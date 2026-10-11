@@ -19,13 +19,22 @@ pub const MARKER: &str = "RETROPANE-HELLO-OK";
 mod image {
     use core::fmt::Write;
 
+    use core::cell::RefCell;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
+
+    use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_tsc2046::{Calibration, Tsc2046};
     use rp_hal_pxa27x::rt;
 
     rp_hal_pxa27x::entry!(main);
+
+    /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
 
     struct TimerDelay;
     impl Delay for TimerDelay {
@@ -70,18 +79,46 @@ mod image {
             }
             let _ = writeln!(uart, "{}", super::MARKER);
 
-            // Report button presses until the end of time (or the emulator).
-            if let Some(regs) = rt::take_keypad() {
-                let mut keypad = Keypad::new(regs);
+            // Report buttons and touches until the end of time (or the emulator).
+            if let (Some(kp), Some(gpio), Some(ssp)) =
+                (rt::take_keypad(), rt::take_gpio(), rt::take_ssp1())
+            {
+                let mut keypad = Keypad::new(kp);
                 keypad.enable();
-                let mut last = Pressed::default();
+
+                let gpio = RefCell::new(Gpio::new(gpio));
+                gpio.borrow_mut().make_output(TS_CS, true);
+                gpio.borrow_mut().make_input(TS_PENIRQ);
+                let mut ssp = Ssp::new(ssp);
+                ssp.configure_spi(2_600_000);
+                let mut touch = Tsc2046::new(
+                    ssp,
+                    GpioPin::new(&gpio, TS_CS),
+                    GpioPin::new(&gpio, TS_PENIRQ),
+                );
+
+                let mut last_keys = Pressed::default();
+                let mut last_touch = None;
                 loop {
-                    let now = keypad.pressed();
-                    for (button, down) in last.changes(now) {
+                    let keys = keypad.pressed();
+                    for (button, down) in last_keys.changes(keys) {
                         let state = if down { "down" } else { "up" };
                         let _ = writeln!(uart, "KEY {} {state}", button.name());
                     }
-                    last = now;
+                    last_keys = keys;
+
+                    let now = touch.sample().map(|t| Calibration::X51V.to_screen(t));
+                    if now != last_touch {
+                        match now {
+                            Some((x, y)) => {
+                                let _ = writeln!(uart, "TOUCH {x} {y}");
+                            }
+                            None => {
+                                let _ = writeln!(uart, "TOUCH up");
+                            }
+                        }
+                        last_touch = now;
+                    }
                     rt::delay_us(5_000);
                 }
             }

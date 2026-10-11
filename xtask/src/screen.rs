@@ -64,6 +64,70 @@ impl Monitor {
     }
 }
 
+/// A connection to QEMU's machine protocol (QMP), for absolute pointer input.
+pub struct Qmp {
+    stream: TcpStream,
+}
+
+impl Qmp {
+    /// Connects to QMP on local `port` and leaves capabilities negotiation mode.
+    pub fn connect(port: u16) -> Result<Self, String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => break s,
+                Err(e) if Instant::now() > deadline => {
+                    return Err(format!("can't reach QMP on port {port}: {e}"));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .map_err(|e| e.to_string())?;
+        let mut q = Self { stream };
+        q.read_reply()?; // greeting
+        q.execute(&serde_json::json!({ "execute": "qmp_capabilities" }))?;
+        Ok(q)
+    }
+
+    fn read_reply(&mut self) -> Result<String, String> {
+        let mut buf = [0u8; 4096];
+        let n = self
+            .stream
+            .read(&mut buf)
+            .map_err(|e| format!("QMP read: {e}"))?;
+        Ok(String::from_utf8_lossy(&buf[..n]).into_owned())
+    }
+
+    /// Sends a command and checks QEMU didn't report an error.
+    pub fn execute(&mut self, cmd: &serde_json::Value) -> Result<(), String> {
+        writeln!(self.stream, "{cmd}").map_err(|e| e.to_string())?;
+        let reply = self.read_reply()?;
+        if reply.contains("\"error\"") {
+            return Err(format!("QMP error: {reply}"));
+        }
+        Ok(())
+    }
+
+    /// Stylus down at absolute pointer position `(x, y)` (0..0x7FFF), or up.
+    pub fn touch(&mut self, at: Option<(u32, u32)>) -> Result<(), String> {
+        let mut events = Vec::new();
+        if let Some((x, y)) = at {
+            events.push(serde_json::json!({ "type": "abs", "data": { "axis": "x", "value": x } }));
+            events.push(serde_json::json!({ "type": "abs", "data": { "axis": "y", "value": y } }));
+        }
+        events.push(serde_json::json!({
+            "type": "btn",
+            "data": { "down": at.is_some(), "button": "left" }
+        }));
+        self.execute(&serde_json::json!({
+            "execute": "input-send-event",
+            "arguments": { "events": events }
+        }))
+    }
+}
+
 /// A decoded binary PPM (P6, 8-bit).
 #[derive(Debug)]
 pub struct Image {

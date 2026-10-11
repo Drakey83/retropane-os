@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-pxa-ssp"
+description = "PXA27x SSP serial port in SPI mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

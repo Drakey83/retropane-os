@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.4.0";
+pub const QEMU_RELEASE: &str = "rp-v0.5.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -167,33 +167,72 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-/// A scripted interaction after boot: send a monitor command, then wait for
-/// serial output containing each `expect` string.
-struct Step {
-    command: &'static str,
-    expect: &'static [&'static str],
+/// What a step does.
+enum Action {
+    /// A QEMU human-monitor command.
+    Hmp(&'static str),
+    /// Put the stylus down at screen pixel `(x, y)`.
+    TouchDown(u16, u16),
+    /// Lift the stylus.
+    TouchUp,
 }
 
-/// Button presses checked after the hello image boots (QEMU `sendkey` names;
-/// see docs/hw/keypad.md for the emulator's key mapping).
+/// What a step expects on serial afterwards.
+enum Expect {
+    /// This exact text.
+    Text(&'static str),
+    /// A `TOUCH x y` line within 2 pixels of `(x, y)`.
+    TouchNear(u16, u16),
+}
+
+/// A scripted interaction after boot.
+struct Step {
+    action: Action,
+    expect: &'static [Expect],
+}
+
+/// Interactions checked after the hello image boots: button presses (QEMU
+/// `sendkey` names, see docs/hw/keypad.md) and stylus taps (docs/hw/touch.md).
 const HELLO_STEPS: &[Step] = &[
     Step {
-        command: "sendkey up",
-        expect: &["KEY Up down", "KEY Up up"],
+        action: Action::Hmp("sendkey up"),
+        expect: &[Expect::Text("KEY Up down"), Expect::Text("KEY Up up")],
     },
     Step {
-        command: "sendkey ret",
-        expect: &["KEY Enter down", "KEY Enter up"],
+        action: Action::Hmp("sendkey ret"),
+        expect: &[Expect::Text("KEY Enter down"), Expect::Text("KEY Enter up")],
     },
     Step {
-        command: "sendkey f1",
-        expect: &["KEY Calendar down", "KEY Calendar up"],
+        action: Action::Hmp("sendkey f1"),
+        expect: &[
+            Expect::Text("KEY Calendar down"),
+            Expect::Text("KEY Calendar up"),
+        ],
     },
     Step {
-        command: "sendkey f4",
-        expect: &["KEY Home down", "KEY Home up"],
+        action: Action::Hmp("sendkey f4"),
+        expect: &[Expect::Text("KEY Home down"), Expect::Text("KEY Home up")],
+    },
+    Step {
+        action: Action::TouchDown(120, 160),
+        expect: &[Expect::TouchNear(120, 160)],
+    },
+    Step {
+        action: Action::TouchUp,
+        expect: &[Expect::Text("TOUCH up")],
+    },
+    Step {
+        action: Action::TouchDown(400, 600),
+        expect: &[Expect::TouchNear(400, 600)],
+    },
+    Step {
+        action: Action::TouchUp,
+        expect: &[Expect::Text("TOUCH up")],
     },
 ];
+
+/// Screen size of the emulated X51v, for converting taps to absolute pointer units.
+const SCREEN: (u32, u32) = (480, 640);
 
 /// Boots the bring-up image, checks it reports success over the UART,
 /// screenshots the emulated display and verifies the test pattern, then
@@ -214,7 +253,7 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     crate::screen::check_test_pattern(&ppm)?;
     eprintln!("    display OK: test pattern verified ({})", shot.display());
     eprintln!(
-        "    input OK: {} button presses reported",
+        "    input OK: {} button/stylus interactions reported",
         HELLO_STEPS.len()
     );
     Ok(())
@@ -230,8 +269,13 @@ struct Serial {
 impl Serial {
     /// Waits until the output (from byte `from` onwards) contains `text`.
     fn wait_for(&mut self, text: &str, from: usize) -> bool {
+        self.wait_until(from, |o| o.contains(text))
+    }
+
+    /// Waits until `pred` holds for the output from byte `from` onwards.
+    fn wait_until(&mut self, from: usize, pred: impl Fn(&str) -> bool) -> bool {
         loop {
-            if self.output.get(from..).is_some_and(|o| o.contains(text)) {
+            if self.output.get(from..).is_some_and(&pred) {
                 return true;
             }
             let Some(left) = self.deadline.checked_duration_since(Instant::now()) else {
@@ -256,6 +300,7 @@ fn boot(
 ) -> Result<String, String> {
     let port = monitor_port();
     let monitor = format!("tcp:127.0.0.1:{port},server,nowait");
+    let qmp = format!("tcp:127.0.0.1:{},server,nowait", port + 1);
     let emu = emulator(root)?;
     let wsl = matches!(emu, Emulator::Wsl);
     let mut cmd = match emu {
@@ -263,7 +308,7 @@ fn boot(
             eprintln!("    emulator: {}", exe.display());
             let mut c = Command::new(exe);
             c.args(EMU_ARGS.split(' '))
-                .args(["-monitor", &monitor])
+                .args(["-monitor", &monitor, "-qmp", &qmp])
                 .arg("-kernel")
                 .arg(image);
             c
@@ -273,7 +318,7 @@ fn boot(
             // `timeout` guarantees the Linux process exits even if killing
             // wsl.exe doesn't reach it.
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -kernel '{}'",
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -qmp {qmp} -kernel '{}'",
                 BOOT_TIMEOUT.as_secs() + 10,
                 to_wsl_path(image)
             ))
@@ -336,21 +381,79 @@ fn run_session(
         };
         mon.screendump(&guest, path)?;
     }
+    let mut qmp: Option<crate::screen::Qmp> = None;
     for step in steps {
         let from = serial.output.len();
-        mon.command(step.command)?;
+        let what = match step.action {
+            Action::Hmp(cmd) => {
+                mon.command(cmd)?;
+                cmd.to_string()
+            }
+            Action::TouchDown(..) | Action::TouchUp => {
+                if qmp.is_none() {
+                    qmp = Some(crate::screen::Qmp::connect(port + 1)?);
+                }
+                touch(qmp.as_mut().expect("connected above"), &step.action)?
+            }
+        };
         for want in step.expect {
-            if !serial.wait_for(want, from) {
-                return Err(format!("after `{}`: no `{want}` on serial", step.command));
+            let ok = match *want {
+                Expect::Text(t) => serial.wait_for(t, from),
+                Expect::TouchNear(x, y) => serial.wait_until(from, |o| touch_near(o, x, y)),
+            };
+            if !ok {
+                let desc = match *want {
+                    Expect::Text(t) => t.to_string(),
+                    Expect::TouchNear(x, y) => format!("TOUCH near {x},{y}"),
+                };
+                return Err(format!("after `{what}`: no `{desc}` on serial"));
             }
         }
     }
     Ok(())
 }
 
+/// Sends a stylus action over QMP; returns a description for error messages.
+fn touch(qmp: &mut crate::screen::Qmp, action: &Action) -> Result<String, String> {
+    match *action {
+        Action::TouchDown(x, y) => {
+            let ax = u32::from(x) * 0x7FFF / (SCREEN.0 - 1);
+            let ay = u32::from(y) * 0x7FFF / (SCREEN.1 - 1);
+            qmp.touch(Some((ax, ay)))?;
+            Ok(format!("touch down at {x},{y}"))
+        }
+        Action::TouchUp => {
+            qmp.touch(None)?;
+            Ok("touch up".into())
+        }
+        Action::Hmp(_) => unreachable!("not a touch"),
+    }
+}
+
+/// Whether `output` has a `TOUCH x y` line within 2 pixels of `(x, y)`.
+fn touch_near(output: &str, x: u16, y: u16) -> bool {
+    output.lines().any(|line| {
+        let mut it = line.trim().strip_prefix("TOUCH ").unwrap_or("").split(' ');
+        match (
+            it.next().and_then(|v| v.parse::<u16>().ok()),
+            it.next().and_then(|v| v.parse::<u16>().ok()),
+        ) {
+            (Some(lx), Some(ly)) => lx.abs_diff(x) <= 2 && ly.abs_diff(y) <= 2,
+            _ => false,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn touch_lines_match_within_tolerance() {
+        assert!(touch_near("KEY Up up\nTOUCH 119 161\n", 120, 160));
+        assert!(!touch_near("TOUCH 110 160\n", 120, 160));
+        assert!(!touch_near("TOUCH up\n", 120, 160));
+    }
 
     #[test]
     fn windows_paths_map_to_wsl_mounts() {

@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-tsc2046"
+description = "TI TSC2046 touch screen controller"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

@@ -62,6 +62,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-gpio"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-keypad"
 version = "0.0.0"
 dependencies = [
@@ -70,7 +78,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-ssp"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-uart"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
+name = "rp-drv-tsc2046"
 version = "0.0.0"
 dependencies = [
  "rp-hal-api",
@@ -108,8 +132,11 @@ version = "0.0.0"
 dependencies = [
  "rp-drv-cpld",
  "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
+ "rp-drv-pxa-ssp",
  "rp-drv-pxa-uart",
+ "rp-drv-tsc2046",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
 ]
