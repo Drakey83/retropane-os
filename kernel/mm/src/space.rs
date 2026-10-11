@@ -404,6 +404,34 @@ pub enum Access {
     Exec,
 }
 
+/// The access to resolve for an abort, without decoding the faulting
+/// instruction. ARMv5 doesn't say whether a data abort was a read or a write,
+/// and decoding instructions (ARM and Thumb) is slow and fragile. Instead:
+///
+/// - a **translation** fault is resolved as a read. Zero pages are mapped
+///   writable anyway if the region allows; a private file page is mapped
+///   read-only, and if the access was a write it retries, takes a permission
+///   fault, and is copied then;
+/// - a **permission** fault on a readable page can only be a write (RetroPane
+///   never maps a readable page without user read access);
+/// - a prefetch abort is an instruction fetch;
+/// - domain and other faults aren't paging faults: `None`.
+///
+/// Cost: at most one extra fault the first time a private file page is
+/// written, instead of decoding every faulting instruction.
+#[must_use]
+pub fn access_for(kind: crate::arm::FaultKind, prefetch: bool) -> Option<Access> {
+    use crate::arm::FaultKind;
+    if prefetch {
+        return Some(Access::Exec);
+    }
+    match kind {
+        FaultKind::Translation => Some(Access::Read),
+        FaultKind::Permission => Some(Access::Write),
+        FaultKind::Domain | FaultKind::Other(_) => None,
+    }
+}
+
 /// How a fault was resolved.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
@@ -797,6 +825,51 @@ mod tests {
                 shared,
             },
         }
+    }
+
+    #[test]
+    fn aborts_map_to_accesses_without_decoding() {
+        use crate::arm::FaultKind;
+        assert_eq!(
+            access_for(FaultKind::Translation, false),
+            Some(Access::Read)
+        );
+        assert_eq!(
+            access_for(FaultKind::Permission, false),
+            Some(Access::Write)
+        );
+        assert_eq!(access_for(FaultKind::Domain, false), None);
+        assert_eq!(access_for(FaultKind::Other(1), false), None);
+        assert_eq!(access_for(FaultKind::Other(0), true), Some(Access::Exec));
+    }
+
+    #[test]
+    fn a_write_resolved_as_read_then_permission_still_copies() {
+        // The two-step path `access_for` relies on: a write to an unmapped
+        // private file page first resolves as a read (read-only cache page),
+        // the retried write takes a permission fault, and that copies.
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        let first = access_for(crate::arm::FaultKind::Translation, false).unwrap();
+        assert_eq!(w.vm().handle_fault(&s, a, first), Ok(Outcome::Mapped));
+        let second = access_for(crate::arm::FaultKind::Permission, false).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a, second),
+            Ok(Outcome::CopiedOnWrite)
+        );
+        // And a write to an unmapped page of a read-only region ends as a
+        // protection error, after the same two steps.
+        s.map(zero(a + 0x1000, 0x1000, Prot::R)).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 0x1000, first),
+            Ok(Outcome::Mapped)
+        );
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 0x1000, second),
+            Err(FaultError::Protection)
+        );
     }
 
     #[test]

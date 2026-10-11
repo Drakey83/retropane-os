@@ -81,3 +81,29 @@ pub fn take_scratch() -> Option<&'static mut [u8]> {
     // identity-mapped with the MMU off; the flag guarantees one owner.
     Some(unsafe { core::slice::from_raw_parts_mut(SCRATCH_BASE as *mut u8, SCRATCH_SIZE) })
 }
+
+/// Start of the RAM pool handed out by [`take_ram_pool`]: SDRAM from 16 MiB
+/// up (above the scratch region), 16 KiB aligned so first-level page tables
+/// can be carved from it.
+pub const RAM_POOL_BASE: usize = 0xA900_0000;
+/// Size of the RAM pool: the top 48 MiB of SDRAM.
+pub const RAM_POOL_SIZE: usize = 48 * 1024 * 1024;
+
+static mut POOL_TAKEN: bool = false;
+
+/// Hands out the RAM pool once, as words: the kernel's physical frames
+/// (page tables, process memory). Word-typed so page-table entries can be
+/// read and written without casts.
+pub fn take_ram_pool() -> Option<&'static mut [u32]> {
+    // SAFETY: single core; called from main code with IRQs masked or before
+    // any interrupt handler touches the flag.
+    let taken = unsafe { core::ptr::addr_of_mut!(POOL_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: RAM_POOL_BASE..+RAM_POOL_SIZE is SDRAM (docs/hw/memory-map.md)
+    // that no image section, stack or other handout reaches (images live in
+    // the first MiB, scratch at 8 MiB); word aligned; identity-mapped; the
+    // flag guarantees one owner.
+    Some(unsafe { core::slice::from_raw_parts_mut(RAM_POOL_BASE as *mut u32, RAM_POOL_SIZE / 4) })
+}

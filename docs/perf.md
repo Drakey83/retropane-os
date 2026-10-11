@@ -37,6 +37,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | Benchmarks moved into a shared suite (`boot/suite`) used by `bench` and the device `probe`; added `chase_sdram/sram_256k` and `tlb_fit/spill` (+ `_l1sram` on device) for ADR-0006. Existing results unchanged (emulator has no latency model, so the new ones only become meaningful on hardware) | all existing benchmarks | — | ±0.1% |
 | 2026-10-11 | Interrupt-driven input (ADR-0007), then: non-generic critical sections, a plain bounds-check message in `Mmio` (no offset formatting at every register access), all integers printed as `u32` (one formatter per kind) | `rp-hello` loaded size | 18,392 B (polling) → 20,904 B (IRQ lines) | 19,544 B |
 | 2026-10-11 | `tlb_fit/spill` raised from 64 to 1024 rounds: at 64 a run was ~26 timer ticks, so code-layout noise of one tick read as a 4% "regression". Baseline re-recorded (measurement fix, not a code change) | `tlb_fit_16` resolution | ±4% | ±0.3% |
+| 2026-10-11 | First live page faults (`boot/kernel`): zero-fill fault including abort entry, `handle_fault`, frame allocation, zeroing and mapping. Emulator real time (no `-icount`), so only a smoke number until it runs on the device | `vm_fault_zero` | — | ~22 µs (emulated) |
 
 ## Open leads
 

@@ -188,6 +188,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-kernel"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-kernel-mm",
+]
+
+[[package]]
 name = "rp-kernel-mm"
 version = "0.0.0"
 

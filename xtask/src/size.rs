@@ -25,6 +25,13 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 24 * 1024,
         max_zero: 20 * 1024,
     },
+    // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
+    // bookkeeping (9 KiB), stacks including a 4 KiB abort stack.
+    Budget {
+        image: "rp-kernel",
+        max_load: 32 * 1024,
+        max_zero: 100 * 1024,
+    },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").
     Budget {

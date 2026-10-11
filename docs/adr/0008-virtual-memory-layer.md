@@ -51,6 +51,28 @@ ARMv5 and the XScale's VIVT caches, which a textbook design would get wrong.
     second-level tables (1024 tables, 1 GiB of mapped space), all bookkeeping
     in `.bss`.
 
+**Live since 2026-10-11** (`boot/kernel`, checked by `cargo xtask emu`): the
+kernel builds its own page tables with `PageTables`, switches the MMU to them,
+and resolves real page faults in an abort handler (demand-zero, page-cache
+file pages, copy-on-write), with FCSE slot switching and a full unmap that
+returns every frame. Lessons from making it run:
+
+- **Rule 8 is real:** the first run's copy-on-write test wrote through a
+  read-only mapping from kernel mode, the hardware allowed it, and the page
+  cache's copy changed. Kernel writes to user memory go through
+  `prepare_user_write`.
+- **No instruction decoding:** a translation fault is resolved as a read, a
+  permission fault as a write (`space::access_for`); a write to a fresh
+  private file page costs one extra fault instead.
+- **Page-table writes are synced** (`PhysMem::sync`) until hardware shows
+  whether the XScale table walker sees the D-cache.
+- **FAR:** the XScale reports the FCSE-modified address, QEMU the address
+  before relocation; relocating in the handler is right for both.
+- **Device windows must move to kernel space:** the bring-up identity map's
+  CS0-CS5 windows (below `0x42000000`) overlap the process slots, so the
+  kernel's tables leave them out for now. Next step: a kernel-space device
+  map, with the HAL told each window's virtual address.
+
 Still to come, in order: reclaim of clean pages (ARMv5 has no accessed bit, so
 reference tracking needs a software scheme), ARM domain assignment per process
 (16 domains for up to 31 processes), and ADR-0006's rules one at a time.

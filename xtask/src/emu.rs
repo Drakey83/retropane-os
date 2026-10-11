@@ -302,6 +302,48 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_kernel::MARKER`.
+const KERNEL_MARKER: &str = "RETROPANE-KERNEL-OK";
+/// Every VM step the kernel image must pass.
+const KERNEL_EXPECT: &[&str] = &[
+    "VM tables OK",
+    "VM zero page OK",
+    "VM file page OK",
+    "VM copy-on-write OK",
+    "VM FCSE OK",
+    "VM fault loop OK",
+    "VM unmap OK",
+];
+
+/// Boots the kernel image: the VM layer live on the CPU, with real page
+/// faults resolved by demand paging and copy-on-write.
+pub fn boot_kernel(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-kernel");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: KERNEL_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    for want in KERNEL_EXPECT {
+        if !output.contains(want) {
+            return Err(format!("kernel check failed: no `{want}` on serial"));
+        }
+    }
+    eprintln!("    kernel VM OK: page tables, demand paging, copy-on-write, FCSE, unmap");
+    Ok(())
+}
+
 /// Must match `rp_probe::MARKER`.
 const PROBE_MARKER: &str = "RETROPANE-PROBE-DONE";
 /// Text every probe report must contain.

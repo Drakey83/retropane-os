@@ -23,9 +23,19 @@ use crate::frames::Frames;
 /// under any address (on VIVT caches, a dirty line under the kernel's address
 /// would hide the data from a user mapping at another address). The HAL
 /// meets this by cleaning after writing through the direct map, or by DMA.
+///
+/// Contract for [`sync`](Self::sync): [`PageTables`] calls it after writing
+/// descriptors, and it must make them visible to the MMU's table walker
+/// (clean the D-cache lines; whether the XScale walker sees the D-cache is an
+/// open question, ADR-0006).
 pub trait PhysMem {
     /// The first-level table (4096 entries).
     fn l1(&mut self) -> &mut [u32; 4096];
+    /// Physical address of the first-level table.
+    fn l1_phys(&self) -> u32;
+    /// Makes `len` bytes of page-table memory at physical `phys` visible to
+    /// the table walker.
+    fn sync(&mut self, phys: u32, len: u32);
     /// The coarse table at physical `phys` (1 KiB aligned, inside a frame
     /// from the frame allocator).
     fn l2(&mut self, phys: u32) -> &mut [u32; 256];
@@ -173,6 +183,8 @@ impl PageTables {
             return Err(MapError::AlreadyMapped);
         }
         *l1 = arm::l1_section(phys, domain, attrs);
+        let at = mem.l1_phys() + (mva >> 20) * 4;
+        mem.sync(at, 4);
         Ok(())
     }
 
@@ -196,6 +208,7 @@ impl PageTables {
             return Err(MapError::AlreadyMapped);
         }
         t[i] = arm::l2_small(phys, attrs);
+        mem.sync(table + i as u32 * 4, 4);
         self.used[(mva >> 20) as usize] += 1;
         Ok(())
     }
@@ -223,6 +236,7 @@ impl PageTables {
             return Err(MapError::AlreadyMapped);
         }
         t[first..first + 16].fill(arm::l2_large(phys, attrs));
+        mem.sync(table + first as u32 * 4, 64);
         self.used[(mva >> 20) as usize] += 16;
         Ok(())
     }
@@ -337,7 +351,8 @@ impl PageTables {
     }
 
     /// Calls `f(table, index, mva)` for every second-level entry in range
-    /// (megabytes without a coarse table are skipped).
+    /// (megabytes without a coarse table are skipped), then syncs the
+    /// entries visited.
     fn walk(
         mem: &mut impl PhysMem,
         mva: u32,
@@ -351,10 +366,15 @@ impl PageTables {
             if let L1::Coarse { table_phys, .. } = arm::l1_decode(mem.l1()[idx]) {
                 let t = mem.l2(table_phys);
                 let stop = end.min((page | (MIB - 1)).saturating_add(1));
+                let first = (page >> 12) & 0xFF;
+                let mut n = 0;
                 while page < stop {
                     f(t, ((page >> 12) & 0xFF) as usize, page);
                     page += PAGE;
+                    n += 1;
                 }
+                // The walk may have changed any entry it visited.
+                mem.sync(table_phys + first * 4, n * 4);
             } else {
                 page = (page | (MIB - 1)).saturating_add(1);
             }
@@ -398,7 +418,10 @@ impl PageTables {
             L1::Fault => {
                 let table = self.alloc_table(mem, frames)?;
                 mem.l2(table).fill(0);
+                mem.sync(table, 1024);
                 mem.l1()[idx] = arm::l1_coarse(table, domain);
+                let at = mem.l1_phys() + idx as u32 * 4;
+                mem.sync(at, 4);
                 self.used[idx] = 0;
                 Ok(table)
             }
@@ -436,6 +459,8 @@ impl PageTables {
             return; // remapped since it emptied
         }
         mem.l1()[idx] = 0;
+        let at = mem.l1_phys() + idx as u32 * 4;
+        mem.sync(at, 4);
         let frame = mem.phys_frame(table_phys);
         let q = (table_phys % PAGE) / 1024;
         let Some(s) = (0..MAX_SLABS).find(|&s| usize::from(self.slab_frame[s]) == frame + 1) else {
@@ -463,10 +488,15 @@ pub(crate) mod fake {
     use super::*;
     use std::collections::HashMap;
 
+    /// Where the fake pretends its first-level table lives.
+    pub const FAKE_L1: u32 = 0xA800_4000;
+
     /// RAM as a map of 4 KiB pages, based at the X51v's SDRAM address.
     pub struct Ram {
         pub l1: Box<[u32; 4096]>,
         pub pages: HashMap<u32, Box<[u32; 1024]>>,
+        /// Every `sync(phys, len)` call, in order.
+        pub synced: Vec<(u32, u32)>,
     }
 
     impl Ram {
@@ -474,6 +504,7 @@ pub(crate) mod fake {
             Self {
                 l1: Box::new([0; 4096]),
                 pages: HashMap::new(),
+                synced: Vec::new(),
             }
         }
 
@@ -487,6 +518,12 @@ pub(crate) mod fake {
     impl PhysMem for Ram {
         fn l1(&mut self) -> &mut [u32; 4096] {
             &mut self.l1
+        }
+        fn l1_phys(&self) -> u32 {
+            FAKE_L1
+        }
+        fn sync(&mut self, phys: u32, len: u32) {
+            self.synced.push((phys, len));
         }
         fn l2(&mut self, phys: u32) -> &mut [u32; 256] {
             let off = ((phys & 0xFFF) / 4) as usize;
@@ -569,6 +606,39 @@ mod tests {
             L1::Coarse { domain: 3, .. }
         ));
         assert_eq!(pt.table_frames(), 1);
+    }
+
+    #[test]
+    fn every_descriptor_write_is_synced() {
+        let (mut pt, mut ram, mut fr) = setup();
+        pt.map_small(&mut ram, &mut fr, 0x0A01_3000, phys(100), 3, RW)
+            .unwrap();
+        let table = match arm::l1_decode(ram.l1[0x0A0]) {
+            L1::Coarse { table_phys, .. } => table_phys,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            ram.synced,
+            [
+                (table, 1024),                         // new table zeroed
+                (super::fake::FAKE_L1 + 0x0A0 * 4, 4), // L1 entry
+                (table + 0x13 * 4, 4),                 // the page's entry
+            ]
+        );
+        ram.synced.clear();
+        pt.unmap(
+            &mut ram,
+            &mut fr,
+            &mut Log::default(),
+            0x0A01_3000,
+            0x1000,
+            |_, _| {},
+        );
+        assert_eq!(
+            ram.synced,
+            [(table + 0x13 * 4, 4), (super::fake::FAKE_L1 + 0x0A0 * 4, 4)],
+            "cleared entry, then the freed table's L1 entry"
+        );
     }
 
     #[test]
