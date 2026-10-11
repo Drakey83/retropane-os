@@ -268,11 +268,15 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-test.img"))?;
     let output = boot(
         root,
-        &image,
-        HELLO_MARKER,
-        Some(&shot),
-        Some(&sd),
-        HELLO_STEPS,
+        &Boot {
+            image: &image,
+            marker: HELLO_MARKER,
+            screenshot: Some(&shot),
+            sd_image: Some(&sd),
+            steps: HELLO_STEPS,
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
     )?;
     for want in [SD_EXPECT_CARD, SD_EXPECT_PARTITION] {
         if !output.contains(want) {
@@ -293,6 +297,127 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
         HELLO_STEPS.len()
     );
     Ok(())
+}
+
+/// Must match `rp_bench::DONE`.
+const BENCH_DONE: &str = "BENCH-DONE";
+/// OS timer frequency the bench image counts in.
+const TICK_HZ: f64 = 3_250_000.0;
+/// A slowdown beyond this fails `cargo xtask bench`. Results are deterministic
+/// under `-icount`, so any real change in work shows up; the margin only
+/// absorbs timer granularity.
+const REGRESSION_LIMIT: f64 = 0.02;
+
+/// One benchmark result in nanoseconds per iteration (emulated time).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BenchResult {
+    /// Benchmark name.
+    pub name: String,
+    /// Nanoseconds per iteration.
+    pub ns: f64,
+}
+
+/// Parses `BENCH <name> <ticks> <iters>` lines.
+pub fn parse_bench(output: &str) -> Vec<BenchResult> {
+    output
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.trim().strip_prefix("BENCH ")?.split(' ');
+            let name = it.next()?.to_string();
+            let ticks: f64 = it.next()?.parse().ok()?;
+            let iters: f64 = it.next()?.parse().ok()?;
+            (iters > 0.0).then(|| BenchResult {
+                name,
+                ns: ticks * 1e9 / TICK_HZ / iters,
+            })
+        })
+        .collect()
+}
+
+/// `cargo xtask bench [--update]`: deterministic micro-benchmarks in the
+/// emulator, compared with `bench/baseline-emulator.json`.
+pub fn bench(root: &Path, update: bool) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-bench");
+    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-bench.img"))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: BENCH_DONE,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            // One virtual nanosecond per instruction: timings become a
+            // deterministic measure of the work done.
+            extra: &["-icount", "shift=0"],
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let results = parse_bench(&output);
+    if results.is_empty() {
+        return Err(format!("no benchmark results. Serial output:\n{output}"));
+    }
+    let path = root.join("bench").join("baseline-emulator.json");
+    let baseline: Option<serde_json::Value> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let same_emulator = baseline
+        .as_ref()
+        .is_some_and(|b| b["emulator"] == serde_json::json!(QEMU_RELEASE));
+
+    let mut regressions = Vec::new();
+    eprintln!(
+        "    {:<22} {:>14} {:>14} {:>8}",
+        "benchmark", "ns/iter", "baseline", "change"
+    );
+    for r in &results {
+        let base = baseline
+            .as_ref()
+            .filter(|_| same_emulator)
+            .and_then(|b| b["results"][&r.name].as_f64());
+        let (base_s, change_s) = match base {
+            Some(b) if b > 0.0 => {
+                let change = r.ns / b - 1.0;
+                if change > REGRESSION_LIMIT {
+                    regressions.push(format!("{} is {:.1}% slower", r.name, change * 100.0));
+                }
+                (format!("{b:.0}"), format!("{:+.1}%", change * 100.0))
+            }
+            _ => ("-".into(), "new".into()),
+        };
+        eprintln!(
+            "    {:<22} {:>14.0} {:>14} {:>8}",
+            r.name, r.ns, base_s, change_s
+        );
+    }
+
+    if update {
+        let map: serde_json::Map<String, serde_json::Value> = results
+            .iter()
+            .map(|r| (r.name.clone(), serde_json::json!(r.ns.round())))
+            .collect();
+        let doc = serde_json::json!({
+            "emulator": QEMU_RELEASE,
+            "units": "nanoseconds per iteration, QEMU -icount shift=0 (deterministic)",
+            "results": map,
+        });
+        std::fs::create_dir_all(path.parent().expect("has parent")).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n";
+        std::fs::write(&path, text).map_err(|e| e.to_string())?;
+        eprintln!("    baseline updated: {}", path.display());
+        return Ok(());
+    }
+    if baseline.is_some() && !same_emulator {
+        eprintln!("    note: baseline was recorded on a different emulator release; not comparing");
+    }
+    if regressions.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "performance regressions: {}",
+            regressions.join("; ")
+        ))
+    }
 }
 
 /// Serial output collected from the emulator, with a deadline.
@@ -327,14 +452,29 @@ impl Serial {
 
 /// Boots `image`, waits until its serial output contains `marker`, optionally
 /// takes a screenshot, then runs `steps`. Returns the serial output.
-fn boot(
-    root: &Path,
-    image: &Path,
-    marker: &str,
-    screenshot: Option<&Path>,
-    sd_image: Option<&Path>,
-    steps: &[Step],
-) -> Result<String, String> {
+/// How to boot an image in the emulator.
+struct Boot<'a> {
+    image: &'a Path,
+    /// Serial text that means the image is up (or done).
+    marker: &'a str,
+    screenshot: Option<&'a Path>,
+    sd_image: Option<&'a Path>,
+    steps: &'a [Step],
+    /// Extra QEMU arguments.
+    extra: &'a [&'a str],
+    timeout: Duration,
+}
+
+fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
+    let Boot {
+        image,
+        marker,
+        screenshot,
+        sd_image,
+        steps,
+        extra,
+        timeout,
+    } = *cfg;
     let port = monitor_port();
     let monitor = format!("tcp:127.0.0.1:{port},server,nowait");
     let qmp = format!("tcp:127.0.0.1:{},server,nowait", port + 1);
@@ -346,6 +486,7 @@ fn boot(
             let mut c = Command::new(exe);
             c.args(EMU_ARGS.split(' '))
                 .args(["-monitor", &monitor, "-qmp", &qmp])
+                .args(extra)
                 .arg("-kernel")
                 .arg(image);
             if let Some(sd) = sd_image {
@@ -362,8 +503,9 @@ fn boot(
                 .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
                 .unwrap_or_default();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
-                BOOT_TIMEOUT.as_secs() + 10,
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                timeout.as_secs() + 10,
+                extra.join(" "),
                 to_wsl_path(image)
             ))
         }
@@ -390,7 +532,7 @@ fn boot(
     let mut serial = Serial {
         rx,
         output: String::new(),
-        deadline: Instant::now() + BOOT_TIMEOUT,
+        deadline: Instant::now() + timeout,
     };
     let result = run_session(&mut serial, marker, port, wsl, screenshot, steps);
     let _ = child.kill();
@@ -410,7 +552,7 @@ fn run_session(
     steps: &[Step],
 ) -> Result<(), String> {
     if !serial.wait_for(marker, 0) {
-        return Err(format!("no `{marker}` within {}s", BOOT_TIMEOUT.as_secs()));
+        return Err(format!("no `{marker}` before the deadline"));
     }
     if screenshot.is_none() && steps.is_empty() {
         return Ok(());
@@ -491,6 +633,14 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_bench_lines() {
+        let r = parse_bench("noise\nBENCH memcpy_64k 3250 10\nBENCH bad x 1\nBENCH-DONE\n");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].name, "memcpy_64k");
+        assert!((r[0].ns - 100_000.0).abs() < 1e-6); // 3250 ticks = 1 ms, / 10
+    }
 
     #[test]
     fn touch_lines_match_within_tolerance() {

@@ -1,5 +1,5 @@
 /*
- * RetroPane bring-up image layout.
+ * RetroPane bare-metal image layout (shared by boot/hello and boot/bench).
  *
  * Loaded at 0xA0008000, the address the SD launcher and QEMU both use (the
  * traditional ARM kernel load address, 32 KiB into SDRAM). MMU off, so

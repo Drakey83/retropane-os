@@ -28,16 +28,23 @@ commands:
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   emu       boot the bring-up image in the x51v emulator (downloads it if needed)
-  qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)";
+  qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
+  bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
+            (--update records a new baseline)";
 
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
+    let flag = std::env::args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "qemu" => {
             run_step(&cmd)
+        }
+        "bench" => {
+            eprintln!("==> bench");
+            cross().and_then(|()| emu::bench(&workspace_root(), flag == "--update"))
         }
         _ => {
             eprintln!("{USAGE}");
