@@ -1,6 +1,6 @@
 # Roadmap
 
-> Status: DRAFT v0.1. Phases overlap. The **reverse-engineering (RE) track runs
+> Status: living document, updated with each change. Phases overlap. The **reverse-engineering (RE) track runs
 > in parallel from Phase 0**, because it's the critical path for the hardware
 > requirements (3D, 2D, Wi-Fi).
 > No dates yet. Each phase ends with a demo on the **real X51v**, not just the emulator.
@@ -48,13 +48,13 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 **Goal:** a real kernel with threads, memory protection and full-speed clocks.
 
 - [ ] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET kit ready: `cargo xtask sdkit`; awaiting first run on the device)*
-- [x] Physical frame allocator (`kernel/mm`, host-tested, benchmarked) *(2026-10-11)*; ADR-0006 (chip-specific memory design) proposed
+- [x] Physical frame allocator (`kernel/mm`, host-tested, benchmarked) *(2026-10-11)*; ADR-0006 (chip-specific memory design) accepted 2026-10-11
 - [ ] On-screen debug text *(boot log done 2026-10-11)* and crash screen (using the display inherited from Windows Mobile), plus a crash log that survives reboot
 - [ ] **USB device driver early:** CDC-ACM console over the stock cradle, with no custom PC drivers
 - [x] Exception vectors (high), bring-up MMU (identity map: cached RAM, write-combined framebuffer, strict devices), caches, fault reporting *(2026-10-10)*
 - [ ] FCSE slot model (ADR-0003) and demand-paged VM (ADR-0005), 624 MHz turbo plus frequency scaling
 - [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*; unowned sources masked and reported *(2026-10-11)*
-- [ ] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, proposed)
+- [ ] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted 2026-10-11)
 - [ ] Scheduler (256 priorities, priority inheritance)
 - [ ] Processes, threads, sync objects, IPC, driver host process
 - [ ] PE loader (host-tested with synthetic PE files)

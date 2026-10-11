@@ -11,6 +11,11 @@ hardware, or compatibility reports.
    🔁 iterate · ✨ modernize · 🗄️ legacy support · ⚡ better/faster.
 2. Read [`docs/CLEANROOM.md`](docs/CLEANROOM.md). It isn't optional: it's what
    keeps the project legal and safe to distribute.
+3. Using an AI coding assistant? Give it
+   [`docs/AI-CONTRIBUTING.md`](docs/AI-CONTRIBUTING.md) first: the project's
+   identity, hardware constraints, architecture law, review concerns and
+   definition of done in one brief. Human contributors will find it a useful
+   summary too.
 
 ## What you need
 

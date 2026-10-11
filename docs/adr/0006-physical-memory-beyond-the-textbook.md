@@ -1,6 +1,6 @@
 # ADR-0006: Physical memory: designed for this chip, not the textbook
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context
@@ -74,6 +74,19 @@ after on real hardware.
 - **Bitmap allocator with `CLZ` scanning:** much smaller metadata (about 12 KiB
   instead of 80 KiB) and lowest-address-first allocation. Worth benchmarking
   later; the saving is about 0.1% of RAM, so it isn't the priority.
+
+## Rollout (review conditions)
+
+- **One rule at a time.** Each rule is built, measured before and after on
+  the device, and kept or dropped before work on the next one starts. All five
+  at once would be too much machinery to debug on a device with no JTAG.
+- **Rule 2 is measured with a sparse-access workload too**, not only Doom.
+  Faulting in a whole 64 KiB block reads up to 16 times the data an app
+  touching one page in a block actually needs. The benchmark set includes a
+  program that touches one page per 64 KiB of a large mapped file, and the
+  rule only stays if it wins or breaks even there. If it doesn't, the fallback
+  is to promote a block to a large page only after several of its pages have
+  been touched.
 
 ## Consequences
 
