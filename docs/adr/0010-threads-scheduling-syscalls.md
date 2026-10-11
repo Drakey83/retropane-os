@@ -1,6 +1,6 @@
 # ADR-0010: Threads, scheduling and the system-call boundary
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR-0011: Reclaiming memory without accessed bits
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context

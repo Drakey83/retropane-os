@@ -1,6 +1,6 @@
 # ADR-0008: The virtual memory layer
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context
@@ -95,7 +95,7 @@ on a kernel stack; the first version overflowed the 4 KiB abort stack into
 the frame allocator. Buffers are static (`ZBuffers`) and pages are touched in
 place (`PhysMem::with_page`).
 
-Still to come, in order: reclaim policy (proposed in ADR-0011: by process,
+Still to come, in order: reclaim policy (ADR-0011: by process,
 without accessed bits) and ADR-0006's rules one at a time.
 
 ## The four lenses

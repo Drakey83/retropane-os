@@ -13,6 +13,12 @@ pub struct Budget {
 }
 
 /// Current budgets.
+///
+/// Rules (ADR-0005 rule 7): budgets only tighten, except by a raise the
+/// project owner approves, with the reason written next to the budget. After
+/// an approved raise the budget is *ratcheted*: set to the measured size plus
+/// about 10%, not to a round number with room to spare, so growth can't
+/// accumulate unreviewed. Every raise is logged in docs/perf.md.
 pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-hello",
@@ -27,14 +33,14 @@ pub const BUDGETS: &[Budget] = &[
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
     // bookkeeping (9 KiB), stacks including a 4 KiB abort stack.
-    // Load budget raised 32 -> 40 KiB on 2026-10-11 (PENDING OWNER REVIEW):
+    // Load budget raised 32 -> 38 KiB on 2026-10-11 (approved by the owner):
     // compressed RAM landed (LZ4 codec, compressed page store, fault-path
     // restore: ~8 KiB); the image crate is already built for size and its
-    // printing trimmed. Revert to 32 KiB if the review says so.
+    // printing trimmed. Ratcheted to the measured 34.9 KB + ~10%.
     Budget {
         image: "rp-kernel",
-        max_load: 40 * 1024,
-        // Raised 100 -> 112 KiB with the load budget (PENDING OWNER REVIEW):
+        max_load: 38 * 1024,
+        // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
         // allocator).
