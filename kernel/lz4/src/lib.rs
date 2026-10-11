@@ -184,6 +184,9 @@ fn copy_match(dst: &mut [u8], o: usize, offset: usize, len: usize) {
 const HASH_BITS: u32 = 12;
 /// The minimum match.
 const MIN_MATCH: usize = 4;
+/// Misses in a row before the search step grows by one byte (LZ4's usual
+/// value: 64).
+const SKIP_SHIFT: usize = 6;
 /// The spec's end rules.
 const LAST_LITERALS: usize = 5;
 const MF_LIMIT: usize = 12;
@@ -276,6 +279,11 @@ pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
         // Position 0 is never a match source (the table's zero entries
         // would point at it), so start one in.
         let mut i = 1;
+        // Skip acceleration: after every 2^SKIP_SHIFT misses in a row, step
+        // one byte further, so incompressible data (already-compressed
+        // files, media) is skimmed instead of searched byte by byte. Any
+        // match resets the step.
+        let mut misses = 0usize;
         table[hash(read32(src, 0))] = 0;
         while i <= limit {
             let v = read32(src, i);
@@ -293,6 +301,7 @@ pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
                         .take_while(|(a, b)| a == b)
                         .count();
                 put_sequence(dst, &mut o, &src[anchor..i], Some(((i - cand) as u16, len)))?;
+                misses = 0;
                 i += len;
                 anchor = i;
                 // Index a position inside the match so repeats are found.
@@ -300,7 +309,8 @@ pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
                     table[hash(read32(src, i - 2))] = (i - 2) as u16;
                 }
             } else {
-                i += 1;
+                misses += 1;
+                i += 1 + (misses >> SKIP_SHIFT);
             }
         }
     }

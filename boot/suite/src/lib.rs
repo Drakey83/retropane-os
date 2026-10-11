@@ -201,14 +201,46 @@ mod target {
         }
     }
 
-    /// LZ4 on a 4 KiB page (ADR-0005: compressed RAM and storage): compress
-    /// and decompress a page shaped like heap data (pointers and small
-    /// integers), and check the round trip on the CPU. `scratch` needs
-    /// 16 KiB.
+    /// LZ4 on 4 KiB pages (ADR-0005: compressed RAM and storage), three
+    /// kinds: a heap-shaped stress page (pointers and small integers: ~1000
+    /// minimum-length matches), text (UI strings and resources: long
+    /// matches), and noise (already-compressed data: nothing to find). The
+    /// round trip is checked on the CPU for each. `scratch` needs 16 KiB.
     pub fn lz4(r: &mut Runner, scratch: &mut [u8]) {
         let (page, rest) = scratch.split_at_mut(4096);
         let (packed, rest) = rest.split_at_mut(rp_lz4::max_compressed(4096));
         let back = &mut rest[..4096];
+        let kinds: [(&'static str, &'static str, &'static str, fn(&mut [u8])); 3] = [
+            ("lz4", "lz4_compress_page", "lz4_decompress_page", heap_page),
+            (
+                "lz4 text",
+                "lz4_compress_text",
+                "lz4_decompress_text",
+                text_page,
+            ),
+            (
+                "lz4 noise",
+                "lz4_compress_noise",
+                "lz4_decompress_noise",
+                noise_page,
+            ),
+        ];
+        for (check, comp, decomp, fill) in kinds {
+            fill(page);
+            let n = rp_lz4::compress(page, packed).unwrap_or(0);
+            let ok =
+                n > 0 && rp_lz4::decompress(&packed[..n], back) == Ok(4096) && back == &page[..];
+            r.check(check, ok, if ok { "" } else { "round trip" });
+            r.run(comp, 16, &mut || {
+                black_box(rp_lz4::compress(black_box(&page[..]), packed).ok());
+            });
+            r.run(decomp, 64, &mut || {
+                black_box(rp_lz4::decompress(black_box(&packed[..n]), back).ok());
+            });
+        }
+    }
+
+    fn heap_page(page: &mut [u8]) {
         for (i, w) in page.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let i = i as u32;
             let v = if i % 3 == 0 {
@@ -218,15 +250,50 @@ mod target {
             };
             *w = v.to_le_bytes();
         }
-        let n = rp_lz4::compress(page, packed).unwrap_or(0);
-        let ok = n > 0 && rp_lz4::decompress(&packed[..n], back) == Ok(4096) && back == &page[..];
-        r.check("lz4", ok, if ok { "" } else { "round trip" });
-        r.run("lz4_compress_page", 16, &mut || {
-            black_box(rp_lz4::compress(black_box(&page[..]), packed).ok());
-        });
-        r.run("lz4_decompress_page", 64, &mut || {
-            black_box(rp_lz4::decompress(black_box(&packed[..n]), back).ok());
-        });
+    }
+
+    fn text_page(page: &mut [u8]) {
+        const WORDS: [&[u8]; 16] = [
+            b"the ",
+            b"Settings ",
+            b"Today ",
+            b"Start ",
+            b"menu ",
+            b"of ",
+            b"Contacts ",
+            b"and ",
+            b"Calendar ",
+            b"to ",
+            b"Messaging ",
+            b"a ",
+            b"Wi-Fi ",
+            b"is ",
+            b"connected. ",
+            b"Programs ",
+        ];
+        let mut x = 0x1234_5678u32;
+        let mut at = 0;
+        while at < page.len() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            for &b in WORDS[(x % 16) as usize] {
+                if at < page.len() {
+                    page[at] = b;
+                    at += 1;
+                }
+            }
+        }
+    }
+
+    fn noise_page(page: &mut [u8]) {
+        let mut x = 0x9E37_79B9u32;
+        for b in page.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *b = x as u8;
+        }
     }
 
     /// Checks the memcpy family on the real CPU for every size 0..=300 and
