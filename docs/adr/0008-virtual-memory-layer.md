@@ -95,9 +95,8 @@ on a kernel stack; the first version overflowed the 4 KiB abort stack into
 the frame allocator. Buffers are static (`ZBuffers`) and pages are touched in
 place (`PhysMem::with_page`).
 
-Still to come, in order: reclaim of clean pages (ARMv5 has no accessed bit, so
-reference tracking needs a software scheme) and ADR-0006's rules one at a
-time.
+Still to come, in order: reclaim policy (proposed in ADR-0011: by process,
+without accessed bits) and ADR-0006's rules one at a time.
 
 ## The four lenses
 
