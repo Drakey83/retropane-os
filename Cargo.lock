@@ -46,6 +46,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-cpld"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-mbx-display"
 version = "0.0.0"
 dependencies = [
@@ -90,6 +98,7 @@ dependencies = [
 name = "rp-hello"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",

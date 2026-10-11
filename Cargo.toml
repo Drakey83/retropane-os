@@ -7,6 +7,7 @@ members = [
     "hal/x51v",
     "drivers/pxa-uart",
     "drivers/mbx-display",
+    "drivers/cpld",
     "boot/hello",
     "tools/romdump",
     "xtask",

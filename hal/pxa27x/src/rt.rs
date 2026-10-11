@@ -81,3 +81,23 @@ pub fn cpu_id() -> u32 {
     }
     id
 }
+
+/// OS timer counter 0 (OSCR0): free-running at 3.25 MHz after reset.
+const OSCR0: usize = 0x40A0_0010;
+/// OSCR0 ticks per 4 microseconds (3.25 MHz = 13 ticks / 4 µs).
+const OSCR_TICKS_PER_US_X4: u32 = 13;
+
+/// Busy-waits at least `us` microseconds using the OS timer.
+pub fn delay_us(us: u32) {
+    let read = || {
+        // SAFETY: OSCR0 is a read-only-in-effect counter register in the
+        // PXA27x OS timer block, identity-mapped with the MMU off; reading it
+        // has no side effects.
+        unsafe { (OSCR0 as *const u32).read_volatile() }
+    };
+    let ticks = us.saturating_mul(OSCR_TICKS_PER_US_X4).div_ceil(4);
+    let start = read();
+    while read().wrapping_sub(start) < ticks {
+        core::hint::spin_loop();
+    }
+}

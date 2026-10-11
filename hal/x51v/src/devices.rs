@@ -10,6 +10,7 @@ use rp_hal_pxa27x::Mmio;
 use crate::{MBX_REG_OFFSET, MBX_REG_SIZE, MBX_VRAM_SIZE, region};
 
 static mut MBX_TAKEN: bool = false;
+static mut CPLD_TAKEN: bool = false;
 
 /// Hands out the Intel 2700G once: its register block and its local memory.
 pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
@@ -28,4 +29,17 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     // else in RetroPane references; the flag guarantees this is the only slice.
     let vram = unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) };
     Some((regs, vram))
+}
+
+/// Hands out the board CPLD's register window once.
+pub fn take_cpld() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
+    let taken = unsafe { core::ptr::addr_of_mut!(CPLD_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    let base = NonNull::new(region("cs4_cpld")?.base as *mut u32)?;
+    // SAFETY: CS4 holds the CPLD's 0x20-byte register window (docs/hw/cpld.md),
+    // identity-mapped with the MMU off; the flag guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x20) })
 }
