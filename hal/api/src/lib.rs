@@ -33,6 +33,16 @@ pub trait RegisterBus {
     }
 }
 
+/// A bank of 16-bit memory-mapped registers (e.g. the X51v CPLD), addressed
+/// by byte offset. Offsets must be 2-byte aligned.
+pub trait RegisterBus16 {
+    /// Reads the 16-bit register at `offset`.
+    fn read16(&mut self, offset: usize) -> u16;
+
+    /// Writes `value` to the 16-bit register at `offset`.
+    fn write16(&mut self, offset: usize, value: u16);
+}
+
 /// A contiguous bit field inside a 32-bit register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {

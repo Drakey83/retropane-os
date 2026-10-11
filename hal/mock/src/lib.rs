@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use rp_hal_api::RegisterBus;
+use rp_hal_api::{RegisterBus, RegisterBus16};
 
 /// One recorded register access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +90,13 @@ impl MockBus {
         self.regs.get(&offset).copied().unwrap_or(0)
     }
 
+    fn check_aligned16(offset: usize) {
+        assert!(
+            offset.is_multiple_of(2),
+            "unaligned 16-bit register offset {offset:#x}"
+        );
+    }
+
     fn check_aligned(offset: usize) {
         assert!(
             offset.is_multiple_of(4),
@@ -114,6 +121,30 @@ impl RegisterBus for MockBus {
         Self::check_aligned(offset);
         self.regs.insert(offset, value);
         self.log.push(Access::Write { offset, value });
+    }
+}
+
+/// 16-bit accesses share the register map and the log; values are widened.
+impl RegisterBus16 for MockBus {
+    fn read16(&mut self, offset: usize) -> u16 {
+        Self::check_aligned16(offset);
+        let value = self
+            .scripted
+            .get_mut(&offset)
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_else(|| self.value(offset))
+            & 0xFFFF;
+        self.log.push(Access::Read { offset, value });
+        value as u16
+    }
+
+    fn write16(&mut self, offset: usize, value: u16) {
+        Self::check_aligned16(offset);
+        self.regs.insert(offset, u32::from(value));
+        self.log.push(Access::Write {
+            offset,
+            value: u32::from(value),
+        });
     }
 }
 
@@ -159,6 +190,22 @@ mod tests {
         bus.modify(0x8, Field::new(0, 4), 0);
         assert_eq!(bus.writes(), vec![(0x8, 0xF0)]);
         assert_eq!(bus.log().len(), 2);
+    }
+
+    #[test]
+    fn sixteen_bit_accesses_are_logged_and_truncated() {
+        let mut bus = MockBus::new();
+        bus.write16(0x1E, 0x8);
+        bus.script_reads(0x16, &[0x1_0005]);
+        assert_eq!(bus.read16(0x1E), 0x8);
+        assert_eq!(bus.read16(0x16), 0x5);
+        assert_eq!(bus.writes(), vec![(0x1E, 0x8)]);
+    }
+
+    #[test]
+    #[should_panic(expected = "unaligned 16-bit")]
+    fn rejects_odd_16_bit_offsets() {
+        MockBus::new().read16(0x3);
     }
 
     #[test]

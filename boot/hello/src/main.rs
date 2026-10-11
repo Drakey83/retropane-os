@@ -19,11 +19,19 @@ pub const MARKER: &str = "RETROPANE-HELLO-OK";
 mod image {
     use core::fmt::Write;
 
+    use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt;
 
     rp_hal_pxa27x::entry!(main);
+
+    struct TimerDelay;
+    impl Delay for TimerDelay {
+        fn delay_us(&mut self, us: u32) {
+            rt::delay_us(us);
+        }
+    }
 
     fn main() -> ! {
         if let Some(bus) = rt::take_ffuart() {
@@ -31,7 +39,20 @@ mod image {
             uart.init(115_200);
             let _ = writeln!(uart, "\nRetroPane OS: hello from the Dell Axim X51v");
             let _ = writeln!(uart, "CPU ID: {:#010x}", rt::cpu_id());
-            if let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() {
+            let vga = match rp_hal_x51v::devices::take_cpld() {
+                Some(bus) => {
+                    let panel = Cpld::new(bus).panel(&mut TimerDelay);
+                    let _ = writeln!(uart, "Panel: {}", panel.name());
+                    panel.is_vga()
+                }
+                None => true,
+            };
+            if !vga {
+                let _ = writeln!(
+                    uart,
+                    "QVGA panel: display setup skipped (not supported yet)"
+                );
+            } else if let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() {
                 let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
                 pattern::fill_rgb565(
                     &mut vram[plane.offset..],

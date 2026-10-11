@@ -23,7 +23,7 @@
 | CompactFlash | PXA PC Card socket 1; detect GPIO13, reset GPIO36, ready GPIO84 | confirmed (code) | PXA native | PXA manual | `pxa2xx_aximx50.c` |
 | USB client | PXA UDC; cable detect GPIO14, pull-up GPIO2 | confirmed (code) | — | PXA manual | mainline (old) |
 | IrDA | PXA STUART | confirmed (code) | — | PXA manual | — |
-| CPLD | Unknown part; 16 × 16-bit regs at CS4; power rails and LCD ID | confirmed (code) | Static memory bus | **None** | Partial map in AxDroid (buggy clear logic) |
+| CPLD | Unknown part; 16 × 16-bit regs at CS4; power rails and LCD ID (spec: `docs/hw/cpld.md`) | confirmed (code) | Static memory bus | **None** | Partial map in AxDroid (buggy clear logic) |
 | Power / battery / charger | **Unknown**; only AC-in = GPIO11 known | — | — | **None** | **None** |
 
 Manufacturer is likely **HTC** (FCC filing; the FCC ID NM8HC03U is a guess, unverified).

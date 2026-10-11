@@ -8,7 +8,7 @@
 
 use core::ptr::NonNull;
 
-use rp_hal_api::RegisterBus;
+use rp_hal_api::{RegisterBus, RegisterBus16};
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
@@ -62,6 +62,31 @@ impl RegisterBus for Mmio {
     }
 }
 
+impl Mmio {
+    fn reg16(&self, offset: usize) -> *mut u16 {
+        assert!(
+            offset.is_multiple_of(2) && offset + 2 <= self.len,
+            "16-bit register offset {offset:#x} out of range or unaligned"
+        );
+        self.base.as_ptr().cast::<u16>().wrapping_add(offset / 2)
+    }
+}
+
+impl RegisterBus16 for Mmio {
+    fn read16(&mut self, offset: usize) -> u16 {
+        let reg = self.reg16(offset);
+        // SAFETY: aligned and inside the window, which the caller of
+        // `Mmio::new` guaranteed is valid for volatile access.
+        unsafe { reg.read_volatile() }
+    }
+
+    fn write16(&mut self, offset: usize, value: u16) {
+        let reg = self.reg16(offset);
+        // SAFETY: as in `read16`.
+        unsafe { reg.write_volatile(value) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +109,16 @@ mod tests {
             assert_eq!(mmio.read32(0x8), 0xDEAD_BEEF);
             mmio.modify(0x8, Field::new(0, 16), 0);
             assert_eq!(mmio.read32(0x8), 0xDEAD_0000);
+        });
+    }
+
+    #[test]
+    fn sixteen_bit_access_hits_the_right_halfword() {
+        with_window(|mmio| {
+            mmio.write32(0x4, 0);
+            mmio.write16(0x6, 0xBEEF);
+            assert_eq!(mmio.read32(0x4), 0xBEEF_0000);
+            assert_eq!(mmio.read16(0x6), 0xBEEF);
         });
     }
 

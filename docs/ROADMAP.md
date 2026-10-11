@@ -33,7 +33,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 
 - [x] Fork QEMU 9.1 ([retropane-qemu](https://github.com/Drakey83/retropane-qemu); CI builds Linux + Windows releases, and `cargo xtask emu` downloads them, so no submodule is needed)
 - [ ] `x51v` machine: PXA270, memory map, UART console *(rp-v0.1.0)*, SD image, keypad
-- [ ] TSC2046 touch, WM8750 audio, CPLD model (from `docs/hw/cpld.md`)
+- [x] CPLD model (from `docs/hw/cpld.md`) *(rp-v0.3.0)*
+- [ ] TSC2046 touch, WM8750 audio
 - [x] 2700G display model: local memory, registers, graphics-plane scan-out *(rp-v0.2.0)*
 - [x] Screenshots for integration tests: `cargo xtask emu` verifies the hello image's test pattern pixel by pixel *(input scripting still to do)*
 - [ ] **RE:** `tools/mmiotrace` working on Windows Mobile: traps and logs 2700G register accesses
@@ -64,7 +65,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] CompactFlash (PXA PC Card socket 1, DMA where possible)
 - [ ] Audio (WM8750, I²S, DMA)
 - [ ] USB client (serial gadget for development networking)
-- [ ] **RE:** full CPLD register map written up in `docs/hw/cpld.md`
+- [ ] **RE:** full CPLD register map in `docs/hw/cpld.md` *(v0.1 from AxDroid facts; confirm and complete from Dell's OAL in `nk.exe`)*
 
 **Exit:** touch, keys, SD, CF and audio pass hardware-in-the-loop tests.
 
