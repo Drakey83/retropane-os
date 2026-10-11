@@ -214,10 +214,17 @@ mod image {
         halt()
     }
 
-    /// Polls the UDC for `ticks`, then returns its counters.
+    /// Polls the UDC for `ticks`, then returns its counters. Feeds the
+    /// watchdog meanwhile: the loader arms it with a 30 s run limit, and this
+    /// experiment runs for about 40 s (the first run on the device was reset
+    /// by it mid-way, into Dell's factory-restore prompt).
     fn settle(rig: &mut Rig, ticks: u32) -> rp_drv_pxa_udc::Stats {
         let t = rt::ticks();
+        let mut watchdog = rt::watchdog();
         while rt::ticks().wrapping_sub(t) < ticks {
+            if watchdog.armed() {
+                watchdog.feed(30 * TICK_1S);
+            }
             rig.udc.poll();
         }
         rig.udc.stats()
