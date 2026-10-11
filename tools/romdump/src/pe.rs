@@ -149,8 +149,12 @@ fn unmove_sections(e32: &E32, o32: &[O32], bodies: &mut [Vec<u8>]) -> Result<(),
     if moved.is_empty() || fix_size == 0 {
         return Ok(());
     }
-    let relocs = read_rva(o32, bodies, fix_rva, fix_size as usize)
-        .ok_or_else(|| Error::Format("relocation directory not inside any section".into()))?;
+    // Some kitchens (observed: LennySh WM6.5.5) strip the .reloc section but
+    // leave the directory entry. Without relocations the references can't be
+    // moved back; the module is still rebuilt, with data at its RAM address.
+    let Some(relocs) = read_rva(o32, bodies, fix_rva, fix_size as usize) else {
+        return Ok(());
+    };
     for target in highlow_targets(&relocs)? {
         let Some((si, off)) = locate(o32, bodies, target) else {
             continue;
@@ -504,6 +508,19 @@ mod tests {
         let pe = rebuild(&h, &b).unwrap();
         let off = u32_at(&pe, 0x3C).unwrap() as usize;
         assert_eq!(u32_at(&pe, off + 24 + 100 + FIX * 8).unwrap(), 12);
+    }
+
+    #[test]
+    fn stripped_relocations_still_rebuild() {
+        let (mut h, mut b) = sample();
+        // Directory says 0x3000, but drop the .reloc section entirely.
+        h[0x00..0x02].copy_from_slice(&2u16.to_le_bytes());
+        b.pop();
+        let pe = rebuild(&h[..E32_SIZE + 2 * O32_SIZE], &b).unwrap();
+        let off = u32_at(&pe, 0x3C).unwrap() as usize;
+        let code_raw = u32_at(&pe, off + 24 + 0xE0 + 20).unwrap() as usize;
+        // Reference left at the RAM address.
+        assert_eq!(u32_at(&pe, code_raw + 8).unwrap(), 0x0180_0004);
     }
 
     #[test]
