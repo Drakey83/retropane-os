@@ -111,9 +111,16 @@ Constraints and facts that shape the design:
   switch and thread start (`rp_hal_pxa27x::thread`), and the one-shot alarm
   (`rt::set_alarm`). Live in `boot/threads`: ping-pong between equal-priority
   threads, a sleeper waking on time, a tickless idle thread.
-- Next: user mode (SWI entry, user-abort path on the thread's kernel stack),
-  the KData page, mutexes with priority inheritance, `IrqLine` as a waitable
-  object, lazy iWMMXt switching.
+- **User mode and system calls (2026-10-11):** `rp_hal_pxa27x::user`: SWI
+  entry saves the whole user context as a `Frame` on the thread's kernel
+  stack, the handler may block or switch, exit restores it; `enter_user`
+  drops a thread into user mode; a safe user-side `syscall` stub (number in
+  `r7`). Live in `boot/threads`: two user threads print and yield through
+  system calls (`ABABAB`), every frame checked to come from user mode.
+- Next: the user-abort path on the thread's kernel stack, preemption on the
+  way back to user mode (quantum expiry, interrupts), the KData page,
+  mutexes with priority inheritance, `IrqLine` as a waitable object, lazy
+  iWMMXt switching.
 
 ## Open questions
 

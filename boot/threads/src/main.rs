@@ -6,8 +6,11 @@
 //! pong, trade an event 1000 times (round-robin hand-off, and the cost of a
 //! context switch); a more urgent sleeper wakes five times after 10 ms each;
 //! an idle thread puts the CPU to sleep with a one-shot alarm (tickless) when
-//! nothing else can run. Prints `THREADS ... OK` lines and `BENCH` lines,
-//! then [`MARKER`]; `cargo xtask emu` checks them.
+//! nothing else can run. Then two threads drop into **user mode** and make
+//! system calls (`SWI`): each prints a letter and yields, three times, so the
+//! output must be `ABABAB`, and every call's saved CPSR must say user mode.
+//! Prints `THREADS ... OK` / `USER ... OK` lines and `BENCH` lines, then
+//! [`MARKER`]; `cargo xtask emu` checks them.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -22,6 +25,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt::{self, Global};
     use rp_hal_pxa27x::thread;
+    use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid};
 
@@ -44,6 +48,28 @@ mod image {
         late_max: 0,
         wakes: 0,
     });
+
+    /// System calls (user side numbers).
+    const SYS_PRINT: u32 = 0;
+    const SYS_YIELD: u32 = 1;
+    const SYS_EXIT: u32 = 2;
+
+    /// User stacks handed to the user threads.
+    static USTACKS: Global<[Option<&'static mut [u32]>; 2]> = Global::new([None, None]);
+    /// What the user threads printed, and how their calls looked.
+    static ULOG: Global<UserLog> = Global::new(UserLog {
+        text: [0; 16],
+        len: 0,
+        calls: 0,
+        not_user: 0,
+    });
+
+    struct UserLog {
+        text: [u8; 16],
+        len: usize,
+        calls: u32,
+        not_user: u32,
+    }
 
     struct Demo {
         ping: Eid,
@@ -98,8 +124,12 @@ mod image {
         wait(done); // one of: ping-pong finished, sleeper finished
         wait(done); // the other
         let (pp_ticks, late_max, wakes) = DEMO.with(|d| (d.pingpong_ticks, d.late_max, d.wakes));
-        let _ = writeln!(uart, "BENCH thread_switch {pp_ticks} {}", 2 * ROUNDS);
-        let _ = writeln!(uart, "BENCH sleep_lateness_max {late_max} 1");
+        // One format call for both lines (each call site costs image size).
+        let _ = writeln!(
+            uart,
+            "BENCH thread_switch {pp_ticks} {}\nBENCH sleep_lateness_max {late_max} 1",
+            2 * ROUNDS
+        );
         let mut ok = report(&mut uart, "THREADS ping-pong", pp_ticks > 0, pp_ticks);
         // On time: within 1 ms of each deadline (the emulator runs in real
         // time; a real X51v should do much better).
@@ -108,6 +138,40 @@ mod image {
             "THREADS sleep",
             wakes == SLEEPS && late_max < 3250,
             late_max,
+        );
+
+        // User mode: two threads at equal priority, each printing its letter
+        // and yielding three times through system calls.
+        user::set_syscall_handler(on_syscall);
+        let spawned = SCHED.with(|s| -> Result<(), Error> {
+            for i in 0..2 {
+                let kstack = stacks.next().ok_or(Error::Full)?;
+                let ustack = stacks.next().ok_or(Error::Full)?;
+                USTACKS.with(|u| u[i] = Some(ustack));
+                let t = s.create(0, 200)?;
+                thread::prepare(t.index(), kstack, user_trampoline, i);
+            }
+            Ok(())
+        });
+        if spawned.is_err() {
+            let _ = uart.write_str("USER setup FAIL\n");
+            halt();
+        }
+        wait(done);
+        wait(done);
+        let (text, len, calls, not_user) = ULOG.with(|l| (l.text, l.len, l.calls, l.not_user));
+        // 3 prints + 3 yields + 1 exit, per thread.
+        ok &= report(
+            &mut uart,
+            "USER mode",
+            calls == 14 && not_user == 0,
+            not_user,
+        );
+        ok &= report(
+            &mut uart,
+            "USER yield",
+            &text[..len] == b"ABABAB",
+            len as u32,
         );
         if ok {
             let _ = uart.write_str(super::MARKER);
@@ -193,6 +257,60 @@ mod image {
         let done = DEMO.with(|d| d.done);
         set(done);
         finish()
+    }
+
+    /// Kernel side of a user thread: enter user mode, never come back (only
+    /// system calls do).
+    extern "C" fn user_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_main, stack, i)
+    }
+
+    /// Runs in user mode: everything it does goes through system calls.
+    extern "C" fn user_main(i: usize) -> ! {
+        for _ in 0..3 {
+            user::syscall(SYS_PRINT, u32::from(b'A') + i as u32, 0, 0);
+            user::syscall(SYS_YIELD, 0, 0, 0);
+        }
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// The kernel's system-call handler (on the calling thread's kernel
+    /// stack: it may block or switch threads).
+    fn on_syscall(f: &mut Frame) {
+        ULOG.with(|l| {
+            l.calls += 1;
+            if !f.from_user() {
+                l.not_user += 1;
+            }
+        });
+        match f.number() {
+            SYS_PRINT => {
+                ULOG.with(|l| {
+                    if l.len < l.text.len() {
+                        l.text[l.len] = f.arg(0) as u8;
+                        l.len += 1;
+                    }
+                });
+                f.set_result(0);
+            }
+            SYS_YIELD => {
+                SCHED.with(|s| s.yield_now(rt::ticks()));
+                reschedule();
+                f.set_result(0);
+            }
+            SYS_EXIT => {
+                let done = DEMO.with(|d| d.done);
+                let _ = SCHED.with(|s| s.set_event(done));
+                finish()
+            }
+            _ => f.set_result(u32::MAX),
+        }
     }
 
     /// Ends the running thread.

@@ -507,10 +507,14 @@ impl Scheduler {
     /// Creates an event (manual reset: stays set until reset; auto reset:
     /// releases one waiter and clears).
     pub fn create_event(&mut self, manual: bool, set: bool) -> Result<Eid, Error> {
-        let i = 1 + self.events[1..]
-            .iter()
-            .position(|e| !e.used)
-            .ok_or(Error::Full)?;
+        // A plain loop: the iterator version unrolled to over 1 KiB of code.
+        let mut i = 1;
+        while self.events[i].used {
+            i += 1;
+            if i > MAX_EVENTS {
+                return Err(Error::Full);
+            }
+        }
         self.events[i] = Event {
             used: true,
             set,
