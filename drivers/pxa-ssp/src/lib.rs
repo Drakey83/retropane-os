@@ -27,11 +27,21 @@ const SSSR_RNE: Field = Field::bit(3);
 /// SSP input clock.
 pub const SSP_CLOCK_HZ: u32 = 13_000_000;
 
-/// The serial clock rate divisor (SCR) for at most `hz`.
+/// Slowest serial clock the SSP can make: 13 MHz / 4096.
+pub const SSP_MIN_HZ: u32 = SSP_CLOCK_HZ.div_ceil(4096);
+
+/// The serial clock rate divisor (SCR) for at most `hz`. Rates above
+/// [`SSP_CLOCK_HZ`] give the fastest clock, which still honours "at most".
+///
+/// # Panics
+/// In debug builds, if `hz` is below [`SSP_MIN_HZ`]: no divisor can make a
+/// clock that slow, and silently running faster than asked could break the
+/// device on the other end.
 #[must_use]
 pub fn scr_for(hz: u32) -> u32 {
-    let hz = hz.clamp(1, SSP_CLOCK_HZ);
-    SSP_CLOCK_HZ.div_ceil(hz).saturating_sub(1).min(0xFFF)
+    debug_assert!(hz >= SSP_MIN_HZ, "SPI clock below the SSP's minimum");
+    let hz = hz.clamp(SSP_MIN_HZ, SSP_CLOCK_HZ);
+    SSP_CLOCK_HZ.div_ceil(hz) - 1
 }
 
 /// An SSP port configured for 8-bit SPI mode 0.
@@ -74,6 +84,12 @@ impl<B: RegisterBus> SpiBus for Ssp<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "below the SSP's minimum")]
+    fn refuses_impossibly_slow_clocks() {
+        let _ = scr_for(SSP_MIN_HZ - 1);
+    }
     use rp_hal_mock::MockBus;
 
     #[test]
@@ -81,7 +97,8 @@ mod tests {
         assert_eq!(scr_for(13_000_000), 0);
         assert_eq!(scr_for(2_000_000), 6); // 1.86 MHz
         assert_eq!(scr_for(2_600_000), 4); // exactly 2.6 MHz
-        assert_eq!(scr_for(1), 0xFFF);
+        assert_eq!(scr_for(SSP_MIN_HZ), 0xFFF);
+        assert_eq!(scr_for(50_000_000), 0);
     }
 
     #[test]

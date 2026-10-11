@@ -111,11 +111,33 @@ impl Field {
         (reg & self.mask()) >> self.shift
     }
 
-    /// `reg` with this field replaced by `value`. Bits of `value` that don't fit
-    /// in the field are discarded.
+    /// The largest value the field holds.
+    #[must_use]
+    pub const fn max(self) -> u32 {
+        u32::MAX >> (32 - self.width as u32)
+    }
+
+    /// `reg` with this field replaced by `value`.
+    ///
+    /// # Panics
+    /// In debug builds (and host tests), if `value` doesn't fit in the field:
+    /// a silently truncated register value is a driver bug. Use
+    /// [`try_insert`](Self::try_insert) where the value comes from outside.
     #[must_use]
     pub const fn insert(self, reg: u32, value: u32) -> u32 {
+        debug_assert!(value <= self.max(), "value does not fit in the field");
         (reg & !self.mask()) | ((value << self.shift) & self.mask())
+    }
+
+    /// `reg` with this field replaced by `value`, or `None` if `value`
+    /// doesn't fit.
+    #[must_use]
+    pub const fn try_insert(self, reg: u32, value: u32) -> Option<u32> {
+        if value <= self.max() {
+            Some((reg & !self.mask()) | (value << self.shift))
+        } else {
+            None
+        }
     }
 }
 
@@ -139,9 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn insert_discards_overflowing_bits() {
-        let f = Field::new(0, 2);
-        assert_eq!(f.insert(0, 0b111), 0b11);
+    #[should_panic(expected = "does not fit")]
+    fn insert_refuses_values_that_do_not_fit() {
+        let _ = Field::new(0, 2).insert(0, 0b111);
+    }
+
+    #[test]
+    fn try_insert_checks_the_range() {
+        let f = Field::new(4, 2);
+        assert_eq!(f.max(), 3);
+        assert_eq!(f.try_insert(0, 3), Some(0x30));
+        assert_eq!(f.try_insert(0, 4), None);
+        assert_eq!(Field::new(0, 32).try_insert(0, u32::MAX), Some(u32::MAX));
     }
 
     struct Fake(u32);

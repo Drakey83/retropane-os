@@ -53,7 +53,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] **USB device driver early:** CDC-ACM console over the stock cradle, with no custom PC drivers
 - [x] Exception vectors (high), bring-up MMU (identity map: cached RAM, write-combined framebuffer, strict devices), caches, fault reporting *(2026-10-10)*
 - [ ] FCSE slot model (ADR-0003) and demand-paged VM (ADR-0005), 624 MHz turbo plus frequency scaling
-- [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*
+- [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*; unowned sources masked and reported *(2026-10-11)*
+- [ ] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, proposed)
 - [ ] Scheduler (256 priorities, priority inheritance)
 - [ ] Processes, threads, sync objects, IPC, driver host process
 - [ ] PE loader (host-tested with synthetic PE files)
