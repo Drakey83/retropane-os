@@ -5,7 +5,12 @@
 //! sets up the stack, clears `.bss` and calls the image's `rp_main`.
 //!
 //! The image must define `rp_main` with the [`entry!`](crate::entry) macro and
-//! link with a script that provides `__stack_top`, `__bss_start` and `__bss_end`.
+//! link with a script that provides `__stack_top`, `__irq_stack_top`,
+//! `__exc_stack_top`, `__bss_start` and `__bss_end` (see `boot/link.x`).
+//!
+//! It also provides the bring-up MMU ([`init_mmu`]: caches, write buffer,
+//! high vectors), exception handling and a periodic tick with idle
+//! ([`start_tick`], [`wait_tick`]), so images never busy-wait.
 
 use core::ptr::NonNull;
 
@@ -21,7 +26,15 @@ _start:
     @ behind, we now own the CPU.
     msr     cpsr_c, #0xD3
 
-    @ Stack.
+    @ Stacks: IRQ, then abort/undefined (shared; they only report and stop),
+    @ then SVC, where we stay. Interrupts stay masked throughout.
+    msr     cpsr_c, #0xD2
+    ldr     sp, =__irq_stack_top
+    msr     cpsr_c, #0xD7
+    ldr     sp, =__exc_stack_top
+    msr     cpsr_c, #0xDB
+    ldr     sp, =__exc_stack_top
+    msr     cpsr_c, #0xD3
     ldr     sp, =__stack_top
 
     @ Zero .bss (word-aligned by the linker script).
@@ -34,6 +47,48 @@ _start:
 
     bl      rp_main
 2:  b       2b
+
+    @ Exception vectors, copied to the high-vector page by init_mmu. Each slot
+    @ loads its handler's absolute address from the word 32 bytes later.
+    .global rp_vectors
+    .balign 4
+rp_vectors:
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    ldr     pc, [pc, #24]
+    .word   _start, rp_undef_entry, rp_swi_entry, rp_pabt_entry
+    .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_undef_entry
+
+    @ IRQ: save the caller-saved registers (AAPCS; 6 words keeps the stack
+    @ 8-byte aligned), dispatch in Rust, return restoring CPSR from SPSR.
+rp_irq_entry:
+    sub     lr, lr, #4
+    stmfd   sp!, {{r0-r3, r12, lr}}
+    bl      rp_irq
+    ldmfd   sp!, {{r0-r3, r12, pc}}^
+
+    @ Faults: report kind and faulting address, then stop.
+rp_undef_entry:
+    mov     r0, #1
+    sub     r1, lr, #4
+    b       rp_fault
+rp_swi_entry:
+    mov     r0, #2
+    sub     r1, lr, #4
+    b       rp_fault
+rp_pabt_entry:
+    mov     r0, #3
+    sub     r1, lr, #4
+    b       rp_fault
+rp_dabt_entry:
+    mov     r0, #4
+    sub     r1, lr, #8
+    b       rp_fault
     "#
 );
 
@@ -76,6 +131,16 @@ pub fn take_ffuart() -> Option<Mmio> {
     // memory map), identity-mapped with the MMU off, and the flag above
     // guarantees a single owner.
     Some(unsafe { Mmio::new(base, UART_WINDOW) })
+}
+
+/// An FFUART handle for fault and panic reporting only, usable even after
+/// [`take_ffuart`] handed out the normal one. Output may interleave with the
+/// owner's; that's acceptable when the system is stopping anyway.
+#[must_use]
+pub fn emergency_uart() -> Mmio {
+    // SAFETY: the FFUART window is valid MMIO; this is only used on paths that
+    // never return to the code holding the normal handle (faults, panics).
+    unsafe { Mmio::new(NonNull::new_unchecked(FFUART_BASE as *mut u32), UART_WINDOW) }
 }
 
 /// Reads the CPU's Main ID register (CP15 c0).
@@ -191,4 +256,213 @@ pub fn take_mmc() -> Option<Mmio> {
     // SAFETY: the MMC controller's register window (PXA27x memory map, up to
     // 0x50 used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x100) })
+}
+
+// --------------------------------------------------------------------------
+// MMU, exceptions, tick and idle
+// --------------------------------------------------------------------------
+
+/// What went wrong, for the fault handler.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// Undefined instruction (or an unexpected vector).
+    Undefined,
+    /// SWI with no handler yet.
+    Swi,
+    /// Prefetch abort.
+    PrefetchAbort,
+    /// Data abort.
+    DataAbort,
+}
+
+impl Fault {
+    /// A short fixed name (no `Debug` formatting needed).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Undefined => "Undefined",
+            Self::Swi => "Swi",
+            Self::PrefetchAbort => "PrefetchAbort",
+            Self::DataAbort => "DataAbort",
+        }
+    }
+}
+
+static mut FAULT_HANDLER: Option<fn(Fault, u32) -> !> = None;
+static mut TICK_PERIOD: u32 = 0;
+static mut TICKS: u32 = 0;
+
+const INTC_BASE: usize = 0x40D0_0000;
+const OST_BASE: usize = 0x40A0_0000;
+
+fn intc() -> crate::soc::Intc<Mmio> {
+    // SAFETY: the interrupt controller's register window; the HAL is its only
+    // user (images reach it through start_tick / the IRQ path).
+    crate::soc::Intc(unsafe { Mmio::new(NonNull::new_unchecked(INTC_BASE as *mut u32), 0x100) })
+}
+
+fn ostimer() -> crate::soc::OsTimer<Mmio> {
+    // SAFETY: the OS timer's register window; the HAL is its only writer.
+    crate::soc::OsTimer(unsafe { Mmio::new(NonNull::new_unchecked(OST_BASE as *mut u32), 0x20) })
+}
+
+/// Sets what runs on an unexpected exception (gets the kind and the faulting
+/// instruction's address). Call before [`init_mmu`].
+pub fn set_fault_handler(f: fn(Fault, u32) -> !) {
+    // SAFETY: single core with IRQs masked during setup, so nothing reads the
+    // handler while it's being written.
+    unsafe { core::ptr::addr_of_mut!(FAULT_HANDLER).write(Some(f)) }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rp_fault(kind: u32, addr: u32) -> ! {
+    let kind = match kind {
+        2 => Fault::Swi,
+        3 => Fault::PrefetchAbort,
+        4 => Fault::DataAbort,
+        _ => Fault::Undefined,
+    };
+    // SAFETY: written once during setup, before any exception can occur.
+    if let Some(f) = unsafe { core::ptr::addr_of!(FAULT_HANDLER).read() } {
+        f(kind, addr);
+    }
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rp_irq() {
+    let pending = intc().pending();
+    if pending & (1 << crate::soc::irq::OST1) != 0 {
+        // SAFETY: the IRQ handler is the only writer of TICKS (main code only
+        // reads it), and TICK_PERIOD is set before the tick interrupt is enabled.
+        unsafe {
+            ostimer().rearm(core::ptr::addr_of!(TICK_PERIOD).read());
+            let t = core::ptr::addr_of_mut!(TICKS);
+            t.write_volatile(t.read_volatile().wrapping_add(1));
+        }
+    }
+    // Anything else isn't claimed by a driver yet: mask it so it can't storm.
+    let other = pending & !(1 << crate::soc::irq::OST1);
+    for n in 0..40 {
+        if other & (1 << n) != 0 {
+            intc().disable(n);
+        }
+    }
+}
+
+/// Turns on the bring-up MMU: identity map ([`crate::mmu::X51V_BRINGUP`]),
+/// I/D caches, write buffer, branch prediction and high vectors.
+pub fn init_mmu() {
+    unsafe extern "C" {
+        static rp_vectors: [u32; 16];
+    }
+    // SAFETY: interrupts are masked and the MMU is off. L1_TABLE (16 KiB) and
+    // VECTORS_PHYS (64 bytes) are reserved SDRAM below/above every image
+    // (boot/link.x), so writing them clobbers nothing. The table maps the code
+    // currently running at its own address, so execution continues seamlessly.
+    unsafe {
+        let vectors = core::ptr::addr_of!(rp_vectors).cast::<u32>();
+        core::ptr::copy_nonoverlapping(vectors, crate::mmu::VECTORS_PHYS as *mut u32, 16);
+        let table = &mut *(crate::mmu::L1_TABLE as *mut [u32; 4096]);
+        crate::mmu::build(table, crate::mmu::X51V_BRINGUP);
+        core::arch::asm!(
+            "mov {t}, #0",
+            "mcr p15, 0, {t}, c7, c7, 0",   // invalidate I/D caches and BTB
+            "mcr p15, 0, {t}, c8, c7, 0",   // invalidate TLBs
+            "mcr p15, 0, {t}, c7, c10, 4",  // drain write buffer
+            "mcr p15, 0, {ttb}, c2, c0, 0", // translation table base
+            "mov {t}, #1",
+            "mcr p15, 0, {t}, c3, c0, 0",   // domain 0 = client
+            "mrc p15, 0, {t}, c1, c0, 0",
+            "orr {t}, {t}, {bits}",         // M C W Z I V
+            "mcr p15, 0, {t}, c1, c0, 0",
+            "mrc p15, 0, {t}, c2, c0, 0",   // XScale CPWAIT
+            "mov {t}, {t}",
+            "sub pc, pc, #4",
+            t = out(reg) _,
+            ttb = in(reg) crate::mmu::L1_TABLE,
+            bits = in(reg) (1u32 << 0) | (1 << 2) | (1 << 3) | (1 << 11) | (1 << 12) | (1 << 13),
+            options(nostack),
+        );
+    }
+}
+
+/// Reads the word at `addr` to exercise the fault path: an unmapped address
+/// raises a data abort, which the runtime reports through the fault handler
+/// and never returns. Only for self-tests on addresses with no read side
+/// effects (unmapped space, plain RAM); never point it at device FIFOs.
+#[must_use]
+pub fn fault_probe(addr: usize) -> u32 {
+    // SAFETY: bare metal with the bring-up map: the read either hits mapped
+    // memory (the caller promises no read side effects there) or aborts into
+    // the fault handler, which doesn't return.
+    unsafe { (addr as *const u32).read_volatile() }
+}
+
+/// Masks IRQs at the CPU.
+#[inline]
+pub fn irq_disable() {
+    // SAFETY: setting the I bit in CPSR only defers interrupts.
+    unsafe {
+        core::arch::asm!("mrs {t}, cpsr", "orr {t}, {t}, #0x80", "msr cpsr_c, {t}", t = out(reg) _, options(nostack));
+    }
+}
+
+/// Unmasks IRQs at the CPU.
+#[inline]
+pub fn irq_enable() {
+    // SAFETY: the vectors and IRQ stack are set up by `_start` / `init_mmu`.
+    unsafe {
+        core::arch::asm!("mrs {t}, cpsr", "bic {t}, {t}, #0x80", "msr cpsr_c, {t}", t = out(reg) _, options(nostack));
+    }
+}
+
+/// Enters idle mode until an unmasked interrupt is pending (PWRMODE = 1).
+#[inline]
+pub fn idle() {
+    // SAFETY: idle stops the core clock until an interrupt; state is kept.
+    unsafe { core::arch::asm!("mcr p14, 0, {m}, c7, c0, 0", m = in(reg) 1u32, options(nostack)) }
+}
+
+/// Starts a periodic tick at `hz` on OS timer match 1 and enables IRQs.
+/// Requires [`init_mmu`] (for the vectors) first.
+pub fn start_tick(hz: u32) {
+    let period = TICK_HZ / hz.clamp(1, TICK_HZ);
+    // SAFETY: IRQs are still masked; the handler reads these only after the
+    // tick interrupt is enabled below.
+    unsafe {
+        core::ptr::addr_of_mut!(TICK_PERIOD).write(period);
+        core::ptr::addr_of_mut!(TICKS).write_volatile(0);
+    }
+    let mut i = intc();
+    i.reset();
+    ostimer().start(period);
+    i.enable(crate::soc::irq::OST1);
+    irq_enable();
+}
+
+/// Ticks since [`start_tick`].
+#[inline]
+#[must_use]
+pub fn tick_count() -> u32 {
+    // SAFETY: a single aligned word written only by the IRQ handler.
+    unsafe { core::ptr::addr_of!(TICKS).read_volatile() }
+}
+
+/// Sleeps (idle mode) until the next tick, then returns the tick count.
+pub fn wait_tick() -> u32 {
+    let start = tick_count();
+    loop {
+        // Check-then-idle with IRQs masked, so a tick can't slip in between
+        // the check and the idle and leave us asleep.
+        irq_disable();
+        if tick_count() != start {
+            irq_enable();
+            return tick_count();
+        }
+        idle();
+        irq_enable();
+    }
 }

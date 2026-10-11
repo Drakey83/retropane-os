@@ -14,5 +14,8 @@ rp-hal-api = { path = "../api" }
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-mem = { path = "../mem" }
 
+[dev-dependencies]
+rp-hal-mock = { path = "../mock" }
+
 [lints]
 workspace = true

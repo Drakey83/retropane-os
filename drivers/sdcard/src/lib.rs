@@ -87,6 +87,21 @@ pub enum Error {
     CardStatus(u32),
 }
 
+impl Error {
+    /// A short fixed name, for logs that shouldn't pull in `Debug` formatting.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Host(HostError::Timeout) => "timeout",
+            Self::Host(HostError::Crc) => "CRC error",
+            Self::Host(HostError::Data) => "data error",
+            Self::InitTimeout => "init timeout",
+            Self::BadInterfaceCondition => "bad CMD8 echo",
+            Self::CardStatus(_) => "card status error",
+        }
+    }
+}
+
 impl From<HostError> for Error {
     fn from(e: HostError) -> Self {
         Self::Host(e)
@@ -369,6 +384,12 @@ mod tests {
             SdCard::init(Bad(FakeCard::new(true, true))),
             Err(Error::BadInterfaceCondition)
         ));
+    }
+
+    #[test]
+    fn error_names() {
+        assert_eq!(Error::Host(HostError::Timeout).name(), "timeout");
+        assert_eq!(Error::CardStatus(1).name(), "card status error");
     }
 
     #[test]

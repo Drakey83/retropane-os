@@ -10,8 +10,10 @@ use core::ptr::NonNull;
 
 use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 
+pub mod mmu;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
+pub mod soc;
 
 // Every bare-metal image gets RetroPane's memcpy family (ldm/stm bulk loops)
 // instead of compiler-builtins' (docs/perf.md).

@@ -25,6 +25,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-10 | Own `memcpy`/`memset`/`memmove`/`memcmp` (`hal/mem`): 32-byte `ldm`/`stm` bulk loops + `pld`, instead of compiler-builtins' one word per four instructions. Exhaustively tested on host and on target | `memcpy_64k` | 65,585 ns | 10,292 ns (**6.4×**) |
 | 2026-10-10 | (same change) | `memset_64k` | 49,200 ns | 6,185 ns (**8.0×**) |
 | 2026-10-10 | (same change, the pattern fill copies rows with `memcpy`) | `fb_pattern_vga` | 642,974 ns | 127,692 ns (5×; **129×** vs. the original) |
+| 2026-10-10 | Bring-up MMU, caches, interrupts and idle added (`hal/pxa27x`: `init_mmu`, `start_tick`, `wait_tick`); input loop sleeps between 200 Hz ticks instead of busy-waiting. Emulator counts instructions, so no change there; on hardware this enables the D-cache and lets the core idle | `rp-hello` loaded size | 19,184 B | 23,288 B |
+| 2026-10-10 | Dropped `Debug`/full-panic formatting from images (fixed names, panic location only), per ADR-0005 rule 8 | `rp-hello` loaded size | 23,288 B | 20,056 B |
 | 2026-10-10 | Solid fills: `rp_hal_mem::fill32` (any alignment, 32-byte `stm` bursts) and `fill_rect_rgb565` in the display driver, one burst fill per row | `fb_solid_fill_vga` | 1,075,282 ns | 92,205 ns (**11.7×**) |
 
 ## Open leads

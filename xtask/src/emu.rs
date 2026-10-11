@@ -301,6 +301,8 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
 
 /// Must match `rp_bench::DONE`.
 const BENCH_DONE: &str = "BENCH-DONE";
+/// The bench image's deliberate read of unmapped memory must be reported so.
+const FAULT_EXPECT: &str = "FAULT DataAbort at ";
 /// OS timer frequency the bench image counts in.
 const TICK_HZ: f64 = 3_250_000.0;
 /// A slowdown beyond this fails `cargo xtask bench`. Results are deterministic
@@ -343,7 +345,7 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
         root,
         &Boot {
             image: &image,
-            marker: BENCH_DONE,
+            marker: FAULT_EXPECT,
             screenshot: None,
             sd_image: Some(&sd),
             steps: &[],
@@ -353,10 +355,13 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
             timeout: Duration::from_secs(120),
         },
     )?;
+    if !output.contains(BENCH_DONE) {
+        return Err(format!("benchmarks didn't finish:\n{output}"));
+    }
+    eprintln!("    fault path OK: deliberate unmapped read reported as a data abort");
     if !output.contains("CHECK mem OK") {
         return Err(format!(
-            "memory routines failed their on-target check:
-{output}"
+            "memory routines failed their on-target check:\n{output}"
         ));
     }
     let results = parse_bench(&output);
