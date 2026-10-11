@@ -1,6 +1,6 @@
 # ADR-0007: Interrupt ownership: no driver code runs in interrupt mode
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context
@@ -51,6 +51,13 @@ driver's device.**
    written only in interrupt mode, and read with single aligned accesses.
 6. **Unowned sources are masked and reported, never silently dropped**
    (already the case: `rt::unclaimed_irqs`).
+7. **GPIO edge detection belongs to the interrupt layer, not to drivers.** On
+   the PXA27x, GPIOs 2 to 120 share one interrupt (GPIO_X), so finding which
+   pin fired means reading the GPIO edge-detect status. The kernel/HAL owns
+   the edge-detect registers (rising/falling enables and status) as an
+   extension of the interrupt controller, and hands out one `IrqLine` per pin.
+   Drivers keep pin direction and level through their `GpioPin` handles, but
+   never the edge-detect registers.
 
 Before the scheduler exists, bare-metal images use the same API: `wait()`
 idles the CPU until the source is signalled. Driver code written now doesn't
@@ -83,4 +90,8 @@ change when threads arrive.
   `is_signalled()`, plus the first-level handler logic. Host tests cover the
   handler's mask-and-signal behaviour against the mock interrupt controller.
 - A very latency-sensitive device that can't use DMA would need an exception.
-  None is known on the X51v.
+  None is known on the X51v. Checked for the touch screen, the most likely
+  candidate: its only interrupt is pen-down (a GPIO). Sampling is polled SPI
+  from the driver's thread, 9 bytes at 2.6 MHz or about 28 µs per sample, on a
+  timer while the pen is down (about 0.6% CPU at 200 Hz). There are no
+  per-sample interrupts, so the touch screen fits the thread model as is.

@@ -1,6 +1,8 @@
 # RetroPane OS — Design Document
 
-> Status: **DRAFT v0.1** — for review. No code exists yet.
+> Status: **living document**, kept in sync with the code (Phase 1 to 2:
+> bring-up images boot in the x51v emulator; kernel work has started). See
+> [ROADMAP.md](ROADMAP.md) for progress and [adr/](adr/) for decisions.
 > Project name: **RetroPane OS** (chosen 2026-10-10).
 > License: GPL-2.0-or-later.
 
@@ -241,7 +243,7 @@ We improve on CE5 where it doesn't break compatibility:
 - A modern allocator (size-class slabs + a per-process heap) with fragmentation
   metrics exported for tests.
 
-Decision recorded as **ADR-0003** (to be written).
+Decision recorded as [ADR-0003](adr/0003-ce5-slot-memory-model.md); physical memory is designed in [ADR-0005](adr/0005-memory-and-storage-architecture.md) and [ADR-0006](adr/0006-physical-memory-beyond-the-textbook.md), interrupt ownership in [ADR-0007](adr/0007-interrupt-ownership.md).
 
 ### 5.3 PE loader
 
@@ -615,7 +617,7 @@ naturally becomes 27 for the next major release, where "2026" would just look
 dated.
 
 A web search on 2026-10-10 found no software product with the name. Still to
-check when the repo is created: the GitHub org/repo name and a domain.
+check: a domain. The GitHub repository is `Drakey83/retropane-os`.
 
 ---
 
