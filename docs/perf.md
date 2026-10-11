@@ -40,6 +40,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | First live page faults (`boot/kernel`): zero-fill fault including abort entry, `handle_fault`, frame allocation, zeroing and mapping. Emulator real time (no `-icount`), so only a smoke number until it runs on the device | `vm_fault_zero` | — | ~22 µs (emulated) |
 | 2026-10-11 | LZ4 block codec (`kernel/lz4`, ADR-0005 rules 4 and 6): first measurement on a heap-shaped 4 KiB page (pointers and small integers). Correct but slow: ~26 emulated instructions per decoded byte, where LZ4 can do a few. Baseline for optimisation | `lz4_decompress_page` | — | 105,803 ns |
 | 2026-10-11 | (same) | `lz4_compress_page` | — | 130,212 ns |
+| 2026-10-11 | LZ4 decoder: fast path for short sequences (one bounds check for the whole sequence), short copies inlined, per-byte bounds checks removed by slicing once and copying with `zip` (the listing showed two checks per copied byte). Found by reading the generated ARM code, not guessing | `lz4_decompress_page` | 105,803 ns | 76,745 ns (**−27.5%**) |
+| 2026-10-11 | LZ4 compressor: same treatment for emission and match extension: no change (+0.3%). Its miss loop is already ~22 instructions; on this page (936 minimum-length matches in 4 KiB) the cost is inherent. Next: benchmark representative pages (code, text) beside this stress page | `lz4_compress_page` | 130,212 ns | 130,654 ns |
 
 ## Open leads
 

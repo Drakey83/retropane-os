@@ -397,7 +397,7 @@ mod image {
         rep.line(format_args!("panel {panel_name}"));
         rep.line(format_args!("display {display_note} @{:06X}", plane.offset));
         for l in sd_lines.iter().filter(|l| l.iter().any(|&b| b != b' ')) {
-            rep.line(format_args!("{}", core::str::from_utf8(l).unwrap_or("?")));
+            rep.line(format_args!("{}", Ascii(l)));
         }
         rep.line(format_args!(
             "UART {}",
@@ -415,12 +415,16 @@ mod image {
         rep.on_page(3);
         rep.line(format_args!("4 BENCH ns/iteration"));
         for (name, ticks, iters) in &results.bench[..results.n] {
-            // 3.25 MHz ticks: 1 tick = 4000/13 ns.
-            let ns = u64::from(*ticks) * 4000 / 13 / u64::from((*iters).max(1));
+            // 3.25 MHz ticks: 1 tick = 4000/13 ns. Exact in u32 (no 64-bit
+            // division or formatting code in the image): split ticks per
+            // iteration into whole and remainder before scaling.
+            let it = (*iters).max(1);
+            let (q, r) = (ticks / it, ticks % it);
+            let ns = q * 4000 / 13 + r * 4000 / 13 / it;
             rep.line(format_args!("{name:<24} {ns:>11}"));
         }
         for (name, ok, detail) in &results.checks[..results.nc] {
-            let d = core::str::from_utf8(detail).unwrap_or("?");
+            let d = Ascii(detail);
             let v = if *ok { "OK" } else { "FAIL" };
             rep.line(format_args!("check {name} {v} {d}"));
         }
@@ -433,12 +437,7 @@ mod image {
         // Serial copy of every page (the emulator test checks the sums).
         for p in 0..PAGES {
             for l in rep.page_lines(p) {
-                let _ = writeln!(
-                    uart,
-                    "P{}|{}",
-                    p + 1,
-                    core::str::from_utf8(l).unwrap_or("?")
-                );
+                let _ = writeln!(uart, "P{}|{}", p + 1, Ascii(l));
             }
         }
         let _ = writeln!(uart, "{}", super::MARKER);
@@ -500,14 +499,32 @@ mod image {
     fn show(rep: &Report, p: usize, fb: &mut [u8], stride: usize, irqs: u64) {
         let mut c = Console::new(fb, stride, (0, 0), (480, 640), SCALE, COLORS);
         for l in rep.page_lines(p) {
-            let _ = c.write_str(core::str::from_utf8(l).unwrap_or("?"));
-            let _ = c.write_str("\n");
+            let _ = write!(c, "{}\n", Ascii(l));
         }
         let (_, rows) = c.size();
         for _ in rep.page_lines(p).count()..rows - 1 {
             let _ = c.write_str("\n");
         }
-        let _ = write!(c, "pg {}/{PAGES} <> tap  IRQ {irqs:X}", p + 1);
+        let _ = write!(
+            c,
+            "pg {}/{PAGES} <> tap  IRQ {:X}:{:08X}",
+            p + 1,
+            (irqs >> 32) as u32,
+            irqs as u32
+        );
+    }
+
+    /// Shows ASCII bytes as text without UTF-8 validation (report text is
+    /// ASCII by construction; validating it would add code to the image).
+    struct Ascii<'a>(&'a [u8]);
+
+    impl core::fmt::Display for Ascii<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            for &b in self.0 {
+                f.write_char(b as char)?;
+            }
+            Ok(())
+        }
     }
 
     /// Formats into a fixed line buffer (cut if too long).

@@ -195,3 +195,38 @@ fn overlapping_copy_patterns() {
         }
     }
 }
+
+#[test]
+fn bench_page_shape() {
+    // The on-target benchmark's page (boot/suite): print its compressed
+    // shape so per-sequence costs can be estimated from emulator timings.
+    let page: Vec<u8> = (0..1024u32)
+        .flat_map(|i| {
+            (if i % 3 == 0 {
+                0xA800_0000 + (i % 37) * 16
+            } else {
+                i % 11
+            })
+            .to_le_bytes()
+        })
+        .collect();
+    let mut c = vec![0u8; max_compressed(4096)];
+    let n = compress(&page, &mut c).unwrap();
+    let (mut i, mut seqs, mut lit_total, mut match_total) = (0, 0, 0, 0);
+    loop {
+        let t = c[i];
+        i += 1;
+        let lits = length(&c, &mut i, usize::from(t >> 4)).unwrap();
+        i += lits;
+        lit_total += lits;
+        seqs += 1;
+        if i == n {
+            break;
+        }
+        i += 2;
+        match_total += length(&c, &mut i, usize::from(t & 0xF)).unwrap() + 4;
+    }
+    eprintln!(
+        "compressed {n} bytes, {seqs} sequences, {lit_total} literal bytes, {match_total} match bytes"
+    );
+}
