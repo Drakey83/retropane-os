@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.1.0";
+pub const QEMU_RELEASE: &str = "rp-v0.2.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -31,7 +31,15 @@ const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 /// Where `cargo xtask qemu` builds inside WSL.
 const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
 
-const EMU_ARGS: &str = "-M x51v -display none -monitor none -serial stdio";
+const EMU_ARGS: &str = "-M x51v -display none -serial stdio";
+
+/// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
+fn monitor_port() -> u16 {
+    std::env::var("RETROPANE_MONITOR_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(45_455)
+}
 
 struct Platform {
     asset: &'static str,
@@ -159,26 +167,46 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Boots the bring-up image and checks it reports success over the UART.
+/// Boots the bring-up image, checks it reports success over the UART, then
+/// screenshots the emulated display and verifies the test pattern.
 pub fn boot_hello(root: &Path) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
-    let output = boot(root, &image, HELLO_MARKER)?;
+    let shot = root
+        .join("target")
+        .join("emulator")
+        .join("hello-screen.ppm");
+    let output = boot(root, &image, HELLO_MARKER, Some(&shot))?;
     eprint!("{output}");
     if !output.ends_with('\n') {
         eprintln!();
     }
     eprintln!("    emulator boot OK");
+    let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
+    crate::screen::check_test_pattern(&ppm)?;
+    eprintln!("    display OK: test pattern verified ({})", shot.display());
     Ok(())
 }
 
 /// Boots `image` and waits until its serial output contains `marker`.
 /// Returns the serial output.
-fn boot(root: &Path, image: &Path, marker: &str) -> Result<String, String> {
-    let mut cmd = match emulator(root)? {
+fn boot(
+    root: &Path,
+    image: &Path,
+    marker: &str,
+    screenshot: Option<&Path>,
+) -> Result<String, String> {
+    let port = monitor_port();
+    let monitor = format!("tcp:127.0.0.1:{port},server,nowait");
+    let emu = emulator(root)?;
+    let wsl = matches!(emu, Emulator::Wsl);
+    let mut cmd = match emu {
         Emulator::Native(exe) => {
             eprintln!("    emulator: {}", exe.display());
             let mut c = Command::new(exe);
-            c.args(EMU_ARGS.split(' ')).arg("-kernel").arg(image);
+            c.args(EMU_ARGS.split(' '))
+                .args(["-monitor", &monitor])
+                .arg("-kernel")
+                .arg(image);
             c
         }
         Emulator::Wsl => {
@@ -186,8 +214,8 @@ fn boot(root: &Path, image: &Path, marker: &str) -> Result<String, String> {
             // `timeout` guarantees the Linux process exits even if killing
             // wsl.exe doesn't reach it.
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -kernel '{}'",
-                BOOT_TIMEOUT.as_secs() + 5,
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -kernel '{}'",
+                BOOT_TIMEOUT.as_secs() + 10,
                 to_wsl_path(image)
             ))
         }
@@ -225,8 +253,21 @@ fn boot(root: &Path, image: &Path, marker: &str) -> Result<String, String> {
             Err(_) => break false,
         }
     };
+    let shot_result = match screenshot {
+        Some(path) if found => {
+            let _ = std::fs::remove_file(path);
+            let guest_path = if wsl {
+                to_wsl_path(path)
+            } else {
+                path.display().to_string()
+            };
+            crate::screen::screendump(port, &guest_path, path)
+        }
+        _ => Ok(()),
+    };
     let _ = child.kill();
     let _ = child.wait();
+    shot_result?;
 
     if found {
         Ok(output)
