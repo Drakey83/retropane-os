@@ -46,6 +46,13 @@ fi
 cd "$HARET"
 git checkout -q -f "$HARET_REV"
 git clean -qfdx
+# haret-rp.patch:
+# - Renames HaRET's position-independent code sections (.text.preload,
+#   .text.irq, .text.trampoline). The newer linker's default `*(.text.*)` rule
+#   claims them before haret.lds can, which left the preloader that runs
+#   after the MMU is off empty: HaRET hung after "Turning off MMU...".
+# - Draws the boot text 3x larger (the 4x6 font is unreadable on VGA).
+git apply "$(dirname "$0")/haret-rp.patch"
 # Python 3 (the machine-list generator was written for Python 2).
 sed -i '1s|.*|#!/usr/bin/env python3|; s/line += reader.next()/line += next(reader)/' tools/buildmachs.py
 # Newer CeGCC headers no longer define min()/max().
@@ -59,6 +66,8 @@ H
 sed -i 's/: "=r" (readval)/: "=\&r" (readval)/' src/l1trace.cpp
 # Newer objdump prints references to .text without "+offset".
 sed -i 's/^IGNORE=.*/IGNORE=" ARM_26D | ARM_32[ ]*[.]text([+-][^ ]*)?[ ]*$"/' tools/checkrelocs
+# ...and check the renamed sections (haret-rp.patch), or it checks nothing.
+sed -i 's/-j \.text\.preload -j \.text\.irq/-j .rp_preload -j .rp_irq/' tools/checkrelocs
 mkdir -p out
 # -fno-jump-tables: the relocatable preloader and IRQ code must not contain
 # absolute jump tables (checkrelocs enforces this).
@@ -73,6 +82,14 @@ make -s BASE="$CEGCC" CXXFLAGS="-Wall -O -g -MD -march=armv4 -Iinclude \
     out/haret-debug > "$HOME/haret-build.log" 2>&1 || true
 "$CEGCC/bin/arm-mingw32ce-strip" out/haret-debug.exe -o out/haret.exe ||
     { echo "HaRET build failed; see ~/haret-build.log" >&2; exit 1; }
+# Refuse to ship a HaRET whose post-MMU preloader is missing (see above).
+SYMS=$("$CEGCC/bin/arm-mingw32ce-nm" out/haret-debug.exe)
+PSTART=$(echo "$SYMS" | awk '$3 == "preload_start" { print $1 }')
+PEND=$(echo "$SYMS" | awk '$3 == "preload_end" { print $1 }')
+if [ -z "$PSTART" ] || [ "$PSTART" = "$PEND" ]; then
+    echo "haret.exe has an empty preloader section; it would hang at boot" >&2
+    exit 1
+fi
 # Refuse to ship anything importing more than a stock device's own DLLs.
 if "$CEGCC/bin/arm-mingw32ce-objdump" -p out/haret.exe | grep -i "DLL Name" | grep -viE "coredll|winsock"; then
     echo "haret.exe imports a DLL a stock Windows Mobile device doesn't have" >&2
