@@ -110,21 +110,48 @@ pub unsafe fn set(mut dst: *mut u8, c: u8, mut n: usize) {
                 dst = dst.add(1);
                 n -= 1;
             }
-            let word = u32::from(c) * 0x0101_0101;
-            let bulk = n & !31;
-            set_aligned_32(dst.cast(), word, bulk);
-            dst = dst.add(bulk);
-            n -= bulk;
-            while n >= 4 {
-                *dst.cast::<u32>() = word;
-                dst = dst.add(4);
-                n -= 4;
-            }
+            let words = n & !3;
+            set_words(dst.cast(), u32::from(c) * 0x0101_0101, words);
+            dst = dst.add(words);
+            n -= words;
         }
         while n > 0 {
             *dst = c;
             dst = dst.add(1);
             n -= 1;
+        }
+    }
+}
+
+/// Fills `buf` with the little-endian bytes of `word` repeating from `buf[0]`
+/// (so a 16-bit pixel `c` is filled with `word = c | c << 16`). Any alignment;
+/// the aligned middle uses 32-byte burst stores.
+pub fn fill32(buf: &mut [u8], word: u32) {
+    let bytes = word.to_le_bytes();
+    let head = ((4 - (buf.as_ptr() as usize & 3)) & 3).min(buf.len());
+    for (i, b) in buf[..head].iter_mut().enumerate() {
+        *b = bytes[i % 4];
+    }
+    // At the first aligned address the pattern is rotated by `head` bytes.
+    let rotated = word.rotate_right(8 * head as u32);
+    let body = &mut buf[head..];
+    let words = body.len() & !3;
+    // SAFETY: `body[..words]` is in bounds and starts word-aligned.
+    unsafe { set_words(body.as_mut_ptr().cast(), rotated, words) };
+    for (i, b) in body[words..].iter_mut().enumerate() {
+        *b = bytes[(head + words + i) % 4];
+    }
+}
+
+/// Stores `word` over `bytes` (a multiple of 4) at word-aligned `dst`.
+#[inline(always)]
+unsafe fn set_words(dst: *mut u32, word: u32, bytes: usize) {
+    let bulk = bytes & !31;
+    // SAFETY: the caller guarantees `dst` is aligned and valid for `bytes`.
+    unsafe {
+        set_aligned_32(dst, word, bulk);
+        for i in bulk / 4..bytes / 4 {
+            *dst.add(i) = word;
         }
     }
 }
@@ -391,6 +418,21 @@ mod tests {
                 unsafe { set(buf.as_mut_ptr().add(d), 0xA5, n) };
                 assert!(buf[d..d + n].iter().all(|&b| b == 0xA5), "n={n} d={d}");
                 assert!(buf[..d].iter().chain(&buf[d + n..]).all(|&b| b == 0x11));
+            }
+        }
+    }
+
+    #[test]
+    fn fill32_repeats_the_pattern_from_the_first_byte() {
+        let word = 0x4433_2211u32;
+        for n in 0..=100 {
+            for d in 0..4 {
+                let mut buf = [0u8; 112];
+                fill32(&mut buf[d..d + n], word);
+                for i in 0..n {
+                    assert_eq!(buf[d + i], word.to_le_bytes()[i % 4], "n={n} d={d} i={i}");
+                }
+                assert!(buf[..d].iter().chain(&buf[d + n..]).all(|&b| b == 0));
             }
         }
     }

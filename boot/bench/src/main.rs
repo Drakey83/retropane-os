@@ -21,7 +21,7 @@ mod image {
     use core::hint::black_box;
 
     use rp_drv_cpld::Cpld;
-    use rp_drv_mbx_display::{PixelFormat, Plane, X51V_VGA, pattern};
+    use rp_drv_mbx_display::{PixelFormat, Plane, X51V_VGA, fill_rect_rgb565, pattern};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_sdcard::{BLOCK, SdCard};
@@ -108,12 +108,6 @@ mod image {
         }
     }
 
-    fn solid_fill_u32(buf: &mut [u8], value: u32) {
-        for chunk in buf.as_chunks_mut::<4>().0 {
-            *chunk = value.to_le_bytes();
-        }
-    }
-
     fn main() -> ! {
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
@@ -158,7 +152,15 @@ mod image {
                 pattern::fill_rgb565(fb, plane.width.into(), plane.height.into(), plane.stride);
             });
             b.run("fb_solid_fill_vga", 3, &mut || {
-                solid_fill_u32(fb, black_box(0x001F_001F))
+                fill_rect_rgb565(
+                    fb,
+                    plane.stride,
+                    0,
+                    0,
+                    plane.width.into(),
+                    plane.height.into(),
+                    black_box(0x001F),
+                );
             });
         }
 

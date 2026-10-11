@@ -2,10 +2,10 @@
   "emulator": "rp-v0.5.0",
   "results": {
     "fb_pattern_vga": 127692.0,
-    "fb_solid_fill_vga": 1075282.0,
+    "fb_solid_fill_vga": 92205.0,
     "memcpy_64k": 10292.0,
-    "memcpy_naive_64k": 393246.0,
-    "memset_64k": 6185.0,
+    "memcpy_naive_64k": 393231.0,
+    "memset_64k": 6200.0,
     "sd_read_block": 4519.0,
     "timer_read": 13.0
   },

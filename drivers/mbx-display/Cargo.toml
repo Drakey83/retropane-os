@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rp-hal-api = { path = "../../hal/api" }
+rp-hal-mem = { path = "../../hal/mem" }
 
 [dev-dependencies]
 rp-hal-mock = { path = "../../hal/mock" }
