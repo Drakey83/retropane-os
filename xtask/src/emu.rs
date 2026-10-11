@@ -350,7 +350,12 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
 /// Must match `rp_threads::MARKER`.
 const THREADS_MARKER: &str = "RETROPANE-THREADS-OK";
 /// What the threads image must report.
-const THREADS_EXPECT: &[&str] = &["THREADS ping-pong OK", "THREADS sleep OK"];
+const THREADS_EXPECT: &[&str] = &[
+    "THREADS ping-pong OK",
+    "THREADS sleep OK",
+    "USER mode OK",
+    "USER yield OK",
+];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
 /// the tickless idle alarm, live on the CPU.
@@ -377,7 +382,9 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
             return Err(format!("threads check failed: no `{want}` on serial"));
         }
     }
-    eprintln!("    threads OK: context switches, events, sleeps, tickless idle");
+    eprintln!(
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode + syscalls"
+    );
     Ok(())
 }
 

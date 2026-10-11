@@ -79,10 +79,7 @@ rp_undef_entry:
     mov     r0, #1
     sub     r1, lr, #4
     b       rp_fault
-rp_swi_entry:
-    mov     r0, #2
-    sub     r1, lr, #4
-    b       rp_fault
+    @ rp_swi_entry (system calls) lives in user.rs.
     @ Aborts: ask rp_abort first. It returns where to resume: the faulting
     @ instruction (a resolved page fault), a fixup (a faulting try_read /
     @ try_write), or 0 to report the fault and stop.
@@ -519,6 +516,18 @@ impl<T> Global<T> {
         irq_restore(was);
         r
     }
+}
+
+/// Reports an unrecoverable fault through the fault handler.
+pub(crate) fn report_fault(kind: Fault, addr: u32) -> ! {
+    // The numbers the exception entries pass to rp_fault.
+    let code = match kind {
+        Fault::Undefined => 1,
+        Fault::Swi => 2,
+        Fault::PrefetchAbort => 3,
+        Fault::DataAbort => 4,
+    };
+    rp_fault(code, addr)
 }
 
 #[unsafe(no_mangle)]
