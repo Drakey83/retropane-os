@@ -37,8 +37,8 @@ mod image {
     const USB_DETECT: u8 = 14;
     /// OS timer ticks (3.25 MHz) between status redraws: 0.5 s.
     const REDRAW: u32 = 1_625_000;
-    /// Status area height in pixels (9 rows of 16 px at scale 2).
-    const STATUS_H: usize = 9 * 16;
+    /// Status area height in pixels (10 rows of 16 px at scale 2).
+    const STATUS_H: usize = 10 * 16;
     const COLORS: (u16, u16) = (0xFFFF, 0x0000);
     const STATUS_COLORS: (u16, u16) = (0x0000, 0xFFE0);
 
@@ -173,6 +173,12 @@ mod image {
                 );
                 let _ = writeln!(st, "rx {} tx {}", s.rx_bytes, s.tx_bytes);
                 let _ = writeln!(st, "ep0 in {} csr {:03X}", s.ep0_in, s.setup_csr);
+                let r = s.recent;
+                let _ = writeln!(
+                    st,
+                    "req {:04X} {:04X} {:04X} {:04X}",
+                    r[0], r[1], r[2], r[3]
+                );
                 let _ = write!(st, "soft-reset to go back");
             }
         }

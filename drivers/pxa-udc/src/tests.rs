@@ -297,18 +297,13 @@ impl Host {
     /// A control write with no data: expects the zero-length status IN.
     /// The PXA27x sends the status stage of a host-to-device request by
     /// itself: the driver must not queue a packet of its own (docs/hw/udc.md).
+    /// The device sends the zero-length status IN of a host-to-device
+    /// request (measured on the real X51v, docs/hw/udc.md).
     fn control_ack(&mut self, s: [u8; 8]) {
         self.setup(s);
         self.poll(2);
-        assert!(
-            self.sim().ep0_pending.is_none(),
-            "driver queued its own status packet"
-        );
-        assert_eq!(
-            self.sim().csr0 & reg::IPR,
-            0,
-            "IPR set for a host-to-device request"
-        );
+        let p = self.sim().host_in().expect("no status IN");
+        assert!(p.is_empty(), "status IN carried data");
     }
 
     /// A control write with a data stage.
@@ -320,15 +315,8 @@ impl Host {
             self.poll(1);
         }
         self.poll(2);
-        assert!(
-            self.sim().ep0_pending.is_none(),
-            "driver queued its own status packet"
-        );
-        assert_eq!(
-            self.sim().csr0 & reg::IPR,
-            0,
-            "IPR set for a host-to-device request"
-        );
+        let p = self.sim().host_in().expect("no status IN");
+        assert!(p.is_empty(), "status IN carried data");
     }
 
     /// What the hardware does on SET_CONFIGURATION(1).

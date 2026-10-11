@@ -164,6 +164,9 @@ pub struct Stats {
     pub ep0_in: u32,
     /// `UDCCSR0` when the last SETUP arrived (bring-up diagnostics).
     pub setup_csr: u32,
+    /// The last four requests (bmRequestType << 8 | bRequest), newest
+    /// first: what the host did, for the screen.
+    pub recent: [u16; 4],
 }
 
 /// A byte ring. `N` must be a power of two.
@@ -257,6 +260,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 last_request: 0,
                 ep0_in: 0,
                 setup_csr: 0,
+                recent: [0; 4],
             },
         }
     }
@@ -464,6 +468,8 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         let s = Setup::parse(raw);
         self.stats.setups += 1;
         self.stats.last_request = u16::from(s.request_type) << 8 | u16::from(s.request);
+        self.stats.recent.copy_within(0..3, 1);
+        self.stats.recent[0] = self.stats.last_request;
         let configuration = self.configuration;
         match self.cdc.handle(&s, configuration) {
             Reply::In(data) => {
@@ -474,11 +480,14 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 self.ep0 = Ep0::InData;
                 self.send_ep0_packet();
             }
-            // Host-to-device requests: the hardware sends the status stage
-            // itself once SA/OPC are cleared. Setting IPR here as well puts
-            // a stray packet in the FIFO, and Windows gives up on the device
-            // ("not functioning"): found on the real X51v, docs/hw/udc.md.
-            Reply::Ack => self.ep0 = Ep0::Idle,
+            // Host-to-device request without data: software sends the
+            // zero-length status IN (IPR). Measured on the real X51v: with
+            // it, Windows opened the port (DTR arrived); without it, opening
+            // failed with "device not functioning" (docs/hw/udc.md).
+            Reply::Ack => {
+                self.bus.write32(reg::csr(0), reg::IPR);
+                self.ep0 = Ep0::Idle;
+            }
             Reply::Out(n) => {
                 self.ep0_len = n.min(self.ep0_buf.len());
                 self.ep0_pos = 0;
@@ -542,7 +551,8 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         if self.ep0_pos >= self.ep0_len || count < usb::EP0_SIZE {
             let (len, buf) = (self.ep0_pos, self.ep0_buf);
             self.cdc.out_data(&buf[..len]);
-            // Status stage: sent by the hardware (see `setup`).
+            // Status stage: a zero-length IN, as for `Reply::Ack`.
+            self.bus.write32(reg::csr(0), reg::IPR);
             self.ep0 = Ep0::Idle;
         }
     }
