@@ -94,7 +94,9 @@ before UDE is set, and EMCE reports a table the hardware can't fit.
 | Behaviour | Confidence | Evidence |
 |---|---|---|
 | **SET_ADDRESS, SET_CONFIGURATION and SET_INTERFACE are handled by the hardware.** Software sees a configuration-change interrupt (`UDCISR1[31]`), reads the new numbers from `UDCCR`, acknowledges with `UDCCSR0` AREN (plus ACM), and sets `UDCCR` SMAC | likely | (M) |
-| GET_DESCRIPTOR, GET_STATUS and class requests (CDC line coding etc.) reach software as SETUP packets on endpoint 0 | likely | (M) |
+| GET_DESCRIPTOR, GET_STATUS and class requests (CDC line coding etc.) reach software as SETUP packets on endpoint 0 | confirmed | (M), real X51v: enumerated, 53 SETUPs answered |
+| **Host-to-device requests (with or without a data stage): the hardware sends the status stage (zero-length IN) itself** once SA/OPC are cleared and any OUT data read. Software must not set IPR for them: a driver that did made Windows report "a device attached to the system is not functioning" when opening the port | confirmed | real X51v (2026-10-11); (M) never sets IPR there |
+| GPIO14 reads **0 with no USB host connected** and the device still charging from the cradle's power; with the cradle's USB reseated in the PC, the PC enumerated the device | likely (the reading during enumeration wasn't captured) | real X51v |
 | Bus reset raises `UDCISR1[27]`; software flushes endpoint 0 (FTF, OPC) and returns to idle | likely | (M) |
 | Enable order: interrupts masked, UDE clear, endpoint table written, UDE set, then EMCE checked | likely | (M) |
 
