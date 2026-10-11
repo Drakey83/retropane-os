@@ -50,6 +50,62 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | `Scheduler::create_event`: plain loop instead of an iterator chain that unrolled to 1 KiB | `rp-threads` loaded size | 15,404 B | 14,500 B |
 | 2026-10-11 | Preemption test added to `rp-threads`; **load budget raised 15 → 17 KiB, approved by the owner** (measured + ~9%) | `rp-threads` loaded size | 14,660 B | 16,012 B |
 
+## Real hardware
+
+First run on the owner's X51v (2026-10-11, `rp-probe` build `8bd30913+`,
+core at 520 MHz turbo as Windows Mobile left it; every line checksum-verified,
+raw values in `docs/hw/probe-2026-10-11.md`). The emulator counts
+instructions, so the ratio shows where real memory and buses dominate.
+
+| Benchmark | Emulator (ns) | X51v (ns) | X51v / emulator |
+|---|---|---|---|
+| `timer_read` | 13 | 846 | 65.1× |
+| `frames_alloc_free_split` | 567 | 1,467 | 2.6× |
+| `frames_fill_drain_1024` | 165,323 | 516,460 | 3.1× |
+| `memcpy_64k` | 10,292 | 687,430 | 66.8× |
+| `memcpy_naive_64k` | 393,231 | 2,473,353 | 6.3× |
+| `memset_64k` | 6,200 | 173,953 | 28.1× |
+| `lz4_compress_page` | 132,500 | 366,595 | 2.8× |
+| `lz4_decompress_page` | 76,745 | 180,388 | 2.4× |
+| `lz4_compress_text` | 88,327 | 246,845 | 2.8× |
+| `lz4_decompress_text` | 50,909 | 123,052 | 2.4× |
+| `lz4_compress_noise` | 33,442 | 83,730 | 2.5× |
+| `lz4_decompress_noise` | 10,476 | 24,345 | 2.3× |
+| `chase_sdram_256k` | 61,462 | 2,071,614 | 33.7× |
+| `tlb_fit_16` | 128 | 325 | 2.5× |
+| `tlb_spill_60` | 436 | 21,646 | 49.6× |
+| `chase_sram_256k` | 61,423 | 478,653 | 7.8× |
+| `tlb_fit_16_l1sram` | — | 325 | — |
+| `tlb_spill_60_l1sram` | — | 4,174 | — |
+| `fb_pattern_vga` | 127,692 | 61,016,717 | 477.8× |
+| `fb_solid_fill_vga` | 92,205 | 14,473,743 | 157.0× |
+| `sd_read_block` | 4,519 | 3,854,205 | 852.9× |
+
+What stands out (leads, not conclusions yet; one run):
+
+- **Page table in SRAM makes TLB misses 5.2× cheaper** (`tlb_spill_60`
+  21,646 vs 4,174 ns) and pointer-chasing in SRAM is 4.3× faster than SDRAM.
+  ADR-0006's idea is worth doing.
+- **Reading 2700G memory is very slow**: the pattern fill copies rows within
+  the framebuffer and takes 61 ms, 4.2× the solid fill (14.5 ms, ~41 MB/s
+  write). Build rows in SDRAM and only write to the 2700G.
+- **SD reads are slow**: 3.85 ms per 512-byte block (~133 KB/s). The driver
+  polls in 1-bit mode at a low clock; 4-bit mode, a higher clock, multi-block
+  reads and DMA are the obvious steps.
+- **`memcpy` 64 KiB: ~95 MB/s** (3.6× the naive loop; 6.4× in the emulator);
+  `memset` ~377 MB/s. Check the SDRAM mapping's cache/write-allocate settings
+  and try iWMMXt before tuning further.
+- **`timer_read` 846 ns** is far more than one peripheral read should cost
+  (~65× the emulator). Probably loop/measurement overhead or an uncached path:
+  investigate before trusting the small benchmarks (`tlb_fit_16`,
+  `frames_alloc_free_split`).
+- **LZ4**: a 4 KiB heap page decompresses in 180 µs (~23 MB/s), so a
+  compressed-RAM fault costs ~0.2 ms. Acceptable, but the decoder is the first
+  thing to optimise on real hardware.
+- **Open question:** the probe hung before drawing anything until the startup
+  colours (about 1 s of extra delay) were added. Cause unknown; possibly
+  something that needs time to settle after HaRET. Revisit with a serial link.
+
 ## Open leads
 
 - `memcpy` is now 38× faster than a naive byte loop. Next: measure on the real
@@ -57,8 +113,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
   iWMMXt 64-bit loads/stores.
 - `sd_read_block` is pure driver overhead in the emulator (no device latency);
   DMA and 4-bit mode need real-hardware numbers.
-- Get the first real X51v numbers for all benchmarks: `cargo xtask sdkit`
-  now boots the probe, which shows them on screen for a photo.
+- Done 2026-10-11: first real X51v numbers (see Real hardware above).
 - LZ4: short literal and match copies go through `memcpy`/`memmove` calls,
   and unaligned 32-bit reads cost four byte loads on ARMv5. Inline small
   copies, slide the compressor's 4-byte window instead of re-reading it, and
