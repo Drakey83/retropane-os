@@ -95,17 +95,23 @@ const OSCR0: usize = 0x40A0_0010;
 /// OSCR0 ticks per 4 microseconds (3.25 MHz = 13 ticks / 4 µs).
 const OSCR_TICKS_PER_US_X4: u32 = 13;
 
+/// OS timer frequency.
+pub const TICK_HZ: u32 = 3_250_000;
+
+/// The free-running OS timer (3.25 MHz), for timing and benchmarks.
+#[inline]
+#[must_use]
+pub fn ticks() -> u32 {
+    // SAFETY: OSCR0 is a counter register in the PXA27x OS timer block,
+    // identity-mapped with the MMU off; reading it has no side effects.
+    unsafe { (OSCR0 as *const u32).read_volatile() }
+}
+
 /// Busy-waits at least `us` microseconds using the OS timer.
 pub fn delay_us(us: u32) {
-    let read = || {
-        // SAFETY: OSCR0 is a read-only-in-effect counter register in the
-        // PXA27x OS timer block, identity-mapped with the MMU off; reading it
-        // has no side effects.
-        unsafe { (OSCR0 as *const u32).read_volatile() }
-    };
-    let ticks = us.saturating_mul(OSCR_TICKS_PER_US_X4).div_ceil(4);
-    let start = read();
-    while read().wrapping_sub(start) < ticks {
+    let wait = us.saturating_mul(OSCR_TICKS_PER_US_X4).div_ceil(4);
+    let start = ticks();
+    while ticks().wrapping_sub(start) < wait {
         core::hint::spin_loop();
     }
 }

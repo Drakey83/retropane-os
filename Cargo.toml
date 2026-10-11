@@ -15,6 +15,7 @@ members = [
     "drivers/sdcard",
     "drivers/pxa-mmc",
     "boot/hello",
+    "boot/bench",
     "tools/romdump",
     "xtask",
 ]

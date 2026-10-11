@@ -13,11 +13,18 @@ pub struct Budget {
 }
 
 /// Current budgets.
-pub const BUDGETS: &[Budget] = &[Budget {
-    image: "rp-hello",
-    max_load: 24 * 1024,
-    max_zero: 20 * 1024,
-}];
+pub const BUDGETS: &[Budget] = &[
+    Budget {
+        image: "rp-hello",
+        max_load: 24 * 1024,
+        max_zero: 20 * 1024,
+    },
+    Budget {
+        image: "rp-bench",
+        max_load: 24 * 1024,
+        max_zero: 20 * 1024,
+    },
+];
 
 /// Loaded and zero-initialised byte counts of an ELF32 image.
 #[derive(Debug, PartialEq, Eq)]

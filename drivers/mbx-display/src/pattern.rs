@@ -30,13 +30,43 @@ pub const fn to_rgb565((r, g, b): (u8, u8, u8)) -> u16 {
 }
 
 /// Fills an RGB565 framebuffer (`stride` bytes per line) with the pattern.
+///
+/// Matches [`rgb`] pixel for pixel, but builds row 1 once (each bar as a solid
+/// span) and copies it down the screen: no per-pixel arithmetic and no extra
+/// memory. Benchmarked as `fb_pattern_vga` (`cargo xtask bench`).
 pub fn fill_rgb565(buf: &mut [u8], width: u32, height: u32, stride: usize) {
-    for y in 0..height {
-        let row = &mut buf[y as usize * stride..][..width as usize * 2];
-        for (x, px) in row.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-            *px = to_rgb565(rgb(x as u32, y, width, height)).to_le_bytes();
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let white = to_rgb565((255, 255, 255)).to_le_bytes();
+    let row_bytes = w * 2;
+    let fill = |row: &mut [u8], color: [u8; 2]| {
+        for px in row.as_chunks_mut::<2>().0 {
+            *px = color;
+        }
+    };
+
+    // Row 1 (or row 0 if the screen is a single row): bars, white edges.
+    if h > 2 {
+        let row = &mut buf[stride..stride + row_bytes];
+        for (i, &bar) in BARS.iter().enumerate() {
+            // Pixels x with x * 8 / w == i.
+            let start = (i * w).div_ceil(8);
+            let end = ((i + 1) * w).div_ceil(8).min(w);
+            fill(&mut row[start * 2..end * 2], to_rgb565(bar).to_le_bytes());
+        }
+        row[..2].copy_from_slice(&white);
+        row[row_bytes - 2..].copy_from_slice(&white);
+        for y in 2..h - 1 {
+            buf.copy_within(stride..stride + row_bytes, y * stride);
         }
     }
+    fill(&mut buf[..row_bytes], white);
+    fill(
+        &mut buf[(h - 1) * stride..(h - 1) * stride + row_bytes],
+        white,
+    );
 }
 
 #[cfg(test)]
@@ -58,6 +88,30 @@ mod tests {
         assert_eq!(to_rgb565((255, 0, 0)), 0xF800);
         assert_eq!(to_rgb565((0, 255, 0)), 0x07E0);
         assert_eq!(to_rgb565((0, 0, 255)), 0x001F);
+    }
+
+    #[test]
+    fn fast_fill_matches_the_reference_pixel_for_pixel() {
+        for &(w, h) in &[
+            (480, 640),
+            (241, 7),
+            (8, 3),
+            (9, 4),
+            (3, 1),
+            (1, 1),
+            (17, 2),
+        ] {
+            let stride = (w as usize * 2).div_ceil(16) * 16;
+            let mut buf = vec![0u8; stride * h as usize];
+            fill_rgb565(&mut buf, w, h, stride);
+            for y in 0..h {
+                for x in 0..w {
+                    let i = y as usize * stride + x as usize * 2;
+                    let got = u16::from_le_bytes([buf[i], buf[i + 1]]);
+                    assert_eq!(got, to_rgb565(rgb(x, y, w, h)), "{w}x{h} at ({x},{y})");
+                }
+            }
+        }
     }
 
     #[test]
