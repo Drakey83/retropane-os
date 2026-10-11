@@ -45,6 +45,7 @@ impl Error {
 
 /// Reads an extended length: `base` (the nibble) plus bytes while they're
 /// 255.
+#[inline(always)]
 fn length(src: &[u8], at: &mut usize, base: usize) -> Result<usize, Error> {
     let mut n = base;
     if base == 15 {
@@ -66,15 +67,44 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
     let (mut i, mut o) = (0usize, 0usize);
     loop {
         let token = *src.get(i).ok_or(Error::Truncated)?;
+        // Fast path for the common sequence: both lengths fit their nibble
+        // and both buffers have room for the largest such sequence (14
+        // literals + offset; 18-byte match), so one check covers every
+        // access below.
+        let (lit_n, ml_n) = (usize::from(token >> 4), usize::from(token & 0xF));
+        if lit_n < 15 && ml_n < 15 && i + 1 + 14 + 2 < src.len() && o + 14 + 18 <= dst.len() {
+            let at = i + 1;
+            // Slice once, then copy without per-byte bounds checks.
+            for (d, s) in dst[o..o + lit_n].iter_mut().zip(&src[at..at + lit_n]) {
+                *d = *s;
+            }
+            let (i2, o2) = (at + lit_n, o + lit_n);
+            let offset = usize::from(src[i2]) | (usize::from(src[i2 + 1]) << 8);
+            if offset == 0 || offset > o2 {
+                return Err(Error::BadOffset);
+            }
+            let len = ml_n + 4;
+            copy_short(&mut dst[o2 - offset..o2 + len], offset);
+            i = i2 + 2;
+            o = o2 + len;
+            continue;
+        }
         i += 1;
         // Literals.
         let lits = length(src, &mut i, usize::from(token >> 4))?;
         let lit_end = i.checked_add(lits).ok_or(Error::Truncated)?;
         let out_end = o.checked_add(lits).ok_or(Error::Overflow)?;
         let from = src.get(i..lit_end).ok_or(Error::Truncated)?;
-        dst.get_mut(o..out_end)
-            .ok_or(Error::Overflow)?
-            .copy_from_slice(from);
+        let to = dst.get_mut(o..out_end).ok_or(Error::Overflow)?;
+        if lits <= SHORT {
+            // Short runs dominate real data: a call to memcpy costs more
+            // than the copy (zip: no per-byte bounds checks).
+            for (d, s) in to.iter_mut().zip(from) {
+                *d = *s;
+            }
+        } else {
+            to.copy_from_slice(from);
+        }
         i = lit_end;
         o = out_end;
         if i == src.len() {
@@ -101,9 +131,35 @@ pub fn decompress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
 
 /// Copies `len` bytes from `offset` back to position `o` (inside `dst`,
 /// checked by the caller), where source and destination may overlap.
+/// Copies the tail of `win` (everything after its first `offset` bytes) from
+/// its head, forward, as LZ4 defines it. Without overlap the two halves are
+/// split and zipped (no per-byte bounds checks); with overlap, each byte may
+/// depend on one written just before, so it's copied in order.
+#[inline(always)]
+fn copy_short(win: &mut [u8], offset: usize) {
+    let len = win.len() - offset;
+    if offset >= len {
+        let (head, tail) = win.split_at_mut(offset);
+        for (d, s) in tail.iter_mut().zip(&head[..len]) {
+            *d = *s;
+        }
+    } else {
+        for k in 0..len {
+            win[offset + k] = win[k];
+        }
+    }
+}
+
+/// Copies at or below this length are done inline: below it, a call to
+/// `memcpy`/`memmove` costs more than the bytes.
+const SHORT: usize = 16;
+
+#[inline(always)]
 fn copy_match(dst: &mut [u8], o: usize, offset: usize, len: usize) {
     let start = o - offset;
-    if offset >= len {
+    if len <= SHORT {
+        copy_short(&mut dst[start..o + len], offset);
+    } else if offset >= len {
         // No overlap: one bulk copy (memmove's ldm/stm loops).
         dst.copy_within(start..start + len, o);
     } else if offset == 1 {
@@ -167,6 +223,23 @@ fn put_sequence(
     let lit = literals.len();
     let ml = matched.map_or(0, |(_, l)| l - MIN_MATCH);
     let token = ((lit.min(15) as u8) << 4) | ml.min(15) as u8;
+    // Fast path: short literals and match, room for the largest such
+    // sequence (token, 14 literals, offset): one check, no per-field ones.
+    if lit < 15 && ml < 15 && *o + 1 + 14 + 2 <= dst.len() {
+        let out = &mut dst[*o..*o + 1 + lit + 2];
+        out[0] = token;
+        for (d, s) in out[1..=lit].iter_mut().zip(literals) {
+            *d = *s;
+        }
+        let n = if let Some((offset, _)) = matched {
+            out[1 + lit..].copy_from_slice(&offset.to_le_bytes());
+            1 + lit + 2
+        } else {
+            1 + lit
+        };
+        *o += n;
+        return Ok(());
+    }
     *dst.get_mut(*o).ok_or(Error::Overflow)? = token;
     *o += 1;
     if lit >= 15 {
@@ -212,10 +285,13 @@ pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
             if cand < i && i - cand <= 0xFFFF && read32(src, cand) == v {
                 // Extend the match, stopping LAST_LITERALS from the end.
                 let max = src.len() - LAST_LITERALS;
-                let mut len = MIN_MATCH;
-                while i + len < max && src[cand + len] == src[i + len] {
-                    len += 1;
-                }
+                // Zipped slices: no per-byte bounds checks in the loop.
+                let len = MIN_MATCH
+                    + src[cand + MIN_MATCH..]
+                        .iter()
+                        .zip(&src[i + MIN_MATCH..max])
+                        .take_while(|(a, b)| a == b)
+                        .count();
                 put_sequence(dst, &mut o, &src[anchor..i], Some(((i - cand) as u16, len)))?;
                 i += len;
                 anchor = i;
