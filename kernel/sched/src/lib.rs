@@ -22,6 +22,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod kdata;
+
 /// Highest priority.
 pub const HIGHEST: u8 = 0;
 /// CE's default application priority (`THREAD_PRIORITY_NORMAL`).

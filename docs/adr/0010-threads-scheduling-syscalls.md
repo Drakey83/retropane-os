@@ -144,8 +144,13 @@ Constraints and facts that shape the design:
   so a device interrupt never got its thread scheduled; it now sleeps in
   `rt::idle_until_interrupt` (any interrupt ends it, with the "anything
   ready?" check made with IRQs masked).
-- Next: the KData page (needs a real page table for the high page; the
-  bring-up map's 1 MiB sections can't hold it).
+- **The KData layout (rule 8), measured:** a scan of all 500 modules in the
+  owner's ROM (docs/research/kdata.md) shows programs read `+0x000` (the TLS
+  pointer: 89 modules) and `+0x008` (the current thread ID: MFC/ATL
+  runtimes). `kernel/sched::kdata::switch_to` writes those words (and
+  `+0x00C`, the process ID). Wiring it into the switch needs the kernel
+  image's page tables for the high page (the bring-up map's 1 MiB sections
+  can't hold a separate user-read-only page): next, with the kernel image.
 
 ## Open questions
 
