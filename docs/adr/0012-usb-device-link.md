@@ -94,6 +94,16 @@ Facts (docs/hw/udc.md):
   `cargo xtask load` waits up to 120 s and says when an image hung, with or
   without a surviving log.
 
+- **Emulator USB model (retropane-qemu `d7aa030`, `hw/misc/pxa27x-udc.c`):**
+  the PXA27x UDC with a built-in host that enumerates like Windows (strict
+  about one packet in flight, the hardware status stage and the AREN
+  acknowledgement), then bridges the CDC data to a chardev; it sends the
+  "port opened" requests only when a client connects, like Windows. `cargo
+  xtask emu` now checks `rp-usb`'s banner and echo and the loader taking an
+  image and returning a run log over USB, end to end. These tests skip on
+  emulator releases without the model (the pinned `rp-v0.6.0`) until a new
+  release is published.
+
 ## The four lenses
 
 | Lens | Effect |

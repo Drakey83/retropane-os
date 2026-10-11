@@ -120,7 +120,9 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_light(&workspace_root()))
             .and_then(|()| emu::boot_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader(&workspace_root()))
-            .and_then(|()| emu::boot_loader_hang(&workspace_root())),
+            .and_then(|()| emu::boot_loader_hang(&workspace_root()))
+            .and_then(|()| emu::boot_usb_link(&workspace_root()))
+            .and_then(|()| emu::boot_loader_usb(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
