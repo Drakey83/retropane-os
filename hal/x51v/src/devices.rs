@@ -50,6 +50,27 @@ pub fn emergency_vram() -> Option<&'static mut [u8]> {
     Some(unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) })
 }
 
+/// Bring-up beacon: fills all of the 2700G's local memory with alternating
+/// 32 KiB bands of `a` and `b` (RGB565; equal for a solid colour). Whatever
+/// plane the display is scanning out shows it, without knowing that plane's
+/// layout, so it works before any display setup and with the MMU on or off.
+/// Diagnostic only: like [`emergency_vram`], it aliases the memory
+/// [`take_mbx`] hands out, so callers use it only where nothing else draws.
+pub fn beacon(a: u16, b: u16) {
+    let Some(r) = region("cs3_2700g") else {
+        return;
+    };
+    let base = va(r.base as usize) as *mut u32;
+    let (wa, wb) = (u32::from(a) * 0x1_0001, u32::from(b) * 0x1_0001);
+    for i in 0..MBX_VRAM_SIZE as usize / 4 {
+        let w = if (i >> 13) & 1 == 0 { wa } else { wb };
+        // SAFETY: CS3 starts with the 2700G's 16 MiB local memory (mapped
+        // identity with the MMU off, write-combining under the bring-up map);
+        // `i` stays inside it. See above for the aliasing.
+        unsafe { base.add(i).write_volatile(w) };
+    }
+}
+
 /// Hands out the board CPLD's register window once.
 pub fn take_cpld() -> Option<Mmio> {
     // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.

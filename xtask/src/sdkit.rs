@@ -71,6 +71,17 @@ pub fn build(root: &Path) -> Result<(), String> {
     let size = std::fs::metadata(&bin).map_err(|e| e.to_string())?.len();
     eprintln!("    retropane.bin: {size} bytes (raw image for 0xA8008000)");
 
+    // The first-light image, for when the probe shows nothing: swap it in as
+    // retropane.bin (boot/light).
+    let light = kit.join("light");
+    std::fs::create_dir_all(&light).map_err(|e| format!("{}: {e}", light.display()))?;
+    crate::emu::run(
+        Command::new(objcopy())
+            .args(["-O", "binary"])
+            .arg(root.join("target/armv5te-x51v-none-eabi/release/rp-light"))
+            .arg(light.join("retropane.bin")),
+    )?;
+
     let script = root
         .join("xtask")
         .join("scripts")

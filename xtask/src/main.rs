@@ -98,7 +98,8 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
             .and_then(|()| emu::boot_kernel(&workspace_root()))
-            .and_then(|()| emu::boot_threads(&workspace_root())),
+            .and_then(|()| emu::boot_threads(&workspace_root()))
+            .and_then(|()| emu::boot_light(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
