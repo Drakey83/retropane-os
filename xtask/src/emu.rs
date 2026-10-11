@@ -1,8 +1,16 @@
-//! `cargo xtask emu`: boots RetroPane images in the x51v emulator.
+//! `cargo xtask emu` / `cargo xtask qemu`: the x51v emulator.
 //!
-//! The emulator (our QEMU 9.1 fork, ADR-0002) is downloaded from the
-//! retropane-qemu GitHub release on first use, so contributors never build
-//! QEMU. Set `RETROPANE_QEMU` to use a local build instead.
+//! Which emulator `emu` uses, in order:
+//!
+//! 1. `RETROPANE_QEMU=<path>`: that binary. `RETROPANE_QEMU=wsl` forces the WSL build.
+//! 2. On Windows, a local build made by `cargo xtask qemu` inside WSL, if present.
+//!    This is the fast loop for emulator development.
+//! 3. Otherwise the pinned retropane-qemu GitHub release, downloaded on first use,
+//!    so contributors never have to build QEMU.
+//!
+//! `cargo xtask qemu` syncs the retropane-qemu checkout next to this repository
+//! (`RETROPANE_QEMU_SRC` overrides) into WSL (`RETROPANE_WSL_DISTRO`, default
+//! `Ubuntu`) and builds it there in under a minute.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -19,6 +27,11 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Must match `rp_hello::MARKER`.
 const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
+
+/// Where `cargo xtask qemu` builds inside WSL.
+const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+
+const EMU_ARGS: &str = "-M x51v -display none -monitor none -serial stdio";
 
 struct Platform {
     asset: &'static str,
@@ -42,11 +55,71 @@ const fn platform() -> Platform {
     }
 }
 
-/// Finds the emulator, downloading the pinned release if necessary.
-fn qemu(root: &Path) -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("RETROPANE_QEMU") {
-        return Ok(PathBuf::from(path));
+/// The emulator to run.
+enum Emulator {
+    /// A native executable.
+    Native(PathBuf),
+    /// The local build inside WSL.
+    Wsl,
+}
+
+fn wsl_distro() -> String {
+    std::env::var("RETROPANE_WSL_DISTRO").unwrap_or_else(|_| "Ubuntu".into())
+}
+
+/// `C:\x\y` (or `\\?\C:\x\y`) -> `/mnt/c/x/y`.
+fn to_wsl_path(p: &Path) -> String {
+    let s = p.to_string_lossy();
+    let s = s.trim_start_matches(r"\\?\").replace('\\', "/");
+    match s.as_bytes() {
+        [d, b':', ..] => format!("/mnt/{}{}", (*d as char).to_ascii_lowercase(), &s[2..]),
+        _ => s,
     }
+}
+
+fn wsl_bash(script: &str) -> Command {
+    let mut c = Command::new("wsl");
+    c.args(["-d", &wsl_distro(), "--", "bash", "-lc", script]);
+    c
+}
+
+fn wsl_build_exists() -> bool {
+    cfg!(windows)
+        && wsl_bash(&format!("test -x {WSL_QEMU}"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+
+fn emulator(root: &Path) -> Result<Emulator, String> {
+    match std::env::var("RETROPANE_QEMU") {
+        Ok(v) if v.eq_ignore_ascii_case("wsl") => return Ok(Emulator::Wsl),
+        Ok(v) => return Ok(Emulator::Native(PathBuf::from(v))),
+        Err(_) => {}
+    }
+    if wsl_build_exists() {
+        return Ok(Emulator::Wsl);
+    }
+    download_release(root).map(Emulator::Native)
+}
+
+/// `cargo xtask qemu`: syncs the retropane-qemu checkout into WSL and builds it.
+pub fn build_wsl(root: &Path) -> Result<(), String> {
+    let src = std::env::var_os("RETROPANE_QEMU_SRC")
+        .map_or_else(|| root.join("..").join("retropane-qemu"), PathBuf::from);
+    let src = src
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", src.display()))?;
+    let script = root.join("xtask").join("scripts").join("qemu-wsl-build.sh");
+    run(Command::new("wsl")
+        .args(["-d", &wsl_distro(), "--", "bash"])
+        .arg(to_wsl_path(&script))
+        .arg(to_wsl_path(&src)))
+}
+
+/// Downloads the pinned emulator release if necessary.
+fn download_release(root: &Path) -> Result<PathBuf, String> {
     let p = platform();
     let cache = root.join("target").join("emulator").join(QEMU_RELEASE);
     let exe = cache.join(p.dir).join(p.exe);
@@ -101,18 +174,30 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
 /// Boots `image` and waits until its serial output contains `marker`.
 /// Returns the serial output.
 fn boot(root: &Path, image: &Path, marker: &str) -> Result<String, String> {
-    let qemu = qemu(root)?;
-    let mut child = Command::new(&qemu)
-        .args([
-            "-M", "x51v", "-display", "none", "-monitor", "none", "-serial", "stdio",
-        ])
-        .arg("-kernel")
-        .arg(image)
+    let mut cmd = match emulator(root)? {
+        Emulator::Native(exe) => {
+            eprintln!("    emulator: {}", exe.display());
+            let mut c = Command::new(exe);
+            c.args(EMU_ARGS.split(' ')).arg("-kernel").arg(image);
+            c
+        }
+        Emulator::Wsl => {
+            eprintln!("    emulator: local WSL build");
+            // `timeout` guarantees the Linux process exits even if killing
+            // wsl.exe doesn't reach it.
+            wsl_bash(&format!(
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -kernel '{}'",
+                BOOT_TIMEOUT.as_secs() + 5,
+                to_wsl_path(image)
+            ))
+        }
+    };
+    let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| format!("failed to start {}: {e}", qemu.display()))?;
+        .map_err(|e| format!("failed to start emulator: {e}"))?;
 
     // Stream stdout through a channel so we can enforce a timeout.
     let mut stdout = child.stdout.take().expect("piped");
@@ -150,5 +235,20 @@ fn boot(root: &Path, image: &Path, marker: &str) -> Result<String, String> {
             "no `{marker}` within {}s. Serial output so far:\n{output}",
             BOOT_TIMEOUT.as_secs()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_paths_map_to_wsl_mounts() {
+        assert_eq!(
+            to_wsl_path(Path::new(r"C:\Users\x\a b")),
+            "/mnt/c/Users/x/a b"
+        );
+        assert_eq!(to_wsl_path(Path::new(r"\\?\D:\r")), "/mnt/d/r");
+        assert_eq!(to_wsl_path(Path::new("/already/unix")), "/already/unix");
     }
 }

@@ -25,7 +25,8 @@ commands:
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
-  emu       boot the bring-up image in the x51v emulator (downloads it if needed)";
+  emu       boot the bring-up image in the x51v emulator (downloads it if needed)
+  qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)";
 
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
@@ -33,7 +34,9 @@ fn main() -> ExitCode {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
-        "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" => run_step(&cmd),
+        "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "qemu" => {
+            run_step(&cmd)
+        }
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -66,6 +69,7 @@ fn run_step(step: &str) -> Result {
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "emu" => cross().and_then(|()| emu::boot_hello(&workspace_root())),
+        "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
             "--workspace",
