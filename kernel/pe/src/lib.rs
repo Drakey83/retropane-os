@@ -597,5 +597,157 @@ fn read_name<E>(
         .ok_or(FillError::Image(Error::BadLayout))
 }
 
+/// What an export resolves to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub enum Export {
+    /// Code or data at this RVA in the exporting image.
+    Rva(u32),
+    /// Forwarded to another DLL: the RVA of a `"DLL.Name"` string.
+    Forwarder(u32),
+}
+
+/// An image's export directory, for resolving imports against it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub struct Exports {
+    dir: Dir,
+    /// First ordinal.
+    pub base: u32,
+    /// Entries in the address table.
+    pub functions: u32,
+    /// Entries in the (sorted) name table.
+    pub names: u32,
+    functions_rva: u32,
+    names_rva: u32,
+    ordinals_rva: u32,
+}
+
+impl Exports {
+    /// Reads the export directory, if the image has one.
+    pub fn read<E>(
+        img: &Image,
+        mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
+    ) -> Result<Option<Self>, FillError<E>> {
+        let dir = img.dirs[dir::EXPORT];
+        if dir.size == 0 {
+            return Ok(None);
+        }
+        let at = |off: u32, read: &mut _| view_u32(img, dir.rva + off, read);
+        let e = Self {
+            dir,
+            base: at(16, &mut read)?,
+            functions: at(20, &mut read)?,
+            names: at(24, &mut read)?,
+            functions_rva: at(28, &mut read)?,
+            names_rva: at(32, &mut read)?,
+            ordinals_rva: at(36, &mut read)?,
+        };
+        let limit = img.image_size.next_multiple_of(PAGE);
+        let fits = |rva: u32, n: u32, w: u32| {
+            u64::from(rva) + u64::from(n) * u64::from(w) <= u64::from(limit)
+        };
+        if e.functions > 0x1_0000
+            || e.names > e.functions
+            || !fits(e.functions_rva, e.functions, 4)
+            || !fits(e.names_rva, e.names, 4)
+            || !fits(e.ordinals_rva, e.names, 2)
+        {
+            return Err(FillError::Image(Error::BadLayout));
+        }
+        Ok(Some(e))
+    }
+
+    /// The export with ordinal `ordinal`.
+    pub fn by_ordinal<E>(
+        &self,
+        img: &Image,
+        ordinal: u32,
+        mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
+    ) -> Result<Option<Export>, FillError<E>> {
+        let Some(index) = ordinal
+            .checked_sub(self.base)
+            .filter(|&i| i < self.functions)
+        else {
+            return Ok(None);
+        };
+        let rva = view_u32(img, self.functions_rva + index * 4, &mut read)?;
+        Ok(self.classify(rva))
+    }
+
+    fn classify(&self, rva: u32) -> Option<Export> {
+        if rva == 0 {
+            None // a gap in the ordinal range
+        } else if rva >= self.dir.rva && rva < self.dir.rva + self.dir.size {
+            Some(Export::Forwarder(rva))
+        } else {
+            Some(Export::Rva(rva))
+        }
+    }
+
+    /// The export named `name`: tries the `hint` index first (what the
+    /// importer's linker saw), then a binary search of the sorted name table.
+    pub fn by_name<E>(
+        &self,
+        img: &Image,
+        name: &[u8],
+        hint: u16,
+        mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
+    ) -> Result<Option<Export>, FillError<E>> {
+        let mut buf = [0u8; MAX_NAME];
+        let name_at =
+            |i: u32, read: &mut _, buf: &mut [u8; MAX_NAME]| -> Result<usize, FillError<E>> {
+                let rva = view_u32(img, self.names_rva + i * 4, read)?;
+                read_name(img, rva, buf, read)
+            };
+        let found = if u32::from(hint) < self.names && {
+            let n = name_at(u32::from(hint), &mut read, &mut buf)?;
+            &buf[..n] == name
+        } {
+            Some(u32::from(hint))
+        } else {
+            let (mut lo, mut hi) = (0, self.names);
+            let mut hit = None;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let n = name_at(mid, &mut read, &mut buf)?;
+                match buf[..n].cmp(name) {
+                    core::cmp::Ordering::Less => lo = mid + 1,
+                    core::cmp::Ordering::Greater => hi = mid,
+                    core::cmp::Ordering::Equal => {
+                        hit = Some(mid);
+                        break;
+                    }
+                }
+            }
+            hit
+        };
+        let Some(i) = found else { return Ok(None) };
+        let mut o = [0u8; 2];
+        img.read_view(self.ordinals_rva + i * 2, &mut o, &mut read)?;
+        let index = u32::from(u16::from_le_bytes(o));
+        if index >= self.functions {
+            return Err(FillError::Image(Error::BadLayout));
+        }
+        let rva = view_u32(img, self.functions_rva + index * 4, &mut read)?;
+        Ok(self.classify(rva))
+    }
+
+    /// The `i`th name in the name table and its ordinal (for listing).
+    pub fn name_at<E>(
+        &self,
+        img: &Image,
+        i: u32,
+        out: &mut [u8; MAX_NAME],
+        mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
+    ) -> Result<(usize, u32), FillError<E>> {
+        let rva = view_u32(img, self.names_rva + i * 4, &mut read)?;
+        let n = read_name(img, rva, out, &mut read)?;
+        let mut o = [0u8; 2];
+        img.read_view(self.ordinals_rva + i * 2, &mut o, &mut read)?;
+        Ok((n, self.base + u32::from(u16::from_le_bytes(o))))
+    }
+}
+
 #[cfg(test)]
 mod tests;
