@@ -355,6 +355,7 @@ const THREADS_EXPECT: &[&str] = &[
     "THREADS sleep OK",
     "USER mode OK",
     "USER yield OK",
+    "USER preempted OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -383,7 +384,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode + syscalls"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption"
     );
     Ok(())
 }

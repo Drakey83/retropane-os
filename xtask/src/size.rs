@@ -53,7 +53,10 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-threads",
         // First budget = measured + ~10% (13.2 KiB load; 26.4 KiB zeroed:
         // boot stacks, scheduler tables, 128 thread contexts).
-        max_load: 15 * 1024,
+        // PROPOSED raise 15 -> 17 KiB (PENDING OWNER REVIEW, branch
+        // preempt-test): the user-mode preemption test (16.0 KiB measured,
+        // ratcheted +~9%). Spawn code already deduplicated.
+        max_load: 17 * 1024,
         max_zero: 30 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text
