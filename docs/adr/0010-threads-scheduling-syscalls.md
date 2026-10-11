@@ -117,10 +117,26 @@ Constraints and facts that shape the design:
   drops a thread into user mode; a safe user-side `syscall` stub (number in
   `r7`). Live in `boot/threads`: two user threads print and yield through
   system calls (`ABABAB`), every frame checked to come from user mode.
-- Next: the user-abort path on the thread's kernel stack, preemption on the
-  way back to user mode (quantum expiry, interrupts), the KData page,
-  mutexes with priority inheritance, `IrqLine` as a waitable object, lazy
-  iWMMXt switching.
+- **Preemption (2026-10-11):** IRQs enter SVC mode with a full frame on the
+  thread's kernel stack; quantum expiry switches user threads that never
+  yield (`USER preempted OK`).
+- **Mutexes with priority inheritance (2026-10-11, branch
+  `kernel-threads`):** recursive, CE semantics; waiters lend priority along
+  chains of owners; most urgent waiter first; timed-out waiters withdraw
+  their boost; an exiting owner hands its mutexes on. 9 host tests and a
+  live priority-inversion test (`THREADS mutex inheritance OK`).
+- **User faults in the thread's context (rule 5):** user-mode aborts build
+  a system-call `Frame` on the thread's kernel stack and call
+  `user::set_user_fault_handler`'s handler, which may block, fix and resume,
+  or end the thread (`USER fault contained OK`).
+- **Lazy iWMMXt (rule 3):** `iwmmxt::enable_lazy` turns media-unit access
+  off (CPAR) for all but its owner and patches its own undefined-instruction
+  entry into the vector page; a first use saves the owner's 152 bytes and
+  loads the new thread's. 8 shared state slots (~1.2 KiB), not 128
+  (`USER iWMMXt lazy switch OK`, mutation-checked). `wCSSF`/`wCASF` are
+  write-1-to-clear, so restored as far as the hardware allows.
+- Next: `IrqLine` as a waitable object, the KData page (needs a real page
+  table for the high page; the bring-up map's 1 MiB sections can't hold it).
 
 ## Open questions
 

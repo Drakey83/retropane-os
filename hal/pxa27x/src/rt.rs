@@ -101,6 +101,9 @@ rp_irq_entry:
     ldmia   lr, {{lr, pc}}^             @ svc lr, pc; CPSR = SPSR
 
     @ Faults: report kind and faulting address, then stop.
+    @ Undefined instruction: report and stop. (Lazy iWMMXt switching patches
+    @ its own entry into the vector page, iwmmxt.rs, and falls back here.)
+    .global rp_undef_entry
 rp_undef_entry:
     mov     r0, #1
     sub     r1, lr, #4
