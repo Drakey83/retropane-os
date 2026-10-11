@@ -129,6 +129,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-udc"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-drv-sdcard"
 version = "0.0.0"
 

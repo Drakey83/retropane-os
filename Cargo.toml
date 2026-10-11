@@ -15,6 +15,7 @@ members = [
     "drivers/tsc2046",
     "drivers/sdcard",
     "drivers/pxa-mmc",
+    "drivers/pxa-udc",
     "kernel/mm",
     "kernel/pe",
     "kernel/lz4",
