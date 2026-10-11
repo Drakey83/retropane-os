@@ -41,7 +41,7 @@ section in every ADR (Phase 0).
 | G1b | **Efficient and full speed** | CPU runs at its full 624 MHz turbo clock under load (and scales down when idle); UI holds 60 fps on the GPU; budgets in §11a are met on real hardware |
 | G1c | **Beat stock** | After drivers work, iterate (§11b) until RetroPane is measurably faster than the original WM drivers on the same apps |
 | G2 | **WM5 + WM6.x application compatibility** | Unmodified WM5 and WM6.0–6.5 ARM `.exe`/`.dll` files run; DoomGLES is the flagship test |
-| G3 | **Modern internet** | TLS 1.3, WPA2, IPv6, UTF-8, a usable modern web browser |
+| G3 | **Modern internet** | TLS 1.3, WPA2 and WPA3, IPv6, UTF-8, a usable modern web browser |
 | G4 | **Modern take on the WM look** | Windows-esque, retro, modernised: recognisable but fresh |
 | G5 | **Proper engineering** | Layered architecture, unit tests from day one, CI, documented decisions |
 | G6 | **Anyone can try it** | Public GitHub repo; boots from SD card with no risk to the device; later, optional flash install |
@@ -92,7 +92,7 @@ Full inventory with sources: [`research/hardware-inventory.md`](research/hardwar
 | Flash | M-Systems DiskOnChip G3 (~256 MB) | Bare-metal install target (late phase) |
 | GPU | Intel 2700G (PowerVR MBX Lite + MVED1 video), 16 MB own memory | Undocumented 3D → reverse-engineering track (§8) |
 | Display | 3.7" 480×640 VGA, resistive touch (TI TSC2046) | Stylus-first UI at 216 dpi |
-| Wi-Fi | TI TNETW1100B (ACX100), 802.11b, memory-mapped on PC Card socket 0 | Software WPA2 crypto; firmware from user's own ROM |
+| Wi-Fi | TI TNETW1100B (ACX100), 802.11b, memory-mapped on PC Card socket 0 | Software WPA2/WPA3 crypto; firmware from user's own ROM |
 | Audio | Wolfson WM8750 over I²S/I²C | Public datasheet |
 | Expansion | SD/SDIO + CompactFlash Type II | Boot media; CF also a fallback Wi-Fi path |
 | Glue | Unknown CPLD (16×16-bit regs at CS4) for power rails | Partially mapped by AxDroid; must finish RE |
@@ -428,8 +428,8 @@ own life (and maybe be useful to other X50v/X51v hackers).
 |---|---|
 | Wi-Fi driver | Native `acx100` driver from our own spec. Prior art: the out-of-tree acx-mac80211 driver and the AxDroid Axim glue, used as **references for facts** only. |
 | Firmware | The ACX100 needs TI firmware, which we can't redistribute. `tools/romdump` extracts it from the user's own device. |
-| 802.11 / security | Our own 802.11 MAC layer (management, scanning, association). The hardware only does WEP, so **WPA2-PSK (CCMP) runs in software** (fine at 11 Mbps). WPA3-SAE is a stretch goal. |
-| Known limitation | 802.11b only. Many modern routers disable 802.11b rates by default, and WPA3-only networks won't work. Settings will explain this clearly. The built-in ACX100 is required to work. Supporting **CF 802.11g cards** is an optional extra on top, not a substitute. |
+| 802.11 / security | Our own 802.11 MAC layer (management, scanning, association). The hardware only does WEP (RC4), and Dell's stock driver stops at WPA-TKIP. RetroPane does the rest **in software**: **WPA2-PSK (CCMP)** and **WPA3-Personal (SAE with hash-to-element, plus mandatory PMF / 802.11w)**. Software AES is fine at 11 Mbps; SAE's P-256 maths is a one-off cost per connection, and must be constant-time (H2E avoids the Dragonblood timing attacks). Whether PMF is possible depends on the ACX100 firmware letting the host send its own management frames and passing received ones up intact, so that is an RE question for `docs/hw/acx100.md` before the Wi-Fi ADR. |
+| Known limitation | 802.11b only. Many modern routers disable 802.11b rates by default (UniFi: "Minimum Data Rate Control"). Settings will explain this clearly. The built-in ACX100 is required to work. Supporting **CF 802.11g cards** is an optional extra on top, not a substitute. |
 | TCP/IP | `smoltcp` (Rust, BSD-0) or similar: IPv4/IPv6, DHCP, DNS, mDNS |
 | TLS | TLS 1.3 + 1.2 via mbedTLS or wolfSSL (decide in ADR). X25519 + ChaCha20-Poly1305 preferred (no FPU/AES hardware needed). Mozilla CA bundle with updates. |
 | Browser | **NetSurf** port (CSS, partial JS via Duktape) for direct browsing, plus a **"Bridge" mode**: an optional self-hostable companion service (on your PC or a server) that renders JavaScript-heavy sites with a headless browser and streams a simplified page or image tiles to the device (in the spirit of WRP/Browservice/Opera Mini). Both modes in one browser UI. |
