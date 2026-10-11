@@ -103,10 +103,11 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] **RE:** ACX100 trace analysis written up as `docs/hw/acx100.md`
 - [ ] Native ACX100 driver; firmware extracted by `romdump`
 - [ ] 802.11 MAC, scanning, WPA2-PSK in software
+- [ ] WPA3-Personal in software: SAE (H2E, constant-time) and PMF; first, RE whether the firmware allows host-built management frames
 - [ ] TCP/IP (IPv4/IPv6), DHCP, DNS, mDNS; TLS 1.3
 - [ ] Winsock in the CE Personality
 
-**Exit:** the device joins a WPA2 network and does HTTPS on the real hardware.
+**Exit:** the device joins a WPA2 network and a WPA3-only network and does HTTPS on the real hardware.
 
 ## Phase 7 — 2700G acceleration (3D, 2D, video)
 **Goal:** all 2700G blocks running on native drivers, at full speed.
