@@ -112,8 +112,9 @@ pub const MEMORY_MAP: &[Region] = &[
 
 /// Offset of the 2700G register block inside its chip-select window.
 pub const MBX_REG_OFFSET: u32 = 0x03FE_0000;
-/// Confidence in [`MBX_REG_OFFSET`].
-pub const MBX_REG_CONFIDENCE: Confidence = Confidence::Likely;
+/// Confidence in [`MBX_REG_OFFSET`]: Dell's display driver uses the block at
+/// the matching virtual address (docs/hw/2700g.md), agreeing with AxDroid.
+pub const MBX_REG_CONFIDENCE: Confidence = Confidence::Confirmed;
 
 /// Looks up a region by name.
 #[must_use]
