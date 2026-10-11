@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 serde_json = "1"
+rp-drv-mbx-display = { path = "../drivers/mbx-display" }
 
 [lints]
 workspace = true

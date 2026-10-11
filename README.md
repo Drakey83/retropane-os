@@ -15,8 +15,11 @@ on Windows Mobile.
 - **Zero extra hardware:** an X51v, its stock USB cradle, the SD card already in
   it, and a PC. It boots from the SD card and overwrites nothing.
 
-> **Status: Phase 0 (foundations).** There's no bootable OS yet. See the
+> **Status: Phase 1 (emulator).** No usable OS yet, but RetroPane's first
+> image boots in the X51v emulator and drives the Intel 2700G display. See the
 > [roadmap](docs/ROADMAP.md).
+
+<img src="docs/img/emulator-test-pattern.png" width="160" alt="Test pattern on the emulated X51v screen">
 
 Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** ·
 🗄️ **legacy support** · ⚡ **better/faster**.
@@ -36,6 +39,8 @@ You need [rustup](https://rustup.rs). The pinned toolchain installs itself.
 
 ```bash
 cargo xtask ci      # fmt, clippy, architecture lint, unit tests, X51v cross-build
+cargo xtask emu     # boot the bring-up image in the X51v emulator and check the screen
+cargo xtask qemu    # (optional) build the emulator locally in WSL for emulator development
 ```
 
 ## License

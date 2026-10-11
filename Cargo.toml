@@ -6,6 +6,7 @@ members = [
     "hal/pxa27x",
     "hal/x51v",
     "drivers/pxa-uart",
+    "drivers/mbx-display",
     "boot/hello",
     "tools/romdump",
     "xtask",

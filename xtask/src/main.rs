@@ -5,6 +5,7 @@
 
 mod emu;
 mod policy;
+mod screen;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};

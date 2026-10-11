@@ -38,6 +38,14 @@ if [ ! -f build.ninja ]; then
         --extra-cflags=-Wno-error=discarded-qualifiers > "$log" 2>&1 \
         || { tail -20 "$log"; exit 1; }
 fi
+# QEMU's configure writes `werror = true` into its meson native file for git
+# checkouts, and that file wins on every meson reconfigure (e.g. after a
+# meson.build edit). Newer distro libraries then trip deprecation warnings in
+# QEMU 9.1, so keep werror off at the source.
+if grep -q '^werror = true' config-meson.cross 2>/dev/null; then
+    sed -i 's/^werror = true/werror = false/' config-meson.cross
+    ./pyvenv/bin/meson configure -Dwerror=false > /dev/null
+fi
 if ! make -j"$(nproc)" qemu-system-arm > "$log" 2>&1; then
     grep -A8 FAILED "$log" || tail -20 "$log"
     exit 1

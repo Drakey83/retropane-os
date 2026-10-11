@@ -11,6 +11,8 @@ publish.workspace = true
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-hal-x51v = { path = "../../hal/x51v" }
 
 [lints]
 workspace = true

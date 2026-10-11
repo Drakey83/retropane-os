@@ -5,7 +5,9 @@
 //! be confirmed on the device before a driver relies on them.
 
 #![no_std]
-#![forbid(unsafe_code)]
+
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod devices;
 
 /// How sure we are of a hardware fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,6 +114,10 @@ pub const MEMORY_MAP: &[Region] = &[
 
 /// Offset of the 2700G register block inside its chip-select window.
 pub const MBX_REG_OFFSET: u32 = 0x03FE_0000;
+/// Size of the modelled 2700G register window.
+pub const MBX_REG_SIZE: u32 = 0x2_0000;
+/// 2700G local memory size on the X51v (2700G7).
+pub const MBX_VRAM_SIZE: u32 = 16 * 1024 * 1024;
 /// Confidence in [`MBX_REG_OFFSET`]: Dell's display driver uses the block at
 /// the matching virtual address (docs/hw/2700g.md), agreeing with AxDroid.
 pub const MBX_REG_CONFIDENCE: Confidence = Confidence::Confirmed;

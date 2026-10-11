@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-mbx-display"
+description = "Intel 2700G display controller driver: panel timing and graphics plane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true
