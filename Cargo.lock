@@ -193,6 +193,7 @@ name = "rp-kernel"
 version = "0.0.0"
 dependencies = [
  "rp-drv-pxa-uart",
+ "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-kernel-mm",

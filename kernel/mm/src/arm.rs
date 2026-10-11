@@ -181,12 +181,27 @@ pub const fn l2_large(phys: u32, attrs: Attrs) -> u32 {
     (phys & 0xFFFF_0000) | ap4(attrs.ap) | attrs.cache.cb() | 0b01
 }
 
+/// A second-level fault descriptor carrying `payload` (non-zero, under
+/// 2^30): any access faults, and the payload says where the page went.
+#[must_use]
+pub const fn l2_stored(payload: u32) -> u32 {
+    debug_assert!(
+        payload != 0 && payload < 1 << 30,
+        "stored payload out of range"
+    );
+    payload << 2
+}
+
 /// A decoded second-level descriptor.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
 pub enum L2 {
     /// Unmapped.
     Fault,
+    /// Not mapped, but holding a payload in the bits the MMU ignores (a fault
+    /// descriptor only needs bits 1:0 = 00): RetroPane stores a compressed
+    /// page's handle here ([`l2_stored`]).
+    Stored(u32),
     /// A 4 KiB page.
     Small {
         /// Physical base.
@@ -212,7 +227,8 @@ pub const fn l2_decode(d: u32) -> L2 {
         cache: Cache::from_cb((d >> 2) & 0b11),
     };
     match d & 0b11 {
-        0b00 => L2::Fault,
+        0b00 if d == 0 => L2::Fault,
+        0b00 => L2::Stored(d >> 2),
         0b01 => L2::Large {
             phys: d & 0xFFFF_0000,
             attrs,
@@ -360,6 +376,14 @@ mod tests {
         }
         assert_eq!(l1_decode(0), L1::Fault);
         assert_eq!(l2_decode(0), L2::Fault);
+    }
+
+    #[test]
+    fn stored_entries_fault_and_keep_their_payload() {
+        let d = l2_stored(0x0ABC_DEF1);
+        assert_eq!(d & 0b11, 0, "a fault descriptor to the MMU");
+        assert_eq!(l2_decode(d), L2::Stored(0x0ABC_DEF1));
+        assert_eq!(l2_decode(l2_stored(1)), L2::Stored(1));
     }
 
     #[test]

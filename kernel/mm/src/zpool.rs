@@ -30,6 +30,32 @@ const PAGE: usize = 4096;
 /// (2 + 2), reserved (2), slot bitmap (8).
 const HEADER: usize = 16;
 
+/// Room for compressing one page: the LZ4 hash table and the output. Lives
+/// in static memory (12 KiB, all zero: `.bss`), never on a kernel stack.
+pub struct ZBuffers {
+    /// The compressor's hash table.
+    pub table: [u16; rp_lz4::TABLE_LEN],
+    /// A compressed page.
+    pub packed: [u8; rp_lz4::max_compressed(PAGE)],
+}
+
+impl Default for ZBuffers {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ZBuffers {
+    /// Zeroed buffers.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            table: [0; rp_lz4::TABLE_LEN],
+            packed: [0; rp_lz4::max_compressed(PAGE)],
+        }
+    }
+}
+
 /// Frame memory, by frame number.
 pub trait Pages {
     /// Frame `f`'s bytes.

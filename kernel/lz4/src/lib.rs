@@ -268,10 +268,24 @@ fn put_sequence(
 /// bytes guarantees success), returning the compressed size. Inputs up to
 /// 64 KiB per block (offsets are 16-bit and positions are stored as `u16`).
 pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+    compress_with(&mut [0; TABLE_LEN], src, dst)
+}
+
+/// Entries in the compressor's hash table.
+pub const TABLE_LEN: usize = 1 << HASH_BITS;
+
+/// [`compress`] with a caller-provided hash table (8 KiB): kernel stacks are
+/// small, so the kernel keeps one table in static memory instead of putting
+/// it on the stack.
+pub fn compress_with(
+    table: &mut [u16; TABLE_LEN],
+    src: &[u8],
+    dst: &mut [u8],
+) -> Result<usize, Error> {
     if src.len() > 0x1_0000 {
         return Err(Error::Overflow);
     }
-    let mut table = [0u16; 1 << HASH_BITS];
+    table.fill(0);
     let mut o = 0;
     let mut anchor = 0; // start of pending literals
     if src.len() >= MF_LIMIT {

@@ -34,6 +34,7 @@
 use crate::arm::{Ap, Attrs, Cache};
 use crate::layout;
 use crate::pagetable::{FrameAlloc, MapError, Mmu, PageTables, PhysMem};
+use crate::zpool::{Handle, Pages, ZBuffers, ZPool};
 
 const PAGE: u32 = 4096;
 
@@ -453,6 +454,8 @@ pub enum Outcome {
     Mapped,
     /// A private copy replaced a shared page-cache page.
     CopiedOnWrite,
+    /// A compressed page was decompressed back into place.
+    Restored,
     /// The page was already mapped with enough permission (another path
     /// resolved it first).
     Spurious,
@@ -501,6 +504,21 @@ pub struct Vm<'a, M, F, U, C> {
     pub mmu: &'a mut U,
     /// The page cache.
     pub cache: &'a mut C,
+    /// Compressed copies of idle pages (ADR-0005 rule 6).
+    pub zpool: &'a mut ZPool,
+    /// Buffers for compressing and decompressing (static, not on the stack).
+    pub zbuf: &'a mut ZBuffers,
+}
+
+/// The compressed page store's frames, reached through the kernel's
+/// physical-memory access (they're kernel-private).
+struct ZPages<'m, M>(&'m mut M);
+
+impl<M: PhysMem> Pages for ZPages<'_, M> {
+    fn page(&mut self, f: usize) -> &mut [u8; 4096] {
+        let phys = self.0.frame_phys(f);
+        self.0.kernel_page(phys)
+    }
 }
 
 fn attrs_for(r: &Region, writable_now: bool) -> Attrs {
@@ -537,6 +555,10 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         }
         let page = mva & !(PAGE - 1);
         let private_file = matches!(r.backing, Backing::File { shared: false, .. });
+
+        if let Some(raw) = self.tables.stored(self.mem, page) {
+            return self.restore(&r, page, raw);
+        }
 
         if let Some((phys, attrs)) = self.tables.translate(self.mem, page) {
             if access != Access::Write || attrs.ap.user_writable() {
@@ -595,6 +617,84 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         Ok(Outcome::Mapped)
     }
 
+    /// Decompresses the page stored under `raw` back into a fresh frame.
+    fn restore(&mut self, r: &Region, page: u32, raw: u32) -> Result<Outcome, FaultError> {
+        let h = Handle::from_raw(raw);
+        let f = self.frames.alloc(0).ok_or(FaultError::NoMemory)?;
+        let phys = self.mem.frame_phys(f);
+        // Copy the compressed bytes out of the store (the page and the store
+        // can't both be borrowed), then decompress straight into the frame:
+        // no page-sized buffer on the stack (this runs on small kernel and
+        // abort stacks).
+        let packed = &mut self.zbuf.packed;
+        let len = {
+            let mut store = ZPages(&mut *self.mem);
+            let src = self.zpool.get(&mut store, h);
+            packed[..src.len()].copy_from_slice(src);
+            src.len()
+        };
+        let ok = self.mem.with_page(phys, |page| {
+            rp_lz4::decompress(&packed[..len], page) == Ok(4096)
+        });
+        if !ok {
+            // A corrupt compressed copy is a kernel bug: never map garbage.
+            self.frames.free(f);
+            return Err(FaultError::Io);
+        }
+        self.zpool.free(self.frames, &mut ZPages(&mut *self.mem), h);
+        self.tables
+            .restore(self.mem, page, phys, attrs_for(r, r.prot.write()))
+            .map_err(FaultError::Map)?;
+        Ok(Outcome::Restored)
+    }
+
+    /// Compresses the anonymous page mapped at `mva` into the compressed page
+    /// store, frees its frame and leaves the store's handle in its page-table
+    /// entry, so the next touch faults and [`handle_fault`](Self::handle_fault)
+    /// brings it back. Returns whether it was compressed: pages that aren't
+    /// mapped, aren't anonymous, or don't compress well enough stay as they
+    /// are.
+    pub fn compress(&mut self, space: &AddressSpace, mva: u32) -> Result<bool, FaultError> {
+        let page = mva & !(PAGE - 1);
+        let Some(r) = space.find(page) else {
+            return Ok(false);
+        };
+        if r.backing != Backing::Zero {
+            return Ok(false);
+        }
+        let Some((phys, _)) = self.tables.translate(self.mem, page) else {
+            return Ok(false);
+        };
+        // The process may have dirty lines for it under its own address
+        // (VIVT): write them back before reading the frame.
+        self.mmu.clean_page(page);
+        let zb = &mut *self.zbuf;
+        let packed_len = self.mem.with_page(phys, |p| {
+            rp_lz4::compress_with(&mut zb.table, p, &mut zb.packed)
+        });
+        let Ok(n) = packed_len else {
+            return Ok(false);
+        };
+        let h = match self
+            .zpool
+            .store(self.frames, &mut ZPages(&mut *self.mem), &zb.packed[..n])
+        {
+            Ok(h) => h,
+            Err(crate::zpool::ZError::TooBig) => return Ok(false),
+            Err(crate::zpool::ZError::NoMemory) => return Err(FaultError::NoMemory),
+        };
+        if self
+            .tables
+            .store(self.mem, self.mmu, page, h.raw())
+            .is_none()
+        {
+            self.zpool.free(self.frames, &mut ZPages(&mut *self.mem), h);
+            return Ok(false);
+        }
+        self.frames.free(self.mem.phys_frame(phys));
+        Ok(true)
+    }
+
     fn copy_on_write(
         &mut self,
         space: &AddressSpace,
@@ -643,6 +743,21 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         })?;
         let base = self.mem.frame_phys(0);
         for p in pieces[..n].iter().flatten() {
+            // Compressed pages first: free their copies, in bounded batches.
+            let end = p.start + p.len;
+            let mut at = p.start;
+            let mut batch = [0u32; 64];
+            while at < end {
+                let (k, next) = self.tables.take_stored(self.mem, at, end, &mut batch);
+                for &raw in &batch[..k] {
+                    self.zpool.free(
+                        self.frames,
+                        &mut ZPages(&mut *self.mem),
+                        Handle::from_raw(raw),
+                    );
+                }
+                at = next;
+            }
             let cache = &mut *self.cache;
             self.tables.unmap(
                 self.mem,
@@ -783,6 +898,8 @@ mod tests {
         frames: Frames<512>,
         mmu: Log,
         cache: Cache,
+        zpool: ZPool,
+        zbuf: Box<ZBuffers>,
     }
 
     impl World {
@@ -795,6 +912,8 @@ mod tests {
                 frames,
                 mmu: Log::default(),
                 cache: Cache::default(),
+                zpool: ZPool::new(),
+                zbuf: Box::new(ZBuffers::new()),
             }
         }
 
@@ -805,6 +924,8 @@ mod tests {
                 frames: &mut self.frames,
                 mmu: &mut self.mmu,
                 cache: &mut self.cache,
+                zpool: &mut self.zpool,
+                zbuf: &mut self.zbuf,
             }
         }
 
@@ -883,6 +1004,89 @@ mod tests {
             w.vm().handle_fault(&s, a + 0x1000, second),
             Err(FaultError::Protection)
         );
+    }
+
+    #[test]
+    fn idle_pages_compress_and_come_back_on_touch() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(zero(a, 0x3000, Prot::RW)).unwrap();
+        for k in 0..3 {
+            w.vm()
+                .handle_fault(&s, a + k * 0x1000, Access::Write)
+                .unwrap();
+        }
+        // Give the pages contents: mostly zeros, a few words.
+        for k in 0..3u32 {
+            let (phys, _) = w.tables.translate(&mut w.ram, a + k * 0x1000).unwrap();
+            w.ram.page(phys)[k as usize * 10] = 0xC0DE_0000 + k;
+        }
+        let before = w.frames.free_frames();
+        w.mmu.0.clear();
+        for k in 0..3 {
+            assert_eq!(w.vm().compress(&s, a + k * 0x1000), Ok(true));
+        }
+        assert_eq!(
+            w.mmu.0[0],
+            format!("clean {a:#x}"),
+            "cache cleaned before reading"
+        );
+        assert_eq!(
+            w.tables.translate(&mut w.ram, a),
+            None,
+            "unmapped while compressed"
+        );
+        let (zframes, objects, _) = w.zpool.stats();
+        assert_eq!(objects, 3);
+        assert_eq!(
+            w.frames.free_frames(),
+            before + 3 - zframes,
+            "three frames freed, one zpool frame used"
+        );
+        // Touch one: it comes back with its contents.
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 0x1000 + 40, Access::Read),
+            Ok(Outcome::Restored)
+        );
+        assert_eq!(w.peek(a + 0x1000).map(|_| ()), Some(()));
+        let (phys, attrs) = w.tables.translate(&mut w.ram, a + 0x1000).unwrap();
+        assert_eq!(w.ram.page(phys)[10], 0xC0DE_0001);
+        assert_eq!(attrs.ap, Ap::UserWrite);
+        assert_eq!(w.zpool.stats().1, 2);
+        // Unmapping frees the remaining compressed copies too.
+        w.vm().unmap(&mut s, a, 0x3000).unwrap();
+        assert_eq!(w.zpool.stats(), (0, 0, 0));
+        assert_eq!(w.frames.free_frames(), 512);
+    }
+
+    #[test]
+    fn only_anonymous_compressible_pages_are_compressed() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(zero(a, 0x2000, Prot::RW)).unwrap();
+        s.map(file(a + 0x2000, 0x1000, Prot::R, false)).unwrap();
+        assert_eq!(w.vm().compress(&s, a), Ok(false), "not mapped yet");
+        w.vm().handle_fault(&s, a, Access::Write).unwrap();
+        w.vm().handle_fault(&s, a + 0x2000, Access::Read).unwrap();
+        assert_eq!(
+            w.vm().compress(&s, a + 0x2000),
+            Ok(false),
+            "file pages are dropped, not compressed"
+        );
+        assert_eq!(w.vm().compress(&s, a + 0x9000), Ok(false), "no region");
+        // Noise doesn't compress: it stays mapped.
+        let (phys, _) = w.tables.translate(&mut w.ram, a).unwrap();
+        let mut x = 7u32;
+        for v in w.ram.page(phys).iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            *v = x;
+        }
+        assert_eq!(w.vm().compress(&s, a), Ok(false));
+        assert!(w.tables.translate(&mut w.ram, a).is_some());
     }
 
     #[test]
@@ -1208,6 +1412,8 @@ mod tests {
             frames: &mut empty,
             mmu: &mut w.mmu,
             cache: &mut w.cache,
+            zpool: &mut w.zpool,
+            zbuf: &mut w.zbuf,
         };
         assert_eq!(
             vm.handle_fault(&s2, layout::slot_base(6), Access::Write),
