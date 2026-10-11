@@ -105,10 +105,10 @@ pub const MEMORY_MAP: &[Region] = &[
     },
     Region {
         name: "sdram",
-        base: 0xA000_0000,
+        base: 0xA800_0000,
         size: 64 * 1024 * 1024,
         confidence: Confidence::Confirmed,
-        source: "PXA manual (bank 0) + user's device shows 64 MB",
+        source: "Dell OAL address table (PA 0xA8000000, 64 MiB; docs/hw/memory-map.md) + HaRET ramaddr",
     },
 ];
 

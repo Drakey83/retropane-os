@@ -1,17 +1,18 @@
 /*
  * RetroPane bare-metal image layout (shared by boot/hello and boot/bench).
  *
- * Loaded at 0xA0008000, the address the SD launcher and QEMU both use (the
- * traditional ARM kernel load address, 32 KiB into SDRAM). Reserved below and
- * above (rp-hal-pxa27x::mmu): the bring-up page table at 0xA0004000 (16 KiB)
- * and the exception vectors at 0xA00F0000; images must stay below 0xA00F0000.
+ * Loaded at 0xA8008000, the address HaRET (the SD launcher) and QEMU both use:
+ * 32 KiB into SDRAM, which on the X51v starts at 0xA8000000 (SDCS2, see
+ * docs/hw/memory-map.md). HaRET leaves its boot tags at 0xA8000100. Reserved below and
+ * above (rp-hal-pxa27x::mmu): the bring-up page table at 0xA8004000 (16 KiB)
+ * and the exception vectors at 0xA80F0000; images must stay below 0xA80F0000.
  * The bring-up MMU maps everything 1:1, so virtual = physical.
  */
 ENTRY(_start)
 
 MEMORY
 {
-    SDRAM (rwx) : ORIGIN = 0xA0008000, LENGTH = 64M - 32K
+    SDRAM (rwx) : ORIGIN = 0xA8008000, LENGTH = 64M - 32K
 }
 
 SECTIONS

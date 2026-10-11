@@ -15,6 +15,7 @@ members = [
     "drivers/tsc2046",
     "drivers/sdcard",
     "drivers/pxa-mmc",
+    "kernel/mm",
     "boot/hello",
     "boot/bench",
     "tools/romdump",
@@ -44,3 +45,12 @@ debug = true
 
 [profile.dev]
 panic = "abort"
+
+# ADR-0005 rule 8: cold code is built for size. The bring-up image runs once;
+# hot paths (hal/mem, display fills) keep opt-level 3 in their own crates.
+[profile.release.package.rp-hello]
+opt-level = "s"
+[profile.release.package.rp-drv-sdcard]
+opt-level = "s"
+[profile.release.package.rp-drv-cpld]
+opt-level = "s"

@@ -1,0 +1,11 @@
+[package]
+name = "rp-kernel-mm"
+description = "Kernel memory management: physical frame allocator (buddy), later VM and page cache (ADR-0005)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

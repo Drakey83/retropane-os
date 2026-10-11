@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.5.0";
+pub const QEMU_RELEASE: &str = "rp-v0.6.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -71,12 +71,12 @@ enum Emulator {
     Wsl,
 }
 
-fn wsl_distro() -> String {
+pub(crate) fn wsl_distro() -> String {
     std::env::var("RETROPANE_WSL_DISTRO").unwrap_or_else(|_| "Ubuntu".into())
 }
 
 /// `C:\x\y` (or `\\?\C:\x\y`) -> `/mnt/c/x/y`.
-fn to_wsl_path(p: &Path) -> String {
+pub(crate) fn to_wsl_path(p: &Path) -> String {
     let s = p.to_string_lossy();
     let s = s.trim_start_matches(r"\\?\").replace('\\', "/");
     match s.as_bytes() {
@@ -158,7 +158,7 @@ fn download_release(root: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn run(cmd: &mut Command) -> Result<(), String> {
+pub(crate) fn run(cmd: &mut Command) -> Result<(), String> {
     let status = cmd.status().map_err(|e| format!("{cmd:?}: {e}"))?;
     if status.success() {
         Ok(())

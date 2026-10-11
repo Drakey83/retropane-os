@@ -26,6 +26,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_sdcard::{BLOCK, SdCard};
     use rp_hal_pxa27x::{Mmio, rt};
+    use rp_kernel_mm::frames::Frames;
 
     rp_hal_pxa27x::entry!(main);
 
@@ -122,6 +123,8 @@ mod image {
             black_box(rt::ticks());
         });
 
+        bench_frames(&mut b);
+
         if let Some(scratch) = rp_hal_x51v::devices::take_scratch() {
             match check_mem(&mut scratch[..1024]) {
                 Ok(()) => {
@@ -192,6 +195,32 @@ mod image {
         let _ = black_box(rt::fault_probe(black_box(0x8000_0000)));
         let _ = writeln!(b.uart, "FAULT-PROBE no fault (unexpected)");
         halt()
+    }
+
+    /// The kernel's frame allocator (`rp-kernel-mm`). A 4 MiB pool lives on
+    /// the stack only for this function (5 KiB), so the image's zeroed RAM
+    /// stays in budget.
+    #[inline(never)]
+    fn bench_frames(b: &mut Bench) {
+        let mut pool = Frames::<1024>::new();
+        let _ = pool.add_range(0, 1024);
+        // Worst case for a buddy allocator: one page out of a whole 4 MiB
+        // block splits ten times, and freeing it merges ten times.
+        b.run("frames_alloc_free_split", 1000, &mut || {
+            if let Some(f) = pool.alloc(black_box(0)) {
+                let _ = pool.free(f);
+            }
+        });
+        // Typical use: many pages out, then all back.
+        let mut got = [0u16; 1024];
+        b.run("frames_fill_drain_1024", 10, &mut || {
+            for g in got.iter_mut() {
+                *g = pool.alloc(0).unwrap_or(0) as u16;
+            }
+            for &g in got.iter() {
+                let _ = pool.free(usize::from(g));
+            }
+        });
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {

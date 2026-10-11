@@ -49,17 +49,26 @@ pub const fn divisor(baud: u32) -> u16 {
     div as u16
 }
 
+/// How many times [`PxaUart::write_byte`] polls for transmitter space before
+/// declaring the UART dead. One byte at 115200 baud takes 87 µs; this is
+/// milliseconds of polling, so a working UART never gets near it.
+pub const TX_POLL_LIMIT: u32 = 100_000;
+
 /// A PXA27x UART on some register bus.
 #[derive(Debug)]
 pub struct PxaUart<B> {
     bus: B,
+    /// Cleared when the transmitter never became ready: on a real X51v the
+    /// FFUART may be unclocked or unconnected, and debug output must never
+    /// hang the system. Further output is dropped without polling.
+    alive: bool,
 }
 
 impl<B: RegisterBus> PxaUart<B> {
     /// Takes ownership of the UART's register bank. Call [`init`](Self::init)
     /// before use unless firmware already configured it.
     pub fn new(bus: B) -> Self {
-        Self { bus }
+        Self { bus, alive: true }
     }
 
     /// Configures `baud`, 8N1, interrupts off, unit enabled.
@@ -73,10 +82,28 @@ impl<B: RegisterBus> PxaUart<B> {
         self.bus.write32(reg::IER, IER_UUE.mask());
     }
 
-    /// Sends one byte, waiting for space in the transmitter.
+    /// Sends one byte, waiting (boundedly) for space in the transmitter. If
+    /// the transmitter never becomes ready, the UART is marked dead and this
+    /// and all later bytes are dropped.
     pub fn write_byte(&mut self, byte: u8) {
-        while self.bus.read_field(reg::LSR, LSR_TDRQ) == 0 {}
+        if !self.alive {
+            return;
+        }
+        let mut polls = 0;
+        while self.bus.read_field(reg::LSR, LSR_TDRQ) == 0 {
+            polls += 1;
+            if polls == TX_POLL_LIMIT {
+                self.alive = false;
+                return;
+            }
+        }
         self.bus.write32(reg::THR, u32::from(byte));
+    }
+
+    /// Whether the transmitter has been responding.
+    #[must_use]
+    pub fn is_alive(&self) -> bool {
+        self.alive
     }
 
     /// Gives the register bank back.
@@ -138,6 +165,18 @@ mod tests {
                 (reg::IER, 0x40), // UUE
             ]
         );
+    }
+
+    #[test]
+    fn a_dead_transmitter_never_hangs() {
+        // LSR reads 0 forever: an unclocked or missing UART.
+        let mut uart = PxaUart::new(MockBus::new());
+        write!(uart, "hello").unwrap();
+        assert!(!uart.is_alive());
+        let bus = uart.into_inner();
+        // Polled up to the limit once, then gave up on every later byte.
+        assert_eq!(bus.log().len(), TX_POLL_LIMIT as usize);
+        assert!(bus.writes().is_empty());
     }
 
     #[test]
