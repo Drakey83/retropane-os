@@ -18,6 +18,7 @@ members = [
     "kernel/mm",
     "kernel/pe",
     "kernel/lz4",
+    "kernel/sched",
     "boot/hello",
     "boot/bench",
     "boot/suite",
