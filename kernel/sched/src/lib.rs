@@ -421,6 +421,13 @@ impl Scheduler {
         Some(Tid(next))
     }
 
+    /// Whether any thread is waiting for the CPU (the idle loop sleeps only
+    /// if not).
+    #[must_use]
+    pub fn has_ready(&self) -> bool {
+        self.summary != 0
+    }
+
     /// Gives up the rest of the quantum: the next [`schedule`](Self::schedule)
     /// runs another thread of the same priority, if any.
     pub fn yield_now(&mut self, now: u32) {

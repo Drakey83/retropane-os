@@ -135,8 +135,17 @@ Constraints and facts that shape the design:
   loads the new thread's. 8 shared state slots (~1.2 KiB), not 128
   (`USER iWMMXt lazy switch OK`, mutation-checked). `wCSSF`/`wCASF` are
   write-1-to-clear, so restored as far as the hardware allows.
-- Next: `IrqLine` as a waitable object, the KData page (needs a real page
-  table for the high page; the bring-up map's 1 MiB sections can't hold it).
+- **Interrupts as waitable objects (rule 7):** `rt::set_signal_hook` gets
+  each claimed line that fires (after the first-level handler masked it);
+  the kernel sets the event its interrupt-service thread waits on, and the
+  thread services the device and calls `IrqLine::done`. Live with OS timer
+  channel 2 (`soc::SpareTimer`, `THREADS interrupt thread OK`). Found on the
+  way: the idle thread slept in `wait_tick`, which only a timer tick ends,
+  so a device interrupt never got its thread scheduled; it now sleeps in
+  `rt::idle_until_interrupt` (any interrupt ends it, with the "anything
+  ready?" check made with IRQs masked).
+- Next: the KData page (needs a real page table for the high page; the
+  bring-up map's 1 MiB sections can't hold it).
 
 ## Open questions
 
