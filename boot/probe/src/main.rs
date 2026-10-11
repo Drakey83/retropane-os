@@ -121,6 +121,7 @@ mod image {
             if let Some(c) = self.con.as_mut() {
                 let _ = c.write_str(s);
             }
+            rp_hal_x51v::devices::log_write(s.as_bytes());
             self.uart.write_str(s)
         }
     }
@@ -146,6 +147,12 @@ mod image {
                 (0xFFFF, 0xA800),
             );
             let _ = write!(c, "{msg}");
+        }
+        // Started by the resident loader: the message reaches the PC too.
+        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{msg}");
+        if rp_hal_x51v::devices::loader_present() {
+            rt::delay_us(3_000_000);
+            rp_hal_x51v::devices::return_to_loader();
         }
         halt()
     }
@@ -389,13 +396,22 @@ mod image {
             rep.line(format_args!("OVERFLOW {lost} lines lost"));
         }
 
-        // Serial copy of every page (the emulator test checks the sums).
+        // Serial copy of every page (the emulator test checks the sums), and
+        // the run log's: `cargo xtask load` checks them on the PC.
         for p in 0..PAGES {
             for l in rep.page_lines(p) {
                 let _ = writeln!(uart, "P{}|{}", p + 1, Ascii(l));
+                let _ = writeln!(rp_hal_x51v::devices::RunLog, "P{}|{}", p + 1, Ascii(l));
             }
         }
         let _ = writeln!(uart, "{}", super::MARKER);
+        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{}", super::MARKER);
+        // Started by the resident loader: the report is on its way to the PC,
+        // so show page 1 briefly and go back.
+        if rp_hal_x51v::devices::loader_present() {
+            rt::delay_us(2_000_000);
+            rp_hal_x51v::devices::return_to_loader();
+        }
 
         // 4. Show pages; buttons and taps turn them.
         let mut page = 0;

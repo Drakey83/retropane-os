@@ -225,6 +225,20 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                 for l in &log {
                     println!("{l}");
                 }
+                // A probe report: every line's checksum, checked here.
+                let text = log.join("\n");
+                if text.contains("P1|") {
+                    let bad: Vec<&String> = log
+                        .iter()
+                        .filter(|l| l.starts_with('P') && l.contains('|'))
+                        .filter(|l| crate::emu::check_report_line(l).is_err())
+                        .collect();
+                    if bad.is_empty() {
+                        eprintln!("    probe report: every line's checksum is valid");
+                    } else {
+                        return Err(format!("probe report lines with bad checksums: {bad:?}"));
+                    }
+                }
             } else {
                 eprintln!(
                     "    no run log within {LOG_WAIT_SECS} s: the image is still running (or hung), \

@@ -60,9 +60,11 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").
+    // Raised 40 -> 45 KiB on 2026-10-11 (approved by the owner): the run log
+    // and return-to-loader path (ADR-0012), 40.9 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 40 * 1024,
+        max_load: 45 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.

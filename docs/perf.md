@@ -51,6 +51,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | Preemption test added to `rp-threads`; **load budget raised 15 → 17 KiB, approved by the owner** (measured + ~9%) | `rp-threads` loaded size | 14,660 B | 16,012 B |
 | 2026-10-11 | New bring-up images, each with its own budget at measured + ~10% (new budgets, not raises): `rp-light` (first light), `rp-usb` (USB link test), `rp-loader` (resident loader) | loaded size | — | 16,064 / 18,320 / 20,032 B |
 | 2026-10-11 | `rp-probe`: startup colours (step table instead of six inlined two-colour calls) | `rp-probe` loaded size | 40,756 B | 40,864 B |
+| 2026-10-11 | `rp-probe` writes its report to the run log and returns to the resident loader (ADR-0012), so `cargo xtask load rp-probe` delivers the checksummed report to the PC with no photos. **Load budget raised 40 → 45 KiB, approved by the owner** (measured + ~10%) | `rp-probe` loaded size | 40,864 B | 41,920 B |
 
 ## Real hardware
 
