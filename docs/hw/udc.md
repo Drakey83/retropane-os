@@ -63,7 +63,7 @@ all set, read as two 32-bit words, then acknowledged by writing SA | OPC.
 | 3 | DME | DMA enable (preserve on writes) |
 | 4 | SST | a STALL was sent; write 1 to clear |
 | 5 | FST | force STALL (preserve on writes) |
-| 6 | BNE / BNF | IN endpoint: buffer not **empty**; OUT endpoint: buffer not full. (Measured: reading it as "not full" for IN left every IN packet unsent.) |
+| 6 | BNF / BNE | IN endpoint: buffer not full; OUT endpoint: buffer not empty. Reads 0 while the endpoint isn't active, which once looked like "full" (it was the interface problem below, not this bit) |
 | 7 | SP | short packet: set by software to send a short IN packet |
 | 8 | FEF | flush the FIFO |
 | 9 | DPE | data packet error |

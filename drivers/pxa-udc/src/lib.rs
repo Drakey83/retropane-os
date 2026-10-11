@@ -100,10 +100,12 @@ pub mod reg {
 
     /// UDCCSRx (A–X) bits: packet complete.
     pub const PC: u32 = 1 << 1;
-    /// Bit 6: for an IN endpoint, buffer not *empty* (BNE); for an OUT
-    /// endpoint, buffer not full (BNF). Measured on the real X51v: reading
-    /// it as "not full" for IN left every IN packet unsent (`tx 0`).
-    pub const BNE: u32 = 1 << 6;
+    /// Tx/Rx NAK: the host's token found no data (write 1 to clear).
+    pub const TRN: u32 = 1 << 2;
+    /// Bit 6: for an IN endpoint, buffer not full (BNF); for an OUT
+    /// endpoint, buffer not empty. It reads 0 while the endpoint isn't
+    /// active (measured: an inactive endpoint looked "full").
+    pub const BNF: u32 = 1 << 6;
     /// Short packet.
     pub const SP: u32 = 1 << 7;
 }
@@ -599,9 +601,15 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.bus.write32(reg::csr(SLOT_IN), reg::PC);
             self.in_busy = false;
         }
-        // A new packet only into an empty FIFO.
-        if self.tx.len() == 0 || csr & reg::BNE != 0 {
+        if self.tx.len() == 0 || csr & reg::BNF == 0 {
             return;
+        }
+        // A NAKed IN token (TRN) or a stale packet-complete is cleared
+        // before the packet goes in, as the hardware's known-good driver
+        // does (write-1-to-clear, so only the set bits are written).
+        let stale = csr & (reg::PC | reg::TRN);
+        if stale != 0 {
+            self.bus.write32(reg::csr(SLOT_IN), stale);
         }
         let n = self.tx.len().min(usb::BULK_SIZE);
         let mut left = n;
