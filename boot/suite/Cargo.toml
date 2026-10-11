@@ -1,0 +1,17 @@
+[package]
+name = "rp-bench-suite"
+description = "The benchmark suite shared by the bench image (emulator, serial) and the probe image (real X51v, on screen)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-kernel-mm = { path = "../../kernel/mm" }
+
+[lints]
+workspace = true

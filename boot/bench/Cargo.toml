@@ -16,7 +16,7 @@ rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-cpld = { path = "../../drivers/cpld" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
-rp-kernel-mm = { path = "../../kernel/mm" }
+rp-bench-suite = { path = "../suite" }
 
 [lints]
 workspace = true

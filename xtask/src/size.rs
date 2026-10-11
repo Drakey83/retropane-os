@@ -25,6 +25,13 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 24 * 1024,
         max_zero: 20 * 1024,
     },
+    // Diagnostics only, never part of the OS: register names and report text
+    // dominate. Built for size (opt-level "s").
+    Budget {
+        image: "rp-probe",
+        max_load: 40 * 1024,
+        max_zero: 20 * 1024,
+    },
 ];
 
 /// Loaded and zero-initialised byte counts of an ELF32 image.
@@ -71,7 +78,16 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
 }
 
 /// Checks every budget against the built images.
-pub fn check(release_dir: &Path) -> Result<(), String> {
+pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
+    // Every image needs a budget: an unbudgeted image would grow unseen.
+    if let Some(missing) = images
+        .iter()
+        .find(|i| BUDGETS.iter().all(|b| b.image != **i))
+    {
+        return Err(format!(
+            "{missing} has no size budget in xtask/src/size.rs (ADR-0005 rule 7)"
+        ));
+    }
     for b in BUDGETS {
         let path = release_dir.join(b.image);
         let elf = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;

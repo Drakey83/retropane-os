@@ -47,7 +47,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 ## Phase 2 — Kernel
 **Goal:** a real kernel with threads, memory protection and full-speed clocks.
 
-- [ ] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET kit ready: `cargo xtask sdkit`; awaiting first run on the device)*
+- [ ] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET kit ready: `cargo xtask sdkit` boots the on-screen hardware probe; awaiting first run on the device)*
 - [x] Physical frame allocator (`kernel/mm`, host-tested, benchmarked) *(2026-10-11)*; ADR-0006 (chip-specific memory design) accepted 2026-10-11
 - [ ] On-screen debug text *(boot log done 2026-10-11)* and crash screen (using the display inherited from Windows Mobile), plus a crash log that survives reboot
 - [ ] **USB device driver early:** CDC-ACM console over the stock cradle, with no custom PC drivers

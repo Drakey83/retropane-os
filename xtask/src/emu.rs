@@ -302,6 +302,99 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_probe::MARKER`.
+const PROBE_MARKER: &str = "RETROPANE-PROBE-DONE";
+/// Text every probe report must contain.
+const PROBE_EXPECT: &[&str] = &[
+    "1 SYSTEM",
+    "2 WM STATE",
+    "3 2700G",
+    "4 BENCH",
+    "check mem OK",
+    "Sharp VGA",
+    "SD SD RCA",
+    "chase_sram_256k",
+    "tlb_spill_60_l1sram",
+];
+
+/// Boots the probe image (the real-device report), then checks every page
+/// line's checksum, that the report is complete, and that it's on screen.
+pub fn boot_probe(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-probe");
+    let shot = root
+        .join("target")
+        .join("emulator")
+        .join("probe-screen.ppm");
+    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-test.img"))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: PROBE_MARKER,
+            screenshot: Some(&shot),
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    let lines = check_probe_report(&output)?;
+    let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
+    crate::screen::check_text_screen(&ppm)?;
+    eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");
+    Ok(())
+}
+
+/// The probe report's line checksum: the content's bytes (trailing spaces
+/// trimmed) summed modulo 256. Must match `rp_probe::report::checksum`.
+pub fn probe_checksum(content: &str) -> u8 {
+    content
+        .trim_end()
+        .bytes()
+        .fold(0u8, |a, b| a.wrapping_add(b))
+}
+
+/// Verifies the `P<page>|<line>` copy of the report on serial. Returns the
+/// number of lines.
+pub fn check_probe_report(output: &str) -> Result<usize, String> {
+    let mut pages = [0usize; 4];
+    for l in output.lines() {
+        let Some(rest) = l.strip_prefix('P') else {
+            continue;
+        };
+        let Some((page, text)) = rest.split_once('|') else {
+            continue;
+        };
+        let page: usize = page.parse().map_err(|_| format!("bad page in `{l}`"))?;
+        if !(1..=4).contains(&page) || text.len() != 40 {
+            return Err(format!("malformed report line `{l}`"));
+        }
+        let (content, sum) = text.split_at(37);
+        let want =
+            u8::from_str_radix(sum.trim(), 16).map_err(|_| format!("bad checksum in `{l}`"))?;
+        if probe_checksum(content) != want {
+            return Err(format!("checksum mismatch in `{l}`"));
+        }
+        pages[page - 1] += 1;
+    }
+    if let Some(p) = pages.iter().position(|&n| n == 0) {
+        return Err(format!("probe report page {} is empty", p + 1));
+    }
+    for want in PROBE_EXPECT {
+        if !output.contains(want) {
+            return Err(format!("probe report lacks `{want}`"));
+        }
+    }
+    if output.contains("OVERFLOW") {
+        return Err("probe report overflowed a page".into());
+    }
+    Ok(pages.iter().sum())
+}
+
 /// Must match `rp_bench::DONE`.
 const BENCH_DONE: &str = "BENCH-DONE";
 /// The bench image's deliberate read of unmapped memory must be reported so.
@@ -647,6 +740,38 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn probe_checksum_matches_the_image() {
+        // Same vector as rp-probe's report test.
+        let sum: u32 = b"CPU ID 69054117".iter().map(|&b| u32::from(b)).sum();
+        assert_eq!(
+            u32::from(probe_checksum("CPU ID 69054117      ")),
+            sum % 256
+        );
+    }
+
+    #[test]
+    fn probe_report_checks() {
+        let line = |p: u8, t: &str| format!("P{p}|{t:<37} {:02X}", probe_checksum(t));
+        let mut out = String::new();
+        for (p, t) in [
+            (1, "1 SYSTEM"),
+            (2, "2 WM STATE"),
+            (3, "3 2700G"),
+            (4, "4 BENCH"),
+        ] {
+            out += &line(p, t);
+            out.push('\n');
+        }
+        for t in PROBE_EXPECT {
+            out += &line(4, t);
+            out.push('\n');
+        }
+        assert_eq!(check_probe_report(&out), Ok(4 + PROBE_EXPECT.len()));
+        let bad = out.replacen("1 SYSTEM", "1 SYST3M", 1);
+        assert!(check_probe_report(&bad).unwrap_err().contains("checksum"));
+    }
 
     #[test]
     fn parses_bench_lines() {

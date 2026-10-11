@@ -7,7 +7,9 @@
 //!   to it. Nothing is written to flash: a soft reset returns to Windows
 //!   Mobile.
 //! - `default.txt`: the HaRET script it runs on start.
-//! - `retropane.bin`: the bring-up image as a raw binary.
+//! - `retropane.bin`: the probe image (`rp-probe`) as a raw binary: it shows
+//!   everything RetroPane needs to learn from the device on screen, in pages
+//!   for a phone photo.
 //! - `README.txt`: the steps for the device.
 
 use std::path::Path;
@@ -26,25 +28,31 @@ bootlinux
 ";
 
 const README: &str = "\
-RetroPane 26 - SD card boot kit
-===============================
+RetroPane 26 - SD card probe kit
+================================
 
-What this does: HaRET (a Windows Mobile program) loads RetroPane's bring-up
-image into RAM and starts it. Nothing is written to the device's flash. To
-get back to Windows Mobile, soft-reset (the reset button on the bottom edge).
-Save any open work first: a soft reset closes running programs.
+What this does: HaRET (a Windows Mobile program) loads RetroPane's hardware
+probe into RAM and starts it. The probe reads how the device is set up, runs
+benchmarks, and shows everything on screen in 4 pages. Nothing is written to
+the device's flash. To get back to Windows Mobile, soft-reset (the reset
+button on the bottom edge). Save any open work first: a soft reset closes
+running programs.
 
 1. Copy haret.exe, default.txt and retropane.bin to the root of the SD card
    (or one folder; keep the three files together).
 2. Put the card in the X51v. On the device, open File Explorer, go to
    Storage Card, and tap haret.exe.
-3. Tap \"Run\". The screen shows HaRET's boot messages, then RetroPane's
-   color bars with a text log underneath.
-4. Press buttons or tap the screen: each one is shown in the log.
+3. Tap \"Run\". HaRET shows its boot messages, then RetroPane shows progress
+   lines (\"benchmarks...\" takes a few seconds), then page 1 of the report.
+4. Photograph each page: page 1, then press the D-pad right (or tap the
+   screen) for pages 2, 3 and 4. The page number is in the bottom line. Hold
+   the phone square to the screen and close enough that the text fills the
+   photo.
 5. Soft-reset to return to Windows Mobile.
 
-If it stops before the color bars, take a photo of the screen: the last lines
-say how far it got.
+Every line ends in a two-digit checksum, so misread digits get caught. If it
+stops early, photograph whatever is on screen: the last line says how far it
+got.
 ";
 
 /// Builds the kit into `target/sdkit`.
@@ -52,7 +60,7 @@ pub fn build(root: &Path) -> Result<(), String> {
     let kit = root.join("target").join("sdkit");
     std::fs::create_dir_all(&kit).map_err(|e| format!("{}: {e}", kit.display()))?;
 
-    let elf = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
+    let elf = root.join("target/armv5te-x51v-none-eabi/release/rp-probe");
     let bin = kit.join("retropane.bin");
     crate::emu::run(
         Command::new(objcopy())

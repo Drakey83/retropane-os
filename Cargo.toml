@@ -18,6 +18,8 @@ members = [
     "kernel/mm",
     "boot/hello",
     "boot/bench",
+    "boot/suite",
+    "boot/probe",
     "tools/romdump",
     "xtask",
 ]
@@ -53,4 +55,6 @@ opt-level = "s"
 [profile.release.package.rp-drv-sdcard]
 opt-level = "s"
 [profile.release.package.rp-drv-cpld]
+opt-level = "s"
+[profile.release.package.rp-probe]
 opt-level = "s"
