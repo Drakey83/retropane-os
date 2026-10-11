@@ -72,8 +72,10 @@ while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch {{ break }}
     if ($l -like 'RPL *') {{ $reply = $l; "REPLY " + $l; break }}
 }}
-$sp.Close()
-if ($reply -ne 'RPL OK') {{ exit 0 }}
+try {{ $sp.Close() }} catch {{ }}
+if ($reply -like 'RPL ERR*') {{ exit 0 }}
+# No reply read is normal too: the device disconnects to run the image
+# within half a second of saying OK, and the port may go away first.
 # The device disconnects to run the image. If the image returns to the
 # loader, it reconnects and sends the run log: reopen the port and read it.
 $deadline = (Get-Date).AddSeconds({LOG_WAIT_SECS})
@@ -220,11 +222,18 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
         ));
     };
     match reply.as_deref() {
-        Some("RPL OK") => {
-            eprintln!(
-                "    {} bytes sent on {port}: the loader started it",
-                payload.len()
-            );
+        Some("RPL OK") | None => {
+            if reply.is_none() {
+                eprintln!(
+                    "    {} bytes sent on {port}; no reply read (the device disconnects to run                      the image, so this is usual): waiting for the run log",
+                    payload.len()
+                );
+            } else {
+                eprintln!(
+                    "    {} bytes sent on {port}: the loader started it",
+                    payload.len()
+                );
+            }
             if restarted {
                 return Err(
                     "the image hung: the watchdog reset the device and the loader came \
@@ -263,10 +272,6 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
             Ok(())
         }
         Some(r) => Err(format!("the loader refused the image: {r}")),
-        None => Err(format!(
-            "no reply from the loader on {port}{}",
-            stderr_note(&out.stderr)
-        )),
     }
 }
 
