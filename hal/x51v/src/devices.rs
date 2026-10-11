@@ -115,6 +115,109 @@ pub fn take_image_area() -> Option<&'static mut [u8]> {
     Some(unsafe { core::slice::from_raw_parts_mut(IMAGE_BASE as *mut u8, IMAGE_MAX) })
 }
 
+/// The run log (ADR-0012): what an image started by the loader printed,
+/// kept in RAM for the loader to send to the PC when the image returns.
+/// 64 KiB reserved right after the loader's home.
+pub const LOG_BASE: usize = 0xA850_0000;
+/// Size of the run log reservation, header included.
+pub const LOG_SIZE: usize = 64 * 1024;
+const LOG_MAGIC: u32 = u32::from_le_bytes(*b"RPLG");
+/// Header words: magic, bytes used, overflow flag, !magic.
+const LOG_HEADER: usize = 16;
+const LOG_CAPACITY: usize = LOG_SIZE - LOG_HEADER;
+
+fn log_word(i: usize) -> *mut u32 {
+    (LOG_BASE + 4 * i) as *mut u32
+}
+
+/// The log header, if a loader started this run (magic and its complement
+/// intact, length in range); otherwise `None` and logging is off.
+fn log_used() -> Option<usize> {
+    // SAFETY: LOG_BASE..+LOG_SIZE is SDRAM reserved for the run log
+    // (boot/link.x), identity-mapped; reads of plain words.
+    let (magic, used, check) = unsafe {
+        (
+            log_word(0).read_volatile(),
+            log_word(1).read_volatile() as usize,
+            log_word(3).read_volatile(),
+        )
+    };
+    (magic == LOG_MAGIC && check == !LOG_MAGIC && used <= LOG_CAPACITY).then_some(used)
+}
+
+/// Starts an empty run log (the loader, just before starting an image).
+#[inline(never)]
+pub fn log_start() {
+    // SAFETY: the run log's reserved header words (see `log_used`).
+    unsafe {
+        log_word(0).write_volatile(LOG_MAGIC);
+        log_word(1).write_volatile(0);
+        log_word(2).write_volatile(0);
+        log_word(3).write_volatile(!LOG_MAGIC);
+    }
+}
+
+/// Appends to the run log, if this run has one. Past the end, bytes are
+/// dropped and the overflow flag is set (reported by the loader: never
+/// silently).
+#[inline(never)]
+pub fn log_write(data: &[u8]) {
+    let Some(used) = log_used() else { return };
+    let n = data.len().min(LOG_CAPACITY - used);
+    // SAFETY: LOG_BASE + LOG_HEADER + used.. stays inside the reservation
+    // (n is clamped to the capacity left); single core, so no other writer.
+    unsafe {
+        let dst = (LOG_BASE + LOG_HEADER + used) as *mut u8;
+        core::ptr::copy_nonoverlapping(data.as_ptr(), dst, n);
+        log_word(1).write_volatile((used + n) as u32);
+        if n < data.len() {
+            log_word(2).write_volatile(1);
+        }
+    }
+}
+
+/// A `core::fmt::Write` sink for [`log_write`].
+pub struct RunLog;
+
+impl core::fmt::Write for RunLog {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        log_write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Takes the previous run's log (the loader, on start): the bytes and
+/// whether some were dropped. The log is closed, so it's sent once.
+pub fn log_take() -> Option<(&'static [u8], bool)> {
+    let used = log_used()?;
+    // SAFETY: reading the run log's header and its `used` bytes, all inside
+    // the reservation; closing it (magic cleared) makes this the only taker.
+    unsafe {
+        let overflow = log_word(2).read_volatile() != 0;
+        log_word(0).write_volatile(0);
+        let data = core::slice::from_raw_parts((LOG_BASE + LOG_HEADER) as *const u8, used);
+        Some((data, overflow))
+    }
+}
+
+/// Whether the resident loader is in memory and started this run.
+#[must_use]
+#[inline(never)]
+pub fn loader_present() -> bool {
+    // SAFETY: reads 8 bytes of the loader's reserved home.
+    let sig = unsafe { core::ptr::read_volatile((LOADER_BASE + 4) as *const [u8; 8]) };
+    sig == rp_hal_pxa27x::handoff::LOADER_SIGNATURE && log_used().is_some()
+}
+
+/// Ends this run: back to the resident loader if it started it (which then
+/// sends the run log to the PC); otherwise returns, and the caller halts.
+#[inline(never)]
+pub fn return_to_loader() {
+    if loader_present() {
+        rp_hal_pxa27x::handoff::launch(LOADER_BASE as u32);
+    }
+}
+
 /// Start of the SDRAM scratch region handed out by [`take_scratch`]: 8 MiB into
 /// SDRAM, far above bare-metal images (linked at `0xA8008000`, a few tens of KiB).
 pub const SCRATCH_BASE: usize = 0xA880_0000;

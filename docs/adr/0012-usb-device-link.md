@@ -71,9 +71,17 @@ Facts (docs/hw/udc.md):
   them), `cargo xtask load`. `cargo xtask emu` boots the loader as a raw
   binary away from home, sends it first light over the serial port, and
   checks first light runs. Over USB it needs U1 to work on the device first.
-- **Not yet:** U2 (console over USB in every image), the watchdog and the
-  "return to the loader" path from crash handlers, and starting HaRET from
-  WM's StartUp folder.
+- **Run log + return (in place of U2's per-image USB console):** an image
+  started by the loader also writes its output to a 64 KiB RAM log at
+  `0xA8500000`, and when it finishes or crashes it jumps back to the loader
+  (`devices::return_to_loader`), which sends the log to the PC ("RPL LOG" …
+  "RPL END") once the PC has reopened the port. Images need no USB code, and
+  `cargo xtask load <image>` prints the run's output. `rp-light` does this
+  (its 2700G register walk, answered on the device, was removed to fit its
+  budget); the emulator test checks the whole round trip.
+- **Not yet:** the run log and return path in the other images (`rp-probe`
+  needs ~1 KB it doesn't have in its budget), the watchdog for hangs, and
+  starting HaRET from WM's StartUp folder.
 
 ## The four lenses
 

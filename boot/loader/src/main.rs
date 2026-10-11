@@ -119,11 +119,25 @@ mod image {
         let _ = writeln!(log, "USB {}", if usb { "connected" } else { "unavailable" });
         let _ = writeln!(log, "waiting for an image: cargo xtask load");
 
+        // The previous run's log (an image this loader started, now back):
+        // to the FFUART at once, and over USB once the PC has the port open
+        // again (the device reconnected when it came back).
+        let mut pending = devices::log_take();
+        if let Some((data, overflow)) = pending {
+            let _ = writeln!(log, "previous run: {} bytes of log", data.len());
+            send_log(&mut |b| uart_bytes(&mut uart, b), data, overflow);
+        }
+
         let mut rx = Receiver::new();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
         loop {
             udc.poll();
+            if udc.host_open() {
+                if let Some((data, overflow)) = pending.take() {
+                    send_log(&mut |b| usb_bytes(&mut udc, b), data, overflow);
+                }
+            }
             let mut outcome = None;
             while outcome.is_none() {
                 let Some(b) = uart.read_byte() else { break };
@@ -149,6 +163,7 @@ mod image {
                     }
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
+                    devices::log_start();
                     handoff::launch(IMAGE_BASE as u32);
                 }
                 Some(Err(e)) => {
@@ -196,6 +211,34 @@ mod image {
     fn send(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, udc: &mut Udc<rp_hal_pxa27x::Mmio>, s: &str) {
         let _ = uart.write_str(s);
         udc.write(s.as_bytes());
+    }
+
+    /// The run log, framed for `cargo xtask load`.
+    fn send_log(out: &mut dyn FnMut(&[u8]), data: &[u8], overflow: bool) {
+        out(b"RPL LOG\r\n");
+        out(data);
+        if overflow {
+            out(b"\r\n[run log full: later output dropped]");
+        }
+        out(b"\r\nRPL END\r\n");
+    }
+
+    fn uart_bytes(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, data: &[u8]) {
+        for &b in data {
+            uart.write_byte(b);
+        }
+    }
+
+    /// All of `data` over USB, polling as the transmit ring drains (gives
+    /// up after 5 s or if the PC goes away).
+    fn usb_bytes(udc: &mut Udc<rp_hal_pxa27x::Mmio>, mut data: &[u8]) {
+        let start = rt::ticks();
+        while !data.is_empty() && udc.configured() && rt::ticks().wrapping_sub(start) < 5 * TICK_1S
+        {
+            let n = udc.write(data);
+            data = &data[n..];
+            udc.poll();
+        }
     }
 
     fn what(e: LoadError) -> &'static str {

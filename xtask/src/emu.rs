@@ -445,15 +445,25 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
-            input: Some((&frame, LIGHT_MARKER)),
+            input: Some((&frame, "RPL END")),
             timeout: BOOT_TIMEOUT,
         },
     )?;
     if !output.contains("RPL OK") {
         return Err("loader: no `RPL OK` before the image started".into());
     }
+    // The run log the loader sent after first light returned to it.
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("loader: no run log after the image returned")?;
+    if !log.contains("all steps OK") || !log.contains(LIGHT_MARKER) {
+        return Err(format!("loader: the run log is incomplete:{log}"));
+    }
+    eprint!("    run log as the PC receives it:{log}");
     eprintln!(
-        "    loader OK: moved itself home, took a {} byte image over serial, CRC checked, started it",
+        "    loader OK: moved itself home, took a {} byte image over serial, CRC checked, \
+         started it, and sent its run log back when it returned",
         payload.len()
     );
     Ok(())
