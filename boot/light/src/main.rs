@@ -31,7 +31,7 @@ mod image {
 
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, SAVED_REGS, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::diag;
@@ -89,6 +89,12 @@ mod image {
             );
             let _ = write!(c, "{msg}");
         }
+        // Started by the resident loader: the message goes to the PC too.
+        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{msg}");
+        if rp_hal_x51v::devices::loader_present() {
+            rt::delay_us(3_000_000);
+            rp_hal_x51v::devices::return_to_loader();
+        }
         halt()
     }
 
@@ -123,12 +129,12 @@ mod image {
 
         let kept = Plane::decode(gsctrl, gscadr, gsadr, MBX_VRAM_SIZE as usize)
             .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
-        let (plane, note, regs) = match kept {
-            Some(p) => (p, "kept WM plane", Some(regs)),
+        let (plane, note) = match kept {
+            Some(p) => (p, "kept WM plane"),
             None => {
                 let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
                 Display::new(regs).enable(&X51V_VGA, &p);
-                (p, "reprogrammed", None)
+                (p, "reprogrammed")
             }
         };
         let scratch = rp_hal_x51v::devices::take_scratch().is_some();
@@ -162,20 +168,16 @@ mod image {
             "serial: {}",
             if out.0.is_alive() { "alive" } else { "dead" }
         );
-        // The probe reads all of these before drawing anything, and hung on
-        // the device: name each register before reading it, so a register
-        // that stalls the bus is the last name on screen.
-        if let Some(mut regs) = regs {
-            let _ = writeln!(out, "2700G reads:");
-            for (name, off) in SAVED_REGS {
-                let _ = write!(out, "{name} ");
-                let _ = regs.read32(*off);
-            }
-            let _ = writeln!(out, "\nall 2700G reads OK");
-        }
         let _ = writeln!(out, "\nSoft-reset to go back.");
         let _ = writeln!(out.0, "{}", super::MARKER);
+        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{}", super::MARKER);
         let _ = soc;
+        // Started by the resident loader: show the screen briefly, then go
+        // back so it can send the run log to the PC.
+        if rp_hal_x51v::devices::loader_present() {
+            rt::delay_us(2_000_000);
+            rp_hal_x51v::devices::return_to_loader();
+        }
         halt()
     }
 
@@ -185,6 +187,7 @@ mod image {
     impl Write for Tee<'_, '_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             let _ = self.1.write_str(s);
+            rp_hal_x51v::devices::log_write(s.as_bytes());
             self.0.write_str(s)
         }
     }

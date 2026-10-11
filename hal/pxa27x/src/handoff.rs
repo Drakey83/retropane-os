@@ -8,7 +8,8 @@
 //!   images it receives can go there. Linked at its home address, it starts
 //!   with this position-independent copy of itself and then jumps to the
 //!   normal `_start` at home. Only the loader's link script keeps it
-//!   (`KEEP(*(.text.reloc))`); every other image discards it.
+//!   (`KEEP(*(.text.reloc))`); every other image discards it. Bytes 4..12
+//!   are [`LOADER_SIGNATURE`], so an image can tell the loader is resident.
 
 use crate::cpu;
 
@@ -19,7 +20,9 @@ core::arch::global_asm!(
     .weak __load_end
     .arm
 rp_reloc_entry:
-    msr     cpsr_c, #0xD3          @ SVC, IRQ and FIQ masked
+    b       0f
+    .ascii  "RPLOADER"             @ +4: images check this before returning here
+0:  msr     cpsr_c, #0xD3          @ SVC, IRQ and FIQ masked
     adr     r0, rp_reloc_entry     @ where HaRET (or launch) put us
     ldr     r1, =rp_reloc_entry    @ where we're linked
     cmp     r0, r1
@@ -35,6 +38,9 @@ rp_reloc_entry:
     .ltorg
 "#
 );
+
+/// At the loader's home + 4 while it is resident.
+pub const LOADER_SIGNATURE: [u8; 8] = *b"RPLOADER";
 
 /// Linux's machine number for the Axim X50/X51 family, as HaRET passes it
 /// (shown on the device as "mach 00000153").

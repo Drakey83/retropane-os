@@ -67,14 +67,48 @@ $sp.DiscardInBuffer()
 $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
 $deadline = (Get-Date).AddSeconds(10)
+$reply = ''
 while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch {{ break }}
-    if ($l -like 'RPL *') {{ "REPLY " + $l; break }}
+    if ($l -like 'RPL *') {{ $reply = $l; "REPLY " + $l; break }}
 }}
 $sp.Close()
+if ($reply -ne 'RPL OK') {{ exit 0 }}
+# The device disconnects to run the image. If the image returns to the
+# loader, it reconnects and sends the run log: reopen the port and read it.
+$deadline = (Get-Date).AddSeconds({LOG_WAIT_SECS})
+$done = $false
+while (-not $done -and (Get-Date) -lt $deadline) {{
+    Start-Sleep -Milliseconds 500
+    $dev = Get-CimInstance Win32_PnPEntity | Where-Object {{ $_.PNPDeviceID -like 'USB\{VID_PID}*' -and $_.Name -match '\(COM\d+\)' }} | Select-Object -First 1
+    if (-not $dev) {{ continue }}
+    $port = [regex]::Match($dev.Name, 'COM\d+').Value
+    try {{
+        $sp = New-Object System.IO.Ports.SerialPort $port, 115200
+        $sp.DtrEnable = $true
+        $sp.RtsEnable = $true
+        $sp.ReadTimeout = 2000
+        $sp.NewLine = "`r`n"
+        $sp.Open()
+    }} catch {{ continue }}
+    $inlog = $false
+    while ((Get-Date) -lt $deadline) {{
+        try {{ $l = $sp.ReadLine() }}
+        catch [System.TimeoutException] {{ continue }}
+        catch {{ break }}
+        if ($l -eq 'RPL LOG') {{ $inlog = $true; continue }}
+        if ($l -eq 'RPL END') {{ 'LOGEND'; $done = $true; break }}
+        if ($inlog) {{ 'LOG ' + $l }}
+    }}
+    try {{ $sp.Close() }} catch {{ }}
+}}
 "#
         )
 }
+
+/// How long `cargo xtask load` waits for the image to return to the loader
+/// with its run log.
+const LOG_WAIT_SECS: u32 = 30;
 
 /// Base64 of `text` as UTF-16LE, for PowerShell's `-EncodedCommand`.
 fn encode_command(text: &str) -> String {
@@ -158,11 +192,20 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
     let text = String::from_utf8_lossy(&out.stdout);
     let mut port = None;
     let mut reply = None;
-    for line in text.lines().map(str::trim) {
-        if let Some(p) = line.strip_prefix("PORT ") {
-            port = Some(p.to_string());
-        } else if let Some(r) = line.strip_prefix("REPLY ") {
+    let mut log = Vec::new();
+    let mut returned = false;
+    for line in text.lines() {
+        let trimmed = line.trim_end();
+        if let Some(p) = trimmed.strip_prefix("PORT ") {
+            port.get_or_insert_with(|| p.to_string());
+        } else if let Some(r) = trimmed.strip_prefix("REPLY ") {
             reply = Some(r.to_string());
+        } else if let Some(l) = trimmed.strip_prefix("LOG ") {
+            log.push(l.to_string());
+        } else if trimmed == "LOG" {
+            log.push(String::new());
+        } else if trimmed == "LOGEND" {
+            returned = true;
         }
     }
     let Some(port) = port else {
@@ -177,6 +220,17 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                 "    {} bytes sent on {port}: the loader started it",
                 payload.len()
             );
+            if returned {
+                eprintln!("    the image returned to the loader; its run log:");
+                for l in &log {
+                    println!("{l}");
+                }
+            } else {
+                eprintln!(
+                    "    no run log within {LOG_WAIT_SECS} s: the image is still running (or hung), \
+                     or doesn't return to the loader"
+                );
+            }
             Ok(())
         }
         Some(r) => Err(format!("the loader refused the image: {r}")),

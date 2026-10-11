@@ -40,7 +40,8 @@ the PXA27x developer's manual memory map.
   owns memory): `0xA8000100` HaRET's boot tags; `0xA8004000` bring-up page
   table (16 KiB); `0xA8008000`–`0xA80F0000` the image; `0xA80F0000` vector
   page; `0xA80F8000` cache-clean area (32 KiB); **`0xA8400000`–`0xA8500000`
-  the resident loader** (ADR-0012); `0xA8800000` scratch (1 MiB);
+  the resident loader** (ADR-0012); `0xA8500000` the run log (64 KiB);
+  `0xA8800000` scratch (1 MiB);
   `0xA9000000` the kernel's RAM pool (48 MiB).
 - **SDRAM starts at 0xA8000000, not at the PXA27x's bank 0 (0xA0000000).**
   Nothing is at 0xA0000000 on this board. Bare-metal images load at
