@@ -78,6 +78,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-mmc"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-sdcard",
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-ssp"
 version = "0.0.0"
 dependencies = [
@@ -92,6 +101,10 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-mock",
 ]
+
+[[package]]
+name = "rp-drv-sdcard"
+version = "0.0.0"
 
 [[package]]
 name = "rp-drv-tsc2046"
@@ -134,8 +147,10 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
+ "rp-drv-pxa-mmc",
  "rp-drv-pxa-ssp",
  "rp-drv-pxa-uart",
+ "rp-drv-sdcard",
  "rp-drv-tsc2046",
  "rp-hal-pxa27x",
  "rp-hal-x51v",

@@ -57,6 +57,8 @@ static mut KEYPAD_TAKEN: bool = false;
 static mut GPIO_TAKEN: bool = false;
 /// Single-use guard for SSP1.
 static mut SSP1_TAKEN: bool = false;
+/// Single-use guard for the MMC controller.
+static mut MMC_TAKEN: bool = false;
 
 /// Hands out the FFUART register bank once.
 ///
@@ -166,4 +168,21 @@ pub fn take_ssp1() -> Option<Mmio> {
     // SAFETY: SSP1's register window (PXA27x memory map), identity-mapped;
     // the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x40) })
+}
+
+/// CKEN bit for the MMC/SD controller.
+pub const CKEN_MMC: u32 = 12;
+
+/// Hands out the MMC/SD controller once, with its clock enabled.
+pub fn take_mmc() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(MMC_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_MMC);
+    let base = NonNull::new(0x4110_0000 as *mut u32)?;
+    // SAFETY: the MMC controller's register window (PXA27x memory map, up to
+    // 0x50 used), identity-mapped; the flag guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x100) })
 }

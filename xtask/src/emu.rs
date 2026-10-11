@@ -231,6 +231,28 @@ const HELLO_STEPS: &[Step] = &[
     },
 ];
 
+/// The test SD image: 8 MiB (QEMU wants a power of two) with one FAT32 (LBA)
+/// partition entry, which the hello image must report.
+const SD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const SD_EXPECT_CARD: &str = "SD: SD card, RCA";
+const SD_EXPECT_PARTITION: &str = "SD: partition 1 type 0x0c start 2048 blocks 14336";
+
+/// Writes the test SD image (MBR only; the rest is zero).
+fn write_sd_test_image(path: &Path) -> Result<PathBuf, String> {
+    let mut img = vec![0u8; SD_IMAGE_BYTES];
+    let e = 446;
+    img[e + 4] = 0x0C; // FAT32 LBA
+    img[e + 8..e + 12].copy_from_slice(&2048u32.to_le_bytes());
+    img[e + 12..e + 16].copy_from_slice(&14336u32.to_le_bytes());
+    img[510] = 0x55;
+    img[511] = 0xAA;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, img).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
 /// Screen size of the emulated X51v, for converting taps to absolute pointer units.
 const SCREEN: (u32, u32) = (480, 640);
 
@@ -243,7 +265,20 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
         .join("target")
         .join("emulator")
         .join("hello-screen.ppm");
-    let output = boot(root, &image, HELLO_MARKER, Some(&shot), HELLO_STEPS)?;
+    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-test.img"))?;
+    let output = boot(
+        root,
+        &image,
+        HELLO_MARKER,
+        Some(&shot),
+        Some(&sd),
+        HELLO_STEPS,
+    )?;
+    for want in [SD_EXPECT_CARD, SD_EXPECT_PARTITION] {
+        if !output.contains(want) {
+            return Err(format!("SD check failed: no `{want}` on serial"));
+        }
+    }
     eprint!("{output}");
     if !output.ends_with('\n') {
         eprintln!();
@@ -252,6 +287,7 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
     crate::screen::check_test_pattern(&ppm)?;
     eprintln!("    display OK: test pattern verified ({})", shot.display());
+    eprintln!("    SD OK: card identified and partition table read");
     eprintln!(
         "    input OK: {} button/stylus interactions reported",
         HELLO_STEPS.len()
@@ -296,6 +332,7 @@ fn boot(
     image: &Path,
     marker: &str,
     screenshot: Option<&Path>,
+    sd_image: Option<&Path>,
     steps: &[Step],
 ) -> Result<String, String> {
     let port = monitor_port();
@@ -311,14 +348,21 @@ fn boot(
                 .args(["-monitor", &monitor, "-qmp", &qmp])
                 .arg("-kernel")
                 .arg(image);
+            if let Some(sd) = sd_image {
+                c.arg("-drive")
+                    .arg(format!("if=sd,format=raw,file={}", sd.display()));
+            }
             c
         }
         Emulator::Wsl => {
             eprintln!("    emulator: local WSL build");
             // `timeout` guarantees the Linux process exits even if killing
             // wsl.exe doesn't reach it.
+            let sd = sd_image
+                .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
+                .unwrap_or_default();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -qmp {qmp} -kernel '{}'",
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 BOOT_TIMEOUT.as_secs() + 10,
                 to_wsl_path(image)
             ))

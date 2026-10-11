@@ -13,7 +13,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use rp_hal_api::{RegisterBus, RegisterBus16};
+use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 
 /// One recorded register access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,6 +148,28 @@ impl RegisterBus16 for MockBus {
     }
 }
 
+/// 8-bit accesses share the register map and the log; values are widened.
+impl RegisterBus8 for MockBus {
+    fn read8(&mut self, offset: usize) -> u8 {
+        let value = self
+            .scripted
+            .get_mut(&offset)
+            .and_then(VecDeque::pop_front)
+            .unwrap_or_else(|| self.value(offset))
+            & 0xFF;
+        self.log.push(Access::Read { offset, value });
+        value as u8
+    }
+
+    fn write8(&mut self, offset: usize, value: u8) {
+        self.regs.insert(offset, u32::from(value));
+        self.log.push(Access::Write {
+            offset,
+            value: u32::from(value),
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +222,16 @@ mod tests {
         assert_eq!(bus.read16(0x1E), 0x8);
         assert_eq!(bus.read16(0x16), 0x5);
         assert_eq!(bus.writes(), vec![(0x1E, 0x8)]);
+    }
+
+    #[test]
+    fn eight_bit_reads_pop_scripted_bytes() {
+        let mut bus = MockBus::new();
+        bus.script_reads(0x40, &[0x12, 0x134]);
+        assert_eq!(bus.read8(0x40), 0x12);
+        assert_eq!(bus.read8(0x40), 0x34);
+        bus.write8(0x41, 0xAB);
+        assert_eq!(bus.writes(), vec![(0x41, 0xAB)]);
     }
 
     #[test]

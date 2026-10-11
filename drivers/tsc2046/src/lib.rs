@@ -117,17 +117,20 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         decode(hi, lo)
     }
 
-    /// A raw sample if the screen is touched.
+    /// A raw sample if the screen is touched. Samples with no measured
+    /// pressure (Z1 = 0) are discarded: the pen interrupt can briefly
+    /// disagree with the panel while the stylus lands or lifts.
     pub fn sample(&mut self) -> Option<RawTouch> {
         if !self.pen_down() {
             return None;
         }
-        Some(RawTouch {
+        let t = RawTouch {
             x: self.read(channel::X),
             y: self.read(channel::Y),
             z1: self.read(channel::Z1),
             z2: self.read(channel::Z2),
-        })
+        };
+        (t.z1 != 0).then_some(t)
     }
 }
 
@@ -226,6 +229,13 @@ mod tests {
         );
         assert!(!c.borrow().selected);
         assert_eq!(c.borrow().log.len(), 12);
+    }
+
+    #[test]
+    fn zero_pressure_samples_are_discarded() {
+        let c = chip([0, 1111, 0, 0, 2000, 3333, 0, 0]); // Z1 = 0
+        let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
+        assert!(ts.sample().is_none());
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use core::ptr::NonNull;
 
-use rp_hal_api::{RegisterBus, RegisterBus16};
+use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
@@ -87,6 +87,29 @@ impl RegisterBus16 for Mmio {
     }
 }
 
+impl RegisterBus8 for Mmio {
+    fn read8(&mut self, offset: usize) -> u8 {
+        assert!(
+            offset < self.len,
+            "8-bit register offset {offset:#x} out of range"
+        );
+        let reg = self.base.as_ptr().cast::<u8>().wrapping_add(offset);
+        // SAFETY: inside the window, which the caller of `Mmio::new`
+        // guaranteed is valid for volatile access.
+        unsafe { reg.read_volatile() }
+    }
+
+    fn write8(&mut self, offset: usize, value: u8) {
+        assert!(
+            offset < self.len,
+            "8-bit register offset {offset:#x} out of range"
+        );
+        let reg = self.base.as_ptr().cast::<u8>().wrapping_add(offset);
+        // SAFETY: as in `read8`.
+        unsafe { reg.write_volatile(value) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +132,16 @@ mod tests {
             assert_eq!(mmio.read32(0x8), 0xDEAD_BEEF);
             mmio.modify(0x8, Field::new(0, 16), 0);
             assert_eq!(mmio.read32(0x8), 0xDEAD_0000);
+        });
+    }
+
+    #[test]
+    fn eight_bit_access_hits_the_right_byte() {
+        with_window(|mmio| {
+            mmio.write32(0xC, 0);
+            mmio.write8(0xE, 0x5A);
+            assert_eq!(mmio.read32(0xC), 0x005A_0000);
+            assert_eq!(mmio.read8(0xE), 0x5A);
         });
     }
 

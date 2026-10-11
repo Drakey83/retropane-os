@@ -6,6 +6,7 @@
 mod emu;
 mod policy;
 mod screen;
+mod size;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -225,5 +226,6 @@ fn cross() -> Result {
         args.push(c.name.clone());
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    cargo(&refs)
+    cargo(&refs)?;
+    size::check(&workspace_root().join("target/armv5te-x51v-none-eabi/release"))
 }
