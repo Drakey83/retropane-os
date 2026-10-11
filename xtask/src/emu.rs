@@ -389,6 +389,32 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_light::MARKER`.
+const LIGHT_MARKER: &str = "RETROPANE-LIGHT-OK";
+
+/// Boots the first-light image: every startup step must pass.
+pub fn boot_light(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-light");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: LIGHT_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if !output.contains("all steps OK") {
+        return Err("first light: `all steps OK` missing on serial".into());
+    }
+    eprintln!("    first light OK");
+    Ok(())
+}
+
 /// Must match `rp_probe::MARKER`.
 const PROBE_MARKER: &str = "RETROPANE-PROBE-DONE";
 /// Text every probe report must contain.

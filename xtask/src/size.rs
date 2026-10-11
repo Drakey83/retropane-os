@@ -65,6 +65,12 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 40 * 1024,
         max_zero: 20 * 1024,
     },
+    // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
+    Budget {
+        image: "rp-light",
+        max_load: 16 * 1024,
+        max_zero: 20 * 1024,
+    },
 ];
 
 /// Loaded and zero-initialised byte counts of an ELF32 image.

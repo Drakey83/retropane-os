@@ -20,6 +20,7 @@ members = [
     "kernel/lz4",
     "kernel/sched",
     "boot/hello",
+    "boot/light",
     "boot/bench",
     "boot/suite",
     "boot/probe",
