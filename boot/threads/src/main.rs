@@ -24,6 +24,7 @@ mod image {
 
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt::{self, Global};
+    use rp_hal_pxa27x::soc::irq;
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
@@ -51,6 +52,9 @@ mod image {
         order: [0; 4],
         olen: 0,
         fault_addr: 0,
+        irq_event: Eid(0),
+        irq_wakes: 0,
+        irq_latency_max: 0,
     });
 
     /// System calls (user side numbers).
@@ -97,6 +101,11 @@ mod image {
         olen: usize,
         /// The address a user thread faulted on (caught by the kernel).
         fault_addr: u32,
+        /// The event the timer interrupt sets, how often the
+        /// interrupt-service thread woke, and its slowest wake-up.
+        irq_event: Eid,
+        irq_wakes: u32,
+        irq_latency_max: u32,
     }
 
     fn main() -> ! {
@@ -173,6 +182,22 @@ mod image {
             wait(done); // `middle` done
         }
         let (order, olen) = DEMO.with(|d| (d.order, d.olen));
+
+        // An interrupt as a waitable object: the first-level handler masks
+        // the timer interrupt and the signal hook sets an event, which wakes
+        // an interrupt-service thread waiting on it like on any event.
+        let ist = (|| -> Option<()> {
+            let ev = SCHED.with(|s| s.create_event(false, false)).ok()?;
+            DEMO.with(|d| d.irq_event = ev);
+            rt::set_signal_hook(on_signal);
+            let t = SCHED.with(|s| s.create(0, 50)).ok()?;
+            thread::prepare(t.index(), stacks.next()?, ist_thread, 0);
+            Some(())
+        })();
+        if ist.is_some() {
+            wait(done);
+        }
+        let (irq_wakes, irq_latency) = DEMO.with(|d| (d.irq_wakes, d.irq_latency_max));
         // One format call for both lines (each call site costs image size).
         let _ = writeln!(
             uart,
@@ -180,6 +205,13 @@ mod image {
             2 * ROUNDS
         );
         let mut ok = report(&mut uart, "THREADS ping-pong", pp_ticks > 0, pp_ticks);
+        ok &= report(
+            &mut uart,
+            "THREADS interrupt thread",
+            irq_wakes == IRQ_ROUNDS,
+            irq_wakes,
+        );
+        let _ = writeln!(uart, "BENCH irq_to_thread_max {irq_latency} 1");
         ok &= report(
             &mut uart,
             "THREADS mutex inheritance",
@@ -321,16 +353,14 @@ mod image {
 
     extern "C" fn idle_thread(_: usize) -> ! {
         loop {
-            // Tickless: sleep until the next deadline, or any interrupt.
-            match SCHED.with(|s| s.next_deadline()) {
-                Some(at) => {
-                    if rt::set_alarm(at) {
-                        rt::wait_tick();
-                    }
-                }
-                None => {
-                    rt::wait_tick();
-                }
+            // Tickless: sleep until the next deadline or any interrupt (a
+            // device's wakes its service thread through the signal hook).
+            let due = match SCHED.with(|s| s.next_deadline()) {
+                Some(at) => !rt::set_alarm(at),
+                None => false,
+            };
+            if !due {
+                rt::idle_until_interrupt(|| SCHED.with(|s| s.has_ready()));
             }
             reschedule();
         }
@@ -369,6 +399,49 @@ mod image {
             });
         }
         let done = DEMO.with(|d| d.done);
+        set(done);
+        finish()
+    }
+
+    /// Timer interrupts the interrupt-service thread waits for.
+    const IRQ_ROUNDS: u32 = 3;
+    /// 2 ms between them (OS-timer ticks).
+    const IRQ_GAP: u32 = 6_500;
+
+    /// The signal hook (IRQ context): a claimed line fired, wake its waiter.
+    fn on_signal(line: u32) {
+        if line == irq::OST2 {
+            let ev = DEMO.with(|d| d.irq_event);
+            let _ = SCHED.with(|s| s.set_event(ev));
+        }
+    }
+
+    /// An interrupt-service thread: waits for its interrupt like for any
+    /// event, services the device, re-enables the line (CE's
+    /// InterruptDone). Records how late each wake-up was.
+    extern "C" fn ist_thread(_: usize) -> ! {
+        let (ev, done) = DEMO.with(|d| (d.irq_event, d.done));
+        // The thread owns its device and interrupt line (ADR-0007).
+        let (Some(mut line), Some(mut timer)) = (rt::take_irq(irq::OST2), rt::take_spare_timer())
+        else {
+            set(done);
+            finish()
+        };
+        for _ in 0..IRQ_ROUNDS {
+            let at = timer.now().wrapping_add(IRQ_GAP);
+            timer.arm(at);
+            wait(ev);
+            let late = timer.now().wrapping_sub(at);
+            let fired = line.take();
+            timer.ack();
+            line.done();
+            DEMO.with(|d| {
+                if fired {
+                    d.irq_wakes += 1;
+                }
+                d.irq_latency_max = d.irq_latency_max.max(late);
+            });
+        }
         set(done);
         finish()
     }

@@ -411,6 +411,24 @@ fn intc() -> crate::soc::Intc<Mmio> {
     crate::soc::Intc(unsafe { Mmio::new(NonNull::new_unchecked(va(INTC_BASE) as *mut u32), 0x100) })
 }
 
+static mut SPARE_TIMER_TAKEN: bool = false;
+
+/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`).
+pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
+    // SAFETY: single core; IRQs masked by the caller's setup, as for the
+    // other single-owner devices.
+    let taken = unsafe { core::ptr::addr_of_mut!(SPARE_TIMER_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: the OS timer's register window. The spare timer touches only
+    // channel 2's match, status and enable bits (read-modify-write of OIER
+    // with IRQs masked by its owner's callers), the alarm only channel 1's.
+    Some(crate::soc::SpareTimer(unsafe {
+        Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
+    }))
+}
+
 fn ostimer() -> crate::soc::OsTimer<Mmio> {
     // SAFETY: the OS timer's register window; the HAL is its only writer.
     crate::soc::OsTimer(unsafe {
@@ -620,6 +638,19 @@ extern "C" fn rp_fault(kind: u32, addr: u32) -> ! {
 }
 
 static mut PREEMPT_HOOK: Option<fn()> = None;
+static mut SIGNAL_HOOK: Option<fn(u32)> = None;
+
+/// Sets what runs when a claimed interrupt fires (after the first-level
+/// handler masked and recorded it): the kernel's chance to wake the thread
+/// waiting for it, e.g. by setting the event that thread waits on, so an
+/// `IrqLine` is a waitable object (ADR-0010 rule 7). Gets the line's id
+/// ([`IrqLine::id`]); runs in the IRQ handler, IRQs masked, and must not
+/// switch threads (rescheduling happens on the way out: the preempt hook,
+/// or the idle loop).
+pub fn set_signal_hook(f: fn(u32)) {
+    // SAFETY: set during setup, before the lines it serves are claimed.
+    unsafe { core::ptr::addr_of_mut!(SIGNAL_HOOK).write(Some(f)) }
+}
 
 /// Sets what runs after an interrupt taken in user mode, before returning to
 /// it: the kernel's chance to preempt the thread (quantum over, a more
@@ -667,7 +698,17 @@ fn rp_irq() {
         // SAFETY: we're in the IRQ handler with IRQs masked, and main code
         // only touches DISPATCH with IRQs masked, so this access is exclusive.
         unsafe {
-            (*core::ptr::addr_of_mut!(DISPATCH)).handle(&mut intc(), &mut gpio_edges(), other);
+            let hook = core::ptr::addr_of!(SIGNAL_HOOK).read();
+            (*core::ptr::addr_of_mut!(DISPATCH)).handle(
+                &mut intc(),
+                &mut gpio_edges(),
+                other,
+                &mut |line| {
+                    if let Some(h) = hook {
+                        h(line);
+                    }
+                },
+            );
         }
     }
 }
@@ -783,6 +824,16 @@ pub fn take_gpio_irq(pin: u8, edge: Edge) -> Option<IrqLine> {
 }
 
 impl IrqLine {
+    /// The id the signal hook gets for this line: the controller source
+    /// number, or `soc::gpio_line(pin)` for a GPIO edge.
+    #[must_use]
+    pub fn id(&self) -> u32 {
+        match self.src {
+            Src::Intc(n) => n,
+            Src::Gpio(pin, _) => crate::soc::gpio_line(pin),
+        }
+    }
+
     /// Consumes a pending signal: true if the interrupt fired since the last
     /// call. The source stays masked until [`done`](Self::done).
     #[inline(never)]
@@ -923,6 +974,19 @@ pub fn irq_enable() {
 pub fn idle() {
     // SAFETY: idle stops the core clock until an interrupt; state is kept.
     unsafe { core::arch::asm!("mcr p14, 0, {m}, c7, c0, 0", m = in(reg) 1u32, options(nostack)) }
+}
+
+/// The idle loop's sleep: unless `ready()` (checked with IRQs masked, so a
+/// wake-up can't slip in between the check and the sleep), sleeps until any
+/// unmasked interrupt is pending, then lets it be taken. Unlike
+/// [`wait_tick`], a device interrupt ends the sleep too.
+pub fn idle_until_interrupt(ready: impl FnOnce() -> bool) {
+    let was = irq_save();
+    if !ready() {
+        idle();
+    }
+    irq_restore(was);
+    irq_enable();
 }
 
 /// Starts a periodic tick at `hz` on OS timer match 1 and enables IRQs.
