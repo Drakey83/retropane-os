@@ -270,3 +270,177 @@ fn an_empty_scheduler_is_all_zeros() {
     assert_eq!(s.create_event(false, false), Ok(Eid(1)));
     assert_eq!(s.exit(Tid(0)), Err(Error::Invalid));
 }
+
+// ---- mutexes and priority inheritance -------------------------------------
+
+#[test]
+fn a_free_mutex_is_taken_at_once_and_is_recursive() {
+    let mut s = sched();
+    let a = s.create(2, NORMAL).unwrap();
+    assert_eq!(s.schedule(0), Some(a));
+    let m = s.create_mutex(false).unwrap();
+    assert_eq!(s.wait(m, None), Ok(Some(WaitResult::Signalled)));
+    assert_eq!(
+        s.wait(m, None),
+        Ok(Some(WaitResult::Signalled)),
+        "recursive"
+    );
+    assert_eq!(s.mutex_owner_of(m), Some(a));
+    assert_eq!(s.release_mutex(m), Ok(false));
+    assert_eq!(s.mutex_owner_of(m), Some(a), "still held once");
+    assert_eq!(s.release_mutex(m), Ok(false));
+    assert_eq!(s.mutex_owner_of(m), None);
+    assert_eq!(
+        s.release_mutex(m),
+        Err(Error::Invalid),
+        "not the owner any more"
+    );
+}
+
+#[test]
+fn priority_inversion_is_prevented() {
+    // The classic case: low owns the mutex, high waits for it, and a
+    // middle-priority thread is ready. Without inheritance, middle runs and
+    // high waits indefinitely.
+    let mut s = sched();
+    let low = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(0), Some(low));
+    let m = s.create_mutex(true).unwrap();
+    let high = s.create(2, 100).unwrap();
+    let middle = s.create(2, 150).unwrap();
+    assert_eq!(s.schedule(1), Some(high));
+    assert_eq!(s.wait(m, None), Ok(None), "high blocks on low's mutex");
+    assert_eq!(s.priority(low), 100, "low inherits high's priority");
+    assert_eq!(s.base_priority(low), 200);
+    assert_eq!(s.schedule(2), Some(low), "low runs ahead of middle");
+    assert_eq!(s.release_mutex(m), Ok(true));
+    assert_eq!(s.priority(low), 200, "inheritance ends with the release");
+    assert_eq!(s.mutex_owner_of(m), Some(high));
+    assert_eq!(s.schedule(3), Some(high), "high gets the mutex and runs");
+    assert_eq!(s.wait_result(high), WaitResult::Signalled);
+    s.exit(high).unwrap();
+    assert_eq!(s.schedule(4), Some(middle));
+}
+
+#[test]
+fn the_most_urgent_waiter_gets_the_mutex_first() {
+    let mut s = sched();
+    let owner = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(0), Some(owner));
+    let m = s.create_mutex(true).unwrap();
+    let a = s.create(2, 180).unwrap();
+    let b = s.create(2, 120).unwrap();
+    assert_eq!(s.schedule(1), Some(b));
+    assert_eq!(s.wait(m, None), Ok(None));
+    assert_eq!(s.schedule(2), Some(owner), "inherited 120, ahead of a");
+    s.set_priority(a, 110).unwrap();
+    assert_eq!(s.schedule(3), Some(a));
+    assert_eq!(s.wait(m, None), Ok(None));
+    assert_eq!(
+        s.priority(owner),
+        110,
+        "now inherits the more urgent waiter"
+    );
+    assert_eq!(s.schedule(4), Some(owner));
+    s.release_mutex(m).unwrap();
+    assert_eq!(s.mutex_owner_of(m), Some(a), "110 before 120");
+    assert_eq!(s.priority(a), 110);
+}
+
+#[test]
+fn a_new_owner_inherits_from_the_remaining_waiters() {
+    let mut s = sched();
+    let owner = s.create(2, 100).unwrap();
+    assert_eq!(s.schedule(0), Some(owner));
+    let m = s.create_mutex(true).unwrap();
+    let urgent = s.create(2, 50).unwrap();
+    let lazy = s.create(2, 240).unwrap();
+    assert_eq!(s.schedule(1), Some(urgent));
+    assert_eq!(s.wait(m, None), Ok(None));
+    // Make `lazy` more urgent than `urgent` for a moment so it can queue.
+    s.set_priority(lazy, 40).unwrap();
+    assert_eq!(s.schedule(2), Some(lazy));
+    assert_eq!(s.wait(m, None), Ok(None));
+    s.set_priority(lazy, 240).unwrap(); // base drops; it still waits
+    assert_eq!(s.schedule(3), Some(owner));
+    s.release_mutex(m).unwrap();
+    assert_eq!(s.mutex_owner_of(m), Some(urgent));
+    assert_eq!(s.priority(urgent), 50, "the waiter left is less urgent");
+}
+
+#[test]
+fn inheritance_follows_a_chain_of_owners() {
+    // c waits for m2 (held by b), b waits for m1 (held by a): a runs at c's
+    // priority.
+    let mut s = sched();
+    let a = s.create(2, 220).unwrap();
+    assert_eq!(s.schedule(0), Some(a));
+    let m1 = s.create_mutex(true).unwrap();
+    let b = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(1), Some(b));
+    let m2 = s.create_mutex(true).unwrap();
+    assert_eq!(s.wait(m1, None), Ok(None));
+    let c = s.create(2, 60).unwrap();
+    assert_eq!(s.schedule(2), Some(c));
+    assert_eq!(s.wait(m2, None), Ok(None));
+    assert_eq!(s.priority(b), 60);
+    assert_eq!(s.priority(a), 60, "passed along the chain");
+    assert_eq!(s.schedule(3), Some(a));
+}
+
+#[test]
+fn a_timed_out_waiter_stops_lending_its_priority() {
+    let mut s = sched();
+    let owner = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(0), Some(owner));
+    let m = s.create_mutex(true).unwrap();
+    let h = s.create(2, 100).unwrap();
+    assert_eq!(s.schedule(1), Some(h));
+    assert_eq!(s.wait(m, Some(500)), Ok(None));
+    assert_eq!(s.priority(owner), 100);
+    assert_eq!(s.schedule(2), Some(owner));
+    assert_eq!(s.schedule(500), Some(h), "the wait timed out");
+    assert_eq!(s.wait_result(h), WaitResult::TimedOut);
+    assert_eq!(s.priority(owner), 200, "boost withdrawn");
+    assert_eq!(s.mutex_owner_of(m), Some(owner));
+}
+
+#[test]
+fn an_exiting_owner_passes_its_mutexes_on() {
+    let mut s = sched();
+    let owner = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(0), Some(owner));
+    let m = s.create_mutex(true).unwrap();
+    let w = s.create(2, 100).unwrap();
+    assert_eq!(s.schedule(1), Some(w));
+    assert_eq!(s.wait(m, None), Ok(None));
+    s.exit(owner).unwrap();
+    assert_eq!(s.mutex_owner_of(m), Some(w), "abandoned mutex handed on");
+    assert_eq!(s.schedule(2), Some(w));
+}
+
+#[test]
+fn mutexes_are_not_events() {
+    let mut s = sched();
+    let a = s.create(2, NORMAL).unwrap();
+    assert_eq!(s.schedule(0), Some(a));
+    let m = s.create_mutex(false).unwrap();
+    assert_eq!(s.set_event(m), Err(Error::Invalid));
+    assert_eq!(s.reset_event(m), Err(Error::Invalid));
+    let e = s.create_event(false, false).unwrap();
+    assert_eq!(s.release_mutex(e), Err(Error::Invalid));
+}
+
+#[test]
+fn set_priority_keeps_an_inherited_boost() {
+    let mut s = sched();
+    let owner = s.create(2, 200).unwrap();
+    assert_eq!(s.schedule(0), Some(owner));
+    let m = s.create_mutex(true).unwrap();
+    let h = s.create(2, 90).unwrap();
+    assert_eq!(s.schedule(1), Some(h));
+    assert_eq!(s.wait(m, None), Ok(None));
+    s.set_priority(owner, 230).unwrap();
+    assert_eq!(s.priority(owner), 90, "still boosted");
+    assert_eq!(s.base_priority(owner), 230);
+}

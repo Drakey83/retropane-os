@@ -355,6 +355,7 @@ const THREADS_MARKER: &str = "RETROPANE-THREADS-OK";
 const THREADS_EXPECT: &[&str] = &[
     "THREADS ping-pong OK",
     "THREADS sleep OK",
+    "THREADS mutex inheritance OK",
     "USER mode OK",
     "USER yield OK",
     "USER preempted OK",
