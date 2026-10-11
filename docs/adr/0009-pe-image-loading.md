@@ -1,6 +1,6 @@
 # ADR-0009: Loading PE images: an image view in the page cache, relocated on demand
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
 
 ## Context
