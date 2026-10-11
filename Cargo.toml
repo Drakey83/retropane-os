@@ -16,6 +16,7 @@ members = [
     "drivers/sdcard",
     "drivers/pxa-mmc",
     "kernel/mm",
+    "kernel/pe",
     "boot/hello",
     "boot/bench",
     "boot/suite",

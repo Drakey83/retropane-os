@@ -1,0 +1,11 @@
+[package]
+name = "rp-kernel-pe"
+description = "PE/COFF images for the loader: parsing, the image view page by page, per-page relocation (ADR-0009)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
