@@ -46,6 +46,16 @@ pub const BUDGETS: &[Budget] = &[
         // allocator).
         max_zero: 112 * 1024,
     },
+    // Threads test harness (ADR-0010): scheduler tables (~4 KiB, .bss) and
+    // the harness itself; one image per subsystem's test keeps each budget
+    // honest instead of piling every test into one image.
+    Budget {
+        image: "rp-threads",
+        // First budget = measured + ~10% (13.2 KiB load; 26.4 KiB zeroed:
+        // boot stacks, scheduler tables, 128 thread contexts).
+        max_load: 15 * 1024,
+        max_zero: 30 * 1024,
+    },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").
     Budget {

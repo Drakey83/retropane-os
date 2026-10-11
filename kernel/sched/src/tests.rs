@@ -253,3 +253,20 @@ fn tables_are_bounded() {
     assert_eq!(s.create_event(false, false), Err(Error::Full));
     assert_eq!(s.set_event(Eid(200)), Err(Error::Invalid));
 }
+
+#[test]
+fn an_empty_scheduler_is_all_zeros() {
+    // So a `static` scheduler lives in .bss and costs nothing in the image.
+    // Checked through its observable state: no threads, no events, nothing
+    // running, the default quantum.
+    let s = Scheduler::new();
+    assert_eq!(s.running(), None);
+    assert_eq!(s.next_deadline(), None);
+    assert_eq!(s.quantum(), DEFAULT_QUANTUM);
+    assert_eq!(s.state(Tid(0)), State::Free, "slot 0 is the sentinel");
+    let mut s = s;
+    assert_eq!(s.create(2, NORMAL), Ok(Tid(1)), "threads start at 1");
+    assert_eq!(Tid(1).index(), 0);
+    assert_eq!(s.create_event(false, false), Ok(Eid(1)));
+    assert_eq!(s.exit(Tid(0)), Err(Error::Invalid));
+}

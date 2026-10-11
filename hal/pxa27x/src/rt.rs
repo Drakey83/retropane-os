@@ -325,6 +325,8 @@ impl Fault {
 static mut FAULT_HANDLER: Option<fn(Fault, u32) -> !> = None;
 static mut TICK_PERIOD: u32 = 0;
 static mut TICKS: u32 = 0;
+/// OS timer match 1 is a one-shot alarm (tickless) rather than the tick.
+static mut ALARM_MODE: bool = false;
 /// Interrupt claims and signals (ADR-0007). Written by the IRQ handler and,
 /// with IRQs masked, by main code.
 static mut DISPATCH: crate::soc::Dispatch = crate::soc::Dispatch::new();
@@ -543,7 +545,11 @@ extern "C" fn rp_irq() {
         // SAFETY: the IRQ handler is the only writer of TICKS (main code only
         // reads it), and TICK_PERIOD is set before the tick interrupt is enabled.
         unsafe {
-            ostimer().rearm(core::ptr::addr_of!(TICK_PERIOD).read());
+            if core::ptr::addr_of!(ALARM_MODE).read() {
+                ostimer().stop(); // one-shot: acknowledged and disarmed
+            } else {
+                ostimer().rearm(core::ptr::addr_of!(TICK_PERIOD).read());
+            }
             let t = core::ptr::addr_of_mut!(TICKS);
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
@@ -727,6 +733,11 @@ pub fn wait_any_signal() {
     }
 }
 
+/// Whether IRQs are enabled at the CPU (for code that must restore it).
+pub(crate) fn irqs_enabled_now() -> bool {
+    irqs_enabled()
+}
+
 fn irqs_enabled() -> bool {
     let cpsr: u32;
     // SAFETY: reading CPSR has no side effects.
@@ -822,6 +833,23 @@ pub fn start_tick(hz: u32) {
     ostimer().start(period);
     intc().enable(crate::soc::irq::OST1);
     irq_enable();
+}
+
+/// Arms a one-shot alarm at OS-timer value `at` (tickless scheduling): when
+/// it fires, [`tick_count`] advances, so [`wait_tick`] and
+/// [`wait_any_signal`] return. Replaces the periodic tick. Returns false if
+/// `at` has already passed; the caller should act now instead of sleeping.
+pub fn set_alarm(at: u32) -> bool {
+    ensure_intc();
+    // SAFETY: written with IRQs masked (below) before the interrupt it
+    // affects is enabled; read only by the IRQ handler.
+    let was = irq_save();
+    unsafe { core::ptr::addr_of_mut!(ALARM_MODE).write(true) };
+    let armed = ostimer().alarm(at);
+    intc().enable(crate::soc::irq::OST1);
+    irq_restore(was);
+    irq_enable();
+    armed
 }
 
 /// Stops the periodic tick (so an idle system sleeps until a real event).
