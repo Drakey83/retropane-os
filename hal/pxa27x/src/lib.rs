@@ -10,6 +10,14 @@ use core::ptr::NonNull;
 
 use rp_hal_api::RegisterBus;
 
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod rt;
+
+/// Physical base of the full-function UART (FFUART).
+pub const FFUART_BASE: usize = 0x4010_0000;
+/// Size of each UART's register window.
+pub const UART_WINDOW: usize = 0x30;
+
 /// A memory-mapped register bank accessed with volatile 32-bit loads and stores.
 #[derive(Debug)]
 pub struct Mmio {

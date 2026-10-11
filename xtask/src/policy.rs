@@ -7,7 +7,7 @@
 pub enum Layer {
     /// `hal/*`: the only layer allowed to touch hardware.
     Hal = 0,
-    /// `kernel/`, `drivers/*`.
+    /// `kernel/`, `drivers/*`, `boot/*`.
     Core = 1,
     /// `services/*`, `gwes/`.
     System = 2,
@@ -33,7 +33,7 @@ pub fn placement(rel_dir: &str) -> Option<Placement> {
     let top = rel_dir.split('/').next()?;
     Some(match top {
         "hal" => Placement::Os(Layer::Hal),
-        "kernel" | "drivers" => Placement::Os(Layer::Core),
+        "kernel" | "drivers" | "boot" => Placement::Os(Layer::Core),
         "services" | "gwes" => Placement::Os(Layer::System),
         "personality" => Placement::Os(Layer::Personality),
         "shell" | "apps" => Placement::Os(Layer::Apps),

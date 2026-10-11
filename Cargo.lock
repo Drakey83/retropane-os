@@ -33,6 +33,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-uart"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-hal-api"
 version = "0.0.0"
 
@@ -53,6 +61,14 @@ dependencies = [
 [[package]]
 name = "rp-hal-x51v"
 version = "0.0.0"
+
+[[package]]
+name = "rp-hello"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+]
 
 [[package]]
 name = "serde"

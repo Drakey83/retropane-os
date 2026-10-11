@@ -5,6 +5,8 @@ members = [
     "hal/mock",
     "hal/pxa27x",
     "hal/x51v",
+    "drivers/pxa-uart",
+    "boot/hello",
     "xtask",
 ]
 
