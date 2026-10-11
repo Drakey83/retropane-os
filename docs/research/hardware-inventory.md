@@ -84,8 +84,37 @@ Manufacturer is likely **HTC** (FCC filing; the FCC ID NM8HC03U is a guess, unve
     reflash needed.
 - Download mirrors from 2008 (Rapidshare) are likely dead.
 
-## Unknowns to resolve on the real device
+## Dell driver modules in the X51v ROM (RE subjects)
 
-- 64 MB RAM confirmed (52.2 MB shown in WM6.1). A 4 GB SD card works on the current ROM (probably an SDHC driver in LennySh; to confirm). Board revision and LCD panel type still unknown
-- ROM version (Settings → System → About)
-- Serial console pinout on the sync connector
+Found by name in LennySh WM6.1 A08 and L11 `.nb0` images, both cooked from
+Dell's X51v ROM (from LennySh's archive, 2026-10-10). The images live only in
+the git-ignored `local/` folder.
+
+| Hardware | Module(s) | Notes |
+|---|---|---|
+| 2700G display / 2D | `ddi_2700g.dll` | Display driver (DDI). Main source for display planes and the 2D blitter |
+| 2700G 3D | `libGLES_CL.dll`, `d3d_2700g.dll` (+ `d3dm.dll`) | OpenGL ES 1.x Common-Lite and Direct3D Mobile for MBX |
+| 2700G video (MVED1) | `wmv9decoder2700G.dll`, `pvrvadd.dll` | Hardware WMV9 decode; PowerVR video acceleration |
+| Wi-Fi (ACX100) | `tiacxwln.dll`, `ACX100_dl.bin` | TI driver, plus firmware image (user-extracted only, never redistributed) |
+| Bluetooth | `BTuartDMA.dll`, `bthcsr.dll`, `bthuart.dll`, `BTControl.dll` | `bthcsr.dll` hints at a **CSR** BlueCore chip, not Broadcom. Verify |
+| Power / battery | `battdrvr.dll`, `PowerStateManager.dll`, `PowerExe.exe` | Main source for the unknown power/charger IC |
+| Board / CPLD | `AximSDK.dll` | Dell's board API; AxDroid learned CPLD bits from it |
+| Unknown | `maxim_radio_dl.bin` | A firmware blob, possibly for a Maxim radio/RF part. Investigate |
+| Games API | `gx.dll` | GAPI (compatibility reference) |
+
+All of these extract cleanly with `tools/romdump`. The A08 and L11 builds carry the **same
+driver binaries**: identical link timestamps, differing only in the load address each
+ROM cook assigned.
+
+## The user's device (known)
+
+- **RAM:** 64 MB (52.2 MB available in WM6.1).
+- **ROM:** LennySh WM6.1 (CE 5.2.20273), cooked from Dell's X51v ROM. Matching images
+  (A08 and L11) are in `local/` for analysis.
+- **SD:** a 4 GB card works. The ROM's XIP partition contains `pxa27x_sdhc.dll`
+  (the SD host driver) and `sdbus.dll`/`sdmemory.dll`.
+- **Connection:** stock USB cradle only. **No serial cable is used** (DESIGN.md §10b).
+
+Board details such as the LCD panel type (which the CPLD reports in register 0x1E) are
+read at runtime by RetroPane and are documented from Dell's drivers (`ddi_2700g.dll`,
+`AximSDK.dll`) as `romdump` extracts them.
