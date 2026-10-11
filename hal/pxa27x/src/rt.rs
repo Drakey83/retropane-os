@@ -26,12 +26,13 @@ _start:
     @ behind, we now own the CPU.
     msr     cpsr_c, #0xD3
 
-    @ Stacks: IRQ, then abort/undefined (shared; they only report and stop),
-    @ then SVC, where we stay. Interrupts stay masked throughout.
+    @ Stacks: IRQ, abort (its own when the image sizes one: the kernel
+    @ resolves page faults there), undefined, then SVC, where we stay.
+    @ Interrupts stay masked throughout.
     msr     cpsr_c, #0xD2
     ldr     sp, =__irq_stack_top
     msr     cpsr_c, #0xD7
-    ldr     sp, =__exc_stack_top
+    ldr     sp, =__abt_stack_top
     msr     cpsr_c, #0xDB
     ldr     sp, =__exc_stack_top
     msr     cpsr_c, #0xD3
@@ -81,13 +82,32 @@ rp_swi_entry:
     mov     r0, #2
     sub     r1, lr, #4
     b       rp_fault
+    @ Aborts: ask the abort handler (rp_abort) first. If it resolved the
+    @ fault (a page fault), return to the faulting instruction to retry it;
+    @ otherwise report and stop as before.
 rp_pabt_entry:
+    sub     lr, lr, #4
+    stmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #3
-    sub     r1, lr, #4
+    mov     r1, lr
+    bl      rp_abort
+    cmp     r0, #0
+    ldmfdne sp!, {{r0-r3, r12, pc}}^
+    ldmfd   sp!, {{r0-r3, r12, lr}}
+    mov     r0, #3
+    mov     r1, lr
     b       rp_fault
 rp_dabt_entry:
+    sub     lr, lr, #8
+    stmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #4
-    sub     r1, lr, #8
+    mov     r1, lr
+    bl      rp_abort
+    cmp     r0, #0
+    ldmfdne sp!, {{r0-r3, r12, pc}}^
+    ldmfd   sp!, {{r0-r3, r12, lr}}
+    mov     r0, #4
+    mov     r1, lr
     b       rp_fault
     "#
 );
@@ -323,6 +343,90 @@ pub fn set_fault_handler(f: fn(Fault, u32) -> !) {
     // SAFETY: single core with IRQs masked during setup, so nothing reads the
     // handler while it's being written.
     unsafe { core::ptr::addr_of_mut!(FAULT_HANDLER).write(Some(f)) }
+}
+
+/// What an abort handler is told.
+#[derive(Clone, Copy)]
+pub struct Abort {
+    /// Data abort (true) or prefetch abort (false).
+    pub data: bool,
+    /// Address of the faulting instruction.
+    pub pc: u32,
+    /// Data aborts: the Fault Status Register.
+    pub fsr: u32,
+    /// Data aborts: the faulting (modified virtual) address. Prefetch aborts:
+    /// the instruction's address.
+    pub addr: u32,
+}
+
+static mut ABORT_HANDLER: Option<fn(Abort) -> bool> = None;
+
+/// Sets the abort handler: called (in abort mode, IRQs masked) for every
+/// data and prefetch abort. Returning true means "resolved": the faulting
+/// instruction runs again. False reports it as a fault (the fault handler).
+/// The image must size an abort stack for it (`__abt_stack_size`, see
+/// `boot/link.x`).
+pub fn set_abort_handler(f: fn(Abort) -> bool) {
+    // SAFETY: called during setup, before any abort it could race with.
+    unsafe { core::ptr::addr_of_mut!(ABORT_HANDLER).write(Some(f)) }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rp_abort(kind: u32, pc: u32) -> u32 {
+    // SAFETY: written once during setup.
+    let Some(f) = (unsafe { core::ptr::addr_of!(ABORT_HANDLER).read() }) else {
+        return 0;
+    };
+    let data = kind == 4;
+    let (fsr, addr) = if data {
+        crate::cpu::fault_registers()
+    } else {
+        (0, pc)
+    };
+    u32::from(f(Abort {
+        data,
+        pc,
+        fsr,
+        addr,
+    }))
+}
+
+/// A global value for bare-metal images, used safely: [`with`](Self::with)
+/// masks IRQs for the duration (one core, so that's exclusive), and
+/// re-entering it (say, from an abort taken while it's held) panics instead
+/// of aliasing. Lets images keep kernel state in `static`s without `unsafe`.
+pub struct Global<T> {
+    value: core::cell::UnsafeCell<T>,
+    busy: core::cell::Cell<bool>,
+}
+
+// SAFETY: every access goes through `with`, which masks IRQs and refuses
+// re-entry, so on this single-core CPU no two contexts ever hold the value.
+unsafe impl<T: Send> Sync for Global<T> {}
+
+impl<T> Global<T> {
+    /// A global holding `value` (usually zero-initialised, so it's `.bss`).
+    pub const fn new(value: T) -> Self {
+        Self {
+            value: core::cell::UnsafeCell::new(value),
+            busy: core::cell::Cell::new(false),
+        }
+    }
+
+    /// Runs `f` with exclusive access to the value.
+    ///
+    /// # Panics
+    /// If called again while already inside `with` on the same global.
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        let was = irq_save();
+        assert!(!self.busy.replace(true), "Global re-entered");
+        // SAFETY: IRQs are masked and `busy` was false, so this is the only
+        // live reference (see the Sync impl).
+        let r = f(unsafe { &mut *self.value.get() });
+        self.busy.set(false);
+        irq_restore(was);
+        r
+    }
 }
 
 #[unsafe(no_mangle)]

@@ -9,6 +9,10 @@ the Dell bootloader region** (DESIGN.md §10c).
   log, SD card, buttons and touch.
 - `bench/`: deterministic benchmarks in the emulator (`cargo xtask bench`).
 - `suite/`: the benchmark suite itself, shared by `bench` and `probe`.
+- `kernel/`: the kernel image. So far it runs the VM layer live: its own
+  page tables, real page faults resolved in an abort handler (demand-zero,
+  file pages, copy-on-write), FCSE slot switching, and a full unmap.
+  `cargo xtask emu` checks every step.
 - `probe/`: the real-device hardware probe. The X51v has no serial port, so
   it shows everything RetroPane needs to learn on screen, in 4 pages for a
   phone photo, each line ending in a checksum: CPU/clock/memory state, how

@@ -6,6 +6,8 @@
  * docs/hw/memory-map.md). HaRET leaves its boot tags at 0xA8000100. Reserved below and
  * above (rp-hal-pxa27x::mmu): the bring-up page table at 0xA8004000 (16 KiB)
  * and the exception vectors at 0xA80F0000; images must stay below 0xA80F0000.
+ * 0xA80F8000-0xA8100000 (32 KiB) is reserved for the whole-D-cache clean
+ * (rp-hal-pxa27x::cpu::CLEAN_REGION) and never holds data.
  * The bring-up MMU maps everything 1:1, so virtual = physical.
  */
 ENTRY(_start)
@@ -39,6 +41,12 @@ SECTIONS
         __irq_stack_top = .;
         . += 512;
         __exc_stack_top = .;
+        /* Abort mode: its own stack when the image needs one (the kernel
+         * resolves page faults in abort mode; its build.rs passes
+         * --defsym=__abt_stack_size=...). By default 0: shared with the
+         * undefined-instruction stack, which only reports and stops. */
+        . += DEFINED(__abt_stack_size) ? __abt_stack_size : 0;
+        __abt_stack_top = .;
     } > SDRAM
 
     /DISCARD/ : { *(.ARM.exidx .ARM.exidx.* .ARM.extab.*) }

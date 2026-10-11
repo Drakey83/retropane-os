@@ -240,6 +240,32 @@ pub const fn dacr(client: u32) -> u32 {
     v
 }
 
+/// What a data abort's Fault Status Register says happened.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(Debug))]
+pub enum FaultKind {
+    /// No valid descriptor (section or page): demand paging's case.
+    Translation,
+    /// The descriptor's permissions refused the access.
+    Permission,
+    /// The domain is set to no access.
+    Domain,
+    /// Anything else (alignment, external abort, ...), with the status.
+    Other(u32),
+}
+
+/// Decodes a data abort's FSR: status bits 3:0, extended by XScale bit 10.
+#[must_use]
+pub const fn classify(fsr: u32) -> FaultKind {
+    let status = (fsr & 0xF) | ((fsr >> 6) & 0x10);
+    match status {
+        0x5 | 0x7 => FaultKind::Translation,
+        0xD | 0xF => FaultKind::Permission,
+        0x9 | 0xB => FaultKind::Domain,
+        s => FaultKind::Other(s),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +366,23 @@ mod tests {
     #[should_panic(expected = "1 KiB aligned")]
     fn misaligned_tables_are_refused() {
         let _ = l1_coarse(0xA800_0200, 0);
+    }
+
+    #[test]
+    fn fault_status_codes() {
+        // ARM ARM, "Fault status": 0b0101/0b0111 translation (section/page),
+        // 0b1101/0b1111 permission, 0b1001/0b1011 domain.
+        assert_eq!(classify(0x5), FaultKind::Translation);
+        assert_eq!(classify(0x7), FaultKind::Translation);
+        assert_eq!(classify(0xD), FaultKind::Permission);
+        assert_eq!(classify(0xF), FaultKind::Permission);
+        assert_eq!(classify(0x9), FaultKind::Domain);
+        assert_eq!(classify(0xB), FaultKind::Domain);
+        assert_eq!(classify(0x1), FaultKind::Other(1)); // alignment
+        // The domain number in bits 7:4 doesn't change the kind.
+        assert_eq!(classify(0x37), FaultKind::Translation);
+        // XScale's bit 10 extends the status: 0x400 | 0x6 = imprecise abort.
+        assert_eq!(classify(0x406), FaultKind::Other(0x16));
     }
 
     #[test]
