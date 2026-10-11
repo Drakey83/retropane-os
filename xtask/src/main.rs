@@ -73,6 +73,9 @@ fn run_step(step: &str) -> Result {
             "xtask",
             "--exclude",
             "rp-hello",
+            // CLI glue; its logic lives in the tested romdump library.
+            "--ignore-filename-regex",
+            r"romdump.src.main\.rs",
             "--fail-under-lines",
             "80",
         ]),
