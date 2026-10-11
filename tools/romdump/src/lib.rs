@@ -11,6 +11,7 @@ pub mod bytes;
 pub mod imgfs;
 pub mod nb0;
 pub mod pe;
+pub mod xip;
 
 /// Everything that can go wrong reading an image.
 #[derive(Debug)]

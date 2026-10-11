@@ -145,31 +145,99 @@ fn unmove_sections(e32: &E32, o32: &[O32], bodies: &mut [Vec<u8>]) -> Result<(),
             )
         })
         .collect();
-    let (fix_rva, fix_size) = e32.dirs[FIX];
-    if moved.is_empty() || fix_size == 0 {
+    if moved.is_empty() {
         return Ok(());
     }
-    // Some kitchens (observed: LennySh WM6.5.5) strip the .reloc section but
-    // leave the directory entry. Without relocations the references can't be
-    // moved back; the module is still rebuilt, with data at its RAM address.
-    let Some(relocs) = read_rva(o32, bodies, fix_rva, fix_size as usize) else {
-        return Ok(());
+    let (fix_rva, fix_size) = e32.dirs[FIX];
+    let relocs = if fix_size == 0 {
+        None
+    } else {
+        read_rva(o32, bodies, fix_rva, fix_size as usize)
     };
-    for target in highlow_targets(&relocs)? {
-        let Some((si, off)) = locate(o32, bodies, target) else {
-            continue;
-        };
-        let Some(word) = bodies[si].get(off..off + 4) else {
-            continue;
-        };
-        let v = u32::from_le_bytes(word.try_into().expect("4 bytes"));
-        if let Some(&(real, len, home)) = moved.iter().find(|&&(r, l, _)| v >= r && v - r < l) {
-            let _ = len;
-            let fixed = v - real + home;
-            bodies[si][off..off + 4].copy_from_slice(&fixed.to_le_bytes());
+    match relocs.filter(|r| standard_relocs(r, e32.vsize)) {
+        Some(relocs) => {
+            for target in highlow_targets(&relocs)? {
+                if let Some((si, off)) = locate(o32, bodies, target) {
+                    unmove_word(&mut bodies[si], off, &moved);
+                }
+            }
+        }
+        // IMGFS modules often carry Windows CE's compact relocation encoding
+        // instead of PE base relocations (observed: Dell X51v drivers), and
+        // some kitchens strip relocations entirely. Fall back to ARM literal
+        // pools: every word loaded by `LDR Rd, [PC, #imm]` that points into a
+        // moved section is an address and gets moved back.
+        None => {
+            for (i, s) in o32.iter().enumerate() {
+                if s.flags & SCN_CODE == 0 {
+                    continue;
+                }
+                for off in arm_literal_pool_words(&bodies[i]) {
+                    unmove_word(&mut bodies[i], off, &moved);
+                }
+            }
         }
     }
     Ok(())
+}
+
+/// Moves the word at `off` back to its home section if it points into a moved one.
+fn unmove_word(body: &mut [u8], off: usize, moved: &[(u32, u32, u32)]) {
+    let Some(word) = body.get(off..off + 4) else {
+        return;
+    };
+    let v = u32::from_le_bytes(word.try_into().expect("4 bytes"));
+    if let Some(&(real, _, home)) = moved.iter().find(|&&(r, l, _)| v >= r && v - r < l) {
+        body[off..off + 4].copy_from_slice(&(v - real + home).to_le_bytes());
+    }
+}
+
+/// Whether `relocs` looks like PE base relocations: every block's page lies
+/// inside the image and every block size is sane.
+fn standard_relocs(relocs: &[u8], image_size: u32) -> bool {
+    let mut pos = 0;
+    let mut blocks = 0;
+    while pos + 8 <= relocs.len() {
+        let page = u32::from_le_bytes(relocs[pos..pos + 4].try_into().expect("4 bytes"));
+        let size =
+            u32::from_le_bytes(relocs[pos + 4..pos + 8].try_into().expect("4 bytes")) as usize;
+        if size == 0 && page == 0 {
+            break; // padding
+        }
+        if page >= image_size.max(1)
+            || size < 8
+            || !size.is_multiple_of(2)
+            || pos + size > relocs.len()
+        {
+            return false;
+        }
+        pos += size;
+        blocks += 1;
+    }
+    blocks > 0
+}
+
+/// Offsets (within an ARM code section) of words referenced by
+/// `LDR Rd, [PC, #+/-imm12]` instructions, deduplicated.
+fn arm_literal_pool_words(code: &[u8]) -> Vec<usize> {
+    let mut out = std::collections::BTreeSet::new();
+    for off in (0..code.len().saturating_sub(3)).step_by(4) {
+        let ins = u32::from_le_bytes(code[off..off + 4].try_into().expect("4 bytes"));
+        // cond 01 0 P=1 U 0 W=0 L=1 Rn=1111: LDR (literal), word, any condition except NV.
+        if ins & 0x0F7F_0000 != 0x051F_0000 || ins >> 28 == 0xF {
+            continue;
+        }
+        let imm = (ins & 0xFFF) as usize;
+        let target = if ins & (1 << 23) != 0 {
+            off.checked_add(8 + imm)
+        } else {
+            (off + 8).checked_sub(imm)
+        };
+        if let Some(t) = target.filter(|&t| t.is_multiple_of(4) && t + 4 <= code.len()) {
+            out.insert(t);
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// RVAs of every `IMAGE_REL_BASED_HIGHLOW` fixup in a `.reloc` blob.
@@ -521,6 +589,33 @@ mod tests {
         let code_raw = u32_at(&pe, off + 24 + 0xE0 + 20).unwrap() as usize;
         // Reference left at the RAM address.
         assert_eq!(u32_at(&pe, code_raw + 8).unwrap(), 0x0180_0004);
+    }
+
+    #[test]
+    fn nonstandard_relocs_fall_back_to_literal_pools() {
+        let (h, mut b) = sample();
+        // Replace .reloc with bytes that aren't PE base relocations.
+        b[2] = vec![0x00, 0x00, 0xAD, 0x01, 0x9D, 0x90, 0x22, 0x9F, 0, 0, 0, 0];
+        // Code: LDR r0, [pc, #0] at +0 -> literal at +8 (moved data address);
+        // +12 holds the same value but is not a literal, so it must be untouched.
+        let mut code = vec![0u8; 0x10];
+        code[0..4].copy_from_slice(&0xE59F_0000u32.to_le_bytes());
+        code[8..12].copy_from_slice(&0x0180_0004u32.to_le_bytes());
+        code[12..16].copy_from_slice(&0x0180_0004u32.to_le_bytes());
+        b[0] = code;
+        let pe = rebuild(&h, &b).unwrap();
+        let off = u32_at(&pe, 0x3C).unwrap() as usize;
+        let code_raw = u32_at(&pe, off + 24 + 0xE0 + 20).unwrap() as usize;
+        assert_eq!(u32_at(&pe, code_raw + 8).unwrap(), 0x0200_2004);
+        assert_eq!(u32_at(&pe, code_raw + 12).unwrap(), 0x0180_0004);
+    }
+
+    #[test]
+    fn literal_pool_scanner_handles_both_directions() {
+        let mut code = vec![0u8; 0x20];
+        code[0x10..0x14].copy_from_slice(&0xE59F_1004u32.to_le_bytes()); // ldr r1,[pc,#4] -> 0x1C
+        code[0x14..0x18].copy_from_slice(&0xE51F_2014u32.to_le_bytes()); // ldr r2,[pc,#-0x14] -> 0x08
+        assert_eq!(arm_literal_pool_words(&code), vec![0x08, 0x1C]);
     }
 
     #[test]

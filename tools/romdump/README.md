@@ -5,11 +5,15 @@ driver DLLs as ordinary PE files, so they can be studied for
 **interoperability** (see [`docs/CLEANROOM.md`](../../docs/CLEANROOM.md)).
 
 - Reads the partition table: XIP (update loader), XIP (kernel), IMGFS.
+- Reads XIP images (`ROMHDR`, module TOC, files): `coredll.dll`, registry hives,
+  boot drivers. Uncompressed items only (the X51v's main XIP is uncompressed).
 - Walks IMGFS: files, modules, sections, long names.
 - Decompresses LZX chunks (64 KiB window) via the `lzxd` crate.
 - Rebuilds modules from Windows CE's `e32_rom`/`o32_rom` headers into PE files.
-  It moves relocated data references back to the image base, and trims
-  directories to the stored data, so the files load in standard PE tools.
+  It moves relocated data references back to the image base, using PE base
+  relocations when present, or else ARM literal pools (IMGFS modules often use
+  Windows CE's compact relocation format), and trims directories to the stored
+  data, so the files load in standard PE tools.
 
 Verified on LennySh WM6.1 A08 and L11 images: all 1,025 / 997 items extract.
 
@@ -29,6 +33,6 @@ commit or redistribute them.
 
 ## Not yet supported
 
-- Extracting modules from the XIP partitions (only IMGFS is needed for the
-  hardware drivers).
+- Windows CE ROM compression in XIP (used by the X51v's update-loader partition only).
+- Decoding Windows CE's compact relocation format (the literal-pool fallback covers code).
 - Compression other than LZX (e.g. XPRESS, used by some other WM6 ROMs).
