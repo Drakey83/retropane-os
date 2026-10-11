@@ -57,6 +57,10 @@ pub mod ost_reg {
     pub const OSMR1: usize = 0x04;
     /// Match 2.
     pub const OSMR2: usize = 0x08;
+    /// Match 3 (the watchdog's).
+    pub const OSMR3: usize = 0x0C;
+    /// Watchdog enable: bit 0 resets the chip on a match-3 (set-only).
+    pub const OWER: usize = 0x18;
     /// Counter 0.
     pub const OSCR0: usize = 0x10;
     /// Status (write 1 to clear).
@@ -326,6 +330,25 @@ impl<B: RegisterBus> SpareTimer<B> {
     }
 }
 
+/// The watchdog: OS timer match 3 with `OWER.WME`. Once armed it can't be
+/// disarmed (until a reset): it must be fed before every deadline or the
+/// chip resets, which is the point: a hung system comes back by itself.
+pub struct Watchdog<B>(pub B);
+
+impl<B: RegisterBus> Watchdog<B> {
+    /// Arms (if not yet) and sets the deadline `timeout` ticks from now.
+    pub fn feed(&mut self, timeout: u32) {
+        let now = self.0.read32(ost_reg::OSCR0);
+        self.0.write32(ost_reg::OSMR3, now.wrapping_add(timeout));
+        self.0.write32(ost_reg::OWER, 1);
+    }
+
+    /// Whether it's armed (feeding is then mandatory).
+    pub fn armed(&mut self) -> bool {
+        self.0.read32(ost_reg::OWER) & 1 != 0
+    }
+}
+
 /// The OS timer, used for the periodic tick on match register 1.
 pub struct OsTimer<B>(pub B);
 
@@ -383,6 +406,19 @@ mod tests {
     use rp_hal_mock::MockBus;
     extern crate std;
     use std::vec::Vec;
+
+    #[test]
+    fn feeding_the_watchdog_moves_its_deadline_and_arms_it() {
+        let mut w = Watchdog(MockBus::new());
+        w.0.preset(ost_reg::OSCR0, 1_000);
+        assert!(!w.armed());
+        w.feed(500);
+        assert_eq!(w.0.value(ost_reg::OSMR3), 1_500);
+        assert!(w.armed());
+        w.0.preset(ost_reg::OSCR0, u32::MAX - 10);
+        w.feed(100);
+        assert_eq!(w.0.value(ost_reg::OSMR3), 89, "wraps with the counter");
+    }
 
     #[test]
     fn the_spare_timer_arms_and_acknowledges_channel_2_only() {

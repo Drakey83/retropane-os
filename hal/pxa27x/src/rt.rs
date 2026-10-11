@@ -411,6 +411,18 @@ fn intc() -> crate::soc::Intc<Mmio> {
     crate::soc::Intc(unsafe { Mmio::new(NonNull::new_unchecked(va(INTC_BASE) as *mut u32), 0x100) })
 }
 
+/// The watchdog (OS timer match 3). Not single-owner: the loader feeds it
+/// while it waits, and an image it started may feed it too; each feed is
+/// two writes that only move the deadline forward.
+#[must_use]
+pub fn watchdog() -> crate::soc::Watchdog<Mmio> {
+    // SAFETY: the OS timer's register window; the watchdog touches only
+    // match 3 and OWER, which nothing else uses.
+    crate::soc::Watchdog(unsafe {
+        Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
+    })
+}
+
 static mut SPARE_TIMER_TAKEN: bool = false;
 
 /// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`).
