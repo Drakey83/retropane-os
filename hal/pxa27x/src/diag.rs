@@ -172,7 +172,8 @@ mod target {
                 // SAFETY: every address is a whitelisted PXA27x register with
                 // no read side effects, mapped (identity, device memory) both
                 // with the MMU off and under the bring-up map.
-                out[i] = unsafe { (reg.addr as *const u32).read_volatile() };
+                out[i] =
+                    unsafe { (crate::devmap::va(reg.addr as usize) as *const u32).read_volatile() };
                 i += 1;
             }
         }
@@ -222,7 +223,12 @@ mod target {
         // SAFETY: the internal SRAM is 256 KiB of on-chip memory at
         // SRAM_BASE, mapped by the bring-up map; nothing else in RetroPane
         // uses it, and the flag above hands it out once.
-        Some(unsafe { core::slice::from_raw_parts_mut(SRAM_BASE as *mut u8, SRAM_SIZE) })
+        Some(unsafe {
+            core::slice::from_raw_parts_mut(
+                crate::devmap::va(SRAM_BASE as usize) as *mut u8,
+                SRAM_SIZE,
+            )
+        })
     }
 
     /// Moves the live first-level page table to `to` (16 KiB aligned, 16 KiB
@@ -234,6 +240,9 @@ mod target {
     /// If `to` isn't 16 KiB aligned and 16 KiB long.
     pub fn move_l1_table(to: &mut [u8]) {
         assert!(to.len() >= 16 * 1024 && (to.as_ptr() as usize).is_multiple_of(16 * 1024));
+        // TTB takes a physical address: valid here only because the
+        // bring-up map is the identity.
+        assert!(!crate::devmap::kernel_map(), "bring-up map only");
         let ttb: u32;
         // SAFETY: reading TTB has no side effects.
         unsafe {

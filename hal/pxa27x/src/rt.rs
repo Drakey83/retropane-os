@@ -14,6 +14,7 @@
 
 use core::ptr::NonNull;
 
+use crate::devmap::va;
 use crate::{FFUART_BASE, Mmio, UART_WINDOW};
 
 core::arch::global_asm!(
@@ -149,7 +150,7 @@ pub fn take_ffuart() -> Option<Mmio> {
     // Windows Mobile may have left the FFUART's clock off (the X51v has no
     // serial port fitted), and an unclocked UART never reports TX space.
     enable_clock(CKEN_FFUART);
-    let base = NonNull::new(FFUART_BASE as *mut u32)?;
+    let base = NonNull::new(va(FFUART_BASE) as *mut u32)?;
     // SAFETY: FFUART_BASE..+UART_WINDOW is the FFUART register window (PXA27x
     // memory map), identity-mapped with the MMU off, and the flag above
     // guarantees a single owner.
@@ -163,7 +164,12 @@ pub fn take_ffuart() -> Option<Mmio> {
 pub fn emergency_uart() -> Mmio {
     // SAFETY: the FFUART window is valid MMIO; this is only used on paths that
     // never return to the code holding the normal handle (faults, panics).
-    unsafe { Mmio::new(NonNull::new_unchecked(FFUART_BASE as *mut u32), UART_WINDOW) }
+    unsafe {
+        Mmio::new(
+            NonNull::new_unchecked(va(FFUART_BASE) as *mut u32),
+            UART_WINDOW,
+        )
+    }
 }
 
 /// Reads the CPU's Main ID register (CP15 c0).
@@ -192,7 +198,7 @@ pub const TICK_HZ: u32 = 3_250_000;
 pub fn ticks() -> u32 {
     // SAFETY: OSCR0 is a counter register in the PXA27x OS timer block,
     // identity-mapped with the MMU off; reading it has no side effects.
-    unsafe { (OSCR0 as *const u32).read_volatile() }
+    unsafe { (va(OSCR0) as *const u32).read_volatile() }
 }
 
 /// Busy-waits at least `us` microseconds using the OS timer.
@@ -216,7 +222,7 @@ pub const CKEN_FFUART: u32 = 6;
 
 /// Enables a peripheral clock (`CKEN` bit `bit`).
 pub fn enable_clock(bit: u32) {
-    let cken = CKEN as *mut u32;
+    let cken = va(CKEN) as *mut u32;
     // SAFETY: CKEN is the clock manager's clock enable register, identity-
     // mapped with the MMU off; single core with IRQs masked, so this
     // read-modify-write can't race.
@@ -231,7 +237,7 @@ pub fn take_keypad() -> Option<Mmio> {
         return None;
     }
     enable_clock(CKEN_KEYPAD);
-    let base = NonNull::new(KEYPAD_BASE as *mut u32)?;
+    let base = NonNull::new(va(KEYPAD_BASE) as *mut u32)?;
     // SAFETY: the keypad controller's register window (PXA27x memory map,
     // 0x4C bytes used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x100) })
@@ -247,7 +253,7 @@ pub fn take_gpio() -> Option<Mmio> {
     if taken {
         return None;
     }
-    let base = NonNull::new(0x40E0_0000 as *mut u32)?;
+    let base = NonNull::new(va(0x40E0_0000) as *mut u32)?;
     // SAFETY: the GPIO controller's register window (PXA27x memory map, up to
     // 0x130 used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x200) })
@@ -261,7 +267,7 @@ pub fn take_ssp1() -> Option<Mmio> {
         return None;
     }
     enable_clock(CKEN_SSP1);
-    let base = NonNull::new(0x4100_0000 as *mut u32)?;
+    let base = NonNull::new(va(0x4100_0000) as *mut u32)?;
     // SAFETY: SSP1's register window (PXA27x memory map), identity-mapped;
     // the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x40) })
@@ -278,7 +284,7 @@ pub fn take_mmc() -> Option<Mmio> {
         return None;
     }
     enable_clock(CKEN_MMC);
-    let base = NonNull::new(0x4110_0000 as *mut u32)?;
+    let base = NonNull::new(va(0x4110_0000) as *mut u32)?;
     // SAFETY: the MMC controller's register window (PXA27x memory map, up to
     // 0x50 used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x100) })
@@ -329,12 +335,14 @@ const OST_BASE: usize = 0x40A0_0000;
 fn intc() -> crate::soc::Intc<Mmio> {
     // SAFETY: the interrupt controller's register window; the HAL is its only
     // user (images reach it through start_tick / the IRQ path).
-    crate::soc::Intc(unsafe { Mmio::new(NonNull::new_unchecked(INTC_BASE as *mut u32), 0x100) })
+    crate::soc::Intc(unsafe { Mmio::new(NonNull::new_unchecked(va(INTC_BASE) as *mut u32), 0x100) })
 }
 
 fn ostimer() -> crate::soc::OsTimer<Mmio> {
     // SAFETY: the OS timer's register window; the HAL is its only writer.
-    crate::soc::OsTimer(unsafe { Mmio::new(NonNull::new_unchecked(OST_BASE as *mut u32), 0x20) })
+    crate::soc::OsTimer(unsafe {
+        Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
+    })
 }
 
 /// Sets what runs on an unexpected exception (gets the kind and the faulting
@@ -515,7 +523,7 @@ fn gpio_edges() -> crate::soc::GpioEdges<Mmio> {
     // (ADR-0007 rule 7), so sharing the window with `take_gpio`'s owner is
     // safe on one core.
     crate::soc::GpioEdges(unsafe {
-        Mmio::new(NonNull::new_unchecked(0x40E0_0000 as *mut u32), 0x200)
+        Mmio::new(NonNull::new_unchecked(va(0x40E0_0000) as *mut u32), 0x200)
     })
 }
 

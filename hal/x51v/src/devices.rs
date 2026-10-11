@@ -4,6 +4,7 @@
 //! interrupts are enabled, with the MMU off (physical = virtual).
 
 use core::ptr::NonNull;
+use rp_hal_pxa27x::devmap::va;
 
 use rp_hal_pxa27x::Mmio;
 
@@ -21,7 +22,7 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     if taken {
         return None;
     }
-    let cs3 = region("cs3_2700g")?.base;
+    let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
     let regs = NonNull::new((cs3 + MBX_REG_OFFSET) as *mut u32)?;
     // SAFETY: the register block is a device window on CS3 (docs/hw/2700g.md),
     // identity-mapped with the MMU off, and the flag guarantees one owner.
@@ -41,7 +42,7 @@ pub fn emergency_vram() -> Option<&'static mut [u8]> {
     if !unsafe { core::ptr::addr_of!(MBX_TAKEN).read() } {
         return None;
     }
-    let cs3 = region("cs3_2700g")?.base;
+    let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
     // SAFETY: the same 16 MiB of 2700G memory as `take_mbx`. This second
     // slice aliases the owner's, which is acceptable only because it's used
     // on paths that never return to the owner (fault and panic handlers),
@@ -56,7 +57,7 @@ pub fn take_cpld() -> Option<Mmio> {
     if taken {
         return None;
     }
-    let base = NonNull::new(region("cs4_cpld")?.base as *mut u32)?;
+    let base = NonNull::new(va(region("cs4_cpld")?.base as usize) as *mut u32)?;
     // SAFETY: CS4 holds the CPLD's 0x20-byte register window (docs/hw/cpld.md),
     // identity-mapped with the MMU off; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x20) })

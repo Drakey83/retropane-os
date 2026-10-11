@@ -68,10 +68,12 @@ returns every frame. Lessons from making it run:
   whether the XScale table walker sees the D-cache.
 - **FAR:** the XScale reports the FCSE-modified address, QEMU the address
   before relocation; relocating in the handler is right for both.
-- **Device windows must move to kernel space:** the bring-up identity map's
-  CS0-CS5 windows (below `0x42000000`) overlap the process slots, so the
-  kernel's tables leave them out for now. Next step: a kernel-space device
-  map, with the HAL told each window's virtual address.
+- **Device windows live in kernel space:** the bring-up identity map's
+  CS0-CS5 windows (below `0x42000000`) overlap the process slots and the
+  peripheral block runs into the shared area, so the kernel maps every window
+  at `0x90000000+` (`rp_hal_pxa27x::devmap`) and switches the HAL to those
+  addresses (`devmap::use_kernel_map`); nothing is mapped at the physical
+  device addresses any more.
 
 Still to come, in order: reclaim of clean pages (ARMv5 has no accessed bit, so
 reference tracking needs a software scheme), ARM domain assignment per process
