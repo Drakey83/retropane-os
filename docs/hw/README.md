@@ -21,7 +21,7 @@ Rules:
 
 ## First facts from a real X51v (2026-10-11)
 
-Read by `rp-light` (the first-light image) on the owner's device, A08 ROM,
+Read by `rp-light` (the first-light image) on the owner's device (WM 6.1 Classic ROM, CE 5.2.20273),
 booted through HaRET. Details in the per-block files.
 
 | Fact | Value | Meaning | Confidence | Evidence |
