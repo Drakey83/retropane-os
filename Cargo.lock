@@ -201,6 +201,9 @@ dependencies = [
 [[package]]
 name = "rp-kernel-mm"
 version = "0.0.0"
+dependencies = [
+ "rp-lz4",
+]
 
 [[package]]
 name = "rp-kernel-pe"

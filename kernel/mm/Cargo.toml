@@ -9,3 +9,6 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rp-lz4 = { path = "../lz4" }
