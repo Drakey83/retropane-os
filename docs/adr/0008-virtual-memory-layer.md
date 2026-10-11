@@ -75,9 +75,18 @@ returns every frame. Lessons from making it run:
   addresses (`devmap::use_kernel_map`); nothing is mapped at the physical
   device addresses any more.
 
+**Per-process protection (live 2026-10-11):** each active process gets its
+own ARM domain (`kernel/mm::domains`: 13 process domains, least-recently-run
+process parked to a never-enabled domain when they run out, by retagging its
+slot's 32 first-level entries). The DACR enables only the kernel's, the shared
+area's and the running process's domain, so the kernel image's check shows
+another process's page faulting even for kernel reads. `rt::try_read` /
+`try_write` turn an unresolvable fault into an error through a fixup table,
+which the system-call layer will use for user pointers.
+
 Still to come, in order: reclaim of clean pages (ARMv5 has no accessed bit, so
-reference tracking needs a software scheme), ARM domain assignment per process
-(16 domains for up to 31 processes), and ADR-0006's rules one at a time.
+reference tracking needs a software scheme) and ADR-0006's rules one at a
+time.
 
 ## The four lenses
 

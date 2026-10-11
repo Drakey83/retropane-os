@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod arm;
+pub mod domains;
 pub mod frames;
 pub mod layout;
 pub mod pagetable;

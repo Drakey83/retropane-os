@@ -83,9 +83,9 @@ rp_swi_entry:
     mov     r0, #2
     sub     r1, lr, #4
     b       rp_fault
-    @ Aborts: ask the abort handler (rp_abort) first. If it resolved the
-    @ fault (a page fault), return to the faulting instruction to retry it;
-    @ otherwise report and stop as before.
+    @ Aborts: ask rp_abort first. It returns where to resume: the faulting
+    @ instruction (a resolved page fault), a fixup (a faulting try_read /
+    @ try_write), or 0 to report the fault and stop.
 rp_pabt_entry:
     sub     lr, lr, #4
     stmfd   sp!, {{r0-r3, r12, lr}}
@@ -93,6 +93,7 @@ rp_pabt_entry:
     mov     r1, lr
     bl      rp_abort
     cmp     r0, #0
+    strne   r0, [sp, #20]
     ldmfdne sp!, {{r0-r3, r12, pc}}^
     ldmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #3
@@ -105,6 +106,7 @@ rp_dabt_entry:
     mov     r1, lr
     bl      rp_abort
     cmp     r0, #0
+    strne   r0, [sp, #20]
     ldmfdne sp!, {{r0-r3, r12, pc}}^
     ldmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #4
@@ -381,22 +383,102 @@ pub fn set_abort_handler(f: fn(Abort) -> bool) {
 
 #[unsafe(no_mangle)]
 extern "C" fn rp_abort(kind: u32, pc: u32) -> u32 {
-    // SAFETY: written once during setup.
-    let Some(f) = (unsafe { core::ptr::addr_of!(ABORT_HANDLER).read() }) else {
-        return 0;
-    };
     let data = kind == 4;
-    let (fsr, addr) = if data {
-        crate::cpu::fault_registers()
-    } else {
-        (0, pc)
-    };
-    u32::from(f(Abort {
-        data,
-        pc,
-        fsr,
-        addr,
-    }))
+    // SAFETY: written once during setup.
+    if let Some(f) = unsafe { core::ptr::addr_of!(ABORT_HANDLER).read() } {
+        let (fsr, addr) = if data {
+            crate::cpu::fault_registers()
+        } else {
+            (0, pc)
+        };
+        if f(Abort {
+            data,
+            pc,
+            fsr,
+            addr,
+        }) {
+            return pc; // resolved: retry the instruction
+        }
+    }
+    // Not resolvable: a try_read/try_write resumes at its fixup.
+    fixup_for(pc).unwrap_or(0)
+}
+
+/// The fixup address registered for a faulting instruction at `pc`.
+fn fixup_for(pc: u32) -> Option<u32> {
+    unsafe extern "C" {
+        static __rp_fixup_start: [u32; 0];
+        static __rp_fixup_end: [u32; 0];
+    }
+    // SAFETY: the linker places every (fault pc, fixup pc) word pair from
+    // `.rp_fixup` between these two symbols (boot/link.x); read-only data.
+    unsafe {
+        let mut p = core::ptr::addr_of!(__rp_fixup_start).cast::<u32>();
+        let end = core::ptr::addr_of!(__rp_fixup_end).cast::<u32>();
+        while p < end {
+            if p.read() == pc {
+                return Some(p.add(1).read());
+            }
+            p = p.add(2);
+        }
+    }
+    None
+}
+
+/// Reads the word at `addr` (any address, user or kernel), returning `None`
+/// instead of faulting if it can't be read: an unmapped page the VM can't
+/// resolve, another process's domain, no permission. For the kernel touching
+/// memory it can't trust (system-call pointers, protection tests).
+#[must_use]
+pub fn try_read(addr: usize) -> Option<u32> {
+    let (value, failed): (u32, u32);
+    // SAFETY: a single load; if it aborts and the VM can't resolve it, the
+    // abort path resumes at label 2 (registered in .rp_fixup), which only
+    // sets the failure flag. No memory is written.
+    unsafe {
+        core::arch::asm!(
+            "mov {f}, #0",
+            "1: ldr {v}, [{a}]",
+            "b 3f",
+            "2: mov {f}, #1",
+            "mov {v}, #0",
+            "3:",
+            ".pushsection .rp_fixup, \"a\"",
+            ".word 1b, 2b",
+            ".popsection",
+            a = in(reg) addr,
+            v = out(reg) value,
+            f = out(reg) failed,
+            options(nostack, readonly),
+        );
+    }
+    (failed == 0).then_some(value)
+}
+
+/// Writes `value` to `addr`, returning false instead of faulting if it can't
+/// be written (see [`try_read`]).
+#[must_use]
+pub fn try_write(addr: usize, value: u32) -> bool {
+    let failed: u32;
+    // SAFETY: a single store to an address the caller chose to probe; if it
+    // aborts and can't be resolved, the fixup at label 2 sets the flag.
+    unsafe {
+        core::arch::asm!(
+            "mov {f}, #0",
+            "1: str {v}, [{a}]",
+            "b 3f",
+            "2: mov {f}, #1",
+            "3:",
+            ".pushsection .rp_fixup, \"a\"",
+            ".word 1b, 2b",
+            ".popsection",
+            a = in(reg) addr,
+            v = in(reg) value,
+            f = out(reg) failed,
+            options(nostack),
+        );
+    }
+    failed == 0
 }
 
 /// A global value for bare-metal images, used safely: [`with`](Self::with)
