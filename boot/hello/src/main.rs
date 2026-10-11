@@ -34,6 +34,18 @@ mod image {
 
     rp_hal_pxa27x::entry!(main);
 
+    /// Input polling rate: buttons and touch are sampled each tick, with the
+    /// CPU idle in between.
+    const TICK_HZ: u32 = 200;
+
+    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x}", kind.name());
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
     const TS_PENIRQ: u8 = 94;
@@ -49,6 +61,8 @@ mod image {
         if let Some(bus) = rt::take_ffuart() {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
+            rt::set_fault_handler(on_fault);
+            rt::init_mmu();
             let _ = writeln!(uart, "\nRetroPane OS: hello from the Dell Axim X51v");
             let _ = writeln!(uart, "CPU ID: {:#010x}", rt::cpu_id());
             let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
@@ -114,12 +128,12 @@ mod image {
                                 }
                             },
                             Err(e) => {
-                                let _ = writeln!(uart, "SD: read failed: {e:?}");
+                                let _ = writeln!(uart, "SD: read failed: {}", e.name());
                             }
                         }
                     }
                     Err(e) => {
-                        let _ = writeln!(uart, "SD: no card ({e:?})");
+                        let _ = writeln!(uart, "SD: no card ({})", e.name());
                     }
                 }
             }
@@ -143,6 +157,7 @@ mod image {
                     GpioPin::new(&gpio, TS_PENIRQ),
                 );
 
+                rt::start_tick(TICK_HZ);
                 let mut last_keys = Pressed::default();
                 let mut last_touch = None;
                 loop {
@@ -165,7 +180,8 @@ mod image {
                         }
                         last_touch = now;
                     }
-                    rt::delay_us(5_000);
+                    // Sleep until the next tick instead of spinning.
+                    rt::wait_tick();
                 }
             }
         }
@@ -175,7 +191,18 @@ mod image {
     }
 
     #[panic_handler]
-    fn panic(_: &core::panic::PanicInfo) -> ! {
+    fn panic(info: &core::panic::PanicInfo) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        // Location only: formatting the full message would pull in much more
+        // of core::fmt (ADR-0005 rule 8).
+        match info.location() {
+            Some(l) => {
+                let _ = writeln!(uart, "\nPANIC at {}:{}", l.file(), l.line());
+            }
+            None => {
+                let _ = writeln!(uart, "\nPANIC");
+            }
+        }
         loop {
             core::hint::spin_loop();
         }

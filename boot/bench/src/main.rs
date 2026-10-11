@@ -112,6 +112,9 @@ mod image {
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
+        // Benchmark the configuration RetroPane really runs: MMU and caches on.
+        rt::set_fault_handler(on_fault);
+        rt::init_mmu();
         let _ = writeln!(uart, "\nRetroPane benchmarks (OS timer {} Hz)", rt::TICK_HZ);
         let mut b = Bench { uart };
 
@@ -177,12 +180,23 @@ mod image {
                     });
                 }
                 Err(e) => {
-                    let _ = writeln!(b.uart, "SD unavailable: {e:?}");
+                    let _ = writeln!(b.uart, "SD unavailable: {}", e.name());
                 }
             }
         }
 
         let _ = writeln!(b.uart, "{}", super::DONE);
+
+        // Fault-path self-test: 0x80000000 is unmapped in the bring-up map, so
+        // this read must end in a reported data abort, not silence.
+        let _ = black_box(rt::fault_probe(black_box(0x8000_0000)));
+        let _ = writeln!(b.uart, "FAULT-PROBE no fault (unexpected)");
+        halt()
+    }
+
+    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        let _ = writeln!(uart, "FAULT {} at {addr:#010x}", kind.name());
         halt()
     }
 
