@@ -14,7 +14,7 @@ owner's X51v by `rp-probe` (`probe-2026-10-11.md`).
 | Signal | Where | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
 | USB cable detect | GPIO14, input | high on the probe run; both edges enabled as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14) by WM | confirmed (pin), likely (polarity: high = cable present) | (A), (D) |
-| D+ pull-up ("connect") | GPIO2, output, **high = connected** | the PC enumerated the device with GPIO2 high | confirmed | real X51v (2026-10-11), hardware inventory |
+| D+ pull-up ("connect") | GPIO2, output, high | the PC enumerated the device with GPIO2 high, but **never noticed a disconnect** when GPIO2 went low (or the UDC was disabled): every run needed a cable replug. So GPIO2 is not (only) the pull-up control; AxDroid's board file left `gpio_pullup` unset too. Candidates: a CPLD bit (docs/hw/cpld.md), `UP2OCR.DPPUE` with the internal transceiver | open | real X51v (2026-10-11) |
 | Transceiver | **port 2's, output enabled: `UP2OCR` = `0x00020000` (HXOE) as WM leaves it** | with HXOE cleared the PC saw the attach (a bus reset) but no SETUP ever arrived; with it set, enumeration worked. The driver sets it | confirmed | real X51v (2026-10-11) |
 | UDC clock | `CKEN` bit 11 | on as WM left it | confirmed | (D) `CKEN 0x00D91AA3` |
 | Data pins | dedicated USB client pins | no `GAFR` setting needed | likely | (M) |
