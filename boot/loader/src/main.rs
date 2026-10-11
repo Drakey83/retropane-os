@@ -1,0 +1,228 @@
+//! RetroPane's resident loader (ADR-0012 step U3).
+//!
+//! Started once by HaRET, it moves itself to its reserved home at
+//! `0xA8400000` and waits for an image from the PC, over the USB serial port
+//! (the device) or the FFUART (the emulator, and an optional cable). A
+//! complete, CRC-checked image goes to `0xA8008000` and starts exactly as if
+//! HaRET had started it. So a new build reaches the device in about a second,
+//! with nobody copying files or tapping HaRET.
+//!
+//! Protocol: `rp-loadproto`. PC side: `cargo xtask load <image>`.
+
+#![cfg_attr(target_os = "none", no_std, no_main)]
+#![forbid(unsafe_code)]
+
+/// Printed on serial once the loader is waiting (also the READY line).
+pub const MARKER: &str = "RPLOAD1 READY";
+
+#[cfg(target_os = "none")]
+mod image {
+    use core::fmt::Write;
+
+    use rp_drv_mbx_display::console::Console;
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_pxa_udc::Udc;
+    use rp_hal_api::RegisterBus;
+    use rp_hal_pxa27x::{handoff, rt};
+    use rp_hal_x51v::MBX_VRAM_SIZE;
+    use rp_hal_x51v::devices::{self, IMAGE_BASE};
+    use rp_loadproto::{LoadError, OK, READY, Receiver, feed_slice};
+
+    rp_hal_pxa27x::entry!(main);
+
+    /// D+ pull-up and cable detect (docs/hw/udc.md).
+    const USB_PULLUP: u8 = 2;
+    const USB_DETECT: u8 = 14;
+    /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
+    const TICK_1S: u32 = 3_250_000;
+    const STATUS_H: usize = 6 * 16;
+
+    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
+    }
+
+    #[inline(never)]
+    fn crash(msg: core::fmt::Arguments) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        let _ = writeln!(uart, "\n{msg}");
+        if let Some(vram) = devices::emergency_vram() {
+            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+            let mut c = Console::new(
+                &mut vram[plane.offset..],
+                plane.stride,
+                (0, 576),
+                (480, 64),
+                2,
+                (0xFFFF, 0xA800),
+            );
+            let _ = write!(c, "{msg}");
+        }
+        halt()
+    }
+
+    fn main() -> ! {
+        let Some(bus) = rt::take_ffuart() else { halt() };
+        let mut uart = PxaUart::new(bus);
+        uart.init(115_200);
+        rt::set_fault_handler(on_fault);
+        rt::init_mmu();
+
+        let Some((mut regs, vram)) = devices::take_mbx() else {
+            halt()
+        };
+        let plane = Plane::decode(
+            regs.read32(reg::GSCTRL),
+            regs.read32(reg::GSCADR),
+            regs.read32(reg::GSADR),
+            MBX_VRAM_SIZE as usize,
+        )
+        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640)
+        .unwrap_or_else(|| {
+            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+            Display::new(regs).enable(&X51V_VGA, &p);
+            p
+        });
+        let end = plane.offset + plane.stride * usize::from(plane.height);
+        let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
+        let mut log = Console::new(
+            rest,
+            plane.stride,
+            (0, 0),
+            (480, 640 - STATUS_H),
+            2,
+            (0xFFFF, 0x0000),
+        );
+
+        let Some(dest) = devices::take_image_area() else {
+            let _ = writeln!(log, "loader not at its home address");
+            halt()
+        };
+
+        let Some(gpio_bus) = rt::take_gpio() else {
+            halt()
+        };
+        let mut gpio = Gpio::new(gpio_bus);
+        gpio.make_input(USB_DETECT);
+        gpio.make_output(USB_PULLUP, false);
+        rt::delay_us(200_000);
+        let Some(udc_bus) = rt::take_udc() else {
+            halt()
+        };
+        let mut udc = Udc::new(udc_bus);
+        let usb = udc.enable().is_ok();
+        if usb {
+            gpio.write(USB_PULLUP, true);
+        }
+        let _ = writeln!(log, "RetroPane loader at {:#x}", devices::LOADER_BASE);
+        let _ = writeln!(log, "USB {}", if usb { "connected" } else { "unavailable" });
+        let _ = writeln!(log, "waiting for an image: cargo xtask load");
+
+        let mut rx = Receiver::new();
+        let mut last = rt::ticks().wrapping_sub(TICK_1S);
+        let mut buf = [0u8; 64];
+        loop {
+            udc.poll();
+            let mut outcome = None;
+            while outcome.is_none() {
+                let Some(b) = uart.read_byte() else { break };
+                outcome = feed_slice(&mut rx, &[b], dest).1;
+            }
+            if outcome.is_none() {
+                let n = udc.read(&mut buf);
+                let mut used = 0;
+                while outcome.is_none() && used < n {
+                    let (u, r) = feed_slice(&mut rx, &buf[used..n], dest);
+                    used += u;
+                    outcome = r;
+                }
+            }
+            match outcome {
+                Some(Ok(len)) => {
+                    send(&mut uart, &mut udc, OK);
+                    let _ = writeln!(log, "image OK, {len} bytes: starting");
+                    // Let the reply leave over USB before disconnecting.
+                    let t = rt::ticks();
+                    while rt::ticks().wrapping_sub(t) < TICK_1S / 20 {
+                        udc.poll();
+                    }
+                    gpio.write(USB_PULLUP, false);
+                    udc.disable();
+                    handoff::launch(IMAGE_BASE as u32);
+                }
+                Some(Err(e)) => {
+                    send(&mut uart, &mut udc, e.reply());
+                    let _ = writeln!(log, "refused: {}", what(e));
+                }
+                None => {}
+            }
+            if rt::ticks().wrapping_sub(last) >= TICK_1S {
+                last = rt::ticks();
+                if rx.progress().is_none() {
+                    send(&mut uart, &mut udc, READY);
+                }
+                let s = udc.stats();
+                let mut st = Console::new(
+                    &mut *top,
+                    plane.stride,
+                    (0, 0),
+                    (480, STATUS_H),
+                    2,
+                    (0x0000, 0x07FF),
+                );
+                let _ = writeln!(st, "RetroPane 26 loader");
+                let _ = writeln!(
+                    st,
+                    "cable {} configured {} open {}",
+                    u8::from(gpio.read(USB_DETECT)),
+                    yes(udc.configured()),
+                    yes(udc.host_open())
+                );
+                let _ = writeln!(st, "usb resets {} setups {}", s.resets, s.setups);
+                match rx.progress() {
+                    Some((got, len)) => {
+                        let _ = writeln!(st, "receiving {got}/{len}");
+                    }
+                    None => {
+                        let _ = writeln!(st, "idle");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A line to the host on both transports.
+    fn send(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, udc: &mut Udc<rp_hal_pxa27x::Mmio>, s: &str) {
+        let _ = uart.write_str(s);
+        udc.write(s.as_bytes());
+    }
+
+    fn what(e: LoadError) -> &'static str {
+        match e {
+            LoadError::TooBig => "too big",
+            LoadError::BadCrc => "bad CRC",
+        }
+    }
+
+    fn yes(b: bool) -> &'static str {
+        if b { "yes" } else { "no" }
+    }
+
+    fn halt() -> ! {
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    #[panic_handler]
+    fn panic(info: &core::panic::PanicInfo) -> ! {
+        match info.location() {
+            Some(l) => crash(format_args!("PANIC {}:{}", l.file(), l.line())),
+            None => crash(format_args!("PANIC")),
+        }
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+fn main() {}

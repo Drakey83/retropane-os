@@ -23,6 +23,8 @@ members = [
     "boot/hello",
     "boot/light",
     "boot/usb",
+    "boot/loadproto",
+    "boot/loader",
     "boot/bench",
     "boot/suite",
     "boot/probe",

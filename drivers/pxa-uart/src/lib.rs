@@ -31,6 +31,8 @@ pub const IER_UUE: Field = Field::bit(6);
 pub const LCR_DLAB: Field = Field::bit(7);
 /// LCR: word length (0b11 = 8 bits).
 pub const LCR_WLS: Field = Field::new(0, 2);
+/// LSR: a received byte is waiting.
+pub const LSR_DR: Field = Field::bit(0);
 /// LSR: transmit holding register empty.
 pub const LSR_TDRQ: Field = Field::bit(5);
 
@@ -100,6 +102,12 @@ impl<B: RegisterBus> PxaUart<B> {
         self.bus.write32(reg::THR, u32::from(byte));
     }
 
+    /// Takes a received byte, if one is waiting (never blocks).
+    pub fn read_byte(&mut self) -> Option<u8> {
+        (self.bus.read_field(reg::LSR, LSR_DR) != 0)
+            .then(|| (self.bus.read32(reg::THR) & 0xFF) as u8)
+    }
+
     /// Whether the transmitter has been responding.
     #[must_use]
     pub fn is_alive(&self) -> bool {
@@ -165,6 +173,16 @@ mod tests {
                 (reg::IER, 0x40), // UUE
             ]
         );
+    }
+
+    #[test]
+    fn read_byte_takes_only_waiting_bytes() {
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::LSR, &[0, 1]);
+        bus.preset(reg::THR, 0x1_41);
+        let mut uart = PxaUart::new(bus);
+        assert_eq!(uart.read_byte(), None);
+        assert_eq!(uart.read_byte(), Some(b'A'));
     }
 
     #[test]

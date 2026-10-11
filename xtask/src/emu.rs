@@ -12,7 +12,7 @@
 //! (`RETROPANE_QEMU_SRC` overrides) into WSL (`RETROPANE_WSL_DISTRO`, default
 //! `Ubuntu`) and builds it there in under a minute.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -275,6 +275,7 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
             sd_image: Some(&sd),
             steps: HELLO_STEPS,
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -331,6 +332,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -371,6 +373,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -404,6 +407,7 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -412,6 +416,46 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
         return Err("first light: `all steps OK` missing on serial".into());
     }
     eprintln!("    first light OK");
+    Ok(())
+}
+
+/// Must match `rp_loader::MARKER`.
+const LOADER_MARKER: &str = "RPLOAD1 READY";
+
+/// Boots the resident loader the way HaRET does (a raw binary away from its
+/// home, so it must move itself), sends it the first-light image over the
+/// serial port, and checks that image runs: relocation, the protocol, the
+/// CRC check and the hand-off, end to end.
+pub fn boot_loader(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let light = dir.join("rp-light.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-light"), &light)?;
+    let payload = std::fs::read(&light).map_err(|e| format!("{}: {e}", light.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, LIGHT_MARKER)),
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    if !output.contains("RPL OK") {
+        return Err("loader: no `RPL OK` before the image started".into());
+    }
+    eprintln!(
+        "    loader OK: moved itself home, took a {} byte image over serial, CRC checked, started it",
+        payload.len()
+    );
     Ok(())
 }
 
@@ -432,6 +476,7 @@ pub fn boot_usb(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -476,6 +521,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
             sd_image: Some(&sd),
             steps: &[],
             extra: &[],
+            input: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -589,6 +635,7 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
             // One virtual nanosecond per instruction: timings become a
             // deterministic measure of the work done.
             extra: &["-icount", "shift=0"],
+            input: None,
             timeout: Duration::from_secs(120),
         },
     )?;
@@ -710,6 +757,9 @@ struct Boot<'a> {
     steps: &'a [Step],
     /// Extra QEMU arguments.
     extra: &'a [&'a str],
+    /// Bytes to send to the serial port once `marker` appears, and the text
+    /// that must follow.
+    input: Option<(&'a [u8], &'a str)>,
     timeout: Duration,
 }
 
@@ -721,6 +771,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         sd_image,
         steps,
         extra,
+        input,
         timeout,
     } = *cfg;
     let port = monitor_port();
@@ -759,7 +810,11 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         }
     };
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -782,12 +837,39 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         output: String::new(),
         deadline: Instant::now() + timeout,
     };
-    let result = run_session(&mut serial, marker, port, wsl, screenshot, steps);
+    let stdin = child.stdin.take();
+    let result = run_session(&mut serial, marker, port, wsl, screenshot, steps)
+        .and_then(|()| send_input(&mut serial, stdin, input));
     let _ = child.kill();
     let _ = child.wait();
     match result {
         Ok(()) => Ok(serial.output),
         Err(e) => Err(format!("{e}. Serial output so far:\n{}", serial.output)),
+    }
+}
+
+/// Sends `input`'s bytes to the guest's serial port and waits for its text.
+fn send_input(
+    serial: &mut Serial,
+    stdin: Option<std::process::ChildStdin>,
+    input: Option<(&[u8], &str)>,
+) -> Result<(), String> {
+    let Some((bytes, expect)) = input else {
+        return Ok(());
+    };
+    let mut stdin = stdin.ok_or("serial input not connected")?;
+    let from = serial.output.len();
+    stdin
+        .write_all(bytes)
+        .and_then(|()| stdin.flush())
+        .map_err(|e| format!("writing to the serial port: {e}"))?;
+    if serial.wait_for(expect, from) {
+        Ok(())
+    } else {
+        Err(format!(
+            "after sending {} bytes: no `{expect}` on serial",
+            bytes.len()
+        ))
     }
 }
 

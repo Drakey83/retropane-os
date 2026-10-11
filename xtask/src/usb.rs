@@ -1,12 +1,18 @@
-//! `cargo xtask usb`: talks to an X51v running the USB link test (`rp-usb`,
-//! ADR-0012) over its sync cable, through Windows' built-in serial driver.
+//! The PC side of the USB link (ADR-0012), through Windows' built-in serial
+//! driver:
 //!
-//! Finds the COM port by RetroPane's USB IDs, opens it with DTR set (which
-//! makes the device send its banner), sends a line and checks it comes back.
+//! - `cargo xtask usb`: with the USB link test (`rp-usb`) running, finds the
+//!   COM port by RetroPane's USB IDs, opens it with DTR set (which makes the
+//!   device send its banner), sends a line and checks it comes back.
+//! - `cargo xtask load <image>`: with the resident loader (`rp-loader`)
+//!   running, sends an image (an image name such as `rp-probe`, built first,
+//!   or a `.bin` file) and waits for the loader's reply.
+//!
 //! PowerShell's `System.IO.Ports.SerialPort` does the port handling, so no
 //! extra crates are needed; the script is passed base64-encoded (UTF-16LE,
 //! as `-EncodedCommand` expects) so no quoting can break it.
 
+use std::path::Path;
 use std::process::Command;
 
 /// Must match `rp_drv_pxa_udc::usb::{VENDOR_ID, PRODUCT_ID}`.
@@ -16,7 +22,8 @@ const BANNER: &str = "RetroPane 26 USB console OK";
 /// The line sent for the echo check.
 const PROBE: &str = "RetroPane echo test 26";
 
-fn script() -> String {
+/// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
+fn open_port() -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -25,7 +32,14 @@ if (-not $dev) {{ 'NOPORT'; exit 0 }}
 $port = [regex]::Match($dev.Name, 'COM\d+').Value
 "PORT $port"
 $sp = New-Object System.IO.Ports.SerialPort $port, 115200
-$sp.DtrEnable = $true
+"#
+    )
+}
+
+fn script() -> String {
+    open_port()
+        + &format!(
+            r#"$sp.DtrEnable = $true
 $sp.RtsEnable = $true
 $sp.ReadTimeout = 3000
 $sp.NewLine = "`r`n"
@@ -35,7 +49,31 @@ $sp.WriteLine('{PROBE}')
 try {{ "ECHO " + $sp.ReadLine() }} catch {{ 'NOECHO' }}
 $sp.Close()
 "#
-    )
+        )
+}
+
+fn load_script(frame: &Path) -> String {
+    let path = frame.display().to_string().replace('\'', "''");
+    open_port()
+        + &format!(
+            r#"$bytes = [System.IO.File]::ReadAllBytes('{path}')
+$sp.DtrEnable = $true
+$sp.RtsEnable = $true
+$sp.ReadTimeout = 5000
+$sp.WriteTimeout = 20000
+$sp.NewLine = "`r`n"
+$sp.Open()
+$sp.DiscardInBuffer()
+$sp.Write($bytes, 0, $bytes.Length)
+"SENT " + $bytes.Length
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-Date) -lt $deadline) {{
+    try {{ $l = $sp.ReadLine() }} catch {{ break }}
+    if ($l -like 'RPL *') {{ "REPLY " + $l; break }}
+}}
+$sp.Close()
+"#
+        )
 }
 
 /// Base64 of `text` as UTF-16LE, for PowerShell's `-EncodedCommand`.
@@ -85,13 +123,73 @@ fn parse(output: &str) -> Outcome {
     o
 }
 
+fn powershell(script: &str) -> Result<std::process::Output, String> {
+    Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(encode_command(script))
+        .output()
+        .map_err(|e| format!("powershell: {e}"))
+}
+
+/// Sends the image `what` (an image name, built first, or a `.bin` file) to
+/// the resident loader.
+pub fn load(root: &Path, what: &str) -> Result<(), String> {
+    let bin = if what.ends_with(".bin") {
+        Path::new(what).to_path_buf()
+    } else {
+        crate::cross()?;
+        let out = root.join("target/load");
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        let bin = out.join(format!("{what}.bin"));
+        let elf = root
+            .join("target/armv5te-x51v-none-eabi/release")
+            .join(what);
+        if !elf.exists() {
+            return Err(format!("no image `{what}` (looked for {})", elf.display()));
+        }
+        crate::sdkit::raw_binary(&elf, &bin)?;
+        bin
+    };
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let frame = bin.with_extension("frame");
+    std::fs::write(&frame, rp_loadproto::frame(&payload))
+        .map_err(|e| format!("{}: {e}", frame.display()))?;
+    let out = powershell(&load_script(&frame))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut port = None;
+    let mut reply = None;
+    for line in text.lines().map(str::trim) {
+        if let Some(p) = line.strip_prefix("PORT ") {
+            port = Some(p.to_string());
+        } else if let Some(r) = line.strip_prefix("REPLY ") {
+            reply = Some(r.to_string());
+        }
+    }
+    let Some(port) = port else {
+        return Err(format!(
+            "no RetroPane USB port ({VID_PID}) found. Is the loader running with the cable plugged in?{}",
+            stderr_note(&out.stderr)
+        ));
+    };
+    match reply.as_deref() {
+        Some("RPL OK") => {
+            eprintln!(
+                "    {} bytes sent on {port}: the loader started it",
+                payload.len()
+            );
+            Ok(())
+        }
+        Some(r) => Err(format!("the loader refused the image: {r}")),
+        None => Err(format!(
+            "no reply from the loader on {port}{}",
+            stderr_note(&out.stderr)
+        )),
+    }
+}
+
 /// Runs the check.
 pub fn run() -> Result<(), String> {
-    let out = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
-        .arg(encode_command(&script()))
-        .output()
-        .map_err(|e| format!("powershell: {e}"))?;
+    let out = powershell(&script())?;
     let text = String::from_utf8_lossy(&out.stdout);
     let o = parse(&text);
     let Some(port) = o.port else {
@@ -158,5 +256,12 @@ mod tests {
     #[test]
     fn the_script_looks_for_our_ids() {
         assert!(script().contains("USB\\VID_1209&PID_0001*"));
+        assert!(load_script(Path::new("x.frame")).contains("USB\\VID_1209&PID_0001*"));
+    }
+
+    #[test]
+    fn load_paths_are_quoted_for_powershell() {
+        let s = load_script(Path::new("C:/it's/x.frame"));
+        assert!(s.contains("ReadAllBytes('C:/it''s/x.frame')"));
     }
 }

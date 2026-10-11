@@ -234,6 +234,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-loader"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-uart",
+ "rp-drv-pxa-udc",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-loadproto",
+]
+
+[[package]]
+name = "rp-loadproto"
+version = "0.0.0"
+
+[[package]]
 name = "rp-lz4"
 version = "0.0.0"
 
@@ -343,6 +361,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "rp-drv-mbx-display",
+ "rp-loadproto",
  "serde_json",
 ]
 

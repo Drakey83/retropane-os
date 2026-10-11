@@ -71,6 +71,13 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 20 * 1024,
         max_zero: 20 * 1024,
     },
+    // Bring-up: the resident loader (ADR-0012 U3): 19.6 KiB measured, +~10%.
+    // It must also stay inside its 1 MiB home (boot/loader/link.x).
+    Budget {
+        image: "rp-loader",
+        max_load: 22 * 1024,
+        max_zero: 20 * 1024,
+    },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     Budget {
         image: "rp-light",

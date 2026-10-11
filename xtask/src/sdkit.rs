@@ -65,6 +65,9 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
           The PC finds a COM port (no driver needed); on the PC run
           `cargo xtask usb`. The yellow lines at the top show what the PC
           has done (resets, setups, configured, open, bytes).
+- loader/ Resident loader: start it once with HaRET, cable plugged in; then
+          every `cargo xtask load <image>` on the PC sends a new image over
+          USB and starts it. No more copying files.
 ";
 
 /// Builds the kit into `target/sdkit`.
@@ -84,9 +87,13 @@ pub fn build(root: &Path) -> Result<(), String> {
     eprintln!("    retropane.bin: {size} bytes (raw image for 0xA8008000)");
 
     // Other images, each swapped in as retropane.bin from its own folder:
-    // first light (boot/light), for when the probe shows nothing, and the USB
-    // link test (boot/usb, ADR-0012).
-    for (dir, image) in [("light", "rp-light"), ("usb", "rp-usb")] {
+    // first light (boot/light), for when the probe shows nothing, the USB
+    // link test (boot/usb) and the resident loader (boot/loader), ADR-0012.
+    for (dir, image) in [
+        ("light", "rp-light"),
+        ("usb", "rp-usb"),
+        ("loader", "rp-loader"),
+    ] {
         let out = kit.join(dir);
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         crate::emu::run(
@@ -118,6 +125,16 @@ pub fn build(root: &Path) -> Result<(), String> {
     }
     eprintln!("    SD kit ready: {}", kit.display());
     Ok(())
+}
+
+/// Writes `elf` as a raw binary (what HaRET and the loader start) to `out`.
+pub fn raw_binary(elf: &Path, out: &Path) -> Result<(), String> {
+    crate::emu::run(
+        Command::new(objcopy())
+            .args(["-O", "binary"])
+            .arg(elf)
+            .arg(out),
+    )
 }
 
 /// `llvm-objcopy` from the toolchain's `llvm-tools` component.
