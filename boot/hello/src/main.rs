@@ -25,8 +25,10 @@ mod image {
 
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
+    use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_drv_tsc2046::{Calibration, Tsc2046};
     use rp_hal_pxa27x::rt;
 
@@ -49,9 +51,10 @@ mod image {
             uart.init(115_200);
             let _ = writeln!(uart, "\nRetroPane OS: hello from the Dell Axim X51v");
             let _ = writeln!(uart, "CPU ID: {:#010x}", rt::cpu_id());
-            let vga = match rp_hal_x51v::devices::take_cpld() {
-                Some(bus) => {
-                    let panel = Cpld::new(bus).panel(&mut TimerDelay);
+            let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
+            let vga = match cpld.as_mut() {
+                Some(cpld) => {
+                    let panel = cpld.panel(&mut TimerDelay);
                     let _ = writeln!(uart, "Panel: {}", panel.name());
                     panel.is_vga()
                 }
@@ -76,6 +79,49 @@ mod image {
                     "Display: {}x{} test pattern",
                     plane.width, plane.height
                 );
+            }
+            // SD card: power it through the CPLD, identify it, read the MBR.
+            if let (Some(cpld), Some(mmc)) = (cpld.as_mut(), rt::take_mmc()) {
+                cpld.set_sd_power(true);
+                rt::delay_us(10_000);
+                match SdCard::init(PxaMmc::new(mmc)) {
+                    Ok(mut card) => {
+                        let kind = if card.is_high_capacity() {
+                            "SDHC"
+                        } else {
+                            "SD"
+                        };
+                        let _ = writeln!(uart, "SD: {kind} card, RCA {:#06x}", card.rca());
+                        let mut block = [0u8; rp_drv_sdcard::BLOCK];
+                        match card.read(0, &mut block) {
+                            Ok(()) => match mbr_partitions(&block) {
+                                Some(parts) => {
+                                    for (i, p) in parts.iter().enumerate() {
+                                        if let Some(p) = p {
+                                            let _ = writeln!(
+                                                uart,
+                                                "SD: partition {} type {:#04x} start {} blocks {}",
+                                                i + 1,
+                                                p.kind,
+                                                p.start,
+                                                p.blocks
+                                            );
+                                        }
+                                    }
+                                }
+                                None => {
+                                    let _ = writeln!(uart, "SD: no partition table");
+                                }
+                            },
+                            Err(e) => {
+                                let _ = writeln!(uart, "SD: read failed: {e:?}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = writeln!(uart, "SD: no card ({e:?})");
+                    }
+                }
             }
             let _ = writeln!(uart, "{}", super::MARKER);
 

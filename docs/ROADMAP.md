@@ -22,6 +22,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [x] Custom Rust target `armv5te-x51v-none-eabi`; pinned toolchain
 - [x] CI: fmt, clippy, lint-layers, host tests, cross-build, coverage floor
 - [x] ADRs 0001–0004 written: Rust-first, QEMU fork, slot memory model, testing policy. *(The TLS library ADR moves to Phase 6, where it's needed.)*
+- [ ] ADR-0005 memory and storage architecture *(proposed; accept before kernel VM work)*; code-size budgets enforced in `cargo xtask cross`
 - [x] **RE:** `tools/romdump`: unpacks X51v `.nb0` ROM images (IMGFS + LZX) and rebuilds driver DLLs as PE files. No device access needed
 - [ ] *(Optional)* UART serial adapter for deep debugging. Not required: the cradle's USB is the main console from Phase 2
 - [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory), which become the "at least as fast" target
@@ -63,7 +64,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] Display (pxafb passthrough first, then native 2700G planes)
 - [x] Touch (TSC2046 via SSP1 + GPIO), keypad buttons: drivers + emulator tests *(calibration UI still to do)*
 - [ ] Backlight (PWM), power button
-- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system
+- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled SD/SDHC init + block reads done: drivers/sdcard, drivers/pxa-mmc; emulator test reads the MBR)*
 - [ ] CompactFlash (PXA PC Card socket 1, DMA where possible)
 - [ ] Audio (WM8750, I²S, DMA)
 - [ ] USB client (serial gadget for development networking)

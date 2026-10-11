@@ -43,6 +43,16 @@ pub trait RegisterBus16 {
     fn write16(&mut self, offset: usize, value: u16);
 }
 
+/// Byte-wide access to a register bank (e.g. data FIFOs that must be read
+/// a byte at a time). Offsets are byte offsets.
+pub trait RegisterBus8 {
+    /// Reads the 8-bit register at `offset`.
+    fn read8(&mut self, offset: usize) -> u8;
+
+    /// Writes `value` to the 8-bit register at `offset`.
+    fn write8(&mut self, offset: usize, value: u8);
+}
+
 /// A digital output pin.
 pub trait OutputPin {
     /// Drives the pin high.

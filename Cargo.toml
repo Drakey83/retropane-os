@@ -12,6 +12,8 @@ members = [
     "drivers/pxa-gpio",
     "drivers/pxa-ssp",
     "drivers/tsc2046",
+    "drivers/sdcard",
+    "drivers/pxa-mmc",
     "boot/hello",
     "tools/romdump",
     "xtask",

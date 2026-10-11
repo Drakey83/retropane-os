@@ -1,0 +1,18 @@
+[package]
+name = "rp-drv-pxa-mmc"
+description = "PXA27x MMC/SD host controller (polled), implementing rp-drv-sdcard's SdHost"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-drv-sdcard = { path = "../sdcard" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true
