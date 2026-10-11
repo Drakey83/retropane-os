@@ -25,12 +25,10 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-10 | Own `memcpy`/`memset`/`memmove`/`memcmp` (`hal/mem`): 32-byte `ldm`/`stm` bulk loops + `pld`, instead of compiler-builtins' one word per four instructions. Exhaustively tested on host and on target | `memcpy_64k` | 65,585 ns | 10,292 ns (**6.4×**) |
 | 2026-10-10 | (same change) | `memset_64k` | 49,200 ns | 6,185 ns (**8.0×**) |
 | 2026-10-10 | (same change, the pattern fill copies rows with `memcpy`) | `fb_pattern_vga` | 642,974 ns | 127,692 ns (5×; **129×** vs. the original) |
+| 2026-10-10 | Solid fills: `rp_hal_mem::fill32` (any alignment, 32-byte `stm` bursts) and `fill_rect_rgb565` in the display driver, one burst fill per row | `fb_solid_fill_vga` | 1,075,282 ns | 92,205 ns (**11.7×**) |
 
 ## Open leads
 
-- `fb_solid_fill_vga` (one 32-bit store per loop) is *slower* than the row-copy
-  fill: the library `memcpy` moves data in multi-word bursts. Fills should use
-  burst stores (`stm`) too.
 - `memcpy` is now 38× faster than a naive byte loop. Next: measure on the real
   X51v, where SDRAM burst behaviour (not instruction count) dominates, and try
   iWMMXt 64-bit loads/stores.

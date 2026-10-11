@@ -200,6 +200,28 @@ impl Plane {
     }
 }
 
+/// Fills a `w` × `h` rectangle at `(x, y)` of an RGB565 framebuffer
+/// (`stride` bytes per line) with `color`. Each row is one burst fill
+/// (`rp_hal_mem::fill32`). The rectangle is clipped to `buf`.
+pub fn fill_rect_rgb565(
+    buf: &mut [u8],
+    stride: usize,
+    x: usize,
+    y: usize,
+    w: usize,
+    h: usize,
+    color: u16,
+) {
+    let word = u32::from(color) * 0x0001_0001;
+    for row in y..y + h {
+        let start = row * stride + x * 2;
+        let Some(line) = buf.get_mut(start..start + w * 2) else {
+            return;
+        };
+        rp_hal_mem::fill32(line, word);
+    }
+}
+
 /// The 2700G display controller.
 #[derive(Debug)]
 pub struct Display<B> {
@@ -318,6 +340,27 @@ mod tests {
         assert_eq!(w.last(), Some(&(reg::DSCTRL, 0x8000_0020)));
         assert_eq!(w.len(), 2 + 9 + 5);
         assert!(w.contains(&(reg::GSCADR, 0x8000_6000)));
+    }
+
+    #[test]
+    fn fill_rect_touches_only_the_rectangle() {
+        let stride = 16; // 8 pixels per line
+        let mut buf = vec![0u8; stride * 4];
+        fill_rect_rgb565(&mut buf, stride, 1, 1, 3, 2, 0xF800);
+        for y in 0..4 {
+            for x in 0..8 {
+                let px = u16::from_le_bytes([buf[y * stride + x * 2], buf[y * stride + x * 2 + 1]]);
+                let inside = (1..4).contains(&x) && (1..3).contains(&y);
+                assert_eq!(px, if inside { 0xF800 } else { 0 }, "({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn fill_rect_clips_at_the_buffer_end() {
+        let mut buf = vec![0u8; 16 * 2];
+        fill_rect_rgb565(&mut buf, 16, 0, 1, 8, 5, 0xFFFF);
+        assert!(buf[16..].iter().all(|&b| b == 0xFF));
     }
 
     #[test]
