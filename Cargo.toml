@@ -8,6 +8,7 @@ members = [
     "drivers/pxa-uart",
     "drivers/mbx-display",
     "drivers/cpld",
+    "drivers/pxa-keypad",
     "boot/hello",
     "tools/romdump",
     "xtask",

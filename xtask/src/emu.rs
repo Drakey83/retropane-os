@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.3.0";
+pub const QEMU_RELEASE: &str = "rp-v0.4.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -167,15 +167,44 @@ fn run(cmd: &mut Command) -> Result<(), String> {
     }
 }
 
-/// Boots the bring-up image, checks it reports success over the UART, then
-/// screenshots the emulated display and verifies the test pattern.
+/// A scripted interaction after boot: send a monitor command, then wait for
+/// serial output containing each `expect` string.
+struct Step {
+    command: &'static str,
+    expect: &'static [&'static str],
+}
+
+/// Button presses checked after the hello image boots (QEMU `sendkey` names;
+/// see docs/hw/keypad.md for the emulator's key mapping).
+const HELLO_STEPS: &[Step] = &[
+    Step {
+        command: "sendkey up",
+        expect: &["KEY Up down", "KEY Up up"],
+    },
+    Step {
+        command: "sendkey ret",
+        expect: &["KEY Enter down", "KEY Enter up"],
+    },
+    Step {
+        command: "sendkey f1",
+        expect: &["KEY Calendar down", "KEY Calendar up"],
+    },
+    Step {
+        command: "sendkey f4",
+        expect: &["KEY Home down", "KEY Home up"],
+    },
+];
+
+/// Boots the bring-up image, checks it reports success over the UART,
+/// screenshots the emulated display and verifies the test pattern, then
+/// presses buttons and checks the image reports them.
 pub fn boot_hello(root: &Path) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
     let shot = root
         .join("target")
         .join("emulator")
         .join("hello-screen.ppm");
-    let output = boot(root, &image, HELLO_MARKER, Some(&shot))?;
+    let output = boot(root, &image, HELLO_MARKER, Some(&shot), HELLO_STEPS)?;
     eprint!("{output}");
     if !output.ends_with('\n') {
         eprintln!();
@@ -184,16 +213,46 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
     crate::screen::check_test_pattern(&ppm)?;
     eprintln!("    display OK: test pattern verified ({})", shot.display());
+    eprintln!(
+        "    input OK: {} button presses reported",
+        HELLO_STEPS.len()
+    );
     Ok(())
 }
 
-/// Boots `image` and waits until its serial output contains `marker`.
-/// Returns the serial output.
+/// Serial output collected from the emulator, with a deadline.
+struct Serial {
+    rx: mpsc::Receiver<Vec<u8>>,
+    output: String,
+    deadline: Instant,
+}
+
+impl Serial {
+    /// Waits until the output (from byte `from` onwards) contains `text`.
+    fn wait_for(&mut self, text: &str, from: usize) -> bool {
+        loop {
+            if self.output.get(from..).is_some_and(|o| o.contains(text)) {
+                return true;
+            }
+            let Some(left) = self.deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            match self.rx.recv_timeout(left) {
+                Ok(chunk) => self.output.push_str(&String::from_utf8_lossy(&chunk)),
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+/// Boots `image`, waits until its serial output contains `marker`, optionally
+/// takes a screenshot, then runs `steps`. Returns the serial output.
 fn boot(
     root: &Path,
     image: &Path,
     marker: &str,
     screenshot: Option<&Path>,
+    steps: &[Step],
 ) -> Result<String, String> {
     let port = monitor_port();
     let monitor = format!("tcp:127.0.0.1:{port},server,nowait");
@@ -239,44 +298,54 @@ fn boot(
         }
     });
 
-    let deadline = Instant::now() + BOOT_TIMEOUT;
-    let mut output = String::new();
-    let found = loop {
-        if output.contains(marker) {
-            break true;
-        }
-        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-            break false;
-        };
-        match rx.recv_timeout(left) {
-            Ok(chunk) => output.push_str(&String::from_utf8_lossy(&chunk)),
-            Err(_) => break false,
-        }
+    let mut serial = Serial {
+        rx,
+        output: String::new(),
+        deadline: Instant::now() + BOOT_TIMEOUT,
     };
-    let shot_result = match screenshot {
-        Some(path) if found => {
-            let _ = std::fs::remove_file(path);
-            let guest_path = if wsl {
-                to_wsl_path(path)
-            } else {
-                path.display().to_string()
-            };
-            crate::screen::screendump(port, &guest_path, path)
-        }
-        _ => Ok(()),
-    };
+    let result = run_session(&mut serial, marker, port, wsl, screenshot, steps);
     let _ = child.kill();
     let _ = child.wait();
-    shot_result?;
-
-    if found {
-        Ok(output)
-    } else {
-        Err(format!(
-            "no `{marker}` within {}s. Serial output so far:\n{output}",
-            BOOT_TIMEOUT.as_secs()
-        ))
+    match result {
+        Ok(()) => Ok(serial.output),
+        Err(e) => Err(format!("{e}. Serial output so far:\n{}", serial.output)),
     }
+}
+
+fn run_session(
+    serial: &mut Serial,
+    marker: &str,
+    port: u16,
+    wsl: bool,
+    screenshot: Option<&Path>,
+    steps: &[Step],
+) -> Result<(), String> {
+    if !serial.wait_for(marker, 0) {
+        return Err(format!("no `{marker}` within {}s", BOOT_TIMEOUT.as_secs()));
+    }
+    if screenshot.is_none() && steps.is_empty() {
+        return Ok(());
+    }
+    let mut mon = crate::screen::Monitor::connect(port)?;
+    if let Some(path) = screenshot {
+        let _ = std::fs::remove_file(path);
+        let guest = if wsl {
+            to_wsl_path(path)
+        } else {
+            path.display().to_string()
+        };
+        mon.screendump(&guest, path)?;
+    }
+    for step in steps {
+        let from = serial.output.len();
+        mon.command(step.command)?;
+        for want in step.expect {
+            if !serial.wait_for(want, from) {
+                return Err(format!("after `{}`: no `{want}` on serial", step.command));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

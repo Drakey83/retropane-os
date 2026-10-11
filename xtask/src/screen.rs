@@ -8,38 +8,60 @@ use std::time::{Duration, Instant};
 
 use rp_drv_mbx_display::pattern;
 
-/// Asks QEMU (monitor on `port`) to write a PPM screenshot to `guest_path`, and
-/// waits for it to appear at `host_path` (the same file as seen from here).
-pub fn screendump(port: u16, guest_path: &str, host_path: &Path) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut stream = loop {
-        match TcpStream::connect(("127.0.0.1", port)) {
-            Ok(s) => break s,
-            Err(e) if Instant::now() > deadline => {
-                return Err(format!("can't reach QEMU monitor on port {port}: {e}"));
+/// A connection to QEMU's human monitor.
+pub struct Monitor {
+    stream: TcpStream,
+}
+
+impl Monitor {
+    /// Connects to the monitor on local `port`, retrying while QEMU starts.
+    pub fn connect(port: u16) -> Result<Self, String> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => break s,
+                Err(e) if Instant::now() > deadline => {
+                    return Err(format!("can't reach QEMU monitor on port {port}: {e}"));
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(100)),
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(100)),
-        }
-    };
-    stream
-        .set_read_timeout(Some(Duration::from_millis(500)))
-        .map_err(|e| e.to_string())?;
-    let mut banner = [0u8; 512];
-    let _ = stream.read(&mut banner);
-    writeln!(stream, "screendump {guest_path} mbx2700g").map_err(|e| e.to_string())?;
-    while Instant::now() < deadline {
-        if let Ok(meta) = std::fs::metadata(host_path)
-            && meta.len() > 0
-        {
-            // Give QEMU a moment to finish writing, then check it's complete.
-            std::thread::sleep(Duration::from_millis(200));
-            if std::fs::metadata(host_path).is_ok_and(|m| m.len() == meta.len()) {
-                return Ok(());
-            }
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .map_err(|e| e.to_string())?;
+        let mut banner = [0u8; 512];
+        let _ = stream.read(&mut banner);
+        Ok(Self { stream })
     }
-    Err(format!("no screenshot at {}", host_path.display()))
+
+    /// Sends one monitor command.
+    pub fn command(&mut self, cmd: &str) -> Result<(), String> {
+        writeln!(self.stream, "{cmd}").map_err(|e| e.to_string())?;
+        // Drain the echo and prompt so the socket buffer never fills.
+        let mut sink = [0u8; 1024];
+        let _ = self.stream.read(&mut sink);
+        Ok(())
+    }
+
+    /// Screenshots the 2700G console to `guest_path` (as QEMU sees it) and
+    /// waits for the file to appear completely at `host_path`.
+    pub fn screendump(&mut self, guest_path: &str, host_path: &Path) -> Result<(), String> {
+        self.command(&format!("screendump {guest_path} mbx2700g"))?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Ok(meta) = std::fs::metadata(host_path)
+                && meta.len() > 0
+            {
+                // Give QEMU a moment to finish writing, then check it's complete.
+                std::thread::sleep(Duration::from_millis(200));
+                if std::fs::metadata(host_path).is_ok_and(|m| m.len() == meta.len()) {
+                    return Ok(());
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Err(format!("no screenshot at {}", host_path.display()))
+    }
 }
 
 /// A decoded binary PPM (P6, 8-bit).
