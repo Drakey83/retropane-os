@@ -47,7 +47,7 @@ mod image {
     use rp_bench_suite as suite;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, SAVED_REGS, X51V_VGA, reg};
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Button, Keypad, Pressed};
     use rp_drv_pxa_mmc::PxaMmc;
@@ -60,70 +60,6 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
 
     rp_hal_pxa27x::entry!(main);
-
-    /// The 2700G registers Dell's driver saves and restores across suspend
-    /// (docs/hw/2700g.md): its own list of essential, safely readable state.
-    const GPU_REGS: &[(&str, usize)] = &[
-        ("SYSCFG", 0x000),
-        ("PIXCLK", 0x048),
-        ("MEMCLK", 0x04C),
-        ("M24CLK", 0x050),
-        ("MBXCLK", 0x054),
-        ("SDCLK", 0x058),
-        ("PIXCLKDIV", 0x05C),
-        ("LCDCONFIG", 0x060),
-        ("LMCFG", 0x1004),
-        ("LMPWR", 0x1008),
-        ("LMCEMR", 0x1010),
-        ("LMTYPE", 0x1014),
-        ("LMTIM", 0x1018),
-        ("LMREFRESH", 0x101C),
-        ("LMPROTMIN", 0x1020),
-        ("LMPROTMAX", 0x1024),
-        ("LMPROTCFG", 0x1028),
-        ("GSCTRL", 0x2000),
-        ("GBBASE", 0x2020),
-        ("GDRCTRL", 0x2040),
-        ("GSCADR", 0x2060),
-        ("GSADR", 0x20C0),
-        ("GPLUT", 0x2150),
-        ("VSCTRL", 0x2004),
-        ("VBBASE", 0x2024),
-        ("VCMSK", 0x2044),
-        ("VSCADR", 0x2064),
-        ("VUBASE", 0x2084),
-        ("VSADR", 0x20C4),
-        ("BGCOLOR", 0x2174),
-        ("HCCTRL", 0x2100),
-        ("HCSIZE", 0x2110),
-        ("HCPOS", 0x2120),
-        ("HCBADR", 0x2130),
-        ("HCCKMSK", 0x2140),
-        ("DSCTRL", 0x2154),
-        ("DUCTRL", 0x230C),
-        ("DHT01", 0x2158),
-        ("DHT02", 0x215C),
-        ("DHT03", 0x2160),
-        ("DVT01", 0x2164),
-        ("DVT02", 0x2168),
-        ("DVT03", 0x216C),
-        ("DVECTRL", 0x2310),
-        ("DHDET", 0x2314),
-        ("DVDET", 0x2318),
-        ("DODMSK", 0x231C),
-        ("DBCOL", 0x2170),
-        ("DSIG", 0x2184),
-        ("DVLNUM", 0x2308),
-        ("DMCTRL", 0x2188),
-        ("DINTRE", 0x217C),
-        ("DINTRCNT", 0x2180),
-        ("DLLCTRL", 0x2304),
-        ("CLIPCTRL", 0x218C),
-        ("SPOCTRL", 0x2190),
-        ("SVCTRL", 0x2194),
-        ("SHCTRL", 0x21B0),
-        ("SSSIZE", 0x21D8),
-    ];
 
     /// Light grey on black: highest contrast for a photo.
     const COLORS: (u16, u16) = (0xFFFF, 0x0000);
@@ -221,13 +157,13 @@ mod image {
         rt::init_mmu();
 
         // 2. The 2700G: read its state, then find a framebuffer to draw in.
-        let mut gpu = [0u32; GPU_REGS.len()];
+        let mut gpu = [0u32; SAVED_REGS.len()];
         let mut display_note = "no 2700G";
         let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             let _ = writeln!(uart, "probe: no 2700G");
             halt()
         };
-        for (v, (_, off)) in gpu.iter_mut().zip(GPU_REGS) {
+        for (v, (_, off)) in gpu.iter_mut().zip(SAVED_REGS) {
             *v = regs.read32(*off);
         }
         let kept = Plane::decode(
@@ -411,8 +347,8 @@ mod image {
 
         rep.on_page(2);
         rep.line(format_args!("3 2700G (as left by WM)"));
-        let mut pairs = [("", 0u32); GPU_REGS.len()];
-        for (k, (name, _)) in GPU_REGS.iter().enumerate() {
+        let mut pairs = [("", 0u32); SAVED_REGS.len()];
+        for (k, (name, _)) in SAVED_REGS.iter().enumerate() {
             pairs[k] = (name, gpu[k]);
         }
         rep.pairs(&pairs);
