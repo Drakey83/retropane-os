@@ -70,6 +70,11 @@ Facts (docs/hw/udc.md):
   flight, only the active interface's endpoints work, and the transceiver
   output bit. Open: the PC notices the device only after a cable replug
   (the D+ pull-up control is not GPIO2, or not only).
+- **U3 works on the device (2026-10-11):** the loader took first light
+  over USB (`cargo xtask load rp-light`), started it, got control back, and
+  handed its run log to the PC: the first device run with no file copy and
+  no photo. Still needed per run: a cable replug, because the PC doesn't
+  notice the Axim leaving and returning (the pull-up question above).
 - **U3 built, emulator-tested:** `rp-loadproto` (framing + CRC-32),
   `rp-loader` (moves itself to `0xA8400000`, reserved in boot/link.x and
   memory-map.md), `handoff::launch` (caches and MMU off, as HaRET leaves
