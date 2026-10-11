@@ -555,28 +555,33 @@ pub fn probe_checksum(content: &str) -> u8 {
         .fold(0u8, |a, b| a.wrapping_add(b))
 }
 
+/// Verifies one `P<page>|<line>` report line; returns its page (1-4).
+pub fn check_report_line(l: &str) -> Result<usize, String> {
+    let (page, text) = l
+        .strip_prefix('P')
+        .and_then(|r| r.split_once('|'))
+        .ok_or_else(|| format!("not a report line: `{l}`"))?;
+    let page: usize = page.parse().map_err(|_| format!("bad page in `{l}`"))?;
+    if !(1..=4).contains(&page) || text.len() != 40 {
+        return Err(format!("malformed report line `{l}`"));
+    }
+    let (content, sum) = text.split_at(37);
+    let want = u8::from_str_radix(sum.trim(), 16).map_err(|_| format!("bad checksum in `{l}`"))?;
+    if probe_checksum(content) != want {
+        return Err(format!("checksum mismatch in `{l}`"));
+    }
+    Ok(page)
+}
+
 /// Verifies the `P<page>|<line>` copy of the report on serial. Returns the
 /// number of lines.
 pub fn check_probe_report(output: &str) -> Result<usize, String> {
     let mut pages = [0usize; 4];
     for l in output.lines() {
-        let Some(rest) = l.strip_prefix('P') else {
+        if !l.starts_with('P') || !l.contains('|') {
             continue;
-        };
-        let Some((page, text)) = rest.split_once('|') else {
-            continue;
-        };
-        let page: usize = page.parse().map_err(|_| format!("bad page in `{l}`"))?;
-        if !(1..=4).contains(&page) || text.len() != 40 {
-            return Err(format!("malformed report line `{l}`"));
         }
-        let (content, sum) = text.split_at(37);
-        let want =
-            u8::from_str_radix(sum.trim(), 16).map_err(|_| format!("bad checksum in `{l}`"))?;
-        if probe_checksum(content) != want {
-            return Err(format!("checksum mismatch in `{l}`"));
-        }
-        pages[page - 1] += 1;
+        pages[check_report_line(l)? - 1] += 1;
     }
     if let Some(p) = pages.iter().position(|&n| n == 0) {
         return Err(format!("probe report page {} is empty", p + 1));

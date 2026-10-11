@@ -1,6 +1,6 @@
 # ADR-0012: The USB device link (CDC-ACM first)
 
-- **Status:** Proposed (2026-10-11; built ahead of acceptance at the owner's request, "start on the USB link")
+- **Status:** Accepted (2026-10-11, by the project owner; built ahead of acceptance at the owner's request)
 - **Date:** 2026-10-11
 
 ## Context
@@ -79,9 +79,11 @@ Facts (docs/hw/udc.md):
   `cargo xtask load <image>` prints the run's output. `rp-light` does this
   (its 2700G register walk, answered on the device, was removed to fit its
   budget); the emulator test checks the whole round trip.
-- **Not yet:** the run log and return path in the other images (`rp-probe`
-  needs ~1 KB it doesn't have in its budget), the watchdog for hangs, and
-  starting HaRET from WM's StartUp folder.
+- `rp-probe` does the same (budget raise approved by the owner): its
+  checksummed report lines go to the run log, and `cargo xtask load` verifies
+  every checksum on the PC.
+- **Not yet:** the watchdog for hangs, and starting HaRET from WM's StartUp
+  folder.
 
 ## The four lenses
 
