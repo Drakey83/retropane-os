@@ -62,6 +62,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-keypad"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-uart"
 version = "0.0.0"
 dependencies = [
@@ -100,6 +108,7 @@ version = "0.0.0"
 dependencies = [
  "rp-drv-cpld",
  "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",

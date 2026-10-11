@@ -51,6 +51,8 @@ macro_rules! entry {
 
 /// Single-use guard for the boot-time FFUART handle.
 static mut FFUART_TAKEN: bool = false;
+/// Single-use guard for the keypad controller.
+static mut KEYPAD_TAKEN: bool = false;
 
 /// Hands out the FFUART register bank once.
 ///
@@ -100,4 +102,34 @@ pub fn delay_us(us: u32) {
     while read().wrapping_sub(start) < ticks {
         core::hint::spin_loop();
     }
+}
+
+/// Clock manager: clock enable register (CKEN).
+const CKEN: usize = 0x4130_0004;
+/// CKEN bit for the keypad controller.
+pub const CKEN_KEYPAD: u32 = 19;
+/// Keypad controller base.
+const KEYPAD_BASE: usize = 0x4150_0000;
+
+/// Enables a peripheral clock (`CKEN` bit `bit`).
+pub fn enable_clock(bit: u32) {
+    let cken = CKEN as *mut u32;
+    // SAFETY: CKEN is the clock manager's clock enable register, identity-
+    // mapped with the MMU off; single core with IRQs masked, so this
+    // read-modify-write can't race.
+    unsafe { cken.write_volatile(cken.read_volatile() | (1 << bit)) }
+}
+
+/// Hands out the keypad controller once, with its clock enabled.
+pub fn take_keypad() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(KEYPAD_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_KEYPAD);
+    let base = NonNull::new(KEYPAD_BASE as *mut u32)?;
+    // SAFETY: the keypad controller's register window (PXA27x memory map,
+    // 0x4C bytes used), identity-mapped; the flag guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x100) })
 }

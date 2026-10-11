@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-pxa-keypad"
+description = "PXA27x keypad controller driver and the Dell Axim X51v button matrix"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

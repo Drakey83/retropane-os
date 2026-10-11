@@ -21,6 +21,7 @@ mod image {
 
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
+    use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt;
 
@@ -68,6 +69,22 @@ mod image {
                 );
             }
             let _ = writeln!(uart, "{}", super::MARKER);
+
+            // Report button presses until the end of time (or the emulator).
+            if let Some(regs) = rt::take_keypad() {
+                let mut keypad = Keypad::new(regs);
+                keypad.enable();
+                let mut last = Pressed::default();
+                loop {
+                    let now = keypad.pressed();
+                    for (button, down) in last.changes(now) {
+                        let state = if down { "down" } else { "up" };
+                        let _ = writeln!(uart, "KEY {} {state}", button.name());
+                    }
+                    last = now;
+                    rt::delay_us(5_000);
+                }
+            }
         }
         loop {
             core::hint::spin_loop();
