@@ -65,16 +65,29 @@ mod image {
         halt()
     }
 
+    /// Start-up colours (as in rp-light): a hang leaves the last one on
+    /// screen. Red: main entered (the relocation worked); yellow: FFUART
+    /// set up; green: MMU on; cyan: 2700G answered.
+    #[inline(never)]
+    fn step(i: usize) {
+        const COLOURS: [u16; 4] = [0xF800, 0xFFE0, 0x07E0, 0x07FF];
+        devices::beacon(COLOURS[i], COLOURS[i]);
+    }
+
     fn main() -> ! {
+        step(0);
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
+        step(1);
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
+        step(2);
 
         let Some((mut regs, vram)) = devices::take_mbx() else {
             halt()
         };
+        step(3);
         let plane = Plane::decode(
             regs.read32(reg::GSCTRL),
             regs.read32(reg::GSCADR),
