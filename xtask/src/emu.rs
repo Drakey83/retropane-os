@@ -91,6 +91,9 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
     let output = boot(root, &image, HELLO_MARKER)?;
     eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
     eprintln!("    emulator boot OK");
     Ok(())
 }
