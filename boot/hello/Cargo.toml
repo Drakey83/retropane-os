@@ -1,0 +1,16 @@
+[package]
+name = "rp-hello"
+description = "Bring-up image: proves the toolchain, startup code and UART on the emulator and the real X51v"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# Only the device build uses these; on the host this is an empty program.
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true
