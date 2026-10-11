@@ -1,0 +1,31 @@
+name: Hardware / reverse-engineering finding
+description: A fact about the X51v hardware (register, bit, sequence, timing)
+labels: ["re"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read docs/CLEANROOM.md first. Describe **facts only**: no code,
+        disassembly listings or proprietary files. Findings are merged as specs in docs/hw/.
+  - type: dropdown
+    id: block
+    attributes:
+      label: Hardware block
+      options: [2700G MBX 3D, 2700G 2D blitter, 2700G MVED1 video, 2700G display/clocks, ACX100 Wi-Fi, CPLD, Power/battery, Bluetooth, Touch, Audio, SD, CompactFlash, Other]
+    validations: { required: true }
+  - type: dropdown
+    id: confidence
+    attributes:
+      label: Confidence
+      options: [confirmed, likely, guess]
+    validations: { required: true }
+  - type: textarea
+    id: fact
+    attributes:
+      label: The finding
+    validations: { required: true }
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence (which experiment/trace shows it, on what ROM)
+    validations: { required: true }

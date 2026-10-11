@@ -1,0 +1,14 @@
+[package]
+name = "rp-hal-pxa27x"
+description = "RetroPane HAL implementation for the Intel PXA27x SoC (real MMIO)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../api" }
+
+[lints]
+workspace = true

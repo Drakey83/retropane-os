@@ -1,0 +1,11 @@
+[package]
+name = "rp-hal-x51v"
+description = "RetroPane board description for the Dell Axim X51v"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

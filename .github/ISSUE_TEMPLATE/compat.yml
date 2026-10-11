@@ -1,0 +1,23 @@
+name: App compatibility report
+description: A Windows Mobile 5/6.x app that does or doesn't work on RetroPane
+labels: [compat]
+body:
+  - type: input
+    id: app
+    attributes:
+      label: App name and version
+    validations: { required: true }
+  - type: dropdown
+    id: status
+    attributes:
+      label: Status
+      options: [Works perfectly, Works with glitches, Starts but unusable, Crashes, Won't start]
+    validations: { required: true }
+  - type: input
+    id: hash
+    attributes:
+      label: SHA-256 of the .exe (no binaries, please)
+  - type: textarea
+    id: details
+    attributes:
+      label: Details (missing API errors, crash screen, performance vs stock WM)

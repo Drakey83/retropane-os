@@ -1,0 +1,38 @@
+# Compatibility and performance corpus (DESIGN.md §6, §11b).
+# Metadata only: binaries are user-supplied and never committed (docs/CLEANROOM.md).
+# `sha256` will be filled in from the maintainer's copies.
+
+[[app]]
+name = "DoomGLES (Doom)"
+platform = "WM5"
+uses = ["libGLES_CL", "EGL", "coredll", "aygshell"]
+stock_baseline = "VGA, ~50-60 fps (estimated), LennySh WM6.1 ROM"
+sha256 = ""
+
+[[app]]
+name = "DoomGLES (Doom II)"
+platform = "WM5"
+uses = ["libGLES_CL", "EGL", "coredll", "aygshell"]
+stock_baseline = "to measure"
+sha256 = ""
+
+[[app]]
+name = "HereticGLES"
+platform = "WM5"
+uses = ["libGLES_CL", "EGL"]
+stock_baseline = "to measure"
+sha256 = ""
+
+[[app]]
+name = "Cube (GLES)"
+platform = "WM5"
+uses = ["libGLES_CL", "EGL"]
+stock_baseline = "to measure"
+sha256 = ""
+
+[[app]]
+name = "Quake 3 (Q3CE)"
+platform = "WM5"
+uses = ["libGLES_CL", "EGL"]
+stock_baseline = "very slow loading; ~full speed once running"
+sha256 = ""
