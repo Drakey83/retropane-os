@@ -55,7 +55,7 @@ pub const BUDGETS: &[Budget] = &[
         // boot stacks, scheduler tables, 128 thread contexts).
         // Raised 15 -> 17 KiB on 2026-10-11 (approved by the owner): the
         // user-mode preemption test (16.0 KiB measured, ratcheted +~9%).
-        // PROPOSED 17 -> 27 KiB (needs the owner's approval): ADR-0010's
+        // Raised 17 -> 27 KiB on 2026-10-11 (approved by the owner): ADR-0010's
         // mutexes with priority inheritance (~2 KiB of scheduler code), the
         // user-fault path, lazy iWMMXt switching (~1.3 KiB of HAL code, in
         // this image only) and interrupts as waitable objects, plus their
