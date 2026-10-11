@@ -13,6 +13,20 @@
 #![cfg_attr(not(test), no_std)]
 #![no_builtins]
 
+/// Views words as bytes (little-endian order on the X51v). Always sound:
+/// `u8` has no alignment requirement and every bit pattern is a valid `u8`,
+/// and the borrow keeps the words untouchable while the bytes are in use.
+/// Lets the kernel treat a frame of its word-typed RAM pool as a page of
+/// bytes without `unsafe` outside the HAL.
+pub fn words_as_bytes_mut(words: &mut [u32]) -> &mut [u8] {
+    let len = words.len() * 4;
+    // SAFETY: the pointer comes from a valid `&mut [u32]` covering exactly
+    // `len` bytes; u8 has alignment 1 and no invalid values; the returned
+    // slice reborrows `words` mutably for its whole lifetime, so nothing
+    // else can observe the words meanwhile.
+    unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), len) }
+}
+
 /// Copies `n` bytes forward. Regions may overlap only if `dst <= src`.
 ///
 /// # Safety
@@ -361,6 +375,15 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_view_as_little_endian_bytes() {
+        let mut w = [0x0403_0201u32, 0x0807_0605];
+        let b = words_as_bytes_mut(&mut w);
+        assert_eq!(b, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        b[0] = 0xFF;
+        assert_eq!(w[0], 0x0403_02FF);
+    }
 
     const MAX: usize = 300;
 

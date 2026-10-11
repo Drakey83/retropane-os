@@ -314,6 +314,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM FCSE OK",
     "VM domains OK",
     "VM fault loop OK",
+    "VM compressed RAM OK",
     "VM unmap OK",
 ];
 

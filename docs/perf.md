@@ -45,6 +45,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | LZ4 benchmarks on representative pages: text (UI strings: long matches) and noise (already-compressed data) beside the heap stress page. Text decodes at ~12 emulated instructions per byte | `lz4_decompress_text` | — | 50,909 ns |
 | 2026-10-11 | LZ4 compressor: skip acceleration (search step grows after each 64 misses in a row; a match resets it), so incompressible pages are skimmed. Ratios unchanged on heap and text pages; those got ≤1.5% slower | `lz4_compress_noise` | 142,019 ns | 33,462 ns (**4.2×**) |
 | 2026-10-11 | Probe: one shared crash routine for faults and panics instead of two inlined copies | `rp-probe` loaded size | 40,928 B | 40,664 B |
+| 2026-10-11 | Compressed RAM wired into the VM (`Vm::compress`, restore on fault, stored entries in page tables) and run live in `rp-kernel`. Image grew 26.7 → 37.7 KB; built the image crate for size and removed `&str` padding code: 34.8 KB. **Kernel load budget raised 32 → 40 KiB, pending owner review** | `rp-kernel` loaded size | 26,732 B | 34,840 B |
 
 ## Open leads
 

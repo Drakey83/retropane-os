@@ -84,6 +84,17 @@ another process's page faulting even for kernel reads. `rt::try_read` /
 `try_write` turn an unresolvable fault into an error through a fixup table,
 which the system-call layer will use for user pointers.
 
+**Compressed RAM in the VM (live 2026-10-11):** `Vm::compress` packs an idle
+anonymous page into the compressed page store and puts the store's handle in
+the page's own second-level entry: a fault descriptor only needs bits 1:0 =
+00, so the other 30 bits are free (`arm::l2_stored`). No swap map or reverse
+map exists. The next touch is an ordinary translation fault, and
+`handle_fault` decompresses the page back. Unmapping drains stored entries in
+bounded batches (`PageTables::take_stored`). Lesson: nothing page-sized goes
+on a kernel stack; the first version overflowed the 4 KiB abort stack into
+the frame allocator. Buffers are static (`ZBuffers`) and pages are touched in
+place (`PhysMem::with_page`).
+
 Still to come, in order: reclaim of clean pages (ARMv5 has no accessed bit, so
 reference tracking needs a software scheme) and ADR-0006's rules one at a
 time.

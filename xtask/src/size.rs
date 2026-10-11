@@ -27,10 +27,18 @@ pub const BUDGETS: &[Budget] = &[
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
     // bookkeeping (9 KiB), stacks including a 4 KiB abort stack.
+    // Load budget raised 32 -> 40 KiB on 2026-10-11 (PENDING OWNER REVIEW):
+    // compressed RAM landed (LZ4 codec, compressed page store, fault-path
+    // restore: ~8 KiB); the image crate is already built for size and its
+    // printing trimmed. Revert to 32 KiB if the review says so.
     Budget {
         image: "rp-kernel",
-        max_load: 32 * 1024,
-        max_zero: 100 * 1024,
+        max_load: 40 * 1024,
+        // Raised 100 -> 112 KiB with the load budget (PENDING OWNER REVIEW):
+        // the 12 KiB compression buffers live here, not on a kernel stack
+        // (on the 4 KiB abort stack they overflowed into the frame
+        // allocator).
+        max_zero: 112 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").

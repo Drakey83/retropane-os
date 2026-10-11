@@ -45,6 +45,15 @@ pub trait PhysMem {
     fn phys_frame(&self, phys: u32) -> usize;
     /// Fills the 4 KiB page at `phys` with zeros.
     fn zero(&mut self, phys: u32);
+    /// Runs `f` on the 4 KiB page at `phys` in place (no page-sized copies:
+    /// kernel stacks are small). On entry `f` sees what's in RAM (the caller
+    /// has cleaned any user mapping's cache lines); when it returns, RAM
+    /// holds what `f` wrote and no cache line holds the page under the
+    /// kernel's address, as for [`zero`](Self::zero).
+    fn with_page<R>(&mut self, phys: u32, f: impl FnOnce(&mut [u8; 4096]) -> R) -> R;
+    /// A kernel-private page (never mapped for a process, so it can't alias),
+    /// for the kernel's own structures such as the compressed page store.
+    fn kernel_page(&mut self, phys: u32) -> &mut [u8; 4096];
     /// Copies the 4 KiB page at `src` to `dst`.
     fn copy(&mut self, dst: u32, src: u32);
 }
@@ -249,7 +258,7 @@ impl PageTables {
                 match arm::l2_decode(mem.l2(table_phys)[((mva >> 12) & 0xFF) as usize]) {
                     L2::Small { phys, attrs } => Some((phys | (mva & (PAGE - 1)), attrs)),
                     L2::Large { phys, attrs } => Some((phys | (mva & (LARGE - 1)), attrs)),
-                    L2::Fault => None,
+                    L2::Fault | L2::Stored(_) => None,
                 }
             }
             L1::Fault | L1::Fine => None,
@@ -273,7 +282,7 @@ impl PageTables {
             let new = match arm::l2_decode(t[i]) {
                 L2::Small { phys, attrs } => arm::l2_small(phys, Attrs { ap, ..attrs }),
                 L2::Large { phys, attrs } => arm::l2_large(phys, Attrs { ap, ..attrs }),
-                L2::Fault => return,
+                L2::Fault | L2::Stored(_) => return,
             };
             if new != t[i] {
                 t[i] = new;
@@ -312,6 +321,12 @@ impl PageTables {
                 L2::Small { phys, attrs } => (phys, attrs, false),
                 L2::Large { phys, attrs } => (phys | (page_mva & (LARGE - 1)), attrs, true),
                 L2::Fault => return,
+                L2::Stored(_) => {
+                    // Stored pages are drained first (take_stored), so their
+                    // payloads are freed; reaching one here leaks it.
+                    debug_assert!(false, "unmapping a stored page without take_stored");
+                    return;
+                }
             };
             debug_assert!(
                 !large || {
@@ -509,6 +524,106 @@ impl PageTables {
         moved
     }
 
+    /// Replaces the small page mapped at `mva` with a stored entry carrying
+    /// `payload` (a compressed copy's handle), returning the physical page
+    /// it held. The caller has already cleaned the page's cache lines and
+    /// read its contents. `None` (and nothing changed) if `mva` isn't a
+    /// mapped small page.
+    pub fn store(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mmu: &mut impl Mmu,
+        mva: u32,
+        payload: u32,
+    ) -> Option<u32> {
+        let (table, i) = self.entry(mem, mva)?;
+        let L2::Small { phys, .. } = arm::l2_decode(mem.l2(table)[i]) else {
+            return None;
+        };
+        mem.l2(table)[i] = arm::l2_stored(payload);
+        mem.sync(table + i as u32 * 4, 4);
+        mmu.invalidate_tlb(mva & !(PAGE - 1));
+        Some(phys)
+    }
+
+    /// The payload stored at `mva`, if its entry is a stored one.
+    pub fn stored(&self, mem: &mut impl PhysMem, mva: u32) -> Option<u32> {
+        let (table, i) = self.entry(mem, mva)?;
+        match arm::l2_decode(mem.l2(table)[i]) {
+            L2::Stored(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Maps `phys` at `mva` in place of its stored entry (the page came
+    /// back). No TLB maintenance: a fault entry is never cached.
+    pub fn restore(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mva: u32,
+        phys: u32,
+        attrs: Attrs,
+    ) -> Result<(), MapError> {
+        let (table, i) = self.entry(mem, mva).ok_or(MapError::Conflict)?;
+        if !matches!(arm::l2_decode(mem.l2(table)[i]), L2::Stored(_)) {
+            return Err(MapError::AlreadyMapped);
+        }
+        mem.l2(table)[i] = arm::l2_small(phys, attrs);
+        mem.sync(table + i as u32 * 4, 4);
+        Ok(())
+    }
+
+    /// Clears stored entries from `mva` towards `end`, putting their
+    /// payloads in `out`, and returns how many it took and where to resume
+    /// (`>= end` when done). Stops when `out` is full, so callers free each
+    /// batch (which needs memory access the walk can't share) and continue:
+    /// bounded, and nothing is lost.
+    pub fn take_stored(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mva: u32,
+        end: u32,
+        out: &mut [u32],
+    ) -> (usize, u32) {
+        let mut n = 0;
+        let mut page = mva & !(PAGE - 1);
+        while page < end && n < out.len() {
+            let idx = (page >> 20) as usize;
+            let next_mib = (page | (MIB - 1)).wrapping_add(1);
+            if let L1::Coarse { table_phys, .. } = arm::l1_decode(mem.l1()[idx]) {
+                let mut changed = None;
+                while page < end && page != next_mib && n < out.len() {
+                    let i = ((page >> 12) & 0xFF) as usize;
+                    if let L2::Stored(p) = arm::l2_decode(mem.l2(table_phys)[i]) {
+                        out[n] = p;
+                        n += 1;
+                        mem.l2(table_phys)[i] = 0;
+                        self.used[idx] -= 1;
+                        changed = Some(changed.map_or((i, i), |(a, _): (usize, usize)| (a, i)));
+                    }
+                    page += PAGE;
+                }
+                if let Some((a, b)) = changed {
+                    mem.sync(table_phys + a as u32 * 4, (b - a + 1) as u32 * 4);
+                }
+            } else {
+                page = next_mib;
+            }
+            if page == 0 {
+                return (n, u32::MAX); // wrapped past the top
+            }
+        }
+        (n, page)
+    }
+
+    /// The coarse table and index holding `mva`'s entry.
+    fn entry(&self, mem: &mut impl PhysMem, mva: u32) -> Option<(u32, usize)> {
+        match arm::l1_decode(mem.l1()[(mva >> 20) as usize]) {
+            L1::Coarse { table_phys, .. } => Some((table_phys, ((mva >> 12) & 0xFF) as usize)),
+            _ => None,
+        }
+    }
+
     /// Frames currently holding second-level tables.
     #[must_use]
     pub fn table_frames(&self) -> usize {
@@ -531,6 +646,8 @@ pub(crate) mod fake {
         pub pages: HashMap<u32, Box<[u32; 1024]>>,
         /// Every `sync(phys, len)` call, in order.
         pub synced: Vec<(u32, u32)>,
+        /// Kernel-private pages, as bytes.
+        pub bytes: HashMap<u32, Box<[u8; 4096]>>,
     }
 
     impl Ram {
@@ -539,6 +656,7 @@ pub(crate) mod fake {
                 l1: Box::new([0; 4096]),
                 pages: HashMap::new(),
                 synced: Vec::new(),
+                bytes: HashMap::new(),
             }
         }
 
@@ -572,6 +690,27 @@ pub(crate) mod fake {
         }
         fn zero(&mut self, phys: u32) {
             self.page(phys).fill(0);
+        }
+        fn with_page<R>(&mut self, phys: u32, f: impl FnOnce(&mut [u8; 4096]) -> R) -> R {
+            let mut bytes = [0u8; 4096];
+            for (o, w) in bytes
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(self.page(phys).iter())
+            {
+                *o = w.to_le_bytes();
+            }
+            let r = f(&mut bytes);
+            for (w, b) in self.page(phys).iter_mut().zip(bytes.as_chunks::<4>().0) {
+                *w = u32::from_le_bytes(*b);
+            }
+            r
+        }
+        fn kernel_page(&mut self, phys: u32) -> &mut [u8; 4096] {
+            self.bytes
+                .entry(phys & !0xFFF)
+                .or_insert_with(|| Box::new([0; 4096]))
         }
         fn copy(&mut self, dst: u32, src: u32) {
             let s = *self.page(src);
@@ -876,6 +1015,77 @@ mod tests {
         mmu.0.clear();
         assert_eq!(pt.retag(&mut ram, &mut mmu, 0x0A00_0000, 32 << 20, 15), 0);
         assert!(mmu.0.is_empty());
+    }
+
+    #[test]
+    fn stored_entries_replace_and_restore_mappings() {
+        let (mut pt, mut ram, mut fr) = setup();
+        pt.map_small(&mut ram, &mut fr, 0x5000, phys(9), 0, RW)
+            .unwrap();
+        let mut mmu = Log::default();
+        assert_eq!(pt.store(&mut ram, &mut mmu, 0x5000, 0x77), Some(phys(9)));
+        assert_eq!(mmu.0, ["tlb 0x5000"]);
+        assert_eq!(pt.translate(&mut ram, 0x5000), None, "faults now");
+        assert_eq!(pt.stored(&mut ram, 0x5000), Some(0x77));
+        assert_eq!(
+            pt.store(&mut ram, &mut mmu, 0x5000, 0x78),
+            None,
+            "not mapped"
+        );
+        assert_eq!(
+            pt.map_small(&mut ram, &mut fr, 0x5000, phys(10), 0, RW),
+            Err(MapError::AlreadyMapped),
+            "a stored entry isn't free"
+        );
+        pt.restore(&mut ram, 0x5000, phys(10), RW).unwrap();
+        assert_eq!(pt.translate(&mut ram, 0x5000), Some((phys(10), RW)));
+        assert_eq!(pt.stored(&mut ram, 0x5000), None);
+    }
+
+    #[test]
+    fn take_stored_drains_in_bounded_batches() {
+        let (mut pt, mut ram, mut fr) = setup();
+        let mut mmu = Log::default();
+        // 300 stored pages across two megabytes, one ordinary mapping.
+        for k in 0..300u32 {
+            let mva = 0x0010_0000 + k * 4096;
+            pt.map_small(&mut ram, &mut fr, mva, phys(20), 0, RW)
+                .unwrap();
+            pt.store(&mut ram, &mut mmu, mva, k + 1).unwrap();
+        }
+        pt.map_small(&mut ram, &mut fr, 0x0030_0000, phys(21), 0, RW)
+            .unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u32; 64];
+        let (mut at, end) = (0x0010_0000, 0x0040_0000);
+        while at < end {
+            let (n, next) = pt.take_stored(&mut ram, at, end, &mut buf);
+            assert!(n <= 64);
+            got.extend_from_slice(&buf[..n]);
+            at = next;
+        }
+        assert_eq!(
+            got,
+            (1..=300).collect::<Vec<_>>(),
+            "every payload, in order, once"
+        );
+        assert_eq!(pt.stored(&mut ram, 0x0010_0000), None);
+        assert_eq!(
+            pt.translate(&mut ram, 0x0030_0000),
+            Some((phys(21), RW)),
+            "mapping untouched"
+        );
+        // The emptied tables are freed by the normal unmap.
+        pt.unmap(
+            &mut ram,
+            &mut fr,
+            &mut mmu,
+            0x0010_0000,
+            0x0030_0000,
+            |_, _| {},
+        );
+        pt.unmap(&mut ram, &mut fr, &mut mmu, 0x0030_0000, 0x1000, |_, _| {});
+        assert_eq!(pt.table_frames(), 0);
     }
 
     #[test]

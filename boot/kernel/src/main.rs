@@ -40,6 +40,7 @@ mod image {
     use rp_kernel_mm::space::{
         AddressSpace, Backing, IoError, Outcome, PageCache, Prot, Region, Vm, access_for,
     };
+    use rp_kernel_mm::zpool::{ZBuffers, ZPool};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -123,6 +124,23 @@ mod image {
             self.pool.copy_within(s..s + 1024, d);
             cpu::clean_invalidate_range(dst, 4096);
         }
+        fn with_page<R>(&mut self, phys: u32, f: impl FnOnce(&mut [u8; 4096]) -> R) -> R {
+            let i = word(phys);
+            let page: &mut [u8; 4096] = rp_hal_mem::words_as_bytes_mut(&mut self.pool[i..i + 1024])
+                .try_into()
+                .unwrap_or_else(|_| unreachable!());
+            let r = f(page);
+            // Touched through the identity map: write back and drop those
+            // lines, so the page's other mappings see RAM (VIVT).
+            cpu::clean_invalidate_range(phys, 4096);
+            r
+        }
+        fn kernel_page(&mut self, phys: u32) -> &mut [u8; 4096] {
+            let i = word(phys);
+            rp_hal_mem::words_as_bytes_mut(&mut self.pool[i..i + 1024])
+                .try_into()
+                .unwrap_or_else(|_| unreachable!())
+        }
     }
 
     struct XscaleMmu;
@@ -147,6 +165,12 @@ mod image {
     /// with non-zero state would move all 70 KiB into `.data`.
     static FRAMES: Global<Frames<POOL_FRAMES>> = Global::new(Frames::new());
     static TABLES: Global<PageTables> = Global::new(PageTables::new());
+    /// Compressed copies of idle pages (all-zero when empty: `.bss`).
+    static ZPOOL: Global<ZPool> = Global::new(ZPool::new());
+    /// Compression buffers (12 KiB, `.bss`): never on a kernel stack (the
+    /// first version put a page buffer on the 4 KiB abort stack and
+    /// overflowed it into the frame allocator).
+    static ZBUF: Global<ZBuffers> = Global::new(ZBuffers::new());
 
     /// Everything else the VM owns.
     struct State {
@@ -181,29 +205,35 @@ mod image {
     fn with_vm<R>(f: impl FnOnce(&mut KernelVm<'_>, &mut State) -> R) -> R {
         FRAMES.with(|frames| {
             TABLES.with(|tables| {
-                STATE.with(|s| {
-                    let mut pool = s.pool.take().unwrap_or_else(|| unreachable!());
-                    let mut file = RamFile {
-                        phys: s.file.phys,
-                        refs: s.file.refs,
-                    };
-                    let r = {
-                        let mut mem = Mem {
-                            pool: &mut pool,
-                            l1: s.l1,
-                        };
-                        let mut vm = Vm {
-                            tables,
-                            mem: &mut mem,
-                            frames,
-                            mmu: &mut XscaleMmu,
-                            cache: &mut file,
-                        };
-                        f(&mut vm, s)
-                    };
-                    s.file.refs = file.refs;
-                    s.pool = Some(pool);
-                    r
+                ZPOOL.with(|zpool| {
+                    ZBUF.with(|zbuf| {
+                        STATE.with(|s| {
+                            let mut pool = s.pool.take().unwrap_or_else(|| unreachable!());
+                            let mut file = RamFile {
+                                phys: s.file.phys,
+                                refs: s.file.refs,
+                            };
+                            let r = {
+                                let mut mem = Mem {
+                                    pool: &mut pool,
+                                    l1: s.l1,
+                                };
+                                let mut vm = Vm {
+                                    tables,
+                                    mem: &mut mem,
+                                    frames,
+                                    mmu: &mut XscaleMmu,
+                                    cache: &mut file,
+                                    zpool,
+                                    zbuf,
+                                };
+                                f(&mut vm, s)
+                            };
+                            s.file.refs = file.refs;
+                            s.pool = Some(pool);
+                            r
+                        })
+                    })
                 })
             })
         })
@@ -237,7 +267,13 @@ mod image {
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
         let why = STATE.with(|s| s.error).unwrap_or("not a page fault");
-        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x} ({why})", kind.name());
+        // Words via write_str, numbers via u32 formatting: no `&str` Display
+        // (and its padding code) in the image (ADR-0005 rule 8).
+        let _ = uart.write_str("\nFAULT ");
+        let _ = uart.write_str(kind.name());
+        let _ = writeln!(uart, " at {addr:#010x}");
+        let _ = uart.write_str(why);
+        let _ = uart.write_str("\n");
         loop {
             core::hint::spin_loop();
         }
@@ -309,7 +345,8 @@ mod image {
         let free_after_setup = match built {
             Ok(n) => n,
             Err(e) => {
-                let _ = writeln!(early, "VM tables FAIL {e}");
+                let _ = early.write_str("VM tables FAIL ");
+                let _ = early.write_str(e);
                 halt()
             }
         };
@@ -369,7 +406,8 @@ mod image {
             Ok(())
         });
         if let Err(e) = mapped {
-            let _ = writeln!(uart, "VM process FAIL {e}");
+            let _ = uart.write_str("VM process FAIL ");
+            let _ = uart.write_str(e);
             halt()
         }
         // Give slot 5 its ARM domain and run it: PID and DACR, nothing else.
@@ -450,6 +488,36 @@ mod image {
         ok &= report(&mut uart, "fault loop", pass, state().0);
         let _ = writeln!(uart, "BENCH vm_fault_zero {ticks} {pages}");
 
+        // Compressed RAM (ADR-0005 rule 6): compress 32 idle zero-fill pages;
+        // their frames go free and their entries hold zpool handles. Touching
+        // one faults it back in, intact.
+        let free_before = FRAMES.with(|f| f.free_frames() as u32);
+        let start = rt::ticks();
+        let compressed = with_vm(|vm, s| {
+            // A plain loop: the iterator chain cost 2 KB of image.
+            let mut n = 0;
+            for p in 1..=32u32 {
+                if vm.compress(&s.space, layout::mva(ZERO_VA + p * 4096, PROC_SLOT)) == Ok(true) {
+                    n += 1;
+                }
+            }
+            n
+        });
+        let compress_ticks = rt::ticks().wrapping_sub(start);
+        let freed = FRAMES.with(|f| f.free_frames() as u32) - free_before;
+        let start = rt::ticks();
+        let back = rt::try_read((ZERO_VA + 5 * 4096 + 8) as usize);
+        let restore_ticks = rt::ticks().wrapping_sub(start);
+        let stored = ZPOOL.with(|z| z.stats().1);
+        let pass = compressed == 32
+            && freed == 31 // 32 frames back, one zpool frame holds them all
+            && back == Some(0)
+            && state() == (2 + pages + 1, Some(Outcome::Restored))
+            && stored == 31;
+        ok &= report(&mut uart, "compressed RAM", pass, freed);
+        let _ = writeln!(uart, "BENCH vm_compress_page {compress_ticks} 32");
+        let _ = writeln!(uart, "BENCH vm_restore_page {restore_ticks} 1");
+
         // Unmap everything: every frame and page-cache reference returns.
         let slot = layout::slot_base(PROC_SLOT);
         let (unmapped, refs) = with_vm(|vm, s| {
@@ -458,20 +526,24 @@ mod image {
         });
         // The file's own frame stays allocated (it's the "page cache").
         let free_now = FRAMES.with(|f| f.free_frames() as u32);
-        let pass = unmapped && free_now == free_after_setup - 1 && refs == 0;
+        let zpool_empty = ZPOOL.with(|z| z.stats() == (0, 0, 0));
+        let pass = unmapped && free_now == free_after_setup - 1 && refs == 0 && zpool_empty;
         ok &= report(&mut uart, "unmap", pass, free_now);
 
         if ok {
-            let _ = writeln!(uart, "{}", super::MARKER);
+            let _ = uart.write_str(super::MARKER);
+            let _ = uart.write_str("\n");
         }
         halt()
     }
 
     fn report(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
+        let _ = uart.write_str("VM ");
+        let _ = uart.write_str(what);
         if pass {
-            let _ = writeln!(uart, "VM {what} OK");
+            let _ = uart.write_str(" OK\n");
         } else {
-            let _ = writeln!(uart, "VM {what} FAIL (got {got:#010x})");
+            let _ = writeln!(uart, " FAIL (got {got:#010x})");
         }
         pass
     }
@@ -486,7 +558,9 @@ mod image {
     fn panic(info: &core::panic::PanicInfo) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
         if let Some(l) = info.location() {
-            let _ = writeln!(uart, "\nPANIC at {}:{}", l.file(), l.line());
+            let _ = uart.write_str("\nPANIC at ");
+            let _ = uart.write_str(l.file());
+            let _ = writeln!(uart, ":{}", l.line());
         }
         loop {
             core::hint::spin_loop();

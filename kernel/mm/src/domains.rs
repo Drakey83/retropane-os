@@ -98,18 +98,21 @@ impl Domains {
             self.used[d as usize] = self.clock;
             return Self::activation(d, false, None);
         }
-        // A free domain, or the least recently used one.
-        let d = (FIRST..=LAST)
-            .find(|&d| self.owner[d as usize] == 0)
-            .unwrap_or_else(|| {
-                (FIRST..=LAST)
-                    .min_by_key(|&d| {
-                        self.clock
-                            .wrapping_sub(self.used[d as usize])
-                            .wrapping_neg()
-                    })
-                    .unwrap_or(FIRST)
-            });
+        // A free domain, or else the least recently used one (oldest stamp,
+        // measured against the clock so wrap-around is harmless).
+        let mut d = FIRST;
+        let mut oldest = 0;
+        for c in FIRST..=LAST {
+            if self.owner[c as usize] == 0 {
+                d = c;
+                break;
+            }
+            let age = self.clock.wrapping_sub(self.used[c as usize]);
+            if age > oldest {
+                oldest = age;
+                d = c;
+            }
+        }
         let evicted = match self.owner[d as usize] {
             0 => None,
             victim => {

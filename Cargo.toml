@@ -61,3 +61,7 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.rp-probe]
 opt-level = "s"
+# The kernel image's own crate is bring-up and test-harness code (cold); the
+# kernel libraries it links (kernel/mm, kernel/lz4) keep opt-level 3.
+[profile.release.package.rp-kernel]
+opt-level = "s"
