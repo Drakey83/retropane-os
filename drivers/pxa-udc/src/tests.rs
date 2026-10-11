@@ -120,18 +120,18 @@ impl RegisterBus for SimUdc {
                 u32::from_le_bytes(w)
             }
             o if o == reg::csr(SLOT_IN) => {
-                // Pessimistic: a waiting short packet doesn't make the FIFO
-                // read "full", so only packet-complete tells it has left.
-                let bnf = if self.in_fifo.len() < usb::BULK_SIZE {
-                    reg::BNF
-                } else {
+                // Bit 6 is "not empty" for an IN endpoint (measured): set
+                // while bytes are in the FIFO or a packet waits.
+                let bne = if self.in_fifo.is_empty() && self.in_pending.is_none() {
                     0
+                } else {
+                    reg::BNE
                 };
-                bnf | if self.in_pc { reg::PC } else { 0 }
+                bne | if self.in_pc { reg::PC } else { 0 }
             }
             o if o == reg::csr(SLOT_OUT) => {
                 if self.out_pc {
-                    reg::PC | reg::BNF
+                    reg::PC | reg::BNE
                 } else {
                     0
                 }

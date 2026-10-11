@@ -100,8 +100,10 @@ pub mod reg {
 
     /// UDCCSRx (A–X) bits: packet complete.
     pub const PC: u32 = 1 << 1;
-    /// Buffer not full (IN) / not empty (OUT).
-    pub const BNF: u32 = 1 << 6;
+    /// Bit 6: for an IN endpoint, buffer not *empty* (BNE); for an OUT
+    /// endpoint, buffer not full (BNF). Measured on the real X51v: reading
+    /// it as "not full" for IN left every IN packet unsent (`tx 0`).
+    pub const BNE: u32 = 1 << 6;
     /// Short packet.
     pub const SP: u32 = 1 << 7;
 }
@@ -593,7 +595,8 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.bus.write32(reg::csr(SLOT_IN), reg::PC);
             self.in_busy = false;
         }
-        if self.tx.len() == 0 || csr & reg::BNF == 0 {
+        // A new packet only into an empty FIFO.
+        if self.tx.len() == 0 || csr & reg::BNE != 0 {
             return;
         }
         let n = self.tx.len().min(usb::BULK_SIZE);
