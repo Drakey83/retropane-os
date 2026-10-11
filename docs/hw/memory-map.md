@@ -39,7 +39,12 @@ the PXA27x developer's manual memory map.
 - **SDRAM starts at 0xA8000000, not at the PXA27x's bank 0 (0xA0000000).**
   Nothing is at 0xA0000000 on this board. Bare-metal images load at
   `0xA8008000`, the address HaRET copies a kernel to (`ramaddr` + 32 KiB), with
-  its boot tags at `0xA8000100`. The emulator places its RAM to match
+  its boot tags at `0xA8000100`. **Measured on a real X51v (2026-10-11):**
+  HaRET's machine detection doesn't apply its X50/X51 entry to this device;
+  it falls back to `ramaddr 0xA0000000` and copies the kernel into empty
+  address space (its read-back there hangs the bus). The SD kit's
+  `default.txt` therefore sets `ramaddr 0xa8000000` explicitly. The same run
+  confirmed the visible framebuffer at physical `0x0C000000` (2700G memory). The emulator places its RAM to match
   (retropane-qemu `hw/arm/x51v.c`, rp-v0.6.0 and later).
 
 ## Open questions

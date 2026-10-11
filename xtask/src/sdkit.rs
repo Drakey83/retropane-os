@@ -17,11 +17,14 @@ use std::process::Command;
 
 use crate::emu::{to_wsl_path, wsl_distro};
 
-/// HaRET's start-up script. HaRET already knows the X51v ("AximX50": RAM at
-/// 0xA8000000, 64 MiB), and puts the kernel 32 KiB into RAM, where our
-/// images are linked (boot/link.x).
+/// HaRET's start-up script. HaRET puts the kernel 32 KiB into RAM, where our
+/// images are linked (boot/link.x). Its machine list has the X50/X51 (RAM at
+/// 0xA8000000), but on a real X51v it fell back to 0xA0000000, where there
+/// is no RAM: it copied the image into nothing and hung. So the script sets
+/// the RAM start itself.
 const DEFAULT_TXT: &str = "\
 # RetroPane 26 SD boot (HaRET script)
+set ramaddr 0xa8000000
 set kernel retropane.bin
 set cmdline \"\"
 bootlinux
@@ -139,6 +142,8 @@ mod tests {
     #[test]
     fn script_boots_our_image() {
         assert!(DEFAULT_TXT.contains("set kernel retropane.bin"));
+        // The X51v's RAM: HaRET's own guess (0xA0000000) is empty there.
+        assert!(DEFAULT_TXT.contains("set ramaddr 0xa8000000"));
         assert!(DEFAULT_TXT.trim_end().ends_with("bootlinux"));
     }
 }
