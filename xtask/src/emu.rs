@@ -289,8 +289,11 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
     }
     eprintln!("    emulator boot OK");
     let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
-    crate::screen::check_test_pattern(&ppm)?;
-    eprintln!("    display OK: test pattern verified ({})", shot.display());
+    crate::screen::check_boot_screen(&ppm)?;
+    eprintln!(
+        "    display OK: test pattern and boot log verified ({})",
+        shot.display()
+    );
     eprintln!("    SD OK: card identified and partition table read");
     eprintln!(
         "    input OK: {} button/stylus interactions reported",

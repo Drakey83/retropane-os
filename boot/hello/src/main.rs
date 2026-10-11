@@ -21,6 +21,7 @@ mod image {
 
     use core::cell::RefCell;
     use rp_drv_cpld::{Cpld, Delay};
+    use rp_drv_mbx_display::console::{self, Console};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
 
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
@@ -50,6 +51,21 @@ mod image {
     const TS_CS: u8 = 24;
     const TS_PENIRQ: u8 = 94;
 
+    /// Writes to the UART and, once the display is up, the on-screen console.
+    struct Out<U> {
+        uart: U,
+        con: Option<Console<'static>>,
+    }
+
+    impl<U: Write> Write for Out<U> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            if let Some(con) = self.con.as_mut() {
+                let _ = con.write_str(s);
+            }
+            self.uart.write_str(s)
+        }
+    }
+
     struct TimerDelay;
     impl Delay for TimerDelay {
         fn delay_us(&mut self, us: u32) {
@@ -61,24 +77,22 @@ mod image {
         if let Some(bus) = rt::take_ffuart() {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
+            let mut out = Out { uart, con: None };
             rt::set_fault_handler(on_fault);
             rt::init_mmu();
-            let _ = writeln!(uart, "\nRetroPane OS: hello from the Dell Axim X51v");
-            let _ = writeln!(uart, "CPU ID: {:#010x}", rt::cpu_id());
+            let _ = writeln!(out, "\nRetroPane 26: hello from the Dell Axim X51v");
+            let _ = writeln!(out, "CPU ID: {:#010x}", rt::cpu_id());
             let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
             let vga = match cpld.as_mut() {
                 Some(cpld) => {
                     let panel = cpld.panel(&mut TimerDelay);
-                    let _ = writeln!(uart, "Panel: {}", panel.name());
+                    let _ = writeln!(out, "Panel: {}", panel.name());
                     panel.is_vga()
                 }
                 None => true,
             };
             if !vga {
-                let _ = writeln!(
-                    uart,
-                    "QVGA panel: display setup skipped (not supported yet)"
-                );
+                let _ = writeln!(out, "QVGA panel: display setup skipped (not supported yet)");
             } else if let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() {
                 let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
                 pattern::fill_rgb565(
@@ -88,8 +102,20 @@ mod image {
                     plane.stride,
                 );
                 Display::new(regs).enable(&X51V_VGA, &plane);
+                // From here on, everything printed also appears on screen: the
+                // real X51v has no serial port to read.
+                let (x, y, w, h) = console::BOOT_LOG;
+                out.con = Some(Console::new(
+                    &mut vram[plane.offset..],
+                    plane.stride,
+                    (x, y),
+                    (w, h),
+                    console::BOOT_LOG_SCALE,
+                    console::BOOT_LOG_COLORS,
+                ));
+                let _ = writeln!(out, "RetroPane 26");
                 let _ = writeln!(
-                    uart,
+                    out,
                     "Display: {}x{} test pattern",
                     plane.width, plane.height
                 );
@@ -105,7 +131,7 @@ mod image {
                         } else {
                             "SD"
                         };
-                        let _ = writeln!(uart, "SD: {kind} card, RCA {:#06x}", card.rca());
+                        let _ = writeln!(out, "SD: {kind} card, RCA {:#06x}", card.rca());
                         let mut block = [0u8; rp_drv_sdcard::BLOCK];
                         match card.read(0, &mut block) {
                             Ok(()) => match mbr_partitions(&block) {
@@ -113,7 +139,7 @@ mod image {
                                     for (i, p) in parts.iter().enumerate() {
                                         if let Some(p) = p {
                                             let _ = writeln!(
-                                                uart,
+                                                out,
                                                 "SD: partition {} type {:#04x} start {} blocks {}",
                                                 i + 1,
                                                 p.kind,
@@ -124,20 +150,20 @@ mod image {
                                     }
                                 }
                                 None => {
-                                    let _ = writeln!(uart, "SD: no partition table");
+                                    let _ = writeln!(out, "SD: no partition table");
                                 }
                             },
                             Err(e) => {
-                                let _ = writeln!(uart, "SD: read failed: {}", e.name());
+                                let _ = writeln!(out, "SD: read failed: {}", e.name());
                             }
                         }
                     }
                     Err(e) => {
-                        let _ = writeln!(uart, "SD: no card ({})", e.name());
+                        let _ = writeln!(out, "SD: no card ({})", e.name());
                     }
                 }
             }
-            let _ = writeln!(uart, "{}", super::MARKER);
+            let _ = writeln!(out, "{}", super::MARKER);
 
             // Report buttons and touches until the end of time (or the emulator).
             if let (Some(kp), Some(gpio), Some(ssp)) =
@@ -164,7 +190,7 @@ mod image {
                     let keys = keypad.pressed();
                     for (button, down) in last_keys.changes(keys) {
                         let state = if down { "down" } else { "up" };
-                        let _ = writeln!(uart, "KEY {} {state}", button.name());
+                        let _ = writeln!(out, "KEY {} {state}", button.name());
                     }
                     last_keys = keys;
 
@@ -172,10 +198,10 @@ mod image {
                     if now != last_touch {
                         match now {
                             Some((x, y)) => {
-                                let _ = writeln!(uart, "TOUCH {x} {y}");
+                                let _ = writeln!(out, "TOUCH {x} {y}");
                             }
                             None => {
-                                let _ = writeln!(uart, "TOUCH up");
+                                let _ = writeln!(out, "TOUCH up");
                             }
                         }
                         last_touch = now;

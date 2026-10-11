@@ -5,6 +5,15 @@
 use crate::fill_rect_rgb565;
 use crate::font::{HEIGHT, WIDTH, glyph};
 
+/// Where bring-up images put their boot log on the 480 × 640 screen: below
+/// the color bars, inside the pattern's border. `(x, y, width, height)`.
+/// `cargo xtask emu` checks the pattern outside this box and text inside it.
+pub const BOOT_LOG: (usize, usize, usize, usize) = (8, 160, 464, 472);
+/// Boot log glyph scale (12 × 16 pixel cells: 38 columns × 29 rows).
+pub const BOOT_LOG_SCALE: usize = 2;
+/// Boot log colors (RGB565): light grey on dark blue.
+pub const BOOT_LOG_COLORS: (u16, u16) = (0xE73C, 0x0886);
+
 /// A text console over part of a framebuffer.
 pub struct Console<'a> {
     fb: &'a mut [u8],

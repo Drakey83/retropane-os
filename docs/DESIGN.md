@@ -608,6 +608,12 @@ Testing is part of the architecture, not an afterthought.
 - **Pane:** a Windows-esque nod without the trademark.
 - Together, the name reads as a modern take on a window.
 
+**Release branding (2026-10-11): RetroPane 26.** The project is "RetroPane OS";
+releases carry a two-digit year version, in the spirit of Windows Mobile 5 and 6
+and of current year-numbered OS releases. "26" is short, reads as a version, and
+naturally becomes 27 for the next major release, where "2026" would just look
+dated.
+
 A web search on 2026-10-10 found no software product with the name. Still to
 check when the repo is created: the GitHub org/repo name and a domain.
 
