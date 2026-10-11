@@ -48,6 +48,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | Compressed RAM wired into the VM (`Vm::compress`, restore on fault, stored entries in page tables) and run live in `rp-kernel`. Image grew 26.7 → 37.7 KB; built the image crate for size and removed `&str` padding code: 34.8 KB. **Kernel load budget raised 32 → 40 KiB; approved by the owner and ratcheted to 38 KiB (measured + ~10%)** | `rp-kernel` loaded size | 26,732 B | 34,840 B |
 | 2026-10-11 | First thread switches (`boot/threads`): event set + wait + schedule + register switch, per switch. Emulator real time; the device gives the real number (ADR-0010 target: well under 2 µs) | `thread_switch` | — | ~1.4 µs (emulated) |
 | 2026-10-11 | `Scheduler::create_event`: plain loop instead of an iterator chain that unrolled to 1 KiB | `rp-threads` loaded size | 15,404 B | 14,500 B |
+| 2026-10-11 | Preemption test added to `rp-threads`; **load budget raised 15 → 17 KiB, approved by the owner** (measured + ~9%) | `rp-threads` loaded size | 14,660 B | 16,012 B |
 
 ## Open leads
 
