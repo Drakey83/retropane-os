@@ -103,6 +103,18 @@ Constraints and facts that shape the design:
 - The KData layout must be taken from the public SDK headers and checked
   against real apps.
 
+## Implementation status
+
+- **2026-10-11:** the scheduler core (`kernel/sched`: CLZ selection,
+  round-robin with CE/NT preemption semantics, tickless deadlines, sleep
+  queue, events; all-zero when empty so it lives in `.bss`), the context
+  switch and thread start (`rp_hal_pxa27x::thread`), and the one-shot alarm
+  (`rt::set_alarm`). Live in `boot/threads`: ping-pong between equal-priority
+  threads, a sleeper waking on time, a tickless idle thread.
+- Next: user mode (SWI entry, user-abort path on the thread's kernel stack),
+  the KData page, mutexes with priority inheritance, `IrqLine` as a waitable
+  object, lazy iWMMXt switching.
+
 ## Open questions
 
 - 2 KiB or 4 KiB kernel stacks (measure).

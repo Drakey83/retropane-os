@@ -296,6 +296,20 @@ impl<B: RegisterBus> OsTimer<B> {
         self.0.write32(ost_reg::OIER, oier);
     }
 
+    /// Arms match 1 as a one-shot alarm at counter value `at` (tickless
+    /// scheduling). Returns false if `at` has already passed (no interrupt
+    /// would come until the counter wraps), so the caller doesn't sleep.
+    pub fn alarm(&mut self, at: u32) -> bool {
+        self.0.write32(ost_reg::OSSR, 1 << 1);
+        self.0.write32(ost_reg::OSMR1, at);
+        let oier = self.0.read32(ost_reg::OIER) | (1 << 1);
+        self.0.write32(ost_reg::OIER, oier);
+        // Checked after arming: if the deadline is reached now, the match may
+        // have been missed.
+        let now = self.0.read32(ost_reg::OSCR0);
+        at.wrapping_sub(now).wrapping_sub(1) < u32::MAX / 2
+    }
+
     /// Disables the match-1 interrupt.
     pub fn stop(&mut self) {
         let oier = self.0.read32(ost_reg::OIER) & !(1 << 1);
@@ -324,6 +338,19 @@ impl<B: RegisterBus> OsTimer<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn alarms_in_the_past_are_reported() {
+        let mut t = OsTimer(MockBus::new());
+        t.0.preset(ost_reg::OSCR0, 1000);
+        assert!(t.alarm(5000), "future deadline: armed");
+        assert_eq!(t.0.value(ost_reg::OSMR1), 5000);
+        assert_eq!(t.0.value(ost_reg::OIER) & 2, 2);
+        assert!(!t.alarm(1000), "now: too late to wait for");
+        assert!(!t.alarm(900), "past");
+        t.0.preset(ost_reg::OSCR0, u32::MAX - 10);
+        assert!(t.alarm(20), "after the wrap is the future");
+    }
 
     #[test]
     fn gpio_edges_arm_and_disarm_only_their_pin() {

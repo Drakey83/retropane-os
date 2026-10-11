@@ -28,7 +28,7 @@ commands:
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
-  emu       boot the bring-up, probe and kernel images in the x51v emulator
+  emu       boot the bring-up, probe, kernel and threads images in the emulator
             (downloads it if needed)
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
@@ -87,7 +87,8 @@ fn run_step(step: &str) -> Result {
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
-            .and_then(|()| emu::boot_kernel(&workspace_root())),
+            .and_then(|()| emu::boot_kernel(&workspace_root()))
+            .and_then(|()| emu::boot_threads(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
@@ -102,6 +103,8 @@ fn run_step(step: &str) -> Result {
             "rp-bench-suite",
             "--exclude",
             "rp-kernel",
+            "--exclude",
+            "rp-threads",
             // CLI glue; its logic lives in the tested romdump library.
             "--ignore-filename-regex",
             r"romdump.src.main\.rs",

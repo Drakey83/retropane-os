@@ -347,6 +347,40 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_threads::MARKER`.
+const THREADS_MARKER: &str = "RETROPANE-THREADS-OK";
+/// What the threads image must report.
+const THREADS_EXPECT: &[&str] = &["THREADS ping-pong OK", "THREADS sleep OK"];
+
+/// Boots the threads image: scheduler, context switch, events, sleeping and
+/// the tickless idle alarm, live on the CPU.
+pub fn boot_threads(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-threads");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: THREADS_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    for want in THREADS_EXPECT {
+        if !output.contains(want) {
+            return Err(format!("threads check failed: no `{want}` on serial"));
+        }
+    }
+    eprintln!("    threads OK: context switches, events, sleeps, tickless idle");
+    Ok(())
+}
+
 /// Must match `rp_probe::MARKER`.
 const PROBE_MARKER: &str = "RETROPANE-PROBE-DONE";
 /// Text every probe report must contain.

@@ -18,6 +18,8 @@ pub mod mmu;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
 pub mod soc;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod thread;
 
 // Every bare-metal image gets RetroPane's memcpy family (ldm/stm bulk loops)
 // instead of compiler-builtins' (docs/perf.md).

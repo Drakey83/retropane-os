@@ -13,6 +13,9 @@ the Dell bootloader region** (DESIGN.md §10c).
   page tables, real page faults resolved in an abort handler (demand-zero,
   file pages, copy-on-write), FCSE slot switching, and a full unmap.
   `cargo xtask emu` checks every step.
+- `threads/`: the threads test image: scheduler, context switch, events,
+  sleeping and the tickless idle alarm, live (one test image per subsystem,
+  each with its own size budget).
 - `probe/`: the real-device hardware probe. The X51v has no serial port, so
   it shows everything RetroPane needs to learn on screen, in 4 pages for a
   phone photo, each line ending in a checksum: CPU/clock/memory state, how

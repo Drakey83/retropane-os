@@ -12,6 +12,9 @@
 //!   the earliest sleeper), and the kernel programs a one-shot alarm for it.
 //! - **Bounded:** a fixed thread table ([`MAX_THREADS`]); queues are linked
 //!   through it, so nothing allocates.
+//! - **All zeros when empty:** table slot 0 is a sentinel and real threads and
+//!   events start at 1, so a link of 0 means "none" and an empty scheduler is
+//!   plain zeroed memory (`.bss`: nothing in the kernel image).
 //!
 //! The kernel owns the mechanics (stacks, context switch); this crate only
 //! decides who runs.
@@ -30,10 +33,19 @@ pub const MAX_THREADS: usize = 128;
 /// CE's default quantum: 100 ms, in OS-timer ticks (3.25 MHz).
 pub const DEFAULT_QUANTUM: u32 = 325_000;
 
-/// A thread's index in the table.
+/// A thread's number (1-based: 0 is the table's sentinel).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(test, derive(Debug))]
 pub struct Tid(pub u8);
+
+impl Tid {
+    /// A 0-based index, for the kernel's per-thread arrays (contexts,
+    /// stacks).
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as usize - 1
+    }
+}
 
 /// What a thread is doing.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,7 +61,8 @@ pub enum State {
     Blocked,
 }
 
-const NONE: u8 = u8::MAX;
+/// "No thread / no event": the sentinel slot 0.
+const NONE: u8 = 0;
 
 #[derive(Clone, Copy)]
 struct Thread {
@@ -74,7 +87,7 @@ struct Thread {
 
 const EMPTY: Thread = Thread {
     state: State::Free,
-    priority: LOWEST,
+    priority: 0,
     slot: 0,
     next: NONE,
     prev: NONE,
@@ -139,7 +152,8 @@ fn reached(a: u32, b: u32) -> bool {
 
 /// The scheduler state.
 pub struct Scheduler {
-    threads: [Thread; MAX_THREADS],
+    /// Slot 0 is the sentinel; threads are 1..=MAX_THREADS.
+    threads: [Thread; MAX_THREADS + 1],
     /// Ready map: word `p / 32`, bit `31 - p % 32` set when priority `p` has
     /// ready threads (so `CLZ` finds the most urgent).
     map: [u32; 8],
@@ -150,11 +164,13 @@ pub struct Scheduler {
     tail: [u8; 256],
     /// Sleepers, sorted by deadline.
     sleepers: u8,
-    events: [Event; MAX_EVENTS],
+    /// Slot 0 is the sentinel; events are 1..=MAX_EVENTS.
+    events: [Event; MAX_EVENTS + 1],
     running: u8,
     /// When the running thread's quantum ends.
     quantum_end: u32,
-    quantum: u32,
+    /// Quantum in ticks; 0 means [`DEFAULT_QUANTUM`] (keeps `new` all-zero).
+    quantum_setting: u32,
 }
 
 impl Default for Scheduler {
@@ -168,35 +184,43 @@ impl Scheduler {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            threads: [EMPTY; MAX_THREADS],
+            threads: [EMPTY; MAX_THREADS + 1],
             map: [0; 8],
             summary: 0,
             head: [NONE; 256],
             tail: [NONE; 256],
             sleepers: NONE,
-            events: [NO_EVENT; MAX_EVENTS],
+            events: [NO_EVENT; MAX_EVENTS + 1],
             running: NONE,
             quantum_end: 0,
-            quantum: DEFAULT_QUANTUM,
+            quantum_setting: 0,
+        }
+    }
+
+    fn quantum(&self) -> u32 {
+        if self.quantum_setting == 0 {
+            DEFAULT_QUANTUM
+        } else {
+            self.quantum_setting
         }
     }
 
     /// Sets the quantum for threads that start running from now on.
     pub fn set_quantum(&mut self, ticks: u32) {
-        self.quantum = ticks.max(1);
+        self.quantum_setting = ticks.max(1);
     }
 
     /// Creates a ready thread in process `slot` at `priority`.
     pub fn create(&mut self, slot: u8, priority: u8) -> Result<Tid, Error> {
-        let i = self
-            .threads
+        let i = 1 + self.threads[1..]
             .iter()
             .position(|t| t.state == State::Free)
             .ok_or(Error::Full)?;
+        let quantum = self.quantum();
         self.threads[i] = Thread {
             priority,
             slot,
-            quantum: self.quantum,
+            quantum,
             ..EMPTY
         };
         self.make_ready(i as u8);
@@ -219,7 +243,7 @@ impl Scheduler {
 
     fn valid(&self, t: Tid) -> Result<u8, Error> {
         match self.threads.get(usize::from(t.0)) {
-            Some(th) if th.state != State::Free => Ok(t.0),
+            Some(th) if t.0 != NONE && th.state != State::Free => Ok(t.0),
             _ => Err(Error::Invalid),
         }
     }
@@ -335,7 +359,7 @@ impl Scheduler {
             };
             if keep {
                 if expired {
-                    self.quantum_end = now.wrapping_add(self.quantum);
+                    self.quantum_end = now.wrapping_add(self.quantum());
                 }
                 return Some(Tid(cur));
             }
@@ -343,7 +367,7 @@ impl Scheduler {
             // by a more urgent thread: *front* of its queue with what was
             // left, so it resumes before its peers (CE/NT semantics).
             if expired {
-                self.threads[usize::from(cur)].quantum = self.quantum;
+                self.threads[usize::from(cur)].quantum = self.quantum();
                 self.make_ready(cur);
             } else {
                 self.threads[usize::from(cur)].quantum = self.quantum_end.wrapping_sub(now);
@@ -353,10 +377,11 @@ impl Scheduler {
         let p = usize::from(self.best_ready()?);
         let next = self.head[p];
         self.unlink_ready(next);
+        let fresh = self.quantum();
         let th = &mut self.threads[usize::from(next)];
         th.state = State::Running;
         self.quantum_end = now.wrapping_add(th.quantum);
-        th.quantum = self.quantum;
+        th.quantum = fresh;
         self.running = next;
         Some(Tid(next))
     }
@@ -471,7 +496,7 @@ impl Scheduler {
         if i == NONE {
             return Err(Error::Invalid);
         }
-        let fresh = self.quantum;
+        let fresh = self.quantum();
         let th = &mut self.threads[usize::from(i)];
         th.state = State::Blocked;
         th.quantum = fresh; // a full quantum when it next runs
@@ -482,8 +507,7 @@ impl Scheduler {
     /// Creates an event (manual reset: stays set until reset; auto reset:
     /// releases one waiter and clears).
     pub fn create_event(&mut self, manual: bool, set: bool) -> Result<Eid, Error> {
-        let i = self
-            .events
+        let i = 1 + self.events[1..]
             .iter()
             .position(|e| !e.used)
             .ok_or(Error::Full)?;
@@ -498,7 +522,7 @@ impl Scheduler {
 
     fn event(&mut self, e: Eid) -> Result<&mut Event, Error> {
         match self.events.get_mut(usize::from(e.0)) {
-            Some(ev) if ev.used => Ok(ev),
+            Some(ev) if e.0 != NONE && ev.used => Ok(ev),
             _ => Err(Error::Invalid),
         }
     }
