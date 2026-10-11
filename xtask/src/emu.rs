@@ -276,6 +276,7 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
             steps: HELLO_STEPS,
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -333,6 +334,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -355,9 +357,13 @@ const THREADS_MARKER: &str = "RETROPANE-THREADS-OK";
 const THREADS_EXPECT: &[&str] = &[
     "THREADS ping-pong OK",
     "THREADS sleep OK",
+    "THREADS mutex inheritance OK",
+    "THREADS interrupt thread OK",
     "USER mode OK",
     "USER yield OK",
     "USER preempted OK",
+    "USER fault contained OK",
+    "USER iWMMXt lazy switch OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -374,6 +380,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -408,6 +415,7 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -446,6 +454,7 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: Some((&frame, "RPL END")),
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -469,6 +478,199 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Sends the loader an image that hangs (one `b .` instruction, MMU and
+/// IRQs off) and checks recovery: after the run limit the watchdog resets
+/// the machine, the loader starts again and reports that the run didn't
+/// return. The emulator restarts the loader itself; on the device Windows
+/// Mobile's StartUp folder does (docs: SD kit README, loader/).
+pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
+    let loader = root.join("target/emu/rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let hang = rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes());
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&hang, "did not return")),
+            during: None,
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    if !output.contains("RPL OK") {
+        return Err("watchdog: the hanging image was never started".into());
+    }
+    eprintln!("    watchdog OK: a hung image reset the device and the loader reported it");
+    Ok(())
+}
+
+/// Port of the emulated USB serial port (the UDC model's chardev).
+fn usb_port() -> u16 {
+    monitor_port() + 2
+}
+
+/// QEMU arguments that connect the UDC model's serial data to a TCP port.
+fn usb_args() -> [String; 4] {
+    [
+        "-chardev".into(),
+        format!(
+            "socket,id=usb,host=127.0.0.1,port={},server=on,wait=off",
+            usb_port()
+        ),
+        "-global".into(),
+        "pxa27x-udc.chardev=usb".into(),
+    ]
+}
+
+/// Whether the emulator in use has the USB device controller model
+/// (retropane-qemu after rp-v0.6.0). Older releases skip the USB tests.
+fn has_usb_model(root: &Path) -> bool {
+    let out = match emulator(root) {
+        Ok(Emulator::Native(exe)) => Command::new(exe)
+            .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
+            .output(),
+        Ok(Emulator::Wsl) => {
+            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+        }
+        Err(_) => return false,
+    };
+    out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("chardev"))
+}
+
+/// Connects to the emulated USB serial port.
+fn usb_connect() -> Result<std::net::TcpStream, String> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", usb_port())) {
+            Ok(s) => {
+                s.set_read_timeout(Some(Duration::from_millis(200)))
+                    .map_err(|e| e.to_string())?;
+                return Ok(s);
+            }
+            Err(e) if Instant::now() > deadline => {
+                return Err(format!("emulated USB serial port: {e}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
+/// Reads from `s` until `want` arrives (or `secs` pass). Returns what came.
+fn usb_read_until(s: &mut std::net::TcpStream, want: &str, secs: u64) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while Instant::now() < deadline {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                if String::from_utf8_lossy(&got).contains(want) {
+                    return Ok(String::from_utf8_lossy(&got).into_owned());
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!(
+        "no `{want}` on the emulated USB port; got {:?}",
+        String::from_utf8_lossy(&got)
+    ))
+}
+
+/// The USB link test end to end: the emulator's host enumerates rp-usb,
+/// opens the port (the banner arrives) and gets its echo back.
+pub fn boot_usb_link(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    usb link: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-usb");
+    let args = usb_args();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect()?;
+        usb_read_until(&mut s, "RetroPane 26 USB console OK", 10)?;
+        s.write_all(b"echo through USB\r\n")
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "echo through USB", 10)?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: USB_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprintln!("    usb link OK: enumerated by the emulated host, banner and echo over USB");
+    Ok(())
+}
+
+/// The loader over USB: first light sent through the emulated USB serial
+/// port, its run log back the same way.
+pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    loader over USB: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let light = root.join("target/emu/rp-light.bin");
+    let payload = std::fs::read(&light).map_err(|e| format!("{}: {e}", light.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let args = usb_args();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect()?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK", 15)?;
+        // The loader disconnects to run the image and reconnects when it
+        // returns (the emulated host enumerates it again); the socket stays
+        // up throughout, and the run log arrives once the port is reopened.
+        let log = usb_read_until(&mut s, "RPL END", 30)?;
+        if !log.contains("all steps OK") {
+            return Err(format!("run log over USB incomplete: {log:?}"));
+        }
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    eprintln!("    loader over USB OK: image in, run log out, through the emulated USB port");
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 
@@ -487,6 +689,7 @@ pub fn boot_usb(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -533,6 +736,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: None,
+            during: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -652,6 +856,7 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
             // deterministic measure of the work done.
             extra: &["-icount", "shift=0"],
             input: None,
+            during: None,
             timeout: Duration::from_secs(120),
         },
     )?;
@@ -776,6 +981,9 @@ struct Boot<'a> {
     /// Bytes to send to the serial port once `marker` appears, and the text
     /// that must follow.
     input: Option<(&'a [u8], &'a str)>,
+    /// Run while the emulator is still up, after `input` (e.g. talk to the
+    /// emulated USB serial port).
+    during: Option<&'a dyn Fn() -> Result<(), String>>,
     timeout: Duration,
 }
 
@@ -788,6 +996,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         steps,
         extra,
         input,
+        during,
         timeout,
     } = *cfg;
     let port = monitor_port();
@@ -855,7 +1064,8 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     };
     let stdin = child.stdin.take();
     let result = run_session(&mut serial, marker, port, wsl, screenshot, steps)
-        .and_then(|()| send_input(&mut serial, stdin, input));
+        .and_then(|()| send_input(&mut serial, stdin, input))
+        .and_then(|()| during.map_or(Ok(()), |f| f()));
     let _ = child.kill();
     let _ = child.wait();
     match result {

@@ -117,10 +117,40 @@ Constraints and facts that shape the design:
   drops a thread into user mode; a safe user-side `syscall` stub (number in
   `r7`). Live in `boot/threads`: two user threads print and yield through
   system calls (`ABABAB`), every frame checked to come from user mode.
-- Next: the user-abort path on the thread's kernel stack, preemption on the
-  way back to user mode (quantum expiry, interrupts), the KData page,
-  mutexes with priority inheritance, `IrqLine` as a waitable object, lazy
-  iWMMXt switching.
+- **Preemption (2026-10-11):** IRQs enter SVC mode with a full frame on the
+  thread's kernel stack; quantum expiry switches user threads that never
+  yield (`USER preempted OK`).
+- **Mutexes with priority inheritance (2026-10-11):**
+  recursive, CE semantics; waiters lend priority along
+  chains of owners; most urgent waiter first; timed-out waiters withdraw
+  their boost; an exiting owner hands its mutexes on. 9 host tests and a
+  live priority-inversion test (`THREADS mutex inheritance OK`).
+- **User faults in the thread's context (rule 5):** user-mode aborts build
+  a system-call `Frame` on the thread's kernel stack and call
+  `user::set_user_fault_handler`'s handler, which may block, fix and resume,
+  or end the thread (`USER fault contained OK`).
+- **Lazy iWMMXt (rule 3):** `iwmmxt::enable_lazy` turns media-unit access
+  off (CPAR) for all but its owner and patches its own undefined-instruction
+  entry into the vector page; a first use saves the owner's 152 bytes and
+  loads the new thread's. 8 shared state slots (~1.2 KiB), not 128
+  (`USER iWMMXt lazy switch OK`, mutation-checked). `wCSSF`/`wCASF` are
+  write-1-to-clear, so restored as far as the hardware allows.
+- **Interrupts as waitable objects (rule 7):** `rt::set_signal_hook` gets
+  each claimed line that fires (after the first-level handler masked it);
+  the kernel sets the event its interrupt-service thread waits on, and the
+  thread services the device and calls `IrqLine::done`. Live with OS timer
+  channel 2 (`soc::SpareTimer`, `THREADS interrupt thread OK`). Found on the
+  way: the idle thread slept in `wait_tick`, which only a timer tick ends,
+  so a device interrupt never got its thread scheduled; it now sleeps in
+  `rt::idle_until_interrupt` (any interrupt ends it, with the "anything
+  ready?" check made with IRQs masked).
+- **The KData layout (rule 8), measured:** a scan of all 500 modules in the
+  owner's ROM (docs/research/kdata.md) shows programs read `+0x000` (the TLS
+  pointer: 89 modules) and `+0x008` (the current thread ID: MFC/ATL
+  runtimes). `kernel/sched::kdata::switch_to` writes those words (and
+  `+0x00C`, the process ID). Wiring it into the switch needs the kernel
+  image's page tables for the high page (the bring-up map's 1 MiB sections
+  can't hold a separate user-read-only page): next, with the kernel image.
 
 ## Open questions
 

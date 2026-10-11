@@ -55,7 +55,12 @@ pub const BUDGETS: &[Budget] = &[
         // boot stacks, scheduler tables, 128 thread contexts).
         // Raised 15 -> 17 KiB on 2026-10-11 (approved by the owner): the
         // user-mode preemption test (16.0 KiB measured, ratcheted +~9%).
-        max_load: 17 * 1024,
+        // Raised 17 -> 27 KiB on 2026-10-11 (approved by the owner): ADR-0010's
+        // mutexes with priority inheritance (~2 KiB of scheduler code), the
+        // user-fault path, lazy iWMMXt switching (~1.3 KiB of HAL code, in
+        // this image only) and interrupts as waitable objects, plus their
+        // live tests (23.9 KiB measured, +~10%).
+        max_load: 27 * 1024,
         max_zero: 30 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text

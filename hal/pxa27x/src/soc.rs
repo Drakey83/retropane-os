@@ -21,6 +21,16 @@ pub mod irq {
     pub const SSP1: u32 = 24;
     /// OS timer match 1 (the tick).
     pub const OST1: u32 = 27;
+    /// OS timer match 2 (the spare channel, [`super::SpareTimer`]).
+    pub const OST2: u32 = 28;
+}
+
+/// The identifier a GPIO pin's edge interrupt is signalled under
+/// ([`Dispatch::handle`]'s callback, `IrqLine::id`): after the 64 possible
+/// controller sources.
+#[must_use]
+pub const fn gpio_line(pin: u8) -> u32 {
+    64 + pin as u32
 }
 
 /// Interrupt controller registers.
@@ -45,6 +55,12 @@ pub mod intc_reg {
 pub mod ost_reg {
     /// Match 1.
     pub const OSMR1: usize = 0x04;
+    /// Match 2.
+    pub const OSMR2: usize = 0x08;
+    /// Match 3 (the watchdog's).
+    pub const OSMR3: usize = 0x0C;
+    /// Watchdog enable: bit 0 resets the chip on a match-3 (set-only).
+    pub const OWER: usize = 0x18;
     /// Counter 0.
     pub const OSCR0: usize = 0x10;
     /// Status (write 1 to clear).
@@ -224,12 +240,16 @@ impl Dispatch {
     }
 
     /// The first-level handler for the `pending` sources (the caller has
-    /// already serviced its own, e.g. the tick, and left them out).
+    /// already serviced its own, e.g. the tick, and left them out). Each
+    /// claimed source or pin that fires is masked, recorded, and passed to
+    /// `signalled` (controller source `n`, or [`gpio_line`] for a pin), so
+    /// the kernel can wake the thread that waits for it.
     pub fn handle<I: RegisterBus, G: RegisterBus>(
         &mut self,
         intc: &mut Intc<I>,
         gpio: &mut GpioEdges<G>,
         pending: u64,
+        signalled: &mut dyn FnMut(u32),
     ) {
         if pending & GPIO_SOURCES != 0 {
             let ev = gpio.take_events();
@@ -241,6 +261,7 @@ impl Dispatch {
                     gpio.disarm((b as u32 * 32 + i) as u8);
                     if self.claimed_gpio[b] & (1 << i) != 0 {
                         self.signalled_gpio[b] |= 1 << i;
+                        signalled(gpio_line((b as u32 * 32 + i) as u8));
                     } else {
                         self.unclaimed_gpio[b] |= 1 << i;
                     }
@@ -254,6 +275,7 @@ impl Dispatch {
             intc.disable(n);
             if self.claimed & (1 << n) != 0 {
                 self.signalled |= 1 << n;
+                signalled(n);
             } else {
                 self.unclaimed |= 1 << n;
             }
@@ -280,6 +302,50 @@ impl Dispatch {
         let was = self.signalled_gpio[b] & bit != 0;
         self.signalled_gpio[b] &= !bit;
         was
+    }
+}
+
+/// OS timer match channel 2: a one-shot timer interrupt for kernel use
+/// (the scheduler's alarm is channel 1). Its interrupt is claimed and
+/// waited for like any device's (`rt::take_irq(irq::OST2)`).
+pub struct SpareTimer<B>(pub B);
+
+impl<B: RegisterBus> SpareTimer<B> {
+    /// Fires the channel's interrupt when the counter reaches `at`.
+    pub fn arm(&mut self, at: u32) {
+        self.0.write32(ost_reg::OSSR, 1 << 2);
+        self.0.write32(ost_reg::OSMR2, at);
+        let oier = self.0.read32(ost_reg::OIER) | (1 << 2);
+        self.0.write32(ost_reg::OIER, oier);
+    }
+
+    /// Acknowledges a match (the owner's part of servicing it).
+    pub fn ack(&mut self) {
+        self.0.write32(ost_reg::OSSR, 1 << 2);
+    }
+
+    /// The counter now.
+    pub fn now(&mut self) -> u32 {
+        self.0.read32(ost_reg::OSCR0)
+    }
+}
+
+/// The watchdog: OS timer match 3 with `OWER.WME`. Once armed it can't be
+/// disarmed (until a reset): it must be fed before every deadline or the
+/// chip resets, which is the point: a hung system comes back by itself.
+pub struct Watchdog<B>(pub B);
+
+impl<B: RegisterBus> Watchdog<B> {
+    /// Arms (if not yet) and sets the deadline `timeout` ticks from now.
+    pub fn feed(&mut self, timeout: u32) {
+        let now = self.0.read32(ost_reg::OSCR0);
+        self.0.write32(ost_reg::OSMR3, now.wrapping_add(timeout));
+        self.0.write32(ost_reg::OWER, 1);
+    }
+
+    /// Whether it's armed (feeding is then mandatory).
+    pub fn armed(&mut self) -> bool {
+        self.0.read32(ost_reg::OWER) & 1 != 0
     }
 }
 
@@ -338,6 +404,32 @@ impl<B: RegisterBus> OsTimer<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+    extern crate std;
+    use std::vec::Vec;
+
+    #[test]
+    fn feeding_the_watchdog_moves_its_deadline_and_arms_it() {
+        let mut w = Watchdog(MockBus::new());
+        w.0.preset(ost_reg::OSCR0, 1_000);
+        assert!(!w.armed());
+        w.feed(500);
+        assert_eq!(w.0.value(ost_reg::OSMR3), 1_500);
+        assert!(w.armed());
+        w.0.preset(ost_reg::OSCR0, u32::MAX - 10);
+        w.feed(100);
+        assert_eq!(w.0.value(ost_reg::OSMR3), 89, "wraps with the counter");
+    }
+
+    #[test]
+    fn the_spare_timer_arms_and_acknowledges_channel_2_only() {
+        let mut t = SpareTimer(MockBus::new());
+        t.0.preset(ost_reg::OIER, 1 << 1); // the alarm's enable stays
+        t.arm(7000);
+        assert_eq!(t.0.value(ost_reg::OSMR2), 7000);
+        assert_eq!(t.0.value(ost_reg::OIER), (1 << 1) | (1 << 2));
+        t.ack();
+        assert_eq!(t.0.writes().last(), Some(&(ost_reg::OSSR, 1 << 2)));
+    }
 
     #[test]
     fn alarms_in_the_past_are_reported() {
@@ -392,7 +484,14 @@ mod tests {
         intc.0
             .preset(intc_reg::ICMR, (1 << irq::KEYPAD) | (1 << irq::MMC));
         let mut gpio = GpioEdges(MockBus::new());
-        d.handle(&mut intc, &mut gpio, (1 << irq::KEYPAD) | (1 << irq::MMC));
+        let mut woken = Vec::new();
+        d.handle(
+            &mut intc,
+            &mut gpio,
+            (1 << irq::KEYPAD) | (1 << irq::MMC),
+            &mut |n| woken.push(n),
+        );
+        assert_eq!(woken, [irq::KEYPAD], "only the claimed source is passed on");
         assert_eq!(intc.0.value(intc_reg::ICMR), 0, "both masked");
         assert!(d.take_signal(irq::KEYPAD));
         assert!(!d.take_signal(irq::KEYPAD), "signal consumed");
@@ -414,7 +513,11 @@ mod tests {
         gpio.0
             .preset(gpio_reg::GEDR[2], (1 << 30) | (1 << 1))
             .preset(gpio_reg::GFER[2], (1 << 30) | (1 << 1));
-        d.handle(&mut intc, &mut gpio, 1 << irq::GPIO_X);
+        let mut woken = Vec::new();
+        d.handle(&mut intc, &mut gpio, 1 << irq::GPIO_X, &mut |n| {
+            woken.push(n)
+        });
+        assert_eq!(woken, [gpio_line(94)], "the claimed pin, by its line id");
         assert!(d.any_signalled());
         assert!(d.take_gpio_signal(94));
         assert!(!d.take_gpio_signal(94));

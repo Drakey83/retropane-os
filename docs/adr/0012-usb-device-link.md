@@ -82,8 +82,27 @@ Facts (docs/hw/udc.md):
 - `rp-probe` does the same (budget raise approved by the owner): its
   checksummed report lines go to the run log, and `cargo xtask load` verifies
   every checksum on the PC.
-- **Not yet:** the watchdog for hangs, and starting HaRET from WM's StartUp
-  folder.
+- **Recovery from hangs:** the loader arms the PXA watchdog (OS timer match
+  3, `rt::watchdog`, set-only) with a 30 s run limit when it starts an
+  image and feeds it while waiting. An image that finishes or crashes
+  returns and marks its run log "returned"; one that hangs is reset, and
+  the loader reports "did not return" (`cargo xtask emu` sends it a 4-byte
+  `b .` image and checks exactly that). On the device, the kit's
+  `loader/startup.txt` (HaRET boots without a tap) and `RetroPane
+  loader.lnk` (copied to `\Windows\StartUp`) bring the loader back after
+  the reset with nobody at the device; taking the SD card out disables it.
+  `cargo xtask load` waits up to 120 s and says when an image hung, with or
+  without a surviving log.
+
+- **Emulator USB model (retropane-qemu `d7aa030`, `hw/misc/pxa27x-udc.c`):**
+  the PXA27x UDC with a built-in host that enumerates like Windows (strict
+  about one packet in flight, the hardware status stage and the AREN
+  acknowledgement), then bridges the CDC data to a chardev; it sends the
+  "port opened" requests only when a client connects, like Windows. `cargo
+  xtask emu` now checks `rp-usb`'s banner and echo and the loader taking an
+  image and returning a run log over USB, end to end. These tests skip on
+  emulator releases without the model (the pinned `rp-v0.6.0`) until a new
+  release is published.
 
 ## The four lenses
 

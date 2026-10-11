@@ -67,8 +67,22 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
           has done (resets, setups, configured, open, bytes).
 - loader/ Resident loader: start it once with HaRET, cable plugged in; then
           every `cargo xtask load <image>` on the PC sends a new image over
-          USB and starts it. No more copying files.
+          USB and starts it. No more copying files. An image that hangs is
+          reset by the watchdog after 30 s.
+          Optional, for runs that need nobody at the device:
+          * startup.txt: copy it next to haret.exe and HaRET boots by itself
+            when started (no \"Run\" tap). Delete it to get the menu back.
+          * RetroPane loader.lnk: copy it to \\Windows\\StartUp and Windows
+            Mobile starts HaRET (and so the loader) at every boot, including
+            after a watchdog reset. To stop: delete it from \\Windows\\StartUp,
+            or just take the SD card out (then Windows Mobile boots normally).
 ";
+
+/// A Windows CE shortcut: the length of what follows `#`, then the command.
+fn shortcut(target: &str) -> String {
+    let cmd = format!("\"{target}\"");
+    format!("{}#{cmd}", cmd.chars().count())
+}
 
 /// Builds the kit into `target/sdkit`.
 pub fn build(root: &Path) -> Result<(), String> {
@@ -118,7 +132,16 @@ pub fn build(root: &Path) -> Result<(), String> {
             .arg(to_wsl_path(&kit)),
     )?;
 
-    for (name, text) in [("default.txt", DEFAULT_TXT), ("README.txt", README)] {
+    for (name, text) in [
+        ("default.txt", DEFAULT_TXT.to_string()),
+        ("README.txt", README.to_string()),
+        // Loader mode: HaRET runs startup.txt by itself when it starts.
+        ("loader/startup.txt", DEFAULT_TXT.to_string()),
+        (
+            "loader/RetroPane loader.lnk",
+            shortcut(r"\Storage Card\haret.exe"),
+        ),
+    ] {
         // Windows Mobile tools expect CRLF.
         std::fs::write(kit.join(name), text.replace('\n', "\r\n"))
             .map_err(|e| format!("{name}: {e}"))?;
@@ -170,6 +193,14 @@ fn objcopy() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_count_the_characters_after_the_hash() {
+        assert_eq!(
+            shortcut(r"\Storage Card\haret.exe"),
+            r#"25#"\Storage Card\haret.exe""#
+        );
+    }
 
     #[test]
     fn script_boots_our_image() {

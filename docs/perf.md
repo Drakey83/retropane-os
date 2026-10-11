@@ -54,6 +54,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | `rp-probe` writes its report to the run log and returns to the resident loader (ADR-0012), so `cargo xtask load rp-probe` delivers the checksummed report to the PC with no photos. **Load budget raised 40 → 45 KiB, approved by the owner** (measured + ~10%) | `rp-probe` loaded size | 40,864 B | 41,920 B |
 | 2026-10-11 | Pattern fill builds its bar row in RAM and only writes the framebuffer (the device measured reading 2700G memory as the slow part: 61 ms vs 14.5 ms for a plain fill). Emulator counts instructions, so no gain shows there; the device number comes with the next probe run | `fb_pattern_vga` (emulator) | 127,692 ns | 128,821 ns (+0.9%, baseline re-recorded) |
 | 2026-10-11 | SD: 4-bit data bus (ACMD6 + `CMDAT.SD_4DAT`) and multiple-block reads (CMD18/CMD12). New benchmark reads 4 blocks per command; on the device the per-command start-up (most of the measured 3.85 ms per block) is paid once per 4 | `sd_read_4_blocks` (emulator) | — | 17,769 ns |
+| 2026-10-11 | ADR-0010: mutexes with priority inheritance, user faults in the thread's context, lazy iWMMXt, interrupts as waitable objects, plus their live tests. Scheduler entry points kept out of line; free events via a bitmap instead of a loop LLVM unrolled to 1 KiB. **Load budget raised 17 → 27 KiB, approved by the owner** (measured + ~10%) | `rp-threads` loaded size | 16,012 B | 24,500 B |
 
 ## Real hardware
 

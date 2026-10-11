@@ -16,6 +16,8 @@ pub mod devmap;
 pub mod diag;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod handoff;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod iwmmxt;
 pub mod mmu;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;

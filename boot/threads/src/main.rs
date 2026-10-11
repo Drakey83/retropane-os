@@ -24,8 +24,9 @@ mod image {
 
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt::{self, Global};
-    use rp_hal_pxa27x::thread;
+    use rp_hal_pxa27x::soc::irq;
     use rp_hal_pxa27x::user::{self, Frame};
+    use rp_hal_pxa27x::{iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid};
 
@@ -47,6 +48,13 @@ mod image {
         pingpong_ticks: 0,
         late_max: 0,
         wakes: 0,
+        mutex: Eid(0),
+        order: [0; 4],
+        olen: 0,
+        fault_addr: 0,
+        irq_event: Eid(0),
+        irq_wakes: 0,
+        irq_latency_max: 0,
     });
 
     /// System calls (user side numbers).
@@ -87,6 +95,17 @@ mod image {
         pingpong_ticks: u32,
         late_max: u32,
         wakes: u32,
+        /// Priority inheritance: the mutex, and who got where in what order.
+        mutex: Eid,
+        order: [u8; 4],
+        olen: usize,
+        /// The address a user thread faulted on (caught by the kernel).
+        fault_addr: u32,
+        /// The event the timer interrupt sets, how often the
+        /// interrupt-service thread woke, and its slowest wake-up.
+        irq_event: Eid,
+        irq_wakes: u32,
+        irq_latency_max: u32,
     }
 
     fn main() -> ! {
@@ -133,6 +152,52 @@ mod image {
         wait(done); // one of: ping-pong finished, sleeper finished
         wait(done); // the other
         let (pp_ticks, late_max, wakes) = DEMO.with(|d| (d.pingpong_ticks, d.late_max, d.wakes));
+
+        // Priority inversion: `low` holds the mutex, `high` waits for it, and
+        // `middle` is ready. Inheritance runs `low` at `high`'s priority, so
+        // the order is L(ow releases), H(igh gets it), M(iddle runs); without
+        // it, `middle` would run first and `high` would wait behind it.
+        let pi = SCHED.with(|s| -> Result<(), Error> {
+            let m = s.create_mutex(false)?;
+            DEMO.with(|d| d.mutex = m);
+            let t = s.create(0, 220)?;
+            thread::prepare(t.index(), stacks.next().ok_or(Error::Full)?, pi_low, 0);
+            Ok(())
+        });
+        wait(done); // `low` holds the mutex
+        let pi = pi.and_then(|()| {
+            SCHED.with(|s| -> Result<(), Error> {
+                for (prio, entry) in [
+                    (180, pi_middle as extern "C" fn(usize) -> !),
+                    (100, pi_high),
+                ] {
+                    let t = s.create(0, prio)?;
+                    thread::prepare(t.index(), stacks.next().ok_or(Error::Full)?, entry, 0);
+                }
+                Ok(())
+            })
+        });
+        if pi.is_ok() {
+            wait(done); // `high` done
+            wait(done); // `middle` done
+        }
+        let (order, olen) = DEMO.with(|d| (d.order, d.olen));
+
+        // An interrupt as a waitable object: the first-level handler masks
+        // the timer interrupt and the signal hook sets an event, which wakes
+        // an interrupt-service thread waiting on it like on any event.
+        let ist = (|| -> Option<()> {
+            let ev = SCHED.with(|s| s.create_event(false, false)).ok()?;
+            DEMO.with(|d| d.irq_event = ev);
+            rt::set_signal_hook(on_signal);
+            let t = SCHED.with(|s| s.create(0, 50)).ok()?;
+            thread::prepare(t.index(), stacks.next()?, ist_thread, 0);
+            Some(())
+        })();
+        if ist.is_some() {
+            wait(done);
+        }
+        let (irq_wakes, irq_latency) = DEMO.with(|d| (d.irq_wakes, d.irq_latency_max));
         // One format call for both lines (each call site costs image size).
         let _ = writeln!(
             uart,
@@ -140,6 +205,19 @@ mod image {
             2 * ROUNDS
         );
         let mut ok = report(&mut uart, "THREADS ping-pong", pp_ticks > 0, pp_ticks);
+        ok &= report(
+            &mut uart,
+            "THREADS interrupt thread",
+            irq_wakes == IRQ_ROUNDS,
+            irq_wakes,
+        );
+        let _ = writeln!(uart, "BENCH irq_to_thread_max {irq_latency} 1");
+        ok &= report(
+            &mut uart,
+            "THREADS mutex inheritance",
+            order[..olen] == *b"LHM",
+            olen as u32,
+        );
         // On time: within 1 ms of each deadline (the emulator runs in real
         // time; a real X51v should do much better).
         ok &= report(
@@ -185,6 +263,31 @@ mod image {
         let b_first = marks.iter().position(|&m| m == b'B').unwrap_or(usize::MAX);
         let interleaved = mlen == 2 * MARKS && b_first < a_done;
         ok &= report(&mut uart, "USER preempted", interleaved, mlen as u32);
+
+        // A user thread reads memory it may not touch: the kernel handles
+        // the abort in that thread's context, ends just that thread, and the
+        // other user thread carries on (ADR-0010 rule 5).
+        user::set_user_fault_handler(on_user_fault);
+        spawn_user_pair(&mut stacks, fault_trampoline);
+        wait(done); // the faulting thread, ended by the kernel
+        wait(done); // the other one, which exits normally
+        let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
+        let addr = DEMO.with(|d| d.fault_addr);
+        let contained = addr == BAD_ADDR && marks[..mlen].last() == Some(&b'C');
+        ok &= report(&mut uart, "USER fault contained", contained, addr);
+
+        // Lazy iWMMXt: two user threads keep their own value in media
+        // register wR0 while yielding to each other. Each first use traps
+        // once; every switch between them saves one's registers and loads
+        // the other's, so both values must survive.
+        iwmmxt::enable_lazy();
+        spawn_user_pair(&mut stacks, wmmx_trampoline);
+        wait(done);
+        wait(done);
+        let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
+        let traps = iwmmxt::traps();
+        let kept = marks[..mlen].ends_with(b"WW") && traps >= 3;
+        ok &= report(&mut uart, "USER iWMMXt lazy switch", kept, traps);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -250,16 +353,14 @@ mod image {
 
     extern "C" fn idle_thread(_: usize) -> ! {
         loop {
-            // Tickless: sleep until the next deadline, or any interrupt.
-            match SCHED.with(|s| s.next_deadline()) {
-                Some(at) => {
-                    if rt::set_alarm(at) {
-                        rt::wait_tick();
-                    }
-                }
-                None => {
-                    rt::wait_tick();
-                }
+            // Tickless: sleep until the next deadline or any interrupt (a
+            // device's wakes its service thread through the signal hook).
+            let due = match SCHED.with(|s| s.next_deadline()) {
+                Some(at) => !rt::set_alarm(at),
+                None => false,
+            };
+            if !due {
+                rt::idle_until_interrupt(|| SCHED.with(|s| s.has_ready()));
             }
             reschedule();
         }
@@ -302,6 +403,85 @@ mod image {
         finish()
     }
 
+    /// Timer interrupts the interrupt-service thread waits for.
+    const IRQ_ROUNDS: u32 = 3;
+    /// 2 ms between them (OS-timer ticks).
+    const IRQ_GAP: u32 = 6_500;
+
+    /// The signal hook (IRQ context): a claimed line fired, wake its waiter.
+    fn on_signal(line: u32) {
+        if line == irq::OST2 {
+            let ev = DEMO.with(|d| d.irq_event);
+            let _ = SCHED.with(|s| s.set_event(ev));
+        }
+    }
+
+    /// An interrupt-service thread: waits for its interrupt like for any
+    /// event, services the device, re-enables the line (CE's
+    /// InterruptDone). Records how late each wake-up was.
+    extern "C" fn ist_thread(_: usize) -> ! {
+        let (ev, done) = DEMO.with(|d| (d.irq_event, d.done));
+        // The thread owns its device and interrupt line (ADR-0007).
+        let (Some(mut line), Some(mut timer)) = (rt::take_irq(irq::OST2), rt::take_spare_timer())
+        else {
+            set(done);
+            finish()
+        };
+        for _ in 0..IRQ_ROUNDS {
+            let at = timer.now().wrapping_add(IRQ_GAP);
+            timer.arm(at);
+            wait(ev);
+            let late = timer.now().wrapping_sub(at);
+            let fired = line.take();
+            timer.ack();
+            line.done();
+            DEMO.with(|d| {
+                if fired {
+                    d.irq_wakes += 1;
+                }
+                d.irq_latency_max = d.irq_latency_max.max(late);
+            });
+        }
+        set(done);
+        finish()
+    }
+
+    fn note(c: u8) {
+        DEMO.with(|d| {
+            if d.olen < d.order.len() {
+                d.order[d.olen] = c;
+                d.olen += 1;
+            }
+        });
+    }
+
+    extern "C" fn pi_low(_: usize) -> ! {
+        let (m, done) = DEMO.with(|d| (d.mutex, d.done));
+        wait(m); // free: taken at once
+        set(done); // main (more urgent) starts `high` and `middle`
+        // Back here only at `high`'s inherited priority: ahead of `middle`.
+        note(b'L');
+        let _ = SCHED.with(|s| s.release_mutex(m));
+        reschedule();
+        finish()
+    }
+
+    extern "C" fn pi_high(_: usize) -> ! {
+        let (m, done) = DEMO.with(|d| (d.mutex, d.done));
+        wait(m); // blocks: `low` holds it, and inherits this priority
+        note(b'H');
+        let _ = SCHED.with(|s| s.release_mutex(m));
+        set(done);
+        finish()
+    }
+
+    extern "C" fn pi_middle(_: usize) -> ! {
+        note(b'M');
+        let done = DEMO.with(|d| d.done);
+        set(done);
+        finish()
+    }
+
     /// Kernel side of a user thread: enter user mode, never come back (only
     /// system calls do).
     extern "C" fn user_trampoline(i: usize) -> ! {
@@ -332,6 +512,68 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Kernel side of the media test's user threads.
+    extern "C" fn wmmx_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_wmmx, stack, i)
+    }
+
+    /// Puts a value of its own in wR0, yields a few times (the other thread
+    /// uses wR0 meanwhile), then checks it: marks `W` if it survived.
+    extern "C" fn user_wmmx(i: usize) -> ! {
+        let mine = 0x5250_0000_0000_0026 | (i as u64 + 1) << 20;
+        user::wmmx_write(mine);
+        for _ in 0..3 {
+            user::syscall(SYS_YIELD, 0, 0, 0);
+        }
+        let mark = if user::wmmx_read() == mine {
+            b'W'
+        } else {
+            b'X'
+        };
+        user::syscall(SYS_MARK, u32::from(mark), 0, 0);
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Unmapped in the bring-up map: any access aborts.
+    const BAD_ADDR: u32 = 0x8000_0000;
+
+    /// Kernel side of the fault test's user threads.
+    extern "C" fn fault_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_fault, stack, i)
+    }
+
+    /// Thread 0 touches forbidden memory; thread 1 marks `C` and exits.
+    extern "C" fn user_fault(i: usize) -> ! {
+        if i == 0 {
+            let _ = user::user_read(BAD_ADDR);
+        } else {
+            user::syscall(SYS_MARK, u32::from(b'C'), 0, 0);
+            user::syscall(SYS_EXIT, 0, 0, 0);
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// A fault from user mode, on the faulting thread's kernel stack: here
+    /// the thread is ended (later: the VM resolves page faults and resumes).
+    fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
+        let caught = f.from_user() && kind == rt::Fault::DataAbort;
+        DEMO.with(|d| d.fault_addr = if caught { addr } else { 0 });
+        let done = DEMO.with(|d| d.done);
+        let _ = SCHED.with(|s| s.set_event(done));
+        finish()
     }
 
     /// After an interrupt from user mode: maybe switch threads.
@@ -396,6 +638,7 @@ mod image {
     /// Ends the running thread.
     fn finish() -> ! {
         let me = CURRENT.with(|c| *c);
+        iwmmxt::release(me.index());
         let _ = SCHED.with(|s| s.exit(me));
         reschedule();
         unreachable!("an exited thread never runs again")
