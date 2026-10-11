@@ -1,0 +1,14 @@
+/target/
+**/*.rs.bk
+*.profraw
+lcov.info
+
+# Proprietary material extracted from a user's own device: never commit (docs/CLEANROOM.md)
+/local/
+*.nb
+*.nb0
+*.bin
+*.dll
+*.exe
+*.cab
+*.trace

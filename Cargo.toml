@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = [
+    "hal/api",
+    "hal/mock",
+    "hal/pxa27x",
+    "hal/x51v",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/Drakey83/retropane-os"
+publish = false
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = true
+
+[profile.dev]
+panic = "abort"

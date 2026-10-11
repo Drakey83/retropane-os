@@ -1,0 +1,6 @@
+# Pinned nightly: the X51v target needs `-Zbuild-std` (see docs/adr/0001-rust-first.md).
+# Bump deliberately, in its own PR, with CI green.
+[toolchain]
+channel = "nightly-2026-09-15"
+components = ["rust-src", "rustfmt", "clippy", "llvm-tools-preview"]
+profile = "minimal"
