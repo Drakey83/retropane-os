@@ -20,6 +20,12 @@
 //! blank the report. Everything is mirrored to the serial port, where
 //! `cargo xtask emu` verifies every line's checksum.
 //!
+//! Startup colours (bring-up, until the device has a serial cable): each
+//! step before the first line of text fills the screen with a colour, so a
+//! hang leaves the last step's colour showing: red entered, yellow SoC
+//! snapshot, green FFUART, cyan MMU, blue 2700G read, white scratch RAM,
+//! grey report storage. Black with text is normal.
+//!
 //! D-pad right/down/centre or a tap: next page. Left/up: previous page.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
@@ -58,6 +64,7 @@ mod image {
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::{Mmio, diag, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
+    use rp_hal_x51v::devices::beacon;
 
     rp_hal_pxa27x::entry!(main);
 
@@ -146,15 +153,19 @@ mod image {
     fn main() -> ! {
         // 1. Capture the hardware exactly as Windows Mobile (and HaRET) left
         // it, before RetroPane changes anything.
+        step(0); // red: entered (see "Startup colours" above)
         let cp = diag::coprocessors();
         let mut soc = [0u32; diag::COUNT];
         diag::snapshot(&mut soc);
+        step(1); // yellow
 
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
+        step(2); // green
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
+        step(3); // cyan
 
         // 2. The 2700G: read its state, then find a framebuffer to draw in.
         let mut gpu = [0u32; SAVED_REGS.len()];
@@ -166,6 +177,7 @@ mod image {
         for (v, (_, off)) in gpu.iter_mut().zip(SAVED_REGS) {
             *v = regs.read32(*off);
         }
+        step(4); // blue
         let kept = Plane::decode(
             regs.read32(reg::GSCTRL),
             regs.read32(reg::GSCADR),
@@ -199,6 +211,7 @@ mod image {
             halt()
         };
         let (bench_ram, report_ram) = scratch.split_at_mut(scratch.len() - report::STORAGE);
+        step(5); // white
 
         let mut results = Results {
             bench: [("", 0, 0); MAX_RESULTS],
@@ -208,6 +221,7 @@ mod image {
         };
         let mut sd_lines = [[b' '; 37]; 5];
         let mut panel_name = "unknown";
+        step(6); // grey: the console clears it to black next
 
         {
             let mut log = Progress {
@@ -483,6 +497,13 @@ mod image {
             }
         }
         let _ = W(buf, 0).write_fmt(args);
+    }
+
+    /// Startup colour `i` (see the module docs).
+    #[inline(never)]
+    fn step(i: usize) {
+        const COLOURS: [u16; 7] = [0xF800, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xFFFF, 0x7BEF];
+        beacon(COLOURS[i], COLOURS[i]);
     }
 
     fn halt() -> ! {
