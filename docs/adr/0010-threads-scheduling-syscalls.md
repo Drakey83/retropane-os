@@ -120,8 +120,8 @@ Constraints and facts that shape the design:
 - **Preemption (2026-10-11):** IRQs enter SVC mode with a full frame on the
   thread's kernel stack; quantum expiry switches user threads that never
   yield (`USER preempted OK`).
-- **Mutexes with priority inheritance (2026-10-11, branch
-  `kernel-threads`):** recursive, CE semantics; waiters lend priority along
+- **Mutexes with priority inheritance (2026-10-11):**
+  recursive, CE semantics; waiters lend priority along
   chains of owners; most urgent waiter first; timed-out waiters withdraw
   their boost; an exiting owner hands its mutexes on. 9 host tests and a
   live priority-inversion test (`THREADS mutex inheritance OK`).
