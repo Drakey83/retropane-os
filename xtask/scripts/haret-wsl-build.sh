@@ -62,10 +62,21 @@ sed -i 's/^IGNORE=.*/IGNORE=" ARM_26D | ARM_32[ ]*[.]text([+-][^ ]*)?[ ]*$"/' to
 mkdir -p out
 # -fno-jump-tables: the relocatable preloader and IRQ code must not contain
 # absolute jump tables (checkrelocs enforces this).
+# Static C++ runtime: a stock Windows Mobile device has no libstdc++-6.dll,
+# and an import it can't find makes the loader refuse the program ("not
+# signed with a trusted certificate, or one of its components cannot be
+# found").
+rm -f out/haret-debug.exe out/haret.exe
 make -s BASE="$CEGCC" CXXFLAGS="-Wall -O -g -MD -march=armv4 -Iinclude \
     -fno-exceptions -fno-rtti -fno-jump-tables -include rp-compat.h -fpermissive -w" \
+    LDFLAGS="-Wl,--major-subsystem-version=2,--minor-subsystem-version=10 -static-libstdc++ -static-libgcc" \
     out/haret-debug > "$HOME/haret-build.log" 2>&1 || true
 "$CEGCC/bin/arm-mingw32ce-strip" out/haret-debug.exe -o out/haret.exe ||
     { echo "HaRET build failed; see ~/haret-build.log" >&2; exit 1; }
+# Refuse to ship anything importing more than a stock device's own DLLs.
+if "$CEGCC/bin/arm-mingw32ce-objdump" -p out/haret.exe | grep -i "DLL Name" | grep -viE "coredll|winsock"; then
+    echo "haret.exe imports a DLL a stock Windows Mobile device doesn't have" >&2
+    exit 1
+fi
 cp out/haret.exe "$OUT/haret.exe"
 echo "    haret.exe built ($(stat -c %s out/haret.exe) bytes, HaRET $HARET_REV)"
