@@ -211,6 +211,10 @@ name = "rp-kernel-pe"
 version = "0.0.0"
 
 [[package]]
+name = "rp-kernel-sched"
+version = "0.0.0"
+
+[[package]]
 name = "rp-lz4"
 version = "0.0.0"
 
