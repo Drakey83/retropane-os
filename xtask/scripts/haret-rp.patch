@@ -103,7 +103,7 @@ index 33687f4..f56844c 100644
    .rdata : {
      /* Create two symbols around the list of machine init functions. */
 diff --git a/src/linboot.cpp b/src/linboot.cpp
-index 3c00b81..8e3f0b5 100644
+index 3c00b81..442e345 100644
 --- a/src/linboot.cpp
 +++ b/src/linboot.cpp
 @@ -237,7 +237,7 @@ static inline uint32 __preload do_cpuGetPSR(void) {
@@ -115,6 +115,15 @@ index 3c00b81..8e3f0b5 100644
  
  static inline int __preload
  fbOverlaps(struct preloadData *pd)
+@@ -313,6 +313,8 @@ preloader(struct preloadData *data)
+         }
+     }
+ 
++    FB_PRINTF(&data->fbi, "FB=%%x kernel=%%x\\n", data->physFB, destKernel);
++    FB_PRINTF(&data->fbi, "first word %%x mach %%x\\n", *(uint32 *)destKernel, data->machtype);
+     FB_PRINTF(&data->fbi, "Jumping to Kernel...\\n");
+ 
+     // Boot
 diff --git a/src/wince/asmstuff.S b/src/wince/asmstuff.S
 index 076c6ae..32b4ce0 100644
 --- a/src/wince/asmstuff.S
