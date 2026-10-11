@@ -122,7 +122,8 @@ pub const LOG_BASE: usize = 0xA850_0000;
 /// Size of the run log reservation, header included.
 pub const LOG_SIZE: usize = 64 * 1024;
 const LOG_MAGIC: u32 = u32::from_le_bytes(*b"RPLG");
-/// Header words: magic, bytes used, overflow flag, !magic.
+/// Header words: magic, bytes used, flags (bit 0 overflow, bit 1 the image
+/// returned to the loader), !magic.
 const LOG_HEADER: usize = 16;
 const LOG_CAPACITY: usize = LOG_SIZE - LOG_HEADER;
 
@@ -171,7 +172,7 @@ pub fn log_write(data: &[u8]) {
         core::ptr::copy_nonoverlapping(data.as_ptr(), dst, n);
         log_word(1).write_volatile((used + n) as u32);
         if n < data.len() {
-            log_word(2).write_volatile(1);
+            log_word(2).write_volatile(log_word(2).read_volatile() | 1);
         }
     }
 }
@@ -186,17 +187,32 @@ impl core::fmt::Write for RunLog {
     }
 }
 
-/// Takes the previous run's log (the loader, on start): the bytes and
-/// whether some were dropped. The log is closed, so it's sent once.
-pub fn log_take() -> Option<(&'static [u8], bool)> {
+/// The previous run, as the loader finds it on start.
+pub struct PreviousRun {
+    /// What the image printed.
+    pub log: &'static [u8],
+    /// Output was dropped (the log was full).
+    pub overflow: bool,
+    /// The image came back by itself (finished or crashed); if not, it hung
+    /// and the watchdog (or a manual reset) brought the device back.
+    pub returned: bool,
+}
+
+/// Takes the previous run's log (the loader, on start). The log is closed,
+/// so it's reported once.
+pub fn log_take() -> Option<PreviousRun> {
     let used = log_used()?;
     // SAFETY: reading the run log's header and its `used` bytes, all inside
     // the reservation; closing it (magic cleared) makes this the only taker.
     unsafe {
-        let overflow = log_word(2).read_volatile() != 0;
+        let flags = log_word(2).read_volatile();
         log_word(0).write_volatile(0);
-        let data = core::slice::from_raw_parts((LOG_BASE + LOG_HEADER) as *const u8, used);
-        Some((data, overflow))
+        let log = core::slice::from_raw_parts((LOG_BASE + LOG_HEADER) as *const u8, used);
+        Some(PreviousRun {
+            log,
+            overflow: flags & 1 != 0,
+            returned: flags & 2 != 0,
+        })
     }
 }
 
@@ -214,6 +230,8 @@ pub fn loader_present() -> bool {
 #[inline(never)]
 pub fn return_to_loader() {
     if loader_present() {
+        // SAFETY: the run log's flags word (valid: checked just above).
+        unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 2) };
         rp_hal_pxa27x::handoff::launch(LOADER_BASE as u32);
     }
 }

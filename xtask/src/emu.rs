@@ -473,6 +473,38 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Sends the loader an image that hangs (one `b .` instruction, MMU and
+/// IRQs off) and checks recovery: after the run limit the watchdog resets
+/// the machine, the loader starts again and reports that the run didn't
+/// return. The emulator restarts the loader itself; on the device Windows
+/// Mobile's StartUp folder does (docs: SD kit README, loader/).
+pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
+    let loader = root.join("target/emu/rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let hang = rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes());
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&hang, "did not return")),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    if !output.contains("RPL OK") {
+        return Err("watchdog: the hanging image was never started".into());
+    }
+    eprintln!("    watchdog OK: a hung image reset the device and the loader reported it");
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 

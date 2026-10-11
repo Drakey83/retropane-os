@@ -97,6 +97,7 @@ while (-not $done -and (Get-Date) -lt $deadline) {{
         catch [System.TimeoutException] {{ continue }}
         catch {{ break }}
         if ($l -eq 'RPL LOG') {{ $inlog = $true; continue }}
+        if (-not $inlog -and $l -eq 'RPLOAD1 READY') {{ 'RESTARTED'; $done = $true; break }}
         if ($l -eq 'RPL END') {{ 'LOGEND'; $done = $true; break }}
         if ($inlog) {{ 'LOG ' + $l }}
     }}
@@ -107,8 +108,9 @@ while (-not $done -and (Get-Date) -lt $deadline) {{
 }
 
 /// How long `cargo xtask load` waits for the image to return to the loader
-/// with its run log.
-const LOG_WAIT_SECS: u32 = 30;
+/// with its run log: the loader's 30 s run limit, then a watchdog reset and
+/// Windows Mobile's boot back into the loader.
+const LOG_WAIT_SECS: u32 = 120;
 
 /// Base64 of `text` as UTF-16LE, for PowerShell's `-EncodedCommand`.
 fn encode_command(text: &str) -> String {
@@ -194,6 +196,7 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
     let mut reply = None;
     let mut log = Vec::new();
     let mut returned = false;
+    let mut restarted = false;
     for line in text.lines() {
         let trimmed = line.trim_end();
         if let Some(p) = trimmed.strip_prefix("PORT ") {
@@ -206,6 +209,8 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
             log.push(String::new());
         } else if trimmed == "LOGEND" {
             returned = true;
+        } else if trimmed == "RESTARTED" {
+            restarted = true;
         }
     }
     let Some(port) = port else {
@@ -220,10 +225,20 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                 "    {} bytes sent on {port}: the loader started it",
                 payload.len()
             );
+            if restarted {
+                return Err(
+                    "the image hung: the watchdog reset the device and the loader came \
+                     back without a run log (the reset cleared it)"
+                        .into(),
+                );
+            }
             if returned {
                 eprintln!("    the image returned to the loader; its run log:");
                 for l in &log {
                     println!("{l}");
+                }
+                if log.iter().any(|l| l.contains("did not return")) {
+                    return Err("the image hung: the watchdog reset the device (log above)".into());
                 }
                 // A probe report: every line's checksum, checked here.
                 let text = log.join("\n");

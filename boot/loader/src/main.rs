@@ -38,6 +38,9 @@ mod image {
     /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
     const TICK_1S: u32 = 3_250_000;
     const STATUS_H: usize = 6 * 16;
+    /// How long a loaded image may run without returning or feeding the
+    /// watchdog (the probe, the slowest, takes about 15 s on the device).
+    const RUN_LIMIT: u32 = 30 * TICK_1S;
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
@@ -123,19 +126,30 @@ mod image {
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
         let mut pending = devices::log_take();
-        if let Some((data, overflow)) = pending {
-            let _ = writeln!(log, "previous run: {} bytes of log", data.len());
-            send_log(&mut |b| uart_bytes(&mut uart, b), data, overflow);
+        if let Some(run) = &pending {
+            let how = if run.returned {
+                "returned"
+            } else {
+                "did NOT return"
+            };
+            let _ = writeln!(log, "previous run {how}: {} bytes of log", run.log.len());
+            send_log(&mut |b| uart_bytes(&mut uart, b), run);
         }
 
         let mut rx = Receiver::new();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
+        let mut watchdog = rt::watchdog();
         loop {
+            // Armed by an earlier run (it can't be disarmed): keep it fed
+            // while waiting.
+            if watchdog.armed() {
+                watchdog.feed(RUN_LIMIT);
+            }
             udc.poll();
             if udc.host_open() {
-                if let Some((data, overflow)) = pending.take() {
-                    send_log(&mut |b| usb_bytes(&mut udc, b), data, overflow);
+                if let Some(run) = pending.take() {
+                    send_log(&mut |b| usb_bytes(&mut udc, b), &run);
                 }
             }
             let mut outcome = None;
@@ -164,6 +178,11 @@ mod image {
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
                     devices::log_start();
+                    // A run limit: an image that hangs (never returns, never
+                    // feeds the watchdog) resets the device, and the loader
+                    // comes back (started again by Windows Mobile's StartUp
+                    // folder on the device; the emulator restarts it).
+                    watchdog.feed(RUN_LIMIT);
                     handoff::launch(IMAGE_BASE as u32);
                 }
                 Some(Err(e)) => {
@@ -175,7 +194,13 @@ mod image {
             if rt::ticks().wrapping_sub(last) >= TICK_1S {
                 last = rt::ticks();
                 if rx.progress().is_none() {
-                    send(&mut uart, &mut udc, READY);
+                    // Over USB only once the previous run's log has gone,
+                    // so the PC can tell "back with a log" from "restarted
+                    // without one" (a hang whose log the reset wiped).
+                    let _ = uart.write_str(READY);
+                    if pending.is_none() {
+                        udc.write(READY.as_bytes());
+                    }
                 }
                 let s = udc.stats();
                 let mut st = Console::new(
@@ -213,12 +238,16 @@ mod image {
         udc.write(s.as_bytes());
     }
 
-    /// The run log, framed for `cargo xtask load`.
-    fn send_log(out: &mut dyn FnMut(&[u8]), data: &[u8], overflow: bool) {
+    /// The run log, framed for `cargo xtask load`; a run that didn't
+    /// return (a hang the watchdog reset) says so before the end marker.
+    fn send_log(out: &mut dyn FnMut(&[u8]), run: &devices::PreviousRun) {
         out(b"RPL LOG\r\n");
-        out(data);
-        if overflow {
+        out(run.log);
+        if run.overflow {
             out(b"\r\n[run log full: later output dropped]");
+        }
+        if !run.returned {
+            out(b"\r\n[the image did not return: it hung and the device was reset]");
         }
         out(b"\r\nRPL END\r\n");
     }
