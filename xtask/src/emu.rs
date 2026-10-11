@@ -360,6 +360,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER yield OK",
     "USER preempted OK",
     "USER fault contained OK",
+    "USER iWMMXt lazy switch OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and

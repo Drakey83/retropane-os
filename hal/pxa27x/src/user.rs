@@ -148,15 +148,21 @@ unsafe extern "C" {
 pub fn set_syscall_handler(f: fn(&mut Frame)) {
     // SAFETY: set during setup, before any thread can make a system call.
     unsafe { core::ptr::addr_of_mut!(HANDLER).write(Some(f)) }
-    // The vector page holds 8 `ldr pc, [pc, #24]` slots, then their 8
-    // target words: the SWI's target is word 8 + 2.
-    let phys = crate::mmu::VECTORS_PHYS + 4 * 10;
-    let high = 0xFFFF_0000 + 4 * 10;
+    set_vector(2, rp_swi_entry as *const () as usize as u32);
+}
+
+/// Points exception vector `slot` (0 reset .. 7 FIQ) at `entry`. The vector
+/// page holds 8 `ldr pc, [pc, #24]` slots, then their 8 target words, so
+/// optional entries (system calls, lazy iWMMXt) are linked only into images
+/// that install them.
+pub(crate) fn set_vector(slot: u32, entry: u32) {
+    let phys = crate::mmu::VECTORS_PHYS + 4 * (8 + slot);
+    let high = 0xFFFF_0000 + 4 * (8 + slot);
     // SAFETY: VECTORS_PHYS is the reserved vector page (identity-mapped
-    // RAM, see boot/link.x), written only here and by init_mmu; the word is
-    // read by the SWI vector, which can't run concurrently on one core
-    // during setup.
-    unsafe { (phys as *mut u32).write_volatile(rp_swi_entry as *const () as usize as u32) };
+    // RAM, see boot/link.x), written only by init_mmu and during setup; the
+    // word is read only by that exception's vector, which doesn't run
+    // concurrently on one core during setup.
+    unsafe { (phys as *mut u32).write_volatile(entry) };
     // VIVT: the same word is also cached under the high-vector address.
     // Write it back through this alias and drop both aliases' lines.
     crate::cpu::clean_invalidate_range(phys, 4);
@@ -228,6 +234,36 @@ pub fn user_read(addr: u32) -> u32 {
         );
     }
     v
+}
+
+/// Writes media register `wR0` (user side; with lazy switching, a thread's
+/// first media instruction traps once and then runs).
+pub fn wmmx_write(v: u64) {
+    // SAFETY: TMCRR wR0 (MCRR to coprocessor 0) only changes wR0.
+    unsafe {
+        core::arch::asm!(
+            "mcrr p0, #0, {lo}, {hi}, c0",
+            lo = in(reg) v as u32,
+            hi = in(reg) (v >> 32) as u32,
+            options(nomem, nostack),
+        )
+    };
+}
+
+/// Reads media register `wR0` (user side).
+#[must_use]
+pub fn wmmx_read() -> u64 {
+    let (lo, hi): (u32, u32);
+    // SAFETY: TMRRC from wR0 (MRRC from coprocessor 0) only reads it.
+    unsafe {
+        core::arch::asm!(
+            "mrrc p0, #0, {lo}, {hi}, c0",
+            lo = out(reg) lo,
+            hi = out(reg) hi,
+            options(nomem, nostack),
+        )
+    };
+    u64::from(hi) << 32 | u64::from(lo)
 }
 
 unsafe extern "C" {

@@ -24,8 +24,8 @@ mod image {
 
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt::{self, Global};
-    use rp_hal_pxa27x::thread;
     use rp_hal_pxa27x::user::{self, Frame};
+    use rp_hal_pxa27x::{iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid};
 
@@ -243,6 +243,19 @@ mod image {
         let addr = DEMO.with(|d| d.fault_addr);
         let contained = addr == BAD_ADDR && marks[..mlen].last() == Some(&b'C');
         ok &= report(&mut uart, "USER fault contained", contained, addr);
+
+        // Lazy iWMMXt: two user threads keep their own value in media
+        // register wR0 while yielding to each other. Each first use traps
+        // once; every switch between them saves one's registers and loads
+        // the other's, so both values must survive.
+        iwmmxt::enable_lazy();
+        spawn_user_pair(&mut stacks, wmmx_trampoline);
+        wait(done);
+        wait(done);
+        let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
+        let traps = iwmmxt::traps();
+        let kept = marks[..mlen].ends_with(b"WW") && traps >= 3;
+        ok &= report(&mut uart, "USER iWMMXt lazy switch", kept, traps);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -428,6 +441,34 @@ mod image {
         }
     }
 
+    /// Kernel side of the media test's user threads.
+    extern "C" fn wmmx_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_wmmx, stack, i)
+    }
+
+    /// Puts a value of its own in wR0, yields a few times (the other thread
+    /// uses wR0 meanwhile), then checks it: marks `W` if it survived.
+    extern "C" fn user_wmmx(i: usize) -> ! {
+        let mine = 0x5250_0000_0000_0026 | (i as u64 + 1) << 20;
+        user::wmmx_write(mine);
+        for _ in 0..3 {
+            user::syscall(SYS_YIELD, 0, 0, 0);
+        }
+        let mark = if user::wmmx_read() == mine {
+            b'W'
+        } else {
+            b'X'
+        };
+        user::syscall(SYS_MARK, u32::from(mark), 0, 0);
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     /// Unmapped in the bring-up map: any access aborts.
     const BAD_ADDR: u32 = 0x8000_0000;
 
@@ -524,6 +565,7 @@ mod image {
     /// Ends the running thread.
     fn finish() -> ! {
         let me = CURRENT.with(|c| *c);
+        iwmmxt::release(me.index());
         let _ = SCHED.with(|s| s.exit(me));
         reschedule();
         unreachable!("an exited thread never runs again")

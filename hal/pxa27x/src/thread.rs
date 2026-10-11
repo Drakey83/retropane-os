@@ -83,6 +83,8 @@ pub fn switch(from: usize, to: usize) {
     );
     let was = crate::rt::irqs_enabled_now();
     crate::rt::irq_disable();
+    // Media-unit access follows its owner (lazy iWMMXt switching).
+    crate::iwmmxt::on_switch(to);
     // SAFETY: the two slots are distinct and IRQs are masked, so these are
     // the only references; `rp_switch` saves the callee-saved registers, sp
     // and lr of this call into `from` and loads `to`'s, which hold either a
