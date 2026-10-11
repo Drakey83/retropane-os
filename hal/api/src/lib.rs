@@ -43,6 +43,26 @@ pub trait RegisterBus16 {
     fn write16(&mut self, offset: usize, value: u16);
 }
 
+/// A digital output pin.
+pub trait OutputPin {
+    /// Drives the pin high.
+    fn set_high(&mut self);
+    /// Drives the pin low.
+    fn set_low(&mut self);
+}
+
+/// A digital input pin.
+pub trait InputPin {
+    /// Whether the pin currently reads high.
+    fn is_high(&mut self) -> bool;
+}
+
+/// A full-duplex byte-wide SPI bus (chip select handled separately).
+pub trait SpiBus {
+    /// Sends `byte` and returns the byte received in the same frame.
+    fn transfer(&mut self, byte: u8) -> u8;
+}
+
 /// A contiguous bit field inside a 32-bit register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {

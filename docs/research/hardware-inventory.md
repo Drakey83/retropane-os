@@ -13,7 +13,7 @@
 | Flash | M-Systems DiskOnChip G3 at 0x00201000 (X50v: Intel StrataFlash) | confirmed (code) | Static memory bus | — | Linux `docg3` (Mio A701) |
 | GPU | Intel 2700G7 (PowerVR MBX Lite + MVED1), 16 MB stacked memory | confirmed | CS3, registers at CS3+0x3FE0000 | Display/clock/SDRAM only (Linux `mbxfb`, removed 2020). **3D, 2D and video: undocumented** | No open 3D driver anywhere |
 | LCD | 3.7" VGA (Sharp or Samsung); type read from CPLD reg 0x1E | confirmed (code) | Wired through the 2700G; can pass through PXA LCD output | — | `pxafb` passthrough worked in AxDroid |
-| Touch | TI TSC2046 (ADS7846-compatible) | confirmed (code) | SSP1, CS GPIO24, pen IRQ GPIO94, X/Y swapped | Public datasheet | Linux `ads7846` |
+| Touch | TI TSC2046 (ADS7846-compatible) | confirmed (code) | SSP1, CS GPIO24, pen IRQ GPIO94, X/Y swapped (spec: `docs/hw/touch.md`) | Public datasheet | Linux `ads7846` |
 | Audio | Wolfson WM8750 | confirmed (code) | I²S GPIO28–31,113; I²C GPIO117/118; amp GPIO82 + CPLD 0x14; HP detect GPIO83 | Public datasheet | Linux ASoC `wm8750` |
 | Wi-Fi | TI TNETW1100B (ACX100), 802.11b | confirmed (code) | Memory-mapped on PC Card socket 0 (0x2C000000); IRQ GPIO107; reset GPIO89; power via CPLD | **No datasheet** | acx-mac80211 (out of tree, RE'd); AxDroid glue; never worked well |
 | Bluetooth 1.2 | Broadcom module (BCM2035 is a guess) | likely | BTUART GPIO42–45; power GPIO22 | — | Never worked in AxDroid |

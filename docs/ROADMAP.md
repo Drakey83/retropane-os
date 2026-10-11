@@ -34,7 +34,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [x] Fork QEMU 9.1 ([retropane-qemu](https://github.com/Drakey83/retropane-qemu); CI builds Linux + Windows releases, and `cargo xtask emu` downloads them, so no submodule is needed)
 - [ ] `x51v` machine: PXA270, memory map, UART console *(rp-v0.1.0)*, button matrix *(rp-v0.4.0)*, SD image
 - [x] CPLD model (from `docs/hw/cpld.md`) *(rp-v0.3.0)*
-- [ ] TSC2046 touch, WM8750 audio
+- [x] TSC2046 touch screen, byte-accurate *(rp-v0.5.0)*
+- [ ] WM8750 audio
 - [x] 2700G display model: local memory, registers, graphics-plane scan-out *(rp-v0.2.0)*
 - [x] Screenshot and input scripting for integration tests: `cargo xtask emu` verifies the test pattern pixel by pixel and presses buttons through the QEMU monitor
 - [ ] **RE:** `tools/mmiotrace` working on Windows Mobile: traps and logs 2700G register accesses
@@ -60,7 +61,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 **Goal:** every "easy" (documented) device working natively.
 
 - [ ] Display (pxafb passthrough first, then native 2700G planes)
-- [ ] Touch (TSC2046), keypad, buttons, backlight (PWM)
+- [x] Touch (TSC2046 via SSP1 + GPIO), keypad buttons: drivers + emulator tests *(calibration UI still to do)*
+- [ ] Backlight (PWM), power button
 - [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system
 - [ ] CompactFlash (PXA PC Card socket 1, DMA where possible)
 - [ ] Audio (WM8750, I²S, DMA)

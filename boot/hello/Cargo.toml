@@ -15,6 +15,9 @@ rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-drv-cpld = { path = "../../drivers/cpld" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 
 [lints]
 workspace = true
