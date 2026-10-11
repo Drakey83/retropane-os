@@ -183,9 +183,11 @@ mod image {
                 Some(Ok(len)) => {
                     send(&mut uart, &mut udc, OK);
                     let _ = writeln!(log, "image OK, {len} bytes: starting");
-                    // Let the reply leave over USB before disconnecting.
+                    // Let the reply leave over USB before disconnecting: on
+                    // the device, 50 ms was not enough for the PC's program to
+                    // read it before the port went away.
                     let t = rt::ticks();
-                    while rt::ticks().wrapping_sub(t) < TICK_1S / 20 {
+                    while rt::ticks().wrapping_sub(t) < TICK_1S / 2 {
                         udc.poll();
                     }
                     gpio.write(USB_PULLUP, false);
