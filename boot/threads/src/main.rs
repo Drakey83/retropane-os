@@ -50,6 +50,7 @@ mod image {
         mutex: Eid(0),
         order: [0; 4],
         olen: 0,
+        fault_addr: 0,
     });
 
     /// System calls (user side numbers).
@@ -94,6 +95,8 @@ mod image {
         mutex: Eid,
         order: [u8; 4],
         olen: usize,
+        /// The address a user thread faulted on (caught by the kernel).
+        fault_addr: u32,
     }
 
     fn main() -> ! {
@@ -228,6 +231,18 @@ mod image {
         let b_first = marks.iter().position(|&m| m == b'B').unwrap_or(usize::MAX);
         let interleaved = mlen == 2 * MARKS && b_first < a_done;
         ok &= report(&mut uart, "USER preempted", interleaved, mlen as u32);
+
+        // A user thread reads memory it may not touch: the kernel handles
+        // the abort in that thread's context, ends just that thread, and the
+        // other user thread carries on (ADR-0010 rule 5).
+        user::set_user_fault_handler(on_user_fault);
+        spawn_user_pair(&mut stacks, fault_trampoline);
+        wait(done); // the faulting thread, ended by the kernel
+        wait(done); // the other one, which exits normally
+        let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
+        let addr = DEMO.with(|d| d.fault_addr);
+        let contained = addr == BAD_ADDR && marks[..mlen].last() == Some(&b'C');
+        ok &= report(&mut uart, "USER fault contained", contained, addr);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -411,6 +426,40 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Unmapped in the bring-up map: any access aborts.
+    const BAD_ADDR: u32 = 0x8000_0000;
+
+    /// Kernel side of the fault test's user threads.
+    extern "C" fn fault_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_fault, stack, i)
+    }
+
+    /// Thread 0 touches forbidden memory; thread 1 marks `C` and exits.
+    extern "C" fn user_fault(i: usize) -> ! {
+        if i == 0 {
+            let _ = user::user_read(BAD_ADDR);
+        } else {
+            user::syscall(SYS_MARK, u32::from(b'C'), 0, 0);
+            user::syscall(SYS_EXIT, 0, 0, 0);
+        }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// A fault from user mode, on the faulting thread's kernel stack: here
+    /// the thread is ended (later: the VM resolves page faults and resumes).
+    fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
+        let caught = f.from_user() && kind == rt::Fault::DataAbort;
+        DEMO.with(|d| d.fault_addr = if caught { addr } else { 0 });
+        let done = DEMO.with(|d| d.done);
+        let _ = SCHED.with(|s| s.set_event(done));
+        finish()
     }
 
     /// After an interrupt from user mode: maybe switch threads.

@@ -359,6 +359,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER mode OK",
     "USER yield OK",
     "USER preempted OK",
+    "USER fault contained OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and

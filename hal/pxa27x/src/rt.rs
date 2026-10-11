@@ -112,37 +112,54 @@ rp_swi_fault:
     mov     r0, #2
     sub     r1, lr, #4
     b       rp_fault
-    @ Aborts: ask rp_abort first. It returns where to resume: the faulting
-    @ instruction (a resolved page fault), a fixup (a faulting try_read /
-    @ try_write), or 0 to report the fault and stop.
+    @ Aborts: from user mode, the user-abort entry (user.rs, installed at
+    @ run time through rp_user_abort_entry) takes over with r0 = kind and
+    @ the six words just pushed: the fault is handled in the thread's own
+    @ context (ADR-0010 rule 5). Otherwise ask rp_abort: it returns where
+    @ to resume (the faulting instruction for a resolved page fault, a
+    @ try_read / try_write fixup) or 0 to report the fault and stop.
 rp_pabt_entry:
     sub     lr, lr, #4
     stmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #3
-    mov     r1, lr
-    bl      rp_abort
-    cmp     r0, #0
-    strne   r0, [sp, #20]
-    ldmfdne sp!, {{r0-r3, r12, pc}}^
-    ldmfd   sp!, {{r0-r3, r12, lr}}
-    mov     r0, #3
-    mov     r1, lr
-    b       rp_fault
+    b       2f
 rp_dabt_entry:
     sub     lr, lr, #8
     stmfd   sp!, {{r0-r3, r12, lr}}
     mov     r0, #4
+2:  mrs     r1, spsr
+    and     r1, r1, #0x1F
+    cmp     r1, #0x10
+    bne     1f
+    ldr     r1, =rp_user_abort_entry
+    ldr     r1, [r1]
+    cmp     r1, #0
+    bxne    r1
+1:  str     r0, [sp, #-4]!              @ keep the kind across the call
     mov     r1, lr
     bl      rp_abort
+    ldr     r12, [sp], #4
     cmp     r0, #0
     strne   r0, [sp, #20]
     ldmfdne sp!, {{r0-r3, r12, pc}}^
-    ldmfd   sp!, {{r0-r3, r12, lr}}
-    mov     r0, #4
-    mov     r1, lr
+    mov     r0, r12                     @ unresolved: report and stop
+    ldr     r1, [sp, #20]               @ the faulting pc
     b       rp_fault
+    .ltorg
     "#
 );
+
+/// Where an abort taken in user mode goes (0: like any other abort). Set by
+/// `user::set_user_fault_handler`, so images without user mode don't link
+/// the user-abort entry.
+#[unsafe(export_name = "rp_user_abort_entry")]
+static mut USER_ABORT_ENTRY: u32 = 0;
+
+/// Routes aborts from user mode to `entry` (see `USER_ABORT_ENTRY`).
+pub(crate) fn set_user_abort_entry(entry: u32) {
+    // SAFETY: a plain word read only by the abort entries; set during setup.
+    unsafe { core::ptr::addr_of_mut!(USER_ABORT_ENTRY).write_volatile(entry) }
+}
 
 /// Defines the image's entry point. `$path` must be a `fn() -> !`.
 #[macro_export]
