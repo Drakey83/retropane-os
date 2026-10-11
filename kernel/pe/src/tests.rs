@@ -360,6 +360,60 @@ fn imports_by_name_and_ordinal() {
     );
 }
 
+#[test]
+fn exports_by_ordinal_and_name() {
+    // .edata at 0x2000: base ordinal 5, three functions (one gap, one
+    // forwarder), two names sorted: "Alpha" -> index 0, "Beta" -> index 2.
+    let mut e = vec![0u8; 0x200];
+    let w32 = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    w32(&mut e, 16, 5); // base
+    w32(&mut e, 20, 3); // functions
+    w32(&mut e, 24, 2); // names
+    w32(&mut e, 28, 0x2040); // address table
+    w32(&mut e, 32, 0x2060); // name pointers
+    w32(&mut e, 36, 0x2070); // name ordinals
+    w32(&mut e, 0x40, 0x1234); // ordinal 5
+    w32(&mut e, 0x44, 0); // ordinal 6: gap
+    w32(&mut e, 0x48, 0x20A0); // ordinal 7: forwarder (inside the directory)
+    w32(&mut e, 0x60, 0x2080);
+    w32(&mut e, 0x64, 0x2088);
+    e[0x70..0x72].copy_from_slice(&0u16.to_le_bytes());
+    e[0x72..0x74].copy_from_slice(&2u16.to_le_bytes());
+    e[0x80..0x86].copy_from_slice(b"Alpha\0");
+    e[0x88..0x8D].copy_from_slice(b"Beta\0");
+    e[0xA0..0xAD].copy_from_slice(b"OTHER.Thing\0\0");
+    let mut file = Builder::new()
+        .section(".edata", 0x2000, 0x200, e, DATA)
+        .build();
+    let opt = 0x80 + 24;
+    file[opt + 96..opt + 100].copy_from_slice(&0x2000u32.to_le_bytes());
+    file[opt + 100..opt + 104].copy_from_slice(&0x100u32.to_le_bytes());
+    let img = Image::parse(&file).unwrap();
+    let ex = Exports::read(&img, reader(&file)).unwrap().unwrap();
+    assert_eq!(
+        ex.by_ordinal(&img, 5, reader(&file)),
+        Ok(Some(Export::Rva(0x1234)))
+    );
+    assert_eq!(ex.by_ordinal(&img, 6, reader(&file)), Ok(None), "gap");
+    assert_eq!(
+        ex.by_ordinal(&img, 7, reader(&file)),
+        Ok(Some(Export::Forwarder(0x20A0)))
+    );
+    assert_eq!(ex.by_ordinal(&img, 4, reader(&file)), Ok(None));
+    assert_eq!(ex.by_ordinal(&img, 8, reader(&file)), Ok(None));
+    assert_eq!(
+        ex.by_name(&img, b"Alpha", 0, reader(&file)),
+        Ok(Some(Export::Rva(0x1234)))
+    );
+    // A wrong hint falls back to the binary search.
+    assert_eq!(
+        ex.by_name(&img, b"Beta", 0, reader(&file)),
+        Ok(Some(Export::Forwarder(0x20A0)))
+    );
+    assert_eq!(ex.by_name(&img, b"Gamma", 1, reader(&file)), Ok(None));
+    assert_eq!(ex.by_name(&img, b"Alph", 9, reader(&file)), Ok(None));
+}
+
 /// Real WM6 DLLs from a local ROM extraction (`local/` is git-ignored and
 /// never distributed): every one must parse and fill without error. Skipped
 /// when the files aren't there (CI).

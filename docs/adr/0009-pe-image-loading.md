@@ -81,7 +81,8 @@ copy-on-write.
 ## Status of the parts
 
 - Done (2026-10-11): `kernel/pe` parses images, fills view pages, relocates
-  per page (including boundary-straddling values) and lists imports, tested
-  against synthetic images and 12 real WM6 DLLs.
+  per page (including boundary-straddling values), lists imports and
+  resolves exports (by ordinal; by name via the hint, then binary search;
+  forwarders), tested against synthetic images and 12 real WM6 DLLs.
 - Next: the page-cache filler object, the loader that turns an image into
-  address-space regions, export lookup and IAT resolution.
+  address-space regions, and IAT resolution.
