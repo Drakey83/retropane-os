@@ -57,7 +57,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [x] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted and implemented 2026-10-11: mask-and-signal first-level handler, per-pin GPIO lines; hello sleeps until a button or the pen wakes it)
 - [ ] Scheduler (256 priorities, priority inheritance) *(design: ADR-0010 proposed 2026-10-11: O(1) CLZ scheduler, tickless, lazy iWMMXt, KData page)*
 - [ ] Processes, threads, sync objects, IPC, driver host process
-- [ ] Compressed RAM and storage codec (ADR-0005 rules 4, 6) *(LZ4 block codec done 2026-10-11: safe decoder, page compressor, on-target benchmarks)*
+- [ ] Compressed RAM and storage codec (ADR-0005 rules 4, 6) *(LZ4 block codec done 2026-10-11: safe decoder, page compressor, on-target benchmarks; compressed page store `kernel/mm::zpool`: 200 mixed pages in 39% of the RAM)*
 - [ ] PE loader (host-tested with synthetic PE files) *(format layer done 2026-10-11: `kernel/pe` parses, fills image-view pages, relocates per page and lists imports; verified on 12 real WM6 DLLs; ADR-0009 proposed)*
 - [ ] Performance suite v1: context switch, IRQ latency, memcpy bandwidth
 
