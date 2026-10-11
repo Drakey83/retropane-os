@@ -7,6 +7,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod console;
+pub mod font;
 pub mod pattern;
 
 use rp_hal_api::{Field, RegisterBus};
