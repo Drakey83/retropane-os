@@ -27,6 +27,14 @@ pub mod reg {
     pub const UDCISR0: usize = 0x00C;
     /// Interrupt status, P–X and bus events.
     pub const UDCISR1: usize = 0x010;
+    /// USB port 2 output control (transceiver, internal pull-ups).
+    pub const UP2OCR: usize = 0x020;
+    /// USB port 3 output control.
+    pub const UP3OCR: usize = 0x024;
+    /// UP2OCR: D+ pull-up enable.
+    pub const DPPUE: u32 = 1 << 4;
+    /// UP2OCR: transceiver output enable.
+    pub const HXOE: u32 = 1 << 17;
 
     /// Control/status of endpoint `x` (0 = endpoint 0, 1.. = A..).
     #[must_use]
@@ -276,6 +284,18 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         Ok(())
     }
 
+    /// Reads a UDC register directly (bring-up: board facts such as the
+    /// port control registers Windows Mobile left).
+    pub fn read_reg(&mut self, offset: usize) -> u32 {
+        self.bus.read32(offset)
+    }
+
+    /// Writes a UDC register directly (bring-up experiments with the port
+    /// control registers; not for the registers this driver manages).
+    pub fn write_reg(&mut self, offset: usize, value: u32) {
+        self.bus.write32(offset, value);
+    }
+
     /// Turns the controller off.
     pub fn disable(&mut self) {
         self.bus.write32(reg::UDCICR1, 0);
@@ -425,10 +445,11 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 self.ep0 = Ep0::InData;
                 self.send_ep0_packet();
             }
-            Reply::Ack => {
-                self.bus.write32(reg::csr(0), reg::IPR);
-                self.ep0 = Ep0::Idle;
-            }
+            // Host-to-device requests: the hardware sends the status stage
+            // itself once SA/OPC are cleared. Setting IPR here as well puts
+            // a stray packet in the FIFO, and Windows gives up on the device
+            // ("not functioning"): found on the real X51v, docs/hw/udc.md.
+            Reply::Ack => self.ep0 = Ep0::Idle,
             Reply::Out(n) => {
                 self.ep0_len = n.min(self.ep0_buf.len());
                 self.ep0_pos = 0;
@@ -488,7 +509,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         if self.ep0_pos >= self.ep0_len || count < usb::EP0_SIZE {
             let (len, buf) = (self.ep0_pos, self.ep0_buf);
             self.cdc.out_data(&buf[..len]);
-            self.bus.write32(reg::csr(0), reg::IPR);
+            // Status stage: sent by the hardware (see `setup`).
             self.ep0 = Ep0::Idle;
         }
     }
