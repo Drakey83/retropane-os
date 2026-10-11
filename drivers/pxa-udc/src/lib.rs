@@ -269,6 +269,11 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.bus.write32(reg::cr(slot), cfg);
         }
         self.udccr(reg::UDE, 0);
+        // The X51v's UDC talks through port 2's transceiver: its output must
+        // be on (WM leaves UP2OCR = HXOE; with it off the PC sees the device
+        // attach but never gets an answer). Measured, docs/hw/udc.md.
+        let up2 = self.bus.read32(reg::UP2OCR);
+        self.bus.write32(reg::UP2OCR, up2 | reg::HXOE);
         self.bus.write32(reg::csr(0), reg::ACM);
         if self.bus.read32(reg::UDCCR) & reg::EMCE != 0 {
             self.udccr(0, reg::UDE);
