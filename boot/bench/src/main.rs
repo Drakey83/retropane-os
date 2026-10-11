@@ -54,6 +54,54 @@ mod image {
         }
     }
 
+    /// Checks the memcpy family on the real CPU for every size 0..=300 and
+    /// every alignment, including overlapping moves and comparisons.
+    fn check_mem(buf: &mut [u8]) -> Result<(), (&'static str, usize, usize, usize)> {
+        let (src, rest) = buf.split_at_mut(512);
+        let dst = &mut rest[..512];
+        for (i, v) in src.iter_mut().enumerate() {
+            *v = (i * 7 + 3) as u8;
+        }
+        for n in 0..=300 {
+            for so in 0..4 {
+                for d in 0..4 {
+                    dst.fill(0xEE);
+                    dst[d..d + n].copy_from_slice(&src[so..so + n]);
+                    let ok = (0..n).all(|i| black_box(dst[d + i]) == src[so + i])
+                        && dst[..d].iter().chain(&dst[d + n..]).all(|&b| b == 0xEE);
+                    if !ok {
+                        return Err(("memcpy", n, so, d));
+                    }
+                    if dst[d..d + n] != src[so..so + n] {
+                        return Err(("memcmp", n, so, d));
+                    }
+                }
+            }
+            for d in 0..4 {
+                dst.fill(0x11);
+                dst[d..d + n].fill(0xA5);
+                if !(dst[d..d + n].iter().all(|&b| b == 0xA5)
+                    && dst[..d].iter().chain(&dst[d + n..]).all(|&b| b == 0x11))
+                {
+                    return Err(("memset", n, 0, d));
+                }
+            }
+        }
+        for n in 0..=96 {
+            for from in 0..8 {
+                for to in 0..8 {
+                    dst[..200].copy_from_slice(&src[..200]);
+                    dst.copy_within(from..from + n, to);
+                    let ok = (0..n).all(|i| dst[to + i] == src[from + i]);
+                    if !ok {
+                        return Err(("memmove", n, from, to));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn naive_copy(dst: &mut [u8], src: &[u8]) {
         for (d, s) in dst.iter_mut().zip(src) {
             *d = black_box(*s);
@@ -78,6 +126,14 @@ mod image {
         });
 
         if let Some(scratch) = rp_hal_x51v::devices::take_scratch() {
+            match check_mem(&mut scratch[..1024]) {
+                Ok(()) => {
+                    let _ = writeln!(b.uart, "CHECK mem OK");
+                }
+                Err((what, n, x, y)) => {
+                    let _ = writeln!(b.uart, "CHECK mem FAIL {what} n={n} {x} {y}");
+                }
+            }
             let (a, rest) = scratch.split_at_mut(64 * 1024);
             let bufb = &mut rest[..64 * 1024];
             for (i, v) in a.iter_mut().enumerate() {

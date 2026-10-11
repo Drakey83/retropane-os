@@ -132,6 +132,10 @@ name = "rp-hal-api"
 version = "0.0.0"
 
 [[package]]
+name = "rp-hal-mem"
+version = "0.0.0"
+
+[[package]]
 name = "rp-hal-mock"
 version = "0.0.0"
 dependencies = [
@@ -143,6 +147,7 @@ name = "rp-hal-pxa27x"
 version = "0.0.0"
 dependencies = [
  "rp-hal-api",
+ "rp-hal-mem",
 ]
 
 [[package]]

@@ -353,6 +353,12 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
             timeout: Duration::from_secs(120),
         },
     )?;
+    if !output.contains("CHECK mem OK") {
+        return Err(format!(
+            "memory routines failed their on-target check:
+{output}"
+        ));
+    }
     let results = parse_bench(&output);
     if results.is_empty() {
         return Err(format!("no benchmark results. Serial output:\n{output}"));
