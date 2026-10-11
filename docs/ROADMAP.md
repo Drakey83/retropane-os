@@ -55,7 +55,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] FCSE slot model (ADR-0003) and demand-paged VM (ADR-0005), 624 MHz turbo plus frequency scaling *(VM layer done 2026-10-11 and running live in `boot/kernel`: own page tables, real page faults resolved by demand paging and copy-on-write, FCSE slots; ADR-0008 proposed. Next: kernel-space device map, reclaim, domains)*
 - [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*; unowned sources masked and reported *(2026-10-11)*
 - [x] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted and implemented 2026-10-11: mask-and-signal first-level handler, per-pin GPIO lines; hello sleeps until a button or the pen wakes it)
-- [ ] Scheduler (256 priorities, priority inheritance)
+- [ ] Scheduler (256 priorities, priority inheritance) *(design: ADR-0010 proposed 2026-10-11: O(1) CLZ scheduler, tickless, lazy iWMMXt, KData page)*
 - [ ] Processes, threads, sync objects, IPC, driver host process
 - [ ] PE loader (host-tested with synthetic PE files) *(format layer done 2026-10-11: `kernel/pe` parses, fills image-view pages, relocates per page and lists imports; verified on 12 real WM6 DLLs; ADR-0009 proposed)*
 - [ ] Performance suite v1: context switch, IRQ latency, memcpy bandwidth
