@@ -475,6 +475,40 @@ impl PageTables {
         }
     }
 
+    /// Moves every coarse table in `mva..mva + len` to `domain` (a process
+    /// gaining or losing its ARM domain, see [`crate::domains`]): rewrites
+    /// the first-level descriptors, syncs them and drops the TLB entries,
+    /// which cache the old domain. Returns how many tables moved.
+    pub fn retag(
+        &mut self,
+        mem: &mut impl PhysMem,
+        mmu: &mut impl Mmu,
+        mva: u32,
+        len: u32,
+        domain: u32,
+    ) -> u32 {
+        let mut moved = 0;
+        let first = (mva >> 20) as usize;
+        let count = (len as usize).div_ceil(MIB as usize);
+        for idx in first..(first + count).min(4096) {
+            if let L1::Coarse {
+                table_phys,
+                domain: d,
+            } = arm::l1_decode(mem.l1()[idx])
+                && d != domain
+            {
+                mem.l1()[idx] = arm::l1_coarse(table_phys, domain);
+                let at = mem.l1_phys() + idx as u32 * 4;
+                mem.sync(at, 4);
+                moved += 1;
+            }
+        }
+        if moved > 0 {
+            mmu.invalidate_tlb_all();
+        }
+        moved
+    }
+
     /// Frames currently holding second-level tables.
     #[must_use]
     pub fn table_frames(&self) -> usize {
@@ -808,6 +842,40 @@ mod tests {
         let (_, attrs) = pt.translate(&mut ram, 0x7000).unwrap();
         assert_eq!(attrs.cache, Cache::Device, "device memory stays uncached");
         assert_eq!(attrs.ap, Ap::UserRead);
+    }
+
+    #[test]
+    fn retag_moves_a_slot_to_another_domain() {
+        let (mut pt, mut ram, mut fr) = setup();
+        pt.map_small(&mut ram, &mut fr, 0x0A01_0000, phys(1), 3, RW)
+            .unwrap();
+        pt.map_small(&mut ram, &mut fr, 0x0A20_0000, phys(2), 3, RW)
+            .unwrap();
+        pt.map_small(&mut ram, &mut fr, 0x0C00_0000, phys(3), 4, RW)
+            .unwrap(); // next slot
+        let mut mmu = Log::default();
+        assert_eq!(pt.retag(&mut ram, &mut mmu, 0x0A00_0000, 32 << 20, 15), 2);
+        assert!(matches!(
+            arm::l1_decode(ram.l1[0x0A0]),
+            L1::Coarse { domain: 15, .. }
+        ));
+        assert!(matches!(
+            arm::l1_decode(ram.l1[0x0A2]),
+            L1::Coarse { domain: 15, .. }
+        ));
+        assert!(
+            matches!(arm::l1_decode(ram.l1[0x0C0]), L1::Coarse { domain: 4, .. }),
+            "other slot untouched"
+        );
+        assert_eq!(mmu.0, ["tlb all"]);
+        // Mappings survive, and new ones in that megabyte use the new domain.
+        assert_eq!(pt.translate(&mut ram, 0x0A01_0000), Some((phys(1), RW)));
+        pt.map_small(&mut ram, &mut fr, 0x0A01_1000, phys(4), 15, RW)
+            .unwrap();
+        // Nothing to move: no TLB flush.
+        mmu.0.clear();
+        assert_eq!(pt.retag(&mut ram, &mut mmu, 0x0A00_0000, 32 << 20, 15), 0);
+        assert!(mmu.0.is_empty());
     }
 
     #[test]

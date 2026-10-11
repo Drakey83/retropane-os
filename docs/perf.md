@@ -44,6 +44,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | LZ4 compressor: same treatment for emission and match extension: no change (+0.3%). Its miss loop is already ~22 instructions; on this page (936 minimum-length matches in 4 KiB) the cost is inherent. Next: benchmark representative pages (code, text) beside this stress page | `lz4_compress_page` | 130,212 ns | 130,654 ns |
 | 2026-10-11 | LZ4 benchmarks on representative pages: text (UI strings: long matches) and noise (already-compressed data) beside the heap stress page. Text decodes at ~12 emulated instructions per byte | `lz4_decompress_text` | — | 50,909 ns |
 | 2026-10-11 | LZ4 compressor: skip acceleration (search step grows after each 64 misses in a row; a match resets it), so incompressible pages are skimmed. Ratios unchanged on heap and text pages; those got ≤1.5% slower | `lz4_compress_noise` | 142,019 ns | 33,462 ns (**4.2×**) |
+| 2026-10-11 | Probe: one shared crash routine for faults and panics instead of two inlined copies | `rp-probe` loaded size | 40,928 B | 40,664 B |
 
 ## Open leads
 

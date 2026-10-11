@@ -183,8 +183,15 @@ mod image {
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
+    }
+
+    /// Faults and panics: the message on serial and in a red box on screen.
+    /// One copy of this code for both (ADR-0005 rule 8).
+    #[inline(never)]
+    fn crash(msg: core::fmt::Arguments) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x}", kind.name());
+        let _ = writeln!(uart, "\n{msg}");
         if let Some(vram) = rp_hal_x51v::devices::emergency_vram() {
             let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
             let mut c = Console::new(
@@ -195,11 +202,9 @@ mod image {
                 SCALE,
                 (0xFFFF, 0xA800),
             );
-            let _ = writeln!(c, "FAULT {} at {addr:#010x}", kind.name());
+            let _ = write!(c, "{msg}");
         }
-        loop {
-            core::hint::spin_loop();
-        }
+        halt()
     }
 
     fn main() -> ! {
@@ -552,25 +557,10 @@ mod image {
 
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        if let Some(l) = info.location() {
-            let _ = writeln!(uart, "\nPANIC at {}:{}", l.file(), l.line());
+        match info.location() {
+            Some(l) => crash(format_args!("PANIC {}:{}", l.file(), l.line())),
+            None => crash(format_args!("PANIC")),
         }
-        if let Some(vram) = rp_hal_x51v::devices::emergency_vram() {
-            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            let mut c = Console::new(
-                &mut vram[plane.offset..],
-                plane.stride,
-                (0, 576),
-                (480, 64),
-                SCALE,
-                (0xFFFF, 0xA800),
-            );
-            if let Some(l) = info.location() {
-                let _ = write!(c, "PANIC {}:{}", l.file(), l.line());
-            }
-        }
-        halt()
     }
 }
 

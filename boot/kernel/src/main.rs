@@ -33,6 +33,7 @@ mod image {
     use rp_hal_pxa27x::{Mmio, cpu, devmap};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
+    use rp_kernel_mm::domains::{self, Domains};
     use rp_kernel_mm::frames::Frames;
     use rp_kernel_mm::layout;
     use rp_kernel_mm::pagetable::{FrameAlloc, Mmu, PageTables, PhysMem};
@@ -45,7 +46,6 @@ mod image {
     const POOL_FRAMES: usize = RAM_POOL_SIZE / 4096;
     const BASE: u32 = RAM_POOL_BASE as u32;
     const KERNEL_DOMAIN: u32 = 0;
-    const PROC_DOMAIN: u32 = 1;
     const PROC_SLOT: u32 = 5;
     const FILE_OBJECT: u32 = 1;
     const FILE_PATTERN: u32 = 0xC0FF_EE00;
@@ -151,6 +151,7 @@ mod image {
     /// Everything else the VM owns.
     struct State {
         space: AddressSpace,
+        domains: Domains,
         file: RamFile,
         pool: Option<&'static mut [u32]>,
         l1: u32,
@@ -161,7 +162,9 @@ mod image {
     }
 
     static STATE: Global<State> = Global::new(State {
-        space: AddressSpace::process(PROC_SLOT, PROC_DOMAIN),
+        domains: Domains::new(),
+        // Its real domain comes from `Domains::activate` before first use.
+        space: AddressSpace::process(PROC_SLOT, domains::PARKED),
         file: RamFile { phys: 0, refs: 0 },
         pool: None,
         l1: 0,
@@ -311,7 +314,7 @@ mod image {
             }
         };
         let l1 = STATE.with(|s| s.l1);
-        cpu::set_dacr(arm::dacr((1 << KERNEL_DOMAIN) | (1 << PROC_DOMAIN)));
+        cpu::set_dacr(arm::dacr(1 << KERNEL_DOMAIN));
         cpu::switch_table(l1);
         devmap::use_kernel_map();
         let Some(bus) = rt::take_ffuart() else { halt() };
@@ -369,6 +372,13 @@ mod image {
             let _ = writeln!(uart, "VM process FAIL {e}");
             halt()
         }
+        // Give slot 5 its ARM domain and run it: PID and DACR, nothing else.
+        let act5 = STATE.with(|s| {
+            let a = s.domains.activate(PROC_SLOT);
+            s.space.set_domain(a.domain);
+            a
+        });
+        cpu::set_dacr(act5.dacr);
         cpu::set_pid(PROC_SLOT);
         let state = || STATE.with(|s| (s.faults, s.last));
 
@@ -410,6 +420,24 @@ mod image {
         // made by prepare_user_write, not by a fault).
         let pass = via_slot == 0x1234_ABCD && elsewhere.is_none() && state().0 == 2;
         ok &= report(&mut uart, "FCSE", pass, via_slot);
+
+        // Domains: with slot 6 running, slot 5's pages are in a domain the
+        // DACR doesn't enable, so even the kernel can't read them (CE5 let any
+        // process read every slot). try_read turns the domain fault into None
+        // instead of a crash; switching back to slot 5 restores access.
+        let slot5_word = (layout::slot_base(PROC_SLOT) + ZERO_VA + 4) as usize;
+        let act6 = STATE.with(|s| s.domains.activate(6));
+        cpu::set_dacr(act6.dacr);
+        cpu::set_pid(6);
+        let from_6 = rt::try_read(slot5_word);
+        cpu::set_dacr(act5.dacr);
+        cpu::set_pid(PROC_SLOT);
+        let from_5 = rt::try_read(slot5_word);
+        let pass = act6.domain != act5.domain
+            && from_6.is_none()
+            && from_5 == Some(0x1234_ABCD)
+            && state().0 == 2;
+        ok &= report(&mut uart, "domains", pass, from_5.unwrap_or(0));
 
         // Zero-fill fault cost: touch fresh pages, one fault each.
         let pages = ZERO_PAGES - 1;

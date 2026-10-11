@@ -25,6 +25,12 @@ SECTIONS
     } > SDRAM
 
     .rodata : ALIGN(4) { *(.rodata .rodata.*) } > SDRAM
+    /* (faulting instruction, fixup) pairs for rt::try_read / try_write. */
+    .rp_fixup : ALIGN(4) {
+        __rp_fixup_start = .;
+        KEEP(*(.rp_fixup))
+        __rp_fixup_end = .;
+    } > SDRAM
     .data   : ALIGN(4) { *(.data .data.*) } > SDRAM
 
     .bss (NOLOAD) : ALIGN(4) {

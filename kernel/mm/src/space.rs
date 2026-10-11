@@ -222,6 +222,19 @@ impl AddressSpace {
         self.allow_wx = true;
     }
 
+    /// Moves this space to another ARM domain (it gained or lost one, see
+    /// [`crate::domains`]). New page tables use it; existing ones are moved
+    /// with [`PageTables::retag`](crate::pagetable::PageTables::retag).
+    pub fn set_domain(&mut self, domain: u32) {
+        self.domain = domain;
+    }
+
+    /// The window this space covers (start, end).
+    #[must_use]
+    pub const fn bounds(&self) -> (u32, u32) {
+        (self.lo, self.hi)
+    }
+
     /// The ARM domain of this space's page tables.
     #[must_use]
     pub const fn domain(&self) -> u32 {

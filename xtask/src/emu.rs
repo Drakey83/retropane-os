@@ -312,6 +312,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM file page OK",
     "VM copy-on-write OK",
     "VM FCSE OK",
+    "VM domains OK",
     "VM fault loop OK",
     "VM unmap OK",
 ];
