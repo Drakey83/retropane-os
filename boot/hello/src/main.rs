@@ -117,7 +117,7 @@ mod image {
                 None => true,
             };
             if !vga {
-                let _ = writeln!(out, "QVGA panel: display setup skipped (not supported yet)");
+                let _ = writeln!(out, "QVGA panel: not supported yet");
             } else if let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() {
                 let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
                 pattern::fill_rgb565(

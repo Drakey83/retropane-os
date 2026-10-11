@@ -29,6 +29,7 @@ mod image {
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
+    use rp_hal_x51v::devices::beacon;
 
     rp_hal_pxa27x::entry!(main);
 
@@ -66,18 +67,24 @@ mod image {
     }
 
     fn main() -> ! {
+        // Start-up colours (as in rp-light): a hang leaves the last one on
+        // screen. Red: started; green: MMU on; blue: 2700G answered.
+        beacon(0xF800, 0xF800);
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
+        beacon(0x07E0, 0x07E0);
 
         // The screen Windows Mobile left (as in rp-light), else our own.
         let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             halt()
         };
+        let gsctrl = regs.read32(reg::GSCTRL);
+        beacon(0x001F, 0x001F);
         let plane = Plane::decode(
-            regs.read32(reg::GSCTRL),
+            gsctrl,
             regs.read32(reg::GSCADR),
             regs.read32(reg::GSADR),
             MBX_VRAM_SIZE as usize,

@@ -22,6 +22,13 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     if taken {
         return None;
     }
+    // Let the 2700G settle after the hand-off before its registers are read.
+    // Measured on the real X51v: images that read them at once hung after
+    // HaRET's "Jumping to Kernel..." in some runs (rp-probe, rp-usb), while
+    // those that first spent ~1 s writing its memory never did (rp-light,
+    // rp-probe with start-up colours). Cause not yet known (docs/perf.md
+    // open question); half a second at boot is cheap insurance.
+    rp_hal_pxa27x::rt::delay_us(SETTLE_US);
     let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
     let regs = NonNull::new((cs3 + MBX_REG_OFFSET) as *mut u32)?;
     // SAFETY: the register block is a device window on CS3 (docs/hw/2700g.md),
@@ -32,6 +39,9 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     let vram = unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) };
     Some((regs, vram))
 }
+
+/// How long [`take_mbx`] waits before the 2700G's registers are first used.
+const SETTLE_US: u32 = 500_000;
 
 /// The 2700G's local memory for crash reporting only, once [`take_mbx`] has
 /// handed it out (so the display is known to be set up). The real X51v has
