@@ -55,7 +55,10 @@ pub const BUDGETS: &[Budget] = &[
         // boot stacks, scheduler tables, 128 thread contexts).
         // Raised 15 -> 17 KiB on 2026-10-11 (approved by the owner): the
         // user-mode preemption test (16.0 KiB measured, ratcheted +~9%).
-        max_load: 17 * 1024,
+        // PROPOSED 17 -> 21 KiB (needs the owner's approval): mutexes with
+        // priority inheritance (~2 KiB of scheduler code) and their live
+        // test (18.9 KiB measured, +~10%).
+        max_load: 21 * 1024,
         max_zero: 30 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text

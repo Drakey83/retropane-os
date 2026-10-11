@@ -47,6 +47,9 @@ mod image {
         pingpong_ticks: 0,
         late_max: 0,
         wakes: 0,
+        mutex: Eid(0),
+        order: [0; 4],
+        olen: 0,
     });
 
     /// System calls (user side numbers).
@@ -87,6 +90,10 @@ mod image {
         pingpong_ticks: u32,
         late_max: u32,
         wakes: u32,
+        /// Priority inheritance: the mutex, and who got where in what order.
+        mutex: Eid,
+        order: [u8; 4],
+        olen: usize,
     }
 
     fn main() -> ! {
@@ -133,6 +140,36 @@ mod image {
         wait(done); // one of: ping-pong finished, sleeper finished
         wait(done); // the other
         let (pp_ticks, late_max, wakes) = DEMO.with(|d| (d.pingpong_ticks, d.late_max, d.wakes));
+
+        // Priority inversion: `low` holds the mutex, `high` waits for it, and
+        // `middle` is ready. Inheritance runs `low` at `high`'s priority, so
+        // the order is L(ow releases), H(igh gets it), M(iddle runs); without
+        // it, `middle` would run first and `high` would wait behind it.
+        let pi = SCHED.with(|s| -> Result<(), Error> {
+            let m = s.create_mutex(false)?;
+            DEMO.with(|d| d.mutex = m);
+            let t = s.create(0, 220)?;
+            thread::prepare(t.index(), stacks.next().ok_or(Error::Full)?, pi_low, 0);
+            Ok(())
+        });
+        wait(done); // `low` holds the mutex
+        let pi = pi.and_then(|()| {
+            SCHED.with(|s| -> Result<(), Error> {
+                for (prio, entry) in [
+                    (180, pi_middle as extern "C" fn(usize) -> !),
+                    (100, pi_high),
+                ] {
+                    let t = s.create(0, prio)?;
+                    thread::prepare(t.index(), stacks.next().ok_or(Error::Full)?, entry, 0);
+                }
+                Ok(())
+            })
+        });
+        if pi.is_ok() {
+            wait(done); // `high` done
+            wait(done); // `middle` done
+        }
+        let (order, olen) = DEMO.with(|d| (d.order, d.olen));
         // One format call for both lines (each call site costs image size).
         let _ = writeln!(
             uart,
@@ -140,6 +177,12 @@ mod image {
             2 * ROUNDS
         );
         let mut ok = report(&mut uart, "THREADS ping-pong", pp_ticks > 0, pp_ticks);
+        ok &= report(
+            &mut uart,
+            "THREADS mutex inheritance",
+            order[..olen] == *b"LHM",
+            olen as u32,
+        );
         // On time: within 1 ms of each deadline (the emulator runs in real
         // time; a real X51v should do much better).
         ok &= report(
@@ -297,6 +340,42 @@ mod image {
                 d.wakes += 1;
             });
         }
+        let done = DEMO.with(|d| d.done);
+        set(done);
+        finish()
+    }
+
+    fn note(c: u8) {
+        DEMO.with(|d| {
+            if d.olen < d.order.len() {
+                d.order[d.olen] = c;
+                d.olen += 1;
+            }
+        });
+    }
+
+    extern "C" fn pi_low(_: usize) -> ! {
+        let (m, done) = DEMO.with(|d| (d.mutex, d.done));
+        wait(m); // free: taken at once
+        set(done); // main (more urgent) starts `high` and `middle`
+        // Back here only at `high`'s inherited priority: ahead of `middle`.
+        note(b'L');
+        let _ = SCHED.with(|s| s.release_mutex(m));
+        reschedule();
+        finish()
+    }
+
+    extern "C" fn pi_high(_: usize) -> ! {
+        let (m, done) = DEMO.with(|d| (d.mutex, d.done));
+        wait(m); // blocks: `low` holds it, and inherits this priority
+        note(b'H');
+        let _ = SCHED.with(|s| s.release_mutex(m));
+        set(done);
+        finish()
+    }
+
+    extern "C" fn pi_middle(_: usize) -> ! {
+        note(b'M');
         let done = DEMO.with(|d| d.done);
         set(done);
         finish()
