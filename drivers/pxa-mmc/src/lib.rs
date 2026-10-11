@@ -53,9 +53,18 @@ pub const BASE_HZ: u32 = 19_500_000;
 /// Poll iterations before declaring a timeout.
 const SPIN_LIMIT: u32 = 2_000_000;
 
+/// Slowest card clock: 19.5 MHz >> 6 = 304.6875 kHz (still under the 400 kHz
+/// the SD identification phase allows).
+pub const MIN_HZ: u32 = BASE_HZ >> 6;
+
 /// `CLKRT` value for at most `hz` (19.5 MHz >> n, n = 0..6).
+///
+/// # Panics
+/// In debug builds, if `hz` is below [`MIN_HZ`]: the controller can't go that
+/// slow, and silently running faster than asked could break a card.
 #[must_use]
 pub fn clkrt_for(hz: u32) -> u32 {
+    debug_assert!(hz >= MIN_HZ, "card clock below the controller's minimum");
     (0..=6).find(|&n| BASE_HZ >> n <= hz).unwrap_or(6)
 }
 
@@ -173,6 +182,12 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "below the controller's minimum")]
+    fn refuses_impossibly_slow_clocks() {
+        let _ = clkrt_for(MIN_HZ - 1);
+    }
     use rp_hal_mock::MockBus;
 
     #[test]
@@ -181,7 +196,7 @@ mod tests {
         assert_eq!(clkrt_for(19_500_000), 0);
         assert_eq!(clkrt_for(400_000), 6); // 304 kHz
         assert_eq!(clkrt_for(10_000_000), 1);
-        assert_eq!(clkrt_for(1), 6);
+        assert_eq!(clkrt_for(MIN_HZ), 6);
     }
 
     #[test]

@@ -297,6 +297,8 @@ impl Fault {
 static mut FAULT_HANDLER: Option<fn(Fault, u32) -> !> = None;
 static mut TICK_PERIOD: u32 = 0;
 static mut TICKS: u32 = 0;
+/// See [`unclaimed_irqs`].
+static mut UNCLAIMED: u64 = 0;
 
 const INTC_BASE: usize = 0x40D0_0000;
 const OST_BASE: usize = 0x40A0_0000;
@@ -349,13 +351,32 @@ extern "C" fn rp_irq() {
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
     }
-    // Anything else isn't claimed by a driver yet: mask it so it can't storm.
+    // Anything else isn't claimed by a driver yet: mask it so it can't storm,
+    // and record it, so it's visible rather than silently dropped
+    // ([`unclaimed_irqs`]).
     let other = pending & !(1 << crate::soc::irq::OST1);
-    for n in 0..40 {
-        if other & (1 << n) != 0 {
-            intc().disable(n);
+    if other != 0 {
+        // SAFETY: only this handler writes UNCLAIMED; main code reads it with
+        // a single aligned volatile access per half.
+        unsafe {
+            let u = core::ptr::addr_of_mut!(UNCLAIMED);
+            u.write_volatile(u.read_volatile() | other);
+        }
+        for n in 0..40 {
+            if other & (1 << n) != 0 {
+                intc().disable(n);
+            }
         }
     }
+}
+
+/// Interrupt sources that fired with no owner and were masked (bit n = IRQ
+/// n). On the real X51v these are sources Windows Mobile left enabled.
+#[must_use]
+pub fn unclaimed_irqs() -> u64 {
+    // SAFETY: written only by the IRQ handler; a torn read between the two
+    // halves can only miss a bit that is reported on the next read.
+    unsafe { core::ptr::addr_of!(UNCLAIMED).read_volatile() }
 }
 
 /// Turns on the bring-up MMU: identity map ([`crate::mmu::X51V_BRINGUP`]),

@@ -33,6 +33,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | UART transmit wait made bounded (a real X51v may have no clocked FFUART; debug output must never hang) | `rp-hello` loaded size | 23,400 B | 23,328 B |
 | 2026-10-11 | On-screen crash box for faults and panics (real device has no serial port) | `rp-hello` loaded size | 23,328 B | 24,516 B |
 | 2026-10-11 | ADR-0005 rule 8: cold crates (`rp-hello`, `rp-drv-sdcard`, `rp-drv-cpld`) built with `opt-level = "s"`; hot crates stay at 3. No benchmark moved (incl. `sd_read_block`). Budget tightened 24 → 20 KiB | `rp-hello` loaded size | 24,516 B | 18,028 B (**−26%**) |
+| 2026-10-11 | "Never silently discard": unclaimed IRQs and a dead UART are reported on screen | `rp-hello` loaded size | 18,028 B | 18,360 B |
 
 ## Open leads
 

@@ -187,6 +187,11 @@ mod image {
                     }
                 }
             }
+            if !out.uart.is_alive() {
+                // Expected on a real X51v (no serial port fitted): say so
+                // rather than dropping output silently.
+                let _ = writeln!(out, "UART: not responding, screen only");
+            }
             let _ = writeln!(out, "{}", super::MARKER);
 
             // Report buttons and touches until the end of time (or the emulator).
@@ -210,7 +215,14 @@ mod image {
                 rt::start_tick(TICK_HZ);
                 let mut last_keys = Pressed::default();
                 let mut last_touch = None;
+                let mut last_unclaimed = 0;
                 loop {
+                    // Interrupts that fired with no owner were masked; say so.
+                    let unclaimed = rt::unclaimed_irqs();
+                    if unclaimed != last_unclaimed {
+                        let _ = writeln!(out, "IRQ unclaimed, masked: {unclaimed:#x}");
+                        last_unclaimed = unclaimed;
+                    }
                     let keys = keypad.pressed();
                     for (button, down) in last_keys.changes(keys) {
                         let state = if down { "down" } else { "up" };
