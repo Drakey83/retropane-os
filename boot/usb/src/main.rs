@@ -209,12 +209,14 @@ mod image {
     /// Disconnects for a moment (so the PC sees a fresh attach), then applies
     /// connection `mode`.
     fn connect(gpio: &mut Gpio<Mmio>, udc: &mut Udc<Mmio>, mode: usize, wm_up2: u32) {
+        // The transceiver output (HXOE) stays on throughout: without it the
+        // PC sees an attach but no answers (found on the device).
         gpio.write(USB_PULLUP, mode == 1 || mode == 3);
-        udc.write_reg(UP2OCR, wm_up2 & !(DPPUE | HXOE));
+        udc.write_reg(UP2OCR, (wm_up2 | HXOE) & !DPPUE);
         rt::delay_us(300_000);
         gpio.write(USB_PULLUP, mode == 0 || mode == 2);
         if mode >= 2 {
-            udc.write_reg(UP2OCR, (wm_up2 | DPPUE | HXOE) & !(1 << 16));
+            udc.write_reg(UP2OCR, wm_up2 | HXOE | DPPUE);
         }
     }
 

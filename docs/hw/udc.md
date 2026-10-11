@@ -14,7 +14,8 @@ owner's X51v by `rp-probe` (`probe-2026-10-11.md`).
 | Signal | Where | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
 | USB cable detect | GPIO14, input | high on the probe run; both edges enabled as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14) by WM | confirmed (pin), likely (polarity: high = cable present) | (A), (D) |
-| D+ pull-up ("connect") | GPIO2, output | driven high by WM on the probe run; the host sees the device only while the pull-up is on | likely | hardware inventory, (D) (output, high) |
+| D+ pull-up ("connect") | GPIO2, output, **high = connected** | the PC enumerated the device with GPIO2 high | confirmed | real X51v (2026-10-11), hardware inventory |
+| Transceiver | **port 2's, output enabled: `UP2OCR` = `0x00020000` (HXOE) as WM leaves it** | with HXOE cleared the PC saw the attach (a bus reset) but no SETUP ever arrived; with it set, enumeration worked. The driver sets it | confirmed | real X51v (2026-10-11) |
 | UDC clock | `CKEN` bit 11 | on as WM left it | confirmed | (D) `CKEN 0x00D91AA3` |
 | Data pins | dedicated USB client pins | no `GAFR` setting needed | likely | (M) |
 
