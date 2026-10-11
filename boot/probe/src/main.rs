@@ -261,7 +261,11 @@ mod image {
                         let kind = if k.is_high_capacity() { "SDHC" } else { "SD" };
                         fmt_into(
                             &mut sd_lines[0],
-                            format_args!("SD {kind} RCA {:04X}", k.rca()),
+                            format_args!(
+                                "SD {kind} RCA {:04X} {}-bit",
+                                k.rca(),
+                                if k.is_wide() { 4 } else { 1 }
+                            ),
                         );
                         let mut block = [0u8; rp_drv_sdcard::BLOCK];
                         if k.read(0, &mut block).is_ok()
@@ -325,6 +329,8 @@ mod image {
             ("PID", cp.pid),
             ("CPAR", cp.cpar),
             ("CLKCFG", cp.clkcfg),
+            // After RetroPane's MMU setup: confirms the caches are on (C, I).
+            ("CTL NOW", diag::coprocessors().control),
         ]);
         rep.on_page(1);
         rep.line(format_args!("2 WM STATE (as left)"));

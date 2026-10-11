@@ -52,6 +52,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | New bring-up images, each with its own budget at measured + ~10% (new budgets, not raises): `rp-light` (first light), `rp-usb` (USB link test), `rp-loader` (resident loader) | loaded size | — | 16,064 / 18,320 / 20,032 B |
 | 2026-10-11 | `rp-probe`: startup colours (step table instead of six inlined two-colour calls) | `rp-probe` loaded size | 40,756 B | 40,864 B |
 | 2026-10-11 | `rp-probe` writes its report to the run log and returns to the resident loader (ADR-0012), so `cargo xtask load rp-probe` delivers the checksummed report to the PC with no photos. **Load budget raised 40 → 45 KiB, approved by the owner** (measured + ~10%) | `rp-probe` loaded size | 40,864 B | 41,920 B |
+| 2026-10-11 | Pattern fill builds its bar row in RAM and only writes the framebuffer (the device measured reading 2700G memory as the slow part: 61 ms vs 14.5 ms for a plain fill). Emulator counts instructions, so no gain shows there; the device number comes with the next probe run | `fb_pattern_vga` (emulator) | 127,692 ns | 128,821 ns (+0.9%, baseline re-recorded) |
+| 2026-10-11 | SD: 4-bit data bus (ACMD6 + `CMDAT.SD_4DAT`) and multiple-block reads (CMD18/CMD12). New benchmark reads 4 blocks per command; on the device the per-command start-up (most of the measured 3.85 ms per block) is paid once per 4 | `sd_read_4_blocks` (emulator) | — | 17,769 ns |
 
 ## Real hardware
 
@@ -98,10 +100,15 @@ What stands out (leads, not conclusions yet; one run):
 - **`memcpy` 64 KiB: ~95 MB/s** (3.6× the naive loop; 6.4× in the emulator);
   `memset` ~377 MB/s. Check the SDRAM mapping's cache/write-allocate settings
   and try iWMMXt before tuning further.
-- **`timer_read` 846 ns** is far more than one peripheral read should cost
-  (~65× the emulator). Probably loop/measurement overhead or an uncached path:
-  investigate before trusting the small benchmarks (`tlb_fit_16`,
-  `frames_alloc_free_split`).
+- **`timer_read` 846 ns** is one OS-timer read (the loop adds a few cycles):
+  a peripheral read crosses the system and peripheral bus bridges. Together
+  with ~506 ns per SDRAM miss (`chase_sdram_256k` / 4096 hops) and ~117 ns
+  per internal-SRAM hop, this looks like the PXA270's real bus latencies, not
+  a cache problem: memcpy's ~190 MB/s of traffic is consistent with caches
+  on. **Consequence: read the timer sparingly** (the scheduler's tickless
+  design already does). The probe now also reports CP15 control after the
+  MMU is on (`CTL NOW`; `0000387D` in the emulator) to confirm caches on the
+  device rather than infer it.
 - **LZ4**: a 4 KiB heap page decompresses in 180 µs (~23 MB/s), so a
   compressed-RAM fault costs ~0.2 ms. Acceptable, but the decoder is the first
   thing to optimise on real hardware.
