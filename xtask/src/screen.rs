@@ -1,12 +1,12 @@
 //! Emulator screenshots: capture via QEMU's monitor, and check them against
-//! RetroPane's reference test pattern.
+//! the bring-up boot screen (test pattern plus boot log).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use rp_drv_mbx_display::pattern;
+use rp_drv_mbx_display::{console, pattern};
 
 /// A connection to QEMU's human monitor.
 pub struct Monitor {
@@ -176,9 +176,11 @@ pub fn parse_ppm(data: &[u8]) -> Result<Image, String> {
     Ok(Image { width, height, rgb })
 }
 
-/// Checks a screenshot against [`pattern::rgb`] at 480 × 640, allowing for
-/// RGB565 quantisation (up to 8 per channel).
-pub fn check_test_pattern(ppm: &[u8]) -> Result<(), String> {
+/// Checks a bring-up screenshot at 480 × 640: the test pattern
+/// ([`pattern::rgb`]) everywhere outside the boot log box
+/// ([`console::BOOT_LOG`]), and inside it the log's background with some text
+/// drawn on it. Allows for RGB565 quantisation (up to 8 per channel).
+pub fn check_boot_screen(ppm: &[u8]) -> Result<(), String> {
     let img = parse_ppm(ppm)?;
     if (img.width, img.height) != (480, 640) {
         return Err(format!(
@@ -186,27 +188,60 @@ pub fn check_test_pattern(ppm: &[u8]) -> Result<(), String> {
             img.width, img.height
         ));
     }
+    let (lx, ly, lw, lh) = console::BOOT_LOG;
+    let in_log = |x: u32, y: u32| {
+        (lx..lx + lw).contains(&(x as usize)) && (ly..ly + lh).contains(&(y as usize))
+    };
+    let close = |want: (u8, u8, u8), got: &[u8]| {
+        want.0.abs_diff(got[0]) <= 8 && want.1.abs_diff(got[1]) <= 8 && want.2.abs_diff(got[2]) <= 8
+    };
+    let (fg, bg) = console::BOOT_LOG_COLORS;
+    let (fg, bg) = (from_rgb565(fg), from_rgb565(bg));
     let mut bad = Vec::new();
+    let (mut ink, mut paper) = (0usize, 0usize);
     for y in 0..img.height {
         for x in 0..img.width {
-            let (r, g, b) = pattern::rgb(x, y, img.width, img.height);
             let i = ((y * img.width + x) * 3) as usize;
             let got = &img.rgb[i..i + 3];
-            let close = |want: u8, got: u8| want.abs_diff(got) <= 8;
-            if !(close(r, got[0]) && close(g, got[1]) && close(b, got[2])) {
-                bad.push((x, y, (r, g, b), (got[0], got[1], got[2])));
+            if in_log(x, y) {
+                if close(fg, got) {
+                    ink += 1;
+                } else if close(bg, got) {
+                    paper += 1;
+                } else {
+                    bad.push((x, y, bg, (got[0], got[1], got[2])));
+                }
+                continue;
+            }
+            let want = pattern::rgb(x, y, img.width, img.height);
+            if !close(want, got) {
+                bad.push((x, y, want, (got[0], got[1], got[2])));
             }
         }
     }
-    if bad.is_empty() {
-        Ok(())
-    } else {
-        let (x, y, want, got) = bad[0];
-        Err(format!(
-            "{} pixels differ from the test pattern; first at ({x},{y}): expected {want:?}, got {got:?}",
+    if let Some(&(x, y, want, got)) = bad.first() {
+        return Err(format!(
+            "{} pixels are wrong; first at ({x},{y}): expected {want:?}, got {got:?}",
             bad.len()
-        ))
+        ));
     }
+    // A few lines of 5x7 text at scale 2 is thousands of ink pixels.
+    if ink < 1000 || paper < ink {
+        return Err(format!(
+            "boot log looks wrong: {ink} text pixels, {paper} background pixels"
+        ));
+    }
+    Ok(())
+}
+
+/// Expands RGB565 to 8 bits per channel (low bits zero, as QEMU's
+/// screendump produces).
+fn from_rgb565(c: u16) -> (u8, u8, u8) {
+    (
+        ((c >> 11) << 3) as u8,
+        (((c >> 5) & 0x3F) << 2) as u8,
+        ((c & 0x1F) << 3) as u8,
+    )
 }
 
 #[cfg(test)]
@@ -224,24 +259,52 @@ mod tests {
         out
     }
 
+    /// The screen a bring-up image draws, rendered on the host with the same
+    /// drivers, then quantised the way QEMU's screendump reports it.
+    fn boot_screen(text: &str) -> Vec<u8> {
+        use core::fmt::Write;
+        let stride = 480 * 2;
+        let mut fb = vec![0u8; stride * 640];
+        pattern::fill_rgb565(&mut fb, 480, 640, stride);
+        let (x, y, w, h) = console::BOOT_LOG;
+        let mut con = console::Console::new(
+            &mut fb,
+            stride,
+            (x, y),
+            (w, h),
+            console::BOOT_LOG_SCALE,
+            console::BOOT_LOG_COLORS,
+        );
+        con.write_str(text).unwrap();
+        ppm(480, 640, |x, y| {
+            let i = (y as usize) * stride + (x as usize) * 2;
+            from_rgb565(u16::from_le_bytes([fb[i], fb[i + 1]]))
+        })
+    }
+
     #[test]
-    fn accepts_the_pattern_after_rgb565_quantisation() {
-        let img = ppm(480, 640, |x, y| {
-            let (r, g, b) = pattern::rgb(x, y, 480, 640);
-            (r & 0xF8, g & 0xFC, b & 0xF8)
-        });
-        check_test_pattern(&img).unwrap();
+    fn accepts_the_boot_screen() {
+        check_boot_screen(&boot_screen(
+            "RetroPane 26\nDisplay: 480x640\nSD: SD card\n",
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_an_empty_boot_log() {
+        let err = check_boot_screen(&boot_screen("")).unwrap_err();
+        assert!(err.contains("boot log"), "{err}");
     }
 
     #[test]
     fn rejects_a_black_screen() {
-        let err = check_test_pattern(&ppm(480, 640, |_, _| (0, 0, 0))).unwrap_err();
-        assert!(err.contains("differ"));
+        let err = check_boot_screen(&ppm(480, 640, |_, _| (0, 0, 0))).unwrap_err();
+        assert!(err.contains("wrong"), "{err}");
     }
 
     #[test]
     fn rejects_wrong_size() {
-        assert!(check_test_pattern(&ppm(640, 480, |_, _| (0, 0, 0))).is_err());
+        assert!(check_boot_screen(&ppm(640, 480, |_, _| (0, 0, 0))).is_err());
     }
 
     #[test]

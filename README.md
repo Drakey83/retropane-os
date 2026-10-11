@@ -1,7 +1,7 @@
 # RetroPane OS
 
 A new, open-source operating system for the **Dell Axim X51v**: a modern take
-on Windows Mobile.
+on Windows Mobile. The first release is **RetroPane 26**.
 
 - **Native drivers for all of the hardware**, reverse-engineered where no
   documentation exists, including the Intel 2700G 3D, 2D and video blocks and
@@ -19,7 +19,7 @@ on Windows Mobile.
 > image boots in the X51v emulator and drives the Intel 2700G display. See the
 > [roadmap](docs/ROADMAP.md).
 
-<img src="docs/img/emulator-test-pattern.png" width="160" alt="Test pattern on the emulated X51v screen">
+<img src="docs/img/emulator-boot-log.png" width="160" alt="RetroPane 26 boot log on the emulated X51v screen">
 
 Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** ·
 🗄️ **legacy support** · ⚡ **better/faster**.

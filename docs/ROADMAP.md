@@ -42,7 +42,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] **RE:** `tools/mmiotrace` working on Windows Mobile: traps and logs 2700G register accesses
 
 **Exit:** a "hello world" binary prints to serial and draws a test pattern, in the emulator *and* booted from SD on the real device.
-*Emulator half done (2026-10-10): see `docs/img/emulator-test-pattern.png`.*
+*Emulator half done (2026-10-10): see `docs/img/emulator-boot-log.png`.*
 
 ## Phase 2 — Kernel
 **Goal:** a real kernel with threads, memory protection and full-speed clocks.
