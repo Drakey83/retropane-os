@@ -7,6 +7,7 @@ mod emu;
 mod policy;
 mod screen;
 mod sdkit;
+mod serve;
 mod size;
 
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ commands:
             (downloads it if needed)
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
+            (--serve: also serve it over Wi-Fi for the device's browser)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -47,7 +49,15 @@ fn main() -> ExitCode {
         }
         "sdkit" => {
             eprintln!("==> sdkit");
-            cross().and_then(|()| sdkit::build(&workspace_root()))
+            cross()
+                .and_then(|()| sdkit::build(&workspace_root()))
+                .and_then(|()| {
+                    if flag == "--serve" {
+                        serve::serve(&workspace_root().join("target").join("sdkit"))
+                    } else {
+                        Ok(())
+                    }
+                })
         }
         "bench" => {
             eprintln!("==> bench");
