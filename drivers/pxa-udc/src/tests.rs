@@ -21,10 +21,14 @@ struct SimUdc {
     csr0: u32,
     ep0_rx: VecDeque<u8>,
     ep0_tx: Vec<u8>,
-    /// Packets the host has taken from endpoint 0.
-    ep0_sent: VecDeque<Vec<u8>>,
+    /// A packet ready for the host's next IN token (full FIFO, or IPR).
+    ep0_pending: Option<Vec<u8>>,
     cr: [u32; 24],
     in_fifo: Vec<u8>,
+    /// A bulk IN packet waiting for the host's IN token.
+    in_pending: Option<Vec<u8>>,
+    /// Bulk IN packet complete (the last packet was taken).
+    in_pc: bool,
     in_sent: VecDeque<Vec<u8>>,
     out_fifo: VecDeque<u8>,
     out_pc: bool,
@@ -33,15 +37,66 @@ struct SimUdc {
     /// Every raw write to UDCCR, to check the masking rule.
     udccr_writes: Vec<u32>,
     reject_table: bool,
+    up2ocr: u32,
+    up2ocr_writes: u32,
+    isr0: u32,
 }
 
 impl SimUdc {
+    /// A full FIFO (or IPR) makes a packet ready; it waits there until the
+    /// host's next IN token. Pessimistic about IPR: it is not set by the
+    /// hardware for a full FIFO, so a driver can only tell the packet left
+    /// from the packet-complete event.
     fn ep0_packet_ready(&mut self) {
         if self.ep0_tx.len() >= usb::EP0_SIZE || self.csr0 & reg::IPR != 0 {
-            let p = core::mem::take(&mut self.ep0_tx);
-            self.ep0_sent.push_back(p);
-            self.csr0 &= !reg::IPR;
+            assert!(
+                self.ep0_pending.is_none(),
+                "endpoint 0 packet queued before the previous one left"
+            );
+            self.ep0_pending = Some(core::mem::take(&mut self.ep0_tx));
         }
+    }
+
+    fn ep0_write(&mut self, bytes: &[u8]) {
+        assert!(
+            self.ep0_pending.is_none(),
+            "wrote into endpoint 0's FIFO while a packet waits for the host"
+        );
+        self.ep0_tx.extend_from_slice(bytes);
+        self.ep0_packet_ready();
+    }
+
+    fn in_write(&mut self, bytes: &[u8]) {
+        assert!(
+            self.in_pending.is_none(),
+            "wrote into the bulk IN FIFO while a packet waits for the host"
+        );
+        self.in_fifo.extend_from_slice(bytes);
+        assert!(self.in_fifo.len() <= usb::BULK_SIZE, "IN FIFO overrun");
+        if self.in_fifo.len() == usb::BULK_SIZE {
+            self.in_ready();
+        }
+    }
+
+    fn in_ready(&mut self) {
+        assert!(self.in_pending.is_none(), "bulk IN packet queued twice");
+        self.in_pending = Some(core::mem::take(&mut self.in_fifo));
+    }
+
+    /// The host's bulk IN token: takes the waiting packet, if any.
+    fn host_in_bulk(&mut self) {
+        if let Some(p) = self.in_pending.take() {
+            self.in_sent.push_back(p);
+            self.in_pc = true;
+        }
+    }
+
+    /// The host's IN token: takes the waiting packet, if any.
+    fn host_in(&mut self) -> Option<Vec<u8>> {
+        let p = self.ep0_pending.take()?;
+        self.csr0 &= !reg::IPR;
+        self.isr0 |= reg::EP0_PACKET;
+        Some(p)
     }
 }
 
@@ -50,6 +105,8 @@ impl RegisterBus for SimUdc {
         match offset {
             reg::UDCCR => self.udccr,
             reg::UDCISR1 => self.isr1,
+            reg::UP2OCR => self.up2ocr,
+            reg::UDCISR0 => self.isr0,
             o if o == reg::csr(0) => {
                 let rne = if self.ep0_rx.is_empty() { 0 } else { reg::RNE };
                 self.csr0 | rne
@@ -63,11 +120,14 @@ impl RegisterBus for SimUdc {
                 u32::from_le_bytes(w)
             }
             o if o == reg::csr(SLOT_IN) => {
-                if self.in_fifo.len() < usb::BULK_SIZE {
+                // Pessimistic: a waiting short packet doesn't make the FIFO
+                // read "full", so only packet-complete tells it has left.
+                let bnf = if self.in_fifo.len() < usb::BULK_SIZE {
                     reg::BNF
                 } else {
                     0
-                }
+                };
+                bnf | if self.in_pc { reg::PC } else { 0 }
             }
             o if o == reg::csr(SLOT_OUT) => {
                 if self.out_pc {
@@ -102,12 +162,23 @@ impl RegisterBus for SimUdc {
                 }
             }
             reg::UDCICR1 => self.icr1 = v,
+            reg::UP2OCR => {
+                assert_eq!(
+                    self.udccr & reg::UDE,
+                    0,
+                    "UP2OCR written while the UDC runs"
+                );
+                self.up2ocr = v;
+                self.up2ocr_writes += 1;
+            }
             reg::UDCISR1 => self.isr1 &= !v,
+            reg::UDCISR0 => self.isr0 &= !v,
             o if o == reg::csr(0) => {
                 // Write-1-to-clear status, actions, and IPR/FST set by software.
                 self.csr0 &= !(v & (reg::OPC | reg::SA | reg::SST));
                 if v & reg::FTF != 0 {
                     self.ep0_tx.clear();
+                    self.ep0_pending = None;
                 }
                 if v & reg::FST != 0 {
                     // The host's next token gets a STALL.
@@ -121,10 +192,7 @@ impl RegisterBus for SimUdc {
                     self.ep0_packet_ready();
                 }
             }
-            o if o == reg::dr(0) => {
-                self.ep0_tx.extend_from_slice(&v.to_le_bytes());
-                self.ep0_packet_ready();
-            }
+            o if o == reg::dr(0) => self.ep0_write(&v.to_le_bytes()),
             o if (reg::cr(1)..=reg::cr(23)).contains(&o) => {
                 assert_eq!(
                     self.udccr & reg::UDE,
@@ -133,15 +201,14 @@ impl RegisterBus for SimUdc {
                 );
                 self.cr[(o - 0x400) / 4] = v;
             }
-            o if o == reg::dr(SLOT_IN) => {
-                self.in_fifo.extend_from_slice(&v.to_le_bytes());
-                assert!(self.in_fifo.len() <= usb::BULK_SIZE, "IN FIFO overrun");
-                if self.in_fifo.len() == usb::BULK_SIZE {
-                    self.in_sent.push_back(core::mem::take(&mut self.in_fifo));
+            o if o == reg::dr(SLOT_IN) => self.in_write(&v.to_le_bytes()),
+            o if o == reg::csr(SLOT_IN) => {
+                if v & reg::PC != 0 {
+                    self.in_pc = false;
                 }
-            }
-            o if o == reg::csr(SLOT_IN) && v & reg::SP != 0 => {
-                self.in_sent.push_back(core::mem::take(&mut self.in_fifo));
+                if v & reg::SP != 0 {
+                    self.in_ready();
+                }
             }
             o if o == reg::csr(SLOT_OUT) && v & reg::PC != 0 => {
                 self.out_pc = false;
@@ -158,11 +225,9 @@ impl RegisterBus8 for SimUdc {
     }
     fn write8(&mut self, offset: usize, v: u8) {
         if offset == reg::dr(0) {
-            self.ep0_tx.push(v);
-            self.ep0_packet_ready();
+            self.ep0_write(&[v]);
         } else if offset == reg::dr(SLOT_IN) {
-            self.in_fifo.push(v);
-            assert!(self.in_fifo.len() <= usb::BULK_SIZE, "IN FIFO overrun");
+            self.in_write(&[v]);
         }
     }
 }
@@ -212,7 +277,7 @@ impl Host {
                 assert_eq!(self.sim().csr0 & reg::SST, 0, "SST not cleared");
                 return None;
             }
-            if let Some(p) = self.sim().ep0_sent.pop_front() {
+            if let Some(p) = self.sim().host_in() {
                 let short = p.len() < usb::EP0_SIZE;
                 data.extend(p);
                 if short {
@@ -223,7 +288,8 @@ impl Host {
                     return Some(data);
                 }
             }
-            self.poll(1);
+            // The device polls far more often than the host sends IN tokens.
+            self.poll(3);
         }
         panic!("control read never finished");
     }
@@ -235,7 +301,7 @@ impl Host {
         self.setup(s);
         self.poll(2);
         assert!(
-            self.sim().ep0_sent.is_empty(),
+            self.sim().ep0_pending.is_none(),
             "driver queued its own status packet"
         );
         assert_eq!(
@@ -255,7 +321,7 @@ impl Host {
         }
         self.poll(2);
         assert!(
-            self.sim().ep0_sent.is_empty(),
+            self.sim().ep0_pending.is_none(),
             "driver queued its own status packet"
         );
         assert_eq!(
@@ -321,6 +387,24 @@ fn enable_writes_the_table_then_enables() {
 }
 
 #[test]
+fn the_transceiver_output_is_turned_on_only_when_off() {
+    // As Windows Mobile leaves it: left alone.
+    let mut udc = Udc::new(SimUdc {
+        up2ocr: reg::HXOE,
+        ..SimUdc::default()
+    });
+    udc.enable().unwrap();
+    assert_eq!(udc.bus.up2ocr_writes, 0);
+    // Off (e.g. a cold start without WM): turned on, other bits kept.
+    let mut udc = Udc::new(SimUdc {
+        up2ocr: 1 << 24,
+        ..SimUdc::default()
+    });
+    udc.enable().unwrap();
+    assert_eq!(udc.bus.up2ocr, (1 << 24) | reg::HXOE);
+}
+
+#[test]
 fn udccr_writes_carry_only_writable_bits() {
     let mut h = Host::new();
     h.sim().udccr |= reg::EMCE | (3 << 8); // read-only/status bits set
@@ -360,10 +444,10 @@ fn reads_split_into_16_byte_packets_with_a_short_last_one() {
     h.setup([0x80, 6, 0, 2, 0, 0, 255, 0]);
     let mut sizes = Vec::new();
     for _ in 0..20 {
-        while let Some(p) = h.sim().ep0_sent.pop_front() {
+        while let Some(p) = h.sim().host_in() {
             sizes.push(p.len());
         }
-        h.poll(1);
+        h.poll(3);
     }
     // 67 bytes: four full packets, then 3.
     assert_eq!(sizes, [16, 16, 16, 16, 3]);
@@ -431,7 +515,11 @@ fn bulk_in_sends_full_packets_then_a_short_one() {
     h.enumerate();
     let data: Vec<u8> = (0..150u8).collect();
     assert_eq!(h.udc.write(&data), 150);
-    h.poll(10);
+    // The device polls several times between the host's IN tokens.
+    for _ in 0..10 {
+        h.poll(3);
+        h.sim().host_in_bulk();
+    }
     let sent: Vec<Vec<u8>> = h.sim().in_sent.drain(..).collect();
     assert_eq!(sent.iter().map(Vec::len).collect::<Vec<_>>(), [64, 64, 22]);
     assert_eq!(sent.concat(), data);
@@ -484,7 +572,10 @@ fn a_bus_reset_drops_the_configuration_and_queued_data() {
     h.reset();
     assert!(!h.udc.configured());
     h.enumerate();
-    h.poll(4);
+    for _ in 0..4 {
+        h.poll(3);
+        h.sim().host_in_bulk();
+    }
     assert!(h.sim().in_sent.is_empty(), "stale bytes sent after reset");
 }
 

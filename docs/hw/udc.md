@@ -100,6 +100,7 @@ before UDE is set, and EMCE reports a table the hardware can't fit.
 | GPIO14 reads **0 with no USB host connected** and the device still charging from the cradle's power; with the cradle's USB reseated in the PC, the PC enumerated the device | likely (the reading during enumeration wasn't captured) | real X51v |
 | Bus reset raises `UDCISR1[27]`; software flushes endpoint 0 (FTF, OPC) and returns to idle | likely | (M) |
 | Enable order: interrupts masked, UDE clear, endpoint table written, UDE set, then EMCE checked | likely | (M) |
+| **One packet in flight per endpoint.** The next IN packet may be written only after the previous one's packet-complete event (`UDCISR0` bit 0 for endpoint 0, `UDCCSRx.PC` for A–X), the moment an interrupt-driven driver would run. IPR/BNF alone don't prove a packet has left (a short packet doesn't fill the FIFO) | likely: (M)'s driver only writes from those events; a polled driver that didn't wait is the leading explanation for the "Device Descriptor Request Failed" seen on the device | (M), real X51v |
 
 ## Open questions
 
