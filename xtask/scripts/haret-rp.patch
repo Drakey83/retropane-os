@@ -1,0 +1,152 @@
+diff --git a/include/irq.h b/include/irq.h
+index 9862474..1da4baa 100644
+--- a/include/irq.h
++++ b/include/irq.h
+@@ -10,7 +10,7 @@
+ // Functions marked with this attribute will be relocated to an
+ // independant area of memory during interrupt watching.  Code in this
+ // section must not reference data or code in any other sections.
+-#define __irq __attribute__ ((__section__ (".text.irq")))
++#define __irq __attribute__ ((__section__ (".rp_irq")))
+ 
+ 
+ /****************************************************************
+diff --git a/include/linboot.h b/include/linboot.h
+index 47a6fab..7aea4ca 100644
+--- a/include/linboot.h
++++ b/include/linboot.h
+@@ -6,7 +6,7 @@
+ // preloading and are run with the MMU disabled.  These functions must
+ // be careful to not call functions that aren't also marked this way.
+ // They must also not use any global variables.
+-#define __preload __attribute__ ((__section__ (".text.preload")))
++#define __preload __attribute__ ((__section__ (".rp_preload")))
+ 
+ void __preload do_copy(char *dest, const char *src, int count);
+ 
+diff --git a/src/fbwrite.cpp b/src/fbwrite.cpp
+index 6816186..565ec75 100644
+--- a/src/fbwrite.cpp
++++ b/src/fbwrite.cpp
+@@ -17,6 +17,9 @@
+ #define FONTWIDTH 4
+ #define FONTHEIGHT 6
+ #define BPP 2
++#define SCALE 3
++#define CELLW (FONTWIDTH * SCALE)
++#define CELLH (FONTHEIGHT * SCALE)
+ 
+ // Write a character to the screen.
+ static void __preload
+@@ -26,11 +29,11 @@ blit_char(fbinfo *fbi, char c)
+         return;
+ 
+     const unsigned char *font = &fbi->fonts[c * FONTHEIGHT];
+-    uint16 *fbpos = &fbi->fb[fbi->scrx * fbi->y * FONTHEIGHT
+-                             + fbi->x * FONTWIDTH];
+-    for (int y=0; y<FONTHEIGHT; y++) {
+-        for (int x=0; x<FONTWIDTH; x++) {
+-            if (font[y] & (1<<(FONTWIDTH-x-1)))
++    uint16 *fbpos = &fbi->fb[fbi->scrx * fbi->y * CELLH
++                             + fbi->x * CELLW];
++    for (int y=0; y<CELLH; y++) {
++        for (int x=0; x<CELLW; x++) {
++            if (font[y / SCALE] & (1<<(FONTWIDTH-x/SCALE-1)))
+                 fbpos[x] = 0xFFFF;
+         }
+         fbpos += fbi->scrx;
+@@ -45,7 +48,7 @@ goNewLine(fbinfo *fbi)
+         fbi->y++;
+         return;
+     }
+-    int linebytes = fbi->scrx * FONTHEIGHT;
++    int linebytes = fbi->scrx * CELLH;
+     do_copy((char *)fbi->fb
+             , (char *)&fbi->fb[linebytes]
+             , (fbi->scrx * fbi->scry - linebytes) * BPP);
+@@ -186,8 +189,8 @@ fb_init(fbinfo *fbi)
+ 
+     fbi->scrx = videoW;
+     fbi->scry = videoH;
+-    fbi->maxx = videoW / FONTWIDTH;
+-    fbi->maxy = videoH / FONTHEIGHT;
++    fbi->maxx = videoW / CELLW;
++    fbi->maxy = videoH / CELLH;
+ 
+     Output("Video buffer at %p sx=%d sy=%d mx=%d my=%d"
+            , fbi->fb, fbi->scrx, fbi->scry, fbi->maxx, fbi->maxy);
+diff --git a/src/haret.lds b/src/haret.lds
+index 33687f4..f56844c 100644
+--- a/src/haret.lds
++++ b/src/haret.lds
+@@ -11,19 +11,19 @@ SECTIONS
+      * memory.
+      */
+     irq_start = .;
+-    *(.text.irq)
++    *(.rp_irq)
+     irq_end = .;
+ 
+     /* As above, create two symbols for the preloader code. */
+     preload_start = .;
+-    *(.text.preload)
++    *(.rp_preload)
+     preload_end = .;
+ 
+     /* Make sure the trampline is on one page (if it would span to a
+      * second page, align it to the start of a page). */
+     . = ((. + mmu_trampoline_end - mmu_trampoline) > ALIGN(4096))
+          ? ALIGN(4096) : .;
+-    *(.text.trampoline)
++    *(.rp_trampoline)
+   }
+   .rdata : {
+     /* Create two symbols around the list of machine init functions. */
+diff --git a/src/linboot.cpp b/src/linboot.cpp
+index 3c00b81..8e3f0b5 100644
+--- a/src/linboot.cpp
++++ b/src/linboot.cpp
+@@ -237,7 +237,7 @@ static inline uint32 __preload do_cpuGetPSR(void) {
+     __str;                                      \
+ })
+ 
+-#define FB_PRINTF(fbi,fmt,args...) fb_printf((fbi), STR_IN_CODE(.text.preload, fmt) , ##args )
++#define FB_PRINTF(fbi,fmt,args...) fb_printf((fbi), STR_IN_CODE(.rp_preload, fmt) , ##args )
+ 
+ static inline int __preload
+ fbOverlaps(struct preloadData *pd)
+diff --git a/src/wince/asmstuff.S b/src/wince/asmstuff.S
+index 076c6ae..32b4ce0 100644
+--- a/src/wince/asmstuff.S
++++ b/src/wince/asmstuff.S
+@@ -124,7 +124,7 @@ cpuFlushCache_arm6:
+ 
+ @ Assembler stub that (when relocated) can store the location of a
+ @ stack and C executable function to jump to.
+-        .section .text.preload
++        .section .rp_preload, "ax"
+         .global stackJumper
+ stackJumper:
+ stack:          .long 0
+@@ -142,7 +142,7 @@ asm_handler:
+ @       r1 = Virtual address of MMU in non-cached ram.
+ @       r2 = Physical address of code to jump to
+ @       r3 = cpu flush cache function
+-        .section .text.trampoline
++        .section .rp_trampoline, "ax"
+         .global mmu_trampoline, mmu_trampoline_end
+ mmu_trampoline:
+ 	@ Store previous registers on stack.
+diff --git a/src/wince/irqchain.S b/src/wince/irqchain.S
+index 8993d33..93cf3a0 100644
+--- a/src/wince/irqchain.S
++++ b/src/wince/irqchain.S
+@@ -4,7 +4,7 @@
+ @
+ @ This file may be distributed under the terms of the GNU GPL license.
+ 
+-        .section .text.irq
++        .section .rp_irq, "ax"
+ 
+ @ This handler is copied to a malloc'd memory area in the irq.c C
+ @ code.  The following variables are designed to overlap with the
