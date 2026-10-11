@@ -31,8 +31,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 ## Phase 1 — Emulator
 **Goal:** an `x51v` machine in a QEMU 9.1 fork that boots a test kernel.
 
-- [ ] Fork QEMU 9.1 (separate repo, submodule here)
-- [ ] `x51v` machine: PXA270, memory map, UART console, SD image, keypad
+- [x] Fork QEMU 9.1 ([retropane-qemu](https://github.com/Drakey83/retropane-qemu); CI builds Linux + Windows releases, and `cargo xtask emu` downloads them, so no submodule is needed)
+- [ ] `x51v` machine: PXA270, memory map, UART console *(done in rp-v0.1.0; 2700G and CPLD logged as unimplemented)*, SD image, keypad
 - [ ] TSC2046 touch, WM8750 audio, CPLD model (from `docs/hw/cpld.md`)
 - [ ] 2700G display planes model (from the `mbxfb` registers)
 - [ ] Screenshot and input scripting over QMP for integration tests
