@@ -6,6 +6,7 @@
 mod emu;
 mod policy;
 mod screen;
+mod sdkit;
 mod size;
 
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ commands:
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   emu       boot the bring-up image in the x51v emulator (downloads it if needed)
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
+  sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -41,6 +43,10 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "qemu" => {
             run_step(&cmd)
+        }
+        "sdkit" => {
+            eprintln!("==> sdkit");
+            cross().and_then(|()| sdkit::build(&workspace_root()))
         }
         "bench" => {
             eprintln!("==> bench");

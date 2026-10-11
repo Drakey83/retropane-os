@@ -126,6 +126,9 @@ pub fn take_ffuart() -> Option<Mmio> {
     if taken {
         return None;
     }
+    // Windows Mobile may have left the FFUART's clock off (the X51v has no
+    // serial port fitted), and an unclocked UART never reports TX space.
+    enable_clock(CKEN_FFUART);
     let base = NonNull::new(FFUART_BASE as *mut u32)?;
     // SAFETY: FFUART_BASE..+UART_WINDOW is the FFUART register window (PXA27x
     // memory map), identity-mapped with the MMU off, and the flag above
@@ -187,6 +190,9 @@ const CKEN: usize = 0x4130_0004;
 pub const CKEN_KEYPAD: u32 = 19;
 /// Keypad controller base.
 const KEYPAD_BASE: usize = 0x4150_0000;
+
+/// `CKEN` bit for the FFUART.
+pub const CKEN_FFUART: u32 = 6;
 
 /// Enables a peripheral clock (`CKEN` bit `bit`).
 pub fn enable_clock(bit: u32) {

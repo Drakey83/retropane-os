@@ -40,12 +40,36 @@ mod image {
     const TICK_HZ: u32 = 200;
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x}", kind.name());
+        let mut out = crash_out();
+        let _ = writeln!(out, "\nFAULT {} at {addr:#010x}", kind.name());
         loop {
             core::hint::spin_loop();
         }
     }
+
+    /// Crash output: the UART plus, if the display is up, a red box at the
+    /// bottom of the screen (the real X51v has no serial port).
+    fn crash_out() -> Out<PxaUart<rp_hal_pxa27x::Mmio>> {
+        let con = rp_hal_x51v::devices::emergency_vram().map(|vram| {
+            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+            let (x, y, w, h) = console::BOOT_LOG;
+            Console::new(
+                &mut vram[plane.offset..],
+                plane.stride,
+                (x, y + h - 64),
+                (w, 64),
+                console::BOOT_LOG_SCALE,
+                CRASH_COLORS,
+            )
+        });
+        Out {
+            uart: PxaUart::new(rt::emergency_uart()),
+            con,
+        }
+    }
+
+    /// Crash box colors (RGB565): white on red.
+    const CRASH_COLORS: (u16, u16) = (0xFFFF, 0xA800);
 
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
@@ -218,7 +242,7 @@ mod image {
 
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
+        let mut uart = crash_out();
         // Location only: formatting the full message would pull in much more
         // of core::fmt (ADR-0005 rule 8).
         match info.location() {

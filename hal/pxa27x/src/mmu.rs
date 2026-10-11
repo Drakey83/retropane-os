@@ -67,10 +67,10 @@ pub fn build(table: &mut [u32; 4096], regions: &[Region]) {
 }
 
 /// Physical address of the bring-up first-level table: the 16 KiB just below
-/// images' load address (0xA0008000), 16 KiB aligned as the MMU requires.
-pub const L1_TABLE: u32 = 0xA000_4000;
+/// images' load address (0xA8008000), 16 KiB aligned as the MMU requires.
+pub const L1_TABLE: u32 = 0xA800_4000;
 /// Physical page holding the exception vectors, mapped at 0xFFFF0000.
-pub const VECTORS_PHYS: u32 = 0xA00F_0000;
+pub const VECTORS_PHYS: u32 = 0xA80F_0000;
 
 /// The X51v bring-up map (docs/hw: PXA27x memory map, X51v chip selects).
 pub const X51V_BRINGUP: &[Region] = &[
@@ -104,8 +104,8 @@ pub const X51V_BRINGUP: &[Region] = &[
     },
     // 64 MiB SDRAM.
     Region {
-        virt: 0xA000_0000,
-        phys: 0xA000_0000,
+        virt: 0xA800_0000,
+        phys: 0xA800_0000,
         len: 64 * MIB,
         memory: Memory::Normal,
     },
@@ -113,7 +113,7 @@ pub const X51V_BRINGUP: &[Region] = &[
     // VECTORS_PHYS.
     Region {
         virt: 0xFFF0_0000,
-        phys: 0xA000_0000,
+        phys: 0xA800_0000,
         len: MIB,
         memory: Memory::Normal,
     },
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn descriptors_encode_cache_policy() {
-        assert_eq!(section(0xA000_0000, Memory::Normal), 0xA000_0C0E);
+        assert_eq!(section(0xA800_0000, Memory::Normal), 0xA800_0C0E);
         assert_eq!(section(0x0C00_0000, Memory::WriteCombine), 0x0C00_0C06);
         assert_eq!(section(0x4000_0000, Memory::Device), 0x4000_0C02);
     }
@@ -135,15 +135,15 @@ mod tests {
         let mut t = [0u32; 4096];
         build(&mut t, X51V_BRINGUP);
         let at = |a: u32| t[(a >> 20) as usize];
-        assert_eq!(at(0xA000_8000), section(0xA000_0000, Memory::Normal)); // image
+        assert_eq!(at(0xA800_8000), section(0xA800_0000, Memory::Normal)); // image
         assert_eq!(at(0x4010_0000) & 0xC, 0); // FFUART uncached
         assert_eq!(at(0x0FFE_0000), section(0x0FF0_0000, Memory::Device)); // 2700G regs
         assert_eq!(at(0x0C06_0000), section(0x0C00_0000, Memory::WriteCombine)); // framebuffer
         assert_eq!(at(0x1000_0000) & 0xC, 0); // CPLD uncached
-        assert_eq!(at(0xFFFF_0000), section(0xA000_0000, Memory::Normal)); // vectors
+        assert_eq!(at(0xFFFF_0000), section(0xA800_0000, Memory::Normal)); // vectors
         assert_eq!(at(0x8000_0000), 0); // unmapped faults
         // The vector page and table live in the first, mapped, MiB of SDRAM.
-        assert_eq!(VECTORS_PHYS & 0xFFF0_0000, 0xA000_0000);
+        assert_eq!(VECTORS_PHYS & 0xFFF0_0000, 0xA800_0000);
         assert_eq!(L1_TABLE % (16 * 1024), 0);
     }
 

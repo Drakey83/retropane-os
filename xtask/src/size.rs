@@ -16,7 +16,8 @@ pub struct Budget {
 pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-hello",
-        max_load: 24 * 1024,
+        // 24 KiB until 2026-10-11: cold crates built for size cut it to 18 KB.
+        max_load: 20 * 1024,
         max_zero: 20 * 1024,
     },
     Budget {
