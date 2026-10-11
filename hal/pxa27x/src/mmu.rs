@@ -102,6 +102,20 @@ pub const X51V_BRINGUP: &[Region] = &[
         len: 0x3C00_0000,
         memory: Memory::Device,
     },
+    // Internal-memory control (IMPMCR): device.
+    Region {
+        virt: 0x5800_0000,
+        phys: 0x5800_0000,
+        len: MIB,
+        memory: Memory::Device,
+    },
+    // 256 KiB internal SRAM (the rest of the MiB is unused): normal memory.
+    Region {
+        virt: 0x5C00_0000,
+        phys: 0x5C00_0000,
+        len: MIB,
+        memory: Memory::Normal,
+    },
     // 64 MiB SDRAM.
     Region {
         virt: 0xA800_0000,
@@ -142,6 +156,8 @@ mod tests {
         assert_eq!(at(0x1000_0000) & 0xC, 0); // CPLD uncached
         assert_eq!(at(0xFFFF_0000), section(0xA800_0000, Memory::Normal)); // vectors
         assert_eq!(at(0x8000_0000), 0); // unmapped faults
+        assert_eq!(at(0x5C00_0000), section(0x5C00_0000, Memory::Normal)); // SRAM
+        assert_eq!(at(0x5800_0000) & 0xC, 0); // IMPMCR uncached
         // The vector page and table live in the first, mapped, MiB of SDRAM.
         assert_eq!(VECTORS_PHYS & 0xFFF0_0000, 0xA800_0000);
         assert_eq!(L1_TABLE % (16 * 1024), 0);

@@ -28,7 +28,8 @@ commands:
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
-  emu       boot the bring-up image in the x51v emulator (downloads it if needed)
+  emu       boot the bring-up and probe images in the x51v emulator
+            (downloads it if needed)
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
@@ -83,7 +84,9 @@ fn run_step(step: &str) -> Result {
         "lint" => lint(),
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
-        "emu" => cross().and_then(|()| emu::boot_hello(&workspace_root())),
+        "emu" => cross()
+            .and_then(|()| emu::boot_hello(&workspace_root()))
+            .and_then(|()| emu::boot_probe(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
@@ -92,6 +95,10 @@ fn run_step(step: &str) -> Result {
             "xtask",
             "--exclude",
             "rp-hello",
+            "--exclude",
+            "rp-bench",
+            "--exclude",
+            "rp-bench-suite",
             // CLI glue; its logic lives in the tested romdump library.
             "--ignore-filename-regex",
             r"romdump.src.main\.rs",
@@ -106,6 +113,7 @@ fn cargo(args: &[&str]) -> Result {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let status = Command::new(cargo)
         .args(args)
+        .env("RP_BUILD_ID", build_id())
         .current_dir(workspace_root())
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
@@ -114,6 +122,23 @@ fn cargo(args: &[&str]) -> Result {
     } else {
         Err(format!("`cargo {}` failed", args.join(" ")))
     }
+}
+
+/// The commit being built (short hash, `+` if there are uncommitted
+/// changes), so a photo of the probe report names its exact build.
+fn build_id() -> String {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(workspace_root())
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let hash = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let dirty = git(&["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    if dirty { format!("{hash}+") } else { hash }
 }
 
 fn workspace_root() -> PathBuf {
@@ -239,5 +264,14 @@ fn cross() -> Result {
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     cargo(&refs)?;
-    size::check(&workspace_root().join("target/armv5te-x51v-none-eabi/release"))
+    // Bare-metal images: OS crates that are binaries only.
+    let images: Vec<&str> = crates
+        .iter()
+        .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
+        .map(|c| c.name.as_str())
+        .collect();
+    size::check(
+        &workspace_root().join("target/armv5te-x51v-none-eabi/release"),
+        &images,
+    )
 }

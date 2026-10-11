@@ -234,6 +234,32 @@ pub fn check_boot_screen(ppm: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Checks a text screen (the probe report): 480 × 640, mostly black
+/// background with a few thousand white text pixels and nothing else.
+pub fn check_text_screen(ppm: &[u8]) -> Result<(), String> {
+    let img = parse_ppm(ppm)?;
+    if (img.width, img.height) != (480, 640) {
+        return Err(format!(
+            "screen is {}x{}, expected 480x640",
+            img.width, img.height
+        ));
+    }
+    let (mut white, mut black, mut other) = (0usize, 0usize, 0usize);
+    for px in img.rgb.as_chunks::<3>().0 {
+        match (px[0], px[1], px[2]) {
+            (r, g, b) if r >= 0xF0 && g >= 0xF0 && b >= 0xF0 => white += 1,
+            (0, 0, 0) => black += 1,
+            _ => other += 1,
+        }
+    }
+    if other > 0 || white < 5000 || black < white * 3 {
+        return Err(format!(
+            "report screen looks wrong: {white} text, {black} background, {other} other pixels"
+        ));
+    }
+    Ok(())
+}
+
 /// Expands RGB565 to 8 bits per channel (low bits zero, as QEMU's
 /// screendump produces).
 fn from_rgb565(c: u16) -> (u8, u8, u8) {

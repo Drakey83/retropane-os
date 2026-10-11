@@ -1,15 +1,19 @@
 {
   "emulator": "rp-v0.6.0",
   "results": {
+    "chase_sdram_256k": 61462.0,
+    "chase_sram_256k": 61462.0,
     "fb_pattern_vga": 127692.0,
     "fb_solid_fill_vga": 92205.0,
     "frames_alloc_free_split": 567.0,
     "frames_fill_drain_1024": 165354.0,
-    "memcpy_64k": 10292.0,
-    "memcpy_naive_64k": 393231.0,
+    "memcpy_64k": 10277.0,
+    "memcpy_naive_64k": 393246.0,
     "memset_64k": 6200.0,
     "sd_read_block": 4519.0,
-    "timer_read": 13.0
+    "timer_read": 13.0,
+    "tlb_fit_16": 125.0,
+    "tlb_spill_60": 438.0
   },
   "units": "nanoseconds per iteration, QEMU -icount shift=0 (deterministic)"
 }

@@ -49,6 +49,7 @@ dependencies = [
 name = "rp-bench"
 version = "0.0.0"
 dependencies = [
+ "rp-bench-suite",
  "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-mmc",
@@ -56,6 +57,15 @@ dependencies = [
  "rp-drv-sdcard",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-bench-suite"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-sdcard",
+ "rp-hal-pxa27x",
  "rp-kernel-mm",
 ]
 
@@ -180,6 +190,25 @@ dependencies = [
 [[package]]
 name = "rp-kernel-mm"
 version = "0.0.0"
+
+[[package]]
+name = "rp-probe"
+version = "0.0.0"
+dependencies = [
+ "rp-bench-suite",
+ "rp-drv-cpld",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-mmc",
+ "rp-drv-pxa-ssp",
+ "rp-drv-pxa-uart",
+ "rp-drv-sdcard",
+ "rp-drv-tsc2046",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
 
 [[package]]
 name = "serde"

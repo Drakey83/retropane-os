@@ -202,6 +202,37 @@ impl Plane {
     }
 }
 
+impl Plane {
+    /// The plane described by register values read back from the hardware
+    /// (the inverse of [`registers`](Self::registers)): used to keep drawing
+    /// into the framebuffer Windows Mobile left configured. `None` if the
+    /// format is unknown, scanning is off, or the plane doesn't fit in
+    /// `vram_size` bytes of local memory.
+    #[must_use]
+    pub fn decode(gsctrl: u32, gscadr: u32, gsadr: u32, vram_size: usize) -> Option<Self> {
+        let format = match GSCTRL_FMT.extract(gsctrl) {
+            7 => PixelFormat::Rgb565,
+            8 => PixelFormat::Argb8888,
+            _ => return None,
+        };
+        if GSCADR_STR_EN.extract(gscadr) == 0 {
+            return None;
+        }
+        let width = GSCTRL_WIDTH.extract(gsctrl) + 1;
+        let height = GSCTRL_HEIGHT.extract(gsctrl) + 1;
+        let plane = Self {
+            format,
+            width: u16::try_from(width).ok()?,
+            height: u16::try_from(height).ok()?,
+            offset: GSCADR_BASE.extract(gscadr) as usize * 16,
+            stride: (GSADR_STRIDE.extract(gsadr) as usize + 1) * 16,
+        };
+        let row = plane.width as usize * format.bytes();
+        let end = plane.offset + plane.stride * plane.height as usize;
+        (row <= plane.stride && end <= vram_size).then_some(plane)
+    }
+}
+
 /// Fills a `w` × `h` rectangle at `(x, y)` of an RGB565 framebuffer
 /// (`stride` bytes per line) with `color`. Each row is one burst fill
 /// (`rp_hal_mem::fill32`). The rectangle is clipped to `buf`.
@@ -259,6 +290,57 @@ impl<B: RegisterBus> Display<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_inverts_registers() {
+        for plane in [
+            Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565),
+            Plane {
+                format: PixelFormat::Argb8888,
+                width: 240,
+                height: 320,
+                offset: 0x10_0000,
+                stride: 960,
+            },
+        ] {
+            let r = plane.registers();
+            let get = |off| r.iter().find(|(o, _)| *o == off).unwrap().1;
+            assert_eq!(
+                Plane::decode(
+                    get(reg::GSCTRL),
+                    get(reg::GSCADR),
+                    get(reg::GSADR),
+                    16 << 20
+                ),
+                Some(plane)
+            );
+        }
+    }
+
+    #[test]
+    fn decode_refuses_what_it_cannot_draw_into() {
+        let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+        let r = p.registers();
+        let (gsctrl, gscadr, gsadr) = (r[0].1, r[3].1, r[4].1);
+        assert_eq!(
+            Plane::decode(GSCTRL_FMT.insert(gsctrl, 3), gscadr, gsadr, 16 << 20),
+            None
+        );
+        assert_eq!(
+            Plane::decode(gsctrl, GSCADR_STR_EN.insert(gscadr, 0), gsadr, 16 << 20),
+            None
+        );
+        assert_eq!(
+            Plane::decode(gsctrl, gscadr, gsadr, 0x60000),
+            None,
+            "past local memory"
+        );
+        assert_eq!(
+            Plane::decode(gsctrl, gscadr, 0, 16 << 20),
+            None,
+            "stride narrower than a row"
+        );
+    }
     use rp_hal_mock::MockBus;
 
     fn split(v: u32) -> (u32, u32) {
