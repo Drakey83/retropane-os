@@ -2,9 +2,9 @@
 //!
 //! ```text
 //! romdump info    <image.nb0>                  partitions and summary
-//! romdump list    <image.nb0>                  every file and module in IMGFS
+//! romdump list    <image.nb0>                  every file and module (IMGFS and XIP)
 //! romdump extract <image.nb0> <out> [names…]   extract files/modules (all if no names)
-//! romdump header  <image.nb0> <module>         hex dump of a module's header blob
+//! romdump header  <image.nb0> <module>         hex dump of an IMGFS module's header blob
 //! ```
 
 #![forbid(unsafe_code)]
@@ -12,7 +12,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use romdump::imgfs::{Imgfs, Item, Kind};
+use romdump::imgfs::{Imgfs, Kind};
+use romdump::xip::{Xip, XipKind};
 use romdump::{Error, nb0, pe};
 
 const USAGE: &str = "usage:
@@ -24,10 +25,12 @@ const USAGE: &str = "usage:
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["info", image] => info(image),
-        ["list", image] => list(image),
-        ["extract", image, out, ref names @ ..] => extract(image, out, names),
-        ["header", image, module] => header(image, module),
+        ["info", image] => Rom::load(image).and_then(|r| r.info(image)),
+        ["list", image] => Rom::load(image).and_then(|r| r.list()),
+        ["extract", image, out, ref names @ ..] => {
+            Rom::load(image).and_then(|r| r.extract(out, names))
+        }
+        ["header", image, module] => Rom::load(image).and_then(|r| r.header(module)),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -42,94 +45,171 @@ fn main() -> ExitCode {
     }
 }
 
-fn load(path: &str) -> Result<Vec<u8>, Error> {
-    Ok(std::fs::read(path)?)
+/// A loaded image and its partitions.
+struct Rom {
+    image: Vec<u8>,
+    parts: Vec<nb0::Partition>,
 }
 
-fn with_imgfs<T>(path: &str, f: impl FnOnce(&Imgfs<'_>) -> Result<T, Error>) -> Result<T, Error> {
-    let image = load(path)?;
-    let part = nb0::partitions(&image)?
-        .into_iter()
-        .find(|p| p.kind == nb0::TYPE_IMGFS)
-        .ok_or_else(|| Error::Format("no IMGFS partition".into()))?;
-    let fs = Imgfs::parse(&image[part.offset..part.offset + part.len])?;
-    f(&fs)
+/// One extractable entry, from whichever partition holds it.
+struct Entry {
+    source: &'static str,
+    name: String,
+    module: bool,
+    size: usize,
 }
 
-fn info(path: &str) -> Result<(), Error> {
-    let image = load(path)?;
-    println!("{path}: {} bytes", image.len());
-    for p in nb0::partitions(&image)? {
-        println!(
-            "  {:#04x} {:<20} offset {:#010x} size {:#010x}",
-            p.kind,
-            p.kind_name(),
-            p.offset,
-            p.len
-        );
+impl Rom {
+    fn load(path: &str) -> Result<Self, Error> {
+        let image = std::fs::read(path)?;
+        let parts = nb0::partitions(&image)?;
+        Ok(Self { image, parts })
     }
-    with_imgfs(path, |fs| {
-        let modules = fs
-            .items
-            .iter()
-            .filter(|i| matches!(i.kind, Kind::Module { .. }))
-            .count();
-        println!(
-            "  IMGFS: {} items ({} modules, {} files), compression {}",
-            fs.items.len(),
-            modules,
-            fs.items.len() - modules,
-            fs.compression
-        );
-        Ok(())
-    })
-}
 
-fn list(path: &str) -> Result<(), Error> {
-    with_imgfs(path, |fs| {
-        for item in &fs.items {
-            match &item.kind {
-                Kind::File => println!("file    {:>9}  {}", item.size, item.name),
+    fn part(&self, p: &nb0::Partition) -> &[u8] {
+        &self.image[p.offset..p.offset + p.len]
+    }
+
+    fn imgfs(&self) -> Result<Option<Imgfs<'_>>, Error> {
+        self.parts
+            .iter()
+            .find(|p| p.kind == nb0::TYPE_IMGFS)
+            .map(|p| Imgfs::parse(self.part(p)))
+            .transpose()
+    }
+
+    /// XIP partitions, main kernel image (0x23) first.
+    fn xips(&self) -> Result<Vec<(&'static str, Xip<'_>)>, Error> {
+        let mut out = Vec::new();
+        for kind in [nb0::TYPE_XIP, nb0::TYPE_XIP_ULDR] {
+            for p in self.parts.iter().filter(|p| p.kind == kind) {
+                let label = if kind == nb0::TYPE_XIP { "xip" } else { "uldr" };
+                out.push((label, Xip::parse(self.part(p))?));
+            }
+        }
+        Ok(out)
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Error> {
+        let mut out = Vec::new();
+        if let Some(fs) = self.imgfs()? {
+            for i in &fs.items {
+                let (module, size) = match &i.kind {
+                    Kind::File => (false, i.size),
+                    Kind::Module { sections } => (true, sections.iter().map(|s| s.size).sum()),
+                };
+                out.push(Entry {
+                    source: "imgfs",
+                    name: i.name.clone(),
+                    module,
+                    size,
+                });
+            }
+        }
+        for (label, xip) in self.xips()? {
+            for i in &xip.items {
+                let (module, size) = match &i.kind {
+                    XipKind::File { real, .. } => (false, *real),
+                    XipKind::Module { sections, .. } => {
+                        (true, sections.iter().map(|s| s.len).sum())
+                    }
+                };
+                out.push(Entry {
+                    source: label,
+                    name: i.name.clone(),
+                    module,
+                    size,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Extracts `name`, preferring IMGFS, then the main XIP, then the loader XIP.
+    fn extract_one(&self, name: &str) -> Result<Vec<u8>, Error> {
+        if let Some(fs) = self.imgfs()?
+            && let Some(item) = fs.find(name)
+        {
+            return match &item.kind {
+                Kind::File => fs.read(item.data, item.size),
+                // `.ROM` / `.VM` are module-typed metadata with no sections: keep raw.
+                Kind::Module { sections } if sections.is_empty() => fs.read(item.data, item.size),
                 Kind::Module { sections } => {
-                    let total: usize = sections.iter().map(|s| s.size).sum();
-                    println!(
-                        "module  {:>9}  {}  ({} sections)",
-                        total,
-                        item.name,
-                        sections.len()
-                    );
+                    let header = fs.read(item.data, item.size)?;
+                    let bodies = sections
+                        .iter()
+                        .map(|s| fs.read(s.data, s.size))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    pe::rebuild(&header, &bodies)
+                }
+            };
+        }
+        let mut last_err = None;
+        for (_, xip) in self.xips()? {
+            if let Some(item) = xip.find(name) {
+                match xip.extract(item) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(e) => last_err = Some(e),
                 }
             }
         }
-        Ok(())
-    })
-}
+        Err(last_err.unwrap_or_else(|| Error::Format(format!("{name}: not found"))))
+    }
 
-fn extract(path: &str, out: &str, names: &[&str]) -> Result<(), Error> {
-    let out = Path::new(out);
-    std::fs::create_dir_all(out)?;
-    with_imgfs(path, |fs| {
-        let selected: Vec<&Item> = if names.is_empty() {
-            fs.items.iter().collect()
-        } else {
-            names
+    fn info(&self, path: &str) -> Result<(), Error> {
+        println!("{path}: {} bytes", self.image.len());
+        for p in &self.parts {
+            println!(
+                "  {:#04x} {:<20} offset {:#010x} size {:#010x}",
+                p.kind,
+                p.kind_name(),
+                p.offset,
+                p.len
+            );
+        }
+        let entries = self.entries()?;
+        for source in ["imgfs", "xip", "uldr"] {
+            let (m, f) = entries
                 .iter()
-                .map(|n| {
-                    fs.find(n)
-                        .ok_or_else(|| Error::Format(format!("{n}: not found")))
-                })
-                .collect::<Result<_, _>>()?
+                .filter(|e| e.source == source)
+                .fold(
+                    (0, 0),
+                    |(m, f), e| if e.module { (m + 1, f) } else { (m, f + 1) },
+                );
+            if m + f > 0 {
+                println!("  {source:<5}: {m} modules, {f} files");
+            }
+        }
+        Ok(())
+    }
+
+    fn list(&self) -> Result<(), Error> {
+        for e in self.entries()? {
+            let kind = if e.module { "module" } else { "file" };
+            println!("{:<5} {kind:<6} {:>9}  {}", e.source, e.size, e.name);
+        }
+        Ok(())
+    }
+
+    fn extract(&self, out: &str, names: &[&str]) -> Result<(), Error> {
+        let out = Path::new(out);
+        std::fs::create_dir_all(out)?;
+        let mut selected: Vec<String> = if names.is_empty() {
+            self.entries()?.into_iter().map(|e| e.name).collect()
+        } else {
+            names.iter().map(|n| (*n).to_string()).collect()
         };
+        selected.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
         let mut failed = 0;
-        for item in selected {
-            match extract_one(fs, item) {
+        for name in &selected {
+            match self.extract_one(name) {
                 Ok(bytes) => {
-                    std::fs::write(out.join(safe_name(&item.name)), bytes)?;
-                    println!("extracted {}", item.name);
+                    std::fs::write(out.join(safe_name(name)), bytes)?;
+                    println!("extracted {name}");
                 }
                 Err(e) => {
                     failed += 1;
-                    eprintln!("skipped {}: {e}", item.name);
+                    eprintln!("skipped {name}: {e}");
                 }
             }
         }
@@ -137,34 +217,12 @@ fn extract(path: &str, out: &str, names: &[&str]) -> Result<(), Error> {
             eprintln!("{failed} item(s) could not be extracted");
         }
         Ok(())
-    })
-}
-
-fn extract_one(fs: &Imgfs<'_>, item: &Item) -> Result<Vec<u8>, Error> {
-    match &item.kind {
-        Kind::File => fs.read(item.data, item.size),
-        // `.ROM` / `.VM` are module-typed metadata with no sections: keep raw.
-        Kind::Module { sections } if sections.is_empty() => fs.read(item.data, item.size),
-        Kind::Module { sections } => {
-            let header = fs.read(item.data, item.size)?;
-            let bodies = sections
-                .iter()
-                .map(|s| fs.read(s.data, s.size))
-                .collect::<Result<Vec<_>, _>>()?;
-            pe::rebuild(&header, &bodies)
-        }
     }
-}
 
-/// Keeps extracted names inside the output directory.
-fn safe_name(name: &str) -> String {
-    name.chars()
-        .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
-        .collect()
-}
-
-fn header(path: &str, module: &str) -> Result<(), Error> {
-    with_imgfs(path, |fs| {
+    fn header(&self, module: &str) -> Result<(), Error> {
+        let fs = self
+            .imgfs()?
+            .ok_or_else(|| Error::Format("no IMGFS partition".into()))?;
         let item = fs
             .find(module)
             .ok_or_else(|| Error::Format(format!("{module}: not found")))?;
@@ -179,5 +237,12 @@ fn header(path: &str, module: &str) -> Result<(), Error> {
             }
         }
         Ok(())
-    })
+    }
+}
+
+/// Keeps extracted names inside the output directory.
+fn safe_name(name: &str) -> String {
+    name.chars()
+        .map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c })
+        .collect()
 }
