@@ -331,6 +331,7 @@ mod image {
             suite::timer(&mut r);
             suite::frames(&mut r);
             suite::memory(&mut r, bench_ram);
+            suite::lz4(&mut r, &mut bench_ram[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut bench_ram[..256 * 1024]);
             suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
             if let Some(sram) = diag::take_sram() {
