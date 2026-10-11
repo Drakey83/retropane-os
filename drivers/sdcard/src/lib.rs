@@ -2,8 +2,11 @@
 //!
 //! Follows the SD Physical Layer Simplified Specification: reset, interface
 //! condition (CMD8), operating conditions (ACMD41, with SDHC support), card
-//! identification, selection, then 512-byte block reads. Host controllers
-//! implement [`SdHost`].
+//! identification, selection, the 4-bit data bus (ACMD6) when the host has
+//! one, then 512-byte block reads, several at a time (CMD18 + CMD12) when the
+//! host can: an SD card takes milliseconds to start each read, so one
+//! command per block wastes most of the time (measured on the real X51v:
+//! 3.85 ms per single-block read). Host controllers implement [`SdHost`].
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -72,6 +75,22 @@ pub trait SdHost {
     fn command(&mut self, cmd: Command) -> Result<[u32; 4], HostError>;
     /// Sends a single-block read command and receives the block.
     fn read_block(&mut self, cmd: Command, buf: &mut [u8; BLOCK]) -> Result<u32, HostError>;
+    /// Whether the host can use the 4-bit data bus.
+    fn can_wide_bus(&self) -> bool {
+        false
+    }
+    /// Switches the host to the 4-bit data bus (the card already switched).
+    fn set_wide_bus(&mut self) {}
+    /// Whether [`read_blocks`](Self::read_blocks) works.
+    fn can_read_multiple(&self) -> bool {
+        false
+    }
+    /// Sends a multiple-block read command (CMD18) and receives
+    /// `buf.len() / BLOCK` blocks; the caller then stops the card (CMD12).
+    fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+        let _ = (cmd, buf);
+        Err(HostError::Data)
+    }
 }
 
 /// Card errors.
@@ -127,6 +146,7 @@ pub struct SdCard<H> {
     host: H,
     rca: u16,
     high_capacity: bool,
+    wide: bool,
 }
 
 impl<H: SdHost> SdCard<H> {
@@ -166,12 +186,26 @@ impl<H: SdHost> SdCard<H> {
         if !high_capacity {
             check(host.command(Command::new(16, BLOCK as u32, Response::R1))?[0])?;
         }
+        // Every SD card supports the 4-bit bus (ACMD6, argument 2).
+        let wide = host.can_wide_bus();
+        if wide {
+            host.command(Command::new(55, u32::from(rca) << 16, Response::R1))?;
+            check(host.command(Command::new(6, 2, Response::R1))?[0])?;
+            host.set_wide_bus();
+        }
         host.set_clock(TRANSFER_HZ);
         Ok(Self {
             host,
             rca,
             high_capacity,
+            wide,
         })
+    }
+
+    /// Whether the 4-bit data bus is in use.
+    #[must_use]
+    pub fn is_wide(&self) -> bool {
+        self.wide
     }
 
     /// Whether the card is SDHC/SDXC (block-addressed).
@@ -186,17 +220,45 @@ impl<H: SdHost> SdCard<H> {
         self.rca
     }
 
-    /// Reads block `lba` (512 bytes).
-    pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
-        let addr = if self.high_capacity {
+    fn address(&self, lba: u32) -> u32 {
+        if self.high_capacity {
             lba
         } else {
             lba.wrapping_mul(BLOCK as u32)
-        };
+        }
+    }
+
+    /// Reads block `lba` (512 bytes).
+    pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
+        let addr = self.address(lba);
         check(
             self.host
                 .read_block(Command::new(17, addr, Response::R1), buf)?,
         )
+    }
+
+    /// Reads `buf.len() / 512` consecutive blocks from `lba` with one
+    /// command when the host can (otherwise block by block).
+    ///
+    /// # Panics
+    /// If `buf` isn't a whole number of blocks.
+    pub fn read_many(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
+        if buf.len() > BLOCK && self.host.can_read_multiple() {
+            let addr = self.address(lba);
+            let status = self
+                .host
+                .read_blocks(Command::new(18, addr, Response::R1), buf);
+            // Stop the card whatever happened, so it accepts commands again.
+            let stop = self.host.command(Command::new(12, 0, Response::R1b));
+            check(status?)?;
+            stop?;
+            return Ok(());
+        }
+        for (i, block) in buf.as_chunks_mut::<BLOCK>().0.iter_mut().enumerate() {
+            self.read(lba + i as u32, block)?;
+        }
+        Ok(())
     }
 
     /// Gives the host back.
@@ -260,11 +322,14 @@ mod tests {
         clocks: Vec<u32>,
         expect_app: bool,
         data: Vec<u8>,
+        /// Offers the 4-bit bus and multiple-block reads.
+        capable: bool,
+        wide: bool,
     }
 
     impl FakeCard {
         fn new(v2: bool, sdhc: bool) -> Self {
-            let mut data = vec![0u8; 4 * BLOCK];
+            let mut data = vec![0u8; 8 * BLOCK];
             for (i, b) in data.iter_mut().enumerate() {
                 *b = (i / BLOCK) as u8;
             }
@@ -276,6 +341,8 @@ mod tests {
                 clocks: vec![],
                 expect_app: false,
                 data,
+                capable: false,
+                wide: false,
             }
         }
     }
@@ -311,6 +378,8 @@ mod tests {
                 (2, _) => 0x0353_4453, // CID word
                 (3, _) => 0xBEEF_0500, // RCA 0xBEEF
                 (7, _) | (16, _) => 0x0700,
+                (6, true) if c.arg == 2 => 0x0920,
+                (12, _) => 0x0B00,
                 _ => return Err(HostError::Timeout),
             };
             Ok([r, 0, 0, 0])
@@ -323,6 +392,25 @@ mod tests {
                 c.arg / BLOCK as u32
             } as usize;
             buf.copy_from_slice(&self.data[block * BLOCK..(block + 1) * BLOCK]);
+            Ok(0x900)
+        }
+        fn can_wide_bus(&self) -> bool {
+            self.capable
+        }
+        fn set_wide_bus(&mut self) {
+            self.wide = true;
+        }
+        fn can_read_multiple(&self) -> bool {
+            self.capable
+        }
+        fn read_blocks(&mut self, c: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+            self.log.push((c.index, c.arg));
+            let first = if self.sdhc {
+                c.arg
+            } else {
+                c.arg / BLOCK as u32
+            } as usize;
+            buf.copy_from_slice(&self.data[first * BLOCK..first * BLOCK + buf.len()]);
             Ok(0x900)
         }
     }
@@ -353,6 +441,46 @@ mod tests {
         assert!(host.log.contains(&(16, 512)));
         assert!(host.log.contains(&(41, OCR_VOLTAGES))); // no HCS for v1
         assert_eq!(host.log.last(), Some(&(17, 1024)));
+    }
+
+    #[test]
+    fn a_capable_host_gets_the_wide_bus_and_multiple_block_reads() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        let mut card = SdCard::init(fake).unwrap();
+        assert!(card.is_wide());
+        let mut buf = vec![0u8; 3 * BLOCK];
+        card.read_many(4, &mut buf).unwrap();
+        for (i, block) in buf.chunks(BLOCK).enumerate() {
+            assert!(block.iter().all(|&b| b == 4 + i as u8), "block {i}");
+        }
+        let host = card.into_inner();
+        assert!(host.wide);
+        // ACMD6 (with the card's RCA) before the clock goes up; one CMD18 and
+        // a CMD12 for all three blocks.
+        let tail: Vec<(u8, u32)> = host.log[host.log.len() - 5..].to_vec();
+        assert_eq!(
+            tail,
+            [
+                (7, 0xBEEF << 16),
+                (55, 0xBEEF << 16),
+                (6, 2),
+                (18, 4),
+                (12, 0)
+            ]
+        );
+    }
+
+    #[test]
+    fn without_multiple_reads_read_many_goes_block_by_block() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        assert!(!card.is_wide());
+        let mut buf = vec![0u8; 2 * BLOCK];
+        card.read_many(5, &mut buf).unwrap();
+        assert!(buf[..BLOCK].iter().all(|&b| b == 5));
+        assert!(buf[BLOCK..].iter().all(|&b| b == 6));
+        let host = card.into_inner();
+        assert_eq!(&host.log[host.log.len() - 2..], [(17, 5), (17, 6)]);
     }
 
     #[test]

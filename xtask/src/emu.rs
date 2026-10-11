@@ -509,6 +509,7 @@ const PROBE_EXPECT: &[&str] = &[
     "check mem OK",
     "Sharp VGA",
     "SD SD RCA",
+    "-bit",
     "chase_sram_256k",
     "tlb_spill_60_l1sram",
 ];

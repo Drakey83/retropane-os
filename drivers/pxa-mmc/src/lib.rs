@@ -45,6 +45,8 @@ const STAT_END_CMD_RES: u32 = 1 << 13;
 const CMDAT_DATA_EN: u32 = 1 << 2;
 const CMDAT_BUSY: u32 = 1 << 5;
 const CMDAT_INIT: u32 = 1 << 6;
+/// CMDAT: 4-bit SD data bus.
+const CMDAT_SD_4DAT: u32 = 1 << 8;
 const I_RXFIFO_REQ: u32 = 1 << 5;
 const FIFO_BYTES: usize = 32;
 
@@ -97,6 +99,8 @@ pub fn decode_response(words: [u16; 9]) -> [u32; 4] {
 #[derive(Debug)]
 pub struct PxaMmc<B> {
     regs: B,
+    /// The card was switched to the 4-bit bus (ACMD6).
+    wide: bool,
 }
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
@@ -104,7 +108,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     pub fn new(mut regs: B) -> Self {
         regs.write32(reg::RESTO, 0x7F);
         regs.write32(reg::RDTO, 0xFFFF);
-        Self { regs }
+        Self { regs, wide: false }
     }
 
     fn wait_stat(&mut self, mask: u32) -> Result<u32, HostError> {
@@ -129,6 +133,9 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             self.regs.write32(reg::BLKLEN, BLOCK as u32);
             self.regs.write32(reg::NUMBLK, data_blocks);
             cmdat |= CMDAT_DATA_EN;
+            if self.wide {
+                cmdat |= CMDAT_SD_4DAT;
+            }
         }
         self.regs.write32(reg::CMDAT, cmdat);
         self.regs.write32(reg::STRPCL, STRPCL_START);
@@ -158,6 +165,34 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
 
     fn read_block(&mut self, cmd: Command, buf: &mut [u8; BLOCK]) -> Result<u32, HostError> {
         let status = self.issue(cmd, 1)?[0];
+        self.receive(buf)?;
+        Ok(status)
+    }
+
+    fn can_wide_bus(&self) -> bool {
+        true
+    }
+
+    fn set_wide_bus(&mut self) {
+        self.wide = true;
+    }
+
+    fn can_read_multiple(&self) -> bool {
+        true
+    }
+
+    fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+        let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        let status = self.issue(cmd, blocks)?[0];
+        self.receive(buf)?;
+        Ok(status)
+    }
+}
+
+impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
+    /// Drains the receive FIFO, 32 bytes per FIFO request, until `buf` is
+    /// full and the controller reports the transfer done.
+    fn receive(&mut self, buf: &mut [u8]) -> Result<(), HostError> {
         for chunk in buf.chunks_mut(FIFO_BYTES) {
             let mut ready = false;
             for _ in 0..SPIN_LIMIT {
@@ -175,7 +210,7 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
         }
         self.wait_stat(STAT_DATA_DONE)
             .map_err(|_| HostError::Data)?;
-        Ok(status)
+        Ok(())
     }
 }
 
@@ -276,6 +311,36 @@ mod tests {
         let w = mmc.into_inner_for_test().writes();
         assert!(w.contains(&(reg::BLKLEN, 512)) && w.contains(&(reg::NUMBLK, 1)));
         assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN)));
+    }
+
+    #[test]
+    fn multiple_blocks_on_the_wide_bus() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_RXFIFO_REQ);
+        let bytes: Vec<u32> = (0..1536u32).map(|i| i / 512).collect();
+        bus.script_reads(reg::RXFIFO, &bytes);
+        let mut mmc = PxaMmc::new(bus);
+        assert!(mmc.can_wide_bus() && mmc.can_read_multiple());
+        mmc.set_wide_bus();
+        let mut buf = [0u8; 3 * BLOCK];
+        mmc.read_blocks(Command::new(18, 7, Response::R1), &mut buf)
+            .unwrap();
+        assert!(buf[..512].iter().all(|&b| b == 0) && buf[1024..].iter().all(|&b| b == 2));
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::NUMBLK, 3)));
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_SD_4DAT)));
+    }
+
+    #[test]
+    fn commands_without_data_never_set_the_bus_width() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES);
+        let mut mmc = PxaMmc::new(bus);
+        mmc.set_wide_bus();
+        mmc.command(Command::new(13, 0, Response::R1)).unwrap();
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::CMDAT, 1)));
     }
 
     impl<B> PxaMmc<B> {

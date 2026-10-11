@@ -29,11 +29,20 @@ pub const fn to_rgb565((r, g, b): (u8, u8, u8)) -> u16 {
     ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
 }
 
+/// The widest screen whose bar row [`fill_rgb565`] builds outside the
+/// framebuffer (VGA's long side; 1.25 KiB of stack, well under a page).
+pub const ROW_MAX: usize = 640;
+
 /// Fills an RGB565 framebuffer (`stride` bytes per line) with the pattern.
 ///
-/// Matches [`rgb`] pixel for pixel, but builds row 1 once (each bar as a solid
-/// span) and copies it down the screen: no per-pixel arithmetic and no extra
-/// memory. Benchmarked as `fb_pattern_vga` (`cargo xtask bench`).
+/// Matches [`rgb`] pixel for pixel, but builds the bar row once (each bar as a
+/// solid span) and copies it down the screen: no per-pixel arithmetic.
+/// The row is built in a buffer in ordinary RAM, not in the framebuffer:
+/// on the real X51v reading the 2700G's memory is slow (the probe measured
+/// the copy-within-the-framebuffer version at 4.2x the time of a plain
+/// fill), so the framebuffer is only ever written. Screens wider than
+/// [`ROW_MAX`] pixels fall back to copying within the framebuffer.
+/// Benchmarked as `fb_pattern_vga` (`cargo xtask bench`).
 pub fn fill_rgb565(buf: &mut [u8], width: u32, height: u32, stride: usize) {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 {
@@ -47,9 +56,7 @@ pub fn fill_rgb565(buf: &mut [u8], width: u32, height: u32, stride: usize) {
         }
     };
 
-    // Row 1 (or row 0 if the screen is a single row): bars, white edges.
-    if h > 2 {
-        let row = &mut buf[stride..stride + row_bytes];
+    let bars = |row: &mut [u8]| {
         for (i, &bar) in BARS.iter().enumerate() {
             // Pixels x with x * 8 / w == i.
             let start = (i * w).div_ceil(8);
@@ -58,8 +65,22 @@ pub fn fill_rgb565(buf: &mut [u8], width: u32, height: u32, stride: usize) {
         }
         row[..2].copy_from_slice(&white);
         row[row_bytes - 2..].copy_from_slice(&white);
-        for y in 2..h - 1 {
-            buf.copy_within(stride..stride + row_bytes, y * stride);
+    };
+
+    // Rows 1..h-1: bars with white edges.
+    if h > 2 {
+        if w <= ROW_MAX {
+            let mut src = [0u8; ROW_MAX * 2];
+            let src = &mut src[..row_bytes];
+            bars(src);
+            for y in 1..h - 1 {
+                buf[y * stride..y * stride + row_bytes].copy_from_slice(src);
+            }
+        } else {
+            bars(&mut buf[stride..stride + row_bytes]);
+            for y in 2..h - 1 {
+                buf.copy_within(stride..stride + row_bytes, y * stride);
+            }
         }
     }
     fill(&mut buf[..row_bytes], white);
@@ -94,6 +115,8 @@ mod tests {
     fn fast_fill_matches_the_reference_pixel_for_pixel() {
         for &(w, h) in &[
             (480, 640),
+            (640, 480),
+            (641, 5), // wider than ROW_MAX: the copy-within fallback
             (241, 7),
             (8, 3),
             (9, 4),

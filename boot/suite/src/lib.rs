@@ -147,13 +147,20 @@ mod target {
         });
     }
 
-    /// Polled single-block SD reads.
+    /// Polled SD reads: one block per command, and four per command
+    /// (CMD18), where the card's per-command start-up cost is paid once.
     pub fn sd<H: SdHost>(r: &mut Runner, card: &mut SdCard<H>) {
         let mut block = [0u8; BLOCK];
         let mut lba = 0;
         r.run("sd_read_block", 64, &mut || {
             let _ = card.read(lba, &mut block);
             lba = (lba + 1) % 64;
+        });
+        let mut four = [0u8; 4 * BLOCK];
+        let mut lba = 0;
+        r.run("sd_read_4_blocks", 16, &mut || {
+            let _ = card.read_many(lba, &mut four);
+            lba = (lba + 4) % 64;
         });
     }
 
