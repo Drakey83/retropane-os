@@ -66,13 +66,39 @@ rp_vectors:
     .word   _start, rp_undef_entry, rp_swi_fault, rp_pabt_entry
     .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_undef_entry
 
-    @ IRQ: save the caller-saved registers (AAPCS; 6 words keeps the stack
-    @ 8-byte aligned), dispatch in Rust, return restoring CPSR from SPSR.
+    @ IRQ: move straight to SVC mode and save a full frame on the
+    @ interrupted context's SVC stack (a thread's kernel stack), so the
+    @ kernel can switch threads before returning to user mode (ADR-0010).
+    @ The IRQ stack only holds 3 scratch words. Frame (18 words): r0-r12,
+    @ user sp, user lr, svc lr, pc, cpsr.
 rp_irq_entry:
     sub     lr, lr, #4
-    stmfd   sp!, {{r0-r3, r12, lr}}
-    bl      rp_irq
-    ldmfd   sp!, {{r0-r3, r12, pc}}^
+    stmdb   sp, {{r0, lr}}              @ scratch: [sp-8] = r0, [sp-4] = pc
+    mrs     lr, spsr
+    str     lr, [sp, #-12]              @ scratch: [sp-12] = cpsr
+    sub     r0, sp, #12
+    msr     cpsr_c, #0xD3               @ SVC, IRQ and FIQ masked
+    sub     sp, sp, #72
+    stmib   sp, {{r1-r12}}              @ r1-r12 at +4..+48
+    ldmia   r0, {{r1, r2, r3}}          @ cpsr, r0, pc
+    str     r2, [sp]
+    str     lr, [sp, #60]               @ svc lr (live if the kernel was interrupted)
+    str     r3, [sp, #64]
+    str     r1, [sp, #68]
+    add     r0, sp, #52
+    stmia   r0, {{sp, lr}}^             @ user sp and lr
+    nop
+    mov     r0, sp
+    bl      rp_irq_frame
+    ldr     r0, [sp, #68]
+    msr     spsr_cxsf, r0
+    add     r0, sp, #52
+    ldmia   r0, {{sp, lr}}^
+    nop
+    add     lr, sp, #60                 @ lr -> {{svc lr, pc}}
+    ldmia   sp, {{r0-r12}}
+    add     sp, sp, #72                 @ IRQs are masked: the frame can't be overwritten
+    ldmia   lr, {{lr, pc}}^             @ svc lr, pc; CPSR = SPSR
 
     @ Faults: report kind and faulting address, then stop.
 rp_undef_entry:
@@ -553,8 +579,33 @@ extern "C" fn rp_fault(kind: u32, addr: u32) -> ! {
     }
 }
 
+static mut PREEMPT_HOOK: Option<fn()> = None;
+
+/// Sets what runs after an interrupt taken in user mode, before returning to
+/// it: the kernel's chance to preempt the thread (quantum over, a more
+/// urgent thread woken). Runs in SVC mode on the thread's kernel stack with
+/// IRQs masked, and may switch threads. Interrupts taken in kernel mode never
+/// call it (the kernel is non-preemptive, ADR-0010 rule 4).
+pub fn set_preempt_hook(f: fn()) {
+    // SAFETY: set during setup, before interrupts from user mode can occur.
+    unsafe { core::ptr::addr_of_mut!(PREEMPT_HOOK).write(Some(f)) }
+}
+
 #[unsafe(no_mangle)]
-extern "C" fn rp_irq() {
+extern "C" fn rp_irq_frame(frame: *const u32) {
+    rp_irq();
+    // SAFETY: `frame` is the 18-word frame the IRQ entry built; word 17 is
+    // the interrupted CPSR.
+    let cpsr = unsafe { frame.add(17).read() };
+    if cpsr & 0x1F == 0x10 {
+        // SAFETY: written once during setup.
+        if let Some(h) = unsafe { core::ptr::addr_of!(PREEMPT_HOOK).read() } {
+            h();
+        }
+    }
+}
+
+fn rp_irq() {
     let pending = intc().pending();
     if pending & (1 << crate::soc::irq::OST1) != 0 {
         // SAFETY: the IRQ handler is the only writer of TICKS (main code only
@@ -850,7 +901,8 @@ pub fn start_tick(hz: u32) {
     irq_enable();
 }
 
-/// Arms a one-shot alarm at OS-timer value `at` (tickless scheduling): when
+/// Arms a one-shot alarm at OS-timer value `at` (tickless scheduling). IRQs
+/// must be enabled for it to wake anything (threads start with them on). When
 /// it fires, [`tick_count`] advances, so [`wait_tick`] and
 /// [`wait_any_signal`] return. Replaces the periodic tick. Returns false if
 /// `at` has already passed; the caller should act now instead of sleeping.
@@ -862,8 +914,9 @@ pub fn set_alarm(at: u32) -> bool {
     unsafe { core::ptr::addr_of_mut!(ALARM_MODE).write(true) };
     let armed = ostimer().alarm(at);
     intc().enable(crate::soc::irq::OST1);
+    // Leaves the CPU's IRQ state as it was: this is also called from the
+    // preempt hook, which must return with IRQs masked.
     irq_restore(was);
-    irq_enable();
     armed
 }
 
