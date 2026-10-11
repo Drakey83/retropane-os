@@ -67,6 +67,8 @@ rp_swi_entry:
     mov     r0, sp
     msr     cpsr_c, #0x53               @ IRQs on while the kernel works
     bl      rp_syscall
+    @ Back to user mode from the Frame at sp (system calls, user faults).
+rp_user_return:
     msr     cpsr_c, #0xD3               @ IRQs off while restoring
     ldr     r9, [sp, #64]
     msr     spsr_cxsf, r9
@@ -77,6 +79,35 @@ rp_swi_entry:
     ldmia   sp, {{r0-r12}}
     add     sp, sp, #68
     movs    pc, lr
+
+    @ A prefetch or data abort taken in user mode (from rt's abort entries):
+    @ abort mode, r0 = kind (3 prefetch, 4 data), and on the abort stack the
+    @ user's r0-r3, r12 and the faulting pc. Build the same Frame a system
+    @ call does, on the thread's kernel stack, and handle the fault there in
+    @ the thread's own context, where it may block (ADR-0010 rule 5).
+    .global rp_uabt_entry
+rp_uabt_entry:
+    mrs     r1, spsr                    @ the user's CPSR
+    mov     r2, sp                      @ the six saved words
+    add     sp, sp, #24                 @ copied below, before anything can
+                                        @ reuse the abort stack (IRQs stay off)
+    msr     cpsr_c, #0xD3               @ SVC: the thread's kernel stack
+    sub     sp, sp, #68
+    add     r3, sp, #16
+    stmia   r3, {{r4-r11}}              @ r4-r11 are still the user's
+    ldmia   r2, {{r4-r9}}               @ user r0-r3, r12, pc
+    stmia   sp, {{r4-r7}}
+    str     r8, [sp, #48]
+    str     r9, [sp, #60]
+    str     r1, [sp, #64]
+    add     r8, sp, #52
+    stmia   r8, {{sp, lr}}^             @ user sp and lr
+    nop
+    mov     r1, r0
+    mov     r0, sp
+    msr     cpsr_c, #0x53               @ IRQs on while the kernel works
+    bl      rp_user_fault
+    b       rp_user_return              @ resume at the (fixed) instruction
 
     @ rp_enter_user(pc, user_sp, arg): first entry to user mode, never returns.
     .global rp_enter_user
@@ -142,6 +173,61 @@ extern "C" fn rp_syscall(frame: *mut Frame) {
         Some(f) => f(frame),
         None => crate::rt::report_fault(crate::rt::Fault::Swi, frame.pc.wrapping_sub(4)),
     }
+}
+
+/// Handles a fault from user mode: the user context, which fault, and the
+/// faulting address. It may fix the cause and return (the instruction runs
+/// again), or end the thread and never return.
+pub type FaultHandler = fn(&mut Frame, crate::rt::Fault, u32);
+
+static mut FAULT_HANDLER: Option<FaultHandler> = None;
+
+unsafe extern "C" {
+    fn rp_uabt_entry();
+}
+
+/// Sets the kernel's handler for faults taken in user mode and routes such
+/// aborts to it (in the faulting thread's context, on its kernel stack).
+/// Until then, and for faults in kernel mode, aborts are reported as usual.
+pub fn set_user_fault_handler(f: FaultHandler) {
+    // SAFETY: set during setup, before any user thread runs.
+    unsafe { core::ptr::addr_of_mut!(FAULT_HANDLER).write(Some(f)) }
+    crate::rt::set_user_abort_entry(rp_uabt_entry as *const () as usize as u32);
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rp_user_fault(frame: *mut Frame, kind: u32) {
+    // SAFETY: `frame` points at the Frame the user-abort entry just built on
+    // this thread's kernel stack; nothing else refers to it until we return.
+    let frame = unsafe { &mut *frame };
+    let (fault, addr) = if kind == 3 {
+        (crate::rt::Fault::PrefetchAbort, frame.pc)
+    } else {
+        (crate::rt::Fault::DataAbort, crate::cpu::fault_registers().1)
+    };
+    // SAFETY: written once during setup.
+    match unsafe { core::ptr::addr_of!(FAULT_HANDLER).read() } {
+        Some(f) => f(frame, fault, addr),
+        None => crate::rt::report_fault(fault, addr),
+    }
+}
+
+/// Reads a word as user code (user side): for tests of the user-fault path
+/// (an address the user may not access faults like any user access).
+#[must_use]
+pub fn user_read(addr: u32) -> u32 {
+    let v: u32;
+    // SAFETY: a plain load. In user mode the MMU checks it; a bad address
+    // raises an abort the kernel's user-fault handler deals with.
+    unsafe {
+        core::arch::asm!(
+            "ldr {v}, [{a}]",
+            v = out(reg) v,
+            a = in(reg) addr,
+            options(nostack, readonly)
+        );
+    }
+    v
 }
 
 unsafe extern "C" {
