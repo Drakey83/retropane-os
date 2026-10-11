@@ -415,6 +415,34 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_usb::MARKER`.
+const USB_MARKER: &str = "RETROPANE-USB-READY";
+
+/// Boots the USB link test. The emulator has no UDC model yet (ADR-0012),
+/// so this only proves the image starts, enables the controller and connects
+/// without faulting; the driver itself is tested against a simulated host.
+pub fn boot_usb(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-usb");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: USB_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    eprint!("{output}");
+    if !output.contains("UDC enabled") {
+        return Err("usb: `UDC enabled` missing on serial".into());
+    }
+    eprintln!("    usb image OK (starts and connects; no UDC model to enumerate against)");
+    Ok(())
+}
+
 /// Must match `rp_probe::MARKER`.
 const PROBE_MARKER: &str = "RETROPANE-PROBE-DONE";
 /// Text every probe report must contain.

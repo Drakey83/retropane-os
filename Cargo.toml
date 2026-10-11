@@ -22,6 +22,7 @@ members = [
     "kernel/sched",
     "boot/hello",
     "boot/light",
+    "boot/usb",
     "boot/bench",
     "boot/suite",
     "boot/probe",
