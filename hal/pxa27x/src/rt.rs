@@ -307,6 +307,26 @@ pub fn take_ssp1() -> Option<Mmio> {
 /// CKEN bit for the MMC/SD controller.
 pub const CKEN_MMC: u32 = 12;
 
+/// Hands out the USB device controller once, with its clock enabled.
+pub fn take_udc() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(UDC_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_UDC);
+    let base = NonNull::new(va(0x4060_0000) as *mut u32)?;
+    // SAFETY: the USB device controller's register window (PXA27x memory
+    // map; registers up to 0x45C, docs/hw/udc.md), identity-mapped; the flag
+    // guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x1000) })
+}
+
+/// Single-use guard for the USB device controller.
+static mut UDC_TAKEN: bool = false;
+/// CKEN bit for the USB device controller.
+pub const CKEN_UDC: u32 = 11;
+
 /// Hands out the MMC/SD controller once, with its clock enabled.
 pub fn take_mmc() -> Option<Mmio> {
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.

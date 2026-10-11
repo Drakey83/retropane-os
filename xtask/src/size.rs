@@ -65,6 +65,12 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 40 * 1024,
         max_zero: 20 * 1024,
     },
+    // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
+    Budget {
+        image: "rp-usb",
+        max_load: 20 * 1024,
+        max_zero: 20 * 1024,
+    },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     Budget {
         image: "rp-light",

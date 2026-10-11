@@ -1,0 +1,20 @@
+[package]
+name = "rp-usb"
+description = "USB link test image (ADR-0012 U1): the X51v as a COM port on any PC, echoing what it receives"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true

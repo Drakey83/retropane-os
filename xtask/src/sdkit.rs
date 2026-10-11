@@ -56,6 +56,15 @@ running programs.
 Every line ends in a two-digit checksum, so misread digits get caught. If it
 stops early, photograph whatever is on screen: the last line says how far it
 got.
+
+Other images: copy one folder's retropane.bin over the one next to haret.exe.
+
+- light/  First light: fills the screen with a colour after each startup
+          step, so a hang shows where it stopped.
+- usb/    USB link test: plug the sync cable or cradle into the PC first.
+          The PC finds a COM port (no driver needed); on the PC run
+          `cargo xtask usb`. The yellow lines at the top show what the PC
+          has done (resets, setups, configured, open, bytes).
 ";
 
 /// Builds the kit into `target/sdkit`.
@@ -74,16 +83,22 @@ pub fn build(root: &Path) -> Result<(), String> {
     let size = std::fs::metadata(&bin).map_err(|e| e.to_string())?.len();
     eprintln!("    retropane.bin: {size} bytes (raw image for 0xA8008000)");
 
-    // The first-light image, for when the probe shows nothing: swap it in as
-    // retropane.bin (boot/light).
-    let light = kit.join("light");
-    std::fs::create_dir_all(&light).map_err(|e| format!("{}: {e}", light.display()))?;
-    crate::emu::run(
-        Command::new(objcopy())
-            .args(["-O", "binary"])
-            .arg(root.join("target/armv5te-x51v-none-eabi/release/rp-light"))
-            .arg(light.join("retropane.bin")),
-    )?;
+    // Other images, each swapped in as retropane.bin from its own folder:
+    // first light (boot/light), for when the probe shows nothing, and the USB
+    // link test (boot/usb, ADR-0012).
+    for (dir, image) in [("light", "rp-light"), ("usb", "rp-usb")] {
+        let out = kit.join(dir);
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        crate::emu::run(
+            Command::new(objcopy())
+                .args(["-O", "binary"])
+                .arg(
+                    root.join("target/armv5te-x51v-none-eabi/release")
+                        .join(image),
+                )
+                .arg(out.join("retropane.bin")),
+        )?;
+    }
 
     let script = root
         .join("xtask")

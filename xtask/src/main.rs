@@ -9,6 +9,7 @@ mod screen;
 mod sdkit;
 mod serve;
 mod size;
+mod usb;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -29,11 +30,14 @@ commands:
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
-  emu       boot the bring-up, probe, kernel and threads images in the emulator
+  emu       boot the bring-up, probe, kernel, threads, first-light and USB images
+            in the emulator
             (downloads it if needed)
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
             (--serve: also serve it over Wi-Fi for the device's browser)
+  usb       talk to an X51v running the USB link test (target/sdkit/usb) over
+            its sync cable: find the COM port, check the banner and echo
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -58,6 +62,10 @@ fn main() -> ExitCode {
                         Ok(())
                     }
                 })
+        }
+        "usb" => {
+            eprintln!("==> usb");
+            usb::run()
         }
         "bench" => {
             eprintln!("==> bench");
@@ -99,7 +107,8 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_probe(&workspace_root()))
             .and_then(|()| emu::boot_kernel(&workspace_root()))
             .and_then(|()| emu::boot_threads(&workspace_root()))
-            .and_then(|()| emu::boot_light(&workspace_root())),
+            .and_then(|()| emu::boot_light(&workspace_root()))
+            .and_then(|()| emu::boot_usb(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
