@@ -1,6 +1,6 @@
 # ADR-0005: Memory and storage architecture: designed for 64 MB
 
-- **Status:** Proposed (to be accepted before Phase 2 kernel memory management lands)
+- **Status:** Accepted (2026-10-10, by the project owner)
 - **Date:** 2026-10-10
 
 ## Context

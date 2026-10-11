@@ -22,7 +22,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [x] Custom Rust target `armv5te-x51v-none-eabi`; pinned toolchain
 - [x] CI: fmt, clippy, lint-layers, host tests, cross-build, coverage floor
 - [x] ADRs 0001–0004 written: Rust-first, QEMU fork, slot memory model, testing policy. *(The TLS library ADR moves to Phase 6, where it's needed.)*
-- [ ] ADR-0005 memory and storage architecture *(proposed; accept before kernel VM work)*; code-size budgets enforced in `cargo xtask cross`
+- [x] ADR-0005 memory and storage architecture *(accepted 2026-10-10)*; code-size budgets enforced in `cargo xtask cross`
 - [x] **RE:** `tools/romdump`: unpacks X51v `.nb0` ROM images (IMGFS + LZX) and rebuilds driver DLLs as PE files. No device access needed
 - [ ] *(Optional)* UART serial adapter for deep debugging. Not required: the cradle's USB is the main console from Phase 2
 - [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory), which become the "at least as fast" target
