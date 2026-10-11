@@ -10,7 +10,7 @@ Base `0x41500000`; clock enable `CKEN` bit 19 (clock manager `0x41300004`).
 
 | Register | Offset | Fields used |
 |---|---|---|
-| `KPC` | 0x00 | `[30]` AS (scan now), `[29]` ASACT (scan on activity), `[28:26]` MKRN = rows − 1, `[25:23]` MKCN = columns − 1, `[22]` MI, `[20:13]` MS7..0 (matrix scan lines), `[12]` ME (matrix enable), `[11]` MIE (matrix interrupt enable) |
+| `KPC` | 0x00 | `[30]` AS (scan now), `[29]` ASACT (scan on activity), `[28:26]` MKRN = rows − 1, `[25:23]` MKCN = columns − 1, `[22]` MI (matrix interrupt; cleared by reading KPC), `[20:13]` MS7..0 (matrix scan lines), `[12]` ME (matrix enable), `[11]` MIE (matrix interrupt enable) |
 | `KPDK` | 0x08 | direct keys |
 | `KPMK` | 0x18 | matrix key (manual scan) |
 | `KPAS` | 0x20 | `[31]` SO (scan on), `[30:26]` MUKP = keys pressed, `[7:4]` RP row, `[3:0]` CP column (0xF = none) |

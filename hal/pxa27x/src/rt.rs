@@ -297,8 +297,11 @@ impl Fault {
 static mut FAULT_HANDLER: Option<fn(Fault, u32) -> !> = None;
 static mut TICK_PERIOD: u32 = 0;
 static mut TICKS: u32 = 0;
-/// See [`unclaimed_irqs`].
-static mut UNCLAIMED: u64 = 0;
+/// Interrupt claims and signals (ADR-0007). Written by the IRQ handler and,
+/// with IRQs masked, by main code.
+static mut DISPATCH: crate::soc::Dispatch = crate::soc::Dispatch::new();
+/// Whether the interrupt controller has been reset into a known state.
+static mut INTC_READY: bool = false;
 
 const INTC_BASE: usize = 0x40D0_0000;
 const OST_BASE: usize = 0x40A0_0000;
@@ -351,21 +354,14 @@ extern "C" fn rp_irq() {
             t.write_volatile(t.read_volatile().wrapping_add(1));
         }
     }
-    // Anything else isn't claimed by a driver yet: mask it so it can't storm,
-    // and record it, so it's visible rather than silently dropped
-    // ([`unclaimed_irqs`]).
+    // Everything else: mask and signal its owner, or mask and record it as
+    // unclaimed (ADR-0007). No driver code runs here.
     let other = pending & !(1 << crate::soc::irq::OST1);
     if other != 0 {
-        // SAFETY: only this handler writes UNCLAIMED; main code reads it with
-        // a single aligned volatile access per half.
+        // SAFETY: we're in the IRQ handler with IRQs masked, and main code
+        // only touches DISPATCH with IRQs masked, so this access is exclusive.
         unsafe {
-            let u = core::ptr::addr_of_mut!(UNCLAIMED);
-            u.write_volatile(u.read_volatile() | other);
-        }
-        for n in 0..40 {
-            if other & (1 << n) != 0 {
-                intc().disable(n);
-            }
+            (*core::ptr::addr_of_mut!(DISPATCH)).handle(&mut intc(), &mut gpio_edges(), other);
         }
     }
 }
@@ -374,9 +370,174 @@ extern "C" fn rp_irq() {
 /// n). On the real X51v these are sources Windows Mobile left enabled.
 #[must_use]
 pub fn unclaimed_irqs() -> u64 {
-    // SAFETY: written only by the IRQ handler; a torn read between the two
-    // halves can only miss a bit that is reported on the next read.
-    unsafe { core::ptr::addr_of!(UNCLAIMED).read_volatile() }
+    with_dispatch(|d| d.unclaimed)
+}
+
+/// GPIO edges that fired with no owner (bit n of word b = GPIO 32b + n);
+/// their edge detection is now off.
+#[must_use]
+pub fn unclaimed_gpio_irqs() -> [u32; 4] {
+    with_dispatch(|d| d.unclaimed_gpio)
+}
+
+/// Masks IRQs, returning whether they were enabled (for [`irq_restore`]).
+/// Not generic, so critical sections cost one call, not a copy per caller.
+#[inline(never)]
+fn irq_save() -> bool {
+    let was = irqs_enabled();
+    irq_disable();
+    was
+}
+
+fn irq_restore(was_enabled: bool) {
+    if was_enabled {
+        irq_enable();
+    }
+}
+
+/// Runs `f` on the interrupt dispatch state with IRQs masked.
+fn with_dispatch<T>(f: impl FnOnce(&mut crate::soc::Dispatch) -> T) -> T {
+    let was = irq_save();
+    // SAFETY: IRQs are masked, so the IRQ handler (the only other user) can't
+    // run until we're done.
+    let r = f(unsafe { &mut *core::ptr::addr_of_mut!(DISPATCH) });
+    irq_restore(was);
+    r
+}
+
+fn gpio_edges() -> crate::soc::GpioEdges<Mmio> {
+    // SAFETY: the GPIO controller's window. The interrupt layer uses only the
+    // edge registers (GRER, GFER, GEDR), which GPIO drivers never touch
+    // (ADR-0007 rule 7), so sharing the window with `take_gpio`'s owner is
+    // safe on one core.
+    crate::soc::GpioEdges(unsafe {
+        Mmio::new(NonNull::new_unchecked(0x40E0_0000 as *mut u32), 0x200)
+    })
+}
+
+/// Resets the interrupt controller once (everything masked, IRQ not FIQ, only
+/// unmasked sources wake from idle).
+fn ensure_intc() {
+    // SAFETY: called from main code; the flag is only touched here.
+    let ready = unsafe { core::ptr::addr_of_mut!(INTC_READY).replace(true) };
+    if !ready {
+        intc().reset();
+    }
+}
+
+pub use crate::soc::Edge;
+
+/// An interrupt this code owns (ADR-0007): the first-level handler masks it
+/// and signals it; the owner services its device, then calls
+/// [`done`](Self::done) to unmask it.
+pub struct IrqLine {
+    src: Src,
+}
+
+#[derive(Clone, Copy)]
+enum Src {
+    Intc(u32),
+    Gpio(u8, Edge),
+}
+
+/// Claims interrupt-controller source `n` (`soc::irq`), unmasked and ready.
+/// `None` if it's taken, out of range, or a GPIO summary source.
+pub fn take_irq(n: u32) -> Option<IrqLine> {
+    ensure_intc();
+    if !with_dispatch(|d| d.claim(n)) {
+        return None;
+    }
+    let line = IrqLine { src: Src::Intc(n) };
+    with_dispatch(|_| intc().enable(n));
+    irq_enable();
+    Some(line)
+}
+
+/// Claims GPIO `pin`'s edge interrupt, armed for `edge`. `None` if taken.
+pub fn take_gpio_irq(pin: u8, edge: Edge) -> Option<IrqLine> {
+    ensure_intc();
+    if !with_dispatch(|d| d.claim_gpio(pin)) {
+        return None;
+    }
+    with_dispatch(|_| {
+        let mut i = intc();
+        for n in [
+            crate::soc::irq::GPIO0,
+            crate::soc::irq::GPIO1,
+            crate::soc::irq::GPIO_X,
+        ] {
+            i.enable(n);
+        }
+        gpio_edges().arm(pin, edge);
+    });
+    irq_enable();
+    Some(IrqLine {
+        src: Src::Gpio(pin, edge),
+    })
+}
+
+impl IrqLine {
+    /// Consumes a pending signal: true if the interrupt fired since the last
+    /// call. The source stays masked until [`done`](Self::done).
+    #[inline(never)]
+    pub fn take(&mut self) -> bool {
+        let src = self.src;
+        with_dispatch(|d| match src {
+            Src::Intc(n) => d.take_signal(n),
+            Src::Gpio(pin, _) => d.take_gpio_signal(pin),
+        })
+    }
+
+    /// Sleeps (idle mode) until the interrupt fires, consuming the signal.
+    pub fn wait(&mut self) {
+        loop {
+            // Check-then-idle with IRQs masked: a signal can't slip in between.
+            irq_disable();
+            if self.take() {
+                irq_enable();
+                return;
+            }
+            idle();
+            irq_enable();
+        }
+    }
+
+    /// Unmasks the interrupt again (CE's `InterruptDone`). For a GPIO, edge
+    /// detection is re-armed; an edge while it was off isn't remembered, so
+    /// owners re-check the pin's level after this.
+    #[inline(never)]
+    pub fn done(&mut self) {
+        let was = irq_save();
+        match self.src {
+            Src::Intc(n) => intc().enable(n),
+            Src::Gpio(pin, edge) => gpio_edges().arm(pin, edge),
+        }
+        irq_restore(was);
+    }
+}
+
+/// Sleeps (idle mode) until the tick advances or any claimed interrupt is
+/// signalled. Consumes nothing: check the lines with [`IrqLine::take`].
+pub fn wait_any_signal() {
+    let start = tick_count();
+    loop {
+        irq_disable();
+        // SAFETY: IRQs are masked (exclusive access to DISPATCH).
+        let pending = unsafe { (*core::ptr::addr_of!(DISPATCH)).any_signalled() };
+        if pending || tick_count() != start {
+            irq_enable();
+            return;
+        }
+        idle();
+        irq_enable();
+    }
+}
+
+fn irqs_enabled() -> bool {
+    let cpsr: u32;
+    // SAFETY: reading CPSR has no side effects.
+    unsafe { core::arch::asm!("mrs {}, cpsr", out(reg) cpsr, options(nostack, nomem)) };
+    cpsr & 0x80 == 0
 }
 
 /// Turns on the bring-up MMU: identity map ([`crate::mmu::X51V_BRINGUP`]),
@@ -463,11 +624,18 @@ pub fn start_tick(hz: u32) {
         core::ptr::addr_of_mut!(TICK_PERIOD).write(period);
         core::ptr::addr_of_mut!(TICKS).write_volatile(0);
     }
-    let mut i = intc();
-    i.reset();
+    ensure_intc();
     ostimer().start(period);
-    i.enable(crate::soc::irq::OST1);
+    intc().enable(crate::soc::irq::OST1);
     irq_enable();
+}
+
+/// Stops the periodic tick (so an idle system sleeps until a real event).
+pub fn stop_tick() {
+    with_dispatch(|_| {
+        intc().disable(crate::soc::irq::OST1);
+        ostimer().stop();
+    });
 }
 
 /// Ticks since [`start_tick`].

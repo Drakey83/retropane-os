@@ -46,9 +46,11 @@ impl Mmio {
     }
 
     fn reg(&self, offset: usize) -> *mut u32 {
+        // A plain message: formatting the offset would pull formatting code
+        // into every register access site (ADR-0005 rule 8). Still loud.
         assert!(
             offset.is_multiple_of(4) && offset + 4 <= self.len,
-            "register offset {offset:#x} out of range or unaligned"
+            "register offset out of range or unaligned"
         );
         // `offset / 4` is in bounds per the assertion above.
         self.base.as_ptr().wrapping_add(offset / 4)
@@ -74,7 +76,7 @@ impl Mmio {
     fn reg16(&self, offset: usize) -> *mut u16 {
         assert!(
             offset.is_multiple_of(2) && offset + 2 <= self.len,
-            "16-bit register offset {offset:#x} out of range or unaligned"
+            "16-bit register offset out of range or unaligned"
         );
         self.base.as_ptr().cast::<u16>().wrapping_add(offset / 2)
     }

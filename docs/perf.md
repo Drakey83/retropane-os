@@ -35,6 +35,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | ADR-0005 rule 8: cold crates (`rp-hello`, `rp-drv-sdcard`, `rp-drv-cpld`) built with `opt-level = "s"`; hot crates stay at 3. No benchmark moved (incl. `sd_read_block`). Budget tightened 24 → 20 KiB | `rp-hello` loaded size | 24,516 B | 18,028 B (**−26%**) |
 | 2026-10-11 | "Never silently discard": unclaimed IRQs and a dead UART are reported on screen | `rp-hello` loaded size | 18,028 B | 18,360 B |
 | 2026-10-11 | Benchmarks moved into a shared suite (`boot/suite`) used by `bench` and the device `probe`; added `chase_sdram/sram_256k` and `tlb_fit/spill` (+ `_l1sram` on device) for ADR-0006. Existing results unchanged (emulator has no latency model, so the new ones only become meaningful on hardware) | all existing benchmarks | — | ±0.1% |
+| 2026-10-11 | Interrupt-driven input (ADR-0007), then: non-generic critical sections, a plain bounds-check message in `Mmio` (no offset formatting at every register access), all integers printed as `u32` (one formatter per kind) | `rp-hello` loaded size | 18,392 B (polling) → 20,904 B (IRQ lines) | 19,544 B |
+| 2026-10-11 | `tlb_fit/spill` raised from 64 to 1024 rounds: at 64 a run was ~26 timer ticks, so code-layout noise of one tick read as a 4% "regression". Baseline re-recorded (measurement fix, not a code change) | `tlb_fit_16` resolution | ±4% | ±0.3% |
 
 ## Open leads
 

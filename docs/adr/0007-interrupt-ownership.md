@@ -83,6 +83,16 @@ change when threads arrive.
 - **CE-style installable ISRs** (driver-supplied code in interrupt mode): the
   flexibility isn't worth bringing driver code back into interrupt mode.
 
+## Implementation (2026-10-11)
+
+`hal/pxa27x::soc::Dispatch` holds claims and signals and runs the
+first-level logic (host-tested against the mock bus); `soc::GpioEdges` owns
+the GPIO edge registers. `rt::take_irq(n)` / `rt::take_gpio_irq(pin, edge)`
+hand out `IrqLine`s with `take`, `wait` and `done`; `rt::wait_any_signal`
+sleeps until any line fires or the tick advances, and `rt::stop_tick` lets an
+idle image stop the tick entirely. `boot/hello` uses them: keypad and pen-down
+interrupts wake it, and the tick runs only while a button or the pen is held.
+
 ## Consequences
 
 - `RegisterBus` keeps `&mut self`; no trait changes are needed for interrupts.

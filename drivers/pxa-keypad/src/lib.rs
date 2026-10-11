@@ -25,6 +25,8 @@ const KPC_MKCN: Field = Field::new(23, 3);
 const KPC_MS: Field = Field::new(13, 8);
 const KPC_ME: Field = Field::bit(12);
 const KPC_MIE: Field = Field::bit(11);
+/// Matrix interrupt: set on key activity, cleared by reading KPC.
+const KPC_MI: Field = Field::bit(22);
 
 /// The X51v's buttons.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,6 +167,13 @@ impl<B: RegisterBus> Keypad<B> {
         self.regs.write32(reg::KPC, kpc);
     }
 
+    /// Acknowledges the matrix interrupt (reading KPC clears it) and says
+    /// whether there was key activity. Call before unmasking the keypad's
+    /// interrupt again, or the still-asserted interrupt would fire at once.
+    pub fn acknowledge(&mut self) -> bool {
+        KPC_MI.extract(self.regs.read32(reg::KPC)) != 0
+    }
+
     /// Reads which buttons are currently pressed.
     pub fn pressed(&mut self) -> Pressed {
         let mut bitmaps = [0u32; 4];
@@ -191,6 +200,19 @@ impl<B: RegisterBus> Keypad<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn acknowledge_reads_kpc_once() {
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::KPC, &[1 << 22, 0]);
+        let mut k = Keypad::new(bus);
+        assert!(k.acknowledge(), "activity reported");
+        assert!(!k.acknowledge(), "cleared by the read");
+        assert!(
+            k.into_inner().writes().is_empty(),
+            "acknowledging writes nothing"
+        );
+    }
 
     #[test]
     fn enable_programs_matrix_size_and_scanning() {

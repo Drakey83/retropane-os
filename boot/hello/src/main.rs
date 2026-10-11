@@ -32,11 +32,12 @@ mod image {
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_drv_tsc2046::{Calibration, Tsc2046};
     use rp_hal_pxa27x::rt;
+    use rp_hal_pxa27x::soc::irq;
 
     rp_hal_pxa27x::entry!(main);
 
-    /// Input polling rate: buttons and touch are sampled each tick, with the
-    /// CPU idle in between.
+    /// Sampling rate while a button or the pen is held. Otherwise the tick is
+    /// off and the CPU sleeps until an interrupt.
     const TICK_HZ: u32 = 200;
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
@@ -140,8 +141,11 @@ mod image {
                 let _ = writeln!(out, "RetroPane 26");
                 let _ = writeln!(
                     out,
+                    // Integers print as u32 only: one formatter per kind for
+                    // the whole image (ADR-0005 rule 8).
                     "Display: {}x{} test pattern",
-                    plane.width, plane.height
+                    u32::from(plane.width),
+                    u32::from(plane.height)
                 );
             }
             // SD card: power it through the CPLD, identify it, read the MBR.
@@ -155,7 +159,8 @@ mod image {
                         } else {
                             "SD"
                         };
-                        let _ = writeln!(out, "SD: {kind} card, RCA {:#06x}", card.rca());
+                        let _ =
+                            writeln!(out, "SD: {kind} card, RCA {:#06x}", u32::from(card.rca()));
                         let mut block = [0u8; rp_drv_sdcard::BLOCK];
                         match card.read(0, &mut block) {
                             Ok(()) => match mbr_partitions(&block) {
@@ -166,7 +171,7 @@ mod image {
                                                 out,
                                                 "SD: partition {} type {:#04x} start {} blocks {}",
                                                 i + 1,
-                                                p.kind,
+                                                u32::from(p.kind),
                                                 p.start,
                                                 p.blocks
                                             );
@@ -212,16 +217,37 @@ mod image {
                     GpioPin::new(&gpio, TS_PENIRQ),
                 );
 
-                rt::start_tick(TICK_HZ);
+                // Interrupt-driven (ADR-0007): asleep until a button or the
+                // pen wakes us; the tick runs only while something is held.
+                let (Some(mut keys_irq), Some(mut pen_irq)) = (
+                    rt::take_irq(irq::KEYPAD),
+                    rt::take_gpio_irq(TS_PENIRQ, rt::Edge::Falling),
+                ) else {
+                    let _ = writeln!(out, "IRQ lines unavailable");
+                    halt()
+                };
                 let mut last_keys = Pressed::default();
                 let mut last_touch = None;
                 let mut last_unclaimed = 0;
+                let mut ticking = false;
                 loop {
                     // Interrupts that fired with no owner were masked; say so.
                     let unclaimed = rt::unclaimed_irqs();
                     if unclaimed != last_unclaimed {
-                        let _ = writeln!(out, "IRQ unclaimed, masked: {unclaimed:#x}");
+                        // Sources 32-39, then 0-31 (u32 formatting only).
+                        let _ = writeln!(
+                            out,
+                            "IRQ unclaimed, masked: {:#x}:{:08x}",
+                            (unclaimed >> 32) as u32,
+                            unclaimed as u32
+                        );
                         last_unclaimed = unclaimed;
+                    }
+
+                    // Buttons: acknowledge the controller before unmasking.
+                    let key_event = keys_irq.take();
+                    if key_event {
+                        keypad.acknowledge();
                     }
                     let keys = keypad.pressed();
                     for (button, down) in last_keys.changes(keys) {
@@ -229,12 +255,23 @@ mod image {
                         let _ = writeln!(out, "KEY {} {state}", button.name());
                     }
                     last_keys = keys;
+                    if key_event {
+                        keys_irq.done();
+                    }
 
-                    let now = touch.sample().map(|t| Calibration::X51V.to_screen(t));
+                    // Touch: pen-down interrupt starts sampling; the pen line
+                    // stays disarmed while we poll.
+                    let pen_event = pen_irq.take();
+                    let now = if pen_event || last_touch.is_some() || touch.pen_down() {
+                        touch.sample().map(|t| Calibration::X51V.to_screen(t))
+                    } else {
+                        None
+                    };
                     if now != last_touch {
                         match now {
                             Some((x, y)) => {
-                                let _ = writeln!(out, "TOUCH {x} {y}");
+                                // As u32: one integer formatter for the whole image.
+                                let _ = writeln!(out, "TOUCH {} {}", u32::from(x), u32::from(y));
                             }
                             None => {
                                 let _ = writeln!(out, "TOUCH up");
@@ -242,11 +279,36 @@ mod image {
                         }
                         last_touch = now;
                     }
-                    // Sleep until the next tick instead of spinning.
-                    rt::wait_tick();
+
+                    let active =
+                        last_touch.is_some() || keys != Pressed::default() || touch.pen_down();
+                    if active {
+                        if !ticking {
+                            rt::start_tick(TICK_HZ);
+                            ticking = true;
+                        }
+                        rt::wait_tick();
+                    } else {
+                        if ticking {
+                            rt::stop_tick();
+                            ticking = false;
+                        }
+                        // Re-arm pen-down, then re-check the level: an edge
+                        // while it was disarmed isn't remembered.
+                        pen_irq.done();
+                        if !touch.pen_down() {
+                            rt::wait_any_signal();
+                        }
+                    }
                 }
             }
         }
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn halt() -> ! {
         loop {
             core::hint::spin_loop();
         }
