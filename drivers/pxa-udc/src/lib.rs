@@ -8,6 +8,7 @@
 //! cable detect are GPIOs, switched by the caller.
 
 #![no_std]
+#![forbid(unsafe_code)]
 
 pub mod usb;
 
