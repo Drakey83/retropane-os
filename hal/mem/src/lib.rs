@@ -224,46 +224,48 @@ unsafe fn set_aligned_32(dst: *mut u32, word: u32, bytes: usize) {
 /// The C / ARM EABI entry points, exported only in bare-metal builds.
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod exports {
+    use core::ffi::{c_int, c_void};
+
     use super::{compare, copy_backward, copy_forward, set};
 
     #[unsafe(no_mangle)]
-    unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
         // SAFETY: C contract: valid, non-overlapping ranges.
-        unsafe { copy_forward(dst, src, n) };
+        unsafe { copy_forward(dst.cast(), src.cast(), n) };
         dst
     }
 
     #[unsafe(no_mangle)]
-    unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
+    unsafe extern "C" fn memmove(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
         // SAFETY: C contract: valid ranges, possibly overlapping; pick the
         // direction that never reads a byte after overwriting it.
         unsafe {
             if (dst as usize).wrapping_sub(src as usize) >= n {
-                copy_forward(dst, src, n);
+                copy_forward(dst.cast(), src.cast(), n);
             } else {
-                copy_backward(dst, src, n);
+                copy_backward(dst.cast(), src.cast(), n);
             }
         }
         dst
     }
 
     #[unsafe(no_mangle)]
-    unsafe extern "C" fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8 {
+    unsafe extern "C" fn memset(dst: *mut c_void, c: c_int, n: usize) -> *mut c_void {
         // SAFETY: C contract: valid range.
-        unsafe { set(dst, c as u8, n) };
+        unsafe { set(dst.cast(), c as u8, n) };
         dst
     }
 
     #[unsafe(no_mangle)]
-    unsafe extern "C" fn memcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+    unsafe extern "C" fn memcmp(a: *const c_void, b: *const c_void, n: usize) -> c_int {
         // SAFETY: C contract: valid ranges.
-        unsafe { compare(a, b, n) }
+        unsafe { compare(a.cast(), b.cast(), n) }
     }
 
     #[unsafe(no_mangle)]
-    unsafe extern "C" fn bcmp(a: *const u8, b: *const u8, n: usize) -> i32 {
+    unsafe extern "C" fn bcmp(a: *const c_void, b: *const c_void, n: usize) -> c_int {
         // SAFETY: C contract: valid ranges.
-        unsafe { compare(a, b, n) }
+        unsafe { compare(a.cast(), b.cast(), n) }
     }
 
     // ARM EABI helpers (RTABI §4.3.4). Note memset's argument order.
@@ -285,17 +287,17 @@ mod exports {
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __aeabi_memmove(dst: *mut u8, src: *const u8, n: usize) {
         // SAFETY: as memmove.
-        unsafe { memmove(dst, src, n) };
+        unsafe { memmove(dst.cast(), src.cast(), n) };
     }
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __aeabi_memmove4(dst: *mut u8, src: *const u8, n: usize) {
         // SAFETY: as memmove.
-        unsafe { memmove(dst, src, n) };
+        unsafe { memmove(dst.cast(), src.cast(), n) };
     }
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __aeabi_memmove8(dst: *mut u8, src: *const u8, n: usize) {
         // SAFETY: as memmove.
-        unsafe { memmove(dst, src, n) };
+        unsafe { memmove(dst.cast(), src.cast(), n) };
     }
     #[unsafe(no_mangle)]
     unsafe extern "C" fn __aeabi_memset(dst: *mut u8, n: usize, c: i32) {
