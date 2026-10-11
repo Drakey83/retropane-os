@@ -16,10 +16,14 @@ pub const BULK_SIZE: usize = 64;
 /// Notification (interrupt IN) packet size.
 pub const NOTIFY_SIZE: usize = 16;
 
-/// USB endpoint numbers, as in the descriptors and the UDC's endpoint table.
-pub const EP_NOTIFY: u8 = 1;
-/// Bulk data endpoint number (IN 0x82 and OUT 0x02 share it).
-pub const EP_DATA: u8 = 2;
+/// USB endpoint numbers, as in the descriptors and the UDC's endpoint table:
+/// a distinct number for each endpoint, as the PXA27x driver in Linux uses
+/// (bulk OUT 1, bulk IN 2, interrupt IN separate).
+pub const EP_OUT: u8 = 1;
+/// Bulk IN endpoint number.
+pub const EP_IN: u8 = 2;
+/// Notification (interrupt IN) endpoint number.
+pub const EP_NOTIFY: u8 = 3;
 
 const fn lo(v: u16) -> u8 {
     v.to_le_bytes()[0]
@@ -100,7 +104,7 @@ pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     0x06,
     0,
     1,
-    // Notification endpoint 0x81, interrupt
+    // Notification endpoint 0x83, interrupt
     7,
     5,
     0x80 | EP_NOTIFY,
@@ -118,10 +122,10 @@ pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     0x00,
     0x00,
     0,
-    // Bulk OUT 0x02
+    // Bulk OUT 0x01
     7,
     5,
-    EP_DATA,
+    EP_OUT,
     0x02,
     BULK_SIZE as u8,
     0,
@@ -129,7 +133,7 @@ pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     // Bulk IN 0x82
     7,
     5,
-    0x80 | EP_DATA,
+    0x80 | EP_IN,
     0x02,
     BULK_SIZE as u8,
     0,

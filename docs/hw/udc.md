@@ -90,6 +90,13 @@ The endpoint table is fixed while the UDC is enabled: every endpoint, with the
 configuration, interface and alternate setting it belongs to, is written
 before UDE is set, and EMCE reports a table the hardware can't fit.
 
+**Only the active interface's endpoints work** (confirmed on the real X51v):
+with a CDC-ACM device's bulk pair in interface 1 the port opened but no
+bulk data moved either way; the table therefore puts every endpoint in
+interface 0 (the descriptors still say interface 1, which the host uses).
+Linux's PXA27x driver does the same ("multiple interfaces are really broken
+on the pxa") and gives each endpoint a distinct number.
+
 ## Behaviour
 
 | Behaviour | Confidence | Evidence |

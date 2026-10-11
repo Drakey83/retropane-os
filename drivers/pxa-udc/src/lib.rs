@@ -124,17 +124,21 @@ const fn endpoint(interface: u32, number: u8, kind: u32, is_in: bool, size: usiz
         | 1
 }
 
-/// The endpoint table, matching [`usb::CONFIG`].
+/// The endpoint table, matching [`usb::CONFIG`]'s endpoints. Every
+/// endpoint is in interface 0 here, although the descriptors put the bulk
+/// pair in interface 1: the PXA27x only activates endpoints of the active
+/// interface (0 unless the host sends SET_INTERFACE, which a CDC host
+/// doesn't), so with the bulk pair in interface 1 the port opened but no
+/// data moved either way (measured on the real X51v). The Linux PXA27x
+/// driver does the same for its serial gadget ("multiple interfaces are
+/// really broken on the pxa").
 const TABLE: [(usize, u32); 3] = [
     (
         SLOT_NOTIFY,
         endpoint(0, usb::EP_NOTIFY, 3, true, usb::NOTIFY_SIZE),
     ),
-    (SLOT_IN, endpoint(1, usb::EP_DATA, 2, true, usb::BULK_SIZE)),
-    (
-        SLOT_OUT,
-        endpoint(1, usb::EP_DATA, 2, false, usb::BULK_SIZE),
-    ),
+    (SLOT_IN, endpoint(0, usb::EP_IN, 2, true, usb::BULK_SIZE)),
+    (SLOT_OUT, endpoint(0, usb::EP_OUT, 2, false, usb::BULK_SIZE)),
 ];
 
 /// Errors.
