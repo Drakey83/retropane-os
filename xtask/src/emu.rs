@@ -511,18 +511,22 @@ pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Port of the emulated USB serial port (the UDC model's chardev).
-fn usb_port() -> u16 {
-    monitor_port() + 2
+/// Port of the emulated USB serial port (the UDC model's chardev); each test
+/// gets its own (`n`), so one can never reach another test's emulator.
+fn usb_port(n: u16) -> u16 {
+    monitor_port() + 2 + n
 }
 
-/// QEMU arguments that connect the UDC model's serial data to a TCP port.
-fn usb_args() -> [String; 4] {
+/// QEMU arguments that connect the UDC model's serial data to a TCP port,
+/// with the model's protocol checks reported (guest errors).
+fn usb_args(n: u16) -> [String; 6] {
     [
+        "-d".into(),
+        "guest_errors".into(),
         "-chardev".into(),
         format!(
             "socket,id=usb,host=127.0.0.1,port={},server=on,wait=off",
-            usb_port()
+            usb_port(n)
         ),
         "-global".into(),
         "pxa27x-udc.chardev=usb".into(),
@@ -545,10 +549,10 @@ fn has_usb_model(root: &Path) -> bool {
 }
 
 /// Connects to the emulated USB serial port.
-fn usb_connect() -> Result<std::net::TcpStream, String> {
+fn usb_connect(n: u16) -> Result<std::net::TcpStream, String> {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        match std::net::TcpStream::connect(("127.0.0.1", usb_port())) {
+        match std::net::TcpStream::connect(("127.0.0.1", usb_port(n))) {
             Ok(s) => {
                 s.set_read_timeout(Some(Duration::from_millis(200)))
                     .map_err(|e| e.to_string())?;
@@ -598,10 +602,10 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-usb");
-    let args = usb_args();
+    let args = usb_args(0);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let check = || -> Result<(), String> {
-        let mut s = usb_connect()?;
+        let mut s = usb_connect(0)?;
         usb_read_until(&mut s, "RetroPane 26 USB console OK", 10)?;
         s.write_all(b"echo through USB\r\n")
             .map_err(|e| e.to_string())?;
@@ -637,10 +641,10 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
     let light = root.join("target/emu/rp-light.bin");
     let payload = std::fs::read(&light).map_err(|e| format!("{}: {e}", light.display()))?;
     let frame = rp_loadproto::frame(&payload);
-    let args = usb_args();
+    let args = usb_args(1);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let check = || -> Result<(), String> {
-        let mut s = usb_connect()?;
+        let mut s = usb_connect(1)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK", 15)?;
@@ -1068,6 +1072,11 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         .and_then(|()| during.map_or(Ok(()), |f| f()));
     let _ = child.kill();
     let _ = child.wait();
+    if wsl {
+        // Killing wsl.exe may not reach the Linux process at once; make sure
+        // it's gone before the next test binds the same ports.
+        let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+    }
     match result {
         Ok(()) => Ok(serial.output),
         Err(e) => Err(format!("{e}. Serial output so far:\n{}", serial.output)),

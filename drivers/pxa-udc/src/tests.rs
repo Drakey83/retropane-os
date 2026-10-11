@@ -369,12 +369,8 @@ fn enable_writes_the_table_then_enables() {
         (1 << 25) | (2 << 15) | (2 << 13) | (1 << 12) | (64 << 2) | 1
     );
     assert_eq!(sim.cr[3], (1 << 25) | (1 << 15) | (2 << 13) | (64 << 2) | 1);
-    for slot in 1..=3 {
-        assert_eq!(
-            (sim.cr[slot] >> 22) & 7,
-            0,
-            "slot {slot} not in interface 0"
-        );
+    for (slot, cr) in sim.cr.iter().enumerate().take(4).skip(1) {
+        assert_eq!((cr >> 22) & 7, 0, "slot {slot} not in interface 0");
     }
     assert_ne!(sim.icr1 & reg::CONFIG_CHANGE, 0);
 }
