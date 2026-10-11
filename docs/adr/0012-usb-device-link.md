@@ -61,6 +61,20 @@ Facts (docs/hw/udc.md):
      WM's StartUp folder, most device runs then need nobody at the device.
    - **U4:** interrupt-driven, DMA, composite NCM (networking) and MTP (files).
 
+## Implementation status (2026-10-11)
+
+- **U1 built, device test pending:** `rp-drv-pxa-udc` (15 tests against a
+  simulated host), `rp-usb`, `cargo xtask usb`.
+- **U3 built, emulator-tested:** `rp-loadproto` (framing + CRC-32),
+  `rp-loader` (moves itself to `0xA8400000`, reserved in boot/link.x and
+  memory-map.md), `handoff::launch` (caches and MMU off, as HaRET leaves
+  them), `cargo xtask load`. `cargo xtask emu` boots the loader as a raw
+  binary away from home, sends it first light over the serial port, and
+  checks first light runs. Over USB it needs U1 to work on the device first.
+- **Not yet:** U2 (console over USB in every image), the watchdog and the
+  "return to the loader" path from crash handlers, and starting HaRET from
+  WM's StartUp folder.
+
 ## The four lenses
 
 | Lens | Effect |

@@ -49,6 +49,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | First thread switches (`boot/threads`): event set + wait + schedule + register switch, per switch. Emulator real time; the device gives the real number (ADR-0010 target: well under 2 µs) | `thread_switch` | — | ~1.4 µs (emulated) |
 | 2026-10-11 | `Scheduler::create_event`: plain loop instead of an iterator chain that unrolled to 1 KiB | `rp-threads` loaded size | 15,404 B | 14,500 B |
 | 2026-10-11 | Preemption test added to `rp-threads`; **load budget raised 15 → 17 KiB, approved by the owner** (measured + ~9%) | `rp-threads` loaded size | 14,660 B | 16,012 B |
+| 2026-10-11 | New bring-up images, each with its own budget at measured + ~10% (new budgets, not raises): `rp-light` (first light), `rp-usb` (USB link test), `rp-loader` (resident loader) | loaded size | — | 16,064 / 18,320 / 20,032 B |
+| 2026-10-11 | `rp-probe`: startup colours (step table instead of six inlined two-colour calls) | `rp-probe` loaded size | 40,756 B | 40,864 B |
 
 ## Real hardware
 

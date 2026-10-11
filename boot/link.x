@@ -8,6 +8,8 @@
  * and the exception vectors at 0xA80F0000; images must stay below 0xA80F0000.
  * 0xA80F8000-0xA8100000 (32 KiB) is reserved for the whole-D-cache clean
  * (rp-hal-pxa27x::cpu::CLEAN_REGION) and never holds data.
+ * 0xA8400000-0xA8500000 (1 MiB) is the resident loader's home
+ * (boot/loader/link.x, ADR-0012); no image may use it.
  * The bring-up MMU maps everything 1:1, so virtual = physical.
  */
 ENTRY(_start)

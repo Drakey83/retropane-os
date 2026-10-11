@@ -84,6 +84,37 @@ pub fn take_cpld() -> Option<Mmio> {
     Some(unsafe { Mmio::new(base, 0x20) })
 }
 
+/// Where every image is loaded and started (HaRET's `ramaddr` + 32 KiB).
+pub const IMAGE_BASE: usize = 0xA800_8000;
+/// The most an image may occupy: up to the reserved vector page (boot/link.x).
+pub const IMAGE_MAX: usize = 0xA80F_0000 - IMAGE_BASE;
+/// The resident loader's home (ADR-0012 U3): 1 MiB reserved at 4 MiB into
+/// SDRAM, clear of images, the scratch region and the kernel's RAM pool.
+pub const LOADER_BASE: usize = 0xA840_0000;
+/// Size of the loader's reservation (code, data, stacks).
+pub const LOADER_SIZE: usize = 1024 * 1024;
+
+static mut IMAGE_AREA_TAKEN: bool = false;
+
+/// Hands out the image area once, for the resident loader to receive the
+/// next image into. `None` when called from code that is itself running in
+/// that area (any image but the loader), which would overwrite itself.
+pub fn take_image_area() -> Option<&'static mut [u8]> {
+    let here = take_image_area as *const () as usize;
+    if (IMAGE_BASE..IMAGE_BASE + IMAGE_MAX).contains(&here) {
+        return None;
+    }
+    // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
+    let taken = unsafe { core::ptr::addr_of_mut!(IMAGE_AREA_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: IMAGE_BASE..+IMAGE_MAX is SDRAM (identity-mapped) that holds
+    // no code or data of the caller (checked above: it runs elsewhere), and
+    // the flag makes this the only slice.
+    Some(unsafe { core::slice::from_raw_parts_mut(IMAGE_BASE as *mut u8, IMAGE_MAX) })
+}
+
 /// Start of the SDRAM scratch region handed out by [`take_scratch`]: 8 MiB into
 /// SDRAM, far above bare-metal images (linked at `0xA8008000`, a few tens of KiB).
 pub const SCRATCH_BASE: usize = 0xA880_0000;

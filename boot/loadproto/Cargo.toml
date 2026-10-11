@@ -1,0 +1,15 @@
+[package]
+name = "rp-loadproto"
+description = "The resident loader's wire protocol: framed images (magic, length, CRC-32) over any byte stream (ADR-0012 U3)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The host side (`frame`), for xtask.
+std = []
+
+[lints]
+workspace = true

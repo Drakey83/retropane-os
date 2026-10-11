@@ -38,6 +38,8 @@ commands:
             (--serve: also serve it over Wi-Fi for the device's browser)
   usb       talk to an X51v running the USB link test (target/sdkit/usb) over
             its sync cable: find the COM port, check the banner and echo
+  load      send an image (name, e.g. rp-probe, or a .bin) to an X51v running
+            the resident loader (target/sdkit/loader) over USB
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -66,6 +68,14 @@ fn main() -> ExitCode {
         "usb" => {
             eprintln!("==> usb");
             usb::run()
+        }
+        "load" => {
+            eprintln!("==> load {flag}");
+            if flag.is_empty() {
+                Err("usage: cargo xtask load <image name | file.bin>".into())
+            } else {
+                usb::load(&workspace_root(), &flag)
+            }
         }
         "bench" => {
             eprintln!("==> bench");
@@ -108,7 +118,8 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_kernel(&workspace_root()))
             .and_then(|()| emu::boot_threads(&workspace_root()))
             .and_then(|()| emu::boot_light(&workspace_root()))
-            .and_then(|()| emu::boot_usb(&workspace_root())),
+            .and_then(|()| emu::boot_usb(&workspace_root()))
+            .and_then(|()| emu::boot_loader(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",

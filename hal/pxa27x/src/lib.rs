@@ -14,6 +14,8 @@ use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 pub mod cpu;
 pub mod devmap;
 pub mod diag;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod handoff;
 pub mod mmu;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
