@@ -18,3 +18,17 @@ Rules:
 - Facts only: no code, no pseudo-code transcribed from disassembly, no listings.
 - Each `confirmed` fact needs a matching spec test in the driver crate.
 - Record what we **don't** know too (an "Open questions" section).
+
+## First facts from a real X51v (2026-10-11)
+
+Read by `rp-light` (the first-light image) on the owner's device, A08 ROM,
+booted through HaRET. Details in the per-block files.
+
+| Fact | Value | Meaning | Confidence | Evidence |
+|---|---|---|---|---|
+| CPU ID (CP15 c0) | `0x69054117` | Intel XScale, PXA27x core, revision 7 | confirmed | rp-light on device |
+| CP15 c1 at handoff | `0x00002A7A` | MMU, D-cache and I-cache off; alignment checking **on**; write buffer, branch prediction and high vectors set (HaRET's state) | confirmed | rp-light on device |
+| Panel (CPLD ID) | 3.7" Sharp VGA | `cpld.md` panel ID decode is right | confirmed | rp-light on device |
+| FFUART | transmitter drains | clocked and working once enabled (no connector pins verified) | confirmed | rp-light `serial: alive` |
+| RAM start | `0xA8000000` | HaRET must be told (`ramaddr`); nothing at `0xA0000000` | confirmed | `memory-map.md` |
+| Framebuffer | `0x0C000000`, RGB565 480 × 640 | WM's plane, reused as-is | confirmed | `2700g.md` |
