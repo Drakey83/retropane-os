@@ -105,7 +105,7 @@ mod image {
             let mut out = Out { uart, con: None };
             rt::set_fault_handler(on_fault);
             rt::init_mmu();
-            let _ = writeln!(out, "\nRetroPane 26: hello from the Dell Axim X51v");
+            let _ = writeln!(out, "\nRetroPane 26 on the Axim X51v");
             let _ = writeln!(out, "CPU ID: {:#010x}", rt::cpu_id());
             let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
             let vga = match cpld.as_mut() {
@@ -195,7 +195,7 @@ mod image {
             if !out.uart.is_alive() {
                 // Expected on a real X51v (no serial port fitted): say so
                 // rather than dropping output silently.
-                let _ = writeln!(out, "UART: not responding, screen only");
+                let _ = writeln!(out, "UART: none, screen only");
             }
             let _ = writeln!(out, "{}", super::MARKER);
 

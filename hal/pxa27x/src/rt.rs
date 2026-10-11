@@ -27,6 +27,20 @@ _start:
     @ behind, we now own the CPU.
     msr     cpsr_c, #0xD3
 
+    @ ...and the memory: stop what Windows Mobile left running that writes
+    @ RAM by itself, before we use any of it. All 32 DMA channels (DCSRn:
+    @ RUN off), and the USB device controller (its driver's transfers).
+    @ On the real X51v, images hung at random early points only while the
+    @ Axim was docked with USB active.
+    ldr     r0, =0x40000000
+    mov     r1, #0
+    mov     r2, #32
+0:  str     r1, [r0], #4
+    subs    r2, r2, #1
+    bne     0b
+    ldr     r0, =0x40600000
+    str     r1, [r0]
+
     @ Stacks: IRQ, abort (its own when the image sizes one: the kernel
     @ resolves page faults there), undefined, then SVC, where we stay.
     @ Interrupts stay masked throughout.
