@@ -190,7 +190,9 @@ mod target {
     /// offset to its own cache set), so the difference is the page-table walk.
     pub fn tlb(r: &mut Runner, fit: &'static str, spill: &'static str) {
         for (name, n) in [(fit, TLB_FIT), (spill, TLB_SPILL)] {
-            r.run(name, 64, &mut || {
+            // 1024 rounds: at 64 the whole run was ~26 timer ticks, so one
+            // tick of granularity read as a 4% change.
+            r.run(name, 1024, &mut || {
                 for i in 0..n {
                     let addr = 0xA800_0000 + (i << 20) + ((i % 32) << 5);
                     black_box(rt::fault_probe(addr as usize));

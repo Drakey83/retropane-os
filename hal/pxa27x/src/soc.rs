@@ -9,6 +9,10 @@ use rp_hal_api::RegisterBus;
 pub mod irq {
     /// Keypad controller.
     pub const KEYPAD: u32 = 4;
+    /// GPIO 0 edge detect.
+    pub const GPIO0: u32 = 8;
+    /// GPIO 1 edge detect.
+    pub const GPIO1: u32 = 9;
     /// GPIO 2..120 edge detect.
     pub const GPIO_X: u32 = 10;
     /// MMC/SD controller.
@@ -92,6 +96,193 @@ impl<B: RegisterBus> Intc<B> {
     }
 }
 
+/// GPIO edge-detect registers, one per bank of 32 pins (PXA27x manual: the
+/// fourth bank sits at +0x100).
+pub mod gpio_reg {
+    /// Rising-edge detect enable.
+    pub const GRER: [usize; 4] = [0x30, 0x34, 0x38, 0x130];
+    /// Falling-edge detect enable.
+    pub const GFER: [usize; 4] = [0x3C, 0x40, 0x44, 0x13C];
+    /// Edge detect status (write 1 to clear).
+    pub const GEDR: [usize; 4] = [0x48, 0x4C, 0x50, 0x148];
+}
+
+/// Highest GPIO number.
+pub const MAX_GPIO: u8 = 120;
+
+/// Which edges of a GPIO raise its interrupt.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Edge {
+    /// Low to high.
+    Rising,
+    /// High to low.
+    Falling,
+    /// Either.
+    Both,
+}
+
+/// The GPIO edge-detect registers. ADR-0007 rule 7: these belong to the
+/// interrupt layer; GPIO drivers own direction and level only.
+pub struct GpioEdges<B>(pub B);
+
+impl<B: RegisterBus> GpioEdges<B> {
+    fn bank(pin: u8) -> (usize, u32) {
+        debug_assert!(pin <= MAX_GPIO, "GPIO {pin} doesn't exist");
+        (usize::from(pin / 32), 1 << (pin % 32))
+    }
+
+    /// Enables edge detection on `pin`.
+    pub fn arm(&mut self, pin: u8, edge: Edge) {
+        let (b, bit) = Self::bank(pin);
+        let set = |bus: &mut B, reg: usize, on: bool| {
+            let v = bus.read32(reg);
+            bus.write32(reg, if on { v | bit } else { v & !bit });
+        };
+        set(&mut self.0, gpio_reg::GRER[b], edge != Edge::Falling);
+        set(&mut self.0, gpio_reg::GFER[b], edge != Edge::Rising);
+    }
+
+    /// Disables edge detection on `pin` (its interrupt is masked).
+    pub fn disarm(&mut self, pin: u8) {
+        let (b, bit) = Self::bank(pin);
+        for reg in [gpio_reg::GRER[b], gpio_reg::GFER[b]] {
+            let v = self.0.read32(reg) & !bit;
+            self.0.write32(reg, v);
+        }
+    }
+
+    /// Reads and clears the edge-detect status of every bank.
+    pub fn take_events(&mut self) -> [u32; 4] {
+        let mut ev = [0; 4];
+        for (e, &reg) in ev.iter_mut().zip(&gpio_reg::GEDR) {
+            *e = self.0.read32(reg);
+            if *e != 0 {
+                self.0.write32(reg, *e);
+            }
+        }
+        ev
+    }
+}
+
+/// Interrupt ownership and signalling (ADR-0007): which sources are claimed,
+/// which have fired, and which fired with no owner. The first-level handler
+/// only masks and signals; owners service their device in their own thread.
+#[derive(Default)]
+pub struct Dispatch {
+    claimed: u64,
+    claimed_gpio: [u32; 4],
+    signalled: u64,
+    signalled_gpio: [u32; 4],
+    /// Unowned interrupt-controller sources that fired (now masked).
+    pub unclaimed: u64,
+    /// Unowned GPIO edges that fired (edge detection now off).
+    pub unclaimed_gpio: [u32; 4],
+}
+
+/// The GPIO summary interrupts: serviced through the edge registers.
+pub const GPIO_SOURCES: u64 = (1 << irq::GPIO0) | (1 << irq::GPIO1) | (1 << irq::GPIO_X);
+
+impl Dispatch {
+    /// No claims.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            claimed: 0,
+            claimed_gpio: [0; 4],
+            signalled: 0,
+            signalled_gpio: [0; 4],
+            unclaimed: 0,
+            unclaimed_gpio: [0; 4],
+        }
+    }
+
+    /// Claims interrupt-controller source `n`. False if it's taken or is a
+    /// GPIO summary source (claim the pin instead).
+    pub fn claim(&mut self, n: u32) -> bool {
+        if n >= 40 {
+            return false;
+        }
+        let bit = 1u64 << n;
+        if self.claimed & bit != 0 || GPIO_SOURCES & bit != 0 {
+            return false;
+        }
+        self.claimed |= bit;
+        true
+    }
+
+    /// Claims GPIO `pin`'s edge interrupt. False if it's taken.
+    pub fn claim_gpio(&mut self, pin: u8) -> bool {
+        if pin > MAX_GPIO {
+            return false;
+        }
+        let (b, bit) = (usize::from(pin / 32), 1u32 << (pin % 32));
+        if self.claimed_gpio[b] & bit != 0 {
+            return false;
+        }
+        self.claimed_gpio[b] |= bit;
+        true
+    }
+
+    /// The first-level handler for the `pending` sources (the caller has
+    /// already serviced its own, e.g. the tick, and left them out).
+    pub fn handle<I: RegisterBus, G: RegisterBus>(
+        &mut self,
+        intc: &mut Intc<I>,
+        gpio: &mut GpioEdges<G>,
+        pending: u64,
+    ) {
+        if pending & GPIO_SOURCES != 0 {
+            let ev = gpio.take_events();
+            for (b, &e) in ev.iter().enumerate() {
+                let mut rest = e;
+                while rest != 0 {
+                    let i = rest.trailing_zeros();
+                    rest &= rest - 1;
+                    gpio.disarm((b as u32 * 32 + i) as u8);
+                    if self.claimed_gpio[b] & (1 << i) != 0 {
+                        self.signalled_gpio[b] |= 1 << i;
+                    } else {
+                        self.unclaimed_gpio[b] |= 1 << i;
+                    }
+                }
+            }
+        }
+        let mut rest = pending & !GPIO_SOURCES;
+        while rest != 0 {
+            let n = rest.trailing_zeros();
+            rest &= rest - 1;
+            intc.disable(n);
+            if self.claimed & (1 << n) != 0 {
+                self.signalled |= 1 << n;
+            } else {
+                self.unclaimed |= 1 << n;
+            }
+        }
+    }
+
+    /// Whether any claimed source or pin is signalled.
+    #[must_use]
+    pub fn any_signalled(&self) -> bool {
+        self.signalled != 0 || self.signalled_gpio.iter().any(|&w| w != 0)
+    }
+
+    /// Takes (and clears) source `n`'s signal.
+    pub fn take_signal(&mut self, n: u32) -> bool {
+        let bit = 1u64 << n;
+        let was = self.signalled & bit != 0;
+        self.signalled &= !bit;
+        was
+    }
+
+    /// Takes (and clears) GPIO `pin`'s signal.
+    pub fn take_gpio_signal(&mut self, pin: u8) -> bool {
+        let (b, bit) = (usize::from(pin / 32), 1u32 << (pin % 32));
+        let was = self.signalled_gpio[b] & bit != 0;
+        self.signalled_gpio[b] &= !bit;
+        was
+    }
+}
+
 /// The OS timer, used for the periodic tick on match register 1.
 pub struct OsTimer<B>(pub B);
 
@@ -103,6 +294,13 @@ impl<B: RegisterBus> OsTimer<B> {
         self.0.write32(ost_reg::OSMR1, now.wrapping_add(period));
         let oier = self.0.read32(ost_reg::OIER) | (1 << 1);
         self.0.write32(ost_reg::OIER, oier);
+    }
+
+    /// Disables the match-1 interrupt.
+    pub fn stop(&mut self) {
+        let oier = self.0.read32(ost_reg::OIER) & !(1 << 1);
+        self.0.write32(ost_reg::OIER, oier);
+        self.0.write32(ost_reg::OSSR, 1 << 1);
     }
 
     /// Acknowledges a match-1 interrupt and re-arms it `period` ticks after the
@@ -126,6 +324,81 @@ impl<B: RegisterBus> OsTimer<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn gpio_edges_arm_and_disarm_only_their_pin() {
+        let mut g = GpioEdges(MockBus::new());
+        g.0.preset(gpio_reg::GRER[2], 1)
+            .preset(gpio_reg::GFER[2], 1);
+        g.arm(94, Edge::Falling); // bank 2, bit 30
+        assert_eq!(g.0.value(gpio_reg::GRER[2]), 1);
+        assert_eq!(g.0.value(gpio_reg::GFER[2]), 1 | (1 << 30));
+        g.arm(94, Edge::Both);
+        assert_eq!(g.0.value(gpio_reg::GRER[2]), 1 | (1 << 30));
+        g.disarm(94);
+        assert_eq!(g.0.value(gpio_reg::GRER[2]), 1);
+        assert_eq!(g.0.value(gpio_reg::GFER[2]), 1);
+        g.arm(100, Edge::Rising); // bank 3 lives at +0x100
+        assert_eq!(g.0.value(0x130), 1 << 4);
+    }
+
+    #[test]
+    fn take_events_clears_what_it_read() {
+        let mut g = GpioEdges(MockBus::new());
+        g.0.preset(gpio_reg::GEDR[2], 1 << 30);
+        assert_eq!(g.take_events(), [0, 0, 1 << 30, 0]);
+        assert_eq!(
+            g.0.writes(),
+            [(gpio_reg::GEDR[2], 1 << 30)],
+            "write-1-to-clear, banks with events only"
+        );
+    }
+
+    #[test]
+    fn claimed_sources_are_masked_and_signalled() {
+        let mut d = Dispatch::new();
+        assert!(d.claim(irq::KEYPAD));
+        assert!(!d.claim(irq::KEYPAD), "claimed once");
+        assert!(!d.claim(irq::GPIO_X), "GPIO summaries are claimed per pin");
+        assert!(!d.claim(40));
+        let mut intc = Intc(MockBus::new());
+        intc.0
+            .preset(intc_reg::ICMR, (1 << irq::KEYPAD) | (1 << irq::MMC));
+        let mut gpio = GpioEdges(MockBus::new());
+        d.handle(&mut intc, &mut gpio, (1 << irq::KEYPAD) | (1 << irq::MMC));
+        assert_eq!(intc.0.value(intc_reg::ICMR), 0, "both masked");
+        assert!(d.take_signal(irq::KEYPAD));
+        assert!(!d.take_signal(irq::KEYPAD), "signal consumed");
+        assert_eq!(d.unclaimed, 1 << irq::MMC, "unowned, recorded");
+        assert!(
+            gpio.0.log().is_empty(),
+            "no GPIO access without a GPIO interrupt"
+        );
+    }
+
+    #[test]
+    fn gpio_pins_are_demultiplexed() {
+        let mut d = Dispatch::new();
+        assert!(d.claim_gpio(94));
+        assert!(!d.claim_gpio(94));
+        assert!(!d.claim_gpio(121));
+        let mut intc = Intc(MockBus::new());
+        let mut gpio = GpioEdges(MockBus::new());
+        gpio.0
+            .preset(gpio_reg::GEDR[2], (1 << 30) | (1 << 1))
+            .preset(gpio_reg::GFER[2], (1 << 30) | (1 << 1));
+        d.handle(&mut intc, &mut gpio, 1 << irq::GPIO_X);
+        assert!(d.any_signalled());
+        assert!(d.take_gpio_signal(94));
+        assert!(!d.take_gpio_signal(94));
+        assert!(!d.any_signalled());
+        assert_eq!(d.unclaimed_gpio[2], 1 << 1, "GPIO 65 had no owner");
+        assert_eq!(gpio.0.value(gpio_reg::GFER[2]), 0, "both pins disarmed");
+        assert!(
+            intc.0.log().is_empty(),
+            "the summary interrupt stays enabled"
+        );
+    }
 
     #[test]
     fn reset_masks_everything_and_sets_dim() {

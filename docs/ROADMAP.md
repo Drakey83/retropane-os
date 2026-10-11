@@ -54,7 +54,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [x] Exception vectors (high), bring-up MMU (identity map: cached RAM, write-combined framebuffer, strict devices), caches, fault reporting *(2026-10-10)*
 - [ ] FCSE slot model (ADR-0003) and demand-paged VM (ADR-0005), 624 MHz turbo plus frequency scaling *(VM layer logic done and host-tested 2026-10-11: page tables, address spaces, demand paging, copy-on-write, ADR-0008 proposed; next: HAL `PhysMem`/`Mmu` for the XScale, reclaim, domains)*
 - [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*; unowned sources masked and reported *(2026-10-11)*
-- [ ] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted 2026-10-11)
+- [x] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted and implemented 2026-10-11: mask-and-signal first-level handler, per-pin GPIO lines; hello sleeps until a button or the pen wakes it)
 - [ ] Scheduler (256 priorities, priority inheritance)
 - [ ] Processes, threads, sync objects, IPC, driver host process
 - [ ] PE loader (host-tested with synthetic PE files)
