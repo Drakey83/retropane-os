@@ -63,7 +63,7 @@ rp_vectors:
     ldr     pc, [pc, #24]
     ldr     pc, [pc, #24]
     ldr     pc, [pc, #24]
-    .word   _start, rp_undef_entry, rp_swi_entry, rp_pabt_entry
+    .word   _start, rp_undef_entry, rp_swi_fault, rp_pabt_entry
     .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_undef_entry
 
     @ IRQ: save the caller-saved registers (AAPCS; 6 words keeps the stack
@@ -79,7 +79,13 @@ rp_undef_entry:
     mov     r0, #1
     sub     r1, lr, #4
     b       rp_fault
-    @ rp_swi_entry (system calls) lives in user.rs.
+    @ SWI with no system-call handler: report and stop. user.rs patches the
+    @ real entry (rp_swi_entry) into the vector page when a handler is set,
+    @ so images without system calls don't link it.
+rp_swi_fault:
+    mov     r0, #2
+    sub     r1, lr, #4
+    b       rp_fault
     @ Aborts: ask rp_abort first. It returns where to resume: the faulting
     @ instruction (a resolved page fault), a fixup (a faulting try_read /
     @ try_write), or 0 to report the fault and stop.
