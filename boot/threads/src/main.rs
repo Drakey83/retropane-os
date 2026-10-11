@@ -53,6 +53,11 @@ mod image {
     const SYS_PRINT: u32 = 0;
     const SYS_YIELD: u32 = 1;
     const SYS_EXIT: u32 = 2;
+    const SYS_MARK: u32 = 3;
+    /// Marks per spinning thread, and the spin between marks (well over one
+    /// quantum of work in the emulator and on the device).
+    const MARKS: usize = 4;
+    const SPIN: u32 = 3_000_000;
 
     /// User stacks handed to the user threads.
     static USTACKS: Global<[Option<&'static mut [u32]>; 2]> = Global::new([None, None]);
@@ -60,6 +65,8 @@ mod image {
     static ULOG: Global<UserLog> = Global::new(UserLog {
         text: [0; 16],
         len: 0,
+        marks: [0; 16],
+        mlen: 0,
         calls: 0,
         not_user: 0,
     });
@@ -67,6 +74,8 @@ mod image {
     struct UserLog {
         text: [u8; 16],
         len: usize,
+        marks: [u8; 16],
+        mlen: usize,
         calls: u32,
         not_user: u32,
     }
@@ -143,20 +152,7 @@ mod image {
         // User mode: two threads at equal priority, each printing its letter
         // and yielding three times through system calls.
         user::set_syscall_handler(on_syscall);
-        let spawned = SCHED.with(|s| -> Result<(), Error> {
-            for i in 0..2 {
-                let kstack = stacks.next().ok_or(Error::Full)?;
-                let ustack = stacks.next().ok_or(Error::Full)?;
-                USTACKS.with(|u| u[i] = Some(ustack));
-                let t = s.create(0, 200)?;
-                thread::prepare(t.index(), kstack, user_trampoline, i);
-            }
-            Ok(())
-        });
-        if spawned.is_err() {
-            let _ = uart.write_str("USER setup FAIL\n");
-            halt();
-        }
+        spawn_user_pair(&mut stacks, user_trampoline);
         wait(done);
         wait(done);
         let (text, len, calls, not_user) = ULOG.with(|l| (l.text, l.len, l.calls, l.not_user));
@@ -173,6 +169,22 @@ mod image {
             &text[..len] == b"ABABAB",
             len as u32,
         );
+
+        // Preemption: two user threads spin without ever making a system
+        // call (a mark after each burst). With a 5 ms quantum the timer must
+        // take the CPU from one mid-spin, so the marks interleave; without
+        // preemption they'd come out AAAABBBB.
+        SCHED.with(|s| s.set_quantum(16_250));
+        rt::set_preempt_hook(preempt);
+        spawn_user_pair(&mut stacks, spin_trampoline);
+        wait(done);
+        wait(done);
+        let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
+        let marks = &marks[..mlen];
+        let a_done = marks.iter().rposition(|&m| m == b'A').unwrap_or(0);
+        let b_first = marks.iter().position(|&m| m == b'B').unwrap_or(usize::MAX);
+        let interleaved = mlen == 2 * MARKS && b_first < a_done;
+        ok &= report(&mut uart, "USER preempted", interleaved, mlen as u32);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -180,10 +192,41 @@ mod image {
         halt()
     }
 
+    /// Starts two user threads at priority 200 (a kernel stack and a user
+    /// stack each), entering through `trampoline(0)` and `trampoline(1)`.
+    #[inline(never)]
+    fn spawn_user_pair(
+        stacks: &mut impl Iterator<Item = &'static mut [u32]>,
+        trampoline: extern "C" fn(usize) -> !,
+    ) {
+        for i in 0..2 {
+            let (Some(kstack), Some(ustack)) = (stacks.next(), stacks.next()) else {
+                panic!("out of stacks");
+            };
+            USTACKS.with(|u| u[i] = Some(ustack));
+            let Ok(t) = SCHED.with(|s| s.create(0, 200)) else {
+                panic!("thread table full");
+            };
+            thread::prepare(t.index(), kstack, trampoline, i);
+        }
+    }
+
     /// A scheduling point: runs the most urgent ready thread.
     fn reschedule() {
+        let (next, deadline) = SCHED.with(|s| {
+            let n = s.schedule(rt::ticks());
+            (n, s.next_deadline())
+        });
+        // Tickless: the timer fires only at the next deadline (the new
+        // thread's quantum end if another could take over, or a sleeper). If
+        // it has already passed, fire almost at once.
+        if let Some(at) = deadline
+            && !rt::set_alarm(at)
+        {
+            let _ = rt::set_alarm(rt::ticks().wrapping_add(64));
+        }
         // The idle thread is always ready, so there's always a next.
-        let Some(next) = SCHED.with(|s| s.schedule(rt::ticks())) else {
+        let Some(next) = next else {
             return;
         };
         let cur = CURRENT.with(|c| core::mem::replace(c, next));
@@ -268,6 +311,34 @@ mod image {
         user::enter_user(user_main, stack, i)
     }
 
+    /// Kernel side of a spinning user thread.
+    extern "C" fn spin_trampoline(i: usize) -> ! {
+        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
+            finish()
+        };
+        user::enter_user(user_spin, stack, i)
+    }
+
+    /// Runs in user mode and never yields: only preemption can switch it.
+    extern "C" fn user_spin(i: usize) -> ! {
+        for _ in 0..MARKS {
+            let mut x = 0u32;
+            for k in 0..SPIN {
+                x = core::hint::black_box(x.wrapping_add(k));
+            }
+            user::syscall(SYS_MARK, u32::from(b'A') + i as u32, x, 0);
+        }
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// After an interrupt from user mode: maybe switch threads.
+    fn preempt() {
+        reschedule();
+    }
+
     /// Runs in user mode: everything it does goes through system calls.
     extern "C" fn user_main(i: usize) -> ! {
         for _ in 0..3 {
@@ -295,6 +366,15 @@ mod image {
                     if l.len < l.text.len() {
                         l.text[l.len] = f.arg(0) as u8;
                         l.len += 1;
+                    }
+                });
+                f.set_result(0);
+            }
+            SYS_MARK => {
+                ULOG.with(|l| {
+                    if l.mlen < l.marks.len() {
+                        l.marks[l.mlen] = f.arg(0) as u8;
+                        l.mlen += 1;
                     }
                 });
                 f.set_result(0);
