@@ -30,7 +30,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
     use rp_hal_pxa27x::rt::{self, Global};
-    use rp_hal_pxa27x::{Mmio, cpu};
+    use rp_hal_pxa27x::{Mmio, cpu, devmap};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
     use rp_kernel_mm::frames::Frames;
@@ -249,12 +249,14 @@ mod image {
     }
 
     fn main() -> ! {
-        let Some(bus) = rt::take_ffuart() else { halt() };
-        let mut uart = PxaUart::new(bus);
-        uart.init(115_200);
+        // Until the kernel's device map is live, print through a temporary
+        // handle at the identity address; the real one is taken after the
+        // switch, so it carries the new virtual address.
+        let mut early = PxaUart::new(rt::emergency_uart());
+        early.init(115_200);
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let _ = writeln!(uart, "\nRetroPane 26 kernel: VM bring-up");
+        let _ = writeln!(early, "\nRetroPane 26 kernel: VM bring-up");
         let mut ok = true;
 
         // 1-2. Frames, then the kernel's own page tables.
@@ -271,33 +273,27 @@ mod image {
                 pool: &mut *pool,
                 l1,
             };
-            // The bring-up map's RAM, peripherals, SRAM and vectors. Not the
-            // device windows below 0x42000000 (CS0-CS5): they'd overlap the
-            // process slots, which is why device windows move to kernel space
-            // next.
-            for r in X51V_BRINGUP {
+            // RAM (identity, where this code runs) and the vectors from the
+            // bring-up map, and every device window at its kernel address
+            // (devmap): nothing at the devices' physical addresses, which lie
+            // in the process slots and the shared area.
+            let ram = X51V_BRINGUP
+                .iter()
+                .filter(|r| r.memory == Memory::Normal && r.phys >= layout::RAM_PHYS)
+                .map(|r| (r.virt, r.phys, r.len, r.memory));
+            let devices = devmap::KERNEL_WINDOWS
+                .iter()
+                .map(|w| (w.virt, w.phys, w.len, w.memory));
+            for (virt, phys, len, memory) in ram.chain(devices) {
                 let attrs = Attrs {
                     ap: Ap::Kernel,
-                    cache: cache_for(r.memory),
+                    cache: cache_for(memory),
                 };
-                // Clip each region to 0x40000000 and up: the peripheral block
-                // (UART, interrupt controller, timer) stays, the CS0-CS5
-                // windows below don't.
-                let end = u64::from(r.virt) + u64::from(r.len);
-                if end <= 0x4000_0000 {
-                    continue;
-                }
-                let mut off = 0x4000_0000u32.saturating_sub(r.virt);
-                while off < r.len {
+                let mut off = 0;
+                while off < len {
                     TABLES
                         .with(|t| {
-                            t.map_section(
-                                &mut mem,
-                                r.virt + off,
-                                r.phys + off,
-                                KERNEL_DOMAIN,
-                                attrs,
-                            )
+                            t.map_section(&mut mem, virt + off, phys + off, KERNEL_DOMAIN, attrs)
                         })
                         .map_err(|e| e.name())?;
                     off += 1 << 20;
@@ -310,17 +306,28 @@ mod image {
         let free_after_setup = match built {
             Ok(n) => n,
             Err(e) => {
-                let _ = writeln!(uart, "VM tables FAIL {e}");
+                let _ = writeln!(early, "VM tables FAIL {e}");
                 halt()
             }
         };
         let l1 = STATE.with(|s| s.l1);
         cpu::set_dacr(arm::dacr((1 << KERNEL_DOMAIN) | (1 << PROC_DOMAIN)));
         cpu::switch_table(l1);
+        devmap::use_kernel_map();
+        let Some(bus) = rt::take_ffuart() else { halt() };
+        let mut uart = PxaUart::new(bus);
         let _ = writeln!(
             uart,
             "VM tables OK (L1 at {l1:#010x}, {free_after_setup} frames free)"
         );
+        // The device map: the UART answers at its kernel address, and its
+        // physical address (in process slot 32) maps nothing.
+        let devmap_ok = with_vm(|vm, _| {
+            vm.tables.translate(vm.mem, 0x9010_0000).map(|(p, _)| p) == Some(0x4010_0000)
+                && vm.tables.translate(vm.mem, 0x4010_0000).is_none()
+                && vm.tables.translate(vm.mem, 0x1000_0000).is_none()
+        });
+        ok &= report(&mut uart, "device map", devmap_ok, 0);
         rt::set_abort_handler(on_abort);
 
         // 3-4. A process in slot 5: zero-fill memory and a private file page.

@@ -307,6 +307,7 @@ const KERNEL_MARKER: &str = "RETROPANE-KERNEL-OK";
 /// Every VM step the kernel image must pass.
 const KERNEL_EXPECT: &[&str] = &[
     "VM tables OK",
+    "VM device map OK",
     "VM zero page OK",
     "VM file page OK",
     "VM copy-on-write OK",

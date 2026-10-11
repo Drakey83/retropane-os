@@ -9,6 +9,7 @@
 //! | `0x04000000..0x42000000` | Slots 2-32: one per process |
 //! | `0x42000000..0x80000000` | Shared memory-mapped files |
 //! | `0x80000000..0x84000000` | Kernel direct map of all 64 MiB of RAM |
+//! | `0x90000000..0x9C100000` | Device windows (`rp_hal_pxa27x::devmap`) |
 //! | `0xFFFF0000` | Exception vectors |
 //!
 //! The CE5 layout below 2 GiB is from Microsoft's public Windows CE 5.0
