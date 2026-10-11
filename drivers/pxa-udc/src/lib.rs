@@ -68,6 +68,8 @@ pub mod reg {
     /// UDCCR: active configuration number.
     pub const ACN_SHIFT: u32 = 11;
 
+    /// UDCISR0/UDCICR0: endpoint 0 packet complete.
+    pub const EP0_PACKET: u32 = 1 << 0;
     /// UDCISR1/UDCICR1: bus reset.
     pub const RESET: u32 = 1 << 27;
     /// Suspend.
@@ -157,6 +159,11 @@ pub struct Stats {
     pub tx_bytes: u32,
     /// The last request: bmRequestType << 8 | bRequest.
     pub last_request: u16,
+    /// Endpoint 0 IN packets written (descriptor answers): with SETUPs
+    /// arriving but this stuck, answers aren't leaving.
+    pub ep0_in: u32,
+    /// `UDCCSR0` when the last SETUP arrived (bring-up diagnostics).
+    pub setup_csr: u32,
 }
 
 /// A byte ring. `N` must be a power of two.
@@ -221,6 +228,8 @@ pub struct Udc<B> {
     configuration: u8,
     rx: Ring<256>,
     tx: Ring<512>,
+    /// A bulk IN packet is waiting for the host.
+    in_busy: bool,
     stats: Stats,
 }
 
@@ -237,6 +246,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             configuration: 0,
             rx: Ring::new(),
             tx: Ring::new(),
+            in_busy: false,
             stats: Stats {
                 resets: 0,
                 setups: 0,
@@ -245,6 +255,8 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 rx_bytes: 0,
                 tx_bytes: 0,
                 last_request: 0,
+                ep0_in: 0,
+                setup_csr: 0,
             },
         }
     }
@@ -268,12 +280,16 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         for (slot, cfg) in TABLE {
             self.bus.write32(reg::cr(slot), cfg);
         }
-        self.udccr(reg::UDE, 0);
         // The X51v's UDC talks through port 2's transceiver: its output must
         // be on (WM leaves UP2OCR = HXOE; with it off the PC sees the device
-        // attach but never gets an answer). Measured, docs/hw/udc.md.
+        // attach but never gets an answer). Measured, docs/hw/udc.md. Only
+        // written when off, and before the UDC is enabled: the run that
+        // enumerated never wrote UP2OCR.
         let up2 = self.bus.read32(reg::UP2OCR);
-        self.bus.write32(reg::UP2OCR, up2 | reg::HXOE);
+        if up2 & reg::HXOE == 0 {
+            self.bus.write32(reg::UP2OCR, up2 | reg::HXOE);
+        }
+        self.udccr(reg::UDE, 0);
         self.bus.write32(reg::csr(0), reg::ACM);
         if self.bus.read32(reg::UDCCR) & reg::EMCE != 0 {
             self.udccr(0, reg::UDE);
@@ -285,6 +301,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             reg::UDCICR1,
             reg::RESET | reg::SUSPEND | reg::RESUME | reg::CONFIG_CHANGE,
         );
+        self.bus.write32(reg::UDCICR0, reg::EP0_PACKET);
         self.ep0 = Ep0::Idle;
         Ok(())
     }
@@ -379,6 +396,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.ep0 = Ep0::Idle;
         self.rx.clear();
         self.tx.clear();
+        self.in_busy = false;
     }
 
     /// SET_CONFIGURATION/SET_INTERFACE, already done by the hardware:
@@ -407,7 +425,12 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 }
             }
             Ep0::InData => {
-                if csr & reg::IPR == 0 {
+                // The next packet only once the previous one has left: the
+                // packet-complete event, as an interrupt-driven driver would
+                // wait for (IPR alone may read clear while a full FIFO is
+                // still waiting for the host's IN token).
+                let sent = self.bus.read32(reg::UDCISR0) & reg::EP0_PACKET != 0;
+                if sent && csr & reg::IPR == 0 {
                     self.send_ep0_packet();
                 }
             }
@@ -432,6 +455,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     }
 
     fn setup(&mut self) {
+        self.stats.setup_csr = self.bus.read32(reg::csr(0));
         let mut raw = [0u8; 8];
         for half in raw.as_chunks_mut::<4>().0 {
             half.copy_from_slice(&self.bus.read32(reg::dr(0)).to_le_bytes());
@@ -472,6 +496,10 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     /// empty one after an exact multiple of 16) needs IPR and ends the data
     /// stage; a full one is sent by the hardware when the FIFO fills.
     fn send_ep0_packet(&mut self) {
+        self.stats.ep0_in += 1;
+        // Clear the packet-complete event; it's set again once this packet
+        // has gone (polled by `poll_ep0`).
+        self.bus.write32(reg::UDCISR0, reg::EP0_PACKET);
         let end = (self.ep0_pos + usb::EP0_SIZE).min(self.ep0_len);
         let chunk = self.ep0_pos..end;
         let n = chunk.len();
@@ -544,11 +572,18 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
 
     /// Bulk IN: one packet per poll when the FIFO has room.
     fn poll_in(&mut self) {
-        if self.tx.len() == 0 {
-            return;
-        }
         let csr = self.bus.read32(reg::csr(SLOT_IN));
-        if csr & reg::BNF == 0 {
+        // One packet in flight at a time: the next only after the previous
+        // one's packet-complete (a short packet doesn't fill the FIFO, so
+        // "not full" alone would let bytes be appended to it).
+        if self.in_busy {
+            if csr & reg::PC == 0 {
+                return;
+            }
+            self.bus.write32(reg::csr(SLOT_IN), reg::PC);
+            self.in_busy = false;
+        }
+        if self.tx.len() == 0 || csr & reg::BNF == 0 {
             return;
         }
         let n = self.tx.len().min(usb::BULK_SIZE);
@@ -570,6 +605,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.bus.write32(reg::csr(SLOT_IN), reg::SP);
         }
         self.stats.tx_bytes += n as u32;
+        self.in_busy = true;
     }
 }
 

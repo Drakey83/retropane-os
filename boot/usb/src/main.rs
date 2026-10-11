@@ -25,9 +25,8 @@ mod image {
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
-    use rp_drv_pxa_udc::reg::{DPPUE, HXOE, UP2OCR, UP3OCR};
+    use rp_drv_pxa_udc::reg::{UP2OCR, UP3OCR};
     use rp_hal_api::RegisterBus;
-    use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
 
@@ -122,31 +121,15 @@ mod image {
                 halt()
             }
         }
+        // Connect: GPIO2 high (confirmed on the device, docs/hw/udc.md).
+        gpio.write(USB_PULLUP, true);
         let _ = writeln!(uart, "{}", super::MARKER);
-
-        // Which signal connects the device is not yet known on this board:
-        // try each way of turning a D+ pull-up on for a while, and stay with
-        // the first one the PC answers (a bus reset).
-        let mut mode = 0;
-        let mut mode_start = rt::ticks();
-        let mut locked = false;
-        connect(&mut gpio, &mut udc, mode, up2);
 
         let mut last_draw = rt::ticks().wrapping_sub(REDRAW);
         let mut was_open = false;
         let mut buf = [0u8; 64];
         loop {
             udc.poll();
-            if !locked {
-                if udc.stats().resets > 0 {
-                    locked = true;
-                    let _ = writeln!(log, "PC answered in mode {mode}: {}", MODES[mode]);
-                } else if rt::ticks().wrapping_sub(mode_start) >= MODE_TIME {
-                    mode = (mode + 1) % MODES.len();
-                    mode_start = rt::ticks();
-                    connect(&mut gpio, &mut udc, mode, up2);
-                }
-            }
             let open = udc.host_open();
             if open && !was_open {
                 udc.write(super::BANNER.as_bytes());
@@ -177,12 +160,9 @@ mod image {
                 let _ = writeln!(st, "RetroPane 26 USB link test");
                 let _ = writeln!(
                     st,
-                    "cable GPIO14={} mode {}{}",
-                    u8::from(gpio.read(USB_DETECT)),
-                    mode,
-                    if locked { " locked" } else { "" }
+                    "cable GPIO14={} GPIO2 high",
+                    u8::from(gpio.read(USB_DETECT))
                 );
-                let _ = writeln!(st, "{}", MODES[mode]);
                 let _ = writeln!(st, "resets {} setups {}", s.resets, s.setups);
                 let _ = writeln!(st, "stalls {} last {:04X}", s.stalls, s.last_request);
                 let _ = writeln!(
@@ -192,31 +172,9 @@ mod image {
                     yes(open)
                 );
                 let _ = writeln!(st, "rx {} tx {}", s.rx_bytes, s.tx_bytes);
+                let _ = writeln!(st, "ep0 in {} csr {:03X}", s.ep0_in, s.setup_csr);
                 let _ = write!(st, "soft-reset to go back");
             }
-        }
-    }
-
-    /// The ways of connecting tried in turn, and how long each gets.
-    const MODES: [&str; 4] = [
-        "GPIO2 high",
-        "GPIO2 low",
-        "UP2OCR pull-up, GPIO2 high",
-        "UP2OCR pull-up, GPIO2 low",
-    ];
-    const MODE_TIME: u32 = 10 * 3_250_000;
-
-    /// Disconnects for a moment (so the PC sees a fresh attach), then applies
-    /// connection `mode`.
-    fn connect(gpio: &mut Gpio<Mmio>, udc: &mut Udc<Mmio>, mode: usize, wm_up2: u32) {
-        // The transceiver output (HXOE) stays on throughout: without it the
-        // PC sees an attach but no answers (found on the device).
-        gpio.write(USB_PULLUP, mode == 1 || mode == 3);
-        udc.write_reg(UP2OCR, (wm_up2 | HXOE) & !DPPUE);
-        rt::delay_us(300_000);
-        gpio.write(USB_PULLUP, mode == 0 || mode == 2);
-        if mode >= 2 {
-            udc.write_reg(UP2OCR, wm_up2 | HXOE | DPPUE);
         }
     }
 
