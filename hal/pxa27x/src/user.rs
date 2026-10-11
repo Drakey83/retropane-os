@@ -107,10 +107,29 @@ rp_enter_user:
 
 static mut HANDLER: Option<fn(&mut Frame)> = None;
 
-/// Sets the kernel's system-call handler.
+unsafe extern "C" {
+    fn rp_swi_entry();
+}
+
+/// Sets the kernel's system-call handler and routes the SWI vector to the
+/// system-call entry (until then it reports a fault, and images that never
+/// call this don't link the entry at all). Call after `rt::init_mmu`.
 pub fn set_syscall_handler(f: fn(&mut Frame)) {
     // SAFETY: set during setup, before any thread can make a system call.
     unsafe { core::ptr::addr_of_mut!(HANDLER).write(Some(f)) }
+    // The vector page holds 8 `ldr pc, [pc, #24]` slots, then their 8
+    // target words: the SWI's target is word 8 + 2.
+    let phys = crate::mmu::VECTORS_PHYS + 4 * 10;
+    let high = 0xFFFF_0000 + 4 * 10;
+    // SAFETY: VECTORS_PHYS is the reserved vector page (identity-mapped
+    // RAM, see boot/link.x), written only here and by init_mmu; the word is
+    // read by the SWI vector, which can't run concurrently on one core
+    // during setup.
+    unsafe { (phys as *mut u32).write_volatile(rp_swi_entry as *const () as usize as u32) };
+    // VIVT: the same word is also cached under the high-vector address.
+    // Write it back through this alias and drop both aliases' lines.
+    crate::cpu::clean_invalidate_range(phys, 4);
+    crate::cpu::clean_invalidate_range(high, 4);
 }
 
 #[unsafe(no_mangle)]
