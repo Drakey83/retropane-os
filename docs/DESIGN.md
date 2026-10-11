@@ -492,6 +492,9 @@ takes it down:
 1. **On-screen crash screen.** The loader inherits Windows Mobile's working display,
    so the very first kernel code can draw text. Panics show a RetroPane "blue
    screen" with the reason, registers and backtrace.
+   *(Implemented for bring-up: images draw a boot log and a red crash box; the
+   SD-card probe image, `boot/probe`, shows everything we need from a real
+   device in pages with per-line checksums, read from a phone photo.)*
 2. **Crash log that survives a reboot.** Panic data goes into a reserved RAM area
    that keeps its contents through a soft reset (SDRAM self-refresh). The next
    boot sends it over USB and saves it to SD.
@@ -582,7 +585,7 @@ Testing is part of the architecture, not an afterthought.
 | **Property / fuzz** | PE loader, network stack, TLS glue, file system, font/image parsers | Host (`proptest`, `cargo-fuzz`) | Nightly CI |
 | **Integration** | Boot the OS in the emulator, run scripted scenarios over the serial console, compare screenshots with golden images | Emulator in CI | Every PR |
 | **Compat** | Launch each corpus app in the emulator; record pass/fail/crash; track it as a dashboard over time | Emulator (binaries user-supplied, not in CI) | Weekly / on demand |
-| **Hardware-in-the-loop** | Same integration scripts on the real X51v over serial (`tools/hwtest`) | Real device | Before each milestone |
+| **Hardware-in-the-loop** | Same integration scripts on the real X51v over serial (`tools/hwtest`); until USB works, the on-screen probe (`boot/probe`) reports state and benchmark numbers for a phone photo | Real device | Before each milestone |
 | **Performance** | Boot time, frame time, memory budgets, context switch cost | Emulator (relative), device (absolute) | Per milestone |
 
 ### 12.2 Rules
