@@ -5,6 +5,7 @@ members = [
     "hal/mock",
     "hal/pxa27x",
     "hal/x51v",
+    "hal/mem",
     "drivers/pxa-uart",
     "drivers/mbx-display",
     "drivers/cpld",

@@ -1,0 +1,11 @@
+[package]
+name = "rp-hal-mem"
+description = "memcpy/memmove/memset/memcmp for RetroPane, with ARMv5 ldm/stm bulk loops"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

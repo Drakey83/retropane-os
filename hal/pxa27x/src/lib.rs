@@ -13,6 +13,11 @@ use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
 
+// Every bare-metal image gets RetroPane's memcpy family (ldm/stm bulk loops)
+// instead of compiler-builtins' (docs/perf.md).
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+use rp_hal_mem as _;
+
 /// Physical base of the full-function UART (FFUART).
 pub const FFUART_BASE: usize = 0x4010_0000;
 /// Size of each UART's register window.

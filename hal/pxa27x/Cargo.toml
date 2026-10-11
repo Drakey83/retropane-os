@@ -10,5 +10,9 @@ publish.workspace = true
 [dependencies]
 rp-hal-api = { path = "../api" }
 
+# Bare-metal images link RetroPane's memcpy family.
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-mem = { path = "../mem" }
+
 [lints]
 workspace = true

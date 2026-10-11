@@ -222,7 +222,6 @@ fn cross() -> Result {
         "--target".into(),
         TARGET_SPEC.into(),
         "-Zbuild-std=core,compiler_builtins".into(),
-        "-Zbuild-std-features=compiler-builtins-mem".into(),
         "-Zjson-target-spec".into(),
     ];
     for c in crates
