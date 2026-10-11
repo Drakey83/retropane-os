@@ -67,6 +67,7 @@ dependencies = [
  "rp-drv-sdcard",
  "rp-hal-pxa27x",
  "rp-kernel-mm",
+ "rp-lz4",
 ]
 
 [[package]]
@@ -203,6 +204,10 @@ version = "0.0.0"
 
 [[package]]
 name = "rp-kernel-pe"
+version = "0.0.0"
+
+[[package]]
+name = "rp-lz4"
 version = "0.0.0"
 
 [[package]]

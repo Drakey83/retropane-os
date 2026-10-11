@@ -17,6 +17,7 @@ members = [
     "drivers/pxa-mmc",
     "kernel/mm",
     "kernel/pe",
+    "kernel/lz4",
     "boot/hello",
     "boot/bench",
     "boot/suite",

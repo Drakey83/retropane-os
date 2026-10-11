@@ -12,6 +12,7 @@ rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-kernel-mm = { path = "../../kernel/mm" }
+rp-lz4 = { path = "../../kernel/lz4" }
 
 [lints]
 workspace = true

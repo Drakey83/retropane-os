@@ -38,6 +38,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | Interrupt-driven input (ADR-0007), then: non-generic critical sections, a plain bounds-check message in `Mmio` (no offset formatting at every register access), all integers printed as `u32` (one formatter per kind) | `rp-hello` loaded size | 18,392 B (polling) → 20,904 B (IRQ lines) | 19,544 B |
 | 2026-10-11 | `tlb_fit/spill` raised from 64 to 1024 rounds: at 64 a run was ~26 timer ticks, so code-layout noise of one tick read as a 4% "regression". Baseline re-recorded (measurement fix, not a code change) | `tlb_fit_16` resolution | ±4% | ±0.3% |
 | 2026-10-11 | First live page faults (`boot/kernel`): zero-fill fault including abort entry, `handle_fault`, frame allocation, zeroing and mapping. Emulator real time (no `-icount`), so only a smoke number until it runs on the device | `vm_fault_zero` | — | ~22 µs (emulated) |
+| 2026-10-11 | LZ4 block codec (`kernel/lz4`, ADR-0005 rules 4 and 6): first measurement on a heap-shaped 4 KiB page (pointers and small integers). Correct but slow: ~26 emulated instructions per decoded byte, where LZ4 can do a few. Baseline for optimisation | `lz4_decompress_page` | — | 105,803 ns |
+| 2026-10-11 | (same) | `lz4_compress_page` | — | 130,212 ns |
 
 ## Open leads
 
@@ -48,5 +50,9 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
   DMA and 4-bit mode need real-hardware numbers.
 - Get the first real X51v numbers for all benchmarks: `cargo xtask sdkit`
   now boots the probe, which shows them on screen for a photo.
+- LZ4: short literal and match copies go through `memcpy`/`memmove` calls,
+  and unaligned 32-bit reads cost four byte loads on ARMv5. Inline small
+  copies, slide the compressor's 4-byte window instead of re-reading it, and
+  skip faster over incompressible data.
 - ADR-0006: page tables in on-chip SRAM, 64 KiB large pages, DMA pre-zeroing:
   each needs before/after numbers on hardware.

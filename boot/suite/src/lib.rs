@@ -201,6 +201,34 @@ mod target {
         }
     }
 
+    /// LZ4 on a 4 KiB page (ADR-0005: compressed RAM and storage): compress
+    /// and decompress a page shaped like heap data (pointers and small
+    /// integers), and check the round trip on the CPU. `scratch` needs
+    /// 16 KiB.
+    pub fn lz4(r: &mut Runner, scratch: &mut [u8]) {
+        let (page, rest) = scratch.split_at_mut(4096);
+        let (packed, rest) = rest.split_at_mut(rp_lz4::max_compressed(4096));
+        let back = &mut rest[..4096];
+        for (i, w) in page.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let i = i as u32;
+            let v = if i % 3 == 0 {
+                0xA800_0000 + (i % 37) * 16
+            } else {
+                i % 11
+            };
+            *w = v.to_le_bytes();
+        }
+        let n = rp_lz4::compress(page, packed).unwrap_or(0);
+        let ok = n > 0 && rp_lz4::decompress(&packed[..n], back) == Ok(4096) && back == &page[..];
+        r.check("lz4", ok, if ok { "" } else { "round trip" });
+        r.run("lz4_compress_page", 16, &mut || {
+            black_box(rp_lz4::compress(black_box(&page[..]), packed).ok());
+        });
+        r.run("lz4_decompress_page", 64, &mut || {
+            black_box(rp_lz4::decompress(black_box(&packed[..n]), back).ok());
+        });
+    }
+
     /// Checks the memcpy family on the real CPU for every size 0..=300 and
     /// every alignment, including overlapping moves and comparisons.
     fn check_mem(buf: &mut [u8]) -> Result<(), &'static str> {

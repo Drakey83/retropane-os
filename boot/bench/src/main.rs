@@ -56,6 +56,7 @@ mod image {
         suite::frames(&mut r);
         if let Some(scratch) = rp_hal_x51v::devices::take_scratch() {
             suite::memory(&mut r, scratch);
+            suite::lz4(&mut r, &mut scratch[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut scratch[..256 * 1024]);
         }
         if let Some(sram) = diag::take_sram() {
