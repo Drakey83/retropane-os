@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-[dependencies]
+# Device access (`devices`) exists only in bare-metal builds.
+[target.'cfg(target_os = "none")'.dependencies]
 rp-hal-pxa27x = { path = "../pxa27x" }
 
 [lints]
