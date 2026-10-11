@@ -63,8 +63,13 @@ Facts (docs/hw/udc.md):
 
 ## Implementation status (2026-10-11)
 
-- **U1 built, device test pending:** `rp-drv-pxa-udc` (15 tests against a
-  simulated host), `rp-usb`, `cargo xtask usb`.
+- **U1 works on the device (2026-10-11):** the X51v enumerates on Windows 11
+  as a COM port with the built-in driver; `cargo xtask usb` got the banner
+  and its echo back. Four device-measured facts fixed on the way
+  (docs/hw/udc.md): the status IN of host-to-device requests, one packet in
+  flight, only the active interface's endpoints work, and the transceiver
+  output bit. Open: the PC notices the device only after a cable replug
+  (the D+ pull-up control is not GPIO2, or not only).
 - **U3 built, emulator-tested:** `rp-loadproto` (framing + CRC-32),
   `rp-loader` (moves itself to `0xA8400000`, reserved in boot/link.x and
   memory-map.md), `handoff::launch` (caches and MMU off, as HaRET leaves
