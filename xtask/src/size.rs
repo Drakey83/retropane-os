@@ -85,6 +85,12 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 22 * 1024,
         max_zero: 20 * 1024,
     },
+    // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
+    Budget {
+        image: "rp-reconnect",
+        max_load: 24 * 1024,
+        max_zero: 20 * 1024,
+    },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     Budget {
         image: "rp-light",

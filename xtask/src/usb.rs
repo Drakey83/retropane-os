@@ -225,7 +225,7 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
         Some("RPL OK") | None => {
             if reply.is_none() {
                 eprintln!(
-                    "    {} bytes sent on {port}; no reply read (the device disconnects to run                      the image, so this is usual): waiting for the run log",
+                    "    {} bytes sent on {port}; no reply read (the device disconnects to run the image, so this is usual): waiting for the run log",
                     payload.len()
                 );
             } else {
