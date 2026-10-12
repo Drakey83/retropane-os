@@ -553,6 +553,20 @@ on the host or in the emulator first.
     - **Modernize:** an idle device that actually idles: less heat and
       battery while docked and waiting.
 
+## Ninth tier (added 2026-10-12, same rules)
+
+32. **HMAC-SHA256 and the loader's security, designed**: HMAC (RFC 2104)
+    in `rp-crypto`, checked against RFC 4231's test vectors (the next
+    building block for TLS's key schedule and for authenticated frames);
+    ADR-0017 (proposed): how the development loader stops running whatever
+    any USB host sends (the threat: someone at the cradle), given that the
+    card is visible to the PC as a drive, so a key file on it would be
+    readable by the very attacker it is meant to stop.
+33. **Deleting files**: `rm` on FAT32 and exFAT, crash-safe (the entry goes
+    in one sector write, then the clusters are freed: a cut leaks space at
+    worst), through the loader (`cargo xtask rm`), checked with `card
+    check` after power cuts at every write.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
