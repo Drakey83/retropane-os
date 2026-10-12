@@ -522,6 +522,19 @@ on the host or in the emulator first.
     - **Modernize:** a built-in, read-only fsck that explains, rather than
       silently "repairing".
 
+## Eighth tier (added 2026-10-12, same rules)
+
+30. **SHA-256 for what the loader receives**: a `rp-crypto` crate (SHA-256,
+    checked against the published test vectors, constant-memory streaming);
+    the loader reports the SHA-256 of each image it starts and file it
+    saves, and `cargo xtask load`/`put` compare it with their own: a real
+    fingerprint instead of a CRC (which only catches line noise), and the
+    groundwork for TLS (Phase 6) and signed images.
+31. **The loader idles**: between polls it sleeps until the next timer tick
+    or interrupt instead of spinning flat out (battery and heat on the
+    device), and `drive status` reports how idle it was; emulator test
+    checks an idle loader is mostly asleep and still answers at once.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
