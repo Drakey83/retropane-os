@@ -1430,6 +1430,59 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The backlight through the loader: `backlight 30` must fade PWM0 to the
+/// perceptual 30% (9% duty: 19 of 216 counts) and `backlight 100` to full
+/// duty, checked in the emulator's PWM registers through the monitor.
+pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) || !device_has(root, "pxa27x-pwm", "dcr0") {
+        eprintln!("    backlight: skipped (no USB or PWM model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let args = usb_args(9);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let port = monitor_port();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(9)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&rp_loadproto::control_frame("backlight 30"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK backlight 30% (duty 19/216)", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+        let pcr = mon.query("qom-get /machine/peripheral/pwm pcr0")?;
+        if dcr != "19" || pcr != "215" {
+            return Err(format!(
+                "backlight: PWM0 duty {dcr}, period {pcr}; wanted 19, 215"
+            ));
+        }
+        s.write_all(&rp_loadproto::control_frame("backlight 100"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK backlight 100% (duty 216/216)", 10)?;
+        let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+        if dcr != "1024" {
+            return Err(format!("backlight: 100% isn't full duty (DCR {dcr})"));
+        }
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    eprintln!("    backlight OK: faded to 30% and 100% through the loader, checked in PWM0");
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 

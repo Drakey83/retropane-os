@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-pxa-pwm"
+description = "PXA27x PWM and the backlight on it: perceptual levels, smooth fades, Windows Mobile's period kept"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

@@ -35,6 +35,7 @@ mod image {
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_mmc::PxaMmc;
+    use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
@@ -466,6 +467,26 @@ mod image {
         let _ = out.write_str("\r\n");
     }
 
+    /// `backlight` reports the level; `backlight <0-100>` fades to it
+    /// (perceptual percent, rp-drv-pxa-pwm).
+    #[inline(never)]
+    fn backlight_command(bl: Option<&mut Backlight<Mmio>>, args: &[u8], out: &mut Line) {
+        let Some(bl) = bl else {
+            let _ = out.write_str("RPL ERR backlight: PWM0 unavailable\r\n");
+            return;
+        };
+        if args.iter().any(|b| !b.is_ascii_whitespace()) {
+            let Some(level) = parse_number(args).filter(|&l| l <= 100) else {
+                let _ = out.write_str(LoadError::BadCommand.reply());
+                return;
+            };
+            bl.fade_to(level, &mut |us| rt::delay_us(us));
+        }
+        let level = bl.level();
+        let (on, counts) = bl.duty();
+        let _ = write!(out, "RPL OK backlight {level}% (duty {on}/{counts})\r\n");
+    }
+
     /// A decimal number from a command's argument (spaces ignored).
     fn parse_number(args: &[u8]) -> Option<u32> {
         args.iter()
@@ -822,6 +843,8 @@ mod image {
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 1);
+        // The backlight, left as Windows Mobile set it until asked.
+        let mut backlight = rt::take_pwm0().map(Backlight::new);
         udc.set_msc_luns(1);
         // Layout fallback: if the PC keeps trying (bus resets) but never
         // configures the composite device, offer the serial-only layout it
@@ -943,6 +966,10 @@ mod image {
                                     card_note
                                 ),
                             );
+                            status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"backlight") => {
+                            backlight_command(backlight.as_mut(), &c[9..], &mut status);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card peek ") => {

@@ -122,6 +122,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-pwm"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-ssp"
 version = "0.0.0"
 dependencies = [
@@ -260,6 +268,7 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-mmc",
+ "rp-drv-pxa-pwm",
  "rp-drv-pxa-uart",
  "rp-drv-pxa-udc",
  "rp-drv-sdcard",
