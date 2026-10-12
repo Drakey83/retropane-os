@@ -866,10 +866,20 @@ on the host or in the emulator first.
 
 ## Twelfth tier: the design brief (owner, 2026-10-12; docs/design-brief.md)
 
-49. **Pinned memory**: regions marked pinned are never aged, compressed or
-    evicted by reclaim, for the input path, the compositor's working set and
-    the scheduler's hot data; a per-process limit on pinned memory so a
-    program can't pin the device full.
+49. **Pinned memory**: **done (emulator).** `Prot::pinned()`: a pinned
+    region is never aged, compressed or evicted; `Vm::populate` loads its
+    pages up front (private copies made now), so later touches never fault.
+    Each space has a pin limit (64 KiB for apps; the kernel can raise it for
+    trusted services such as the compositor), checked by `map` and
+    `protect`; changing a pinned region's permissions keeps the pin. 2 host
+    tests; live: 4 pinned pages loaded up front survive three full reclaim
+    sweeps of the process, contents intact, with zero faults on touch
+    (`VM pinned OK`, required by the emulator test). Fits the budget.
+    - **Iterate:** CE had `LockPages` per call; here pinning is a property
+      of the region, so the guarantee can't be forgotten halfway.
+    - **Modernize:** like `mlock` with a per-process limit, so pinning
+      can't be used to starve the device; the input path stays
+      deterministic while everything else compresses.
 
 50. **Boot time as a budget**: each image measures and prints its own
     time from reset to ready (`BENCH boot_*`), recorded in perf.md; drivers

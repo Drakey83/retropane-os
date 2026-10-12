@@ -70,6 +70,21 @@ impl Prot {
     pub const fn exec(self) -> bool {
         self.0 & 4 != 0
     }
+
+    /// The same permissions, *pinned*: the region's pages are loaded when
+    /// [`Vm::populate`] asks and then never aged, compressed or evicted
+    /// (the input path, the compositor's working set). Pinned memory
+    /// counts against the space's pin limit.
+    #[must_use]
+    pub const fn pinned(self) -> Self {
+        Self(self.0 | 8)
+    }
+
+    /// Whether pinned.
+    #[must_use]
+    pub const fn is_pinned(self) -> bool {
+        self.0 & 8 != 0
+    }
 }
 
 /// What a region's pages hold.
@@ -147,6 +162,11 @@ impl Region {
     }
 }
 
+/// Pinned memory a space may hold unless the kernel raises its limit (a
+/// trusted service such as the compositor): an app can't pin the device
+/// full.
+pub const DEFAULT_PIN_LIMIT: u32 = 64 * 1024;
+
 /// Regions per address space (ADR-0005 rule 9: bounded). A WM app with a
 /// dozen DLLs uses a few dozen.
 pub const MAX_REGIONS: usize = 64;
@@ -165,6 +185,8 @@ pub enum SpaceError {
     SharedWriteNotGlobal,
     /// [`MAX_REGIONS`] reached.
     TooManyRegions,
+    /// Pinning this would exceed the space's pin limit.
+    PinLimit,
 }
 
 impl SpaceError {
@@ -177,6 +199,7 @@ impl SpaceError {
             SpaceError::WriteExec => "write+exec",
             SpaceError::SharedWriteNotGlobal => "shared write outside shared area",
             SpaceError::TooManyRegions => "too many regions",
+            SpaceError::PinLimit => "pin limit",
         }
     }
 }
@@ -187,6 +210,7 @@ pub struct AddressSpace {
     hi: u32,
     domain: u32,
     allow_wx: bool,
+    pin_limit: u32,
     regions: [Option<Region>; MAX_REGIONS],
     count: usize,
 }
@@ -212,6 +236,7 @@ impl AddressSpace {
             hi,
             domain,
             allow_wx: false,
+            pin_limit: DEFAULT_PIN_LIMIT,
             regions: [None; MAX_REGIONS],
             count: 0,
         }
@@ -226,6 +251,7 @@ impl AddressSpace {
         self.hi = self.lo + layout::SLOT_SIZE;
         self.domain = domain;
         self.allow_wx = false;
+        self.pin_limit = DEFAULT_PIN_LIMIT;
         self.regions[..self.count].fill(None);
         self.count = 0;
     }
@@ -234,6 +260,21 @@ impl AddressSpace {
     /// that generate code (emulators with dynamic recompilers, for example).
     pub fn allow_write_exec(&mut self) {
         self.allow_wx = true;
+    }
+
+    /// Sets how much memory this space may pin (the kernel's decision, for
+    /// trusted services; apps keep [`DEFAULT_PIN_LIMIT`]).
+    pub fn set_pin_limit(&mut self, bytes: u32) {
+        self.pin_limit = bytes;
+    }
+
+    /// Bytes of pinned regions.
+    #[must_use]
+    pub fn pinned_bytes(&self) -> u64 {
+        self.regions()
+            .filter(|r| r.prot.is_pinned())
+            .map(|r| u64::from(r.len))
+            .sum()
     }
 
     /// Moves this space to another ARM domain (it gained or lost one, see
@@ -306,6 +347,10 @@ impl AddressSpace {
         {
             return Err(SpaceError::Overlap);
         }
+        if r.prot.is_pinned() && self.pinned_bytes() + u64::from(r.len) > u64::from(self.pin_limit)
+        {
+            return Err(SpaceError::PinLimit);
+        }
         self.insert(r)
     }
 
@@ -375,7 +420,8 @@ impl AddressSpace {
     }
 
     /// Changes the permissions of `start..start + len`, which must be fully
-    /// covered by regions.
+    /// covered by regions. Pinned pieces stay pinned; `prot` may pin more
+    /// (within the pin limit).
     pub fn protect(&mut self, start: u32, len: u32, prot: Prot) -> Result<(), SpaceError> {
         self.check_range(start, len)?;
         let mut pieces = [None; MAX_REGIONS];
@@ -397,8 +443,24 @@ impl AddressSpace {
         if covered != u64::from(len) {
             return Err(SpaceError::BadRange);
         }
+        if prot.is_pinned() {
+            let newly: u64 = pieces[..n]
+                .iter()
+                .flatten()
+                .filter(|p| !p.prot.is_pinned())
+                .map(|p| u64::from(p.len))
+                .sum();
+            if self.pinned_bytes() + newly > u64::from(self.pin_limit) {
+                return Err(SpaceError::PinLimit);
+            }
+        }
         self.carve(start, len, |_| {})?;
         for p in pieces[..n].iter().flatten() {
+            let prot = if p.prot.is_pinned() {
+                prot.pinned()
+            } else {
+                prot
+            };
             self.insert(Region { prot, ..*p })?;
         }
         Ok(())
@@ -684,7 +746,7 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         let Some(r) = space.find(page) else {
             return Ok(false);
         };
-        if r.backing != Backing::Zero {
+        if r.backing != Backing::Zero || r.prot.is_pinned() {
             return Ok(false);
         }
         let Some((phys, _)) = self.tables.translate(self.mem, page) else {
@@ -736,6 +798,44 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
             )
             .map_err(FaultError::Map)?;
         Ok(Outcome::CopiedOnWrite)
+    }
+
+    /// Loads every page of `start..start + len` now (each as its first touch
+    /// would: zero-filled, from the page cache, or decompressed; writable
+    /// pages already private), so later touches never fault: for pinned
+    /// regions on the input path. Returns how many pages it loaded.
+    pub fn populate(
+        &mut self,
+        space: &AddressSpace,
+        start: u32,
+        len: u32,
+    ) -> Result<u32, FaultError> {
+        let mut loaded = 0;
+        let mut page = start & !(PAGE - 1);
+        let end = u64::from(start) + u64::from(len);
+        while u64::from(page) < end {
+            let r = *space.find(page).ok_or(FaultError::NoRegion)?;
+            let access = if r.prot.write() {
+                Access::Write
+            } else {
+                Access::Read
+            };
+            if self.tables.translate(self.mem, page).is_none() {
+                self.handle_fault(space, page, access)?;
+                loaded += 1;
+            }
+            // A private file page mapped read-only so far: make the copy now.
+            if access == Access::Write
+                && self
+                    .tables
+                    .translate(self.mem, page)
+                    .is_some_and(|(_, a)| !a.ap.user_writable())
+            {
+                self.handle_fault(space, page, Access::Write)?;
+            }
+            page += PAGE;
+        }
+        Ok(loaded)
     }
 
     /// Compresses the frame at `phys` into the store: its handle, or `None`
@@ -959,9 +1059,9 @@ fn decode_aged(raw: u32) -> Option<(usize, bool)> {
 }
 
 /// Whether reclaim may take pages from `r` (everything but device and
-/// fixed physical windows).
+/// fixed physical windows, and pinned regions).
 fn reclaimable(r: &Region) -> bool {
-    !matches!(r.backing, Backing::Phys { .. })
+    !matches!(r.backing, Backing::Phys { .. }) && !r.prot.is_pinned()
 }
 
 /// The first reclaimable page at or after `hand`, wrapping to the lowest.
@@ -1776,5 +1876,58 @@ mod tests {
             Err(SpaceError::WriteExec)
         );
         assert!(s.map(zero(b9 + 0x10000, 0x1000, Prot::RW)).is_ok());
+    }
+
+    #[test]
+    fn pinned_pages_stay_resident_through_reclaim() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(zero(a, 0x2000, Prot::RW.pinned())).unwrap();
+        s.map(zero(a + 0x2000, 0x2000, Prot::RW)).unwrap();
+        // Populating loads the pinned pages now: no fault later.
+        assert_eq!(w.vm().populate(&s, a, 0x2000), Ok(2));
+        assert_eq!(w.vm().populate(&s, a, 0x2000), Ok(0), "already there");
+        resident(&mut w, &s, a + 0x2000, 2);
+        let mut hand = a;
+        for _ in 0..3 {
+            w.vm().reclaim(&s, &mut hand, 8, u32::MAX).unwrap();
+        }
+        // The ordinary pages went; the pinned ones never left.
+        assert!(w.tables.translate(&mut w.ram, a).is_some());
+        assert!(w.tables.translate(&mut w.ram, a + 0x1000).is_some());
+        assert!(w.tables.translate(&mut w.ram, a + 0x2000).is_none());
+        assert_eq!(
+            w.vm().compress(&s, a),
+            Ok(false),
+            "pinned: never compressed"
+        );
+    }
+
+    #[test]
+    fn pinning_is_limited_and_survives_protect() {
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        let limit = DEFAULT_PIN_LIMIT;
+        assert_eq!(
+            s.map(zero(a, limit + 0x1000, Prot::RW.pinned())),
+            Err(SpaceError::PinLimit)
+        );
+        s.map(zero(a, limit, Prot::RW.pinned())).unwrap();
+        assert_eq!(s.pinned_bytes(), u64::from(limit));
+        // More pinning is refused, by map or by protect.
+        let b = a + limit;
+        s.map(zero(b, 0x1000, Prot::RW)).unwrap();
+        assert_eq!(
+            s.protect(b, 0x1000, Prot::R.pinned()),
+            Err(SpaceError::PinLimit)
+        );
+        // Changing a pinned region's permissions keeps it pinned.
+        s.protect(a, 0x1000, Prot::R).unwrap();
+        assert!(s.find(a).unwrap().prot.is_pinned());
+        assert_eq!(s.pinned_bytes(), u64::from(limit));
+        // The kernel can raise a trusted service's limit.
+        s.set_pin_limit(limit + 0x1000);
+        assert!(s.protect(b, 0x1000, Prot::R.pinned()).is_ok());
     }
 }
