@@ -119,6 +119,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-pxa-i2c"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
+name = "rp-drv-pxa-i2s"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-pxa-keypad"
 version = "0.0.0"
 dependencies = [
@@ -179,6 +195,13 @@ version = "0.0.0"
 dependencies = [
  "rp-hal-api",
  "rp-hal-mock",
+]
+
+[[package]]
+name = "rp-drv-wm8750"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
 ]
 
 [[package]]
@@ -282,11 +305,14 @@ dependencies = [
  "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
+ "rp-drv-pxa-i2c",
+ "rp-drv-pxa-i2s",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-pwm",
  "rp-drv-pxa-uart",
  "rp-drv-pxa-udc",
  "rp-drv-sdcard",
+ "rp-drv-wm8750",
  "rp-fat",
  "rp-hal-api",
  "rp-hal-pxa27x",

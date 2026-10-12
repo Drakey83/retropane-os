@@ -402,9 +402,21 @@ on the host or in the emulator first.
     removed). Proposed: a Thumb target for cold code with the HAL's
     coprocessor assembly and hot loops marked ARM, where a missed mark is a
     build error, not a device fault; steps measured in the emulator first.
-22. **Audio**: WM8750 codec over I2S with DMA (QEMU has both models): a
-    tone through the loader, measured, as the start of ROADMAP Phase 3
-    audio.
+22. **Audio**: **first sound done in the emulator; device run pending
+    (with the owner there).** `rp-drv-pxa-i2c` (polled master, bounded,
+    a refused transaction always ends in a stop), `rp-drv-wm8750` (found
+    at either address, playback set-up, volume in 1 dB steps, changes at
+    zero crossings), `rp-drv-pxa-i2s` (PXA clock master, 48/44.1 kHz) with
+    `Tone` (fixed-point sine, accurate to 0.1%). Loader `tone <hz> <ms>`.
+    Emulator rp-v0.9.8: the WM8750 and I2S models wired into the x51v
+    machine with a recordable output; `boot_loader_tone` records
+    `tone 440 500` to a wav and measures 439.6 Hz for 0.496 s. 11 new host
+    tests. Spec: `docs/hw/audio.md`. DMA streaming is the next step.
+    - **Iterate:** the codec is found rather than assumed (the address
+      isn't documented), volume steps are even to the ear, and the test
+      listens to the output instead of trusting the register writes.
+    - **Modernize:** sound tested in CI like everything else, from the
+      register writes to the pitch of what comes out.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
