@@ -274,6 +274,7 @@ dependencies = [
  "rp-hal-x51v",
  "rp-kernel-ipc",
  "rp-kernel-mm",
+ "rp-kernel-sched",
 ]
 
 [[package]]

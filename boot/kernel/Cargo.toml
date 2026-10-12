@@ -13,6 +13,7 @@ rp-hal-x51v = { path = "../../hal/x51v" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-kernel-mm = { path = "../../kernel/mm" }
 rp-kernel-ipc = { path = "../../kernel/ipc" }
+rp-kernel-sched = { path = "../../kernel/sched" }
 rp-hal-mem = { path = "../../hal/mem" }
 
 [lints]
