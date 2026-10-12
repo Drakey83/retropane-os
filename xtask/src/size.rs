@@ -199,6 +199,119 @@ pub const BUDGETS: &[Budget] = &[
     },
 ];
 
+/// The device's RAM (docs/memory-budget.md).
+pub const DEVICE_RAM: u64 = 64 << 20;
+/// What the OS must leave for apps: at least what Windows Mobile leaves on
+/// the owner's X51v (about 52 MB free).
+pub const APP_RAM_FLOOR: u64 = 52 << 20;
+
+/// A part of the OS and the RAM it may take, top-down
+/// (docs/memory-budget.md). The images listed count against it with their
+/// whole budgets (loaded + zeroed).
+pub struct Allotment {
+    /// What it is.
+    pub part: &'static str,
+    /// Its share of RAM.
+    pub bytes: u64,
+    /// The images built so far that belong to it.
+    pub images: &'static [&'static str],
+}
+
+const MIB: u64 = 1 << 20;
+
+/// The OS's parts: together at most `DEVICE_RAM - APP_RAM_FLOOR`.
+pub const ALLOTMENTS: &[Allotment] = &[
+    Allotment {
+        part: "kernel image (code, data, static tables, stacks)",
+        bytes: MIB,
+        images: &["rp-kernel"],
+    },
+    Allotment {
+        part: "kernel memory in use (page tables, compressed store, thread stacks)",
+        bytes: MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "driver hosts (storage, display+input, audio, connectivity, power)",
+        bytes: MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "service manager and system services (files, registry)",
+        bytes: MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "window manager (GWES), shell, Today screen",
+        bytes: 3 * MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "Windows Mobile libraries (coredll, aygshell, GDI, GAPI; shared code)",
+        bytes: 2 * MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "networking (TCP/IP, TLS 1.3, Wi-Fi)",
+        bytes: 2 * MIB,
+        images: &[],
+    },
+    Allotment {
+        part: "headroom",
+        bytes: MIB,
+        images: &[],
+    },
+];
+
+/// Checks the top-down budget: the parts and the apps' floor fit the
+/// device, each image belongs to one part at most, and each part's images'
+/// budgets fit inside it.
+pub fn check_allotments(
+    budgets: &[Budget],
+    allotments: &[Allotment],
+    device: u64,
+    floor: u64,
+) -> Result<(), String> {
+    let total: u64 = allotments.iter().map(|a| a.bytes).sum();
+    if total + floor > device {
+        return Err(format!(
+            "the OS's parts take {} KiB: with {} KiB kept for apps that is more than the device's {} KiB (docs/memory-budget.md)",
+            total / 1024,
+            floor / 1024,
+            device / 1024
+        ));
+    }
+    for a in allotments {
+        let mut used = 0;
+        for image in a.images {
+            if allotments
+                .iter()
+                .filter(|o| o.images.contains(image))
+                .count()
+                > 1
+            {
+                return Err(format!(
+                    "{image} is counted in two parts of the memory budget"
+                ));
+            }
+            let b = budgets
+                .iter()
+                .find(|b| b.image == *image)
+                .ok_or_else(|| format!("{image} is in the memory budget but has no size budget"))?;
+            used += b.max_load + b.max_zero;
+        }
+        if used > a.bytes {
+            return Err(format!(
+                "{}: its images' budgets ({} KiB) exceed its share ({} KiB) of the memory budget (docs/memory-budget.md)",
+                a.part,
+                used / 1024,
+                a.bytes / 1024
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Loaded and zero-initialised byte counts of an ELF32 image.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sizes {
@@ -244,6 +357,7 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
 
 /// Checks every budget against the built images.
 pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
+    check_allotments(BUDGETS, ALLOTMENTS, DEVICE_RAM, APP_RAM_FLOOR)?;
     // Every image needs a budget: an unbudgeted image would grow unseen.
     if let Some(missing) = images
         .iter()
@@ -313,5 +427,32 @@ mod tests {
     fn rejects_non_elf() {
         assert!(measure(b"MZ\x90\x00").is_err());
         assert!(measure(&[0x7F, b'E', b'L', b'F', 1]).is_err());
+    }
+
+    #[test]
+    fn the_os_leaves_apps_their_floor() {
+        // The real table holds.
+        assert_eq!(
+            check_allotments(BUDGETS, ALLOTMENTS, DEVICE_RAM, APP_RAM_FLOOR),
+            Ok(())
+        );
+        let b = [Budget {
+            image: "k",
+            max_load: 600 * 1024,
+            max_zero: 500 * 1024,
+        }];
+        let a = |bytes, images: &'static [&'static str]| Allotment {
+            part: "p",
+            bytes,
+            images,
+        };
+        // An image whose budget outgrows its part.
+        assert!(check_allotments(&b, &[a(MIB, &["k"])], 64 * MIB, 52 * MIB).is_err());
+        assert!(check_allotments(&b, &[a(2 * MIB, &["k"])], 64 * MIB, 52 * MIB).is_ok());
+        // Parts that leave apps less than the floor.
+        assert!(check_allotments(&b, &[a(13 * MIB, &["k"])], 64 * MIB, 52 * MIB).is_err());
+        // Counted twice, or with no size budget.
+        assert!(check_allotments(&b, &[a(2 * MIB, &["k"]), a(MIB, &["k"])], 64 * MIB, 0).is_err());
+        assert!(check_allotments(&b, &[a(MIB, &["nope"])], 64 * MIB, 0).is_err());
     }
 }
