@@ -411,3 +411,176 @@ fn error_names_are_short() {
     assert_eq!(Error::NoRoom.name(), "no room");
     assert_eq!(Error::Device(BlockError::Device).name(), "device error");
 }
+
+fn tiny_image(files: &[Entry<'_>]) -> Vec<u8> {
+    small_image(files, &[])
+}
+
+#[test]
+fn creates_files_with_8_3_and_lower_case_names() {
+    let img = tiny_image(&[Entry {
+        name: "OLD.BIN",
+        data: b"x",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    let a = pattern(3000, 1);
+    v.create("NEW.BIN", &a, &mut scratch).unwrap();
+    v.create("readme.txt", b"lower", &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "NEW.BIN", 4096), a);
+    assert_eq!(read_all(&mut v, "README.TXT", 512), b"lower");
+    let mut names = Vec::new();
+    v.for_each_root(|e| names.push(String::from_utf8_lossy(e.name).into_owned()))
+        .unwrap();
+    // No long-name entries needed: Windows NT's case flags keep it lower.
+    assert_eq!(names, ["OLD.BIN", "NEW.BIN", "readme.txt"]);
+    assert_eq!(v.create("new.bin", b"y", &mut scratch), Err(Error::Exists));
+}
+
+#[test]
+fn creates_long_names_with_windows_style_short_names() {
+    let img = tiny_image(&[]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    v.create("My Long File Name.text", b"one", &mut scratch)
+        .unwrap();
+    v.create("My Long File Name 2.text", b"two", &mut scratch)
+        .unwrap();
+    v.create("RetroPane loader.lnk", b"lnk", &mut scratch)
+        .unwrap();
+    assert_eq!(read_all(&mut v, "my long file name.text", 512), b"one");
+    assert_eq!(read_all(&mut v, "MYLONG~1.TEX", 512), b"one");
+    assert_eq!(read_all(&mut v, "MYLONG~2.TEX", 512), b"two");
+    assert_eq!(read_all(&mut v, "RETROP~1.LNK", 512), b"lnk");
+    let mut names = Vec::new();
+    v.for_each_root(|e| names.push(String::from_utf8_lossy(e.name).into_owned()))
+        .unwrap();
+    assert_eq!(
+        names,
+        [
+            "My Long File Name.text",
+            "My Long File Name 2.text",
+            "RetroPane loader.lnk"
+        ]
+    );
+}
+
+#[test]
+fn refuses_names_fat_does_not_allow() {
+    let img = tiny_image(&[]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 512];
+    for bad in [
+        "a*b",
+        "what?",
+        "x:y",
+        "pipe|",
+        "trailing.",
+        "trailing ",
+        ".",
+        "..",
+        "",
+        "a/b",
+    ] {
+        assert_eq!(
+            v.create(bad, b"z", &mut scratch),
+            Err(Error::BadName),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_full_root_directory_grows() {
+    // 1 KiB clusters: 32 entries per cluster, so ~10 long names fill one.
+    let img = tiny_image(&[]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    for i in 0..40 {
+        let name = format!("a rather long file name number {i}.txt");
+        v.create(&name, name.as_bytes(), &mut scratch).unwrap();
+    }
+    for i in 0..40 {
+        let name = format!("a rather long file name number {i}.txt");
+        assert_eq!(read_all(&mut v, &name, 512), name.as_bytes(), "{name}");
+    }
+    // The root chain is now several clusters long.
+    assert_ne!(v.fat_get(2).unwrap() & 0x0FFF_FFFF, 0x0FFF_FFFF);
+}
+
+#[test]
+fn put_replaces_or_creates() {
+    let img = tiny_image(&[Entry {
+        name: "a.bin",
+        data: b"old",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    v.put("a.bin", b"new", &mut scratch).unwrap();
+    v.put("b.bin", b"made", &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "a.bin", 512), b"new");
+    assert_eq!(read_all(&mut v, "b.bin", 512), b"made");
+}
+
+#[test]
+fn creating_on_a_full_card_gives_the_clusters_back() {
+    let img = tiny_image(&[Entry {
+        name: "a.bin",
+        data: b"keep",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    for c in 4..2 + v.clusters() {
+        v.fat_set(c, EOC).unwrap();
+    }
+    v.fat_flush().unwrap();
+    let mut scratch = vec![0u8; 4096];
+    assert_eq!(
+        v.create("big.bin", &pattern(5000, 3), &mut scratch),
+        Err(Error::NoRoom)
+    );
+    assert_eq!(v.find("big.bin"), Err(Error::NotFound));
+    assert_eq!(read_all(&mut v, "a.bin", 512), b"keep");
+}
+
+/// Power lost after any number of writes while creating: afterwards the
+/// file either doesn't exist or reads back whole, and the other file is
+/// untouched.
+#[test]
+fn power_loss_while_creating_leaves_no_file_or_the_whole_file() {
+    let keep = pattern(1500, 4);
+    let new = pattern(4100, 5);
+    let img = tiny_image(&[Entry {
+        name: "keep.bin",
+        data: &keep,
+    }]);
+    let total = {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        v.create("A brand new long name.bin", &new, &mut scratch)
+            .unwrap();
+        v.dev.writes
+    };
+    let (mut none, mut whole) = (0, 0);
+    for fail_at in 0..total {
+        let mut disk = MemDisk::new(img.clone());
+        disk.fail_at = Some(fail_at);
+        let mut v = Volume::mount(disk, PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        assert!(
+            v.create("A brand new long name.bin", &new, &mut scratch)
+                .is_err()
+        );
+        let data = v.into_inner().data;
+        let mut v = Volume::mount(MemDisk::new(data), PARTITION_START).unwrap();
+        match v.find("A brand new long name.bin") {
+            Err(Error::NotFound) => none += 1,
+            Ok(_) => {
+                assert_eq!(read_all(&mut v, "A brand new long name.bin", 4096), new);
+                whole += 1;
+            }
+            Err(e) => panic!("write {fail_at}: {e:?}"),
+        }
+        assert_eq!(read_all(&mut v, "keep.bin", 4096), keep);
+    }
+    assert!(none > 0, "{none} none, {whole} whole");
+}

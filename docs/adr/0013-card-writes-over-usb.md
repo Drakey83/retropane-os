@@ -88,6 +88,10 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
   ready before the next command. Measured ~1.7 MB/s each way. **The last
   manual step in the device loop is gone.**
 
+- 2026-10-12: files the card lacks are created (`Volume::create`/`put`:
+  directory entry written last, long names, Windows' short names, root
+  growth; power-loss sweep), so `put` and `install` need no hand copying.
+
 ## Consequences
 
 - The loader grows (SD + FAT code); it's a test image, ratcheted freely

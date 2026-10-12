@@ -98,9 +98,19 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 4. FAT: create files (and directories' first step)
 
-- [ ] `rp-fat` creates root-directory files (short names, with a long-name
-      entry when needed), so `cargo xtask install` can put files the card
-      doesn't have yet.
+- [x] `rp-fat` creates root-directory files: `create`, and `put` (replace or
+      create), used by the loader's file frames, so `cargo xtask put` and
+      `install` create what the card lacks. 7 new host tests (20 in all),
+      the emulator test creates "RetroPane loader.lnk" through the loader
+      and finds it by long and short name in the image.
+- **Iterate:** crash-safe order proven by a power-loss sweep (no file or
+  the whole file, never a broken one; the other files untouched); a full
+  root directory grows; a full card gives the clusters back; names FAT
+  forbids are refused before anything is written.
+- **Modernize:** long names exactly as Windows writes them, Windows'
+  `~1`/`~2` short names, and lower-case 8.3 names stored with Windows NT's
+  case flags (no long-name entries needed), so the card reads naturally on
+  any 2026 PC.
 - Improvements planned: crash-safe order (clusters, FATs, then the
   directory entry last: a power loss leaves either no file or the whole
   file); long-name entries Windows displays correctly; name collisions
