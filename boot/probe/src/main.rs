@@ -378,7 +378,8 @@ mod image {
                 suite::framebuffer(&mut r, &mut offscreen[..screen_end - plane.offset], &plane);
             }
             if let Some(k) = card.as_mut() {
-                suite::sd(&mut r, k);
+                // Programmed I/O here: the device baseline DMA is judged against.
+                suite::sd(&mut r, k, &mut bench_ram[..32 * 1024]);
             }
             let _ = writeln!(log, "done");
         }

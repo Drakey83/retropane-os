@@ -147,21 +147,40 @@ mod target {
         });
     }
 
-    /// Polled SD reads: one block per command, and four per command
-    /// (CMD18), where the card's per-command start-up cost is paid once.
-    pub fn sd<H: SdHost>(r: &mut Runner, card: &mut SdCard<H>) {
+    /// Cache-line aligned, so a DMA engine accepts it.
+    #[repr(C, align(32))]
+    struct Lines<const N: usize>([u8; N]);
+
+    /// SD reads: one block per command, four per command (CMD18), where
+    /// the card's per-command start-up cost is paid once, and 64 (32 KiB,
+    /// a cluster's worth, into `big`: 32 KiB, cache-line aligned, off the
+    /// stack), where moving the data dominates and DMA, if the host has it,
+    /// shows.
+    pub fn sd<H: SdHost>(r: &mut Runner, card: &mut SdCard<H>, big: &mut [u8]) {
         let mut block = [0u8; BLOCK];
         let mut lba = 0;
         r.run("sd_read_block", 64, &mut || {
             let _ = card.read(lba, &mut block);
             lba = (lba + 1) % 64;
         });
-        let mut four = [0u8; 4 * BLOCK];
+        let mut four = Lines([0u8; 4 * BLOCK]);
         let mut lba = 0;
         r.run("sd_read_4_blocks", 16, &mut || {
-            let _ = card.read_many(lba, &mut four);
+            let _ = card.read_many(lba, &mut four.0);
             lba = (lba + 4) % 64;
         });
+        if let Some(many) = big.get_mut(..64 * BLOCK) {
+            r.run("sd_read_64_blocks", 4, &mut || {
+                let _ = card.read_many(0, many);
+            });
+            // The multi-block path (DMA, if the host has it) must read what
+            // single-block reads (programmed I/O) do.
+            let same = card.read_many(0, many).is_ok()
+                && many.chunks_exact(BLOCK).enumerate().all(|(lba, want)| {
+                    card.read(lba as u32, &mut block).is_ok() && block[..] == *want
+                });
+            r.check("sd_multi_block_matches", same, "");
+        }
     }
 
     /// Memory latency by pointer chasing: each hop depends on the previous

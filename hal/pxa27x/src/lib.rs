@@ -15,6 +15,8 @@ pub mod cpu;
 pub mod devmap;
 pub mod diag;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod dma;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod handoff;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod iwmmxt;

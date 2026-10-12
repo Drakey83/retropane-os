@@ -41,6 +41,7 @@ mod image {
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_fat::Volume;
     use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
+    use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
@@ -64,7 +65,7 @@ mod image {
     const SCRATCH: usize = 64 * 1024;
 
     /// The SD card.
-    type Sd = SdCard<PxaMmc<Mmio>>;
+    type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
     /// Staging buffer for the drive's block transfers (in the scratch
     /// area, not the image: 64 sectors per card command).
@@ -83,7 +84,7 @@ mod image {
         card: Option<Sd>,
         /// The controller, kept when no card initialised, for a card
         /// inserted later.
-        spare: Option<PxaMmc<Mmio>>,
+        spare: Option<PxaMmc<Mmio, Dma>>,
         writable: bool,
         /// Offered to the PC (`drive off` makes it "no medium", like an
         /// empty card reader: the PC stops using it at once).
@@ -273,13 +274,15 @@ mod image {
 
     /// Powers the card and identifies it.
     #[inline(never)]
-    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio>>) {
-        let (Some(cpld), Some(mmc)) = (devices::take_cpld(), rt::take_mmc()) else {
+    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio, Dma>>) {
+        let (Some(cpld), Some(mmc), Some(dma)) =
+            (devices::take_cpld(), rt::take_mmc(), rt::take_dma())
+        else {
             return (None, None);
         };
         Cpld::new(cpld).set_sd_power(true);
         rt::delay_us(10_000);
-        match SdCard::try_init(PxaMmc::new(mmc)) {
+        match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
             Ok(card) => (Some(card), None),
             Err((_, host)) => (None, Some(host)),
         }
@@ -497,6 +500,90 @@ mod image {
                 "RPL ERR repair: read-back differs (mirror {mirror} still good)\r\n"
             );
         }
+    }
+
+    /// How SD DMA is used: reads once the start-up self-test has shown DMA
+    /// reads match programmed I/O on this hardware; writes only once the
+    /// owner turns them on (`card dma writes`), until a device run has
+    /// proven them (a verified `put`). Nothing unproven touches the card.
+    struct DmaPolicy {
+        /// The self-test's verdict.
+        verdict: &'static str,
+    }
+
+    /// DMA self-test: the first blocks read by DMA (into a buffer filled
+    /// with a pattern first, so a DMA that writes nothing shows) and one by
+    /// one by programmed I/O must match. DMA stays off for the session if
+    /// they don't, or if there is no card to test with.
+    #[inline(never)]
+    fn check_dma(lun: &mut Lun, buf: &mut [u8]) -> DmaPolicy {
+        const BLOCKS: usize = 8;
+        let Some(sd) = lun.card.as_mut() else {
+            if let Some(host) = lun.spare.as_mut() {
+                host.set_dma(false, false);
+            }
+            return DmaPolicy {
+                verdict: "off (no card to test with)",
+            };
+        };
+        sd.host_mut().set_dma(true, false);
+        let many = &mut buf[..BLOCKS * rp_drv_sdcard::BLOCK];
+        many.fill(0xA5);
+        let before = sd.host().dma_transfers();
+        let mut one = [0u8; rp_drv_sdcard::BLOCK];
+        let ok = sd.read_many(0, many).is_ok()
+            && sd.host().dma_transfers() != before
+            && many
+                .chunks_exact(rp_drv_sdcard::BLOCK)
+                .enumerate()
+                .all(|(lba, want)| sd.read(lba as u32, &mut one).is_ok() && one[..] == *want);
+        if ok {
+            DmaPolicy {
+                verdict: "on (self-test passed)",
+            }
+        } else {
+            sd.host_mut().set_dma(false, false);
+            DmaPolicy {
+                verdict: "off (self-test: DMA reads differed)",
+            }
+        }
+    }
+
+    /// `card dma` reports the DMA policy; `card dma writes` lets writes use
+    /// DMA for this session (only when reads passed their self-test).
+    #[inline(never)]
+    fn card_dma(lun: &mut Lun, policy: &DmaPolicy, args: &[u8], out: &mut Line) {
+        let host = match (lun.card.as_mut(), lun.spare.as_mut()) {
+            (Some(sd), _) => sd.host_mut(),
+            (None, Some(h)) => h,
+            (None, None) => {
+                let _ = write!(out, "RPL ERR dma: no SD controller\r\n");
+                return;
+            }
+        };
+        let (reads, _) = host.dma_allowed();
+        if args == b" writes" {
+            if !reads {
+                let _ = write!(
+                    out,
+                    "RPL ERR dma: reads {}, so writes stay off\r\n",
+                    policy.verdict
+                );
+                return;
+            }
+            host.set_dma(true, true);
+        } else if !args.is_empty() {
+            let _ = write!(out, "RPL ERR usage: card dma [writes]\r\n");
+            return;
+        }
+        let (_, writes_now) = host.dma_allowed();
+        let _ = write!(
+            out,
+            "RPL OK dma reads {}, writes {}, {} transfers\r\n",
+            if reads { policy.verdict } else { "off" },
+            if writes_now { "on" } else { "off" },
+            host.dma_transfers()
+        );
     }
 
     /// `card peek <lba> <offset>`: 16 bytes of a block as hex (read-only),
@@ -844,6 +931,10 @@ mod image {
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
         let (card, spare) = open_card();
+        let Some(scratch) = devices::take_scratch() else {
+            halt()
+        };
+        let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         // In: the switch says so, or a card answered anyway (so a wrong
         // reading of the switch can't hide a working card).
         let inserted = !gpio.read(SD_DETECT) || card.is_some();
@@ -857,6 +948,7 @@ mod image {
             locked,
             seen: (inserted, locked),
         };
+        let dma = check_dma(&mut lun, msc_buf);
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
         if usb {
@@ -864,15 +956,12 @@ mod image {
         }
         let _ = writeln!(log, "RetroPane loader at {:#x}", devices::LOADER_BASE);
         let _ = writeln!(log, "USB {}", if usb { "connected" } else { "unavailable" });
+        let _ = writeln!(log, "SD DMA reads {}, writes off", dma.verdict);
         let _ = writeln!(log, "waiting for an image: cargo xtask load");
 
         // The previous run's log (an image this loader started, now back):
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
-        let Some(scratch) = devices::take_scratch() else {
-            halt()
-        };
-        let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         let mut pending = devices::log_take();
         if let Some(run) = &pending {
             let how = if run.crashed {
@@ -1029,6 +1118,10 @@ mod image {
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
                             backlight_command(backlight.as_mut(), &c[9..], &mut status);
+                            status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"card dma") => {
+                            card_dma(&mut lun, &dma, &c[8..], &mut status);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card peek ") => {
