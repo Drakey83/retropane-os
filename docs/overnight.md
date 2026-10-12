@@ -183,9 +183,16 @@ on the host or in the emulator first.
    - **Modernize:** crash reports persist and reach the developer by
      themselves, like modern crash reporting, instead of a photo of the
      screen.
-8. **Performance suite v1** (ROADMAP): context switch, IRQ latency, memcpy
-   bandwidth, in the emulator baseline and on the device via the loader,
-   numbers in docs/perf.md.
+8. **Performance suite v1** (ROADMAP): **device numbers in.** `rp-threads`
+   tees its results into the run log and returns to the loader, so `cargo
+   xtask load rp-threads` gives the real X51v's figures: all 13 tests pass
+   on hardware for the first time; switch ~12 µs (an open lead against the
+   2 µs target), interrupt-to-thread ~8 µs, sleep lateness ~17 µs; memcpy
+   ~95 MB/s already measured. docs/perf.md.
+   - **Iterate:** the numbers come from the device in seconds, so the
+     switch-time lead can be chased one suspect at a time.
+   - **Modernize:** honest measurement instead of assumptions: the switch
+     misses its target and says so.
 9. **exFAT reading** in `rp-fat`: SDXC cards (64 GB+) ship as exFAT; stock
    Windows Mobile can't read them at all. Host-tested with a formatter.
 10. **SD card detect and write-protect** (GPIO12/GPIO27): driver support,

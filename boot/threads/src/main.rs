@@ -120,9 +120,24 @@ mod image {
         irq_latency_max: u32,
     }
 
+    /// Everything the test prints goes to the FFUART and, when the resident
+    /// loader started it, into the run log too, so `cargo xtask load
+    /// rp-threads` brings the real X51v's numbers (switch time, interrupt
+    /// latency) to the PC.
+    struct Tee(PxaUart<rp_hal_pxa27x::Mmio>);
+
+    impl Write for Tee {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let _ = self.0.write_str(s);
+            rp_hal_x51v::devices::log_write(s.as_bytes());
+            Ok(())
+        }
+    }
+
     fn main() -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        uart.init(115_200);
+        let mut port = PxaUart::new(rt::emergency_uart());
+        port.init(115_200);
+        let mut uart = Tee(port);
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = uart.write_str("\nRetroPane 26 threads test\n");
@@ -328,6 +343,8 @@ mod image {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
         }
+        // Back to the resident loader, if it started this run.
+        rp_hal_x51v::devices::return_to_loader();
         halt()
     }
 
@@ -713,7 +730,7 @@ mod image {
         unreachable!("an exited thread never runs again")
     }
 
-    fn report(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, what: &str, pass: bool, got: u32) -> bool {
+    fn report(uart: &mut Tee, what: &str, pass: bool, got: u32) -> bool {
         let _ = uart.write_str(what);
         if pass {
             let _ = uart.write_str(" OK\n");
@@ -724,10 +741,16 @@ mod image {
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
+    }
+
+    /// Faults and panics: on serial, and the shared crash path (back to the
+    /// loader with the report, if it started this run).
+    #[inline(never)]
+    fn crash(msg: core::fmt::Arguments) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = uart.write_str("\nFAULT ");
-        let _ = uart.write_str(kind.name());
-        let _ = writeln!(uart, " at {addr:#010x}");
+        let _ = writeln!(uart, "\n{msg}");
+        rp_hal_x51v::devices::crash_to_loader(msg);
         halt()
     }
 
@@ -739,13 +762,10 @@ mod image {
 
     #[panic_handler]
     fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        if let Some(l) = info.location() {
-            let _ = uart.write_str("\nPANIC at ");
-            let _ = uart.write_str(l.file());
-            let _ = writeln!(uart, ":{}", l.line());
+        match info.location() {
+            Some(l) => crash(format_args!("PANIC at {}:{}", l.file(), l.line())),
+            None => crash(format_args!("PANIC")),
         }
-        halt()
     }
 }
 
