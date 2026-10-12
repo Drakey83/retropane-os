@@ -278,9 +278,20 @@ on the host or in the emulator first.
 14. **Emulator release bump**: rp-v0.9.4 (SD switches, PWM) into
     `QEMU_RELEASE` once built, bench re-recorded, so GitHub CI runs the
     locked-card and backlight tests too.
-15. **FAT subdirectories** in `rp-fat`: paths (`dir/file`), find, read,
-    create and replace inside directories, `mkdir`; `cargo xtask put`
-    takes a card path. Crash-safe as before; power-loss and hostile tests.
+15. **FAT subdirectories** in `rp-fat`: **done.** Paths with `/` or `\`
+    (`.`/`..` and more than 16 levels refused), find/read/create/replace in
+    folders, `mkdir` (first cluster with `.`/`..` written and linked before
+    the entry), `put` creating missing parents like `mkdir -p`, listings
+    per folder, short names unique per folder; one shared entry writer and
+    one shared lookup for files and folders. 3 new tests (33 in all):
+    folders end to end, power loss at every write of a put that makes two
+    folders and a file, a folder pointing back at the root (corrupt, not a
+    loop). Emulator: the loader puts "Apps/Sub Folder/hello.txt" on a card
+    with no such folders and the image holds it.
+    - **Iterate:** the same crash-safety proof extended to folders; loops
+      and absurd depths refused; less code for both kinds of entry.
+    - **Modernize:** `cargo xtask put file Apps/Game.exe` organises the card
+      like any modern device, folders made as needed.
 16. **exFAT writes**: replace and create on exFAT cards (bitmap instead of
     a free scan, entry-set checksums kept right), so SDXC cards get the
     same tools as FAT32.

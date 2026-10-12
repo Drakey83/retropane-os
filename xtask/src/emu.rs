@@ -909,6 +909,13 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPL OK 6000 bytes", 40)?;
         s.write_all(&bad).map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR bad name", 20)?;
+        // Into folders that don't exist yet: created on the way.
+        s.write_all(&rp_loadproto::file_frame(
+            "Apps/Sub Folder/hello.txt",
+            b"hello",
+        ))
+        .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 5 bytes", 20)?;
         // Scrub: a first-FAT sector is rewritten and verified; anything
         // without a mirror is refused.
         let fat1 = rp_fat::format::PARTITION_START + 32;
@@ -968,6 +975,9 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         [(damaged + fat_sectors) as usize * 512..(damaged + fat_sectors) as usize * 512 + 512];
     if one != two {
         return Err("card repair: the first FAT sector still differs from its mirror".into());
+    }
+    if card_file(&sd, "Apps/Sub Folder/hello.txt")? != b"hello" {
+        return Err("the file in new folders isn't on the card".into());
     }
     if card_file(&sd, "RetroPane loader.lnk")? != created
         || card_file(&sd, "RETROP~1.LNK")? != created
