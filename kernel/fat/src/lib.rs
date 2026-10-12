@@ -344,13 +344,33 @@ impl<D: BlockDevice> Volume<D> {
         {
             return Err(Error::NotFat32);
         }
-        let fat_start = base + reserved;
-        let data_start = fat_start + fats * fat_sectors;
-        let data_sectors = total.saturating_sub(reserved + fats * fat_sectors);
+        // Everything below comes from the card, so it is hostile until
+        // checked (docs/security.md): overflow-checked, and the data area,
+        // every cluster and the root must lie inside the partition. Then
+        // every in-range cluster's sector number fits in a u32, so the code
+        // that trusts validated clusters can't overflow.
+        let fat_total = fats.checked_mul(fat_sectors);
+        let fat_start = base.checked_add(reserved);
+        let data_start = fat_start.zip(fat_total).and_then(|(s, t)| s.checked_add(t));
+        let end = base.checked_add(total);
+        let (Some(fat_total), Some(fat_start), Some(data_start), Some(_)) =
+            (fat_total, fat_start, data_start, end)
+        else {
+            return Err(Error::NotFat32);
+        };
+        let data_sectors = total.saturating_sub(reserved.saturating_add(fat_total));
         // Volumes under 65,525 clusters are FAT12/16 by the specification's
         // rule of thumb, but test images are tiny: the FAT32 markers above
         // (no fixed root directory, a root cluster, 32-bit FAT size) decide.
         let clusters = data_sectors / sectors_per_cluster;
+        // The FAT must have an entry for every cluster.
+        let fat_entries = u64::from(fat_sectors) * u64::from(FAT_PER_SECTOR);
+        if clusters == 0
+            || u64::from(clusters) + 2 > fat_entries
+            || !(2..2 + clusters).contains(&root_cluster)
+        {
+            return Err(Error::NotFat32);
+        }
         Ok(Self {
             dev,
             sectors_per_cluster,

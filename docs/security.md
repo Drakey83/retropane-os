@@ -56,6 +56,13 @@ a later pass (the owner's standing requirement, 2026-10-12). Every ADR has a
 | USB mass storage exposes the whole card (ADR-0014) | Owner's request: the card as a drive | In the loader (development) the drive is offered at once but **read-only** until the PC sends `drive rw` (`cargo xtask drive rw`); the card holds the loader and HaRET, and Windows writes a mounted drive on its own. In the OS proper: only after the user allows it on the device, per connection, read-only by default for cards holding the system |
 | Serial loader frames are CRC-checked, not authenticated | Integrity against line noise, not attackers | Same as the first row |
 
+## Findings
+
+| Date | Where | Finding | Status |
+|---|---|---|---|
+| 2026-10-12 | `rp-fat` mount | A forged FAT size or root cluster overflowed the sector arithmetic: a panic in test builds, reads of the wrong sectors in release | Fixed: the geometry is validated with checked arithmetic at mount; 1,500-card corruption test |
+| 2026-10-12 | `rp-loadproto`, `rp-usb-msc`, `pxa-udc`, `kernel/pe` | Random-input tests added (20,000 / 5,000 / 52,000 / 5,000 cases) | No findings |
+
 ## Checklist for every ADR and parser
 
 - What outside input does it accept, from whom?

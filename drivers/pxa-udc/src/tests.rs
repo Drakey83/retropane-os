@@ -688,3 +688,56 @@ fn mass_storage_class_requests() {
     assert!(h.udc.take_msc_reset());
     assert!(!h.udc.take_msc_reset());
 }
+
+/// Hostile input: random SETUP packets (and random OUT data) never panic,
+/// and no reply is longer than the host asked for.
+#[test]
+fn random_setup_packets_never_panic_or_overrun() {
+    let mut x: u64 = 0x0C0F_FEE5;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut cdc = usb::Cdc::new();
+    for i in 0..50_000u32 {
+        let mut b = [0u8; 8];
+        for v in &mut b {
+            *v = rnd() as u8;
+        }
+        // Bias towards the request types the code handles.
+        if i % 3 == 0 {
+            b[0] = [0x80, 0x81, 0x82, 0x00, 0x21, 0xA1][(rnd() % 6) as usize];
+            b[1] = [0, 1, 3, 6, 8, 10, 0x20, 0x21, 0x22, 0x23, 0xFE, 0xFF][(rnd() % 12) as usize];
+        }
+        let s = usb::Setup::parse(b);
+        cdc.set_composite(rnd() % 2 == 0);
+        match cdc.handle(&s, 1) {
+            usb::Reply::In(d) => assert!(d.len() <= usize::from(s.length), "{s:?}"),
+            usb::Reply::Out(n) => {
+                assert!(n <= usize::from(s.length));
+                let data: Vec<u8> = (0..n).map(|_| rnd() as u8).collect();
+                cdc.out_data(&data);
+            }
+            usb::Reply::Ack | usb::Reply::Stall => {}
+        }
+    }
+    // And through the whole driver, with the simulated controller.
+    let mut h = Host::new();
+    h.reset();
+    for _ in 0..2000 {
+        let mut b = [0u8; 8];
+        for v in &mut b {
+            *v = rnd() as u8;
+        }
+        b[6] = (rnd() % 140) as u8; // wLength up to past the buffer
+        b[7] = 0;
+        if b[0] & 0x80 != 0 {
+            let _ = h.control_in(b);
+        } else {
+            h.setup(b);
+            h.poll(3);
+        }
+    }
+}
