@@ -147,7 +147,26 @@ What stands out (leads, not conclusions yet; one run):
   colours (about 1 s of extra delay) were added. Cause unknown; possibly
   something that needs time to settle after HaRET. Revisit with a serial link.
 
+### Threads on the real X51v (2026-10-12, `cargo xtask load rp-threads`)
+
+All 13 scheduler and user-mode tests pass on the device (ADR-0010: ping-pong,
+interrupt thread, priority inheritance, sleep, user mode, yield, preemption,
+contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
+
+| Measure | Device | Per unit |
+|---|---|---|
+| `thread_switch` (2,000 switches: event set, wait, schedule, register switch, KData) | 79,385 ticks | **~12.2 µs per switch** |
+| `irq_to_thread_max` (interrupt to the waiting thread running) | 26 ticks | ~8 µs |
+| `sleep_lateness_max` | 56 ticks | ~17 µs |
+
 ## Open leads
+
+- **Thread switch ~12 µs on the device vs ADR-0010's < 2 µs target.**
+  Suspects to measure one at a time: the CPU clock as Windows Mobile left
+  it (the probe reads CCCR/CLKCFG), the per-switch KData write and the
+  cache work around it, the event path rather than the register switch
+  itself (split the benchmark). The emulator can't answer this; the device
+  run takes seconds now.
 
 - `memcpy` is now 38× faster than a naive byte loop. Next: measure on the real
   X51v, where SDRAM burst behaviour (not instruction count) dominates, and try

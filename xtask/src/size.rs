@@ -70,7 +70,11 @@ pub const BUDGETS: &[Budget] = &[
         // user-fault path, lazy iWMMXt switching (~1.3 KiB of HAL code, in
         // this image only) and interrupts as waitable objects, plus their
         // live tests (23.9 KiB measured, +~10%).
-        max_load: 27 * 1024,
+        // Ratcheted 27 -> 32 KiB on 2026-10-12 (test image, owner's rule):
+        // results teed into the run log and a return to the loader, so the
+        // real X51v's switch and interrupt numbers reach the PC, plus the
+        // shared crash path; 28.1 KiB measured, +~10%.
+        max_load: 32 * 1024,
         max_zero: 30 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text
