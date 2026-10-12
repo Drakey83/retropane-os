@@ -23,7 +23,10 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-hello",
         // 24 KiB until 2026-10-11: cold crates built for size cut it to 18 KB.
-        max_load: 20 * 1024,
+        // Raised 20 -> 22 KiB on 2026-10-11 (approved by the owner): shared
+        // HAL start-up code grew (DMA stop, fault diagnostics, aligned MMU
+        // transitions, user-fault path); 20.0 KiB measured, +~10%.
+        max_load: 22 * 1024,
         max_zero: 20 * 1024,
     },
     Budget {
