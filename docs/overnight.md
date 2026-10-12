@@ -502,11 +502,25 @@ on the host or in the emulator first.
       side is overwritten by accident.
     - **Modernize:** the card browsable from the PC's terminal over the
       same cable, besides the drive.
-29. **Card check** (`card check`): a read-only consistency check of the
-    card's file system, as a modern fsck: FAT32 chains (loops, cross-links,
-    clusters used but marked free, lost clusters), exFAT (files against the
-    allocation bitmap, set checksums), reported, never "fixed" silently; run
-    by the emulator tests after every write test.
+29. **Card check**: **done (emulator).** `card check` (and `cargo xtask
+    card check`; part of `device-check`): every folder walked from the
+    root, every cluster used marked once in a lent bitmap (a bit per
+    cluster: 122 KB for the owner's 4 GB card, from the scratch area),
+    then the FAT or the exFAT bitmap compared: cross-links and loops, bad
+    chains, sizes against chains, lost clusters (counted, harmless), exFAT
+    clusters used but marked free (dangerous) and bad entry sets, FAT32
+    copies that differ. Folders read 16 entries at a time, nothing grows
+    with a folder; reported, never fixed silently. 8 tests (clean after
+    many writes, every kind of damage found on both, power cuts never
+    damage, hostile volumes never panic). Emulator: the put test's check
+    finds the FAT sector it was given damaged, then checks clean after the
+    repair; the exFAT test checks clean with no lost cluster.
+    `rp-loader` budget 112 -> 124 KiB (with item 28).
+    - **Iterate:** the writers are now checked by separate code, not just
+      read back; the owner's card can be checked for more weak FAT
+      sectors.
+    - **Modernize:** a built-in, read-only fsck that explains, rather than
+      silently "repairing".
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only

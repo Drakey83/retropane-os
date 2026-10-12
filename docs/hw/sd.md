@@ -109,6 +109,11 @@ wear: keep a backup, and consider replacing it.
 
 ### File system
 
+`cargo xtask card check` runs a read-only check of the card's file system
+(FAT32 or exFAT) through the loader: cross-links, broken chains, sizes,
+lost clusters, FAT copies that differ (as block 10880's did).
+
+
 SDXC cards (64 GB and up) come as exFAT: `rp-fat` reads and writes those
 too (folders included, growing as they fill),
 through the allocation bitmap, storing a file

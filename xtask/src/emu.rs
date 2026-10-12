@@ -1147,6 +1147,13 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::file_frame("Apps/Sub Folder/x.txt", b"x"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK 1 bytes", 20)?;
+        s.write_all(&rp_loadproto::control_frame("card check"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ", 40)?;
+        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        if !reply.contains("RPL OK check clean") || !reply.contains(" 0 lost") {
+            return Err(format!("exFAT card check after the writes: {reply:?}"));
+        }
         Ok(())
     };
     boot(
@@ -1323,6 +1330,16 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("get no such file"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR", 20)?;
+        // The check finds the FAT sector this card was given damaged.
+        s.write_all(&rp_loadproto::control_frame("card check"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ", 40)?;
+        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        if !reply.contains("RPL OK check PROBLEMS") || !reply.contains("FAT copies differ 1,") {
+            return Err(format!(
+                "card check didn't find the damaged FAT sector: {reply:?}"
+            ));
+        }
         // Scrub: a first-FAT sector is rewritten and verified; anything
         // without a mirror is refused.
         let fat1 = rp_fat::format::PARTITION_START + 32;
@@ -1345,6 +1362,14 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("card peek 2048 0"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK peek 2048+0: eb 58 90", 20)?;
+        // Repaired, and after every write: clean.
+        s.write_all(&rp_loadproto::control_frame("card check"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ", 40)?;
+        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        if !reply.contains("RPL OK check clean") {
+            return Err(format!("card check after the repair: {reply:?}"));
+        }
         Ok(())
     };
     boot(

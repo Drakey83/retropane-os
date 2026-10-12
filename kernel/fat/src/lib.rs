@@ -1314,6 +1314,9 @@ pub mod format;
 
 pub mod exfat;
 
+pub mod check;
+pub use check::Health;
+
 /// A FAT32 or exFAT volume, whichever the boot sector says: what a caller
 /// that only stores and reads files needs (the loader's `put`, crash
 /// reports), so SDXC cards work wherever SD and SDHC cards do.
@@ -1366,6 +1369,14 @@ impl<D: BlockDevice> AnyVolume<D> {
                 let file = v.find(path)?;
                 v.read_file(&file, scratch, f)
             }
+        }
+    }
+
+    /// Checks the volume, read-only ([`check`]).
+    pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<Health, Error> {
+        match self {
+            Self::Fat32(v) => v.check(seen, scratch),
+            Self::ExFat(v) => v.check(seen, scratch),
         }
     }
 
