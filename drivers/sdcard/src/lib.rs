@@ -175,6 +175,8 @@ pub struct SdCard<H> {
     rca: u16,
     high_capacity: bool,
     wide: bool,
+    /// Capacity in 512-byte blocks, from the CSD register.
+    blocks: u32,
     /// The last failure behind a [`BlockDevice`] error (which carries none).
     last_error: Option<Error>,
     /// Read commands issued (a multiple-block read counts once): each costs
@@ -215,6 +217,9 @@ impl<H: SdHost> SdCard<H> {
 
         host.command(Command::new(2, 0, Response::R2))?; // CID
         let rca = (host.command(Command::new(3, 0, Response::R1))?[0] >> 16) as u16;
+        // CSD (standby state, before selection): the capacity.
+        let blocks =
+            csd_blocks(host.command(Command::new(9, u32::from(rca) << 16, Response::R2))?);
         check(host.command(Command::new(7, u32::from(rca) << 16, Response::R1b))?[0])?;
         if !high_capacity {
             check(host.command(Command::new(16, BLOCK as u32, Response::R1))?[0])?;
@@ -232,9 +237,16 @@ impl<H: SdHost> SdCard<H> {
             rca,
             high_capacity,
             wide,
+            blocks,
             last_error: None,
             reads: 0,
         })
+    }
+
+    /// Capacity in 512-byte blocks (0 if the CSD was unreadable).
+    #[must_use]
+    pub fn blocks(&self) -> u32 {
+        self.blocks
     }
 
     /// The card error behind the last [`BlockDevice`] failure, if any.
@@ -387,6 +399,38 @@ impl<H: SdHost> BlockDevice for SdCard<H> {
     }
 }
 
+/// `size` bits of a 128-bit register starting at bit `start` (0 = least
+/// significant), from the four response words, most significant first.
+fn bits(r: [u32; 4], start: u32, size: u32) -> u32 {
+    let word = |i: u32| -> u64 {
+        if i < 4 {
+            u64::from(r[3 - i as usize])
+        } else {
+            0
+        }
+    };
+    let lo = start / 32;
+    let v = word(lo) | word(lo + 1) << 32;
+    ((v >> (start % 32)) & ((1u64 << size) - 1)) as u32
+}
+
+/// Card capacity in 512-byte blocks from its CSD (SD Physical Layer
+/// specification 5.3): version 2 (SDHC/SDXC) counts 512 KiB units, version
+/// 1 (SDSC) multiplies; anything else reads as 0 (unknown).
+fn csd_blocks(csd: [u32; 4]) -> u32 {
+    match bits(csd, 126, 2) {
+        1 => (bits(csd, 48, 22) + 1).saturating_mul(1024),
+        0 => {
+            let c_size = bits(csd, 62, 12);
+            let mult = bits(csd, 47, 3);
+            let read_bl_len = bits(csd, 80, 4);
+            let bytes = u64::from(c_size + 1) << (mult + 2) << read_bl_len;
+            u32::try_from(bytes / BLOCK as u64).unwrap_or(u32::MAX)
+        }
+        _ => 0,
+    }
+}
+
 fn check(status: u32) -> Result<(), Error> {
     if status & STATUS_ERRORS == 0 {
         Ok(())
@@ -483,6 +527,15 @@ mod tests {
         }
         fn command(&mut self, c: Command) -> Result<[u32; 4], HostError> {
             self.log.push((c.index, c.arg));
+            if c.index == 9 {
+                // CSD v2 with C_SIZE 0 (1024 blocks) for SDHC; v1 with
+                // READ_BL_LEN 9, C_SIZE 1, C_SIZE_MULT 0 (8 blocks) for SDSC.
+                return Ok(if self.sdhc {
+                    [0x4000_0000, 0, 0, 0]
+                } else {
+                    [0, 0x0009_0000, 0x4000_0000, 0]
+                });
+            }
             let app = core::mem::take(&mut self.expect_app);
             let r = match (c.index, app) {
                 (0, _) => 0,
@@ -668,8 +721,22 @@ mod tests {
         let host = card.into_inner();
         assert_eq!(host.clocks, [INIT_HZ, TRANSFER_HZ]);
         let cmds: Vec<u8> = host.log.iter().map(|&(i, _)| i).collect();
-        assert_eq!(cmds, [0, 8, 55, 41, 55, 41, 55, 41, 2, 3, 7, 17]); // no CMD16
+        assert_eq!(cmds, [0, 8, 55, 41, 55, 41, 55, 41, 2, 3, 9, 7, 17]); // no CMD16
         assert_eq!(host.log.last(), Some(&(17, 3)));
+    }
+
+    #[test]
+    fn capacity_comes_from_the_csd() {
+        let card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        assert_eq!(card.blocks(), 1024);
+        assert!(card.into_inner().log.contains(&(9, 0xBEEF << 16)));
+        let card = SdCard::init(FakeCard::new(false, false)).unwrap();
+        assert_eq!(card.blocks(), 8);
+        // A CSD v2 with C_SIZE 7623: 7,806,976 blocks, which is where the
+        // owner's card's partition ends (start 8192 + 7,798,784 blocks).
+        let csd = [0x400E_0032, 0x5B59_0000, 0x1DC7_7F80, 0x0A40_0000];
+        assert_eq!(csd_blocks(csd), 8192 + 7_798_784);
+        assert_eq!(csd_blocks([0xC000_0000, 0, 0, 0]), 0, "unknown structure");
     }
 
     #[test]

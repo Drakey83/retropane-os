@@ -43,6 +43,13 @@ testability) and do as many as make sense; one token improvement doesn't
 meet it. When a part is finished, report what was done to iterate and to
 modernize it.
 
+**Security is a design input, not a later pass.** RetroPane will be on the
+internet. Read [`security.md`](security.md): every ADR gets a Security
+section, every parser of outside input (USB, network, files, images) checks
+every length and offset, never panics on malformed input, and has tests
+with hostile input. Development-only exposures (the code-running loader)
+are listed there and never ship.
+
 **The emulator follows the device.** Every fact learned on the real X51v
 that a model could reproduce goes into the emulator fork with a `cargo xtask
 emu` boot that fails without it; what can't be modelled is listed with the

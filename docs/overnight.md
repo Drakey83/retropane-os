@@ -86,6 +86,16 @@ nothing writes flash; card writes only through copy-then-swap.
       undocking-free events (USB reset, host open/close); settle what they
       are or narrow it down, docs/hw/udc.md updated.
 
+## Security pass (owner's requirement, 2026-10-12)
+
+- [x] `docs/security.md`: principles, threat model, current exposures,
+      per-parser checklist; charter and memory updated.
+- [ ] Hostile-input tests for every parser of outside input that exists:
+      the loader protocol (`rp-loadproto`), FAT (`rp-fat`, a card can be
+      hostile), PE (`kernel/pe`), USB setup packets (`pxa-udc`), and the
+      mass-storage commands as they're written. No panics, no out-of-range
+      access, overflow-safe arithmetic; findings fixed and listed.
+
 ## Second tier (when the above is done or blocked)
 
 Each held to the same standard: every improvement that makes sense, tested
