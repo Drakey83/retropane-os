@@ -1025,7 +1025,11 @@ on the host or in the emulator first.
     limit. Next: DMA for writes (on the device), larger multi-block
     commands, the bus clock checked, measured before/after on the device.
 
-60. **Plane blending at scan-out** (owner said go, 2026-10-12; replaces
+60. **Plane blending at scan-out**: **done (emulator), device run next.**
+    Steps 1-4 below are built: emulator rp-v0.10.0, `Display::adopt` in the
+    loader and every image, `rp-blend`, `cargo xtask emu-blend` (three
+    stages pixel-exact; screens in docs/img/emulator-plane-blend.png), two
+    mutants. (Owner said go, 2026-10-12; replaces
     the "2D blitter fill" milestone, see docs/hw/2700g.md "2D drawing and
     plane composition"). The wallpaper lives in the 2700G's **video plane**
     (YUV), the interface in the **graphics plane** with per-pixel alpha,
@@ -1072,6 +1076,16 @@ on the host or in the emulator first.
       test scene is generated, not stored (the image stays small).
       *Modern?* hardware composition with per-pixel alpha is how phone
       compositors (Android's hardware composer, iOS) do it today.
+
+61. **The Windows build of the emulator can't receive images** (found
+    2026-10-12 while releasing rp-v0.10.0): with the downloaded native
+    Windows QEMU (`RETROPANE_WSL_DISTRO=none-for-test`), `emu-picture` and
+    `emu-blend` time out with the loader printing `RPLOAD1 READY` again and
+    again, so the frame sent on stdin never arrives. rp-v0.9.9 fails the
+    same way, so it is older than this release. The WSL build and CI
+    (Linux) are fine. Likely QEMU's Windows stdio chardev not reading a
+    pipe; try `-serial pipe:` or a TCP serial in `xtask/src/emu.rs` for
+    native Windows, then make the release check use it again.
 
 59. **No emulator-only image on the device**: **done (emulator).** Every
     image's budget now says what it does under the loader (`OnDevice`:
