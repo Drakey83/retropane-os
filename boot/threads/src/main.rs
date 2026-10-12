@@ -73,6 +73,9 @@ mod image {
     /// quantum of work in the emulator and on the device).
     const MARKS: usize = 4;
     const SPIN: u32 = 3_000_000;
+    /// Rounds (each 1/16 of a spin) a spinning thread waits for the other's
+    /// first mark: many quanta, but finite.
+    const WAIT_ROUNDS: u32 = 400;
 
     /// User stacks handed to the user threads.
     static USTACKS: Global<[Option<&'static mut [u32]>; 2]> = Global::new([None, None]);
@@ -563,13 +566,28 @@ mod image {
     }
 
     /// Runs in user mode and never yields: only preemption can switch it.
+    /// After its first mark it spins until the other thread has marked too
+    /// (asking without yielding), so the marks interleave exactly when the
+    /// timer preempts, however fast or slow the host; bounded, so a missing
+    /// preemption fails the test instead of hanging it.
     extern "C" fn user_spin(i: usize) -> ! {
-        for _ in 0..MARKS {
+        let me = u32::from(b'A') + i as u32;
+        for j in 0..MARKS {
             let mut x = 0u32;
             for k in 0..SPIN {
                 x = core::hint::black_box(x.wrapping_add(k));
             }
-            user::syscall(SYS_MARK, u32::from(b'A') + i as u32, x, 0);
+            user::syscall(SYS_MARK, me, 0, 0);
+            if j == 0 {
+                for _ in 0..WAIT_ROUNDS {
+                    if user::syscall(SYS_MARK, 0, me, 0) > 0 {
+                        break;
+                    }
+                    for k in 0..SPIN / 16 {
+                        x = core::hint::black_box(x.wrapping_add(k));
+                    }
+                }
+            }
         }
         user::syscall(SYS_EXIT, 0, 0, 0);
         loop {
@@ -689,13 +707,17 @@ mod image {
                 f.set_result(0);
             }
             SYS_MARK => {
-                ULOG.with(|l| {
-                    if l.mlen < l.marks.len() {
-                        l.marks[l.mlen] = f.arg(0) as u8;
+                // A mark, or with mark 0 a query: how many marks are not
+                // the caller's (arg 1). Neither yields.
+                let (mark, mine) = (f.arg(0) as u8, f.arg(1) as u8);
+                let others = ULOG.with(|l| {
+                    if mark != 0 && l.mlen < l.marks.len() {
+                        l.marks[l.mlen] = mark;
                         l.mlen += 1;
                     }
+                    l.marks[..l.mlen].iter().filter(|&&m| m != mine).count()
                 });
-                f.set_result(0);
+                f.set_result(others as u32);
             }
             SYS_KDATA => {
                 // What the caller read must be what the kernel says it is.
