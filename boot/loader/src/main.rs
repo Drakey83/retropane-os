@@ -652,6 +652,46 @@ mod image {
         }
     }
 
+    /// `card check`: a read-only check of the card's file system (FAT32 or
+    /// exFAT): what it found, counted. `seen` holds a bit per cluster.
+    #[inline(never)]
+    fn card_check(lun: &mut Lun, seen: &mut [u8], scratch: &mut [u8], reply: &mut Line) {
+        let Some(sd) = lun.card.as_mut() else {
+            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let mut vol = match mount_any(sd) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        match vol.check(seen, scratch) {
+            Ok(h) => {
+                let _ = write!(
+                    reply,
+                    "RPL OK check {}: {} files, {} folders, {} clusters used, {} lost (cross-linked {}, bad chains {}, size mismatches {}, free but used {}, bad sets {}, FAT copies differ {}, unchecked {})\r\n",
+                    if h.clean() { "clean" } else { "PROBLEMS" },
+                    h.files,
+                    h.folders,
+                    h.used,
+                    h.lost,
+                    h.cross_linked,
+                    h.bad_chains,
+                    h.size_mismatch,
+                    h.free_but_used,
+                    h.bad_sets,
+                    h.fat_copies_differ,
+                    h.unchecked
+                );
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR check: {}\r\n", e.name());
+            }
+        }
+    }
+
     /// `get <file>`: the file as base64 `RPD` lines, then `RPL OK <bytes>
     /// bytes crc <crc32>` so the PC checks what it got. Read-only.
     #[inline(never)]
@@ -1597,6 +1637,15 @@ mod image {
                             // Attached (or not): the PC looks at LUN 1 again.
                             msc.medium_changed(1);
                             status.as_str()
+                        }
+                        Ok(b"card check") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                let (scratch, seen) = fat_scratch.split_at_mut(SCRATCH);
+                                card_check(&mut lun, seen, scratch, &mut status);
+                                status.as_str()
+                            }
                         }
                         Ok(c) if c.starts_with(b"card dma") => {
                             card_dma(&mut lun, &dma, &c[8..], &mut status);

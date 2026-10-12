@@ -945,3 +945,161 @@ fn a_folder_that_points_back_at_the_root_is_corrupt_not_a_loop() {
     v.dev.write_blocks(lba, &sector).unwrap();
     assert_eq!(v.find("loop/loop/loop/x"), Err(Error::Corrupt));
 }
+
+fn health(v: &mut Volume<MemDisk>) -> Health {
+    let mut seen = vec![0u8; (v.clusters as usize + 2).div_ceil(8)];
+    let mut scratch = vec![0u8; 4096];
+    v.check(&mut seen, &mut scratch).unwrap()
+}
+
+#[test]
+fn a_healthy_volume_checks_clean_after_many_writes() {
+    let img = tiny_image(&[Entry {
+        name: "a.txt",
+        data: b"aaa",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    for i in 0..30 {
+        v.put(
+            &format!("Dir {}/file {i}.bin", i % 3),
+            &pattern(1500 * (i % 4), i as u8),
+            &mut scratch,
+        )
+        .unwrap();
+    }
+    v.put("a.txt", &pattern(5000, 9), &mut scratch).unwrap();
+    let h = health(&mut v);
+    assert!(h.clean(), "{h:?}");
+    assert_eq!((h.files, h.folders, h.lost), (31, 3, 0), "{h:?}");
+    // Every cluster the FAT allocates was reached.
+    assert!(h.used > 0);
+}
+
+#[test]
+fn damage_of_every_kind_is_found() {
+    let img = tiny_image(&[
+        Entry {
+            name: "one.bin",
+            data: &pattern(3000, 1),
+        },
+        Entry {
+            name: "two.bin",
+            data: &pattern(3000, 2),
+        },
+    ]);
+    let base = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+    let (one, two) = {
+        let mut v = base;
+        (v.find("one.bin").unwrap(), v.find("two.bin").unwrap())
+    };
+    let entry = |f: &File| f.entry_lba as usize * SECTOR + usize::from(f.entry_index) * 32;
+    // Cross-link: two.bin starts at one.bin's first cluster.
+    let mut d = img.clone();
+    let o = entry(&two);
+    d[o + 26..o + 28].copy_from_slice(&(one.first_cluster as u16).to_le_bytes());
+    let mut v = Volume::mount(MemDisk::new(d), PARTITION_START).unwrap();
+    let h = health(&mut v);
+    assert!(h.cross_linked > 0 && h.lost > 0 && !h.clean(), "{h:?}");
+    // Size mismatch: one.bin says it is bigger than its chain.
+    let mut d = img.clone();
+    let o = entry(&one);
+    d[o + 28..o + 32].copy_from_slice(&9000u32.to_le_bytes());
+    let mut v = Volume::mount(MemDisk::new(d), PARTITION_START).unwrap();
+    assert_eq!(health(&mut v).size_mismatch, 1);
+    // A link out of the volume, and the copies of the FAT then differ.
+    let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+    v.fat_load(one.first_cluster / FAT_PER_SECTOR).unwrap();
+    let fat1 = v.fat_start + one.first_cluster / FAT_PER_SECTOR;
+    let mut d = img.clone();
+    let o = fat1 as usize * SECTOR + (one.first_cluster % FAT_PER_SECTOR) as usize * 4;
+    d[o..o + 4].copy_from_slice(&0x0FFF_FF00u32.to_le_bytes());
+    let mut v = Volume::mount(MemDisk::new(d), PARTITION_START).unwrap();
+    let h = health(&mut v);
+    assert!(h.bad_chains == 1 && h.fat_copies_differ == 1, "{h:?}");
+    // Lost: a chain in the FAT nothing points at.
+    let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+    let free = v
+        .find_free_run(2, 2, &mut vec![0u8; 4096])
+        .unwrap()
+        .unwrap();
+    v.fat_set(free, free + 1).unwrap();
+    v.fat_set(free + 1, EOC).unwrap();
+    v.fat_flush().unwrap();
+    let h = health(&mut v);
+    assert!(
+        h.clean() && h.lost == 2,
+        "lost space is reported, not unclean: {h:?}"
+    );
+    // Too small a bitmap is refused, not overrun.
+    let mut tiny = [0u8; 1];
+    assert_eq!(v.check(&mut tiny, &mut [0u8; 4096]), Err(Error::NoRoom));
+}
+
+#[test]
+fn power_cuts_leak_space_at_worst_never_damage() {
+    let img = tiny_image(&[Entry {
+        name: "a.bin",
+        data: &pattern(4000, 3),
+    }]);
+    let mut scratch = vec![0u8; 4096];
+    let total = {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        v.put("d/e/a.bin", &pattern(6000, 4), &mut scratch).unwrap();
+        v.put("a.bin", &pattern(7000, 5), &mut scratch).unwrap();
+        v.dev.writes
+    };
+    for fail_at in 0..total {
+        let mut disk = MemDisk::new(img.clone());
+        disk.fail_at = Some(fail_at);
+        let mut v = Volume::mount(disk, PARTITION_START).unwrap();
+        let _ = v
+            .put("d/e/a.bin", &pattern(6000, 4), &mut scratch)
+            .and_then(|_| v.put("a.bin", &pattern(7000, 5), &mut scratch));
+        let mut v = Volume::mount(MemDisk::new(v.into_inner().data), PARTITION_START).unwrap();
+        let h = health(&mut v);
+        // The FAT copies may differ mid-write (written one after the other).
+        let damage = Health {
+            lost: 0,
+            fat_copies_differ: 0,
+            files: 0,
+            folders: 0,
+            used: 0,
+            ..h
+        };
+        assert!(damage.clean(), "write {fail_at}: {h:?}");
+    }
+}
+
+#[test]
+fn checking_hostile_volumes_never_panics_or_hangs() {
+    let img = tiny_image(&[
+        Entry {
+            name: "one.bin",
+            data: &pattern(3000, 1),
+        },
+        Entry {
+            name: "two.bin",
+            data: &pattern(9000, 2),
+        },
+    ]);
+    let mut x: u64 = 0xC4EC_2026;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let base = PARTITION_START as usize * SECTOR;
+    for _ in 0..1500 {
+        let mut d = img.clone();
+        for _ in 0..1 + rnd() % 8 {
+            let at = base + 32 * SECTOR + (rnd() as usize % (d.len() - base - 32 * SECTOR));
+            d[at] = rnd() as u8;
+        }
+        if let Ok(mut v) = Volume::mount(MemDisk::new(d), PARTITION_START) {
+            let mut seen = vec![0u8; (v.clusters as usize + 2).div_ceil(8)];
+            let _ = v.check(&mut seen, &mut [0u8; 4096]);
+        }
+    }
+}

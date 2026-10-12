@@ -589,6 +589,7 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
         ("drive".into(), "drive status".into()),
         ("SD DMA".into(), "card dma".into()),
         ("backlight".into(), "backlight".into()),
+        ("file system".into(), "card check".into()),
     ];
     // The rest of the first FAT (docs/hw/sd.md), 400 blocks a command.
     let (first, last) = (15_074u32, 16_975u32);

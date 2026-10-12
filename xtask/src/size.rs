@@ -130,9 +130,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 104 -> 112 KiB on 2026-10-12 (test image): audio (I2C,
     // the WM8750, I2S streamed from a DMA ring, the headphone jack) for
     // the `tone` command; 104.6 KiB measured, +~7%.
+    // Ratcheted 112 -> 124 KiB on 2026-10-12 (test image): browsing the
+    // card from the PC (`ls`, `get`) and the read-only file system check
+    // (`card check`, FAT32 and exFAT); 118.0 KiB measured, +~5%.
     Budget {
         image: "rp-loader",
-        max_load: 112 * 1024,
+        max_load: 124 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.

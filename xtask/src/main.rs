@@ -57,7 +57,8 @@ commands:
             `card scrub <lba>` rewrites a weak first-FAT sector in place,
             verified against its mirror in the second FAT; `card repair
             <lba>` restores a damaged one from the mirror (only when the
-            first copy's differing entries are invalid); `card dma` reports
+            first copy's differing entries are invalid); `card check`
+            checks the file system read-only (FAT32 or exFAT); `card dma` reports
             the SD DMA self-test, `card dma writes` lets writes use DMA
   ls        list a folder on the card through the loader (read-only)
   get       `get <file> [local name]`: copy a file from the card, CRC

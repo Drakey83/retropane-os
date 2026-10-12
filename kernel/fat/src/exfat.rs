@@ -107,6 +107,9 @@ pub struct ExVolume<D> {
     base: u32,
     /// VolumeDirty was already set at mount (then a write leaves it set).
     was_dirty: bool,
+    /// Entry sets whose checksum failed, counted as directories are walked
+    /// (for [`ExVolume::check`]).
+    bad_sets: u32,
     /// The allocation bitmap: first sector and length in bytes (found on
     /// the first write).
     bitmap: Option<(u32, u32)>,
@@ -220,6 +223,7 @@ impl<D: BlockDevice> ExVolume<D> {
             dev,
             base,
             was_dirty: b[106] & VOLUME_DIRTY != 0,
+            bad_sets: 0,
             bitmap: None,
             fat_start: base + fat_offset,
             heap_start: base + heap_offset,
@@ -358,7 +362,8 @@ impl<D: BlockDevice> ExVolume<D> {
         let mut want = 0usize; // entries still to collect for the set
         let mut seen = 0usize;
         let mut sum = 0u16;
-        self.walk_slots(dir, &mut |lba, nth, slot, e| {
+        let mut bad = 0u32;
+        let r = self.walk_slots(dir, &mut |lba, nth, slot, e| {
             if e[0] == 0 {
                 return true;
             }
@@ -375,6 +380,7 @@ impl<D: BlockDevice> ExVolume<D> {
                 found.count = seen;
                 let Some((name, n, file, whole)) = parse_set(&found.set[..seen.min(KEEP)], sum)
                 else {
+                    bad += 1;
                     return false;
                 };
                 found.whole = whole;
@@ -393,7 +399,241 @@ impl<D: BlockDevice> ExVolume<D> {
                 }
             }
             false
-        })
+        });
+        self.bad_sets = self.bad_sets.wrapping_add(bad);
+        r
+    }
+
+    /// Checks the volume, read-only (see [`crate::check`]): every folder
+    /// walked, every cluster files and folders use marked once and checked
+    /// against the allocation bitmap, then the bitmap scanned for clusters
+    /// nothing reached. `seen` needs a bit per cluster; `scratch` a sector
+    /// and 4 bytes.
+    #[inline(never)]
+    pub fn check(&mut self, seen: &mut [u8], scratch: &mut [u8]) -> Result<crate::Health, Error> {
+        use crate::check::{BATCH, PENDING, Seen};
+        let total = self.clusters + 2;
+        if seen.len() < (total as usize).div_ceil(8) || scratch.len() < SECTOR + 4 {
+            return Err(Error::NoRoom);
+        }
+        seen[..(total as usize).div_ceil(8)].fill(0);
+        let mut seen = Seen(seen);
+        let mut h = crate::Health::default();
+        let (bitmap_lba, bitmap_bytes) = self.bitmap()?;
+        // The root's clusters, and those of the bitmap and up-case table.
+        let root = self.root();
+        self.mark_dir(root, &mut seen, &mut h, scratch)?;
+        let mut special = [(0u32, 0u64); 2];
+        self.walk_slots(root, &mut |_, _, _, e| {
+            match e[0] {
+                T_BITMAP => special[0] = (le32(e, 20), le64(e, 24)),
+                0x82 => special[1] = (le32(e, 20), le64(e, 24)),
+                _ => {}
+            }
+            false
+        })?;
+        for (first, len) in special {
+            if len > 0 {
+                let f = ExFile {
+                    first_cluster: first,
+                    size: len,
+                    valid: len,
+                    contiguous: false,
+                    is_dir: false,
+                };
+                self.mark_file(&f, &mut seen, &mut h, scratch)?;
+            }
+        }
+        let mut pending = [root; PENDING];
+        let mut np = 1;
+        while np > 0 {
+            np -= 1;
+            let dir = pending[np];
+            let mut skip = 0usize;
+            loop {
+                let mut batch = [None; BATCH];
+                let (mut nb, mut idx, mut more) = (0, 0usize, false);
+                let before = self.bad_sets;
+                let walked = self.walk_dir(dir, &mut |_, file, _| {
+                    if idx < skip {
+                        idx += 1;
+                        return false;
+                    }
+                    if nb == BATCH {
+                        more = true;
+                        return true;
+                    }
+                    batch[nb] = Some(*file);
+                    nb += 1;
+                    idx += 1;
+                    false
+                });
+                match walked {
+                    Err(Error::Corrupt) => {
+                        h.bad_chains += 1;
+                        break;
+                    }
+                    r => r?,
+                }
+                if !more {
+                    // The walk that read the whole folder counts its bad sets.
+                    h.bad_sets += self.bad_sets.wrapping_sub(before);
+                }
+                for f in batch[..nb].iter().flatten() {
+                    if f.is_dir {
+                        h.folders += 1;
+                        match self.dir_of(f) {
+                            Ok(d) => {
+                                if self.mark_dir(d, &mut seen, &mut h, scratch)? {
+                                    if np < PENDING {
+                                        pending[np] = d;
+                                        np += 1;
+                                    } else {
+                                        h.unchecked += 1;
+                                    }
+                                }
+                            }
+                            Err(_) => h.bad_chains += 1,
+                        }
+                    } else {
+                        h.files += 1;
+                        self.mark_file(f, &mut seen, &mut h, scratch)?;
+                    }
+                }
+                if !more {
+                    break;
+                }
+                skip += nb;
+            }
+        }
+        // Allocated in the bitmap, reached by nothing.
+        let mut s = 0;
+        while s * SECTOR < bitmap_bytes as usize {
+            self.dev
+                .read_blocks(bitmap_lba + s as u32, &mut scratch[..SECTOR])?;
+            for (i, &byte) in scratch[..SECTOR].iter().enumerate() {
+                for bit in 0..8 {
+                    let c = ((s * SECTOR + i) * 8 + bit) as u32 + 2;
+                    if c < total && byte >> bit & 1 == 1 && !seen.get(c) {
+                        h.lost += 1;
+                    }
+                }
+            }
+            s += 1;
+        }
+        Ok(h)
+    }
+
+    /// Whether cluster `c` is marked used in the bitmap (one sector cached in
+    /// `cache`: its first 4 bytes the sector index + 1, then the sector).
+    fn bitmap_bit(&mut self, c: u32, cache: &mut [u8]) -> Result<bool, Error> {
+        let (lba0, _) = self.bitmap()?;
+        let bit = c - 2;
+        let sector = bit / (SECTOR as u32 * 8);
+        let (tag, data) = cache.split_at_mut(4);
+        if u32::from_le_bytes([tag[0], tag[1], tag[2], tag[3]]) != sector + 1 {
+            self.dev.read_blocks(lba0 + sector, &mut data[..SECTOR])?;
+            tag.copy_from_slice(&(sector + 1).to_le_bytes());
+        }
+        let i = (bit % (SECTOR as u32 * 8)) as usize;
+        Ok(data[i / 8] >> (i % 8) & 1 == 1)
+    }
+
+    /// Marks one cluster of a file or folder and checks the bitmap has it.
+    fn mark_one(
+        &mut self,
+        c: u32,
+        seen: &mut crate::check::Seen<'_>,
+        h: &mut crate::Health,
+        cache: &mut [u8],
+    ) -> Result<bool, Error> {
+        if !self.valid_cluster(c) {
+            h.bad_chains += 1;
+            return Ok(false);
+        }
+        if !seen.mark(c) {
+            h.cross_linked += 1;
+            return Ok(false);
+        }
+        h.used += 1;
+        if !self.bitmap_bit(c, cache)? {
+            h.free_but_used += 1;
+        }
+        Ok(true)
+    }
+
+    /// Marks a file's clusters (one run, or its chain).
+    fn mark_file(
+        &mut self,
+        f: &ExFile,
+        seen: &mut crate::check::Seen<'_>,
+        h: &mut crate::Health,
+        scratch: &mut [u8],
+    ) -> Result<(), Error> {
+        let n = f.size.div_ceil(self.cluster_bytes() as u64);
+        if n == 0 {
+            return Ok(());
+        }
+        if n > u64::from(self.clusters) {
+            h.bad_chains += 1;
+            return Ok(());
+        }
+        let cache = &mut scratch[..SECTOR + 4];
+        cache[..4].fill(0);
+        let mut c = f.first_cluster;
+        for k in 0..n {
+            if !self.mark_one(c, seen, h, cache)? {
+                return Ok(());
+            }
+            if k + 1 < n {
+                c = if f.contiguous {
+                    c + 1
+                } else {
+                    match self.fat_next(c) {
+                        Ok(Some(next)) => next,
+                        Ok(None) => {
+                            h.size_mismatch += 1;
+                            return Ok(());
+                        }
+                        Err(Error::Corrupt) => {
+                            h.bad_chains += 1;
+                            return Ok(());
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+            }
+        }
+        Ok(())
+    }
+
+    /// Marks a folder's clusters; `true` if all were reached for the first
+    /// time (so it is walked once).
+    fn mark_dir(
+        &mut self,
+        dir: Dir,
+        seen: &mut crate::check::Seen<'_>,
+        h: &mut crate::Health,
+        scratch: &mut [u8],
+    ) -> Result<bool, Error> {
+        let cache = &mut scratch[..SECTOR + 4];
+        cache[..4].fill(0);
+        let mut c = dir.first;
+        for k in 0.. {
+            if !self.mark_one(c, seen, h, cache)? {
+                return Ok(false);
+            }
+            match self.dir_next(dir, c, k) {
+                Ok(Some(next)) => c = next,
+                Ok(None) => break,
+                Err(Error::Corrupt) => {
+                    h.bad_chains += 1;
+                    return Ok(false);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -1955,6 +2195,120 @@ mod tests {
         // Walks stay bounded: an error or not found, never a hang.
         assert!(v.find("loop/loop/loop/loop/x").is_err());
         let _ = v.put("loop/loop/new.txt", b"x", &mut scratch);
+    }
+
+    fn health(v: &mut ExVolume<Mem>) -> crate::Health {
+        let mut seen = vec![0u8; (v.clusters as usize + 2).div_ceil(8)];
+        v.check(&mut seen, &mut [0u8; 1024]).unwrap()
+    }
+
+    #[test]
+    fn a_healthy_exfat_volume_checks_clean_after_many_writes() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 2048];
+        let h = health(&mut v);
+        assert!(h.clean() && h.lost == 0 && h.files == 3, "{h:?}");
+        for i in 0..40 {
+            v.put(
+                &format!("dir {}/f{i}", i % 2),
+                &pattern(700 * (i % 5), i as u8),
+                &mut scratch,
+            )
+            .unwrap();
+        }
+        v.put("retropane.bin", &pattern(10_000, 1), &mut scratch)
+            .unwrap();
+        let h = health(&mut v);
+        assert!(h.clean() && h.lost == 0, "{h:?}");
+        assert_eq!((h.files, h.folders), (43, 2), "{h:?}");
+    }
+
+    #[test]
+    fn exfat_damage_of_every_kind_is_found() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let root = v.root();
+        let (a, at_a) = v.find_set(root, "retropane.bin").unwrap();
+        // Free but used: the bitmap forgets one of retropane.bin's clusters.
+        let mut w = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        w.mark(a.first_cluster + 1, 1, false).unwrap();
+        let h = health(&mut w);
+        assert!(h.free_but_used == 1 && !h.clean(), "{h:?}");
+        // Lost: the bitmap holds a cluster nothing uses.
+        let mut w = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let (Some(free), _) = w.scan(2, 1, &mut vec![0u8; 512]).unwrap() else {
+            panic!("no free cluster")
+        };
+        w.mark(free, 1, true).unwrap();
+        let h = health(&mut w);
+        assert!(h.clean() && h.lost == 1, "{h:?}");
+        // Cross-link: the empty file now claims retropane.bin's clusters.
+        let mut w = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let (_, at_e) = w.find_set(root, "empty.txt").unwrap();
+        let mut set = at_e.set;
+        set_stream(&mut set[..at_e.count], a.first_cluster, 4096, true);
+        let o = at_e.lba as usize * SECTOR + at_e.slot * ENTRY;
+        w.dev.data[o..o + ENTRY].copy_from_slice(&set[0]);
+        w.dev.data[o + ENTRY..o + 2 * ENTRY].copy_from_slice(&set[1]);
+        let h = health(&mut w);
+        assert!(h.cross_linked >= 1, "{h:?}");
+        // A set whose checksum fails.
+        let mut w = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let o = at_a.lba as usize * SECTOR + at_a.slot * ENTRY;
+        w.dev.data[o + 2 * ENTRY + 4] ^= 1; // a name character
+        let h = health(&mut w);
+        assert!(h.bad_sets == 1 && !h.clean(), "{h:?}");
+        // No room for the marks: refused, not overrun.
+        assert_eq!(v.check(&mut [0u8; 1], &mut [0u8; 1024]), Err(Error::NoRoom));
+    }
+
+    #[test]
+    fn exfat_power_cuts_leak_space_at_worst_never_damage() {
+        let (img, _, _) = image();
+        let mut scratch = vec![0u8; 2048];
+        let new = pattern(9000, 6);
+        let total = {
+            let mut v = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+            v.put("x/y.bin", &new, &mut scratch).unwrap();
+            v.put("retropane.bin", &new, &mut scratch).unwrap();
+            v.dev.writes
+        };
+        for fail_at in 0..total {
+            let mut disk = Mem(img.clone());
+            disk.fail_at = Some(fail_at);
+            let mut v = ExVolume::mount(disk, PARTITION_START).unwrap();
+            let _ = v
+                .put("x/y.bin", &new, &mut scratch)
+                .and_then(|_| v.put("retropane.bin", &new, &mut scratch));
+            let mut v = ExVolume::mount(Mem(v.into_inner().data), PARTITION_START).unwrap();
+            let h = health(&mut v);
+            assert!(h.clean(), "write {fail_at}: {h:?}");
+        }
+    }
+
+    #[test]
+    fn checking_hostile_exfat_cards_never_panics() {
+        let (base_img, _, _) = image();
+        let base = PARTITION_START as usize * SECTOR;
+        let mut x: u64 = 0xC4EC_E0FA;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        for _ in 0..1500 {
+            let mut img = base_img.clone();
+            for _ in 0..1 + rnd() % 6 {
+                let at = base + 24 * SECTOR + (rnd() as usize % (img.len() - base - 24 * SECTOR));
+                img[at] = rnd() as u8;
+            }
+            if let Ok(mut v) = ExVolume::mount(Mem(img), PARTITION_START) {
+                let mut seen = vec![0u8; (v.clusters as usize + 2).div_ceil(8)];
+                let _ = v.check(&mut seen, &mut [0u8; 1024]);
+            }
+        }
     }
 
     /// Writing to a hostile card: errors, never a panic or a loop.
