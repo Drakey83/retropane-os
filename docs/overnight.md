@@ -434,8 +434,17 @@ on the host or in the emulator first.
       errors.
     - **Modernize:** double-buffered DMA audio, the shape of every modern
       audio stack, measured in CI.
-24. **Headphone detect**: GPIO83 read, debounced, reported (and the output
-    routed: headphones vs speaker); emulator models the jack as a switch.
+24. **Headphone detect**: **done (emulator); polarity to confirm on the
+    device.** The loader reads GPIO83 each second (debounced over two
+    reads), routes the codec (`Wm8750::route`: headphones mute the speaker
+    pair; unplugging brings it back) and logs each change with the raw
+    level. Emulator rp-v0.9.9: the jack as a switch on GPIO83; the tone
+    test plays to the speaker, plugs headphones in, and the next tone goes
+    to them. 1 new codec test. `rp-loader` budget 104 -> 112 KiB (audio).
+    - **Iterate:** the speaker mutes itself when headphones go in, as
+      expected of any device; unknown polarity handled by logging levels,
+      not guessing silently.
+    - **Modernize:** automatic output switching, tested end to end.
 25. **Growing folders**: a full exFAT folder, or a FAT32 folder other than
     the root, takes another cluster instead of answering "no room"
     (crash-safe: the new cluster zeroed and linked before any entry uses

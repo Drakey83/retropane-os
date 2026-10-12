@@ -127,9 +127,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 96 -> 104 KiB on 2026-10-12 (test image; never in a
     // release, docs/security.md): CompactFlash (driver, `cf`, the drive's
     // second unit) and exFAT folders; 98.2 KiB measured, +~6%.
+    // Ratcheted 104 -> 112 KiB on 2026-10-12 (test image): audio (I2C,
+    // the WM8750, I2S streamed from a DMA ring, the headphone jack) for
+    // the `tone` command; 104.6 KiB measured, +~7%.
     Budget {
         image: "rp-loader",
-        max_load: 104 * 1024,
+        max_load: 112 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.

@@ -976,6 +976,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         Emulator::Wsl => to_wsl_path(&wav),
         Emulator::Native(_) => wav.display().to_string(),
     };
+    let port = monitor_port();
     let mut args: Vec<String> = usb_args(2).into();
     args.extend([
         "-audiodev".into(),
@@ -990,10 +991,20 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("tone 440 500"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "\n", 20)?;
-        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames") || !reply.contains("by DMA") {
+        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames")
+            || !reply.contains("by DMA")
+            || !reply.contains("to speaker")
+        {
             return Err(format!("unexpected reply to tone: {reply:?}"));
         }
         eprintln!("    loader: {}", reply.trim());
+        // Headphones in: the next tone goes to them (the speaker muted).
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        mon.query("qom-set /machine/peripheral/jack pressed true")?;
+        std::thread::sleep(Duration::from_millis(2500));
+        s.write_all(&rp_loadproto::control_frame("tone 1000 50"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "to headphones", 20)?;
         s.write_all(&rp_loadproto::control_frame("tone 5 5"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR usage", 10)?;

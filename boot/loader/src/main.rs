@@ -42,7 +42,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_drv_wm8750::Wm8750;
+    use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Volume};
     use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
     use rp_hal_pxa27x::dma::Dma;
@@ -164,6 +164,36 @@ mod image {
     const SD_DETECT: u8 = 12;
     /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
     const CF_DETECT: u8 = 13;
+    /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
+    /// unconfirmed on the device, so changes are logged with the level).
+    const HP_DETECT: u8 = 83;
+
+    /// The headphone jack, debounced over two one-second polls.
+    struct Jack {
+        plugged: bool,
+        seen: bool,
+    }
+
+    impl Jack {
+        /// The new state when the jack changed.
+        fn poll(&mut self, gpio: &mut Gpio<Mmio>) -> Option<bool> {
+            let now = gpio.read(HP_DETECT);
+            let stable = now == self.seen;
+            self.seen = now;
+            (stable && now != self.plugged).then(|| {
+                self.plugged = now;
+                now
+            })
+        }
+
+        fn output(&self) -> Output {
+            if self.plugged {
+                Output::Headphones
+            } else {
+                Output::Speaker
+            }
+        }
+    }
     const SD_LOCK: u8 = 27;
 
     impl Lun {
@@ -728,6 +758,7 @@ mod image {
     #[inline(never)]
     fn tone_command(
         audio: &mut Audio,
+        jack: &Jack,
         args: &[u8],
         ring: &mut [u8],
         feed: &mut dyn FnMut(),
@@ -748,7 +779,10 @@ mod image {
         if let Audio::Untried = audio {
             *audio = match (rt::take_i2c(), rt::take_i2s()) {
                 (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
-                    Ok(codec) => Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(1)),
+                    Ok(mut codec) => {
+                        let _ = codec.route(jack.output());
+                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(1))
+                    }
                     Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
                 },
                 _ => Audio::Failed("I2C or I2S unavailable"),
@@ -766,11 +800,7 @@ mod image {
         let frames = rate.hz() / 1000 * ms;
         let mut source = Tone::new(hz, rate.hz(), 12_000);
         let Some(dma) = dma else {
-            let _ = write!(
-                out,
-                "RPL ERR tone: no DMA channel
-"
-            );
+            let _ = write!(out, "RPL ERR tone: no DMA channel\r\n");
             return;
         };
         i2s.start(rate);
@@ -788,11 +818,15 @@ mod image {
             Ok(s) => {
                 let _ = write!(
                     out,
-                    "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}
-",
+                    "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}, to {}\r\n",
                     s.total / (TICK_1S / 1000),
                     u64::from(s.busy) * 100 / u64::from(s.total.max(1)),
-                    codec.address()
+                    codec.address(),
+                    if codec.output() == Output::Headphones {
+                        "headphones"
+                    } else {
+                        "speaker"
+                    }
                 );
             }
             Err(e) => {
@@ -800,11 +834,7 @@ mod image {
                     rp_drv_pxa_i2s::StreamError::Refused => "refused",
                     rp_drv_pxa_i2s::StreamError::Stalled => "stalled",
                 };
-                let _ = write!(
-                    out,
-                    "RPL ERR tone: DMA stream {why}
-"
-                );
+                let _ = write!(out, "RPL ERR tone: DMA stream {why}\r\n");
             }
         }
     }
@@ -1253,6 +1283,11 @@ mod image {
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
         let mut audio = Audio::Untried;
+        gpio.make_input(HP_DETECT);
+        let mut jack = Jack {
+            plugged: gpio.read(HP_DETECT),
+            seen: gpio.read(HP_DETECT),
+        };
         let mut cf = CfLun {
             slot: CfSlot::Untried,
             inserted: false,
@@ -1390,6 +1425,7 @@ mod image {
                         Ok(c) if c.starts_with(b"tone") => {
                             tone_command(
                                 &mut audio,
+                                &jack,
                                 &c[4..],
                                 &mut fat_scratch[..8192],
                                 &mut || {
@@ -1522,6 +1558,19 @@ mod image {
                     uart,
                     "power button: screen {}",
                     if on { "on" } else { "off" }
+                );
+            }
+            if rt::ticks().wrapping_sub(last) >= TICK_1S
+                && let Some(plugged) = jack.poll(&mut gpio)
+            {
+                if let Audio::Ready(codec, ..) = &mut audio {
+                    let _ = codec.route(jack.output());
+                }
+                let _ = writeln!(
+                    log,
+                    "headphones {} (GPIO83 {})",
+                    if plugged { "in" } else { "out" },
+                    u8::from(plugged)
                 );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {

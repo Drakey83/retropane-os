@@ -54,8 +54,13 @@ crossings, the right channel latching both).
   left, writes it back from the cache, and is free in between. Stops after
   the last frame has played; a ring that stops moving for 200 ms is an
   error, not a hang.
-- Not yet: the speaker amplifier, headphone detect, recording, sample
-  rates other than 48 kHz on the codec side.
+- Headphone jack: GPIO83 read each second, debounced over two reads; high
+  is taken as plugged in (unconfirmed: the loader logs each change with
+  the level, so a device run settles it). Plugged in, the speaker pair is
+  muted and sound goes to the headphones; unplugged, back to the speaker.
+  The `tone` reply names the output.
+- Not yet: the speaker amplifier, recording, sample rates other than
+  48 kHz on the codec side.
 
 ## Device run (with the owner there: it makes sound)
 
