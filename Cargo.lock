@@ -272,6 +272,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-kernel-ipc",
  "rp-kernel-mm",
 ]
 

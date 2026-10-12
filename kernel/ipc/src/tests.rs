@@ -39,6 +39,13 @@ fn handles_belong_to_their_process() {
     // Out-of-range slots and threads.
     assert_eq!(ipc.call(5, 0, h), Err(Error::Range));
     assert_eq!(ipc.call(5, 64, h), Err(Error::Range));
+    // Slot 1 (shared code) and slot 33 (the shared-file area) hold no
+    // process.
+    assert_eq!(ipc.install(1, PortId(0), Rights::CALL), Err(Error::Range));
+    assert_eq!(
+        ipc.install(LAST_SLOT + 1, PortId(0), Rights::CALL),
+        Err(Error::Range)
+    );
     assert_eq!(ipc.call(200, APP, h), Err(Error::Range));
 }
 
@@ -124,7 +131,7 @@ fn tables_are_bounded() {
     assert_eq!(ipc.install(APP, port, Rights::CALL), Err(Error::Full));
     let mut ipc = Ipc::new();
     for i in 0..MAX_PORTS {
-        ipc.open(1 + (i % 60) as u8, 0).unwrap();
+        ipc.open(FIRST_SLOT + (i % MAX_SLOTS) as u8, 0).unwrap();
     }
     assert_eq!(ipc.open(SERVER, 0), Err(Error::Full));
 }
@@ -163,10 +170,14 @@ fn random_operations_never_break_the_rules() {
             3 | 4 => {
                 if let Ok(e) = ipc.call(tid, slot, h) {
                     // It was a live handle with CALL in the caller's table.
-                    let entry = ipc.tables[usize::from(slot)][usize::from(h.0)].unwrap();
-                    assert!(entry.rights.contains(Rights::CALL));
-                    let p = ipc.ports[usize::from(entry.port)].unwrap();
-                    assert!(p.open && p.generation == entry.generation && p.server == e.slot);
+                    let entry =
+                        Entry::decode(ipc.tables[usize::from(slot - FIRST_SLOT)][usize::from(h.0)])
+                            .unwrap();
+                    assert!(entry.rights().contains(Rights::CALL));
+                    let p = ipc.ports[usize::from(entry.port())].unwrap();
+                    assert!(
+                        p.open == 1 && p.generation == entry.generation() && p.server == e.slot
+                    );
                     assert!(e.depth <= MAX_DEPTH);
                 }
             }

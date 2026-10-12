@@ -81,6 +81,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | The loader sleeps between polls after 50 ms of quiet (1 ms tick, XScale idle mode) | Waiting loader asleep (emulator) | 0% | 99% (answers in 1-2 ms; the drive still reads 1 MiB in ~3 s) |
 
 | 2026-10-12 | ADR-0015 step 2: the loader built as Thumb (the HAL's assembly marked ARM per function; global assembly already `.arm`), every emulator test passing; budget lowered 128 -> 101 KiB | `rp-loader` loaded size | 127,664 B | 94,208 B (−26%) |
+| 2026-10-12 | IPC (ADR-0016 step 2) live in `rp-kernel`: a client process calls a server process through a port, the thread migrating (FCSE PID + domain switch, registers saved and cleared) and back; 1,002 calls including a faulting server and a refused handle. Emulator real time (no `-icount`), so a smoke number until the device runs it | `ipc_call_roundtrip` | — | ~12 µs per call (39,104 ticks of 3.25 MHz / 1,002, emulated) |
+| 2026-10-12 | IPC in `rp-kernel`. Handle tables one packed word each (no `Option`, no padding) and only for CE5's 31 process slots, not all 63 FCSE PIDs: 9.9 → 5.7 KB of zeroed RAM, inside the old budget. The user test programs copied into a frame at start instead of a page-aligned page in the image (−7.6 KB of padding; no kernel-image page is user-visible). `rp-kernel-ipc` built for size (its table scans unrolled to 0.8 KB at opt-level 3). **Kernel load budget raised 38 → 46 KiB, approved by the owner** (measured + ~10%) | `rp-kernel` loaded / zeroed | 34,928 / 105,456 B | 42,312 / 111,128 B |
 
 ## Real hardware
 

@@ -25,6 +25,8 @@ pub mod mmu;
 pub mod rt;
 pub mod soc;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod testprog;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod thread;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod user;

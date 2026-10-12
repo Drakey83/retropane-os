@@ -288,6 +288,15 @@ unsafe extern "C" {
     fn rp_enter_user(pc: u32, sp: u32, arg: u32) -> !;
 }
 
+/// Leaves the kernel for good: continues in user mode at address `pc` with
+/// stack pointer `sp` and `r0 = arg`, as the running process sees them (its
+/// own slot). The MMU confines what runs there to that process's pages.
+pub fn enter_user_at(pc: u32, sp: u32, arg: u32) -> ! {
+    // SAFETY: user mode can only reach what the page tables let it; the SVC
+    // stack pointer stays at this thread's kernel stack for later SWIs.
+    unsafe { rp_enter_user(pc, sp & !7, arg) }
+}
+
 /// Leaves the kernel for good: continues in user mode at `entry(arg)` on
 /// the user stack `stack` (memory the user may access). The calling kernel
 /// thread's stack becomes its kernel stack for system calls.

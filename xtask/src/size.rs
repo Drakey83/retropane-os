@@ -58,7 +58,14 @@ pub const BUDGETS: &[Budget] = &[
     // printing trimmed. Ratcheted to the measured 34.9 KB + ~10%.
     Budget {
         image: "rp-kernel",
-        max_load: 38 * 1024,
+        // Raised 38 -> 46 KiB on 2026-10-12 (approved by the owner): IPC
+        // (ADR-0016) landed: the system-call path, migrating call and
+        // return, unwinding a faulted server (~6 KB), plus the IPC test
+        // (~1.3 KB; its user programs are copied into a frame at start, not
+        // a page-aligned page in the image). Measured 41.3 KiB + ~10%. The
+        // handle tables are 4 KiB of zeroed RAM, sized to CE5's 31 process
+        // slots, inside the existing zero budget.
+        max_load: 46 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame

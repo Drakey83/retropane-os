@@ -647,6 +647,29 @@ on the host or in the emulator first.
     - **Modernize:** capability-style handles, verified against random
       hostile use before any of it runs.
 
+37. **IPC, step 2: the call, live** (ADR-0016): **done (emulator).**
+    `rp-kernel` runs two user processes (slots 5 and 6). The client calls
+    the server 1,000 times through a port: each call migrates the thread
+    (saves the caller's registers, clears all but the arguments, switches
+    FCSE PID and DACR domain, enters the server on its own stack) and
+    returns the sum. A server that faults mid-call unwinds to its caller
+    with an error, a handle the client never had is refused, and each
+    process keeps its own word at the same address. The emulator test
+    requires all four `IPC ... OK` lines (absent without this step).
+    `BENCH ipc_call_roundtrip`: ~12 µs per call (emulated real time).
+    Size: handle tables are one word per handle and exist only for CE5's
+    31 process slots (ADR-0016 said 63 processes; corrected: above slot 32
+    is the shared-file area); test programs copied into a frame instead of
+    a page-aligned page in the image; kernel load budget 38 -> 46 KiB,
+    approved by the owner.
+    - **Iterate:** CE's thread-migrating calls, with the server seeing
+      only its arguments (never the caller's other registers), and a
+      crashing service returning an error to its caller.
+    - **Modernize:** user code never runs from a kernel-image page (copied
+      into its own frame, W^X), a server can't touch its caller's memory
+      (domains), and the tables are fixed, zero-initialised and half the
+      size of a naive layout.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
