@@ -737,9 +737,33 @@ on the host or in the emulator first.
       page ever user-visible, and every loader input bounded and treated
       as hostile.
 
-41. **Reclaim** (ADR-0005): when free frames run low, compress the
-    coldest pages (a clock over the page tables, accessed bits emulated
-    with faults); host tests, then live in the kernel image.
+41. **Reclaim** (ADR-0005): **done (emulator).** `Vm::reclaim`: a clock
+    hand sweeps a process's pages. A resident page is *aged*: its cache
+    lines are written back and its entry becomes a stored one recording
+    the frame and whether it was writable, so the next touch is a cheap
+    minor fault that maps it again (`Outcome::Referenced`). That emulates
+    the accessed bit ARMv5 lacks, with no extra memory. A page still aged
+    when the hand returns is evicted: frames the process owns (anonymous
+    memory, private copies) are compressed; page-cache pages (code,
+    constants) are let go and reload on demand; device windows are never
+    touched. Aged entries use a size class the compressed store never has,
+    so they can't be confused with compressed handles; `unmap` frees them
+    like mapped pages; a page made read-only while aged comes back
+    read-only. 5 host tests; live: 16 pages, one sweep ages all, 8 are
+    touched (8 minor faults), the next sweep re-ages those 8 and compresses
+    the other 8, and an evicted page comes back intact (`VM reclaim OK`,
+    required by the emulator test). Fits the current budget.
+    - **Iterate:** CE had no page reclaim beyond discarding code; this keeps
+      the working set and squeezes only what wasn't touched for a sweep.
+    - **Modernize:** second-chance clock with emulated reference bits (as
+      modern kernels do on MMUs without them), compressed instead of
+      swapped to slow flash, so no flash wear and no data leaves RAM.
+
+43. **A whole-OS memory budget** (owner's question, 2026-10-12): a
+    top-down budget for the device (kernel, services, driver hosts, shell,
+    and RAM left for apps: at least what Windows Mobile leaves, ~52 MB of
+    64), in `docs/memory-budget.md`, and an `xtask` check that the per-image
+    budgets add up within it.
 
 42. **Service manager and driver hosts** (ADR-0016 step 3): a first user
     process that owns the port table and starts hosts per driver class;

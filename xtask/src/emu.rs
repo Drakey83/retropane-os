@@ -345,6 +345,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM domains OK",
     "VM fault loop OK",
     "VM compressed RAM OK",
+    "VM reclaim OK",
     "VM unmap OK",
     // IPC (ADR-0016): two user processes, a migrating call and back 1000
     // times, a faulting server unwound to its caller, a forged handle

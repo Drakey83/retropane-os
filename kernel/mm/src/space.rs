@@ -456,6 +456,9 @@ pub enum Outcome {
     CopiedOnWrite,
     /// A compressed page was decompressed back into place.
     Restored,
+    /// An aged page was touched: mapped again as it was (a minor fault:
+    /// the reclaim clock's "referenced" bit, which ARMv5 lacks).
+    Referenced,
     /// The page was already mapped with enough permission (another path
     /// resolved it first).
     Spurious,
@@ -557,6 +560,15 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         let private_file = matches!(r.backing, Backing::File { shared: false, .. });
 
         if let Some(raw) = self.tables.stored(self.mem, page) {
+            if let Some((f, writable)) = decode_aged(raw) {
+                // Writable only if it was and the region still allows it.
+                let attrs = attrs_for(&r, writable && r.prot.write());
+                let phys = self.mem.frame_phys(f);
+                self.tables
+                    .restore(self.mem, page, phys, attrs)
+                    .map_err(FaultError::Map)?;
+                return Ok(Outcome::Referenced);
+            }
             return self.restore(&r, page, raw);
         }
 
@@ -668,20 +680,8 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         // The process may have dirty lines for it under its own address
         // (VIVT): write them back before reading the frame.
         self.mmu.clean_page(page);
-        let zb = &mut *self.zbuf;
-        let packed_len = self.mem.with_page(phys, |p| {
-            rp_lz4::compress_with(&mut zb.table, p, &mut zb.packed)
-        });
-        let Ok(n) = packed_len else {
+        let Some(h) = self.pack(phys)? else {
             return Ok(false);
-        };
-        let h = match self
-            .zpool
-            .store(self.frames, &mut ZPages(&mut *self.mem), &zb.packed[..n])
-        {
-            Ok(h) => h,
-            Err(crate::zpool::ZError::TooBig) => return Ok(false),
-            Err(crate::zpool::ZError::NoMemory) => return Err(FaultError::NoMemory),
         };
         if self
             .tables
@@ -725,6 +725,95 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         Ok(Outcome::CopiedOnWrite)
     }
 
+    /// Compresses the frame at `phys` into the store: its handle, or `None`
+    /// if it doesn't compress well enough. The caller has written back its
+    /// cache lines.
+    fn pack(&mut self, phys: u32) -> Result<Option<Handle>, FaultError> {
+        let zb = &mut *self.zbuf;
+        let packed_len = self.mem.with_page(phys, |p| {
+            rp_lz4::compress_with(&mut zb.table, p, &mut zb.packed)
+        });
+        let Ok(n) = packed_len else {
+            return Ok(None);
+        };
+        match self
+            .zpool
+            .store(self.frames, &mut ZPages(&mut *self.mem), &zb.packed[..n])
+        {
+            Ok(h) => Ok(Some(h)),
+            Err(crate::zpool::ZError::TooBig) => Ok(None),
+            Err(crate::zpool::ZError::NoMemory) => Err(FaultError::NoMemory),
+        }
+    }
+
+    /// One step of the reclaim clock over `space` (ADR-0005): from `*hand`,
+    /// visits up to `budget` pages of its regions in address order
+    /// (wrapping). A resident page is *aged*: written back from the cache
+    /// and made to fault on its next touch, which maps it again at once
+    /// ([`Outcome::Referenced`]). A page still aged when the hand comes
+    /// back wasn't touched for a whole sweep, so it is evicted: a frame the
+    /// process owns (anonymous memory, a private copy) is compressed; a
+    /// page-cache page is simply let go (it reloads on demand). Device
+    /// windows are never touched. Stops after freeing `want` frames.
+    pub fn reclaim(
+        &mut self,
+        space: &AddressSpace,
+        hand: &mut u32,
+        budget: u32,
+        want: u32,
+    ) -> Result<Reclaimed, FaultError> {
+        let mut done = Reclaimed::default();
+        while done.scanned < budget && done.compressed + done.dropped < want {
+            let Some(page) = next_reclaimable(space, *hand) else {
+                break;
+            };
+            *hand = page.wrapping_add(PAGE);
+            done.scanned += 1;
+            let Some(r) = space.find(page).copied() else {
+                break;
+            };
+            if let Some((phys, attrs)) = self.tables.translate(self.mem, page) {
+                // First visit: a second chance.
+                self.mmu.clean_page(page);
+                let f = self.mem.phys_frame(phys);
+                let payload = aged(f, attrs.ap.user_writable());
+                if self
+                    .tables
+                    .store(self.mem, self.mmu, page, payload)
+                    .is_some()
+                {
+                    done.aged += 1;
+                }
+                continue;
+            }
+            let Some((f, writable)) = self.tables.stored(self.mem, page).and_then(decode_aged)
+            else {
+                continue; // unmapped, or compressed already
+            };
+            let phys = self.mem.frame_phys(f);
+            let owned = match r.backing {
+                Backing::Zero => true,
+                Backing::File { shared, .. } => !shared && writable,
+                Backing::Phys { .. } => continue,
+            };
+            if owned {
+                // Its lines were written back when it was aged, and it
+                // can't have been written since (any touch maps it again).
+                let Some(h) = self.pack(phys)? else {
+                    continue; // incompressible: stays resident, aged
+                };
+                self.tables.replace_stored(self.mem, page, h.raw());
+                self.frames.free(f);
+                done.compressed += 1;
+            } else {
+                self.tables.replace_stored(self.mem, page, 0);
+                self.cache.release(phys);
+                done.dropped += 1;
+            }
+        }
+        Ok(done)
+    }
+
     /// Removes `start..start + len` from `space`, unmapping its pages and
     /// returning their frames.
     pub fn unmap(
@@ -750,11 +839,17 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
             while at < end {
                 let (k, next) = self.tables.take_stored(self.mem, at, end, &mut batch);
                 for &raw in &batch[..k] {
-                    self.zpool.free(
-                        self.frames,
-                        &mut ZPages(&mut *self.mem),
-                        Handle::from_raw(raw),
-                    );
+                    if let Some((f, writable)) = decode_aged(raw) {
+                        // Aged but resident: released like a mapped page.
+                        let phys = self.mem.frame_phys(f);
+                        release_page(p, phys, writable, base, self.frames, self.cache);
+                    } else {
+                        self.zpool.free(
+                            self.frames,
+                            &mut ZPages(&mut *self.mem),
+                            Handle::from_raw(raw),
+                        );
+                    }
                 }
                 at = next;
             }
@@ -821,6 +916,60 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
 
 /// Gives back the frame of a page leaving region `r`. `base` is the physical
 /// address of frame 0 (frames are linear in physical memory).
+/// What a [`Vm::reclaim`] step did.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(test, derive(Debug))]
+pub struct Reclaimed {
+    /// Pages the hand visited.
+    pub scanned: u32,
+    /// Resident pages given a second chance.
+    pub aged: u32,
+    /// Untouched pages compressed (their frames freed).
+    pub compressed: u32,
+    /// Untouched page-cache pages let go.
+    pub dropped: u32,
+}
+
+/// An aged page's stored payload: still resident (its frame, and whether
+/// it was mapped writable), in a size class the compressed store never
+/// uses, so it can't be mistaken for a compressed copy's handle.
+const AGED_CLASS: u32 = 0xFF;
+const _: () = assert!(crate::zpool::CLASSES < AGED_CLASS as usize);
+
+fn aged(frame: usize, writable: bool) -> u32 {
+    debug_assert!(frame < 1 << 14, "stored payloads have 30 bits");
+    (frame as u32) << 16 | AGED_CLASS << 8 | u32::from(writable)
+}
+
+fn decode_aged(raw: u32) -> Option<(usize, bool)> {
+    ((raw >> 8) & 0xFF == AGED_CLASS).then_some(((raw >> 16) as usize, raw & 1 != 0))
+}
+
+/// Whether reclaim may take pages from `r` (everything but device and
+/// fixed physical windows).
+fn reclaimable(r: &Region) -> bool {
+    !matches!(r.backing, Backing::Phys { .. })
+}
+
+/// The first reclaimable page at or after `hand`, wrapping to the lowest.
+fn next_reclaimable(space: &AddressSpace, hand: u32) -> Option<u32> {
+    let page = hand & !(PAGE - 1);
+    let mut next = None::<u32>;
+    let mut lowest = None::<u32>;
+    for r in space.regions().filter(|r| reclaimable(r)) {
+        if r.start <= page && page - r.start < r.len {
+            return Some(page);
+        }
+        if r.start > page && next.is_none_or(|n| r.start < n) {
+            next = Some(r.start);
+        }
+        if lowest.is_none_or(|l| r.start < l) {
+            lowest = Some(r.start);
+        }
+    }
+    next.or(lowest)
+}
+
 fn release_page<F: FrameAlloc, C: PageCache>(
     r: &Region,
     phys: u32,
@@ -1420,5 +1569,178 @@ mod tests {
             Err(FaultError::NoMemory)
         );
         assert_eq!(w.frames.free_frames(), 512);
+    }
+
+    /// Faults in `n` writable zero pages at `a` and marks each with a word.
+    fn resident(w: &mut World, s: &AddressSpace, a: u32, n: u32) {
+        for k in 0..n {
+            w.vm()
+                .handle_fault(s, a + k * 0x1000, Access::Write)
+                .unwrap();
+            let (phys, _) = w.tables.translate(&mut w.ram, a + k * 0x1000).unwrap();
+            w.ram.page(phys)[3] = 0xA6E0_0000 + k;
+        }
+    }
+
+    #[test]
+    fn reclaim_gives_a_second_chance_then_compresses_untouched_pages() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(zero(a, 0x4000, Prot::RW)).unwrap();
+        resident(&mut w, &s, a, 4);
+        let free0 = w.frames.free_frames();
+        // First sweep: everything is aged, nothing freed yet.
+        let mut hand = a;
+        let r = w.vm().reclaim(&s, &mut hand, 4, u32::MAX).unwrap();
+        assert_eq!(
+            r,
+            Reclaimed {
+                scanned: 4,
+                aged: 4,
+                compressed: 0,
+                dropped: 0
+            }
+        );
+        assert_eq!(w.tables.translate(&mut w.ram, a), None, "aged pages fault");
+        assert_eq!(w.frames.free_frames(), free0);
+        // Page 0 is touched: a minor fault maps it again, as it was.
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 8, Access::Read),
+            Ok(Outcome::Referenced)
+        );
+        let (phys, attrs) = w.tables.translate(&mut w.ram, a).unwrap();
+        assert_eq!(w.ram.page(phys)[3], 0xA6E0_0000);
+        assert_eq!(attrs.ap, Ap::UserWrite, "it was writable, and still is");
+        // Second sweep: page 0 gets another chance, the rest go.
+        let mut hand = a;
+        let r = w.vm().reclaim(&s, &mut hand, 4, u32::MAX).unwrap();
+        assert_eq!((r.aged, r.compressed, r.dropped), (1, 3, 0));
+        let (zframes, objects, _) = w.zpool.stats();
+        assert_eq!(objects, 3);
+        assert_eq!(w.frames.free_frames(), free0 + 3 - zframes);
+        // An evicted page comes back intact.
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 0x2000, Access::Read),
+            Ok(Outcome::Restored)
+        );
+        let (phys, _) = w.tables.translate(&mut w.ram, a + 0x2000).unwrap();
+        assert_eq!(w.ram.page(phys)[3], 0xA6E0_0002);
+        // Unmapping frees everything: aged, compressed and mapped pages.
+        w.vm().unmap(&mut s, a, 0x4000).unwrap();
+        assert_eq!(w.zpool.stats(), (0, 0, 0));
+        assert_eq!(w.frames.free_frames(), 512);
+    }
+
+    #[test]
+    fn reclaim_lets_page_cache_pages_go_and_they_reload() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(file(a, 0x2000, Prot::R, false)).unwrap();
+        s.map(file(a + 0x2000, 0x1000, Prot::R, true)).unwrap();
+        for k in 0..3 {
+            w.vm()
+                .handle_fault(&s, a + k * 0x1000, Access::Read)
+                .unwrap();
+        }
+        assert_eq!(w.cache.total_refs(), 3);
+        let mut hand = a;
+        w.vm().reclaim(&s, &mut hand, 3, u32::MAX).unwrap();
+        let r = w.vm().reclaim(&s, &mut hand, 3, u32::MAX).unwrap();
+        assert_eq!((r.compressed, r.dropped), (0, 3));
+        assert_eq!(w.cache.total_refs(), 0, "every cache reference returned");
+        assert_eq!(w.zpool.stats().1, 0, "nothing compressed");
+        assert_eq!(
+            w.vm().handle_fault(&s, a + 0x1000, Access::Read),
+            Ok(Outcome::Mapped),
+            "reloaded from the cache"
+        );
+        assert_eq!(w.cache.total_refs(), 1);
+    }
+
+    #[test]
+    fn a_private_copy_is_compressed_not_dropped() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        w.vm().handle_fault(&s, a, Access::Write).unwrap(); // copied
+        let mut hand = a;
+        w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        let r = w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        assert_eq!((r.compressed, r.dropped), (1, 0));
+        assert_eq!(w.cache.total_refs(), 0);
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Write),
+            Ok(Outcome::Restored)
+        );
+        let (_, attrs) = w.tables.translate(&mut w.ram, a).unwrap();
+        assert_eq!(attrs.ap, Ap::UserWrite, "still the process's own copy");
+    }
+
+    #[test]
+    fn reclaim_skips_device_windows_wraps_and_stops_when_satisfied() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(Region {
+            start: a,
+            len: 0x2000,
+            prot: Prot::RW,
+            backing: Backing::Phys {
+                base: 0x4400_0000,
+                cache: crate::arm::Cache::Device,
+            },
+        })
+        .unwrap();
+        s.map(zero(a + 0x8000, 0x4000, Prot::RW)).unwrap();
+        w.vm().handle_fault(&s, a, Access::Read).unwrap();
+        resident(&mut w, &s, a + 0x8000, 4);
+        // The hand starts in the device window: it jumps to the next
+        // reclaimable region, and the window's page stays mapped.
+        let mut hand = a;
+        let r = w.vm().reclaim(&s, &mut hand, 2, u32::MAX).unwrap();
+        assert_eq!(r.aged, 2);
+        assert_eq!(hand, a + 0xA000);
+        assert!(w.tables.translate(&mut w.ram, a).is_some());
+        // Past the end it wraps to the lowest reclaimable page.
+        let mut hand = a + 0xC000;
+        let r = w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        assert_eq!(r.scanned, 1);
+        assert_eq!(hand, a + 0x9000, "wrapped to the region's first page");
+        // It stops once it freed what was asked for.
+        let mut w = World::new();
+        resident(&mut w, &s, a + 0x8000, 4);
+        let mut hand = a + 0x8000;
+        w.vm().reclaim(&s, &mut hand, 4, u32::MAX).unwrap();
+        let r = w.vm().reclaim(&s, &mut hand, 8, 2).unwrap();
+        assert_eq!((r.scanned, r.compressed), (2, 2));
+        // An empty space: nothing to do, no endless loop.
+        let empty = AddressSpace::process(SLOT, 2);
+        let r = w.vm().reclaim(&empty, &mut hand, 8, 8).unwrap();
+        assert_eq!(r, Reclaimed::default());
+    }
+
+    #[test]
+    fn a_page_made_read_only_while_aged_comes_back_read_only() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(zero(a, 0x1000, Prot::RW)).unwrap();
+        resident(&mut w, &s, a, 1);
+        let mut hand = a;
+        w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        w.vm().protect(&mut s, a, 0x1000, Prot::R).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Read),
+            Ok(Outcome::Referenced)
+        );
+        let (_, attrs) = w.tables.translate(&mut w.ram, a).unwrap();
+        assert_eq!(attrs.ap, Ap::UserRead);
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Write),
+            Err(FaultError::Protection)
+        );
     }
 }

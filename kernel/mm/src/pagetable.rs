@@ -546,6 +546,26 @@ impl PageTables {
         Some(phys)
     }
 
+    /// Replaces the stored entry at `mva` with one carrying `payload`, or
+    /// clears it (`payload` 0). False (and nothing changed) if the entry
+    /// isn't a stored one. No TLB maintenance: a fault entry is never
+    /// cached.
+    pub fn replace_stored(&mut self, mem: &mut impl PhysMem, mva: u32, payload: u32) -> bool {
+        let Some((table, i)) = self.entry(mem, mva) else {
+            return false;
+        };
+        if !matches!(arm::l2_decode(mem.l2(table)[i]), L2::Stored(_)) {
+            return false;
+        }
+        mem.l2(table)[i] = if payload == 0 {
+            0
+        } else {
+            arm::l2_stored(payload)
+        };
+        mem.sync(table + i as u32 * 4, 4);
+        true
+    }
+
     /// The payload stored at `mva`, if its entry is a stored one.
     pub fn stored(&self, mem: &mut impl PhysMem, mva: u32) -> Option<u32> {
         let (table, i) = self.entry(mem, mva)?;
