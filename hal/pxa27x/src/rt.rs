@@ -205,6 +205,8 @@ static mut SSP1_TAKEN: bool = false;
 static mut MMC_TAKEN: bool = false;
 /// Single-use guard for PWM0.
 static mut PWM0_TAKEN: bool = false;
+/// Single-use guard for the DMA channel.
+static mut DMA_TAKEN: bool = false;
 
 /// Hands out the FFUART register bank once.
 ///
@@ -378,6 +380,21 @@ pub fn take_mmc() -> Option<Mmio> {
     // SAFETY: the MMC controller's register window (PXA27x memory map, up to
     // 0x50 used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x100) })
+}
+
+/// CKEN bit for the DMA controller.
+pub const CKEN_DMA: u32 = 24;
+
+/// Hands out DMA channel 0 once (`_start` stopped every channel), with the
+/// controller's clock enabled.
+pub fn take_dma() -> Option<crate::dma::Dma> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(DMA_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_DMA);
+    Some(crate::dma::Dma::new(0))
 }
 
 /// CKEN bit for PWM0 (and PWM2).

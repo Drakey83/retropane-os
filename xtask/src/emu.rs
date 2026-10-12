@@ -887,6 +887,19 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // SD DMA: reads on after the start-up self-test, writes only when
+        // asked; the puts below then write by DMA and are checked in the
+        // image afterwards.
+        s.write_all(&rp_loadproto::control_frame("card dma"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(
+            &mut s,
+            "RPL OK dma reads on (self-test passed), writes off",
+            20,
+        )?;
+        s.write_all(&rp_loadproto::control_frame("card dma writes"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "writes on", 20)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "RPL ", 40)?;
         let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
@@ -1737,6 +1750,17 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
         return Err(format!(
             "memory routines failed their on-target check:\n{output}"
         ));
+    }
+    // Every on-target check must pass, not just the memory one.
+    let failed: Vec<&str> = output
+        .lines()
+        .filter(|l| l.starts_with("CHECK ") && l.contains(" FAIL"))
+        .collect();
+    if !failed.is_empty() {
+        return Err(format!("on-target checks failed:\n{}", failed.join("\n")));
+    }
+    for l in output.lines().filter(|l| l.starts_with("CHECK ")) {
+        eprintln!("    {l}");
     }
     let results = parse_bench(&output);
     if results.is_empty() {

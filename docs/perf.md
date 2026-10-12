@@ -68,6 +68,10 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 | 2026-10-12 | `rp-loader`: SD read recovery (timeouts, slow blocks, weak ranges), drive diagnostics, file creation in `rp-fat`. **Ratcheted 52 → 58 → 70 KiB** (test image; reasons in `xtask/src/size.rs`). `rp-bench` 24 → 27 KiB for the same SD code | `rp-loader` loaded size | 47,743 B | 63,447 B |
 
+| 2026-10-12 | SD DMA for multi-block reads (`hal/pxa27x` DMA channel, `PxaMmc::with_dma`): the CPU arms a descriptor chain and waits, instead of reading the FIFO a byte at a time. Emulator numbers are instruction counts, so this is the CPU's share of the work; the device's wall-clock gain is still to measure (the probe now records a 64-block programmed-I/O row to compare against) | `sd_read_4_blocks` | 13,635 ns | 1,250 ns (**10.9×**) |
+| 2026-10-12 | (same change, new row: 32 KiB, a cluster's worth, 8 descriptors) | `sd_read_64_blocks` | — | 12,923 ns |
+| 2026-10-12 | `rp-bench` **ratcheted 27 → 30 KiB** (test image): the DMA channel, the controller's DMA path and the 64-block row | `rp-bench` loaded size | 26,608 B | 28,764 B |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

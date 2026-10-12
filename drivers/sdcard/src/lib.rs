@@ -572,6 +572,13 @@ impl<H: SdHost> SdCard<H> {
         &self.host
     }
 
+    /// The host controller, for its settings (DMA use, say). Not for
+    /// commands: those would leave the card in a state this driver doesn't
+    /// know about.
+    pub fn host_mut(&mut self) -> &mut H {
+        &mut self.host
+    }
+
     /// Gives the host back.
     pub fn into_inner(self) -> H {
         self.host

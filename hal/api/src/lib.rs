@@ -71,6 +71,42 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
     }
 }
 
+/// A DMA engine moving data between memory and a device FIFO, paced by the
+/// device's request line. Two phases, because the transfer must be ready
+/// before the device starts: arm it, start the device, then poll `done`
+/// (non-blocking, so the device driver can watch the device's own errors
+/// at the same time) or `abort`.
+pub trait DmaEngine {
+    /// Arms a transfer of `buf.len()` bytes from the FIFO at physical
+    /// address `fifo` into `buf`. `buf` must not be touched until `finish`
+    /// or `abort`. False if it can't (too long, already armed).
+    fn arm_from_device(&mut self, request: u8, fifo: u32, buf: &mut [u8]) -> bool;
+    /// Arms a transfer of `buf` into the FIFO at physical address `fifo`.
+    fn arm_to_device(&mut self, request: u8, fifo: u32, buf: &[u8]) -> bool;
+    /// `None` while the armed transfer runs; once it has ended, `Some(true)`
+    /// (or `Some(false)` on a bus error) and the engine is disarmed.
+    fn done(&mut self) -> Option<bool>;
+    /// Stops the armed transfer (the device failed, say) and disarms.
+    fn abort(&mut self);
+}
+
+/// No DMA: every arm is refused, so drivers use programmed I/O.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoDma;
+
+impl DmaEngine for NoDma {
+    fn arm_from_device(&mut self, _: u8, _: u32, _: &mut [u8]) -> bool {
+        false
+    }
+    fn arm_to_device(&mut self, _: u8, _: u32, _: &[u8]) -> bool {
+        false
+    }
+    fn done(&mut self) -> Option<bool> {
+        Some(false)
+    }
+    fn abort(&mut self) {}
+}
+
 /// Why a block transfer failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockError {

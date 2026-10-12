@@ -1,10 +1,15 @@
 //! PXA27x MMC/SD host controller, polled (docs/hw/sd.md).
+//!
+//! Multi-block data moves by DMA when the controller is given a
+//! [`DmaEngine`] ([`PxaMmc::with_dma`]) that accepts the buffer; otherwise
+//! (and always for single blocks, where setting DMA up costs more than it
+//! saves) through the FIFOs by programmed I/O.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 use rp_drv_sdcard::{BLOCK, Command, HostError, Response, SdHost};
-use rp_hal_api::{RegisterBus, RegisterBus8};
+use rp_hal_api::{DmaEngine, NoDma, RegisterBus, RegisterBus8};
 
 /// Register offsets.
 pub mod reg {
@@ -64,6 +69,15 @@ const CMDAT_BUSY: u32 = 1 << 5;
 const CMDAT_INIT: u32 = 1 << 6;
 /// CMDAT: 4-bit SD data bus.
 const CMDAT_SD_4DAT: u32 = 1 << 8;
+/// FIFO requests go to the DMA controller instead of I_REG.
+const CMDAT_DMA_EN: u32 = 1 << 7;
+/// The controller's physical address (the DMA controller sees physical
+/// addresses).
+pub const PHYS_BASE: u32 = 0x4110_0000;
+/// DMA request line for the receive FIFO (PXA27x manual, DRCMR table).
+pub const DREQ_RX: u8 = 21;
+/// DMA request line for the transmit FIFO.
+pub const DREQ_TX: u8 = 22;
 const I_RXFIFO_REQ: u32 = 1 << 5;
 const I_TXFIFO_REQ: u32 = 1 << 6;
 const FIFO_BYTES: usize = 32;
@@ -119,8 +133,16 @@ pub fn decode_response(words: [u16; 9]) -> [u32; 4] {
 
 /// The controller.
 #[derive(Debug)]
-pub struct PxaMmc<B> {
+pub struct PxaMmc<B, D = NoDma> {
     regs: B,
+    dma: D,
+    /// The current data command's FIFO requests go to DMA.
+    dma_on: bool,
+    /// DMA may be used for reads, and for writes (see [`PxaMmc::set_dma`]).
+    dma_reads: bool,
+    dma_writes: bool,
+    /// Transfers that went by DMA (for benchmarks and the run log).
+    dma_transfers: u32,
     /// The card was switched to the 4-bit bus (ACMD6).
     wide: bool,
     /// A multi-block write is in progress: the next CMD12 stops it.
@@ -133,16 +155,49 @@ pub struct PxaMmc<B> {
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     /// Takes the controller's registers. Its clock must already be enabled.
-    pub fn new(mut regs: B) -> Self {
+    pub fn new(regs: B) -> Self {
+        Self::with_dma(regs, NoDma)
+    }
+}
+
+impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
+    /// Takes the controller's registers (its clock enabled) and a DMA
+    /// engine for multi-block transfers.
+    pub fn with_dma(mut regs: B, dma: D) -> Self {
         regs.write32(reg::RESTO, 0x7F);
         regs.write32(reg::RDTO, 0xFFFF);
         Self {
             regs,
+            dma,
+            dma_on: false,
+            dma_reads: true,
+            dma_writes: true,
+            dma_transfers: 0,
             wide: false,
             writing: false,
             last_failure: None,
             data_cmd: 0,
         }
+    }
+
+    /// Allows DMA for reads and for writes (both, by default, with an
+    /// engine). A caller that hasn't yet seen DMA work on this hardware can
+    /// keep a direction on programmed I/O.
+    pub fn set_dma(&mut self, reads: bool, writes: bool) {
+        self.dma_reads = reads;
+        self.dma_writes = writes;
+    }
+
+    /// Whether DMA is allowed for (reads, writes).
+    #[must_use]
+    pub fn dma_allowed(&self) -> (bool, bool) {
+        (self.dma_reads, self.dma_writes)
+    }
+
+    /// How many transfers went by DMA.
+    #[must_use]
+    pub fn dma_transfers(&self) -> u32 {
+        self.dma_transfers
     }
 
     /// The last command that timed out and the status register it left.
@@ -197,6 +252,9 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             if self.wide {
                 cmdat |= CMDAT_SD_4DAT;
             }
+            if self.dma_on {
+                cmdat |= CMDAT_DMA_EN;
+            }
         }
         self.regs.write32(reg::CMDAT, cmdat);
         self.regs.write32(reg::STRPCL, STRPCL_START);
@@ -214,6 +272,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             r => {
                 let s = r.unwrap_or_else(|_| self.regs.read32(reg::STAT));
                 self.last_failure = Some((cmd.index, s));
+                self.end_dma();
                 return Err(HostError::Timeout);
             }
         };
@@ -227,7 +286,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     }
 }
 
-impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
+impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
     fn set_clock(&mut self, hz: u32) {
         // The rate changes only while the clock is stopped (PXA27x manual);
         // the next command's start restarts it at the new rate.
@@ -264,8 +323,18 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
 
     fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
         let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        self.dma_on = blocks > 1
+            && self.dma_reads
+            && self
+                .dma
+                .arm_from_device(DREQ_RX, PHYS_BASE + reg::RXFIFO as u32, buf);
         let status = self.issue(cmd, blocks)?[0];
-        self.receive(buf)?;
+        if self.dma_on {
+            self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, SPIN_LIMIT)?;
+            self.receive(&mut [])?;
+        } else {
+            self.receive(buf)?;
+        }
         Ok(status)
     }
 
@@ -285,13 +354,61 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
 
     fn write_blocks(&mut self, cmd: Command, buf: &[u8]) -> Result<u32, HostError> {
         let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        self.dma_on = blocks > 1
+            && self.dma_writes
+            && self
+                .dma
+                .arm_to_device(DREQ_TX, PHYS_BASE + reg::TXFIFO as u32, buf);
         let status = self.issue_data(cmd, blocks, true)?[0];
-        self.transmit(buf)?;
+        if self.dma_on {
+            self.dma_wait(0, WRITE_SPIN_LIMIT)?;
+            self.transmit(&[])?;
+        } else {
+            self.transmit(buf)?;
+        }
         Ok(status)
     }
 }
 
-impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
+impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
+    /// Waits for the armed DMA transfer, watching the controller's `errors`
+    /// status bits so a failing card ends it at once (the DMA would wait
+    /// for FIFO requests that never come).
+    fn dma_wait(&mut self, errors: u32, limit: u32) -> Result<(), HostError> {
+        for _ in 0..limit {
+            match self.dma.done() {
+                Some(true) => {
+                    self.dma_on = false;
+                    self.dma_transfers = self.dma_transfers.wrapping_add(1);
+                    return Ok(());
+                }
+                Some(false) => {
+                    self.dma_on = false;
+                    let stat = self.regs.read32(reg::STAT);
+                    self.last_failure = Some((self.data_cmd, stat));
+                    return Err(HostError::Data);
+                }
+                None => {}
+            }
+            let stat = self.regs.read32(reg::STAT);
+            if stat & errors != 0 {
+                self.end_dma();
+                return Err(self.data_failure(stat));
+            }
+        }
+        self.end_dma();
+        let stat = self.regs.read32(reg::STAT);
+        Err(self.data_failure(stat))
+    }
+
+    /// Stops an armed DMA transfer (after a failed command or transfer).
+    fn end_dma(&mut self) {
+        if self.dma_on {
+            self.dma.abort();
+            self.dma_on = false;
+        }
+    }
+
     /// Drains the receive FIFO, 32 bytes per FIFO request, until `buf` is
     /// full and the controller reports the transfer done.
     fn receive(&mut self, buf: &mut [u8]) -> Result<(), HostError> {
@@ -609,9 +726,193 @@ mod tests {
         assert!(w.contains(&(reg::CMDAT, 1)));
     }
 
-    impl<B> PxaMmc<B> {
+    impl<B, D> PxaMmc<B, D> {
         fn into_inner_for_test(self) -> B {
             self.regs
         }
+    }
+
+    /// A DMA engine that moves nothing (it fills read buffers with 0xD4)
+    /// but records what it was asked, and finishes (or fails) after a set
+    /// number of polls.
+    #[derive(Default)]
+    struct FakeDma {
+        armed: bool,
+        arms: Vec<(u8, u32, usize)>,
+        polls: u32,
+        polls_left: u32,
+        fail: bool,
+        refuse: bool,
+        aborted: u32,
+    }
+
+    impl FakeDma {
+        fn arm(&mut self, req: u8, fifo: u32, len: usize) -> bool {
+            assert!(!self.armed, "armed twice");
+            if self.refuse {
+                return false;
+            }
+            self.armed = true;
+            self.polls_left = self.polls;
+            self.arms.push((req, fifo, len));
+            true
+        }
+    }
+
+    impl DmaEngine for FakeDma {
+        fn arm_from_device(&mut self, req: u8, fifo: u32, buf: &mut [u8]) -> bool {
+            let ok = self.arm(req, fifo, buf.len());
+            if ok {
+                buf.fill(0xD4);
+            }
+            ok
+        }
+        fn arm_to_device(&mut self, req: u8, fifo: u32, buf: &[u8]) -> bool {
+            self.arm(req, fifo, buf.len())
+        }
+        fn done(&mut self) -> Option<bool> {
+            assert!(self.armed, "polled while disarmed");
+            if self.polls_left > 0 {
+                self.polls_left -= 1;
+                return None;
+            }
+            self.armed = false;
+            Some(!self.fail)
+        }
+        fn abort(&mut self) {
+            assert!(self.armed, "aborted while disarmed");
+            self.armed = false;
+            self.aborted += 1;
+        }
+    }
+
+    fn fake() -> FakeDma {
+        FakeDma {
+            polls: 3,
+            ..FakeDma::default()
+        }
+    }
+
+    #[test]
+    fn multi_block_transfers_go_by_dma_to_the_right_fifo_and_line() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        let mut mmc = PxaMmc::with_dma(bus, fake());
+        let mut buf = vec![0u8; 4 * BLOCK];
+        mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf)
+            .unwrap();
+        assert!(buf.iter().all(|&b| b == 0xD4));
+        mmc.write_blocks(Command::new(25, 8, Response::R1), &buf[..2 * BLOCK])
+            .unwrap();
+        assert_eq!(mmc.dma_transfers(), 2);
+        assert_eq!(
+            mmc.dma.arms,
+            [(21, 0x4110_0040, 4 * BLOCK), (22, 0x4110_0044, 2 * BLOCK)]
+        );
+        assert!(!mmc.dma.armed);
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_DMA_EN)));
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_WRITE | CMDAT_DMA_EN)));
+        assert!(w.contains(&(reg::NUMBLK, 4)));
+    }
+
+    #[test]
+    fn single_blocks_and_refused_buffers_use_the_fifo() {
+        // One block: no DMA even when offered.
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_RXFIFO_REQ);
+        bus.script_reads(reg::RXFIFO, &[7; 512]);
+        let mut mmc = PxaMmc::with_dma(bus, fake());
+        let mut buf = vec![0u8; BLOCK];
+        mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf)
+            .unwrap();
+        assert!(buf.iter().all(|&b| b == 7));
+        assert!(mmc.dma.arms.is_empty());
+        // Several blocks the engine refuses (misaligned, say): the FIFO.
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_RXFIFO_REQ);
+        bus.script_reads(reg::RXFIFO, &[9; 1024]);
+        let mut dma = fake();
+        dma.refuse = true;
+        let mut mmc = PxaMmc::with_dma(bus, dma);
+        let mut buf = vec![0u8; 2 * BLOCK];
+        mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf)
+            .unwrap();
+        assert!(buf.iter().all(|&b| b == 9));
+        assert_eq!(mmc.dma_transfers(), 0);
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN)));
+    }
+
+    #[test]
+    fn each_direction_can_be_kept_on_the_fifo() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_TXFIFO_REQ);
+        let mut mmc = PxaMmc::with_dma(bus, fake());
+        assert_eq!(mmc.dma_allowed(), (true, true));
+        mmc.set_dma(true, false);
+        let mut buf = vec![0u8; 2 * BLOCK];
+        mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf)
+            .unwrap();
+        mmc.write_blocks(Command::new(25, 0, Response::R1), &buf)
+            .unwrap();
+        // Only the read went by DMA.
+        assert_eq!(mmc.dma.arms, [(21, 0x4110_0040, 2 * BLOCK)]);
+        let w = mmc.into_inner_for_test().writes();
+        assert_eq!(
+            w.iter().filter(|&&(r, _)| r == reg::TXFIFO).count(),
+            2 * BLOCK
+        );
+    }
+
+    #[test]
+    fn a_card_error_mid_dma_aborts_it_and_is_named() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_CRC_READ);
+        let mut dma = fake();
+        dma.polls = u32::MAX;
+        let mut mmc = PxaMmc::with_dma(bus, dma);
+        let mut buf = vec![0u8; 2 * BLOCK];
+        assert_eq!(
+            mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf),
+            Err(HostError::Crc)
+        );
+        assert_eq!(mmc.dma.aborted, 1);
+        assert!(!mmc.dma.armed);
+        assert_eq!(mmc.last_failure().map(|f| f.0), Some(18));
+    }
+
+    #[test]
+    fn a_command_that_times_out_disarms_the_dma() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_TOUT_RES);
+        let mut mmc = PxaMmc::with_dma(bus, fake());
+        let buf = vec![0u8; 2 * BLOCK];
+        assert_eq!(
+            mmc.write_blocks(Command::new(25, 0, Response::R1), &buf),
+            Err(HostError::Timeout)
+        );
+        assert_eq!(mmc.dma.aborted, 1);
+        assert!(!mmc.dma.armed && !mmc.dma_on);
+    }
+
+    #[test]
+    fn a_dma_bus_error_is_a_data_error() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES);
+        let mut dma = fake();
+        dma.fail = true;
+        let mut mmc = PxaMmc::with_dma(bus, dma);
+        let mut buf = vec![0u8; 2 * BLOCK];
+        assert_eq!(
+            mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf),
+            Err(HostError::Data)
+        );
+        assert_eq!(mmc.dma_transfers(), 0);
+        assert_eq!(mmc.dma.aborted, 0);
+        assert!(!mmc.dma_on);
     }
 }

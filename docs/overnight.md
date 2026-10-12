@@ -309,8 +309,27 @@ on the host or in the emulator first.
     - **Iterate:** polarity-proof by design; debounced; the screen comes
       back exactly as it was.
     - **Modernize:** press for screen off/on with a fade, as on any phone.
-18. **SD DMA**: the PXA27x DMA controller for card reads and writes
-    (emulator has a DMA model), measured against the polled path.
+18. **SD DMA**: **done in the emulator; device run pending.** A DMA channel
+    in the HAL (descriptor chains, 4 KiB each; cache maintenance inside it;
+    whole cache lines only) behind a small `DmaEngine` trait (arm, poll,
+    abort), so the MMC driver stays safe code tested against a fake engine
+    (6 new tests: routing, refusals, card errors mid-transfer, command
+    timeouts, bus errors, per-direction switches). Multi-block reads and
+    writes use it; single blocks and refused buffers use the FIFO. The
+    loader self-tests DMA reads at start-up and keeps writes on the FIFO
+    until `card dma writes`. Emulator rp-v0.9.6 fixes three model faults
+    found on the way (see `docs/hw/emulator.md`). Bench: `sd_read_4_blocks`
+    13,635 → 1,250 ns of CPU work; new `sd_read_64_blocks` and an on-target
+    check that DMA reads equal single-block reads; the bench now fails on
+    any failed on-target check, not just the memory one.
+    - **Iterate:** the CPU is free while the card transfers (a 32 KiB read
+      costs it ~13 µs of work); errors end a DMA at once instead of hanging;
+      the rollout is gated by a self-test, so unproven hardware behaviour
+      can't corrupt the card.
+    - **Modernize:** scatter-gather DMA with the cache rules enforced by the
+      type that owns the channel, the way modern kernels' DMA APIs do;
+      measured, not assumed (instruction-count bench plus a device baseline
+      row in the probe).
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight on the

@@ -115,6 +115,34 @@ new clusters first, FAT links in every copy, then one sector write switches
 the directory entry, then the old clusters are freed. The probe lists the
 root directory read-only; the loader takes `RPF1` frames (`cargo xtask put`).
 
+### DMA (M; emulator-verified, device run pending)
+
+Multi-block transfers can move by DMA instead of byte-wide FIFO reads:
+`CMDAT[7]` sends the controller's FIFO requests to the DMA controller,
+request line 21 (receive FIFO, physical `0x41100040`) and 22 (transmit,
+`0x41100044`). The channel (`hal/pxa27x/src/dma.rs`) runs a descriptor chain,
+4 KiB per descriptor, 32-byte bursts of byte-wide FIFO accesses (`DCMD`
+receive: increment target, flow-control by source; transmit: increment
+source, flow-control by target), STOP on the last descriptor; done is
+`DCSR` STOPINTR, failure BUSERR. The DMA engine owns the cache maintenance
+(clean before, discard after a receive), so no caller can forget it, and
+accepts only whole cache lines (32-byte aligned, multiples of 32 bytes): a
+line shared with other data could be written back over what the device
+wrote. Anything else, and single blocks, go through the FIFO as before.
+
+The controller driver watches the card's error bits while the DMA runs (a
+failing card never raises the FIFO requests the DMA waits for) and stops the
+channel on any failure, so the existing recovery (CMD12, CMD13, retries,
+block-by-block fallback) works unchanged.
+
+Rollout, because nothing unproven may touch the owner's card: the loader
+self-tests DMA at start-up (8 blocks read by DMA into a buffer pre-filled
+with a pattern, compared with the same blocks read one by one); reads use
+DMA only if they match. Writes stay on the FIFO until the owner runs
+`cargo xtask card dma writes` for a session (a `put` is then verified by
+read-back). `cargo xtask card dma` reports the verdict and the transfer
+count.
+
 ## Speed (measured, real X51v)
 
 One block per command took 3.85 ms on the owner's 4 GB SDHC card, far more

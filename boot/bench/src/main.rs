@@ -54,10 +54,13 @@ mod image {
 
         suite::timer(&mut r);
         suite::frames(&mut r);
+        let mut sd_buf: &mut [u8] = &mut [];
         if let Some(scratch) = rp_hal_x51v::devices::take_scratch() {
             suite::memory(&mut r, scratch);
             suite::lz4(&mut r, &mut scratch[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut scratch[..256 * 1024]);
+            // The last 32 KiB (the suites above stay below it).
+            sd_buf = &mut scratch[1024 * 1024 - 32 * 1024..];
         }
         if let Some(sram) = diag::take_sram() {
             suite::chase(&mut r, "chase_sram_256k", sram);
@@ -68,11 +71,15 @@ mod image {
             let end = plane.offset + plane.stride * usize::from(plane.height);
             suite::framebuffer(&mut r, &mut vram[plane.offset..end], &plane);
         }
-        if let (Some(cpld), Some(mmc)) = (rp_hal_x51v::devices::take_cpld(), rt::take_mmc()) {
+        if let (Some(cpld), Some(mmc), Some(dma)) = (
+            rp_hal_x51v::devices::take_cpld(),
+            rt::take_mmc(),
+            rt::take_dma(),
+        ) {
             Cpld::new(cpld).set_sd_power(true);
             rt::delay_us(10_000);
-            match SdCard::init(PxaMmc::new(mmc)) {
-                Ok(mut card) => suite::sd(&mut r, &mut card),
+            match SdCard::init(PxaMmc::with_dma(mmc, dma)) {
+                Ok(mut card) => suite::sd(&mut r, &mut card, sd_buf),
                 Err(e) => r.check("sd", false, e.name()),
             }
         }

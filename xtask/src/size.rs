@@ -36,9 +36,12 @@ pub const BUDGETS: &[Budget] = &[
     // recovery for slow and failing reads (block-by-block fallback, CMD12 +
     // CMD13 recovery, slow-clock retry), found on the owner's card;
     // 24.5 KiB measured, +~10%.
+    // Ratcheted 27 -> 30 KiB on 2026-10-12 (test image): SD DMA (the DMA
+    // channel driver and the controller's DMA path) and a 64-block read
+    // row and its on-target check; 28.1 KiB measured, +~7%.
     Budget {
         image: "rp-bench",
-        max_load: 27 * 1024,
+        max_load: 30 * 1024,
         max_zero: 20 * 1024,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table

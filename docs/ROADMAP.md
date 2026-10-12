@@ -68,8 +68,8 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 
 - [ ] Display (pxafb passthrough first, then native 2700G planes)
 - [x] Touch (TSC2046 via SSP1 + GPIO), keypad buttons: drivers + emulator tests *(calibration UI still to do)*
-- [ ] Backlight (PWM), power button *(backlight done 2026-10-12 in the emulator: `rp-drv-pxa-pwm`, `cargo xtask backlight`; device run and the power button to do)*
-- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled, 4-bit, multi-block reads and writes with recovery for slow and failing blocks, hot swap and the lock switch; FAT32 read/create/replace (crash-safe), exFAT read; the card as a USB drive (ADR-0014); all 2026-10-11/12. To do: DMA, exFAT writes, subdirectories)*
+- [ ] Backlight (PWM), power button *(both done 2026-10-12 in the emulator: `rp-drv-pxa-pwm`, `cargo xtask backlight`, a press fades the screen off/on; device runs to do)*
+- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled, 4-bit, multi-block reads and writes with recovery for slow and failing blocks, hot swap and the lock switch; FAT32 read/create/replace (crash-safe), exFAT read; the card as a USB drive (ADR-0014); folders; DMA for multi-block transfers, self-tested at start-up (emulator; device run pending); all 2026-10-11/12. To do: exFAT writes, SDIO)*
 - [ ] CompactFlash (PXA PC Card socket 1, DMA where possible) *(spec `docs/hw/cf.md` and the probe's socket readings 2026-10-12; driver to do, then LUN 1 of the USB drive)*
 - [ ] Audio (WM8750, I²S, DMA)
 - [x] USB client (serial gadget for development networking) *(CDC-ACM serial, and since 2026-10-12 a composite device with USB mass storage: ADR-0012, ADR-0014)*
