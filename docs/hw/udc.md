@@ -108,6 +108,7 @@ on the pxa") and gives each endpoint a distinct number.
 | GPIO14 reads **0 with no USB host connected** and the device still charging from the cradle's power; with the cradle's USB reseated in the PC, the PC enumerated the device | likely (the reading during enumeration wasn't captured) | real X51v |
 | Bus reset raises `UDCISR1[27]`; software flushes endpoint 0 (FTF, OPC) and returns to idle | likely | (M) |
 | Enable order: interrupts masked, UDE clear, endpoint table written, UDE set, then EMCE checked | likely | (M) |
+| **IN data waits until a PC program reads the port.** While the device is configured but no program has the port open, Windows issues no IN requests: whatever the device queues stays queued. A device that keeps writing (the loader's once-a-second READY) fills its own ring; after an hour idle, 36 stale lines and one torn one poured out when the port was next opened, and the reply to the first frame was cut short | confirmed | real X51v, 2026-10-12 (idle-put log) |
 | **One packet in flight per endpoint.** The next IN packet may be written only after the previous one's packet-complete event (`UDCISR0` bit 0 for endpoint 0, `UDCCSRx.PC` for A–X), the moment an interrupt-driven driver would run. IPR/BNF alone don't prove a packet has left (a short packet doesn't fill the FIFO) | likely: (M)'s driver only writes from those events; a polled driver that didn't wait is the leading explanation for the "Device Descriptor Request Failed" seen on the device | (M), real X51v |
 
 ## Open questions
