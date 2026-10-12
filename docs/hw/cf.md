@@ -110,6 +110,29 @@ So the probe only reads the memory controller and GPIO registers (always
 safe); attribute memory is read only once power-on and detect are
 understood, with the owner present.
 
+## Measured on the owner's X51v (2026-10-12, first device runs)
+
+Card: "ULTIMATE CF CARD 8GB", 16,250,976 sectors, MBR with one FAT32
+partition; reads and writes fine under Windows Mobile in the same slot.
+
+| Run | Result |
+|---|---|
+| First loader after Windows Mobile (HaRET start), `cf` | **Works**: IDENTIFY, write cache off, sector 0 read whole (`33 c0 8e d0 ...`, `55 aa`), status `0x50` after |
+| A loader that had been reloaded over USB several times, `cf` | IDENTIFY and SET FEATURES work, but sector 0 comes back with its end zeroed (`00 00` for `55 aa`) and status reads `0x00` after; every later read fails (Windows retried sector 0 endlessly) |
+| A loader started by another loader that had used the socket, `cf` | `not a storage card`: the CIS reads back as garbage |
+| GPIO13 with the card in | low (so low = card in, as the driver assumes) |
+| CPLD registers, read before RetroPane's first write | `00=0048 04=00a0 06=0002 14=0002`, the rest 0, including `0x16`: our only write (`0x16 = 0x0001`, SD power) clears nothing Windows Mobile set, so the CF slot keeps Windows Mobile's power |
+
+**So:** the socket works when RetroPane is its first owner after Windows
+Mobile and breaks when a loader inherits it from an earlier RetroPane run.
+The driver assumes a fresh socket; the fix is to put the card into a known
+state whenever a loader takes the socket (a card reset), not to trust what
+the previous owner left. Second finding (a bug class, not CF only): while
+the card was stuck, image transfers over USB stalled part-way (the
+loader's loop waited on the card's long timeouts), so a dead card could
+lock the PC out of the loader. Waits on a device must never hold up the
+USB loop.
+
 ## Open
 
 | Question | How to settle |

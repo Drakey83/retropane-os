@@ -320,17 +320,22 @@ mod image {
 
     /// Powers the card and identifies it.
     #[inline(never)]
-    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio, Dma>>) {
-        let (Some(cpld), Some(mmc), Some(dma)) =
+    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio, Dma>>, [u16; 16]) {
+        let (Some(mut cpld), Some(mmc), Some(dma)) =
             (devices::take_cpld(), rt::take_mmc(), rt::take_dma(0))
         else {
-            return (None, None);
+            return (None, None, [0; 16]);
         };
+        // Diagnostics (CF power hunt): the CPLD's registers as Windows
+        // Mobile left them, read before our first write. Reads only; whether
+        // they read back at all is one of the questions (docs/hw/cpld.md).
+        let found: [u16; 16] =
+            core::array::from_fn(|k| rp_hal_api::RegisterBus16::read16(&mut cpld, k * 2));
         Cpld::new(cpld).set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None),
-            Err((_, host)) => (None, Some(host)),
+            Ok(card) => (Some(card), None, found),
+            Err((_, host)) => (None, Some(host), found),
         }
     }
 
@@ -849,6 +854,9 @@ mod image {
         inserted: bool,
         seen: bool,
         writable: bool,
+        /// Times the detect line settled to a new level (diagnostics: a
+        /// line that flaps would look like the card coming and going).
+        changes: u32,
     }
 
     impl CfLun {
@@ -863,6 +871,7 @@ mod image {
                 return false;
             }
             self.inserted = now;
+            self.changes = self.changes.saturating_add(1);
             if !now && let CfSlot::Card(_) = self.slot {
                 let CfSlot::Card(card) = core::mem::replace(&mut self.slot, CfSlot::Untried) else {
                     return true;
@@ -919,6 +928,14 @@ mod image {
             let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
             return;
         }
+        // What the slot looked like before this command (diagnostics).
+        let was = match lun.slot {
+            CfSlot::Untried => "untried",
+            CfSlot::Card(_) => "card",
+            CfSlot::Removed(..) => "removed",
+            CfSlot::Failed(_) => "failed",
+        };
+        let (was_in, changes) = (lun.inserted, lun.changes);
         lun.inserted = true;
         lun.seen = true;
         let slot = &mut lun.slot;
@@ -950,7 +967,9 @@ mod image {
             CfSlot::Untried | CfSlot::Removed(..) => return,
         };
         let mut block = [0u8; rp_drv_cf::SECTOR];
-        let first = match card.read_blocks(0, &mut block) {
+        let read = card.read_blocks(0, &mut block);
+        let (st, err) = card.registers();
+        let first = match read {
             Err(_) => "sector 0 unreadable",
             Ok(()) => match mbr_partitions(&block).and_then(|p| p[0]) {
                 Some(p) if p.kind == 0x0C || p.kind == 0x0B => "FAT32 partition",
@@ -969,6 +988,19 @@ mod image {
         );
         for &b in card.model().iter().take(40) {
             let _ = out.write_char(char::from(b));
+        }
+        // Diagnostics for the first device runs: the slot's state before
+        // this command, detect changes seen, the task file after the read,
+        // and sector 0's first 16 bytes and signature when it read.
+        let _ = write!(
+            out,
+            "; was {was} (in {was_in}, detect changes {changes}); status {st:02x} error {err:02x}"
+        );
+        if read.is_ok() {
+            let _ = out.write_str("; s0");
+            for b in block[..16].iter().chain(&block[510..]) {
+                let _ = write!(out, " {b:02x}");
+            }
         }
         let _ = out.write_str("\r\n");
     }
@@ -1422,7 +1454,7 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare) = open_card();
+        let (card, spare, cpld_found) = open_card();
         let Some(scratch) = devices::take_scratch() else {
             halt()
         };
@@ -1551,6 +1583,7 @@ mod image {
             inserted: false,
             seen: false,
             writable: false,
+            changes: 0,
         };
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
@@ -1748,6 +1781,16 @@ mod image {
                                 status.as_str()
                             }
                         }
+                        Ok(b"cpld") => {
+                            // The CPLD as found at start-up (read-only
+                            // diagnostics; offsets 0x00..0x1E).
+                            let _ = status.write_str("RPL OK cpld:");
+                            for (k, v) in cpld_found.iter().enumerate() {
+                                let _ = write!(status, " {:02x}={v:04x}", k * 2);
+                            }
+                            let _ = status.write_str("\r\n");
+                            status.as_str()
+                        }
                         Ok(b"cf") => {
                             cf_command(&mut cf, &mut gpio, &mut status);
                             // Attached (or not): the PC looks at LUN 1 again.
@@ -1835,7 +1878,20 @@ mod image {
                         Ok(b"drive off") | Ok(b"drive on") => {
                             lun.offered = f.command(dest) == Ok(b"drive on");
                             msc.medium_changed(0);
-                            if lun.offered {
+                            if lun.offered && !udc.composite() {
+                                // The fallback left the serial-only layout
+                                // up (the PC was slow after a reset); a
+                                // drive asked for needs the composite one
+                                // back. The reply can't arrive (the device
+                                // re-enumerates), so the host checks for
+                                // the drive instead.
+                                udc.disable();
+                                udc.set_composite(true);
+                                let _ = udc.enable();
+                                layout_since = rt::ticks();
+                                layout_resets = udc.stats().resets;
+                                "RPL OK drive offered to the PC (serial + drive layout back)\r\n"
+                            } else if lun.offered {
                                 "RPL OK drive offered to the PC\r\n"
                             } else {
                                 "RPL OK drive off: no medium for the PC\r\n"

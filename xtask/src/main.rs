@@ -72,7 +72,9 @@ commands:
             (crash-safe; the files the device boots from are refused)
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit)
-  tone      `tone <hz> <ms>`: a sine through the codec (headphones; the
+  cpld      the CPLD's registers as the loader found them at start-up
+            (read-only diagnostics)
+  tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
             reply names the output and the CPU's busy share)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
@@ -175,6 +177,10 @@ fn main() -> ExitCode {
         "cf" => {
             eprintln!("==> cf");
             usb::command(&workspace_root(), "cf")
+        }
+        "cpld" => {
+            eprintln!("==> cpld");
+            usb::command(&workspace_root(), "cpld")
         }
         "tone" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();

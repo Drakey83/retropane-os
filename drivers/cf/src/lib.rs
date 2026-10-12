@@ -265,6 +265,12 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
         self.last_error
     }
 
+    /// The status and error registers as they are now (diagnostics: what
+    /// a card that stopped answering says about itself).
+    pub fn registers(&mut self) -> (u8, u8) {
+        (self.status(), self.common.read8(reg::ERROR_FEATURES))
+    }
+
     /// Gives the windows back.
     pub fn into_inner(self) -> (A, C) {
         (self.attr, self.common)
