@@ -900,9 +900,33 @@ on the host or in the emulator first.
     - **Modernize:** start-up work overlapped instead of serialised; the
       remaining wait is named, explained and on the device list.
 
-51. **Trace ring**: an always-on, fixed-size, low-overhead ring of events
-    (thread switches, faults, IPC calls, timers, clock changes) the loader
-    reads over USB (`cargo xtask trace`); overwrite-oldest, no locks.
+51. **Trace ring**: **done (emulator), step 1.** `rp-kernel-trace`: a fixed
+    ring of 16-byte records (time, kind, two arguments), overwrite-oldest,
+    all zero when empty; each record carries its sequence number written
+    last, so a reader drops torn or garbled records instead of misreading
+    them and knows exactly how many were lost; decoding works on a copy of
+    the words (for the PC). 4 host tests. The kernel image records thread
+    switches, page faults, calls and returns, restarts, process start and
+    exit (2 KiB ring); after the run it checks the ring wrapped many times
+    and kept the newest 128 intact and in order (`TRACE ring OK`, required
+    by the emulator test) and measures a record (`BENCH trace_event`).
+    Step 2 (item 54): the ring kept across a return to the loader and read
+    over USB with `cargo xtask trace`.
+    - **Iterate:** CE's CeLog needed a desktop tool connected while it ran;
+      this is always on, bounded, and readable after a crash.
+    - **Modernize:** self-validating records (no locks, no torn reads),
+      like the flight recorders modern kernels keep.
+
+54. **Trace over USB**: the ring placed where it survives the return to the
+    loader (as the run log does), and `cargo xtask trace` fetching and
+    printing it as a timeline.
+
+55. **Soft watchdog** (owner's device kept landing on Dell's restore
+    prompt): a timer interrupt at the run limit returns a hung or too-long
+    program to the loader with a crash screen and its log, instead of the
+    hardware reset; the hardware watchdog stays as the last resort with a
+    longer limit. Emulator tests run at the owner's card size too, so work
+    that is fine on a tiny test card but too slow on a real one is caught.
 
 52. **Display fast paths**: fills, copies, alpha blending and colour
     conversion in one module, iWMMXt where it pays, written for the

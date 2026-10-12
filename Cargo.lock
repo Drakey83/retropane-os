@@ -276,6 +276,7 @@ dependencies = [
  "rp-kernel-mm",
  "rp-kernel-pe",
  "rp-kernel-sched",
+ "rp-kernel-trace",
 ]
 
 [[package]]
@@ -295,6 +296,10 @@ version = "0.0.0"
 
 [[package]]
 name = "rp-kernel-sched"
+version = "0.0.0"
+
+[[package]]
+name = "rp-kernel-trace"
 version = "0.0.0"
 
 [[package]]

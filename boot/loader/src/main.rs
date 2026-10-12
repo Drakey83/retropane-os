@@ -345,15 +345,45 @@ mod image {
 
     /// Mounts the card's first partition afresh: the PC may have written
     /// it (as a drive) since the last time, so nothing cached is trusted.
-    fn mount(sd: &mut Sd) -> Result<Volume<&mut Sd>, &'static str> {
+    fn mount(sd: &mut Sd) -> Result<Volume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        Volume::mount(sd, start).map_err(|_| "not FAT32")
+        Volume::mount(Fed(sd), start).map_err(|_| "not FAT32")
     }
 
     /// Mounts the first partition as FAT32 or exFAT, for storing files.
-    fn mount_any(sd: &mut Sd) -> Result<AnyVolume<&mut Sd>, &'static str> {
+    fn mount_any(sd: &mut Sd) -> Result<AnyVolume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        AnyVolume::mount(sd, start).map_err(|_| "not FAT32 or exFAT")
+        AnyVolume::mount(Fed(sd), start).map_err(|_| "not FAT32 or exFAT")
+    }
+
+    /// The card as the file systems see it: every block read or written
+    /// also keeps the watchdog fed (if a run armed it). A long command that
+    /// is making progress (checking a 4 GB card reads ~34,000 blocks, about
+    /// 40 s) is then never taken for a hang, while a real hang, which reads
+    /// nothing, still is. Found on the device: `card check` reset the Axim.
+    struct Fed<'a>(&'a mut Sd);
+
+    impl BlockDevice for Fed<'_> {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            keep_alive();
+            self.0.read_blocks(lba, buf)
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            keep_alive();
+            self.0.write_blocks(lba, buf)
+        }
+    }
+
+    /// Times file-system work passed through [`keep_alive`] (reported by
+    /// `drive status`, so tests can see long commands do).
+    static KEPT_ALIVE: rt::Global<u32> = rt::Global::new(0);
+
+    fn keep_alive() {
+        KEPT_ALIVE.with(|k| *k = k.wrapping_add(1));
+        let mut w = rt::watchdog();
+        if w.armed() {
+            w.feed(RUN_LIMIT);
+        }
     }
 
     /// Writes a file frame to the card and checks it back; the reply line.
@@ -395,16 +425,21 @@ mod image {
         // Whatever happens next, the PC must re-read the volume.
         msc.medium_changed(0);
         let t0 = rt::ticks();
-        let reads0 = vol.device().reads();
+        let reads0 = vol.device().0.reads();
         let written = match vol.put(name, contents, scratch) {
             Ok(w) => w,
             Err(e) => {
-                let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol.device()));
+                let _ = write!(
+                    reply,
+                    "RPL ERR {}{}\r\n",
+                    e.name(),
+                    card_note(vol.device().0)
+                );
                 return;
             }
         };
         let t_write = rt::ticks().wrapping_sub(t0);
-        let reads = vol.device().reads().wrapping_sub(reads0);
+        let reads = vol.device().0.reads().wrapping_sub(reads0);
         // Read back through the FAT code and compare with what was sent;
         // the SHA-256 of what the card now holds goes back to the PC.
         let mut crc = !0u32;
@@ -447,7 +482,7 @@ mod image {
                     reply,
                     "RPL ERR verify: {}{}\r\n",
                     e.name(),
-                    card_note(vol.device())
+                    card_note(vol.device().0)
                 );
             }
         }
@@ -1655,7 +1690,7 @@ mod image {
                             let s = msc.stats();
                             let _ = write!(
                                 status,
-                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, idle {}%\r\n",
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, kept alive {}, idle {}%\r\n",
                                 s.commands,
                                 s.failed,
                                 s.blocks_read,
@@ -1674,6 +1709,7 @@ mod image {
                                     },
                                     card_note
                                 ),
+                                KEPT_ALIVE.with(|k| *k),
                                 idle_pct.min(100),
                             );
                             status.as_str()
