@@ -46,6 +46,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-apiscan"
+version = "0.0.0"
+dependencies = [
+ "rp-kernel-pe",
+]
+
+[[package]]
 name = "rp-bench"
 version = "0.0.0"
 dependencies = [
