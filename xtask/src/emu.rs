@@ -926,33 +926,37 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     };
     let stage_time = Duration::from_secs(u64::from(RP_BLEND_STAGE_SECONDS));
     let check = || -> Result<(), String> {
-        // Called as soon as stage A is up; the emulator redraws on a timer.
-        let shown = Instant::now();
+        // Called as soon as stage A is up. Each stage's screen must appear,
+        // in order, within a stage's time: poll the screen rather than
+        // trust timing (the emulator's pace varies).
+        let started = Instant::now();
         for (i, stage) in Stage::ALL.iter().enumerate() {
-            let at = stage_time * i as u32 + Duration::from_millis(1500);
-            std::thread::sleep(at.saturating_sub(shown.elapsed()));
-            let got = dump(stage.letter())?;
-            let differ = |w: &[u8]| {
-                got.chunks(3)
-                    .zip(w.chunks(3))
-                    .filter(|(a, b)| a != b)
-                    .count()
-            };
-            let counts: Vec<usize> = want.iter().map(|w| differ(w)).collect();
-            if counts[i] != 0 {
-                return Err(format!(
-                    "blend: stage {} differs from the reference in {} of {} pixels (against A/B/C: {counts:?})",
-                    stage.letter(),
-                    counts[i],
-                    blendtest::W * blendtest::H
-                ));
+            let deadline = Instant::now() + stage_time + Duration::from_secs(3);
+            loop {
+                std::thread::sleep(Duration::from_millis(700));
+                let got = dump(stage.letter())?;
+                let differ = |w: &[u8]| {
+                    got.chunks(3)
+                        .zip(w.chunks(3))
+                        .filter(|(a, b)| a != b)
+                        .count()
+                };
+                let counts: Vec<usize> = want.iter().map(|w| differ(w)).collect();
+                if counts[i] == 0 {
+                    break;
+                }
+                if counts[i + 1..].contains(&0) || Instant::now() > deadline {
+                    return Err(format!(
+                        "blend: stage {} never showed as the reference has it; pixels differing from each stage: {counts:?}",
+                        stage.letter()
+                    ));
+                }
             }
         }
         // After the last stage, it puts everything back and returns; the
         // loader takes the screen again: no trace of the wallpaper.
-        std::thread::sleep(
-            (stage_time * 3 + Duration::from_secs(4)).saturating_sub(shown.elapsed()),
-        );
+        std::thread::sleep(stage_time + Duration::from_secs(4));
+        let _ = started;
         let got = dump('R')?;
         let bars = |s: &[u8]| s[(435 * blendtest::W + 90) * 3..][..3].to_vec();
         if want.iter().any(|w| bars(w) == bars(&got)) {
@@ -971,7 +975,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-BLEND-A")),
             during: Some(&check),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(240),
         },
     )?;
     let log = output
@@ -992,13 +996,13 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
         return Err(format!("blend: didn't return cleanly:{log}"));
     }
     eprintln!(
-        "    blend OK: 3 stages pixel-exact against the reference, registers put back, back at the loader"
+        "    blend OK: every stage pixel-exact against the reference, registers put back, back at the loader"
     );
     Ok(())
 }
 
 /// How long rp-blend holds each stage (kept in step with the image).
-const RP_BLEND_STAGE_SECONDS: u32 = 8;
+const RP_BLEND_STAGE_SECONDS: u32 = 15;
 
 /// What rp-blend's `stage` should put on screen: the image's own drawing
 /// and register programming (shared code), through the reference model.
