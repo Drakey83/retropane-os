@@ -263,5 +263,12 @@ on the host or in the emulator first.
       (third-party apps next).
     - **Modernize:** a data-driven compatibility plan instead of a
       reimplementation of everything WM had.
-13. **Docs sync**: ROADMAP and DESIGN brought up to date with tonight's
-    work (SD writes, FAT, USB client, emulator models), coverage check.
+13. **Docs sync**: **done.** ROADMAP (SD loader, USB client, perf suite
+    ticked; scheduler, SD/FAT/exFAT, CF, backlight progress noted) and
+    DESIGN §10b (mass storage row, the loader's card updates, the crash log)
+    brought up to date. Coverage: every new crate has host tests and its
+    parsers hostile-input tests (security pass).
+    - **Iterate:** the plan documents say what is true tonight, so the next
+      session (or contributor) starts from facts.
+    - **Modernize:** the PC-side story is now standard classes only:
+      serial, mass storage, and later NCM/MTP; no sync software.

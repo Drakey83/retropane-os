@@ -478,10 +478,11 @@ PC drivers (which would also need expensive Microsoft code-signing).
 
 | Function | How | PC driver |
 |---|---|---|
-| Install / update | SD card image; later an updater app | none |
+| Install / update | SD card image; during development the resident loader writes the card's files over USB, crash-safe and verified (ADR-0013); later an updater app | none |
 | Debug console / logs | USB **CDC-ACM** serial over the cradle | built in (shows up as a COM port) |
+| Storage on the PC | USB **Mass Storage** (the SD card as a drive, composite with the serial port; ADR-0014). In the OS proper offered only after the user allows it on the device (docs/security.md) | built in |
 | Networking via PC | USB **CDC-NCM / RNDIS** | built in |
-| File transfer | USB **MTP** | built in |
+| File transfer | USB **MTP** (when the device keeps using its card) | built in |
 | Companion app | "RetroPane Connect" for Windows 11 (later macOS/Linux): install, sync, logs, crash reports, Bridge host | uses the above |
 
 Because nothing works over USB until our own USB device driver runs, the
@@ -498,6 +499,10 @@ takes it down:
 2. **Crash log that survives a reboot.** Panic data goes into a reserved RAM area
    that keeps its contents through a soft reset (SDRAM self-refresh). The next
    boot sends it over USB and saves it to SD.
+   *(Implemented for images under the resident loader, 2026-10-12: a fault or
+   panic goes straight back to the loader, which saves `crashlog.txt` on the
+   card before anything else and sends the report to the PC; no watchdog
+   reset involved.)*
 3. **SD card logging** for anything longer.
 
 ### 10c. Install stages and the brick-proof rule
