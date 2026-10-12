@@ -832,8 +832,8 @@ on the host or in the emulator first.
       "need-resched on return to user" as modern kernels do.
 
 47. **ADR: kernel object memory** (for the owner's vote): **drafted:
-    ADR-0019, waiting for the owner's vote** (recommends regions in
-    per-process pages from the frame allocator, with a quota).
+    ADR-0019 accepted by the owner** (regions in per-process pages from
+    the frame allocator, with a quota); built as item 48.
     Original scope: process records
     hold room for 64 regions each (1.6 KB), too few for some Windows Mobile
     apps (each memory reservation is a region) and wasted for small
@@ -841,7 +841,7 @@ on the host or in the emulator first.
     from the frame allocator, or a small kernel heap; pluses and minuses.
 
 45. **ADR draft: optional packs on the card** (owner's idea, 2026-10-12):
-    **drafted: ADR-0018, waiting for the owner's vote.** Recommends one
+    **ADR-0018 accepted by the owner** (built in Phases 8-9). Recommends one
     complete base system in flash plus signed, verified packs that may live
     on the card, rather than two installs; notes the real limit is RAM,
     which files on the card don't save.
@@ -857,6 +857,12 @@ on the host or in the emulator first.
     the backlight (PWM) driver through a granted MMIO window and its
     interrupt as an event, called by a client through a port; a crash in
     the host restarts it without touching the kernel or other hosts.
+
+48. **Process records per ADR-0019**: `AddressSpace` regions kept in
+    per-process pages from the frame allocator (encoded as words, no
+    unsafe), a per-process quota, small fixed records; the same API and
+    results (host tests compare), then the kernel image switches over and
+    its process table shrinks from ~8 KB of initialised data to ~1 KB.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
