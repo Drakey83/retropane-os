@@ -27,6 +27,8 @@ pub const CHASE_HOPS: u32 = 4096;
 pub const TLB_FIT: u32 = 16;
 /// See [`TLB_FIT`].
 pub const TLB_SPILL: u32 = 60;
+/// Bytes `layer` needs: a 480 x 640 ARGB8888 layer and a 64 x 64 glyph.
+pub const LAYER_WORK: usize = 480 * 640 * 4 + 64 * 64;
 
 #[cfg(target_os = "none")]
 mod target {
@@ -251,6 +253,146 @@ mod target {
         }
         r.check(
             "gfx",
+            ok,
+            if ok {
+                ""
+            } else {
+                "fast path differs from the reference or flush overreached"
+            },
+        );
+    }
+
+    /// The interface layer (item 60, `rp_gfx::layer`): glass as a gradient
+    /// fill, a soft-edged glyph over glass (the "over" rule's slow case),
+    /// and flushes to an ARGB4444 graphics plane with the dither, whole
+    /// screen and clock-sized, against the per-pixel reference conversion.
+    /// `work` needs [`LAYER_WORK`] bytes, word aligned; `plane` (the 2700G's
+    /// memory, off screen) needs a 480 x 640 ARGB8888 plane's worth.
+    pub fn layer(r: &mut Runner, work: &mut [u8], plane: Option<&mut [u8]>) {
+        use rp_gfx::Rect;
+        use rp_gfx::dirty::Dirty;
+        use rp_gfx::layer::{
+            self, Layer, Mask, PlaneFormat, over, over_reference, to_4444_dithered,
+        };
+
+        const W: u32 = 480;
+        const H: u32 = 640;
+        let (lw, rest) = work.split_at_mut(super::LAYER_WORK - 64 * 64);
+        let cover = &mut rest[..64 * 64];
+        let Some(mut l) = Layer::in_bytes(lw, W, H) else {
+            r.check("layer", false, "work area too small or misaligned");
+            return;
+        };
+        // A round glyph: solid inside, a soft 4-pixel edge.
+        for (k, c) in cover.iter_mut().enumerate() {
+            let (x, y) = ((k % 64) as i32 - 32, (k / 64) as i32 - 32);
+            let d = x * x + y * y;
+            *c = if d < 28 * 28 {
+                255
+            } else if d < 1024 {
+                ((1024 - d) * 255 / (1024 - 784)) as u8
+            } else {
+                0
+            };
+        }
+        let screen = l.bounds();
+        let mut cols = [0u32; W as usize];
+        for (k, c) in cols.iter_mut().enumerate() {
+            *c = (64 + k as u32 * 96 / W) << 24 | 0x00F0_F8FF;
+        }
+        r.run("layer_glass_vga", 3, &mut || {
+            l.fill_columns(black_box(screen), &cols);
+        });
+        let mask = Mask {
+            cover,
+            w: 64,
+            h: 64,
+        };
+        r.run("layer_glyph_over_glass_64", 20, &mut || {
+            l.draw_mask(&mask, black_box(0xFF14_1E32), 200, 100);
+        });
+
+        // Self-check: the short paths of "over" against the reference on
+        // the target's own arithmetic.
+        let mut ok = true;
+        let mut x = 0x1234_5678u32;
+        for _ in 0..2000 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let d = x.rotate_left(11);
+            ok &= over(x, d) == over_reference(x, d);
+            ok &= over(x | 0xFF00_0000, d) == over_reference(x | 0xFF00_0000, d);
+            ok &= over(x, d | 0xFF00_0000) == over_reference(x, d | 0xFF00_0000);
+        }
+
+        if let Some(plane) = plane {
+            let stride = W as usize * 2;
+            let Some(fb) = plane.get_mut(..stride * H as usize) else {
+                r.check("layer", false, "plane too small");
+                return;
+            };
+            // The "before": converting pixel by pixel with the reference.
+            let v = l.view();
+            r.run("layer_flush4444_reference_vga", 1, &mut || {
+                for y in 0..H {
+                    for (x, &c) in v.row(y).iter().enumerate() {
+                        let at = y as usize * stride + x * 2;
+                        let p = to_4444_dithered(c, x, y as usize).to_le_bytes();
+                        fb[at..at + 2].copy_from_slice(&p);
+                    }
+                }
+            });
+            // The reference's bytes at a band of sample points, for the
+            // fast flush to match.
+            let probe: [(u32, u32); 6] = [
+                (0, 0),
+                (201, 101),
+                (231, 131),
+                (479, 639),
+                (3, 2),
+                (250, 140),
+            ];
+            let at = |x: u32, y: u32| y as usize * stride + x as usize * 2;
+            let want: [[u8; 2]; 6] = core::array::from_fn(|k| {
+                let (x, y) = probe[k];
+                [fb[at(x, y)], fb[at(x, y) + 1]]
+            });
+            fb.fill(0);
+            let f = PlaneFormat::Argb4444Dithered;
+            r.run("layer_flush4444_vga", 3, &mut || {
+                let _ = layer::flush(&v, f, fb, stride, &[black_box(screen)]);
+            });
+            for (k, &(x, y)) in probe.iter().enumerate() {
+                ok &= fb[at(x, y)..at(x, y) + 2] == want[k];
+            }
+            let mut d = Dirty::<8>::new(screen);
+            d.add(Rect::new(371, 9, 101, 24)); // the title bar's clock
+            r.run("layer_flush4444_clock", 50, &mut || {
+                let _ = layer::flush(&v, f, fb, stride, black_box(d.rects()));
+            });
+            // Only the dirty words were written.
+            let (out_x, in_x) = (368u32, 400u32);
+            fb[at(out_x, 20)..at(out_x, 20) + 2].copy_from_slice(&[0xEF, 0xBE]);
+            fb[at(in_x, 20)..at(in_x, 20) + 2].copy_from_slice(&[0xEF, 0xBE]);
+            let _ = layer::flush(&v, f, fb, stride, d.rects());
+            ok &= fb[at(out_x, 20)..at(out_x, 20) + 2] == [0xEF, 0xBE];
+            ok &= fb[at(in_x, 20)..at(in_x, 20) + 2]
+                == to_4444_dithered(v.get(in_x, 20).unwrap_or(0), in_x as usize, 20).to_le_bytes();
+            if let Some(fb8) = plane.get_mut(..W as usize * 4 * H as usize) {
+                r.run("layer_flush8888_vga", 3, &mut || {
+                    let _ = layer::flush(
+                        &v,
+                        PlaneFormat::Argb8888,
+                        fb8,
+                        W as usize * 4,
+                        &[black_box(screen)],
+                    );
+                });
+            }
+        }
+        r.check(
+            "layer",
             ok,
             if ok {
                 ""

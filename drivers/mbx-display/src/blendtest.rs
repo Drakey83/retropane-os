@@ -18,6 +18,7 @@
 //! | C | planar 4:2:0 | ARGB8888 (to judge ARGB4444's banding) |
 //! | D | as C, video gamma off | ARGB8888 |
 //! | E | planar 4:2:0 | ARGB4444, ordered dither (C's smoothness at A's size?) |
+//! | F | planar 4:2:0 | as E, drawn the way the OS will: an `rp-gfx` layer in RAM, dirty flushes |
 //!
 //! Everything lives in 2700G memory from 1 MiB up, so the loader's screen
 //! at offset 0 is never touched. Drawing builds each row in RAM and only
@@ -47,11 +48,14 @@ pub enum Stage {
     D,
     /// Video 4:2:0, graphics ARGB4444 with ordered dithering.
     E,
+    /// As E, but composed in an `rp-gfx` layer and flushed through dirty
+    /// rectangles (the OS's own drawing path).
+    F,
 }
 
 impl Stage {
     /// All of them, in the order shown.
-    pub const ALL: [Self; 5] = [Self::A, Self::B, Self::C, Self::D, Self::E];
+    pub const ALL: [Self; 6] = [Self::A, Self::B, Self::C, Self::D, Self::E, Self::F];
 
     /// The stage's letter.
     #[must_use]
@@ -62,6 +66,7 @@ impl Stage {
             Self::C => 'C',
             Self::D => 'D',
             Self::E => 'E',
+            Self::F => 'F',
         }
     }
 
@@ -74,6 +79,7 @@ impl Stage {
             Self::C => ["C  video 4:2:0", "   UI ARGB8888"],
             Self::D => ["D  C, no gamma", "   UI ARGB8888"],
             Self::E => ["E  video 4:2:0", "   UI 4444 dith"],
+            Self::F => ["F  E via rp-gfx", "   dirty flush"],
         }
     }
 
@@ -95,6 +101,7 @@ impl Stage {
             Self::C => (gfx(PixelFormat::Argb8888, 0x30_0000), yuv420),
             Self::D => (gfx(PixelFormat::Argb8888, 0x70_0000), yuv420),
             Self::E => (gfx(PixelFormat::Argb4444, 0x90_0000), yuv420),
+            Self::F => (gfx(PixelFormat::Argb4444, 0xA0_0000), yuv420),
         }
     }
 }
@@ -223,15 +230,7 @@ pub fn ui(stage: Stage, x: usize, y: usize) -> u32 {
     let (px, py, pw, ph) = PANEL;
     if (px..px + pw).contains(&x) && (py..py + ph).contains(&y) {
         let edge = x < px + 2 || x >= px + pw - 2 || y < py + 2 || y >= py + ph - 2;
-        if edge {
-            return 0xDCFF_FFFF;
-        }
-        // Frosted glass: alpha rising left to right, white to pale blue
-        // top to bottom (smooth, so ARGB4444's 16 steps show as bands).
-        let a = 64 + (x - px) * 96 / pw;
-        let t = (y - py) * 255 / ph;
-        let (r, g) = (255 - t * 55 / 255, 255 - t * 30 / 255);
-        return (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | 0xFF;
+        return if edge { EDGE } else { glass(x, y) };
     }
     let (sx, sy, sw, sh) = STRIP;
     if (sy..sy + sh).contains(&y) && (sx..sx + 16 * sw).contains(&x) {
@@ -239,6 +238,19 @@ pub fn ui(stage: Stage, x: usize, y: usize) -> u32 {
         return (a as u32) << 24 | 0x00FF_2828;
     }
     0
+}
+
+/// The panel's 2-pixel frame.
+const EDGE: u32 = 0xDCFF_FFFF;
+
+/// Frosted glass inside the panel: alpha rising left to right, white to
+/// pale blue top to bottom (smooth, so ARGB4444's 16 steps show as bands).
+const fn glass(x: usize, y: usize) -> u32 {
+    let (px, py, pw, ph) = PANEL;
+    let a = 64 + (x - px) * 96 / pw;
+    let t = (y - py) * 255 / ph;
+    let (r, g) = (255 - t * 55 / 255, 255 - t * 30 / 255);
+    (a as u32) << 24 | (r as u32) << 16 | (g as u32) << 8 | 0xFF
 }
 
 /// ARGB8888 to ARGB4444, each channel rounded.
@@ -250,18 +262,10 @@ pub const fn to_4444(c: u32) -> u16 {
     (q(c, 24) << 12 | q(c, 16) << 8 | q(c, 8) << 4 | q(c, 0)) as u16
 }
 
-/// [`to_4444`] with a 4 × 4 ordered (Bayer) dither: each channel rounds up
-/// or down by the pixel's place in the pattern, so 16 levels average out to
-/// smooth gradients at the same 2 bytes a pixel. 0 and 255 stay exact.
-#[must_use]
-pub const fn to_4444_dithered(c: u32, x: usize, y: usize) -> u16 {
-    const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
-    const fn q(c: u32, s: u32, t: u32) -> u32 {
-        ((c >> s & 0xFF) * 15 * 16 + t) / (255 * 16)
-    }
-    let t = (2 * BAYER[y % 4][x % 4] + 1) * 255 / 2;
-    (q(c, 24, t) << 12 | q(c, 16, t) << 8 | q(c, 8, t) << 4 | q(c, 0, t)) as u16
-}
+/// [`to_4444`] with the 4 × 4 ordered dither the owner approved (stage E).
+/// It lives in `rp-gfx`, whose flush uses it, so the test scene and the OS
+/// can't drift apart.
+pub use rp_gfx::layer::to_4444_dithered;
 
 /// What the screen should show at `(x, y)`, ideally: the interface over the
 /// wallpaper with 8-bit maths and no format loss. The emulator's exact
@@ -318,12 +322,19 @@ pub const SAMPLES: [(usize, usize); 28] = [
 /// B and C share the 4:2:0 wallpaper, so all three can be drawn first and
 /// switched between instantly.
 ///
+/// Stage F composes its interface in `work` ([`WORK`] bytes, word
+/// aligned); the other stages don't touch it.
+///
 /// # Panics
-/// If `vram` is smaller than the planes need (16 MiB covers them).
-pub fn draw(stage: Stage, vram: &mut [u8]) {
+/// If `vram` is smaller than the planes need (16 MiB covers them), or for
+/// stage F if `work` is too small or not word aligned.
+pub fn draw(stage: Stage, vram: &mut [u8], work: &mut [u8]) {
     let (gfx, video) = stage.planes();
     let mut row = [0u8; W * 4];
-    for y in 0..H {
+    if stage == Stage::F {
+        compose(&gfx, vram, work);
+    }
+    for y in (0..H).take_while(|_| stage != Stage::F) {
         let line = &mut row[..W * gfx.format.bytes()];
         for x in 0..W {
             let c = ui(stage, x, y);
@@ -378,6 +389,89 @@ pub fn draw(stage: Stage, vram: &mut [u8]) {
     }
 }
 
+/// RAM [`draw`] needs for stage F's interface layer.
+pub const WORK: usize = W * H * 4;
+
+/// Stage F's interface, drawn the way the OS will draw it: composed in a
+/// RAM layer from `rp-gfx`'s primitives (fills, a glass gradient per row,
+/// glyph masks drawn over), then sent to the plane as a compositor does: a
+/// first full frame (all clear), then only the dirty rectangles, converted
+/// with the dither on the way. The result must be byte for byte what
+/// stage E's per-pixel conversion gives for the same picture (tested), so
+/// the device shows E and F identically unless the drawing path is wrong.
+#[inline(never)]
+fn compose(gfx: &Plane, vram: &mut [u8], work: &mut [u8]) {
+    use rp_gfx::Rect;
+    use rp_gfx::dirty::Dirty;
+    use rp_gfx::layer::{self, Layer, Mask, PlaneFormat};
+
+    let rect =
+        |x: usize, y: usize, w: usize, h: usize| Rect::new(x as u32, y as u32, w as u32, h as u32);
+    let Some(mut l) = Layer::in_bytes(work, W as u32, H as u32) else {
+        panic!("stage F needs {WORK} bytes of word-aligned RAM");
+    };
+    let fmt = PlaneFormat::Argb4444Dithered;
+    let plane = &mut vram[gfx.offset..gfx.offset + gfx.stride * H];
+    let full = l.bounds();
+    l.fill(full, layer::CLEAR);
+    layer::flush(&l.view(), fmt, plane, gfx.stride, &[full]);
+
+    let mut dirty = Dirty::<8>::new(full);
+    let mut fill = |l: &mut Layer<'_>, r: Rect, c: u32| {
+        l.fill(r, c);
+        dirty.add(r);
+    };
+    fill(&mut l, rect(0, 0, W, STATUS_H), 0x9600_0000);
+    // The opaque reference halves: one flat rectangle per bar or step.
+    for y0 in [400, 470] {
+        for k in 0..8 {
+            let (r, g, b) = wall(k * 60, y0);
+            let c = 0xFF00_0000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+            fill(&mut l, rect(k * 60, y0, 60, 35), c);
+        }
+    }
+    let (sx, sy, sw, sh) = STRIP;
+    for k in 0..16 {
+        let c = (k as u32 * 17) << 24 | 0x00FF_2828;
+        fill(&mut l, rect(sx + k * sw, sy, sw, sh), c);
+    }
+    // The panel: its frame, then the glass a row at a time.
+    let (px, py, pw, ph) = PANEL;
+    fill(&mut l, rect(px, py, pw, ph), EDGE);
+    let mut cols = [0u32; PANEL.2 - 4];
+    for y in py + 2..py + ph - 2 {
+        for (k, c) in cols.iter_mut().enumerate() {
+            *c = glass(px + 2 + k, y);
+        }
+        l.fill_columns(rect(px + 2, y, pw - 4, 1), &cols);
+    }
+    // Text last, over everything: each glyph a coverage mask.
+    let mut cover = [0u8; font::WIDTH * 4 * font::HEIGHT * 4];
+    for Line(lx, ly, s, color, text) in lines(Stage::F) {
+        let (gw, gh) = (font::WIDTH * s, font::HEIGHT * s);
+        for (i, ch) in text.chars().enumerate() {
+            let g = font::glyph(ch);
+            for (k, c) in cover[..gw * gh].iter_mut().enumerate() {
+                let (gx, gy) = (k % gw / s, k / gw / s);
+                *c = if g[gy] & (1 << (font::WIDTH - 1 - gx)) != 0 {
+                    255
+                } else {
+                    0
+                };
+            }
+            let mask = Mask {
+                cover: &cover[..gw * gh],
+                w: gw as u32,
+                h: gh as u32,
+            };
+            let x = lx + i * (font::WIDTH + 1) * s;
+            l.draw_mask(&mask, color, x as u32, ly as u32);
+        }
+        dirty.add(rect(lx, ly, text.len() * (font::WIDTH + 1) * s, gh));
+    }
+    layer::flush(&l.view(), fmt, plane, gfx.stride, dirty.rects());
+}
+
 fn yuv_at(x: usize, y: usize) -> (u8, u8, u8) {
     let (r, g, b) = wall(x, y);
     rgb_to_yuv(r, g, b)
@@ -397,7 +491,7 @@ mod tests {
             &crate::X51V_VGA,
             &Plane::fullscreen(&crate::X51V_VGA, PixelFormat::Rgb565),
         );
-        draw(stage, &mut vram);
+        draw(stage, &mut vram, &mut vec![0u8; WORK]);
         program(&mut d, stage);
         let bus = d.into_inner();
         let mut out = vec![0u8; W * H * 3];
@@ -424,6 +518,30 @@ mod tests {
                         "stage {stage:?} at ({x},{y}): want {r},{g},{b}, got {got:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn stage_f_drawn_like_the_os_is_byte_for_byte_the_dithered_picture() {
+        let mut vram = vec![0u8; 16 << 20];
+        // Garbage where the plane goes: the first full flush must clear it.
+        vram.iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b = (i * 31) as u8);
+        let mut words = vec![0u32; WORK / 4];
+        draw(
+            Stage::F,
+            &mut vram,
+            rp_hal_mem::words_as_bytes_mut(&mut words),
+        );
+        let (gfx, _) = Stage::F.planes();
+        for y in 0..H {
+            for x in 0..W {
+                let at = gfx.offset + y * gfx.stride + x * 2;
+                let got = u16::from_le_bytes([vram[at], vram[at + 1]]);
+                let ui = ui(Stage::F, x, y);
+                assert_eq!(got, to_4444_dithered(ui, x, y), "({x},{y}): ui {ui:#010x}");
             }
         }
     }

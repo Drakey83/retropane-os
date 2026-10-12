@@ -1,11 +1,13 @@
 //! Test image: plane blending at scan-out (overnight item 60). The
 //! wallpaper goes in the 2700G's video plane (YUV), a glass panel with text
 //! in the graphics plane with per-pixel alpha, and the display controller
-//! mixes them as it scans out. Five stages ([`blendtest`]), each labelled
+//! mixes them as it scans out. Six stages ([`blendtest`]), each labelled
 //! on screen and held [`STAGE_SECONDS`] so the owner can photograph it:
 //! A video 4:2:2 + UI ARGB4444, B 4:2:0 + ARGB4444, C 4:2:0 + ARGB8888,
-//! D as C with the video gamma bit off, E 4:2:0 + dithered ARGB4444. It
-//! checks in with the hardware watchdog, since all five outlast the
+//! D as C with the video gamma bit off, E 4:2:0 + dithered ARGB4444, F as
+//! E but drawn through `rp-gfx` (a RAM layer in the scratch region, dirty
+//! flushes): the OS's own path, which should look identical to E. It
+//! checks in with the hardware watchdog, since all six outlast the
 //! deadline the loader sets at launch.
 //!
 //! The run log gets the display registers as found and, per stage, read
@@ -29,7 +31,7 @@ pub const STAGE_SECONDS: u32 = 15;
 /// rp-blend` to look at a few for longer).
 pub const STAGES: &str = match option_env!("RP_BLEND_STAGES") {
     Some(s) => s,
-    None => "ABCDE",
+    None => "ABCDEF",
 };
 
 /// The seconds per stage this build uses.
@@ -92,8 +94,18 @@ mod image {
         let _ = d.adopt(MBX_VRAM_SIZE as usize);
         let before = Snapshot::take(d.regs());
 
+        // Stage F's interface layer (1.2 MB) lives in the scratch region.
+        let Some(work) = rp_hal_x51v::devices::take_scratch() else {
+            crash(format_args!("no scratch RAM"))
+        };
         for stage in Stage::ALL {
-            blendtest::draw(stage, vram);
+            let t = rt::ticks();
+            blendtest::draw(stage, vram, work);
+            // F is the OS's drawing path: its time (compose in RAM, a full
+            // clear flush, the dirty flush, and the shared wallpaper) is the
+            // device number for docs/perf.md. OS timer: 3.25 ticks a microsecond.
+            let us = rt::ticks().wrapping_sub(t) / 13 * 4;
+            let _ = writeln!(RunLog, "draw {}: {us} us", stage.letter());
         }
         for stage in Stage::ALL
             .into_iter()

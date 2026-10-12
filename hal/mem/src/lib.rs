@@ -61,6 +61,31 @@ pub fn bytes_as_pixels_mut(bytes: &mut [u8]) -> Option<&mut [u16]> {
     Some(unsafe { core::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<u16>(), len) })
 }
 
+/// Views words as bytes, read-only: copying a composed 32-bit layer into the
+/// framebuffer with the burst `memcpy`. Always sound, as
+/// [`words_as_bytes_mut`].
+pub fn words_as_bytes(words: &[u32]) -> &[u8] {
+    // SAFETY: the pointer comes from a valid `&[u32]` covering exactly
+    // `4 * len` bytes; u8 has alignment 1 and no invalid values; the
+    // returned slice borrows `words` for its whole lifetime.
+    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 4) }
+}
+
+/// Views bytes as words, if they start 4-byte aligned (`None` otherwise);
+/// up to 3 trailing bytes are left out. For using a byte region (scratch
+/// RAM) as a 32-bit drawing layer.
+pub fn bytes_as_words_mut(bytes: &mut [u8]) -> Option<&mut [u32]> {
+    if bytes.as_ptr() as usize & 3 != 0 {
+        return None;
+    }
+    let len = bytes.len() / 4;
+    // SAFETY: the start is 4-byte aligned (checked), the range covers
+    // `4 * len <= bytes.len()` bytes of a valid `&mut [u8]`, every bit
+    // pattern is a valid u32, and the result reborrows `bytes` mutably for
+    // its whole lifetime.
+    Some(unsafe { core::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<u32>(), len) })
+}
+
 /// Copies `n` bytes forward. Regions may overlap only if `dst <= src`.
 ///
 /// # Safety
@@ -437,6 +462,15 @@ mod tests {
         assert_eq!(b, &[1, 2, 3, 4, 5, 6, 7, 8]);
         b[0] = 0xFF;
         assert_eq!(w[0], 0x0403_02FF);
+        assert_eq!(words_as_bytes(&w)[..2], [0xFF, 2]);
+        // Bytes as words: aligned only, trailing bytes left out.
+        let mut w = [0u32; 3];
+        let bytes = words_as_bytes_mut(&mut w);
+        assert!(bytes_as_words_mut(&mut bytes[2..]).is_none());
+        let words = bytes_as_words_mut(&mut bytes[4..11]).unwrap();
+        assert_eq!(words.len(), 1);
+        words[0] = 0xCAFE_F00D;
+        assert_eq!(w[1], 0xCAFE_F00D);
     }
 
     const MAX: usize = 300;

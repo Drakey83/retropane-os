@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod dirty;
+pub mod layer;
 
 /// A 16-bit RGB565 pixel.
 pub type Px = u16;

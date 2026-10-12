@@ -56,15 +56,19 @@ mod image {
         suite::frames(&mut r);
         let mut sd_buf: &mut [u8] = &mut [];
         let mut gfx_work: &mut [u8] = &mut [];
+        let mut layer_work: &mut [u8] = &mut [];
         if let Some(scratch) = rp_hal_x51v::devices::take_scratch() {
             suite::memory(&mut r, scratch);
             suite::lz4(&mut r, &mut scratch[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut scratch[..256 * 1024]);
-            // The last 32 KiB for SD (the suites above stay below it); the
-            // rest for the pixel paths, which run after them.
+            // The first MiB less 32 KiB for the pixel paths, those 32 KiB
+            // for SD (the suites above stay below them), the rest for the
+            // interface layer.
             let (work, tail) = scratch.split_at_mut(1024 * 1024 - 32 * 1024);
+            let (sd, rest) = tail.split_at_mut(32 * 1024);
             gfx_work = work;
-            sd_buf = tail;
+            sd_buf = sd;
+            layer_work = rest;
         }
         if let Some(sram) = diag::take_sram() {
             suite::chase(&mut r, "chase_sram_256k", sram);
@@ -80,8 +84,11 @@ mod image {
                 Some((&mut vram[plane.offset..end], &plane)),
             );
             suite::framebuffer(&mut r, &mut vram[plane.offset..end], &plane);
+            // An off-screen graphics plane from 1 MiB up (the screen is at 0).
+            suite::layer(&mut r, layer_work, vram.get_mut(0x10_0000..0x24_0000));
         } else {
             suite::gfx(&mut r, gfx_work, None);
+            suite::layer(&mut r, layer_work, None);
         }
         if let (Some(cpld), Some(mmc), Some(dma)) = (
             rp_hal_x51v::devices::take_cpld(),

@@ -332,9 +332,10 @@ pub fn crash_to_loader(msg: core::fmt::Arguments) {
 /// SDRAM, far above bare-metal images (linked at `0xA8008000`, a few tens of KiB).
 pub const SCRATCH_BASE: usize = 0xA880_0000;
 /// Size of the scratch region.
-pub const SCRATCH_SIZE: usize = 1024 * 1024;
+pub const SCRATCH_SIZE: usize = 4 * 1024 * 1024;
 
-/// Hands out 1 MiB of otherwise unused SDRAM once, for buffers in bare-metal
+/// Hands out 4 MiB of otherwise unused SDRAM once (enough for a full-screen
+/// ARGB8888 interface layer), for buffers in bare-metal
 /// images (benchmarks, bring-up) that shouldn't grow the image itself.
 pub fn take_scratch() -> Option<&'static mut [u8]> {
     // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
