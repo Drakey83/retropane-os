@@ -17,8 +17,11 @@
 //!    3 more times (4 calls deep, the limit) and each level adds 1: 45;
 //! 7. the same with 4: the fifth level is refused (`TooDeep`), and the
 //!    error comes back up unchanged;
-//! 8. reports: `SYS_DONE` with the last sum, both errors, its word, and
-//!    the two nested results in `r4`, `r5`.
+//! 8. follows two absolute addresses (`RELOC_LITERAL`'s, to the image's
+//!    `.data`, and the pointer there, to `.rdata`) to [`MAGIC`]: right only
+//!    if the loader relocated both;
+//! 9. reports: `SYS_DONE` with the last sum, both errors, its word, the two
+//!    nested results in `r4`, `r5` and the word it reached in `r6`.
 //!
 //! The server, given the arguments in `r1`, `r2` and a nesting count in
 //! `r3`: with a count, calls itself (handle 0, its own port) with the
@@ -36,6 +39,12 @@ pub const SYS_DONE: u32 = 3;
 pub const DATA: u32 = 0x0002_0000;
 /// Calls the client makes for timing.
 pub const ROUNDS: u32 = 1000;
+/// The image the programs are packaged in (by the kernel's test) prefers
+/// this base, with `.text` at RVA `0x1000`, `.rdata` at `0x2000` and
+/// `.data` at `0x3000`.
+pub const PREFERRED_BASE: u32 = 0x0001_0000;
+/// The word at the start of `.rdata` the client must reach.
+pub const MAGIC: u32 = 0x7E57_DA7A;
 
 core::arch::global_asm!(
     r#"
@@ -88,15 +97,21 @@ rp_ipc_client:
     mov     r7, #1
     swi     #0
     mov     r12, r0
+    mov     r3, r6                  @ our word
+    ldr     r6, 9f                  @ &.data: an absolute address
+    ldr     r6, [r6]                @ .data's pointer to .rdata
+    ldr     r6, [r6]                @ MAGIC, if both were relocated
     mov     r4, r9
     mov     r5, r12
     mov     r0, r8
     mov     r1, r10
     mov     r2, r11
-    mov     r3, r6
     mov     r7, #3                  @ SYS_DONE
     swi     #0
 2:  b       2b
+    .global rp_ipc_reloc
+rp_ipc_reloc:
+9:  .word   0x00013000              @ PREFERRED_BASE + .data's RVA (relocated)
 
 rp_ipc_server:
     cmp     r3, #0
@@ -132,22 +147,41 @@ unsafe extern "C" {
     static rp_user_page_end: u32;
     static rp_ipc_client: u8;
     static rp_ipc_server: u8;
+    static rp_ipc_reloc: u8;
 }
 
-/// The programs as words (to copy into a user frame), and the client's and
-/// server's offsets in them.
+/// The programs' code, as words.
+pub struct Programs {
+    /// The code (position independent, but for one relocated literal).
+    pub code: &'static [u32],
+    /// The client's offset in it.
+    pub client: u32,
+    /// The server's offset in it.
+    pub server: u32,
+    /// The offset of the literal that needs a base relocation (`HIGHLOW`).
+    pub reloc: u32,
+}
+
+/// The programs' code and the offsets the image builder needs.
 #[must_use]
-pub fn ipc_programs() -> (&'static [u32], u32, u32) {
+pub fn ipc_programs() -> Programs {
     let start = core::ptr::addr_of!(rp_user_page);
-    let (end, client, server) = (
+    let (end, client, server, reloc) = (
         core::ptr::addr_of!(rp_user_page_end) as usize,
         core::ptr::addr_of!(rp_ipc_client) as u32,
         core::ptr::addr_of!(rp_ipc_server) as u32,
+        core::ptr::addr_of!(rp_ipc_reloc) as u32,
     );
     let words = (end - start as usize) / 4;
     // SAFETY: `rp_user_page..rp_user_page_end` is the assembled block
     // above: word aligned, a whole number of words, read-only, in the
     // image for its whole life.
     let code = unsafe { core::slice::from_raw_parts(start, words) };
-    (code, client - start as u32, server - start as u32)
+    let at = start as u32;
+    Programs {
+        code,
+        client: client - at,
+        server: server - at,
+        reloc: reloc - at,
+    }
 }

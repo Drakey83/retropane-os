@@ -86,6 +86,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | Thread contexts kept on each thread's own kernel stack (`push {r4-r11, lr}`; only sp in the table): one word per thread instead of ten. Every threads and kernel test passes on it | `rp-threads` zeroed RAM | 29,496 B | 24,888 B (budget lowered 30 -> 27 KiB) |
 | 2026-10-12 | The scheduler in `rp-kernel` (ADR-0010) with two client threads in one server, preempted inside calls; IPC caller frames dropped (the caller's slot waits in its kernel stack frame), ports without `Option`. Thumb for `main` tried: 51.5 -> 53.4 KB (helpers outlined), reverted. **Budgets raised 46 -> 55 KiB load, 112 -> 120 KiB zeroed, approved by the owner** | `rp-kernel` loaded / zeroed | 42,376 / 111,368 B | 51,324 / 115,644 B |
 | 2026-10-12 | Two client threads calling one server at once (1,011 calls each incl. nested), with switches between them. Emulator real time | `ipc_call_roundtrip` (2,022 calls) | ~13 µs per call | ~17 µs per call incl. switches (113,091 ticks of 3.25 MHz) |
+| 2026-10-12 | PE images loaded into processes (ADR-0009) in `rp-kernel`: parser, per-page load + relocation, page-cache fill, W^X; plus the test's image writer. `rp-kernel-pe` built for size (-0.7 KB). **Kernel load budget 55 -> 65 KiB, owner's standing rule** (planned subsystem, measured + ~10%) | `rp-kernel` loaded size | 51,324 B | 60,328 B |
 
 ## Real hardware
 

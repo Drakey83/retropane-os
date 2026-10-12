@@ -321,6 +321,38 @@ impl Image {
         Ok(())
     }
 
+    /// Fills view page `page` and applies its base relocations: the page as
+    /// it reads at a load address `delta` above the preferred base. The
+    /// four bytes either side, for values straddling the page's edges, are
+    /// read from the view too, so pages load in any order and alone.
+    pub fn load_page<E>(
+        &self,
+        page: u32,
+        out: &mut [u8; PAGE as usize],
+        relocs: &Relocations<'_>,
+        delta: u32,
+        mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
+    ) -> Result<(), FillError<E>> {
+        self.fill_page(page, out, &mut read)?;
+        if delta != 0 {
+            let (mut prev, mut next) = ([0u8; 4], [0u8; 4]);
+            if page > 0 {
+                self.read_view(page * PAGE - 4, &mut prev, &mut read)?;
+            }
+            self.read_view((page + 1) * PAGE, &mut next, &mut read)?;
+            relocs.apply(page, out, prev, next, delta);
+        }
+        Ok(())
+    }
+
+    /// Whether any view page would be both writable and executable. The
+    /// loader refuses such images (W^X): code can't be rewritten, and
+    /// written data can't run.
+    #[must_use]
+    pub fn writable_code(&self) -> bool {
+        (0..self.pages()).any(|p| self.page_protection(p).is_some_and(|q| q.write && q.exec))
+    }
+
     /// The memory protection of view page `page`: the union of everything
     /// that lies in it (headers are read-only). `None` for a page no section
     /// covers (it stays unmapped: a guard).
@@ -748,6 +780,8 @@ impl Exports {
         Ok((n, self.base + u32::from(u16::from_le_bytes(o))))
     }
 }
+
+pub mod build;
 
 #[cfg(test)]
 mod tests;

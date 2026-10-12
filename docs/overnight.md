@@ -713,9 +713,29 @@ on the host or in the emulator first.
       shared server stack between threads, nothing per-thread that a
       hostile process can grow.
 
-40. **A process from a PE file** (ADR-0009): the kernel loads a small
-    PE built by xtask (sections, relocations, W^X) into a slot through
-    `kernel/pe`'s image views, demand paged, instead of copied test code.
+40. **A process from a PE file** (ADR-0009): **done (emulator).** At
+    start the kernel packages the test programs as a PE image (`.text`,
+    `.rdata`, `.data`, `.reloc`; `kernel/pe`'s new no_std writer, which a
+    host test checks byte for byte against the reference builder) in a RAM
+    "file". No ARM PE toolchain is installed, so the file is built on the
+    device, but every loading step is the real one. Both processes map it at
+    0x100000, not its preferred 0x10000, each page with its section's
+    rights. On a page's first fault the page cache loads it into a new
+    frame (`Image::load_page`: fill, then relocate, including values
+    straddling page edges), once, and both processes share it. The client
+    follows two relocated addresses (a code literal to `.data`, `.data`'s
+    pointer to `.rdata`) to a magic word. Checks: `PE image relocated` and
+    `PE pages loaded on demand` (exactly 3 of 5 pages: never the headers or
+    `.reloc`), required by the emulator test. W^X: an image with any
+    writable+executable page is refused (`Image::writable_code`).
+    `rp-kernel-pe` built for size. Kernel load budget 55 -> 65 KiB under
+    the owner's new standing rule.
+    - **Iterate:** CE's loader model (one image, mapped per process at the
+      same address), with pages loaded only when touched and relocated per
+      page, so an image's untouched parts cost nothing.
+    - **Modernize:** W^X enforced at load, per-section rights, no kernel
+      page ever user-visible, and every loader input bounded and treated
+      as hostile.
 
 41. **Reclaim** (ADR-0005): when free frames run low, compress the
     coldest pages (a clock over the page tables, accessed bits emulated

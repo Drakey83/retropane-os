@@ -1,6 +1,8 @@
 # ADR-0009: Loading PE images: an image view in the page cache, relocated on demand
 
-- **Status:** Accepted (2026-10-11, by the project owner)
+- **Status:** Accepted (2026-10-11, by the project owner). Live in the
+  kernel image 2026-10-12: demand page loads (fill + relocate per page, once,
+  shared between processes), per-section protections, W^X refusal.
 - **Date:** 2026-10-11
 
 ## Context

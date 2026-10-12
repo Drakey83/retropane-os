@@ -69,6 +69,7 @@ a later pass (the owner's standing requirement, 2026-10-12). Every ADR has a
 | 2026-10-12 | `rp-crypto` SHA-256 | Published test vectors (FIPS 180-2 appendix B, NIST examples, a million "a"); every split of the input | No findings; the loader now fingerprints what it runs and stores |
 | 2026-10-12 | `rp-fat` check | 3,000 hostile volumes checked (FAT32 and exFAT) | No findings: bounded walks, the cluster bitmap sized before use, errors not panics |
 | 2026-10-12 | `rp-fat` exFAT writes | Writing to hostile cards (1,500 corrupted images, boot checksum re-signed so the damage passes mount) and a power cut at every write of four kinds of put | No findings: errors, no panics or loops; no live cluster ever left marked free |
+| 2026-10-12 | `kernel/pe` loading, kernel image | Images with a page both writable and executable are refused before mapping (W^X); each page maps with its own section's rights (code read+execute, constants read-only, data private copy-on-write), uncovered pages stay unmapped as guards; the image is never mapped from kernel memory (pages are loaded into fresh frames); relocation data bounded | No findings; host test `writable_code_is_found`, emulator checks `PE image relocated`, `PE pages loaded on demand` |
 
 ## Checklist for every ADR and parser
 

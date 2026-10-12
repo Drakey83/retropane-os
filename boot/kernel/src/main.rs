@@ -24,6 +24,12 @@
 //!    the fifth level is refused; a server that faults unwinds to its
 //!    caller with an error; a handle the client doesn't have is refused;
 //!    each process sees only its own memory at the same address.
+//! 7. A process from a PE file (ADR-0009): the programs are packaged at
+//!    start as a PE image (`.text`, `.rdata`, `.data`, `.reloc`) in a RAM
+//!    "file", and both processes map it at a base it doesn't prefer, each
+//!    page with its section's protection. A page is loaded (filled and
+//!    relocated) on its first fault, once, and shared; the client reaches a
+//!    word in `.rdata` through two relocated addresses.
 //!
 //! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
 //! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
@@ -56,6 +62,8 @@ mod image {
         AddressSpace, Backing, IoError, Outcome, PageCache, Prot, Region, Vm, access_for,
     };
     use rp_kernel_mm::zpool::{ZBuffers, ZPool};
+    use rp_kernel_pe::build::{self, Header, SectionSpec};
+    use rp_kernel_pe::{Dir, Image, Relocations, dir, scn};
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
 
     rp_hal_pxa27x::entry!(main);
@@ -71,10 +79,26 @@ mod image {
     const ZERO_PAGES: u32 = 64;
     const FILE_VA: u32 = 0x0008_0000;
 
-    /// A one-page "file" standing in for the page cache.
+    /// The test image (a PE file built at start) as a page-cache object,
+    /// loaded at `LOAD_BASE`, not the base it prefers, so every absolute
+    /// address in it must be relocated.
+    const PE_OBJECT: u32 = 2;
+    const LOAD_BASE: u32 = 0x0010_0000;
+    /// View pages the cache can hold for it.
+    const PE_PAGES: usize = 8;
+
+    /// The page cache: a one-page "file", and the test image's view pages.
+    #[derive(Clone, Copy)]
     struct RamFile {
         phys: u32,
         refs: u32,
+        /// The image's file (a pool frame; 0: none yet).
+        pe_file: u32,
+        /// Its view pages as loaded (filled and relocated); 0: not yet.
+        pe: [u32; PE_PAGES],
+        pe_refs: u32,
+        /// Pages loaded so far (each once, however many processes map it).
+        pe_loads: u32,
     }
 
     impl PageCache for RamFile {
@@ -82,13 +106,23 @@ mod image {
             if object == FILE_OBJECT && page == 0 && self.phys != 0 {
                 self.refs += 1;
                 Ok(self.phys)
+            } else if object == PE_OBJECT
+                && let Some(&phys) = self.pe.get(page as usize).filter(|&&p| p != 0)
+            {
+                self.pe_refs += 1;
+                Ok(phys)
             } else {
                 Err(IoError)
             }
         }
         fn release(&mut self, phys: u32) {
-            debug_assert!(phys == self.phys && self.refs > 0, "bad page-cache release");
-            self.refs -= 1;
+            if phys == self.phys {
+                debug_assert!(self.refs > 0, "bad page-cache release");
+                self.refs -= 1;
+            } else {
+                debug_assert!(self.pe_refs > 0, "bad page-cache release");
+                self.pe_refs -= 1;
+            }
         }
     }
 
@@ -190,9 +224,13 @@ mod image {
 
     /// The IPC test's server process and what it needs.
     const SERVER_SLOT: u32 = 6;
-    /// Where the programs' page appears in both processes, and their stacks.
-    const CODE_VA: u32 = 0x0000_8000;
+    /// Where the programs' stacks are in both processes.
     const STACK_VA: u32 = 0x0004_0000;
+    /// The test image's layout (`build_image`).
+    const TEXT_RVA: u32 = 0x1000;
+    const RDATA_RVA: u32 = 0x2000;
+    const DATA_RVA: u32 = 0x3000;
+    const RELOC_RVA: u32 = 0x4000;
     /// User stack pages per thread: its own, then one per call depth (a
     /// thread in a server runs on that server's page for the depth).
     const STACK_PAGES: u32 = 1 + rp_kernel_ipc::MAX_DEPTH as u32;
@@ -244,8 +282,8 @@ mod image {
         /// The client program's entry and the handle it calls through.
         entry: u32,
         handle: u8,
-        /// Each client's report (the `SYS_DONE` registers r0-r5).
-        results: [[u32; 6]; CLIENTS],
+        /// Each client's report (the `SYS_DONE` registers r0-r6).
+        results: [[u32; 7]; CLIENTS],
         finished: usize,
         /// Thread switches away from a thread that was inside a call.
         in_call_switches: u32,
@@ -257,7 +295,7 @@ mod image {
         done: Eid(0),
         entry: 0,
         handle: 0,
-        results: [[0; 6]; CLIENTS],
+        results: [[0; 7]; CLIENTS],
         finished: 0,
         in_call_switches: 0,
     });
@@ -281,7 +319,14 @@ mod image {
         // Its real domain comes from `Domains::activate` before first use.
         space: AddressSpace::process(PROC_SLOT, domains::PARKED),
         server: AddressSpace::process(SERVER_SLOT, domains::PARKED),
-        file: RamFile { phys: 0, refs: 0 },
+        file: RamFile {
+            phys: 0,
+            refs: 0,
+            pe_file: 0,
+            pe: [0; PE_PAGES],
+            pe_refs: 0,
+            pe_loads: 0,
+        },
         pool: None,
         l1: 0,
         pid: 0,
@@ -301,10 +346,7 @@ mod image {
                     ZBUF.with(|zbuf| {
                         STATE.with(|s| {
                             let mut pool = s.pool.take().unwrap_or_else(|| unreachable!());
-                            let mut file = RamFile {
-                                phys: s.file.phys,
-                                refs: s.file.refs,
-                            };
+                            let mut file = s.file;
                             let r = {
                                 let mut mem = Mem {
                                     pool: &mut pool,
@@ -321,7 +363,7 @@ mod image {
                                 };
                                 f(&mut vm, s)
                             };
-                            s.file.refs = file.refs;
+                            s.file = file;
                             s.pool = Some(pool);
                             r
                         })
@@ -627,39 +669,58 @@ mod image {
         let pass = unmapped && free_now == free_after_setup - 1 && refs == 0 && zpool_empty;
         ok &= report(&mut uart, "unmap", pass, free_now);
 
-        // 6. IPC: the client (slot 5) and the server (slot 6), each with the
-        // programs' page (user code, copied into a frame of its own: no page
-        // of the kernel image is ever user-visible), a stack and a data page.
-        let (code, client_off, server_off) = testprog::ipc_programs();
-        let code_frame = FRAMES.with(|f| FrameAlloc::alloc(f, 0));
-        let mapped = STATE.with(|s| -> Result<(), &'static str> {
-            let f = code_frame.ok_or("no code frame")?;
-            let code_phys = BASE + f as u32 * 4096;
+        // 6-7. IPC, from a PE file: the client (slot 5) and the server (slot
+        // 6) both map the test image (user code: no page of the kernel image
+        // is ever user-visible), each with its own stack and data page.
+        let programs = testprog::ipc_programs();
+        let file_frame = FRAMES.with(|f| FrameAlloc::alloc(f, 0));
+        let mapped = STATE.with(|s| -> Result<u32, &'static str> {
+            let f = file_frame.ok_or("no file frame")?;
+            let file_phys = BASE + f as u32 * 4096;
             let pool = s.pool.as_deref_mut().unwrap_or_else(|| unreachable!());
-            let page = &mut pool[word(code_phys)..word(code_phys) + 1024];
-            page.fill(0);
-            page.get_mut(..code.len())
-                .ok_or("code too big")?
-                .copy_from_slice(code);
-            // Out of the D-cache (and any stale I-cache lines) before user
-            // mode fetches it through another address.
-            cpu::clean_invalidate_range(code_phys, 4096);
+            let file =
+                rp_hal_mem::words_as_bytes_mut(&mut pool[word(file_phys)..word(file_phys) + 1024]);
+            build_image(file, &programs).map_err(|e| e.name())?;
+            let image = Image::parse(file).map_err(|e| e.name())?;
+            // W^X: an image with a page both writable and executable is
+            // refused, not mapped.
+            if image.writable_code() || image.pages() as usize > PE_PAGES {
+                return Err("image refused");
+            }
+            s.file.pe_file = file_phys;
             let a5 = s.domains.activate(PROC_SLOT);
             let a6 = s.domains.activate(SERVER_SLOT);
             s.space.set_domain(a5.domain);
             s.server.set_domain(a6.domain);
             for (space, slot) in [(&mut s.space, PROC_SLOT), (&mut s.server, SERVER_SLOT)] {
                 let base = layout::slot_base(slot);
+                // Each view page as its section says; a page no section
+                // covers stays unmapped (a guard).
+                for page in 0..image.pages() {
+                    let Some(q) = image.page_protection(page) else {
+                        continue;
+                    };
+                    let prot = if q.exec {
+                        Prot::RX
+                    } else if q.write {
+                        Prot::RW
+                    } else {
+                        Prot::R
+                    };
+                    space
+                        .map(Region {
+                            start: base + LOAD_BASE + page * 4096,
+                            len: 4096,
+                            prot,
+                            backing: Backing::File {
+                                object: PE_OBJECT,
+                                offset: page * 4096,
+                                shared: q.shared,
+                            },
+                        })
+                        .map_err(|e| e.name())?;
+                }
                 for region in [
-                    Region {
-                        start: base + CODE_VA,
-                        len: 4096,
-                        prot: Prot::RX,
-                        backing: Backing::Phys {
-                            base: code_phys,
-                            cache: Cache::WriteBack,
-                        },
-                    },
                     Region {
                         start: base + testprog::DATA,
                         len: 4096,
@@ -677,10 +738,13 @@ mod image {
                     space.map(region).map_err(|e| e.name())?;
                 }
             }
-            Ok(())
+            Ok(image.pages())
         });
+        let pe_pages = *mapped.as_ref().unwrap_or(&0);
+        let mapped = mapped.map(|_| ());
         let client_handle = IPC.with(|i| -> Option<Handle> {
-            let (port, _) = i.ipc.open(SERVER_SLOT as u8, CODE_VA + server_off).ok()?;
+            let server = LOAD_BASE + TEXT_RVA + programs.server;
+            let (port, _) = i.ipc.open(SERVER_SLOT as u8, server).ok()?;
             i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()
         });
         // Threads: this code becomes the boot thread; an idle thread; the
@@ -705,7 +769,7 @@ mod image {
         };
         RUN.with(|r| {
             r.done = done;
-            r.entry = CODE_VA + client_off;
+            r.entry = LOAD_BASE + TEXT_RVA + programs.client;
             r.handle = h.0;
         });
         user::set_syscall_handler(on_syscall);
@@ -715,7 +779,7 @@ mod image {
         while RUN.with(|r| r.finished) < CLIENTS {
             wait(done);
         }
-        ok &= report_clients(&mut uart);
+        ok &= report_clients(&mut uart, pe_pages);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -875,6 +939,7 @@ mod image {
         let (fsr, _) = cpu::fault_registers();
         let resolved = access_for(arm::classify(fsr), prefetch).is_some_and(|access| {
             with_vm(|vm, s| {
+                load_pe_page(vm, addr);
                 let mva = layout::mva(addr, s.pid);
                 let space = if s.pid == SERVER_SLOT {
                     &s.server
@@ -892,11 +957,128 @@ mod image {
         on_fault(kind, addr)
     }
 
+    /// Packages the test programs as a PE file in `file`: `.text` (the
+    /// code), `.rdata` (`MAGIC`), `.data` (a pointer to `.rdata`) and
+    /// `.reloc` (fix-ups for that pointer and the code's one absolute
+    /// literal), preferring `testprog::PREFERRED_BASE`.
+    fn build_image(file: &mut [u8], p: &testprog::Programs) -> Result<(), rp_kernel_pe::Error> {
+        let mut code = [0u8; 512];
+        let code = code
+            .get_mut(..p.code.len() * 4)
+            .ok_or(rp_kernel_pe::Error::Truncated)?;
+        for (b, w) in code.as_chunks_mut::<4>().0.iter_mut().zip(p.code) {
+            *b = w.to_le_bytes();
+        }
+        let rdata = testprog::MAGIC.to_le_bytes();
+        let data = (testprog::PREFERRED_BASE + RDATA_RVA).to_le_bytes();
+        let mut rel = [0u8; 32];
+        let a = build::reloc_block(&mut rel, TEXT_RVA, &[p.reloc as u16])?;
+        let b = build::reloc_block(&mut rel[a..], DATA_RVA, &[0])?;
+        let rel = &rel[..a + b];
+        let header = Header {
+            machine: rp_kernel_pe::MACHINE_ARM,
+            image_base: testprog::PREFERRED_BASE,
+            entry: TEXT_RVA + p.client,
+            dll: false,
+            relocs: Some(Dir {
+                rva: RELOC_RVA,
+                size: rel.len() as u32,
+            }),
+        };
+        let sections = [
+            SectionSpec {
+                name: b".text",
+                rva: TEXT_RVA,
+                vsize: code.len() as u32,
+                data: code,
+                characteristics: scn::CODE | scn::EXECUTE | scn::READ,
+            },
+            SectionSpec {
+                name: b".rdata",
+                rva: RDATA_RVA,
+                vsize: 4,
+                data: &rdata,
+                characteristics: scn::READ,
+            },
+            SectionSpec {
+                name: b".data",
+                rva: DATA_RVA,
+                vsize: 4,
+                data: &data,
+                characteristics: scn::READ | scn::WRITE,
+            },
+            SectionSpec {
+                name: b".reloc",
+                rva: RELOC_RVA,
+                vsize: rel.len() as u32,
+                data: rel,
+                characteristics: scn::READ,
+            },
+        ];
+        build::write(file, &header, &sections).map(|_| ())
+    }
+
+    /// The page cache's fill for the test image: if `addr` lies in it and
+    /// its view page isn't loaded, loads it into a new frame (filled from
+    /// the file and relocated, then written back from the cache so user
+    /// mode reads and fetches it).
+    fn load_pe_page(vm: &mut KernelVm<'_>, addr: u32) {
+        let Some(page) = addr
+            .checked_sub(LOAD_BASE)
+            .map(|o| o / 4096)
+            .filter(|&p| (p as usize) < PE_PAGES)
+        else {
+            return;
+        };
+        if vm.cache.pe[page as usize] != 0 || vm.cache.pe_file == 0 {
+            return;
+        }
+        let Some(f) = FrameAlloc::alloc(vm.frames, 0) else {
+            return;
+        };
+        let phys = BASE + f as u32 * 4096;
+        if load_view_page(vm.mem.pool, vm.cache.pe_file, phys, page).is_some() {
+            cpu::clean_invalidate_range(phys, 4096);
+            vm.cache.pe[page as usize] = phys;
+            vm.cache.pe_loads += 1;
+        } else {
+            FrameAlloc::free(vm.frames, f);
+        }
+    }
+
+    /// Loads view page `page` of the image in the file frame `file_phys`
+    /// into the frame `out_phys`. `None` if the image or page is bad.
+    fn load_view_page(pool: &mut [u32], file_phys: u32, out_phys: u32, page: u32) -> Option<()> {
+        let (fi, oi) = (word(file_phys), word(out_phys));
+        let (file, out) = if fi < oi {
+            let (lo, hi) = pool.split_at_mut(oi);
+            (&mut lo[fi..fi + 1024], &mut hi[..1024])
+        } else {
+            let (lo, hi) = pool.split_at_mut(fi);
+            (&mut hi[..1024], &mut lo[oi..oi + 1024])
+        };
+        let file: &[u8] = rp_hal_mem::words_as_bytes_mut(file);
+        let out: &mut [u8; 4096] = rp_hal_mem::words_as_bytes_mut(out).try_into().ok()?;
+        let read = |off: u32, buf: &mut [u8]| -> Result<(), ()> {
+            let src = file.get(off as usize..off as usize + buf.len()).ok_or(())?;
+            buf.copy_from_slice(src);
+            Ok(())
+        };
+        let image = Image::parse(file).ok()?;
+        let d = image.dirs[dir::BASERELOC];
+        let mut rel = [0u8; 64];
+        let rel = rel.get_mut(..d.size as usize)?;
+        image.read_view(d.rva, rel, read).ok()?;
+        let relocs = Relocations::new(rel).ok()?;
+        let delta = LOAD_BASE.wrapping_sub(image.image_base);
+        image.load_page(page, out, &relocs, delta, read).ok()
+    }
+
     /// A client's report: kept for the boot thread, then the thread ends.
     fn done(me: Tid, f: &mut Frame) -> ! {
         let done = RUN.with(|r| {
             let n = r.finished.min(CLIENTS - 1);
-            r.results[n].copy_from_slice(&f.r[..6]);
+            r.results[n].copy_from_slice(&f.r[..7]);
             r.finished += 1;
             r.done
         });
@@ -910,13 +1092,13 @@ mod image {
 
     /// Checks every client's report, the server's own word, and that
     /// threads were switched while inside calls.
-    fn report_clients(uart: &mut PxaUart<Mmio>) -> bool {
+    fn report_clients(uart: &mut PxaUart<Mmio>, pe_pages: u32) -> bool {
         let ticks = rt::ticks().wrapping_sub(IPC.with(|i| i.first_call));
         switch_to(SERVER_SLOT);
         let server_word = rt::try_read((layout::slot_base(SERVER_SLOT) + testprog::DATA) as usize);
         let (results, switches) = RUN.with(|r| (r.results, r.in_call_switches));
         let calls = IPC.with(|i| i.calls);
-        let all = |f: &dyn Fn(&[u32; 6]) -> bool| results.iter().all(f);
+        let all = |f: &dyn Fn(&[u32; 7]) -> bool| results.iter().all(f);
         let first = results[0];
         let mut ok = report_ipc(uart, "call", all(&|r| r[0] == 42), first[0]);
         ok &= report_ipc(uart, "server fault", all(&|r| r[1] == ERR_FAULT), first[1]);
@@ -928,6 +1110,15 @@ mod image {
         let isolated = all(&|r| r[3] == 0x1111_1111) && server_word == Some(0x2222_2222);
         ok &= report_ipc(uart, "isolation", isolated, first[3]);
         ok &= report_ipc(uart, "preempted in calls", switches > 0, switches);
+        // The image: relocated (the client reached MAGIC through two fixed-up
+        // addresses), and loaded on demand, each page once though both
+        // processes map it: code, `.rdata` and `.data`, never the headers
+        // or `.reloc`.
+        let relocated = all(&|r| r[6] == testprog::MAGIC);
+        ok &= report_ipc(uart, "PE image relocated", relocated, first[6]);
+        let loads = STATE.with(|s| s.file.pe_loads);
+        let demand = loads == 3 && pe_pages == 5;
+        ok &= report_ipc(uart, "PE pages loaded on demand", demand, loads);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         ok
     }
