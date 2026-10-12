@@ -74,7 +74,7 @@ fn main() -> ExitCode {
         "load" => {
             eprintln!("==> load {flag}");
             if flag == "--setup" {
-                usb::setup_restart_task()
+                usb::setup_restart_task(&workspace_root())
             } else if flag.is_empty() {
                 Err("usage: cargo xtask load <image name | file.bin> | --setup".into())
             } else {

@@ -27,8 +27,10 @@ const PROBE: &str = "RetroPane echo test 26";
 /// the device leaving and returning; restarting its device entry makes
 /// Windows enumerate it afresh, which a cable replug otherwise did.
 const RESTART_TASK: &str = "RetroPane USB restart";
-/// The Axim's device instance (its serial number is fixed in the firmware).
-const INSTANCE_ID: &str = r"USB\VID_1209&PID_0001\RP26-0001";
+/// The script the task runs: restarts every present USB entry that could be
+/// the Axim (ours, Windows Mobile's, or a failed one), so the port is
+/// enumerated afresh.
+const RESTART_SCRIPT: &str = "xtask/scripts/usb-restart.ps1";
 
 /// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
 fn open_port() -> String {
@@ -190,11 +192,16 @@ fn powershell(script: &str) -> Result<std::process::Output, String> {
 /// Creates the admin scheduled task that restarts the Axim's USB device
 /// entry (one UAC prompt, once). Without it, every `load` needs a cable
 /// replug for the PC to find the loader again.
-pub fn setup_restart_task() -> Result<(), String> {
+pub fn setup_restart_task(root: &Path) -> Result<(), String> {
+    let script = root.join(RESTART_SCRIPT);
+    let script = script
+        .to_str()
+        .ok_or("repository path isn't valid text")?
+        .replace('\'', "''");
     let register = format!(
         "Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action (New-ScheduledTaskAction \
-         -Execute 'pnputil.exe' -Argument '/restart-device \"{INSTANCE_ID}\"') -RunLevel Highest \
-         -Force | Out-Null"
+         -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File \"{script}\"') \
+         -RunLevel Highest -Force | Out-Null"
     );
     // Elevated through UAC (the user approves the prompt), then waited for.
     let script = format!(
@@ -244,7 +251,16 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
     let frame = bin.with_extension("frame");
     std::fs::write(&frame, rp_loadproto::frame(&payload))
         .map_err(|e| format!("{}: {e}", frame.display()))?;
-    let out = powershell(&load_script(&frame))?;
+    let mut out = powershell(&load_script(&frame))?;
+    if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
+        // Windows still holds a stale entry for the port (Windows Mobile's
+        // device after a fresh start, or ours): restart it and look again.
+        eprintln!("    no port yet: asking Windows to re-find the Axim");
+        let _ = powershell(&format!(
+            "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
+        ));
+        out = powershell(&load_script(&frame))?;
+    }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut port = None;
     let mut reply = None;

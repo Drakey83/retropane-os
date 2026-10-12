@@ -76,6 +76,11 @@ Facts (docs/hw/udc.md):
   pull-up is a fixed resistor (manual + measurement), so Windows never sees
   the device leave; an admin scheduled task (`cargo xtask load --setup`,
   once) restarts the device entry instead, kicked every 8 s while waiting.
+  After a fresh Windows Mobile start the stale entry is Windows Mobile's own
+  USB device, so the task runs `xtask/scripts/usb-restart.ps1`, which
+  restarts every present entry that could be the Axim; `cargo xtask load`
+  kicks it once when it finds no port. A session from the owner's side is:
+  dock, tap `haret.exe`, say "running".
 - **U3 works on the device (2026-10-11):** the loader took first light
   over USB (`cargo xtask load rp-light`), started it, got control back, and
   handed its run log to the PC: the first device run with no file copy and
