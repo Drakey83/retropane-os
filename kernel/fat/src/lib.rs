@@ -2,8 +2,11 @@
 //! every PC format it.
 //!
 //! Reads: mount a partition, find a file in the root directory by its long
-//! or short name, read it in runs of consecutive sectors. Writes: replace a
-//! file's contents by **copy-then-swap**: the new contents go into fresh
+//! or short name, read it in runs of consecutive sectors. Writes: create a
+//! file (its directory entry written last, so a power cut leaves no file or
+//! the whole file; long names as Windows writes them, `~1`-style short
+//! names, lower-case 8.3 names stored with Windows NT's case flags), or
+//! replace a file's contents by **copy-then-swap**: the new contents go into fresh
 //! clusters (one contiguous run when there is one), the chain is linked in
 //! every FAT copy, then the directory entry is switched to the new chain
 //! with a single sector write, and only then are the old clusters freed.
@@ -12,7 +15,8 @@
 //! file or searching the FAT for free clusters borrows the caller's
 //! scratch, so a bigger scratch means fewer, longer device commands.
 //!
-//! Not here yet: creating files, subdirectories, timestamps (no clock).
+//! Not here yet: subdirectories, deleting, timestamps (no clock yet: new
+//! entries carry none, which Windows shows as unknown).
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![forbid(unsafe_code)]
@@ -48,8 +52,11 @@ pub enum Error {
     NoRoom,
     /// A cluster chain or directory is damaged.
     Corrupt,
-    /// The name is longer than [`NAME_MAX`] or not ASCII.
+    /// The name is longer than [`NAME_MAX`], not ASCII, or has characters
+    /// FAT doesn't allow.
     BadName,
+    /// A file of that name already exists (to create).
+    Exists,
 }
 
 impl From<BlockError> for Error {
@@ -69,6 +76,7 @@ impl Error {
             Self::NoRoom => "no room",
             Self::Corrupt => "corrupt",
             Self::BadName => "bad name",
+            Self::Exists => "exists",
         }
     }
 }
@@ -181,6 +189,132 @@ fn check_name(name: &[u8]) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// A name a new file may have: [`check_name`], plus none of the characters
+/// FAT forbids, no trailing dot or space, not `.` or `..`.
+fn check_new_name(name: &[u8]) -> Result<(), Error> {
+    check_name(name)?;
+    if name.iter().any(|b| b"\"*:<>?|".contains(b))
+        || name.ends_with(b".")
+        || name.ends_with(b" ")
+        || name.iter().all(|&b| b == b'.')
+    {
+        return Err(Error::BadName);
+    }
+    Ok(())
+}
+
+/// Characters allowed in an 8.3 short name besides letters and digits.
+fn short_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'()-@^_`{}~".contains(&b)
+}
+
+/// How a name is stored: its 11-byte short name, Windows NT's case flags
+/// (0x08: lower-case base, 0x10: lower-case extension) and whether it
+/// needs long-name entries.
+fn plain_short(name: &[u8]) -> Option<([u8; 11], u8)> {
+    let (base, ext) = match name.iter().rposition(|&b| b == b'.') {
+        Some(0) => return None,
+        Some(i) => (&name[..i], &name[i + 1..]),
+        None => (name, &b""[..]),
+    };
+    let uniform = |p: &[u8]| {
+        p.iter().all(|&b| short_char(b))
+            && (p.iter().all(|b| !b.is_ascii_lowercase())
+                || p.iter().all(|b| !b.is_ascii_uppercase()))
+    };
+    if base.is_empty() || base.len() > 8 || ext.len() > 3 || !uniform(base) || !uniform(ext) {
+        return None;
+    }
+    let mut short = [b' '; 11];
+    for (d, &s) in short.iter_mut().zip(base) {
+        *d = s.to_ascii_uppercase();
+    }
+    for (d, &s) in short[8..].iter_mut().zip(ext) {
+        *d = s.to_ascii_uppercase();
+    }
+    let mut nt = 0;
+    if base.iter().any(u8::is_ascii_lowercase) {
+        nt |= 0x08;
+    }
+    if ext.iter().any(u8::is_ascii_lowercase) {
+        nt |= 0x10;
+    }
+    Some((short, nt))
+}
+
+/// The `BASIS~N.EXT` short name Windows derives from a long name.
+fn numbered_short(name: &[u8], n: u32) -> [u8; 11] {
+    let (base, ext) = match name.iter().rposition(|&b| b == b'.') {
+        Some(i) if i > 0 => (&name[..i], &name[i + 1..]),
+        _ => (name, &b""[..]),
+    };
+    let mut short = [b' '; 11];
+    let clean = |b: u8| {
+        let u = b.to_ascii_uppercase();
+        if short_char(u) {
+            Some(u)
+        } else if b == b' ' || b == b'.' {
+            None
+        } else {
+            Some(b'_')
+        }
+    };
+    let mut digits = [0u8; 7];
+    let mut k = digits.len();
+    let mut v = n;
+    loop {
+        k -= 1;
+        digits[k] = b'0' + (v % 10) as u8;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    digits[k - 1] = b'~';
+    let tail = &digits[k - 1..];
+    let keep = 8 - tail.len();
+    let mut i = 0;
+    for b in base.iter().filter_map(|&b| clean(b)).take(keep) {
+        short[i] = b;
+        i += 1;
+    }
+    short[i..i + tail.len()].copy_from_slice(tail);
+    for (d, b) in short[8..]
+        .iter_mut()
+        .zip(ext.iter().filter_map(|&b| clean(b)))
+    {
+        *d = b;
+    }
+    short
+}
+
+/// The long-name entries for `name` (ASCII), last piece first as they go
+/// on disk, each 32 bytes; returns how many.
+fn lfn_entries(name: &[u8], checksum: u8, out: &mut [[u8; 32]; LFN_MAX]) -> usize {
+    const AT: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+    let pieces = name.len().div_ceil(13);
+    for p in 0..pieces {
+        let e = &mut out[pieces - 1 - p];
+        *e = [0; 32];
+        e[0] = (p + 1) as u8 | if p + 1 == pieces { 0x40 } else { 0 };
+        e[11] = ATTR_LONG_NAME;
+        e[13] = checksum;
+        for (i, &o) in AT.iter().enumerate() {
+            let idx = p * 13 + i;
+            let c: u16 = match idx.cmp(&name.len()) {
+                core::cmp::Ordering::Less => u16::from(name[idx]),
+                core::cmp::Ordering::Equal => 0,
+                core::cmp::Ordering::Greater => 0xFFFF,
+            };
+            e[o..o + 2].copy_from_slice(&c.to_le_bytes());
+        }
+    }
+    pieces
+}
+
+/// Most long-name entries a name of [`NAME_MAX`] needs.
+const LFN_MAX: usize = NAME_MAX.div_ceil(13);
 
 impl<D: BlockDevice> Volume<D> {
     /// Mounts the FAT32 partition whose first sector is `base`.
@@ -542,7 +676,7 @@ impl<D: BlockDevice> Volume<D> {
                 return false; // volume label
             }
             let mut short = [0u8; 12];
-            let n = short_to_display(&e[..11], &mut short);
+            let n = short_to_display(&e[..11], e[12], &mut short);
             let name = if lfn.is_empty() { &short[..n] } else { lfn };
             f(&DirEntry {
                 name,
@@ -566,7 +700,7 @@ impl<D: BlockDevice> Volume<D> {
                 return false;
             }
             let mut short = [0u8; 12];
-            let n = short_to_display(&e[..11], &mut short);
+            let n = short_to_display(&e[..11], e[12], &mut short);
             let hit = (!lfn.is_empty() && lfn.eq_ignore_ascii_case(want))
                 || short[..n].eq_ignore_ascii_case(want);
             if hit {
@@ -693,9 +827,198 @@ impl<D: BlockDevice> Volume<D> {
         scratch: &mut [u8],
     ) -> Result<Written, Error> {
         let file = self.find(name)?;
+        let hint = self.fsinfo_hint()?;
+        let written = self.store(data, hint, scratch)?;
+
+        // The swap: one sector write.
+        self.dev.read_blocks(file.entry_lba, &mut self.buf)?;
+        let o = usize::from(file.entry_index) * 32;
+        let size = u32::try_from(data.len()).map_err(|_| Error::NoRoom)?;
+        self.buf[o + 20..o + 22]
+            .copy_from_slice(&((written.first_cluster >> 16) as u16).to_le_bytes());
+        self.buf[o + 26..o + 28].copy_from_slice(&(written.first_cluster as u16).to_le_bytes());
+        self.buf[o + 28..o + 32].copy_from_slice(&size.to_le_bytes());
+        self.buf[o + 11] |= 0x20; // archive: changed since the last backup
+        self.dev.write_blocks(file.entry_lba, &self.buf)?;
+
+        self.fsinfo_adjust(
+            -i64::from(written.clusters),
+            Some(self.next_hint(&written, hint)),
+        )?;
+        if file.first_cluster != 0 {
+            self.free_chain(file.first_cluster)?;
+        }
+        Ok(written)
+    }
+
+    /// Replaces `name`'s contents, or creates it when it doesn't exist.
+    pub fn put(&mut self, name: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        match self.replace(name, data, scratch) {
+            Err(Error::NotFound) => self.create(name, data, scratch),
+            r => r,
+        }
+    }
+
+    /// Creates the root-directory file `name` holding `data`. The contents
+    /// and their FAT links are written first, the directory entries last
+    /// (the short entry, which makes the file exist, in the last sector
+    /// written), so a power cut leaves no file or the whole file; at worst
+    /// some clusters stay allocated to nothing, which a disk check frees.
+    /// A full root directory grows by a cluster.
+    pub fn create(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
+        let n = name.as_bytes();
+        check_new_name(n)?;
+        match self.find(name) {
+            Ok(_) => return Err(Error::Exists),
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        // The short name: the 8.3 form itself, or BASIS~N with long-name
+        // entries, N the first free number.
+        let (short, nt, lfn) = match plain_short(n) {
+            Some((s, nt)) => (s, nt, false),
+            None => {
+                let mut k = 1;
+                loop {
+                    let s = numbered_short(n, k);
+                    if !self.short_exists(&s)? {
+                        break (s, 0, true);
+                    }
+                    k += 1;
+                    if k > 999_999 {
+                        return Err(Error::NoRoom);
+                    }
+                }
+            }
+        };
+        let mut entries = [[0u8; 32]; LFN_MAX + 1];
+        let mut count = 0;
+        if lfn {
+            let mut l = [[0u8; 32]; LFN_MAX];
+            count = lfn_entries(n, short_checksum(&short), &mut l);
+            entries[..count].copy_from_slice(&l[..count]);
+        }
+
+        let hint = self.fsinfo_hint()?;
+        let written = self.store(data, hint, scratch)?;
+        let size = u32::try_from(data.len()).map_err(|_| Error::NoRoom)?;
+        let e = &mut entries[count];
+        e[..11].copy_from_slice(&short);
+        e[11] = 0x20;
+        e[12] = nt;
+        e[20..22].copy_from_slice(&((written.first_cluster >> 16) as u16).to_le_bytes());
+        e[26..28].copy_from_slice(&(written.first_cluster as u16).to_le_bytes());
+        e[28..32].copy_from_slice(&size.to_le_bytes());
+        count += 1;
+
+        let mut grown = 0;
+        let slots = match self.free_slots(count, scratch, &mut grown) {
+            Ok(s) => s,
+            Err(err) => {
+                if written.first_cluster != 0 {
+                    self.free_chain(written.first_cluster)?;
+                }
+                return Err(err);
+            }
+        };
+        // Sector by sector, in order: the short entry is the last slot, so
+        // its sector is written last.
+        let mut i = 0;
+        while i < count {
+            let lba = slots[i].0;
+            self.dev.read_blocks(lba, &mut self.buf)?;
+            while i < count && slots[i].0 == lba {
+                let o = usize::from(slots[i].1) * 32;
+                self.buf[o..o + 32].copy_from_slice(&entries[i]);
+                i += 1;
+            }
+            self.dev.write_blocks(lba, &self.buf)?;
+        }
+        self.fsinfo_adjust(
+            -i64::from(written.clusters + grown),
+            Some(self.next_hint(&written, hint)),
+        )?;
+        Ok(written)
+    }
+
+    fn next_hint(&self, w: &Written, hint: u32) -> u32 {
+        if w.clusters > 0 {
+            w.first_cluster + if w.contiguous { w.clusters } else { 0 }
+        } else {
+            hint
+        }
+    }
+
+    /// Whether a root entry has the short name `short`.
+    fn short_exists(&mut self, short: &[u8; 11]) -> Result<bool, Error> {
+        self.walk_root(&mut |_, _, e, _| e[..11] == short[..])
+    }
+
+    /// Finds `need` consecutive free slots in the root directory (deleted
+    /// or past its end), growing it by a zeroed cluster if it has none;
+    /// returns their (sector, index), in order.
+    fn free_slots(
+        &mut self,
+        need: usize,
+        scratch: &mut [u8],
+        grown: &mut u32,
+    ) -> Result<[(u32, u8); LFN_MAX + 1], Error> {
+        let mut run = [(0u32, 0u8); LFN_MAX + 1];
+        let mut len = 0;
+        let mut cluster = self.root_cluster;
+        let mut visited = 0u32;
+        loop {
+            let lba = self.cluster_lba(cluster);
+            for s in 0..self.sectors_per_cluster {
+                self.dev.read_blocks(lba + s, &mut self.buf)?;
+                for i in 0..ENTRIES {
+                    if matches!(self.buf[i * 32], 0x00 | 0xE5) {
+                        run[len] = (lba + s, i as u8);
+                        len += 1;
+                        if len == need {
+                            return Ok(run);
+                        }
+                    } else {
+                        len = 0;
+                    }
+                }
+            }
+            visited += 1;
+            match self.next_cluster(cluster)? {
+                Some(c) if visited <= self.clusters => cluster = c,
+                Some(_) => return Err(Error::Corrupt),
+                None => {
+                    // Grow: a zeroed cluster linked after the last one; the
+                    // run continues into it.
+                    let hint = self.fsinfo_hint()?;
+                    let Some(c) = self.find_free_run(hint, 1, scratch)? else {
+                        return Err(Error::NoRoom);
+                    };
+                    self.buf = [0; SECTOR];
+                    for s in 0..self.sectors_per_cluster {
+                        self.dev.write_blocks(self.cluster_lba(c) + s, &self.buf)?;
+                    }
+                    self.fat_set(c, EOC)?;
+                    self.fat_set(cluster, c)?;
+                    self.fat_flush()?;
+                    *grown += 1;
+                    cluster = c;
+                }
+            }
+        }
+    }
+
+    /// Allocates clusters for `data` (one contiguous run when there is one,
+    /// searching from `hint`), writes it and links the chain in every FAT
+    /// copy. The data is reachable only through what the caller links next.
+    fn store(&mut self, data: &[u8], hint: u32, scratch: &mut [u8]) -> Result<Written, Error> {
         let cb = self.cluster_bytes();
         let need = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
-        let hint = self.fsinfo_hint()?;
 
         let mut written = Written {
             first_cluster: 0,
@@ -746,36 +1069,23 @@ impl<D: BlockDevice> Volume<D> {
             }
         }
         self.fat_flush()?;
-
-        // The swap: one sector write.
-        self.dev.read_blocks(file.entry_lba, &mut self.buf)?;
-        let o = usize::from(file.entry_index) * 32;
-        let size = u32::try_from(data.len()).map_err(|_| Error::NoRoom)?;
-        self.buf[o + 20..o + 22]
-            .copy_from_slice(&((written.first_cluster >> 16) as u16).to_le_bytes());
-        self.buf[o + 26..o + 28].copy_from_slice(&(written.first_cluster as u16).to_le_bytes());
-        self.buf[o + 28..o + 32].copy_from_slice(&size.to_le_bytes());
-        self.buf[o + 11] |= 0x20; // archive: changed since the last backup
-        self.dev.write_blocks(file.entry_lba, &self.buf)?;
-
-        let next_hint = if need > 0 {
-            written.first_cluster + if written.contiguous { need } else { 0 }
-        } else {
-            hint
-        };
-        self.fsinfo_adjust(-i64::from(need), Some(next_hint))?;
-        if file.first_cluster != 0 {
-            self.free_chain(file.first_cluster)?;
-        }
         Ok(written)
     }
 }
 
-/// `NAME.EXT` from an 8.3 entry name; returns the length written to `out`.
-fn short_to_display(short: &[u8], out: &mut [u8; 12]) -> usize {
+/// `NAME.EXT` from an 8.3 entry name, in lower case where Windows NT's case
+/// flags (`nt`: 0x08 base, 0x10 extension) say so; returns the length.
+fn short_to_display(short: &[u8], nt: u8, out: &mut [u8; 12]) -> usize {
+    let lower = |b: u8, flag: u8| {
+        if nt & flag != 0 {
+            b.to_ascii_lowercase()
+        } else {
+            b
+        }
+    };
     let mut n = 0;
     for &b in short[..8].iter().take_while(|&&b| b != b' ') {
-        out[n] = if b == 0x05 { 0xE5 } else { b };
+        out[n] = if b == 0x05 { 0xE5 } else { lower(b, 0x08) };
         n += 1;
     }
     let ext: &[u8] = &short[8..11];
@@ -783,7 +1093,9 @@ fn short_to_display(short: &[u8], out: &mut [u8; 12]) -> usize {
     if ext_len > 0 {
         out[n] = b'.';
         n += 1;
-        out[n..n + ext_len].copy_from_slice(&ext[..ext_len]);
+        for (d, &b) in out[n..n + ext_len].iter_mut().zip(ext) {
+            *d = lower(b, 0x10);
+        }
         n += ext_len;
     }
     n

@@ -799,7 +799,11 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let sd = root.join("target/emulator/sd-put.img");
     std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let frame = rp_loadproto::file_frame("retropane.bin", &new);
-    let missing = rp_loadproto::file_frame("missing.bin", b"x");
+    // A file the card doesn't have: created (long name, so the loader
+    // writes long-name entries and a ~1 short name).
+    let created: Vec<u8> = (0..6000u32).map(|i| (i * 5 + 3) as u8).collect();
+    let create = rp_loadproto::file_frame("RetroPane loader.lnk", &created);
+    let bad = rp_loadproto::file_frame("bad*name", b"x");
     let args = usb_args(2);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let check = || -> Result<(), String> {
@@ -829,9 +833,10 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
                 "the write took {reads} read commands (at most {MAX_PUT_READS}): is the FAT search reading sector by sector again?"
             ));
         }
-        s.write_all(&missing).map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ERR not found", 20)?;
-        let _ = reply;
+        s.write_all(&create).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 6000 bytes", 40)?;
+        s.write_all(&bad).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR bad name", 20)?;
         Ok(())
     };
     boot(
@@ -858,6 +863,11 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     }
     if card_file(&sd, "startup.txt")? != script {
         return Err("startup.txt changed on the card".into());
+    }
+    if card_file(&sd, "RetroPane loader.lnk")? != created
+        || card_file(&sd, "RETROP~1.LNK")? != created
+    {
+        return Err("the created file isn't on the card (long or short name)".into());
     }
     eprintln!("    file to card OK: replaced through the loader, verified in the image");
     Ok(())

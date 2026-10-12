@@ -66,6 +66,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 | 2026-10-12 | `rp-loader`: the SD card as a USB drive (ADR-0014). **Ratcheted 41 → 52 KiB** (test image): composite descriptors, the Bulk-Only/SCSI stack (2.6 KiB `Msc::poll`), card capacity from the CSD; the 32 KiB transfer buffer is in the scratch area, not the image | `rp-loader` loaded size | 39,400 B | 47,743 B |
 
+| 2026-10-12 | `rp-loader`: SD read recovery (timeouts, slow blocks, weak ranges), drive diagnostics, file creation in `rp-fat`. **Ratcheted 52 → 58 → 70 KiB** (test image; reasons in `xtask/src/size.rs`). `rp-bench` 24 → 27 KiB for the same SD code | `rp-loader` loaded size | 47,743 B | 63,447 B |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

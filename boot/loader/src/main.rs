@@ -221,7 +221,7 @@ mod image {
         msc.medium_changed(0);
         let t0 = rt::ticks();
         let reads0 = vol.device().reads();
-        let written = match vol.replace(name, contents, scratch) {
+        let written = match vol.put(name, contents, scratch) {
             Ok(w) => w,
             Err(e) => {
                 let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol.device()));

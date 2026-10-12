@@ -469,11 +469,10 @@ const KIT_FILES: [(&str, &str); 4] = [
     ("haret.exe", "haret.exe"),
 ];
 
-/// Puts the kit's files on the card through the loader. Files the card
-/// doesn't have yet are reported, not created (ADR-0013 doesn't create).
+/// Puts the kit's files on the card through the loader: each replaced,
+/// or created if the card doesn't have it yet.
 pub fn install(root: &Path) -> Result<(), String> {
     let kit = root.join("target/sdkit");
-    let mut missing = Vec::new();
     for (local, name) in KIT_FILES {
         let path = kit.join(local);
         if !path.exists() {
@@ -482,18 +481,9 @@ pub fn install(root: &Path) -> Result<(), String> {
                 path.display()
             ));
         }
-        match put(root, &path.display().to_string(), Some(name)) {
-            Ok(()) => {}
-            Err(e) if e.contains("not found") => {
-                eprintln!("    {name}: not on the card (copy it there once by hand)");
-                missing.push(name);
-            }
-            Err(e) => return Err(e),
-        }
+        put(root, &path.display().to_string(), Some(name))?;
     }
-    if missing.is_empty() {
-        eprintln!("    the card is up to date; soft-reset the Axim to start the new loader");
-    }
+    eprintln!("    the card is up to date; soft-reset the Axim to start the new loader");
     Ok(())
 }
 

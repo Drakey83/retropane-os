@@ -100,9 +100,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 52 -> 58 KiB on 2026-10-12 (test image): card diagnostics
     // over USB (`drive status`, `card scan`), which found the owner's slow
     // card block, and the USB layout fallback; 52.2 KiB measured, +~10%.
+    // Ratcheted 58 -> 70 KiB on 2026-10-12 (test image): creating files on
+    // the card (rp-fat: long names, ~N short names, root growth; ~5 KiB) and
+    // the SD driver's slow-read recovery; 62.0 KiB measured, +~10%. When
+    // rp-fat moves into the OS it counts against rp-kernel's strict budget.
     Budget {
         image: "rp-loader",
-        max_load: 58 * 1024,
+        max_load: 70 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
