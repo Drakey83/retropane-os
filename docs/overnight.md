@@ -249,9 +249,19 @@ on the host or in the emulator first.
       black; the existing period respected; registers checked by a test.
     - **Modernize:** brightness controllable from the PC; the fade and the
       perceptual scale are what users expect of a 2026 device.
-12. **Compatibility corpus scanner** (ROADMAP Phase 3 start): a host tool
-    that reads the import tables of WM6 executables (the `kernel/pe`
-    parser already handles 12 real DLLs) and ranks the APIs RetroPane
-    must provide.
+12. **Compatibility corpus scanner** (ROADMAP Phase 3 start): **done.**
+    `tools/apiscan` (host tool on `rp-kernel-pe`): import tables of every PE
+    file in a corpus, ordinals resolved through the corpus's own export
+    tables (unresolved 34,893 -> 3,259 once the XIP region's `coredll` is
+    in), ranked by importing modules into `docs/research/api-backlog.md`:
+    519 modules of the owner's ROM, 4,361 functions; `coredll` leads with
+    1,315 functions used by 432 modules (`LocalFree`, `memset`, the stack
+    cookie pair, `CloseHandle`, `memcpy`, the registry...). Host-tested
+    (no emulator part: it's a PC tool). Clean-room: interface facts only.
+    - **Iterate:** the CE personality gets built in the order real
+      programs need it, measured, not guessed; re-runnable on any corpus
+      (third-party apps next).
+    - **Modernize:** a data-driven compatibility plan instead of a
+      reimplementation of everything WM had.
 13. **Docs sync**: ROADMAP and DESIGN brought up to date with tonight's
     work (SD writes, FAT, USB client, emulator models), coverage check.

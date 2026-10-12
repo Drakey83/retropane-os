@@ -80,7 +80,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 ## Phase 4 — CE Personality v1
 **Goal:** simple unmodified WM5/6.x apps run.
 
-- [ ] Compatibility corpus defined; import-table scanner produces a ranked API backlog
+- [ ] Compatibility corpus defined; import-table scanner produces a ranked API backlog *(scanner done 2026-10-12: `tools/apiscan` -> `docs/research/api-backlog.md` from the owner's ROM; third-party apps still to add to the corpus)*
 - [ ] coredll (core subset), aygshell basics, GDI on the software backend
 - [ ] GAPI (`gx.dll`)
 - [ ] Registry and file-system semantics matching CE
