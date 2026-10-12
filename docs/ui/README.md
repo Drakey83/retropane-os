@@ -58,3 +58,21 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
   Microsoft fonts (Segoe is not ours to ship), no copied artwork.
 - Concepts I (Sense tribute) and K (full sky) on the canvas follow this;
   J (tiles) is set aside.
+
+## More owner decisions (2026-10-12)
+
+- Not a phone: no Contacts in the main design (softkeys: Calendar and Edit
+  Today; the Start menu lists File Explorer instead).
+- WM feel is a must: the title bar with Start at top left, a WM-style
+  Start menu (recent programs row, then Today, Calendar, File Explorer,
+  Messaging, Browser, Programs, Settings, Help), the two softkeys.
+- The weather blends into the desktop: the wallpaper is the current sky,
+  the reading sits on it with no box. Concept A's calendar card and quick
+  buttons are kept as they are.
+- Icons: the owner wants an existing artist's realistic set under a free
+  licence rather than generated ones. Licence check: VClouds (the owner's
+  reference) is CC BY-NC-SA 3.0, non-commercial, which a GPL OS can't ship
+  without the artist's permission; KDE's Oxygen weather icons are LGPL-3
+  (shippable with attribution and their SVG sources); MerlinTheRed's plain
+  set is CC BY-SA (a plainer style); the Xfce "liquid" set's licence is
+  unclear (avoid).
