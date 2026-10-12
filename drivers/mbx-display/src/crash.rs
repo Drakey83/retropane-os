@@ -4,6 +4,9 @@
 //! is, chosen to fit so nothing scrolls (no copying a whole screen per line
 //! of a long log).
 
+use rp_hal_api::RegisterBus;
+
+use crate::Display;
 use crate::console::Console;
 use crate::font::{HEIGHT, WIDTH};
 
@@ -75,6 +78,25 @@ pub fn tail_start(log: &[u8], cols: usize, rows: usize) -> usize {
     start
 }
 
+/// The box an image's fault and panic handlers write their message into:
+/// a console over the `w` × `h` region at `(x, y)` of the plane actually on
+/// screen ([`Display::on_screen`]), found from the 2700G's registers `regs`
+/// (read, never written) and its local memory `vram`. Every image's crash
+/// path draws through here, so none can draw where nothing shows (Windows
+/// Mobile leaves its plane at offset 0, not [`crate::FRAMEBUFFER_OFFSET`]).
+pub fn emergency_console<B: RegisterBus>(
+    regs: B,
+    vram: &mut [u8],
+    at: (usize, usize),
+    size: (usize, usize),
+    scale: usize,
+    colors: (u16, u16),
+) -> Console<'_> {
+    let plane = Display::new(regs).on_screen(vram.len());
+    let start = plane.offset.min(vram.len());
+    Console::new(&mut vram[start..], plane.stride, at, size, scale, colors)
+}
+
 /// Columns of text a panel `w` pixels wide shows.
 #[must_use]
 pub fn columns(w: usize) -> usize {
@@ -84,6 +106,33 @@ pub fn columns(w: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::reg;
+    use rp_hal_mock::MockBus;
+
+    #[test]
+    fn emergency_box_lands_on_wm_plane_at_offset_0() {
+        // Windows Mobile's plane, as measured on a real X51v (docs/hw/2700g.md).
+        let mut bus = MockBus::new();
+        bus.preset(reg::GSCTRL, 0x3C0E_FA7F);
+        bus.preset(reg::GSCADR, 0x8000_0000);
+        bus.preset(reg::GSADR, 0x0EC0_0000);
+        let mut vram = vec![0u8; 16 << 20];
+        let mut c = emergency_console(bus, &mut vram, (0, 576), (480, 64), 2, (0xFFFF, 0xA800));
+        let _ = core::fmt::Write::write_str(&mut c, "PANIC");
+        let row = 600 * 960;
+        assert_eq!(
+            &vram[row + 940..row + 942],
+            &0xA800u16.to_le_bytes(),
+            "box at offset 0"
+        );
+        let conventional = crate::FRAMEBUFFER_OFFSET + row;
+        assert!(
+            vram[conventional..conventional + 960]
+                .iter()
+                .all(|&b| b == 0),
+            "nothing at 0x60000"
+        );
+    }
 
     #[test]
     fn the_tail_is_whole_lines_that_fit_with_wrapping() {

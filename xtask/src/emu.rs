@@ -589,39 +589,78 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
     });
     let sd = root.join("target/emulator/sd-crash.img");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
-    // The crash screen: once the loader is back, a red band at the top of
-    // its log area (below the 96-pixel status lines) and the log's end.
+    // First the image's own crash box, on the plane actually on screen:
+    // rp-crash moved it to offset 0 (where Windows Mobile leaves it), so a
+    // box drawn at the conventional 0x60000 never shows. Then, once the
+    // loader is back, its crash screen: a red band at the top of its log
+    // area (below the 96-pixel status lines) and the log's end.
     let shot = root.join("target/emulator/crash-screen.ppm");
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
     };
-    let check_screen = || -> Result<(), String> {
-        std::thread::sleep(Duration::from_millis(1500));
+    let screen = || -> Result<crate::screen::Image, String> {
         let _ = std::fs::remove_file(&shot);
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.screendump(&guest, &shot)?;
         let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
-        let px = |x: u32, y: u32| {
-            let o = ((y * img.width + x) * 3) as usize;
-            (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2])
-        };
-        let (r, g, b) = px(470, 96 + 4);
+        if img.width < 480 || img.height < 640 {
+            return Err(format!("crash screen: {} x {}", img.width, img.height));
+        }
+        Ok(img)
+    };
+    let px = |img: &crate::screen::Image, x: u32, y: u32| {
+        let o = ((y * img.width + x) * 3) as usize;
+        (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2])
+    };
+    // White as the screendump quantises RGB565 (about 248, 252, 248).
+    let white = |(r, g, b): (u8, u8, u8)| r > 230 && g > 230 && b > 230;
+    // Polls (the image holds its box for 3 s) until `seen` or `limit`.
+    let poll = |limit: Duration,
+                seen: &dyn Fn(&crate::screen::Image) -> Result<(), String>|
+     -> Result<(), String> {
+        let until = Instant::now() + limit;
+        loop {
+            let last = screen().and_then(|img| seen(&img));
+            if last.is_ok() || Instant::now() > until {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    let image_box = |img: &crate::screen::Image| -> Result<(), String> {
+        // The box: the bottom 64 lines, dark red (0xA800) with white text.
+        let (r, g, b) = px(img, 470, 600);
+        let text = (576..640).any(|y| (0..480).any(|x| white(px(img, x, y))));
+        if (150..190).contains(&r) && g < 40 && b < 40 && text {
+            Ok(())
+        } else {
+            Err(format!(
+                "crash screen: the image's crash box isn't on the plane on screen (pixel {r},{g},{b}, text {text})"
+            ))
+        }
+    };
+    let loader_screen = |img: &crate::screen::Image| -> Result<(), String> {
+        let (r, g, b) = px(img, 470, 96 + 4);
         if r < 200 || g > 40 || b > 40 {
             return Err(format!("crash screen: no red band (pixel {r},{g},{b})"));
         }
         // Text in the band (white) and below it (the log, light grey).
-        // White as the screendump quantises RGB565 (about 248, 252, 248).
-        let white = (0..480).any(|x| {
-            let (r, g, b) = px(x, 96 + 10);
-            r > 230 && g > 230 && b > 230
-        });
-        let text =
-            (96 + 50..96 + 320).any(|y| (0..480).any(|x| px(x, y).0 > 200 && px(x, y).1 > 200));
-        if !white || !text {
-            return Err(format!("crash screen: band text {white}, log text {text}"));
+        let band = (0..480).any(|x| white(px(img, x, 96 + 10)));
+        let text = (96 + 50..96 + 320)
+            .any(|y| (0..480).any(|x| px(img, x, y).0 > 200 && px(img, x, y).1 > 200));
+        if !band || !text {
+            return Err(format!("crash screen: band text {band}, log text {text}"));
         }
+        Ok(())
+    };
+    let check_screen = || -> Result<(), String> {
+        poll(Duration::from_secs(5), &image_box)?;
+        poll(Duration::from_secs(8), &loader_screen)?;
+        // The run log goes out with the crash screen: let it arrive.
+        std::thread::sleep(Duration::from_millis(1000));
         Ok(())
     };
     let output = boot(
@@ -633,7 +672,9 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
             sd_image: Some(&sd),
             steps: &[],
             extra: &[],
-            input: Some((&frame, "RPL END")),
+            // The image's own panic line, printed just before it draws its
+            // box: the checks start while the box is up.
+            input: Some((&frame, "PANIC deliberate test panic")),
             during: Some(&check_screen),
             timeout: BOOT_TIMEOUT,
         },
@@ -653,7 +694,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         return Err("crash: crashlog.txt on the card doesn't hold the report".into());
     }
     eprintln!(
-        "    crash path OK: the panic came back to the loader, reached the PC and the card, and is on the screen"
+        "    crash path OK: the image's crash box showed on the plane on screen (offset 0, as WM          leaves it); the panic came back to the loader, reached the PC and the card, and is on          the screen"
     );
     Ok(())
 }
