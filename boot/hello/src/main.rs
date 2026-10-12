@@ -25,6 +25,7 @@ mod image {
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
 
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
+    use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_ssp::Ssp;
@@ -226,7 +227,7 @@ mod image {
                     let _ = writeln!(out, "no IRQs");
                     halt()
                 };
-                let mut last_keys = Pressed::default();
+                let mut key_events = Keys::new(Timing::DEFAULT);
                 let mut last_touch = None;
                 let mut last_unclaimed = 0;
                 let mut ticking = false;
@@ -249,12 +250,19 @@ mod image {
                     if key_event {
                         keypad.acknowledge();
                     }
+                    // As Windows Mobile programs see them: virtual keys,
+                    // D-pad repeat, press and hold on the program buttons.
                     let keys = keypad.pressed();
-                    for (button, down) in last_keys.changes(keys) {
-                        let state = if down { "down" } else { "up" };
-                        let _ = writeln!(out, "KEY {} {state}", button.name());
-                    }
-                    last_keys = keys;
+                    key_events.update(rt::ticks() / 3250, keys, &mut |e| {
+                        let what = match e.kind {
+                            Kind::Down => "down",
+                            Kind::Repeat => "repeat",
+                            Kind::Hold => "hold",
+                            Kind::Up { after_hold: false } => "up",
+                            Kind::Up { after_hold: true } => "up after hold",
+                        };
+                        let _ = writeln!(out, "KEY {} {what} vk {:x}", e.button.name(), e.vk);
+                    });
                     if key_event {
                         keys_irq.done();
                     }
@@ -280,8 +288,7 @@ mod image {
                         last_touch = now;
                     }
 
-                    let active =
-                        last_touch.is_some() || keys != Pressed::default() || touch.pen_down();
+                    let active = last_touch.is_some() || keys != Pressed::NONE || touch.pen_down();
                     if active {
                         if !ticking {
                             rt::start_tick(TICK_HZ);

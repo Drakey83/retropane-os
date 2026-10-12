@@ -7,6 +7,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod keys;
+
 use rp_hal_api::{Field, RegisterBus};
 
 /// Register offsets.
@@ -113,6 +115,15 @@ impl Button {
 pub struct Pressed(u16);
 
 impl Pressed {
+    /// Nothing pressed.
+    pub const NONE: Self = Self(0);
+
+    /// The same set with `b` pressed too.
+    #[must_use]
+    pub fn with(self, b: Button) -> Self {
+        Self(self.0 | 1 << Self::index(b))
+    }
+
     /// Whether `b` is pressed.
     #[must_use]
     pub fn contains(self, b: Button) -> bool {
