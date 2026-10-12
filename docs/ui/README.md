@@ -117,3 +117,57 @@ The owner picked VClouds' Rainmeter work (deviantart.com/vclouds: "Glasses", "VC
 The concepts keep the glass light enough that the photo shows through. A "glass darkness" setting covers busy photos where small grey text gets hard to read.
 
 **Seeing a concept on the real Axim.** Render the board at 480 × 640, convert it to RGB565 (dithered) at `local/concept/picture.rgb565`, then run `cargo xtask emu-picture` (pixel-exact on the emulated screen, clean return) and `cargo xtask load rp-picture`. The Axim shows it for 20 s, then goes back to the loader. `local/` is never committed, so concept art with third-party pieces never reaches the repository. Without the file, the image shows a test gradient.
+
+## Rendering the glass on a 624 MHz XScale (review, 2026-10-12)
+
+An outside review warned that glass is the most compositing-heavy look
+possible on this CPU. That's true of *frosted* glass (a blur under every
+panel, every frame). The VClouds look is tinted glass with no blur, and
+it's mostly static, which changes the cost completely:
+
+- **Cache the desktop, don't recompose it.** Wallpaper plus every glass
+  panel is blended once, into one 480 × 640 RGB565 surface in RAM (600 KB,
+  counted in the shell's allotment), when the wallpaper, the layout or the
+  darkness setting changes. Live content (the clock, the weather, a task
+  ticked) is redrawn over that cache in its own dirty rectangle only, and
+  only that rectangle goes to the write-only framebuffer (docs/hw/2700g.md).
+  A clock tick is about 2 % of the screen.
+- **What a full software recompose costs** (to measure in item 52, these
+  are estimates): an alpha blend of 307,200 RGB565 pixels is a few cycles
+  per pixel with iWMMXt (four pixels per operation), so a few milliseconds
+  of CPU; memory traffic (about 1.2 MB in and out) and the push to the
+  2700G's local memory dominate, roughly 15-30 ms. A full recompose is
+  fine on a wallpaper or theme change and too slow to do every frame, so
+  nothing does it every frame.
+- **What moves:** the Start menu opening, scrolling lists and page
+  transitions. Each moving panel is pre-rendered once (its glass baked
+  over the cached desktop under it) and then copied, not re-blended, as
+  it moves; the 2700G's 2D blitter does those copies when we have it
+  (ROADMAP Phase 7), and iWMMXt copies do them before. The window-manager
+  spec (Phase 5) records a frame budget for the software path next to
+  each animation, so the look never depends on the blitter.
+- **Glass darkness slider:** the preview recomposes one sample panel
+  while dragging; the whole desktop recomposes once, on release.
+- **No blur, ever,** unless measured affordable; the look doesn't need it.
+
+## The wallpaper when the card is gone (ADR-0018 edge case)
+
+- The base system (flash) always has one built-in wallpaper of its own,
+  plus a gradient drawn in code (no bytes stored) as the last resort, so
+  glass over nothing never happens.
+- A wallpaper the user picks from a card is converted once (to the
+  screen's size and colour depth, compressed) into the user's storage in
+  flash, so pulling the card changes nothing on screen. Card space is
+  used for the originals and packs, not for what the screen needs now.
+
+## Third-party art ships as a pack, never in the base
+
+Licensed third-party content (the VClouds icons, if the artist agrees)
+ships as a separate, signed, optional pack (ADR-0018), never in the base
+image. The base keeps its own complete look (original icons in this
+style), so a "no", a withdrawn permission or a licence change removes
+one pack and breaks nothing. The pack carries its licence and the
+permission text inside it. Permission asked for in writing must name
+the scope: distributing the icons in a free pack alongside the OS, and
+converting them for the device (resizing, cropping, colour conversion).
+The CC0 / public-domain wallpapers need no permission.

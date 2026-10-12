@@ -100,6 +100,15 @@ Constraints that shape the answer:
   this is accepted.
 - Nothing changes in the kernel work now: packs land with the installer
   (ROADMAP Phase 9) and the first big optional part (the browser, Phase 8).
+- (Added 2026-10-12, from an outside review of the UI direction.) Packs
+  are also the boundary for **licensed third-party content**: art under
+  someone else's terms (e.g. an icon set used with permission) ships only
+  as a pack carrying its own licence and permission, never in the base,
+  which always has a complete look of its own.
+- (Added 2026-10-12.) **Anything the screen shows must not depend on the
+  card.** A wallpaper picked from a card is converted into the user's
+  flash storage when picked; the base has its own wallpaper and a
+  drawn-in-code fallback. See docs/ui/README.md.
 
 ## For the vote
 
