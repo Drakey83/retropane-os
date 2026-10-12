@@ -584,3 +584,180 @@ fn power_loss_while_creating_leaves_no_file_or_the_whole_file() {
     }
     assert!(none > 0, "{none} none, {whole} whole");
 }
+
+/// A disk that panics if a single operation needs more than `limit`
+/// transfers: an endless loop on a hostile card shows up as a failure.
+fn bounded(data: Vec<u8>) -> MemDisk {
+    MemDisk::new(data)
+}
+
+fn ops(d: &MemDisk) -> usize {
+    d.reads + d.writes
+}
+
+/// Runs every public operation on a (possibly hostile) volume; returns
+/// nothing, it only must not panic or run away.
+fn exercise(data: Vec<u8>) {
+    let Ok(mut v) = Volume::mount(bounded(data), PARTITION_START) else {
+        return;
+    };
+    // A healthy 1024-sector image never needs more than this many transfers
+    // for one operation; a loop would.
+    const LIMIT: usize = 20_000;
+    let mut scratch = vec![0u8; 4096];
+    let start = ops(&v.dev);
+    let _ = v.for_each_root(|_| {});
+    assert!(ops(&v.dev) - start < LIMIT, "for_each_root ran away");
+    for name in [
+        "retropane.bin",
+        "HARET.EXE",
+        "x.txt",
+        "A long file name.dat",
+    ] {
+        let start = ops(&v.dev);
+        if let Ok(f) = v.find(name) {
+            let _ = v.read_file(&f, &mut scratch, |_| {});
+        }
+        assert!(ops(&v.dev) - start < LIMIT, "find/read {name} ran away");
+    }
+    let start = ops(&v.dev);
+    let _ = v.put("retropane.bin", &[7u8; 3000], &mut scratch);
+    let _ = v.create("A long file name.dat", &[9u8; 700], &mut scratch);
+    assert!(ops(&v.dev) - start < 4 * LIMIT, "writes ran away");
+}
+
+#[test]
+fn hostile_cards_never_panic_or_loop() {
+    let a = pattern(3000, 11);
+    let base = small_image(
+        &[
+            Entry {
+                name: "retropane.bin",
+                data: &a,
+            },
+            Entry {
+                name: "HARET.EXE",
+                data: b"haret",
+            },
+        ],
+        &[],
+    );
+    let bs = PARTITION_START as usize * SECTOR;
+    let mut x: u64 = 0x0FA7_2026;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    for i in 0..1500 {
+        let mut img = base.clone();
+        // Corrupt a few bytes, aimed at the structures: boot sector, FSInfo,
+        // the FAT, the root directory (and anywhere now and then).
+        for _ in 0..1 + rnd() % 6 {
+            let region = match i % 5 {
+                0 => bs..bs + SECTOR,
+                1 => bs + SECTOR..bs + 2 * SECTOR,
+                2 => bs + 32 * SECTOR..bs + 40 * SECTOR,
+                3 => {
+                    let v = Volume::mount(MemDisk::new(base.clone()), PARTITION_START).unwrap();
+                    let root = v.cluster_lba(v.root_cluster) as usize * SECTOR;
+                    root..root + v.cluster_bytes()
+                }
+                _ => 0..img.len(),
+            };
+            let at = region.start + (rnd() as usize % region.len());
+            img[at] = rnd() as u8;
+        }
+        exercise(img);
+    }
+}
+
+#[test]
+fn a_fat_chain_that_loops_is_corrupt_not_endless() {
+    let a = pattern(3000, 12);
+    let img = small_image(
+        &[Entry {
+            name: "a.bin",
+            data: &a,
+        }],
+        &[],
+    );
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let f = v.find("a.bin").unwrap();
+    // Second cluster points back at the first.
+    v.fat_set(f.first_cluster() + 1, f.first_cluster()).unwrap();
+    v.fat_flush().unwrap();
+    let mut scratch = vec![0u8; 512];
+    // The size says 3 clusters, the chain never ends: an error, not a hang.
+    let r = v.read_file(&f, &mut scratch, |_| {});
+    assert!(r.is_ok() || r == Err(Error::Corrupt));
+    // Replacing frees the old (looping) chain: must terminate.
+    let _ = v.replace("a.bin", b"new", &mut scratch);
+    exercise(v.into_inner().data);
+}
+
+#[test]
+fn a_root_directory_that_loops_is_corrupt_not_endless() {
+    let img = small_image(
+        &[Entry {
+            name: "a.bin",
+            data: b"x",
+        }],
+        &[],
+    );
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    // Fill the root cluster with entries (no end marker), then loop it.
+    let root = v.root_cluster;
+    v.fat_set(root, root).unwrap();
+    v.fat_flush().unwrap();
+    let lba = v.cluster_lba(root);
+    let mut sector = [0u8; SECTOR];
+    for i in 0..ENTRIES {
+        sector[i * 32..i * 32 + 11].copy_from_slice(b"FILLER  BIN");
+        sector[i * 32 + 11] = 0x20;
+    }
+    for s in 0..v.sectors_per_cluster {
+        v.dev.write_blocks(lba + s, &sector).unwrap();
+    }
+    assert_eq!(v.find("nothere.bin"), Err(Error::Corrupt));
+    let mut scratch = vec![0u8; 512];
+    assert!(v.create("new.bin", b"y", &mut scratch).is_err());
+}
+
+#[test]
+fn out_of_range_clusters_and_absurd_geometry_are_refused() {
+    let img = small_image(
+        &[Entry {
+            name: "a.bin",
+            data: b"abc",
+        }],
+        &[],
+    );
+    // A directory entry pointing far past the volume.
+    let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+    let f = v.find("a.bin").unwrap();
+    let mut s = [0u8; SECTOR];
+    v.dev.read_blocks(f.entry_lba, &mut s).unwrap();
+    let o = usize::from(f.entry_index) * 32;
+    s[o + 20..o + 22].copy_from_slice(&0x0FFFu16.to_le_bytes());
+    v.dev.write_blocks(f.entry_lba, &s).unwrap();
+    let f = v.find("a.bin").unwrap();
+    let mut scratch = vec![0u8; 512];
+    assert_eq!(v.read_file(&f, &mut scratch, |_| {}), Err(Error::Corrupt));
+    // Geometry: zero or odd cluster sizes, a root cluster past the end.
+    let bs = PARTITION_START as usize * SECTOR;
+    for (at, val) in [(13usize, 0u8), (13, 3), (16, 0)] {
+        let mut bad = img.clone();
+        bad[bs + at] = val;
+        assert!(
+            Volume::mount(MemDisk::new(bad), PARTITION_START).is_err(),
+            "byte {at} = {val}"
+        );
+    }
+    let mut bad = img.clone();
+    bad[bs + 44..bs + 48].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes());
+    if let Ok(mut v) = Volume::mount(MemDisk::new(bad), PARTITION_START) {
+        assert!(v.find("a.bin").is_err());
+    }
+}

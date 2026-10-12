@@ -451,3 +451,48 @@ fn real_wm6_dlls_parse_and_fill() {
     }
     eprintln!("checked {checked} real DLLs");
 }
+
+/// Hostile input: thousands of randomly mutated images (headers, section
+/// table, directories) through every entry point; nothing may panic, and
+/// every page fill stays inside the page.
+#[test]
+fn mutated_images_never_panic() {
+    let (base, _) = sample();
+    let mut x: u64 = 0x5045_2026;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut page = [0u8; PAGE as usize];
+    for i in 0..5000 {
+        let mut file = base.clone();
+        let region = if i % 2 == 0 {
+            0x80..0x200
+        } else {
+            0..file.len()
+        };
+        for _ in 0..1 + rnd() % 8 {
+            let at = region.start + (rnd() as usize % region.len());
+            file[at] = rnd() as u8;
+        }
+        let Ok(img) = Image::parse(&file) else {
+            continue;
+        };
+        for p in 0..img.pages().min(64) {
+            let _ = img.fill_page(p, &mut page, reader(&file));
+            let _ = img.page_protection(p);
+        }
+        let _ = for_each_import(&img, reader(&file), |_, _, _| {});
+        if let Ok(Some(e)) = Exports::read(&img, reader(&file)) {
+            let _ = e.by_ordinal(&img, 1, reader(&file));
+            let _ = e.by_name(&img, b"x", 0, reader(&file));
+        }
+        // Relocation blocks straight from random bytes, too.
+        let raw: Vec<u8> = (0..(rnd() % 64)).map(|_| rnd() as u8).collect();
+        if let Ok(r) = Relocations::new(&raw) {
+            r.apply(0, &mut page, [0; 4], [0; 4], 0x1234_0000);
+        }
+    }
+}

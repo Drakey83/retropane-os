@@ -147,11 +147,21 @@ nothing writes flash; card writes only through copy-then-swap.
 
 - [x] `docs/security.md`: principles, threat model, current exposures,
       per-parser checklist; charter and memory updated.
-- [ ] Hostile-input tests for every parser of outside input that exists:
-      the loader protocol (`rp-loadproto`), FAT (`rp-fat`, a card can be
-      hostile), PE (`kernel/pe`), USB setup packets (`pxa-udc`), and the
-      mass-storage commands as they're written. No panics, no out-of-range
-      access, overflow-safe arithmetic; findings fixed and listed.
+- [x] Hostile-input tests for every parser of outside input:
+      `rp-loadproto` (20,000 random stream chunks), `rp-usb-msc` (5,000
+      random commands), `pxa-udc` (50,000 random SETUP packets plus 2,000
+      through the whole driver), `kernel/pe` (5,000 mutated images through
+      every entry point), `rp-fat` (1,500 corrupted cards, looping FAT and
+      root chains, out-of-range clusters, absurd geometry).
+- **Found and fixed:** `rp-fat` trusted the card's FAT size and root
+  cluster: forged values overflowed the sector arithmetic (a panic in test
+  builds, silently wrong sectors in release). Mount now validates the whole
+  geometry with checked arithmetic, so every cluster the code later trusts
+  is in range. Listed in docs/security.md.
+- **Iterate:** every parser now has a test that throws garbage at it, so a
+  future change that reopens a hole fails CI.
+- **Modernize:** the threat model's "hostile files" and "someone with a
+  cable" rows are now backed by tests, not intentions.
 
 ## Second tier (when the above is done or blocked)
 
