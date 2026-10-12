@@ -104,3 +104,14 @@ The owner picked the reference's Rainmeter work ( "Glasses", "the reference Weat
 - **Icons break out of their frames.** Weather icons are large and overhang the top edge of their glass tile.
 - **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
 - **Clean-room.** the reference's icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping icons will be original work in his volumetric style, unless the artist grants permission, or the Oxygen set (LGPL-3) is the fallback.
+
+**Owner verdict (2026-10-12): "I LOVE it."** Boards N–R (smoked glass over photo wallpapers) are the chosen direction. The cartoon sky wallpaper is dropped. The candidate wallpapers we'd ship are all free of restrictions, from Wikimedia Commons, cropped to 3:4:
+
+| Wallpaper | Commons file | Licence |
+|---|---|---|
+| Pier, black and white | `File:Monochrome pier with sky (Unsplash).jpg` | CC0 |
+| Mountain lake | `File:Lake Blanche Reflection (31122974596).jpg` | Public domain |
+| City at night | `File:Long Exposure Photography of City Buildings.jpg` | CC0 |
+| Aurora | `File:Night landscape northern lights scenic aurora borealis.jpg` | Public domain |
+
+The concepts keep the glass light enough that the photo shows through. A "glass darkness" setting covers busy photos where small grey text gets hard to read.
