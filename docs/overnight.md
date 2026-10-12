@@ -72,3 +72,28 @@ nothing writes flash; card writes only through copy-then-swap.
 - [ ] A probe run that records both lines' levels and edges across docking,
       undocking-free events (USB reset, host open/close); settle what they
       are or narrow it down, docs/hw/udc.md updated.
+
+## Second tier (when the above is done or blocked)
+
+Each held to the same standard: every improvement that makes sense, tested
+on the host or in the emulator first.
+
+7. **Crash log that survives a reset** (ROADMAP Phase 2): faults and panics
+   written to the reserved log area with a checksum, shown by the loader
+   and sent to the PC at the next start, so a crash is never lost.
+8. **Performance suite v1** (ROADMAP): context switch, IRQ latency, memcpy
+   bandwidth, in the emulator baseline and on the device via the loader,
+   numbers in docs/perf.md.
+9. **exFAT reading** in `rp-fat`: SDXC cards (64 GB+) ship as exFAT; stock
+   Windows Mobile can't read them at all. Host-tested with a formatter.
+10. **SD card detect and write-protect** (GPIO12/GPIO27): driver support,
+    emulator model, probe line.
+11. **Backlight** (PWM): spec from the PXA manual and board sources,
+    driver with brightness steps and a fade, a probe test that restores
+    Windows Mobile's level afterwards.
+12. **Compatibility corpus scanner** (ROADMAP Phase 3 start): a host tool
+    that reads the import tables of WM6 executables (the `kernel/pe`
+    parser already handles 12 real DLLs) and ranks the APIs RetroPane
+    must provide.
+13. **Docs sync**: ROADMAP and DESIGN brought up to date with tonight's
+    work (SD writes, FAT, USB client, emulator models), coverage check.
