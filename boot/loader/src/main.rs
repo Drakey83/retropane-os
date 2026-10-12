@@ -51,8 +51,9 @@ mod image {
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
-    /// The end of the image area, kept for reading a written file back
-    /// (the bigger it is, the fewer card commands the check takes).
+    /// The end of the image area, kept for searching the FAT for free
+    /// clusters and for reading a written file back (the bigger it is, the
+    /// fewer card commands each takes).
     const SCRATCH: usize = 64 * 1024;
 
     /// The SD card's FAT32 volume, opened on the first file frame.
@@ -128,7 +129,8 @@ mod image {
         }
         let Some(vol) = card.as_mut() else { return };
         let t0 = rt::ticks();
-        let written = match vol.replace(name, contents) {
+        let reads0 = vol.device().reads();
+        let written = match vol.replace(name, contents, scratch) {
             Ok(w) => w,
             Err(e) => {
                 let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol));
@@ -136,6 +138,7 @@ mod image {
             }
         };
         let t_write = rt::ticks().wrapping_sub(t0);
+        let reads = vol.device().reads().wrapping_sub(reads0);
         // Read back through the FAT code and compare with what was sent.
         let mut crc = !0u32;
         let mut got = 0usize;
@@ -150,7 +153,7 @@ mod image {
             Ok(()) if crc == want && got == contents.len() => {
                 let _ = write!(
                     reply,
-                    "RPL OK {} bytes in {} ms, {} cluster{} {}, read back in {} ms\r\n",
+                    "RPL OK {} bytes in {} ms, {} cluster{} {} ({} reads), read back in {} ms\r\n",
                     contents.len(),
                     t_write / (TICK_1S / 1000),
                     written.clusters,
@@ -160,6 +163,7 @@ mod image {
                     } else {
                         "scattered"
                     },
+                    reads,
                     rt::ticks().wrapping_sub(t0 + t_write) / (TICK_1S / 1000),
                 );
             }

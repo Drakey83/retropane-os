@@ -60,6 +60,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | **Measured on the device**: pattern rows built in RAM, framebuffer only written | `fb_pattern_vga` | 61,016,717 ns | 14,480,000 ns (**4.2×**; now equal to the solid fill) |
 | 2026-10-11 | `CTL NOW 00003A7F` on the device: MMU, D-cache, I-cache and BTB on while the benchmarks run (so the bus-latency reading of `timer_read` stands). The CPU reported turbo 624 MHz this time (520 earlier): Windows Mobile's choice at boot, not ours | — | — | — |
 | 2026-10-11 | `rp-hello` **load budget raised 20 → 22 KiB, approved by the owner**: the HAL code every image shares grew through the day (DMA stop at start-up, fault diagnostics, aligned MMU transitions, the user-fault path); hello was 4 bytes from its ceiling and had been trimmed four times to stay under | `rp-hello` loaded size | 20,476 B | 20,476 B (budget 22,528) |
+| 2026-10-11 | FAT free-cluster search in runs (`rp-fat`): the FAT is read through the caller's scratch, one sector first and doubling up to the scratch (64 KiB in the loader), instead of one sector per command. Emulator `boot_loader_put` (16 MiB card, ~88% taken behind the FSInfo hint), read commands for the whole 70 KB write (the scan itself ~28 → 5). Host test (32 MiB, 513 FAT sectors): 479 → 19. `rp-loader` 38,372 → 39,400 B (the scan plus the read count in its reply), inside its budget | `boot_loader_put` read commands | 35 | 12 (**2.9×**) |
 | 2026-10-11 | ADR-0010: mutexes with priority inheritance, user faults in the thread's context, lazy iWMMXt, interrupts as waitable objects, plus their live tests. Scheduler entry points kept out of line; free events via a bitmap instead of a loop LLVM unrolled to 1 KiB. **Load budget raised 17 → 27 KiB, approved by the owner** (measured + ~10%) | `rp-threads` loaded size | 16,012 B | 24,500 B |
 
 ## Real hardware
@@ -73,9 +74,14 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | `haret.exe` | 142,848 | 85 ms (811 ms on a second run: the card's own housekeeping) | 83 ms | 35, contiguous |
 
 About 1.7 MB/s each way through the FAT layer, multi-block commands, 4-bit
-bus; write times vary with the card's internal erase/garbage collection. Open lead: the free-cluster scan after a stale FSInfo hint reads the FAT
-one sector per command (3.7 s once on this card); reading the FAT in runs
-would make it ~20× faster.
+bus; write times vary with the card's internal erase/garbage collection. The
+free-cluster scan after a stale FSInfo hint read the FAT one sector per
+command (3.7 s once on this card: 1,490 commands). It now reads the FAT in
+runs (one sector, doubling to 64 KiB per command): ~18 commands for the
+same scan, so it should be bound by the ~0.75 MB transfer (~0.4 s).
+Open lead: measure it on the device (the loader's reply now gives the
+write's read commands); if the transfer still matters, keep a free-cluster
+summary in RAM after the first scan instead of re-reading the FAT.
 
 First run on the owner's X51v (2026-10-11, `rp-probe` build `8bd30913+`,
 core at 520 MHz turbo as Windows Mobile left it; every line checksum-verified,

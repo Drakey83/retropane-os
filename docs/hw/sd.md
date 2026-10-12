@@ -61,8 +61,13 @@ neither the stop bit nor the poll, so neither could be found there.
 Measured on the owner's 4 GB SDHC card (4-bit bus, 19.5 MHz, through the
 FAT layer, verified by read-back): 36,870 B in 36 ms, 142,848 B in 85 ms
 (1.7 MB/s), read back at 1.7 MB/s. A first write after a stale FSInfo hint
-took 3.7 s: the free-cluster scan reads the FAT a sector per command
-(1,490 sectors × 2.5 ms); the hint is kept current afterwards.
+took 3.7 s: the free-cluster scan read the FAT a sector per command
+(1,490 sectors × 2.5 ms); the hint is kept current afterwards. The scan now
+reads the FAT in runs through the loader's 64 KiB scratch (one sector
+first, doubling to 128 per command), so the same scan is ~18 commands
+instead of 1,490; what remains is the transfer itself (~0.75 MB of FAT,
+roughly 0.4 s at the measured rate). The device number is still to be
+measured (the loader's reply now counts the write's read commands).
 
 ### File system
 

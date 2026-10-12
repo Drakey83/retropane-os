@@ -8,7 +8,9 @@
 //! every FAT copy, then the directory entry is switched to the new chain
 //! with a single sector write, and only then are the old clusters freed.
 //! Power lost at any point leaves the complete old file or the complete new
-//! one. No heap: two sector buffers live in the [`Volume`].
+//! one. No heap: two sector buffers live in the [`Volume`], and reading a
+//! file or searching the FAT for free clusters borrows the caller's
+//! scratch, so a bigger scratch means fewer, longer device commands.
 //!
 //! Not here yet: creating files, subdirectories, timestamps (no clock).
 
@@ -345,49 +347,64 @@ impl<D: BlockDevice> Volume<D> {
         self.fsinfo_adjust(freed as i64, None)
     }
 
-    /// The first free cluster at or after `from` (wrapping once), or `None`.
-    fn find_free(&mut self, from: u32) -> Result<Option<u32>, Error> {
-        let start = if self.valid_cluster(from) { from } else { 2 };
+    /// The first run of `need` (at least one) consecutive free clusters at
+    /// or after `from`, wrapping once (a run doesn't wrap past the end), or
+    /// `None`.
+    ///
+    /// The FAT is read through `scratch` in runs of sectors, one command
+    /// each: the first run is one sector, and each next one doubles up to
+    /// what `scratch` holds, so a hit near `from` costs one short read and a
+    /// scan of the whole FAT a few long ones (on the X51v every command
+    /// costs ~2.5 ms of start-up, an extra sector ~0.1 ms). The sector in
+    /// the write-back cache, which may hold changes not yet written, is
+    /// always read from the cache. A `scratch` under one sector falls back
+    /// to the cache alone: one sector per command.
+    fn find_free_run(
+        &mut self,
+        from: u32,
+        need: u32,
+        scratch: &mut [u8],
+    ) -> Result<Option<u32>, Error> {
+        debug_assert!(need > 0);
         let end = 2 + self.clusters;
-        let mut c = start;
-        loop {
-            if self.fat_get(c)? == 0 {
-                return Ok(Some(c));
-            }
-            c += 1;
-            if c == end {
-                c = 2;
-            }
-            if c == start {
-                return Ok(None);
-            }
-        }
-    }
-
-    /// The first run of `need` consecutive free clusters at or after `from`
-    /// (wrapping once), or `None`.
-    fn find_free_run(&mut self, from: u32, need: u32) -> Result<Option<u32>, Error> {
-        let end = 2 + self.clusters;
-        let mut from = if self.valid_cluster(from) { from } else { 2 };
-        for _pass in 0..2 {
-            let mut c = from;
-            let mut run_start = c;
+        let from = if self.valid_cluster(from) { from } else { 2 };
+        let max = (scratch.len() / SECTOR) as u32;
+        // Sectors held in `scratch`: [first, first + len).
+        let (mut first, mut len) = (0u32, 0u32);
+        let mut grow = 1u32;
+        // Second pass: from the start up to where a run reaching `from`
+        // would end (nothing when the first pass began at the start).
+        let wrap_end = if from == 2 {
+            2
+        } else {
+            (from + need - 1).min(end)
+        };
+        for (lo, hi) in [(from, end), (2, wrap_end)] {
             let mut run = 0;
-            while c < end {
-                if self.fat_get(c)? == 0 {
-                    if run == 0 {
-                        run_start = c;
-                    }
-                    run += 1;
-                    if run == need {
-                        return Ok(Some(run_start));
-                    }
+            for c in lo..hi {
+                let s = c / FAT_PER_SECTOR;
+                let v = if max == 0 || self.fat_cached == Some(s) {
+                    self.fat_get(c)?
                 } else {
+                    if !(first..first + len).contains(&s) {
+                        let n = grow.min(max).min((hi - 1) / FAT_PER_SECTOR - s + 1);
+                        self.dev
+                            .read_blocks(self.fat_start + s, &mut scratch[..n as usize * SECTOR])?;
+                        (first, len) = (s, n);
+                        grow = grow.saturating_mul(2);
+                    }
+                    let i = (s - first) * FAT_PER_SECTOR + c % FAT_PER_SECTOR;
+                    le32(scratch, i as usize * 4) & FAT_MASK
+                };
+                if v != 0 {
                     run = 0;
+                    continue;
                 }
-                c += 1;
+                run += 1;
+                if run == need {
+                    return Ok(Some(c + 1 - need));
+                }
             }
-            from = 2;
         }
         Ok(None)
     }
@@ -664,7 +681,17 @@ impl<D: BlockDevice> Volume<D> {
     /// Replaces the contents of the root-directory file `name` with `data`
     /// by copy-then-swap (see the crate docs). The old contents stay on the
     /// card, untouched, until the new ones are complete and linked.
-    pub fn replace(&mut self, name: &str, data: &[u8]) -> Result<Written, Error> {
+    ///
+    /// `scratch` is borrowed to search the FAT for free clusters in runs of
+    /// sectors; the larger it is (up to the FAT's size), the fewer device
+    /// commands a long search takes. Any length works: under a sector, the
+    /// FAT is read one sector per command.
+    pub fn replace(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
         let file = self.find(name)?;
         let cb = self.cluster_bytes();
         let need = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
@@ -676,7 +703,7 @@ impl<D: BlockDevice> Volume<D> {
             contiguous: true,
         };
         if need > 0 {
-            match self.find_free_run(hint, need)? {
+            match self.find_free_run(hint, need, scratch)? {
                 Some(start) => {
                     // One run: write it as few long transfers as the data
                     // allows (whole clusters in one go), then link it.
@@ -698,7 +725,7 @@ impl<D: BlockDevice> Volume<D> {
                     let mut prev = None;
                     let mut from = hint;
                     for chunk in data.chunks(cb) {
-                        let Some(c) = self.find_free(from)? else {
+                        let Some(c) = self.find_free_run(from, 1, scratch)? else {
                             // Out of space part way: give back what was
                             // taken (the old file is still whole).
                             if written.first_cluster != 0 {
