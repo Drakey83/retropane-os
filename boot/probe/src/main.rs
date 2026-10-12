@@ -127,7 +127,13 @@ mod image {
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
+        // Bring-up: the word in memory at the fault, and the CPSR there.
+        let word = rt::try_read(addr as usize).unwrap_or(0xDEAD_DEAD);
+        crash(format_args!(
+            "FAULT {} at {addr:#010x} word {word:08X} spsr {:08X}",
+            kind.name(),
+            rt::fault_spsr()
+        ))
     }
 
     /// Faults and panics: the message on serial and in a red box on screen.

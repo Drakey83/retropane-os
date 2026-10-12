@@ -179,7 +179,7 @@ mod image {
                                     }
                                 }
                                 None => {
-                                    let _ = writeln!(out, "SD: no partition table");
+                                    let _ = writeln!(out, "SD: no MBR");
                                 }
                             },
                             Err(e) => {
@@ -223,7 +223,7 @@ mod image {
                     rt::take_irq(irq::KEYPAD),
                     rt::take_gpio_irq(TS_PENIRQ, rt::Edge::Falling),
                 ) else {
-                    let _ = writeln!(out, "IRQ lines unavailable");
+                    let _ = writeln!(out, "no IRQs");
                     halt()
                 };
                 let mut last_keys = Pressed::default();

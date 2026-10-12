@@ -119,6 +119,9 @@ rp_irq_entry:
     @ its own entry into the vector page, iwmmxt.rs, and falls back here.)
     .global rp_undef_entry
 rp_undef_entry:
+    mrs     r0, spsr
+    ldr     r1, =rp_fault_spsr
+    str     r0, [r1]
     mov     r0, #1
     sub     r1, lr, #4
     b       rp_fault
@@ -634,6 +637,19 @@ impl<T> Global<T> {
     }
 }
 
+/// The SPSR at the last undefined-instruction exception (bring-up).
+#[unsafe(export_name = "rp_fault_spsr")]
+static mut FAULT_SPSR: u32 = 0;
+
+/// The CPSR of the code that hit the last undefined-instruction fault
+/// (mode bits, and bit 5 for Thumb state).
+#[must_use]
+pub fn fault_spsr() -> u32 {
+    // SAFETY: a plain word, written by the exception entry before the
+    // handler that reads it runs.
+    unsafe { core::ptr::addr_of!(FAULT_SPSR).read_volatile() }
+}
+
 /// Reports an unrecoverable fault through the fault handler.
 pub(crate) fn report_fault(kind: Fault, addr: u32) -> ! {
     // The numbers the exception entries pass to rp_fault.
@@ -938,6 +954,7 @@ pub fn init_mmu() {
     // VECTORS_PHYS (64 bytes) are reserved SDRAM below/above every image
     // (boot/link.x), so writing them clobbers nothing. The table maps the code
     // currently running at its own address, so execution continues seamlessly.
+    let ctl: u32;
     unsafe {
         let vectors = core::ptr::addr_of!(rp_vectors).cast::<u32>();
         core::ptr::copy_nonoverlapping(vectors, crate::mmu::VECTORS_PHYS as *mut u32, 16);
@@ -952,17 +969,41 @@ pub fn init_mmu() {
             "mov {t}, #1",
             "mcr p15, 0, {t}, c3, c0, 0",   // domain 0 = client
             "mrc p15, 0, {t}, c1, c0, 0",
-            "orr {t}, {t}, {bits}",         // M C W Z I V
-            "mcr p15, 0, {t}, c1, c0, 0",
-            "mrc p15, 0, {t}, c2, c0, 0",   // XScale CPWAIT
-            "mov {t}, {t}",
-            "sub pc, pc, #4",
+            "orr {ctl}, {t}, {bits}",       // M C W Z I V
             t = out(reg) _,
+            ctl = out(reg) ctl,
             ttb = in(reg) crate::mmu::L1_TABLE,
             bits = in(reg) (1u32 << 0) | (1 << 2) | (1 << 3) | (1 << 11) | (1 << 12) | (1 << 13),
             options(nostack),
         );
+        // The enable itself from one aligned cache line (see rp_mmu_on).
+        rp_mmu_on(ctl);
     }
+}
+
+core::arch::global_asm!(
+    r#"
+    .section .text.rp_mmu, "ax"
+    .arm
+    .global rp_mmu_on
+    @ rp_mmu_on(control): writes CP15 control (MMU and caches on) and
+    @ returns. The write, the CPWAIT and what follows it must share one
+    @ 32-byte cache line: measured on the X51v, a build whose CPWAIT branch
+    @ ended a line took an undefined-instruction fault on the first word of
+    @ the next line (docs/hw/README.md). Linux keeps its __turn_mmu_on
+    @ aligned for the same reason.
+    .balign 32
+rp_mmu_on:
+    mcr     p15, 0, r0, c1, c0, 0
+    mrc     p15, 0, r1, c2, c0, 0      @ CPWAIT
+    mov     r1, r1
+    sub     pc, pc, #4
+    bx      lr
+    "#
+);
+
+unsafe extern "C" {
+    fn rp_mmu_on(control: u32);
 }
 
 /// Reads the word at `addr` to exercise the fault path: an unmapped address

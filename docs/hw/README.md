@@ -32,3 +32,4 @@ booted through HaRET. Details in the per-block files.
 | FFUART | transmitter drains | clocked and working once enabled (no connector pins verified) | confirmed | rp-light `serial: alive` |
 | RAM start | `0xA8000000` | HaRET must be told (`ramaddr`); nothing at `0xA0000000` | confirmed | `memory-map.md` |
 | Framebuffer | `0x0C000000`, RGB565 480 × 640 | WM's plane, reused as-is | confirmed | `2700g.md` |
+| **MMU/cache enable hazard** | the instructions after the CPWAIT that follows `mcr c1` must sit in the **same 32-byte line** | a probe build whose CPWAIT branch was the last word of a line took an undefined-instruction fault on the first word of the next line (memory verified intact); a build where the sequence stayed inside one line ran. Same hazard as Linux's aligned `__turn_mmu_on`. RetroPane does both transitions in 32-byte-aligned assembly (`rt::init_mmu`, `handoff::launch`) | confirmed | real X51v (2026-10-11), two builds |
