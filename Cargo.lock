@@ -276,6 +276,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-kernel-ipc"
+version = "0.0.0"
+
+[[package]]
 name = "rp-kernel-mm"
 version = "0.0.0"
 dependencies = [

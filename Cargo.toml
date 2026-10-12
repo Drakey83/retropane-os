@@ -28,6 +28,7 @@ members = [
     "kernel/sched",
     "kernel/fat",
     "kernel/crypto",
+    "kernel/ipc",
     "boot/hello",
     "boot/light",
     "boot/crash",
