@@ -33,10 +33,10 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 **Goal:** an `x51v` machine in a QEMU 9.1 fork that boots a test kernel.
 
 - [x] Fork QEMU 9.1 ([retropane-qemu](https://github.com/Drakey83/retropane-qemu); CI builds Linux + Windows releases, and `cargo xtask emu` downloads them, so no submodule is needed)
-- [ ] `x51v` machine: PXA270, memory map, UART console *(rp-v0.1.0)*, button matrix *(rp-v0.4.0)*, SD image
+- [x] `x51v` machine: PXA270, memory map, UART console *(rp-v0.1.0)*, button matrix *(rp-v0.4.0)*, SD image *(with card detect and the lock switch, rp-v0.9.3)*, CompactFlash slot *(rp-v0.9.7)*, power button and headphone jack *(rp-v0.9.5, rp-v0.9.9)*, DMA *(fixed to serve requests asynchronously and chain descriptors, rp-v0.9.6)*
 - [x] CPLD model (from `docs/hw/cpld.md`) *(rp-v0.3.0)*
 - [x] TSC2046 touch screen, byte-accurate *(rp-v0.5.0)*
-- [ ] WM8750 audio
+- [x] WM8750 audio *(on the I2C bus and I2S, output recordable for tests, rp-v0.9.8)*
 - [x] 2700G display model: local memory, registers, graphics-plane scan-out *(rp-v0.2.0)*
 - [x] Screenshot and input scripting for integration tests: `cargo xtask emu` verifies the test pattern pixel by pixel and presses buttons through the QEMU monitor
 - [ ] **RE:** `tools/mmiotrace` working on Windows Mobile: traps and logs 2700G register accesses
