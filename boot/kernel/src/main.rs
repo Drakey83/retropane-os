@@ -78,6 +78,9 @@ mod image {
     const ZERO_VA: u32 = 0x0001_0000;
     const ZERO_PAGES: u32 = 64;
     const FILE_VA: u32 = 0x0008_0000;
+    /// The reclaim test's pages.
+    const RECLAIM_VA: u32 = 0x0020_0000;
+    const RECLAIM_PAGES: u32 = 16;
 
     /// The test image (a PE file built at start) as a page-cache object,
     /// loaded at `LOAD_BASE`, not the base it prefers, so every absolute
@@ -656,6 +659,53 @@ mod image {
         ok &= report(&mut uart, "compressed RAM", pass, freed);
         let _ = writeln!(uart, "BENCH vm_compress_page {compress_ticks} 32");
         let _ = writeln!(uart, "BENCH vm_restore_page {restore_ticks} 1");
+
+        // Reclaim (ADR-0005): a clock with a second chance. Fresh pages, each
+        // marked; one sweep ages them all; half are touched again (minor
+        // faults); the next sweep ages those again and compresses the rest;
+        // an evicted page comes back intact.
+        let region = layout::slot_base(PROC_SLOT) + RECLAIM_VA;
+        let mapped = STATE.with(|s| {
+            s.space
+                .map(Region {
+                    start: region,
+                    len: RECLAIM_PAGES * 4096,
+                    prot: Prot::RW,
+                    backing: Backing::Zero,
+                })
+                .is_ok()
+        });
+        for p in 0..RECLAIM_PAGES {
+            cpu::poke((RECLAIM_VA + p * 4096 + 12) as usize, 0xA6E0_0000 + p);
+        }
+        let sweep = || {
+            with_vm(|vm, s| {
+                let mut hand = region;
+                vm.reclaim(&s.space, &mut hand, RECLAIM_PAGES, u32::MAX)
+            })
+        };
+        let first = sweep();
+        let faults0 = state().0;
+        for p in 0..RECLAIM_PAGES / 2 {
+            let _ = rt::fault_probe((RECLAIM_VA + p * 4096) as usize);
+        }
+        let minor = (state().0 - faults0, state().1);
+        let free0 = FRAMES.with(|f| f.free_frames() as u32);
+        let start = rt::ticks();
+        let second = sweep();
+        let sweep_ticks = rt::ticks().wrapping_sub(start);
+        let freed = FRAMES.with(|f| f.free_frames() as u32) - free0;
+        let back = rt::try_read((RECLAIM_VA + (RECLAIM_PAGES - 1) * 4096 + 12) as usize);
+        let half = RECLAIM_PAGES / 2;
+        let pass = mapped
+            && first.is_ok_and(|r| r.scanned == RECLAIM_PAGES && r.aged == RECLAIM_PAGES)
+            && minor == (half, Some(Outcome::Referenced))
+            && second.is_ok_and(|r| r.aged == half && r.compressed == half && r.dropped == 0)
+            && freed + 1 >= half
+            && back == Some(0xA6E0_0000 + RECLAIM_PAGES - 1)
+            && state().1 == Some(Outcome::Restored);
+        ok &= report(&mut uart, "reclaim", pass, freed);
+        let _ = writeln!(uart, "BENCH vm_reclaim_sweep {sweep_ticks} {RECLAIM_PAGES}");
 
         // Unmap everything: every frame and page-cache reference returns.
         let slot = layout::slot_base(PROC_SLOT);
