@@ -14,10 +14,23 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 1. Merge the worker's branch: FAT free-space scan in runs, KData wiring
 
-- [ ] Review the diff against the charter, re-run CI and the emulator, merge.
-- Iterate: scan cost measured in read commands before/after; the write-back
-  FAT cache kept coherent; power-loss sweep still green; KData live test.
-- Modernize: n/a beyond review; record what the worker reported.
+- [x] Reviewed (the HAL page-table change: one-shot guard, old mapping's
+      cache lines cleaned first, vectors kept on the same physical page),
+      merged as 6db35fc; CI and the emulator green on main. On the Axim the
+      merged loader writes a file in 7–9 card reads in total; the stale-hint
+      scan (3.7 s once) drops from ~1,490 to ~18 reads by the emulator's
+      measure (25× fewer in the host test), to confirm on the card when a
+      stale hint next occurs.
+- **Iterate:** the free-space scan reads the FAT in doubling runs through
+  the caller's scratch (no new buffers, no heap), the cache stays coherent
+  without extra flushes, the power-loss sweep runs both ways, and the reply
+  now reports card reads so every write is measured; KData is written
+  through its one user address so a thread switch needs no cache
+  maintenance, checked by a live test with two mutations that make it fail.
+- **Modernize:** card operations are measured and gated in CI; KData's page
+  is user read-only (verified by a faulting write), and the same change
+  closed a hole that left the vector page and the first MiB of SDRAM
+  user-writable.
 
 ## 2. ADR-0014: the SD card as a drive in Windows (USB mass storage)
 
