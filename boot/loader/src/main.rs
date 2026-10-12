@@ -75,18 +75,26 @@ mod image {
     const LAYOUT_PATIENCE: u32 = 25 * TICK_1S;
 
     /// The SD card as the drive's logical unit 0 (absent when no card
-    /// answered at startup).
-    struct Lun(Option<Sd>);
+    /// answered at startup). Read-only to the PC until it asks otherwise
+    /// (`cargo xtask drive rw`): the card holds the loader and HaRET, and a
+    /// PC writes a mounted drive on its own (docs/security.md).
+    struct Lun {
+        card: Option<Sd>,
+        writable: bool,
+    }
 
     impl BlockDevice for Lun {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-            self.0
+            self.card
                 .as_mut()
                 .ok_or(BlockError::Device)?
                 .read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            self.0
+            if !self.writable {
+                return Err(BlockError::ReadOnly);
+            }
+            self.card
                 .as_mut()
                 .ok_or(BlockError::Device)?
                 .write_blocks(lba, buf)
@@ -95,10 +103,13 @@ mod image {
 
     impl Storage for Lun {
         fn blocks(&self) -> u32 {
-            self.0.as_ref().map_or(0, SdCard::blocks)
+            self.card.as_ref().map_or(0, SdCard::blocks)
         }
         fn present(&self) -> bool {
-            self.0.as_ref().is_some_and(|c| c.blocks() > 0)
+            self.card.as_ref().is_some_and(|c| c.blocks() > 0)
+        }
+        fn read_only(&self) -> bool {
+            !self.writable
         }
         fn product(&self) -> &[u8; 16] {
             b"SD card         "
@@ -192,7 +203,7 @@ mod image {
             let _ = reply.write_str("RPL ERR card busy: the PC is writing\r\n");
             return;
         }
-        let Some(sd) = lun.0.as_mut() else {
+        let Some(sd) = lun.card.as_mut() else {
             let _ = reply.write_str("RPL ERR card: no card\r\n");
             return;
         };
@@ -385,7 +396,10 @@ mod image {
         // within its control-transfer timeout, and card set-up (or giving up
         // on an empty slot) must not stall them (seen in the emulator: the
         // host gave up on the first descriptor request).
-        let mut lun = Lun(open_card());
+        let mut lun = Lun {
+            card: open_card(),
+            writable: false,
+        };
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
         if usb {
@@ -505,6 +519,28 @@ mod image {
                     put_file(&mut lun, &mut msc, frame, dest, &mut reply);
                     send(&mut uart, &mut udc, reply.as_str());
                     let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
+                }
+                Some(Ok(
+                    f @ Frame {
+                        kind: Kind::Control,
+                        ..
+                    },
+                )) => {
+                    let reply = match f.command(dest) {
+                        Ok(b"drive rw") | Ok(b"drive ro") => {
+                            lun.writable = f.command(dest) == Ok(b"drive rw");
+                            // The PC re-reads the medium and its protection.
+                            msc.medium_changed(0);
+                            if lun.writable {
+                                "RPL OK drive read-write\r\n"
+                            } else {
+                                "RPL OK drive read-only\r\n"
+                            }
+                        }
+                        _ => LoadError::BadCommand.reply(),
+                    };
+                    send(&mut uart, &mut udc, reply);
+                    let _ = writeln!(log, "{}", reply.trim_ascii_end());
                 }
                 Some(Ok(Frame { len, .. })) => {
                     // Bring-up check: does the image survive the cache flush
@@ -636,6 +672,7 @@ mod image {
             LoadError::TooBig => "too big",
             LoadError::BadCrc => "bad CRC",
             LoadError::BadName => "bad file name",
+            LoadError::BadCommand => "bad command",
         }
     }
 

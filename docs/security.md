@@ -53,7 +53,7 @@ a later pass (the owner's standing requirement, 2026-10-12). Every ADR has a
 | Exposure | Why it exists | Status |
 |---|---|---|
 | **The resident loader runs any code sent over USB** (ADR-0012), and `RPF1` frames replace files on the card (ADR-0013) | The hands-off development loop | **Development only.** Never part of a release image. Before any public build: either removed, or gated by a physical action on the device plus a signed-image check. Tracked here until then |
-| USB mass storage exposes the whole card (ADR-0014) | Owner's request: the card as a drive | In the loader (development) it's always on. In the OS proper: only after the user allows it on the device, per connection, and read-only by default for cards holding the system |
+| USB mass storage exposes the whole card (ADR-0014) | Owner's request: the card as a drive | In the loader (development) the drive is offered at once but **read-only** until the PC sends `drive rw` (`cargo xtask drive rw`); the card holds the loader and HaRET, and Windows writes a mounted drive on its own. In the OS proper: only after the user allows it on the device, per connection, read-only by default for cards holding the system |
 | Serial loader frames are CRC-checked, not authenticated | Integrity against line noise, not attackers | Same as the first row |
 
 ## Checklist for every ADR and parser

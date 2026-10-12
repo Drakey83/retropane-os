@@ -46,6 +46,8 @@ commands:
             loader (ADR-0013): cargo xtask put <file> [name on the card]
   install   put the kit's loader, HaRET and scripts on the card the same way
             (replaces the files already there; run cargo xtask sdkit first)
+  drive     the SD card as a drive on the PC (ADR-0014): `drive rw` lets the
+            PC write it, `drive ro` (the default at start) makes it read-only
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -91,6 +93,13 @@ fn main() -> ExitCode {
                 Err("usage: cargo xtask put <file> [name on the card]".into())
             } else {
                 usb::put(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+            }
+        }
+        "drive" => {
+            eprintln!("==> drive {flag}");
+            match flag.as_str() {
+                "rw" | "ro" => usb::command(&workspace_root(), &format!("drive {flag}")),
+                _ => Err("usage: cargo xtask drive rw|ro".into()),
             }
         }
         "install" => {

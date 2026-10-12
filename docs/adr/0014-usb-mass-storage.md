@@ -108,6 +108,14 @@ model with a built-in host that enumerates like Windows.
   at the Axim. Tested in the emulator with a host that refuses composite
   devices (`accept-composite=off`, rp-v0.9.1); with the fallback disabled
   the test fails.
+- **Read-only until asked (2026-10-12):** the drive starts write-protected
+  (MODE SENSE's WP bit, writes refused with DATA PROTECT sense); `cargo
+  xtask drive rw` (a new `RPC1` command frame in `rp-loadproto`) makes it
+  writable and `drive ro` locks it again, each followed by "medium changed"
+  so the PC re-mounts with the new protection. The card holds the loader
+  and HaRET, and Windows writes a mounted drive by itself (its System
+  Volume Information folder), so nothing reaches the card unless asked.
+  The emulator test checks both states and the switch.
 - Device run: pending (overnight queue item 3).
 
 ## Security
