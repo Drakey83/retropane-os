@@ -58,6 +58,11 @@ impl<'a> Console<'a> {
         }
     }
 
+    /// Changes the text color for what is written next.
+    pub fn set_fg(&mut self, fg: u16) {
+        self.fg = fg;
+    }
+
     /// Columns and rows of text.
     #[must_use]
     pub fn size(&self) -> (usize, usize) {

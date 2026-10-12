@@ -33,6 +33,7 @@ mod image {
     use rp_drv_cf::CfCard;
     use rp_drv_cpld::Cpld;
     use rp_drv_mbx_display::console::Console;
+    use rp_drv_mbx_display::crash;
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_i2c::PxaI2c;
@@ -60,6 +61,9 @@ mod image {
     /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
     const TICK_1S: u32 = 3_250_000;
     const STATUS_H: usize = 6 * 16;
+    /// The crash screen's height (docs: crash screen), when the previous
+    /// program crashed or hung.
+    const CRASH_H: usize = 320;
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
@@ -1190,11 +1194,17 @@ mod image {
         });
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
+        // The previous program's run: if it crashed or hung, the crash
+        // screen goes above the log.
+        let mut pending = devices::log_take();
+        let trouble = pending.as_ref().is_some_and(|r| r.crashed || !r.returned);
+        let panel_h = if trouble { CRASH_H } else { 0 };
+        let (panel, rest) = rest.split_at_mut(plane.stride * panel_h);
         let mut log = Console::new(
             rest,
             plane.stride,
             (0, 0),
-            (480, 640 - STATUS_H),
+            (480, 640 - STATUS_H - panel_h),
             2,
             (0xFFFF, 0x0000),
         );
@@ -1252,7 +1262,6 @@ mod image {
         // The previous run's log (an image this loader started, now back):
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
-        let mut pending = devices::log_take();
         if let Some(run) = &pending {
             let how = if run.crashed {
                 "CRASHED"
@@ -1270,6 +1279,22 @@ mod image {
                     log,
                     "report {} on the card",
                     if saved { "saved" } else { "NOT saved" }
+                );
+                crash::draw(
+                    panel,
+                    plane.stride,
+                    (480, CRASH_H),
+                    if run.crashed {
+                        "The program crashed"
+                    } else {
+                        "The program stopped responding"
+                    },
+                    if saved {
+                        "Report on the card: crashlog.txt"
+                    } else {
+                        "Report sent to the PC"
+                    },
+                    run.log,
                 );
             }
             send_log(&mut |b| uart_bytes(&mut uart, b), run);

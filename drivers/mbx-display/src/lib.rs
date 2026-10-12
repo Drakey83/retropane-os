@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod console;
+pub mod crash;
 pub mod font;
 pub mod pattern;
 

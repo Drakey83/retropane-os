@@ -463,10 +463,19 @@ on the host or in the emulator first.
 
 ## Sixth tier (added 2026-10-12, same rules)
 
-26. **Crash screen**: when an image panics or faults, the display shows
-    what happened (message, location, registers for a fault) in a readable
-    layout, as well as the log going to the PC and the card; emulator test
-    by screenshot.
+26. **Crash screen**: **done (emulator).** The loader draws it: every
+    image comes back to the loader after a crash (or, after a hang, through
+    the watchdog), so nothing broken has to draw. A red band says "The
+    program crashed" or "The program stopped responding" and where the
+    report is (the card, or the PC); below, the end of the program's log,
+    whole lines chosen to fit (no scrolling a screen per line of a long
+    log), the `PANIC`/`FAULT` line in yellow. `rp_drv_mbx_display::crash`
+    (2 host tests); the emulator's crash test screenshots the screen and
+    checks the band, its text and the log.
+    - **Iterate:** one crash screen for every image, drawn by the program
+      that is known to work; the cause stands out.
+    - **Modernize:** a readable crash report on the device itself, as any
+      modern OS shows, besides the PC and the card.
 27. **Processes and IPC: design (ADR-0016, proposed)**: how processes,
     the driver host and message passing should work on this hardware
     (FCSE slots, the ADR-0010 scheduler), written for the owner to approve
