@@ -93,3 +93,14 @@ RetroPane celebrates what PDAs excel at and doesn't pretend to be a phone:
 Today screen quick buttons: Note, Record, Reader, Media, Games. Start menu:
 recent programs, then Today, Calendar, Tasks, Notes, Documents, File
 Explorer (SD · CF), Inbox, Browser, Programs, Settings.
+
+## The smoked-glass design language (owner, 2026-10-12)
+
+The owner picked the reference's Rainmeter work ( "Glasses", "the reference Weather 2") as the look to borrow heavily from: "a good mix of retro and modern".
+
+- **Smoked glass on a wallpaper the owner chooses.** Panels are dark, translucent glass. The gradient runs from near-black on the left to a lit grey on the right. Each panel has a 1 px bright edge, an almost square corner (3 px) and a soft gloss. A thin vertical light streak sits on one edge, and there is a faint reflection under the bottom row. Everything floats over a full-screen photo.
+- **Wallpapers.** We ship a few that suit glass: dramatic, moody photography with dark areas where the panels sit, such as a black-and-white pier, a mountain lake, a city at night or an aurora. Users can pick their own picture from SD or CF. Settings will offer glass darkness and dimming the wallpaper at night. Any wallpaper we ship must be our own or CC0/public-domain and recorded in the licence list.
+- **Type.** Thin geometric sans, big light numerals (`18°`) and spaced capitals for labels and dates (`MON 12`, `OCTOBER`). His skins bundle Century Gothic, which is Monotype's and is never shipped. The concepts use Didact Gothic (SIL OFL) as an open stand-in.
+- **Icons break out of their frames.** Weather icons are large and overhang the top edge of their glass tile.
+- **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
+- **Clean-room.** the reference's icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping icons will be original work in his volumetric style, unless the artist grants permission, or the Oxygen set (LGPL-3) is the fallback.
