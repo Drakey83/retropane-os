@@ -539,10 +539,19 @@ on the host or in the emulator first.
     - **Modernize:** a cryptographic fingerprint in the dev loop, and the
       first piece of the crypto the networked OS needs (TLS, signed
       images).
-31. **The loader idles**: between polls it sleeps until the next timer tick
-    or interrupt instead of spinning flat out (battery and heat on the
-    device), and `drive status` reports how idle it was; emulator test
-    checks an idle loader is mostly asleep and still answers at once.
+31. **The loader idles**: **done (emulator).** After 50 ms with nothing
+    happening (no input, no drive command under way or new, nothing to
+    send) the loop sleeps until the next 1 ms tick (the XScale's idle
+    mode) instead of spinning; the tick is stopped and IRQs masked before
+    an image starts. `drive status` reports the last second's idle share.
+    Emulator: a waiting loader is 99% asleep and answers in 1-2 ms; the
+    drive test now fails if 1 MiB takes over 8 s, which caught the first
+    version napping between packets of a long read (17 s instead of 3):
+    `Msc::busy` (new, tested) now keeps it awake mid-command.
+    - **Iterate:** sleeps only when nothing is happening, so transfers keep
+      their speed; the idle share is measured, not assumed.
+    - **Modernize:** an idle device that actually idles: less heat and
+      battery while docked and waiting.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
