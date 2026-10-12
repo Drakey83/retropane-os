@@ -92,9 +92,14 @@ hands out the attribute and common windows. The loader's `cf` command
 (`cargo xtask` control frame `cf`) identifies the card read-only, and only
 when GPIO13 reads a card; nothing touches the socket at start-up.
 
+The USB drive's second unit (LUN 1, "CF card") is the CF card: an empty
+card reader until `cf` attaches it, read-only until `drive rw` (as the SD
+card), and back to empty when GPIO13 says the card left (attach it again
+with `cf`). Windows shows it as a second removable drive.
+
 Not yet: card power (the CPLD bit is unknown; the loader relies on Windows
 Mobile having left the slot powered, as HaRET hands over), the card's
-ready/IRQ line, I/O-mode cards, hot swap, and the USB drive's LUN 1.
+ready/IRQ line, I/O-mode cards.
 
 ## Safety for experiments
 

@@ -566,20 +566,104 @@ mod image {
     enum CfSlot {
         Untried,
         Card(CfCard<Mmio, Mmio>),
+        /// Taken out after it was attached: the socket's windows, kept for
+        /// the next `cf`.
+        Removed(Mmio, Mmio),
         Failed(&'static str),
+    }
+
+    /// The CompactFlash card as the drive's second unit (LUN 1): an empty
+    /// card reader until the owner attaches the card (`cf`), read-only
+    /// until `drive rw`, as the SD card is.
+    struct CfLun {
+        slot: CfSlot,
+        /// GPIO13 says a card is in (debounced over two polls).
+        inserted: bool,
+        seen: bool,
+        writable: bool,
+    }
+
+    impl CfLun {
+        /// Follows the detect line; `true` when the card came or went (the
+        /// PC is told the medium changed). A removed card must be attached
+        /// again with `cf`: nothing touches the socket unasked.
+        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
+            let now = !gpio.read(CF_DETECT);
+            let stable = now == self.seen;
+            self.seen = now;
+            if !stable || now == self.inserted {
+                return false;
+            }
+            self.inserted = now;
+            if !now && let CfSlot::Card(_) = self.slot {
+                let CfSlot::Card(card) = core::mem::replace(&mut self.slot, CfSlot::Untried) else {
+                    return true;
+                };
+                let (attr, common) = card.into_inner();
+                self.slot = CfSlot::Removed(attr, common);
+            }
+            true
+        }
+    }
+
+    impl BlockDevice for CfLun {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            match &mut self.slot {
+                CfSlot::Card(c) if self.inserted => c.read_blocks(lba, buf),
+                _ => Err(BlockError::Device),
+            }
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            if !self.writable {
+                return Err(BlockError::ReadOnly);
+            }
+            match &mut self.slot {
+                CfSlot::Card(c) if self.inserted => c.write_blocks(lba, buf),
+                _ => Err(BlockError::Device),
+            }
+        }
+    }
+
+    impl Storage for CfLun {
+        fn blocks(&self) -> u32 {
+            match &self.slot {
+                CfSlot::Card(c) => c.sectors(),
+                _ => 0,
+            }
+        }
+        fn present(&self) -> bool {
+            self.inserted && matches!(self.slot, CfSlot::Card(_))
+        }
+        fn read_only(&self) -> bool {
+            !self.writable
+        }
+        fn product(&self) -> &[u8; 16] {
+            b"CF card         "
+        }
     }
 
     /// `cf`: identifies the CompactFlash card, read-only: model, capacity,
     /// whether its write cache is off, and its first partition. The socket
     /// is touched only when GPIO13 says a card is in it.
     #[inline(never)]
-    fn cf_command(slot: &mut CfSlot, gpio: &mut Gpio<Mmio>, out: &mut Line) {
+    fn cf_command(lun: &mut CfLun, gpio: &mut Gpio<Mmio>, out: &mut Line) {
         if gpio.read(CF_DETECT) {
             let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
             return;
         }
+        lun.inserted = true;
+        lun.seen = true;
+        let slot = &mut lun.slot;
+        let windows = match core::mem::replace(slot, CfSlot::Untried) {
+            CfSlot::Untried => devices::take_cf(),
+            CfSlot::Removed(attr, common) => Some((attr, common)),
+            other => {
+                *slot = other;
+                None
+            }
+        };
         if let CfSlot::Untried = slot {
-            *slot = match devices::take_cf() {
+            *slot = match windows {
                 None => CfSlot::Failed("socket unavailable"),
                 Some((attr, common)) => {
                     match CfCard::init(attr, common, &mut |ms| rt::delay_us(ms * 1000)) {
@@ -595,7 +679,7 @@ mod image {
                 let _ = write!(out, "RPL ERR cf: {why}\r\n");
                 return;
             }
-            CfSlot::Untried => return,
+            CfSlot::Untried | CfSlot::Removed(..) => return,
         };
         let mut block = [0u8; rp_drv_cf::SECTOR];
         let first = match card.read_blocks(0, &mut block) {
@@ -1061,12 +1145,17 @@ mod image {
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
-        let mut msc = Msc::new(msc_buf, MSC_SERIAL, 1);
+        let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
-        let mut cf = CfSlot::Untried;
+        let mut cf = CfLun {
+            slot: CfSlot::Untried,
+            inserted: false,
+            seen: false,
+            writable: false,
+        };
         let mut power = PowerButton::new(&mut gpio);
-        udc.set_msc_luns(1);
+        udc.set_msc_luns(2);
         // Layout fallback: if the PC keeps trying (bus resets) but never
         // configures the composite device, offer the serial-only layout it
         // already knows, so no host can lock the loop out; and back again.
@@ -1118,7 +1207,7 @@ mod image {
                     }
                 );
             }
-            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun], now_ms());
+            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun, &mut cf], now_ms());
             if udc.host_open() {
                 if let Some(run) = pending.take() {
                     send_log(&mut |b| usb_bytes(&mut udc, b), &run);
@@ -1195,6 +1284,8 @@ mod image {
                         }
                         Ok(b"cf") => {
                             cf_command(&mut cf, &mut gpio, &mut status);
+                            // Attached (or not): the PC looks at LUN 1 again.
+                            msc.medium_changed(1);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card dma") => {
@@ -1251,8 +1342,10 @@ mod image {
                         }
                         Ok(b"drive rw") | Ok(b"drive ro") => {
                             lun.writable = f.command(dest) == Ok(b"drive rw");
-                            // The PC re-reads the medium and its protection.
+                            cf.writable = lun.writable;
+                            // The PC re-reads the media and their protection.
                             msc.medium_changed(0);
+                            msc.medium_changed(1);
                             if lun.writable {
                                 "RPL OK drive read-write\r\n"
                             } else {
@@ -1311,6 +1404,10 @@ mod image {
                     "power button: screen {}",
                     if on { "on" } else { "off" }
                 );
+            }
+            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {
+                msc.medium_changed(1);
+                let _ = writeln!(log, "CF card {}", if cf.inserted { "in" } else { "out" });
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && lun.poll_slot(&mut gpio) {
                 msc.medium_changed(0);

@@ -853,12 +853,30 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     let cf = root.join("target/emulator/cf.img");
     std::fs::write(&cf, image).map_err(|e| format!("{}: {e}", cf.display()))?;
     let mut args: Vec<String> = usb_args(2).into();
+    args.extend(msc_args(3));
     args.push("-drive".into());
     args.push(drive_arg(root, "ide", &cf)?);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let via_drive: Vec<u8> = (0..4096u32).map(|i| (i * 29 + 3) as u8).collect();
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
+        let mut bot = Bot::connect(3)?;
+        bot.lun = 1;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // Before the owner attaches it: an empty card reader (after, at
+        // most, one "medium changed" for the detect line settling).
+        let mut r = bot.command(&[0; 6], 0, false, &[])?;
+        let mut sense = bot.sense()?;
+        if sense.1 == 0x28 {
+            r = bot.command(&[0; 6], 0, false, &[])?;
+            sense = bot.sense()?;
+        }
+        if r.status == 0 || sense.1 != 0x3A {
+            return Err(format!(
+                "CF unit before 'cf': status {}, sense {sense:x?}",
+                r.status
+            ));
+        }
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "model", 20)?;
@@ -870,6 +888,53 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, want, 20)?;
+        // Now the PC sees it: medium changed once, then ready.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let r = bot.command(&[0; 6], 0, false, &[])?;
+            if r.status == 0 {
+                break;
+            }
+            let _ = bot.sense()?;
+            if Instant::now() > deadline {
+                return Err("CF unit never became ready".into());
+            }
+        }
+        let r = bot.command(&[0x12, 0, 0, 0, 36, 0], 36, true, &[])?;
+        if r.data.get(16..23) != Some(&b"CF card"[..]) {
+            return Err(format!("CF unit: INQUIRY {:?}", r.data));
+        }
+        let r = bot.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+        if r.data.get(..4) != Some(&32767u32.to_be_bytes()[..]) {
+            return Err(format!("CF unit: capacity {:?}", r.data));
+        }
+        let mut mbr = [0u8; 512];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+            .map_err(|_| "CF unit: sector 0 unreadable".to_string())?;
+        if mbr[510..] != [0x55, 0xAA] {
+            return Err("CF unit: sector 0 isn't the image's MBR".into());
+        }
+        // Read-only until the owner says otherwise...
+        if rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_ok() {
+            return Err("CF unit: written while read-only".into());
+        }
+        let _ = bot.sense()?;
+        s.write_all(&rp_loadproto::control_frame("drive rw"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK drive read-write", 10)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while rp_hal_api::BlockDevice::write_blocks(&mut bot, 30000, &via_drive).is_err() {
+            let _ = bot.sense()?; // medium changed, once
+            if Instant::now() > deadline {
+                return Err("CF unit: write refused after drive rw".into());
+            }
+        }
+        let mut back = vec![0u8; via_drive.len()];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, 30000, &mut back)
+            .map_err(|_| "CF unit: read-back failed".to_string())?;
+        if back != via_drive {
+            return Err("CF unit: read-back differs".into());
+        }
         Ok(())
     };
     boot(
@@ -886,7 +951,13 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(60),
         },
     )?;
-    eprintln!("    CF card OK: identified in socket 1 (16 MB, write cache off, FAT32 seen)");
+    let after = std::fs::read(&cf).map_err(|e| e.to_string())?;
+    if after[30000 * 512..30000 * 512 + via_drive.len()] != via_drive[..] {
+        return Err("CF: the drive's write isn't in the card image".into());
+    }
+    eprintln!(
+        "    CF card OK: identified in socket 1 (16 MB, write cache off), then the PC's second drive: read, refused while read-only, written after drive rw, checked in the image"
+    );
     Ok(())
 }
 
@@ -1178,6 +1249,8 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
 struct Bot {
     s: std::net::TcpStream,
     tag: u32,
+    /// The logical unit commands go to (0: SD card, 1: CF card).
+    lun: u8,
 }
 
 /// One command's outcome.
@@ -1192,6 +1265,7 @@ impl Bot {
         Ok(Self {
             s: usb_connect(n)?,
             tag: 1,
+            lun: 0,
         })
     }
 
@@ -1247,6 +1321,7 @@ impl Bot {
         c[4..8].copy_from_slice(&self.tag.to_le_bytes());
         c[8..12].copy_from_slice(&len.to_le_bytes());
         c[12] = if dir_in { 0x80 } else { 0 };
+        c[13] = self.lun;
         c[14] = cb.len() as u8;
         c[15..15 + cb.len()].copy_from_slice(cb);
         self.send_transfer(&c)?;
@@ -1270,6 +1345,9 @@ impl Bot {
 
     fn sense(&mut self) -> Result<(u8, u8, u8), String> {
         let r = self.command(&[0x03, 0, 0, 0, 18, 0], 18, true, &[])?;
+        if r.data.len() < 14 {
+            return Err(format!("drive: REQUEST SENSE gave {} bytes", r.data.len()));
+        }
         Ok((r.data[2], r.data[12], r.data[13]))
     }
 }

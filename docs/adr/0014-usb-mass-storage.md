@@ -40,7 +40,7 @@ model with a built-in host that enumerates like Windows.
    a bulk pipe (one packet in, one packet out, one in flight) and the
    storage behind each logical unit (`BlockDevice` plus size, presence and
    write protection). Logical units, not one fixed device: LUN 0 is the SD
-   card; the CF card becomes LUN 1 when its driver exists, a second drive
+   card; the CF card is LUN 1 (since 2026-10-12, attached with `cf`), a second drive
    with no USB work.
    Commands: TEST UNIT READY, REQUEST SENSE, INQUIRY (with the serial
    number VPD page), READ CAPACITY(10), READ FORMAT CAPACITIES,
