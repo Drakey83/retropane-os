@@ -171,3 +171,27 @@ permission text inside it. Permission asked for in writing must name
 the scope: distributing the icons in a free pack alongside the OS, and
 converting them for the device (resizing, cropping, colour conversion).
 The CC0 / public-domain wallpapers need no permission.
+
+## Wallpaper provenance (checked 2026-10-12)
+
+Each file's source, checked through Wikimedia Commons' own records, not
+the label alone. Nothing ships until its row says **ship**.
+
+| Wallpaper | Author and original source | Basis | Status |
+|---|---|---|---|
+| Mountain lake | N. Lowe, U.S. Forest Service Intermountain Region (Flickr), 2016 | Work of a U.S. federal employee: public domain (`PD US USDA FS`); Commons' Flickr licence review passed | **ship** |
+| City at night | Tabitha Mort, Pexels photo 432361, 2014 (Portland) | CC0 as published on Pexels at the time; Commons category "reviewed licenses" | **ship** once the Pexels page date is archived with the pack |
+| Pier, black and white | Christopher Sardegna, Unsplash `uDUiRS8YroY`, 2013 | CC0 if published on Unsplash before its June 2017 licence change; on Commons since May 2017, but tagged **"review needed"** | **verify**: confirm the Unsplash date (Wayback copy) or replace |
+| Aurora | Credited to Rich and Rose Primmer, U.S. Fish and Wildlife Service, via a "public-domain-image" wallpaper site | Rests on that site's claim (`PD-author`), not a government source | **verify**: find it in the USFWS image library, or replace with an aurora from a .gov source (NASA, NPS, USFWS) |
+
+Each pack carries this table for its files (author, source link, licence
+basis, date checked) as its provenance note.
+
+## The cached desktop is pinned
+
+The 600 KB composed desktop is what's on screen, so it must never be aged,
+compressed or evicted: it lives in a **pinned** region (`Prot::pinned()`,
+loaded up front by `Vm::populate`). That's above the 64 KiB default pin
+limit, so the shell is one of the trusted services whose limit the kernel
+raises (`set_pin_limit`), and the 600 KB is counted in the shell's
+allotment in docs/memory-budget.md.
