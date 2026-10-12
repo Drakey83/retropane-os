@@ -30,3 +30,17 @@ are made, and links the concept mock-ups.
 buttons; software rendering until the 2700G 2D blitter is supported, so
 the framebuffer is write-only, translucency is used sparingly and chrome is
 pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
+
+## Weather and icons (owner, 2026-10-12)
+
+- The weather is the hero of the Today screen: large, front and center.
+- Icon language: photoreal, volumetric weather icons (soft 3D clouds,
+  glowing suns, a cratered moon, on a dark, moody backdrop), the style of
+  the the reference set the owner pointed to. **Clean-room for artwork too:**
+  RetroPane draws its own original icons in that language; no third-party
+  icon is copied or shipped. On the device the icons are pre-rendered into
+  the asset atlas at build time, so realism costs nothing while running
+  (docs/design-brief.md).
+- Mock-ups D-H on the concept canvas; G (Today screen) and H (the icon
+  family: sunny, clear night, partly cloudy, cloudy, rain, thunderstorm,
+  snow, cloudy night) use the photoreal icons.
