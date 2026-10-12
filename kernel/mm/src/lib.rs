@@ -20,6 +20,7 @@ pub mod domains;
 pub mod frames;
 pub mod layout;
 pub mod pagetable;
+pub mod regions;
 pub mod space;
 pub mod zpool;
 

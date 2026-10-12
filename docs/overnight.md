@@ -858,11 +858,29 @@ on the host or in the emulator first.
     interrupt as an event, called by a client through a port; a crash in
     the host restarts it without touching the kernel or other hosts.
 
-48. **Process records per ADR-0019**: `AddressSpace` regions kept in
-    per-process pages from the frame allocator (encoded as words, no
-    unsafe), a per-process quota, small fixed records; the same API and
-    results (host tests compare), then the kernel image switches over and
-    its process table shrinks from ~8 KB of initialised data to ~1 KB.
+48. **Process records per ADR-0019**: **done (emulator).** `AddressSpace`
+    regions now live in `RegionList` (`kernel/mm/src/regions.rs`): 20-byte
+    entries encoded by hand in 4 KiB pages from the frame allocator (no
+    unsafe), taken as the list grows and given back as it shrinks, a quota
+    of 8 pages (1,632 regions) per process. Records shrank from 1.6 KB to
+    ~60 B; `rp-kernel` load 82,636 -> 76,672 B before the new check, and
+    its budget ratchets 84 -> 82 KiB. Emulator check `VM many regions`
+    (300 regions in one process, touched, unmapped, every frame back:
+    fails at region 65 without it); host tests: a page-level model under
+    30,000 random map/carve/protect operations with memory running out at
+    list-page boundaries (mutation-checked: dropping either reservation
+    fails it), 1,000 regions, wiped pages.
+    - 🔁 Iterate: same API shape (`map`, `find`, `carve`, `protect`), now
+      given the page source; `Vm` supplies its own, so most callers
+      changed by one argument. All 82 earlier tests kept.
+    - ✨ Modernize / better: kernel memory charged to the process with a
+      quota; lookups and overlap checks by binary search (were linear
+      scans); `protect` and `unmap` split in place, one piece at a time,
+      instead of copying the whole region table onto a 4 KiB kernel stack;
+      the reclaim hand finds its next page by binary search instead of
+      rescanning every region per page; failures are atomic (room reserved
+      before any change); freed list pages are wiped (they held another
+      process's memory layout); exit hands list pages back.
 
 ## Twelfth tier: the design brief (owner, 2026-10-12; docs/design-brief.md)
 
