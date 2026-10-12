@@ -12,3 +12,6 @@ lcov.info
 *.exe
 *.cab
 *.trace
+
+# Worktrees the desktop app makes for worker agents
+.claude/worktrees/
