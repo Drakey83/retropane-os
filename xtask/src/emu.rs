@@ -889,11 +889,11 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
 }
 
 /// The plane-blending image (rp-blend, overnight item 60): the loader
-/// starts it; each of its three stages must show exactly what the
+/// starts it; each of its stages must show exactly what the
 /// reference model (`rp_drv_mbx_display::scanout`) computes from the same
 /// drawing and register programming, which a host test already checks
 /// against the intended colours. Each screendump is matched against all
-/// three stages, so a slow host can't pass one stage off as another. Then
+/// the stages, so a slow host can't pass one stage off as another. Then
 /// it must be back at the loader with the wallpaper gone.
 pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::blendtest::{self, Stage};
@@ -986,6 +986,9 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
         "RETROPANE-BLEND-A",
         "RETROPANE-BLEND-B",
         "RETROPANE-BLEND-C",
+        "RETROPANE-BLEND-D",
+        "RETROPANE-BLEND-E",
+        "RETROPANE-BLEND-F",
         "restored:",
     ] {
         if !log.contains(want) {
@@ -1011,7 +1014,7 @@ fn blend_screen(stage: rp_drv_mbx_display::blendtest::Stage) -> Vec<u8> {
     let mut vram = vec![0u8; 16 << 20];
     let mut d = Display::new(RegFile::default());
     let _ = d.adopt(vram.len());
-    blendtest::draw(stage, &mut vram);
+    blendtest::draw(stage, &mut vram, &mut vec![0u8; blendtest::WORK]);
     blendtest::program(&mut d, stage);
     let regs = d.into_inner();
     let mut out = vec![0u8; blendtest::W * blendtest::H * 3];

@@ -76,10 +76,14 @@ pub const BUDGETS: &[Budget] = &[
     // (item 52, `rp-gfx`) benchmarked and checked on the target: fills, the
     // glass tint, alpha icons, photo rows, framebuffer flushes, and the
     // per-channel reference they're compared with; 39.6 KiB measured, +~16%
-    // (left there for the iWMMXt paths to come).
+    // (left there for the iWMMXt paths to come). Ratcheted 46 -> 54 KiB on
+    // 2026-10-12 (test image): the interface layer (item 60 follow-on,
+    // `rp_gfx::layer`) benchmarked and checked: glass, a glyph over glass,
+    // dithered and 8888 flushes and the per-pixel reference; 48.2 KiB
+    // measured with the slow "over" path kept out of line, +~12%.
     Budget {
         image: "rp-bench",
-        max_load: 46 * 1024,
+        max_load: 54 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -267,9 +271,13 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image: plane blending at scan-out (overnight item 60); the
     // scene is generated, not stored. 19.2 KiB measured, + ~10%.
+    // Ratcheted 22 -> 34 KiB on 2026-10-12 (test image): stage F draws the
+    // scene through `rp-gfx` (layer, glyph masks, dirty flushes: ~4 KiB of
+    // the library, ~4 KiB of scene code) and times each stage's drawing;
+    // 29.7 KiB measured, + ~14%.
     Budget {
         image: "rp-blend",
-        max_load: 22 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

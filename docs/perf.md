@@ -191,6 +191,24 @@ contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
 | `irq_to_thread_max` (interrupt to the waiting thread running) | 26 ticks | ~8 µs |
 | `sleep_lateness_max` | 56 ticks | ~17 µs |
 
+## Interface layer flush (2026-10-12, emulator)
+
+`rp_gfx::layer::flush` converting a 480 x 640 ARGB8888 layer to the
+dithered ARGB4444 graphics plane (`cargo xtask bench`, instructions):
+
+| Version | Full screen | Clock-sized |
+|---|---|---|
+| Per-pixel reference (`to_4444_dithered`, byte writes) | 16.6 ms | - |
+| Two channels per lane word, no divides | 11.9 ms | 0.098 ms |
+| + four pixels a step (thresholds fixed), whole-word writes | **9.5 ms** | **0.080 ms** |
+| ARGB8888 plain copy, for comparison | 0.22 ms | - |
+
+The emulator doesn't charge for the 2700G's slow memory; on the device
+writes dominate (a 16-bit screen took 14.5 ms to write), so ARGB8888's
+twice-as-many bytes cost more there than the conversion saves. Device
+numbers: rp-blend's run log (`draw F`). Next: iWMMXt (one pixel's four
+channels in one 64-bit register).
+
 ## Open leads
 
 - **Thread switch ~12 µs on the device vs ADR-0010's < 2 µs target.**

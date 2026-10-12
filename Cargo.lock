@@ -124,6 +124,7 @@ dependencies = [
 name = "rp-drv-mbx-display"
 version = "0.0.0"
 dependencies = [
+ "rp-gfx",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-mock",

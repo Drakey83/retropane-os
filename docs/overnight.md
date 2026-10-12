@@ -1052,10 +1052,27 @@ on the host or in the emulator first.
     setting (ARGB4444 dithered or ARGB8888), so it can be switched (even
     offered to the user) if the dither ever shows. `rp-blend` takes
     `RP_BLEND_STAGES` / `RP_BLEND_SECONDS` at build time to show chosen
-    stages for longer. Next for the UI: the compositor's
-    flush to the graphics plane dithers as it converts (rp-gfx), a real
-    wallpaper as 4:2:0 from a JPEG, and a stage with no `VOVRCLK` to see if
-    the clock is needed. Earlier status:
+    stages for longer. **Done in the emulator (2026-10-12): the OS's
+    drawing path for the interface plane.** Owner chose a full-colour RAM
+    layer (ARGB8888, 1.2 MB) over 16-bit + alpha or drawing in ARGB4444, so
+    the dither always starts from 8 bits. `rp_gfx::layer`: fills, glass as
+    a per-column gradient, icons and glyph masks drawn "over" (straight
+    alpha, exact against a reference; short paths with an exact
+    divide-by-255 in two lanes, only soft edges on glass divide), and
+    `layer::flush` converting dirty rectangles to ARGB4444 with the
+    approved dither (moved into rp-gfx; `blendtest` re-exports it) or
+    copying ARGB8888 (`PlaneFormat`, the one setting). The dither is fixed
+    to screen positions: a small flush writes exactly what a full one
+    would (tested). `rp-blend` stage F draws E's scene through it in the
+    scratch region (now 4 MiB) with a full clear flush then dirty flushes:
+    byte for byte E's picture (host test from a garbage plane), all six
+    stages pixel-exact in `cargo xtask emu-blend`, per-stage draw times in
+    the run log for the device. `CHECK layer` on target; benchmarks
+    (emulator instructions): dithered full-screen flush 9.5 ms vs 16.6 ms
+    per-pixel reference, clock-sized 0.080 ms, glass 0.22 ms. Next: the
+    device run (E against F by eye, F's draw time from the run log), a real
+    wallpaper as 4:2:0 from a JPEG, iWMMXt for the dither (4 channels in
+    one register), and a stage with no `VOVRCLK`. Earlier status:
     Steps 1-4 below are built: emulator rp-v0.10.0, `Display::adopt` in the
     loader and every image, `rp-blend`, `cargo xtask emu-blend` (three
     stages pixel-exact; screens in docs/img/emulator-plane-blend.png), two
