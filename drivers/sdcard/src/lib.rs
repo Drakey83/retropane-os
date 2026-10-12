@@ -177,6 +177,9 @@ pub struct SdCard<H> {
     wide: bool,
     /// The last failure behind a [`BlockDevice`] error (which carries none).
     last_error: Option<Error>,
+    /// Read commands issued (a multiple-block read counts once): each costs
+    /// a few milliseconds of start-up on the X51v whatever its length.
+    reads: u32,
 }
 
 impl<H: SdHost> SdCard<H> {
@@ -230,6 +233,7 @@ impl<H: SdHost> SdCard<H> {
             high_capacity,
             wide,
             last_error: None,
+            reads: 0,
         })
     }
 
@@ -237,6 +241,12 @@ impl<H: SdHost> SdCard<H> {
     #[must_use]
     pub fn last_error(&self) -> Option<Error> {
         self.last_error
+    }
+
+    /// Read commands issued so far (a multiple-block read counts once).
+    #[must_use]
+    pub fn reads(&self) -> u32 {
+        self.reads
     }
 
     /// Whether the 4-bit data bus is in use.
@@ -267,6 +277,7 @@ impl<H: SdHost> SdCard<H> {
 
     /// Reads block `lba` (512 bytes).
     pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
+        self.reads = self.reads.wrapping_add(1);
         let addr = self.address(lba);
         check(
             self.host
@@ -282,6 +293,7 @@ impl<H: SdHost> SdCard<H> {
     pub fn read_many(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         if buf.len() > BLOCK && self.host.can_read_multiple() {
+            self.reads = self.reads.wrapping_add(1);
             let addr = self.address(lba);
             let status = self
                 .host
@@ -684,6 +696,7 @@ mod tests {
         for (i, block) in buf.chunks(BLOCK).enumerate() {
             assert!(block.iter().all(|&b| b == 4 + i as u8), "block {i}");
         }
+        assert_eq!(card.reads(), 1, "one read command for three blocks");
         let host = card.into_inner();
         assert!(host.wide);
         // ACMD6 (with the card's RCA) before the clock goes up; one CMD18 and
@@ -709,6 +722,7 @@ mod tests {
         card.read_many(5, &mut buf).unwrap();
         assert!(buf[..BLOCK].iter().all(|&b| b == 5));
         assert!(buf[BLOCK..].iter().all(|&b| b == 6));
+        assert_eq!(card.reads(), 2, "one read command per block");
         let host = card.into_inner();
         assert_eq!(&host.log[host.log.len() - 2..], [(17, 5), (17, 6)]);
     }
