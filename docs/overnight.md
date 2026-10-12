@@ -127,7 +127,7 @@ nothing writes flash; card writes only through copy-then-swap.
       GPIO13 = 0, ready = 1, reset driven 0. Attribute memory deliberately
       not read with nobody present (a bus stall would mean Dell's prompt).
 - **Needs the owner:** is a CF card in the slot? (settles detect polarity);
-  which CPLD bit powers the slot (Dell OAL analysis: Fable-level RE).
+  which CPLD bit powers the slot (Dell OAL analysis: hard RE, done in bounded steps proven on the device).
 - **Iterate:** the spec separates what's confirmed on the device from what
   the manual says, and the probe captures the state the driver must
   reproduce, before any driver code exists.
