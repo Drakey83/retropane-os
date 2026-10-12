@@ -431,6 +431,30 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Sends a command to the resident loader (`drive rw` / `drive ro`) and
+/// prints its reply.
+pub fn command(root: &Path, command: &str) -> Result<(), String> {
+    let out = root.join("target/load");
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let frame = out.join("command.frame");
+    std::fs::write(&frame, rp_loadproto::control_frame(command))
+        .map_err(|e| format!("{}: {e}", frame.display()))?;
+    let text = run_put(&frame)?;
+    if text.contains("NOPORT") {
+        return Err(format!("no RetroPane USB port ({VID_PID}) found"));
+    }
+    let reply = text
+        .lines()
+        .find_map(|l| l.trim_end().strip_prefix("REPLY "))
+        .ok_or("no reply from the loader")?;
+    if let Some(detail) = reply.strip_prefix("RPL OK ") {
+        eprintln!("    {detail}");
+        Ok(())
+    } else {
+        Err(format!("the loader refused `{command}`: {reply}"))
+    }
+}
+
 fn run_put(frame: &Path) -> Result<String, String> {
     let out = powershell(&put_script(frame))?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())

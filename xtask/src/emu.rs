@@ -1077,6 +1077,25 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         if drive_file(&mut bot, "retropane.bin")? != old {
             return Err("drive: retropane.bin read through the drive differs".into());
         }
+        // Read-only by default: MODE SENSE says so and a write is refused.
+        let r = bot.command(&[0x1A, 0, 0x3F, 0, 255, 0], 255, true, &[])?;
+        if r.data.get(2).is_none_or(|b| b & 0x80 == 0) {
+            return Err("drive: not reported write-protected at start".into());
+        }
+        let r = bot.command(&rw10(0x2A, 100, 1), 512, false, &[0; 512])?;
+        if r.status != 1 || bot.sense()? != (0x07, 0x27, 0x00) {
+            return Err("drive: a write was accepted while read-only".into());
+        }
+        // The PC asks for read-write over the serial port.
+        serial
+            .write_all(&rp_loadproto::control_frame("drive rw"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut serial, "RPL OK drive read-write", 10)?;
+        let r = bot.command(&[0; 6], 0, false, &[])?;
+        if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
+            return Err("drive: no 'medium changed' after the mode change".into());
+        }
+        std::thread::sleep(Duration::from_millis(2500)); // the write grace
         // Replace a file through the drive (the PC's side).
         {
             let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)

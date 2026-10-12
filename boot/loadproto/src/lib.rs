@@ -6,7 +6,7 @@
 //!
 //! | Bytes | Field |
 //! |---|---|
-//! | 4 | magic: `RPL1` (an image to run) or `RPF1` (a file for the SD card) |
+//! | 4 | magic: `RPL1` (an image to run), `RPF1` (a file for the SD card) or `RPC1` (a command) |
 //! | 4 | payload length, little-endian |
 //! | 4 | CRC-32 (IEEE) of the payload, little-endian |
 //! | n | payload |
@@ -14,7 +14,9 @@
 //! An image's payload is the raw image, loaded at the images' link address.
 //! A file's payload is the name's length (one byte), the name, then the
 //! contents; the device replaces the root-directory file of that name on
-//! the card (ADR-0013) and stays in the loader.
+//! the card (ADR-0013) and stays in the loader. A command's payload is a
+//! short ASCII command (`drive rw`, `drive ro`: whether the PC may write
+//! the card as a drive, ADR-0014).
 //!
 //! The device answers [`OK`] (with details after it for a file) or an
 //! `RPL ERR` line and, for an image, starts it. Bytes before a magic are
@@ -31,6 +33,10 @@ extern crate std;
 pub const MAGIC: [u8; 4] = *b"RPL1";
 /// Frame start: a file for the card.
 pub const FILE_MAGIC: [u8; 4] = *b"RPF1";
+/// Frame start: a command.
+pub const CONTROL_MAGIC: [u8; 4] = *b"RPC1";
+/// Longest command.
+pub const COMMAND_MAX: usize = 32;
 /// Longest file name in a file frame.
 pub const NAME_MAX: usize = 64;
 /// Sent by the device about once a second while it waits.
@@ -82,6 +88,8 @@ pub enum LoadError {
     BadCrc,
     /// A file frame's name is missing, too long, or longer than the payload.
     BadName,
+    /// A command frame is too long or not a known command.
+    BadCommand,
 }
 
 impl LoadError {
@@ -92,6 +100,7 @@ impl LoadError {
             Self::TooBig => "RPL ERR too big\r\n",
             Self::BadCrc => "RPL ERR bad crc\r\n",
             Self::BadName => "RPL ERR bad name\r\n",
+            Self::BadCommand => "RPL ERR bad command\r\n",
         }
     }
 }
@@ -103,6 +112,20 @@ pub enum Kind {
     Image,
     /// A file to write to the card.
     File,
+    /// A command for the loader.
+    Control,
+}
+
+impl Kind {
+    /// The kind a magic's third byte names.
+    const fn from_tag(b: u8) -> Option<Self> {
+        match b {
+            b'L' => Some(Self::Image),
+            b'F' => Some(Self::File),
+            b'C' => Some(Self::Control),
+            _ => None,
+        }
+    }
 }
 
 /// A frame that arrived intact.
@@ -115,6 +138,19 @@ pub struct Frame {
 }
 
 impl Frame {
+    /// A command frame's command (ASCII, at most [`COMMAND_MAX`] bytes).
+    pub fn command<'d>(&self, dest: &'d [u8]) -> Result<&'d [u8], LoadError> {
+        if self.kind != Kind::Control || self.len == 0 || self.len > COMMAND_MAX {
+            return Err(LoadError::BadCommand);
+        }
+        let c = &dest[..self.len];
+        if c.iter().all(|b| b.is_ascii_graphic() || *b == b' ') {
+            Ok(c)
+        } else {
+            Err(LoadError::BadCommand)
+        }
+    }
+
     /// Splits a file frame's payload into its name and contents.
     pub fn file<'d>(&self, dest: &'d [u8]) -> Result<(&'d str, &'d [u8]), LoadError> {
         if self.kind != Kind::File || self.len == 0 {
@@ -182,17 +218,19 @@ impl Receiver {
     pub fn feed(&mut self, b: u8, dest: &mut [u8]) -> Option<Result<Frame, LoadError>> {
         match self.state {
             State::Magic(n) => {
-                // The two magics differ only in their third byte.
-                let want = match self.kind {
-                    Kind::Image => MAGIC,
-                    Kind::File => FILE_MAGIC,
+                // "RP", one byte naming the kind, then "1".
+                let matched = match n {
+                    0 => b == MAGIC[0],
+                    1 => b == MAGIC[1],
+                    2 => match Kind::from_tag(b) {
+                        Some(k) => {
+                            self.kind = k;
+                            true
+                        }
+                        None => false,
+                    },
+                    _ => b == MAGIC[3],
                 };
-                if n == 2 && b == FILE_MAGIC[2] {
-                    self.kind = Kind::File;
-                } else if n == 2 && b == MAGIC[2] {
-                    self.kind = Kind::Image;
-                }
-                let matched = b == want[n] || (n == 2 && (b == MAGIC[2] || b == FILE_MAGIC[2]));
                 self.state = if matched {
                     if n + 1 == MAGIC.len() {
                         State::Header(0)
@@ -297,6 +335,13 @@ pub fn file_frame(name: &str, contents: &[u8]) -> std::vec::Vec<u8> {
     framed(FILE_MAGIC, &payload)
 }
 
+/// Builds a command frame.
+#[cfg(any(test, feature = "std"))]
+#[must_use]
+pub fn control_frame(command: &str) -> std::vec::Vec<u8> {
+    framed(CONTROL_MAGIC, command.as_bytes())
+}
+
 #[cfg(any(test, feature = "std"))]
 fn framed(magic: [u8; 4], payload: &[u8]) -> std::vec::Vec<u8> {
     let mut f = magic.to_vec();
@@ -351,6 +396,80 @@ mod tests {
 
     fn frame_for_test(p: &[u8]) -> Vec<u8> {
         frame(p)
+    }
+
+    #[test]
+    fn command_frames_carry_short_ascii_commands() {
+        let mut dest = [0u8; 64];
+        let mut rx = Receiver::new();
+        let (_, r) = feed_slice(&mut rx, &control_frame("drive rw"), &mut dest);
+        let f = r.unwrap().unwrap();
+        assert_eq!(f.kind, Kind::Control);
+        assert_eq!(f.command(&dest), Ok(&b"drive rw"[..]));
+        // Too long, or binary: refused.
+        let long = "x".repeat(COMMAND_MAX + 1);
+        let (_, r) = feed_slice(&mut rx, &control_frame(&long), &mut dest);
+        assert_eq!(
+            r.unwrap().unwrap().command(&dest),
+            Err(LoadError::BadCommand)
+        );
+        let (_, r) = feed_slice(&mut rx, &framed(CONTROL_MAGIC, &[0, 1, 2]), &mut dest);
+        assert_eq!(
+            r.unwrap().unwrap().command(&dest),
+            Err(LoadError::BadCommand)
+        );
+        // A file frame is not a command.
+        let (_, r) = feed_slice(&mut rx, &file_frame("a", b"b"), &mut dest);
+        assert_eq!(
+            r.unwrap().unwrap().command(&dest),
+            Err(LoadError::BadCommand)
+        );
+    }
+
+    #[test]
+    fn unknown_kinds_and_near_misses_are_skipped() {
+        let mut stream = b"RPX1RPRPRPL0RPC".to_vec();
+        stream.extend(frame(b"ok"));
+        let mut dest = [0u8; 16];
+        let mut rx = Receiver::new();
+        let (_, r) = feed_slice(&mut rx, &stream, &mut dest);
+        let f = r.unwrap().unwrap();
+        assert_eq!((f.kind, f.len), (Kind::Image, 2));
+    }
+
+    /// Hostile input: random streams (with real magics sprinkled in) never
+    /// panic, never write past the destination, and frames that complete
+    /// either check out or are refused.
+    #[test]
+    fn random_streams_never_panic() {
+        let mut x: u64 = 0x5250_4C31;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut dest = [0u8; 200];
+        let mut rx = Receiver::new();
+        let magics = [MAGIC, FILE_MAGIC, CONTROL_MAGIC];
+        for _ in 0..20_000 {
+            let mut chunk: Vec<u8> = (0..(rnd() % 64)).map(|_| rnd() as u8).collect();
+            if rnd() % 4 == 0 {
+                chunk.extend(magics[(rnd() % 3) as usize]);
+                chunk.extend((rnd() as u32 % 300).to_le_bytes());
+            }
+            let mut data = &chunk[..];
+            while !data.is_empty() {
+                let (used, r) = feed_slice(&mut rx, data, &mut dest);
+                assert!(used >= 1 && used <= data.len());
+                if let Some(Ok(f)) = r {
+                    assert!(f.len <= dest.len());
+                    let _ = f.file(&dest);
+                    let _ = f.command(&dest);
+                }
+                data = &data[used..];
+            }
+        }
     }
 
     #[test]
