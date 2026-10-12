@@ -418,6 +418,18 @@ on the host or in the emulator first.
     - **Modernize:** sound tested in CI like everything else, from the
       register writes to the pitch of what comes out.
 
+## Fifth tier (added 2026-10-12, same rules)
+
+23. **Audio streaming by DMA**: the DMA engine generalised (port width,
+    a ring of descriptors that loops), the I2S fed from a ring the CPU
+    refills by halves; the CPU's share measured against the polled tone.
+24. **Headphone detect**: GPIO83 read, debounced, reported (and the output
+    routed: headphones vs speaker); emulator models the jack as a switch.
+25. **Growing folders**: a full exFAT folder, or a FAT32 folder other than
+    the root, takes another cluster instead of answering "no room"
+    (crash-safe: the new cluster zeroed and linked before any entry uses
+    it).
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
 power button on the device, thread-switch time investigation, SD DMA on the
