@@ -1,7 +1,8 @@
 # ADR-0016: Processes, the driver host, and IPC
 
-- **Status:** Proposed (2026-10-12, overnight queue item 27; needs the
-  project owner's approval before any code)
+- **Status:** Accepted (2026-10-12, by the project owner) with decision 5
+  as amended: a driver host per driver class from the start (the owner
+  chose the more isolated variant)
 - **Date:** 2026-10-12
 
 ## Context
@@ -64,13 +65,16 @@ Facts that shape the design:
 4. **Notifications are events.** Asynchronous signals (data ready, a card
    inserted) use the existing waitable objects (ADR-0010), not message
    queues: nothing to fill up, nothing to drop.
-5. **The driver host is one process, each driver a supervised service in
-   it.** Drivers get MMIO windows only for the devices the board description
+5. **A driver host per driver class, each driver a supervised service in
+   its host** (amended by the owner: isolation from the start). Classes:
+   storage (SD, CF, the file systems' block layer), display and input
+   (2700G, keypad, touch, backlight), audio, connectivity (USB, Wi-Fi,
+   Bluetooth), power. A fault in one class can't reach another's memory.
+   Drivers get MMIO windows only for the devices the board description
    grants them, and their interrupts as waitable objects (ADR-0007). A
    driver that faults is restarted from its entry point; its in-flight calls
-   fail. (Splitting drivers into separate hosts, for more isolation, is the
-   same mechanism with more processes: decided per driver later, guided by
-   measurements.)
+   fail. Each host costs a slot and its stacks (on the order of 64 KiB
+   resident), measured as the hosts are built.
 6. **No global names: a service manager hands out ports.** Processes start
    with a handle to the service manager only; it gives port handles per
    policy (which process may open which service), which is where the CE
@@ -115,7 +119,7 @@ Facts that shape the design:
   `rp-bench` (emulator: instructions; device: time), against the ADR-0010
   thread switch.
 
-## Open questions (for the owner)
+## Open questions
 
-- 63 processes (FCSE's limit): enough for this device? (CE5 allowed 32.)
-- One driver host, or a host per driver class from the start?
+- 63 processes (FCSE's limit): taken as enough (CE5 allowed 32); revisit
+  if a real workload says otherwise.
