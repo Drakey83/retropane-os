@@ -28,6 +28,15 @@
 //! count less one and returns the result plus one (errors unchanged);
 //! else faults if `r1`, `r2` are both zero (a load from an unmapped
 //! address), else writes `0x2222_2222` at `DATA` and returns their sum.
+//!
+//! The same server code also runs as a supervised *host* (ADR-0016 step
+//! 3), and a third program is the *service manager*: called with `OPEN` in
+//! `r1`, it grants its caller (whose slot the kernel puts in `r0`) a
+//! `CALL` handle to the host and returns the handle's number. Client 0
+//! (its role is `r0 >> 8` at start) then, before step 5: opens the host
+//! through the manager, calls it (7), makes it fault (the host restarts),
+//! calls through the old handle (`Stale`), opens it again and calls (7),
+//! keeping the five results at `RESTART_RESULTS`.
 
 /// System calls the programs make (`r7`).
 pub const SYS_CALL: u32 = 1;
@@ -35,6 +44,12 @@ pub const SYS_CALL: u32 = 1;
 pub const SYS_RETURN: u32 = 2;
 /// The client's report.
 pub const SYS_DONE: u32 = 3;
+/// Hand a handle on (`r0` handle, `r1` slot, `r2` rights).
+pub const SYS_GRANT: u32 = 4;
+/// The manager's operation: open the host service.
+pub const OPEN: u32 = 1;
+/// Where client 0 keeps its restart test's five results (its own slot).
+pub const RESTART_RESULTS: u32 = DATA + 16;
 /// Where each program keeps its word (in its own slot).
 pub const DATA: u32 = 0x0002_0000;
 /// Calls the client makes for timing.
@@ -54,10 +69,12 @@ core::arch::global_asm!(
     .global rp_user_page
     .global rp_ipc_client
     .global rp_ipc_server
+    .global rp_ipc_manager
 rp_user_page:
 rp_ipc_client:
-    mov     r4, r0                  @ the handle
+    and     r4, r0, #0xFF           @ the handle
     ldr     r5, =0x00020000
+    lsr     r12, r0, #8             @ our role (a register: threads share memory)
     ldr     r6, =0x11111111
     str     r6, [r5]
     ldr     r9, =1000
@@ -82,7 +99,43 @@ rp_ipc_client:
     mov     r7, #1
     swi     #0
     mov     r11, r0                 @ the error
-    ldr     r6, [r5]                @ our word, untouched
+    cmp     r12, #0                 @ client 0: the supervised host
+    bne     8f
+    mov     r0, #1                  @ the manager: open the host
+    mov     r1, #1
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #16]
+    mov     r6, r0
+    mov     r1, #3                  @ 3 + 4
+    mov     r2, #4
+    mov     r3, #0
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #20]
+    mov     r0, r6                  @ make it fault: it restarts
+    mov     r1, #0
+    mov     r2, #0
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #24]
+    mov     r0, r6                  @ the old handle: stale now
+    mov     r1, #3
+    mov     r2, #4
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #28]
+    mov     r0, #1                  @ ask the manager again
+    mov     r1, #1
+    mov     r7, #1
+    swi     #0
+    mov     r1, #3                  @ and call the new instance
+    mov     r2, #4
+    mov     r3, #0
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #32]
+8:  ldr     r6, [r5]                @ our word, untouched
     mov     r0, r4                  @ nested: 4 calls deep
     mov     r1, #20
     mov     r2, #22
@@ -134,6 +187,19 @@ rp_ipc_server:
     mov     r7, #2                  @ SYS_RETURN
     swi     #0
 3:  b       3b
+
+rp_ipc_manager:                     @ r0 = the caller's slot, r1 = operation
+    cmp     r1, #1                  @ OPEN
+    mvnne   r0, #2                  @ else an error (0xFFFFFFFD)
+    bne     5f
+    mov     r1, r0                  @ to the caller
+    mov     r0, #0                  @ our handle to the host's port
+    mov     r2, #1                  @ CALL only
+    mov     r7, #4                  @ SYS_GRANT
+    swi     #0
+5:  mov     r7, #2                  @ SYS_RETURN
+    swi     #0
+6:  b       6b
     .ltorg
     .balign 4
     .global rp_user_page_end
@@ -147,6 +213,7 @@ unsafe extern "C" {
     static rp_user_page_end: u32;
     static rp_ipc_client: u8;
     static rp_ipc_server: u8;
+    static rp_ipc_manager: u8;
     static rp_ipc_reloc: u8;
 }
 
@@ -156,8 +223,10 @@ pub struct Programs {
     pub code: &'static [u32],
     /// The client's offset in it.
     pub client: u32,
-    /// The server's offset in it.
+    /// The server's offset in it (also the supervised host's).
     pub server: u32,
+    /// The service manager's offset in it.
+    pub manager: u32,
     /// The offset of the literal that needs a base relocation (`HIGHLOW`).
     pub reloc: u32,
 }
@@ -166,10 +235,11 @@ pub struct Programs {
 #[must_use]
 pub fn ipc_programs() -> Programs {
     let start = core::ptr::addr_of!(rp_user_page);
-    let (end, client, server, reloc) = (
+    let (end, client, server, manager, reloc) = (
         core::ptr::addr_of!(rp_user_page_end) as usize,
         core::ptr::addr_of!(rp_ipc_client) as u32,
         core::ptr::addr_of!(rp_ipc_server) as u32,
+        core::ptr::addr_of!(rp_ipc_manager) as u32,
         core::ptr::addr_of!(rp_ipc_reloc) as u32,
     );
     let words = (end - start as usize) / 4;
@@ -182,6 +252,7 @@ pub fn ipc_programs() -> Programs {
         code,
         client: client - at,
         server: server - at,
+        manager: manager - at,
         reloc: reloc - at,
     }
 }

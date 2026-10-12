@@ -772,9 +772,51 @@ on the host or in the emulator first.
     - **Modernize:** the apps' floor is fixed and parts trade only among
       themselves, so OS growth has to be paid for inside the OS.
 
-42. **Service manager and driver hosts** (ADR-0016 step 3): a first user
-    process that owns the port table and starts hosts per driver class;
-    restart a crashed host with its clients' handles turning `Stale`.
+42. **Service manager and supervised hosts** (ADR-0016 step 3): **done
+    (emulator).** Servers are entered with the caller's slot in `r0`, put
+    there by the kernel. `SYS_GRANT` lets a server hand a narrower copy of
+    a handle to another process. A host (slot 7) is supervised by a service
+    manager (slot 8); both run from the shared PE image. Client 0 opens the
+    host through the manager, calls it (7), makes it fault (`ERR_FAULT`); the
+    kernel marks it *restarting* (new calls fail at once, calls already
+    inside return `ERR_RESTARTED`, never the broken instance's answers) and,
+    when the last thread leaves, drops and remaps its whole address space
+    (code shared, data fresh: checked), bumps the port's generation and
+    renews the manager's handle. The old handle is `Stale`; the client asks
+    the manager again and the new instance answers (7). Checks `IPC service
+    manager OK`, `IPC supervised restart OK`, required by the emulator test;
+    a host test for the supervisor's renewal and `Rights::from_bits`. The
+    emulator caught a race in my first test program (two threads sharing a
+    data word): fixed by keeping per-thread state in registers. Kernel load
+    budget 65 -> 76 KiB under the standing rule. Still to come (items 44,
+    46): real drivers moved into per-class hosts, and processes created and
+    ended by the manager.
+    - **Iterate:** CE's `device.exe` hosted every driver in one process,
+      where one crash took them all down; here a host is restarted alone
+      and its clients reconnect.
+    - **Modernize:** capability handles from a manager instead of global
+      names, unforgeable caller identity, crash results never leak out of a
+      faulted instance, and stale handles fail instead of reaching a new
+      instance.
+
+44. **Processes created and ended at run time**: address spaces allocated
+    per process when it starts (not static records for every slot, 1.6 KB
+    each), `SYS_SPAWN`/`SYS_EXIT` for the service manager (a process from
+    an image, a first thread, a handle to the manager only), and exit
+    cleanup (ports closed, handles dropped, every frame back).
+
+45. **ADR draft: optional packs on the card** (owner's idea, 2026-10-12):
+    the base system always complete in flash; optional packs (browser,
+    codecs, fonts, language packs, extra game compatibility) on the card or
+    in flash; nothing needed to boot or recover lives only on the card;
+    packs hashed and signed and refused if changed; programs from a pack
+    closed cleanly before its card goes. For the owner's vote, with pluses,
+    minuses and alternatives.
+
+46. **A real driver in a host**: the display+input host process running
+    the backlight (PWM) driver through a granted MMIO window and its
+    interrupt as an event, called by a client through a port; a crash in
+    the host restarts it without touching the kernel or other hosts.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only

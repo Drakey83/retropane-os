@@ -78,7 +78,14 @@ pub const BUDGETS: &[Budget] = &[
         // page cache's fill (~5 KB), plus the test's image writer and
         // checks (~2.5 KB). `rp-kernel-pe` built for size (cold: once per
         // page per image). Measured 58.9 KiB + ~10%.
-        max_load: 65 * 1024,
+        // Raised 65 -> 76 KiB on 2026-10-12 under the owner's standing rule:
+        // supervised driver hosts (ADR-0016 step 3): restart on fault with
+        // in-flight calls failed, SYS_GRANT, caller identity, plus two more
+        // test processes (a host and the service manager; their address
+        // spaces are 1.6 KB each of initialised data). Measured 69.1 KiB +
+        // ~10%. Follow-up: address spaces allocated per process at start,
+        // not static (queued).
+        max_load: 76 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame

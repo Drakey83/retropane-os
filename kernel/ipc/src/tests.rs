@@ -98,13 +98,13 @@ fn a_faulting_server_unwinds_to_its_caller() {
 #[test]
 fn a_restarted_server_isnt_reached_through_old_handles() {
     let (mut ipc, port, old) = setup();
-    ipc.restart(port).unwrap();
+    ipc.restart(port, None).unwrap();
     assert_eq!(ipc.call(5, APP, old), Err(Error::Stale));
     let new = ipc.install(APP, port, Rights::CALL).unwrap();
     assert!(ipc.call(5, APP, new).is_ok());
     // The server's own handle followed the restart.
     let (mut ipc2, port2, _) = setup();
-    ipc2.restart(port2).unwrap();
+    ipc2.restart(port2, None).unwrap();
     assert!(ipc2.grant(SERVER, Handle(0), OTHER, Rights::CALL).is_ok());
 }
 
@@ -185,7 +185,7 @@ fn random_operations_never_break_the_rules() {
                 let _ = ipc.ret(tid);
             }
             6 if !ports.is_empty() => {
-                let _ = ipc.restart(ports[(rnd() as usize) % ports.len()]);
+                let _ = ipc.restart(ports[(rnd() as usize) % ports.len()], Some(slot));
             }
             7 => {
                 let _ = ipc.exit(slot);
@@ -195,4 +195,30 @@ fn random_operations_never_break_the_rules() {
             }
         }
     }
+}
+
+#[test]
+fn a_supervisor_keeps_its_handle_across_a_restart() {
+    const MANAGER: u8 = 4;
+    let mut ipc = Ipc::new();
+    let (port, _) = ipc.open(SERVER, 0x1000).unwrap();
+    let m = ipc.install(MANAGER, port, Rights::ALL).unwrap();
+    let old = ipc.grant(MANAGER, m, APP, Rights::CALL).unwrap();
+    ipc.restart(port, Some(MANAGER)).unwrap();
+    // The app's handle is stale; the manager's still works and hands out a
+    // fresh one, with no more rights than asked for.
+    assert_eq!(ipc.call(5, APP, old), Err(Error::Stale));
+    let new = ipc
+        .grant(MANAGER, m, APP, Rights::from_bits(0xFFFF_FFF1))
+        .unwrap();
+    assert!(ipc.call(5, APP, new).is_ok());
+    ipc.ret(5).unwrap();
+    assert_eq!(
+        ipc.grant(APP, new, OTHER, Rights::CALL),
+        Err(Error::NoRight),
+        "granted CALL only"
+    );
+    // A supervisor outside the process slots is refused, and nothing changes.
+    assert_eq!(ipc.restart(port, Some(0)), Err(Error::Range));
+    assert!(ipc.call(5, APP, new).is_ok());
 }

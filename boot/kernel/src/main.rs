@@ -30,6 +30,13 @@
 //!    page with its section's protection. A page is loaded (filled and
 //!    relocated) on its first fault, once, and shared; the client reaches a
 //!    word in `.rdata` through two relocated addresses.
+//! 8. Supervision (ADR-0016 step 3): a host in slot 7 (the server's code)
+//!    supervised by a service manager in slot 8. A client gets the host's
+//!    handle from the manager (`SYS_GRANT`; servers see their caller's
+//!    slot), makes the host fault, and the kernel restarts it once no thread
+//!    is inside: fresh memory, a new port generation (the old handle is
+//!    `Stale`), the manager's handle renewed; the client asks again and the
+//!    new instance answers.
 //!
 //! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
 //! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
@@ -48,11 +55,11 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
     use rp_hal_pxa27x::rt::{self, Global};
-    use rp_hal_pxa27x::testprog::{self, SYS_CALL, SYS_DONE, SYS_RETURN};
+    use rp_hal_pxa27x::testprog::{self, SYS_CALL, SYS_DONE, SYS_GRANT, SYS_RETURN};
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
-    use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, Rights};
+    use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
     use rp_kernel_mm::domains::{self, Domains};
     use rp_kernel_mm::frames::Frames;
@@ -63,7 +70,7 @@ mod image {
     };
     use rp_kernel_mm::zpool::{ZBuffers, ZPool};
     use rp_kernel_pe::build::{self, Header, SectionSpec};
-    use rp_kernel_pe::{Dir, Image, Relocations, dir, scn};
+    use rp_kernel_pe::{Dir, Image, Protection, Relocations, dir, scn};
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
 
     rp_hal_pxa27x::entry!(main);
@@ -253,6 +260,14 @@ mod image {
     /// bits set (no sum of two small numbers looks like it).
     const ERR: u32 = 0xFFFF_FF00;
     const ERR_FAULT: u32 = ERR | 0xFE;
+    /// A call to a server being restarted (fails at once).
+    const ERR_RESTARTING: u32 = ERR | 0xFD;
+    /// A call that was inside a server when it faulted: whatever the broken
+    /// instance would have answered is dropped.
+    const ERR_RESTARTED: u32 = ERR | 0xFC;
+    /// The supervised host (the server's code) and its supervisor.
+    const HOST_SLOT: u32 = 7;
+    const MANAGER_SLOT: u32 = 8;
     // The IPC tables hold one handle table per process slot of the layout.
     const _: () = assert!(
         rp_kernel_ipc::FIRST_SLOT as u32 == layout::FIRST_PROCESS_SLOT
@@ -290,6 +305,17 @@ mod image {
         finished: usize,
         /// Thread switches away from a thread that was inside a call.
         in_call_switches: u32,
+        /// Threads inside each slot as a server, now.
+        inside: [u8; 33],
+        /// Bit `slot`: that server faulted and restarts when it empties.
+        restarting: u64,
+        /// The supervised port (the host's) and its supervisor's slot.
+        supervised: Option<(PortId, u8)>,
+        restarts: u32,
+        /// The restarted host's memory came back fresh.
+        restart_clean: bool,
+        /// Roles handed to client threads as they start.
+        next_role: u32,
     }
 
     static RUN: Global<Run> = Global::new(Run {
@@ -301,12 +327,22 @@ mod image {
         results: [[0; 7]; CLIENTS],
         finished: 0,
         in_call_switches: 0,
+        inside: [0; 33],
+        restarting: 0,
+        supervised: None,
+        restarts: 0,
+        restart_clean: false,
+        next_role: 0,
     });
 
     /// Everything else the VM owns.
     struct State {
         space: AddressSpace,
         server: AddressSpace,
+        host: AddressSpace,
+        manager: AddressSpace,
+        /// The test image's view pages' protections (`None`: a guard).
+        pe_prot: [Option<Protection>; PE_PAGES],
         domains: Domains,
         file: RamFile,
         pool: Option<&'static mut [u32]>,
@@ -322,6 +358,9 @@ mod image {
         // Its real domain comes from `Domains::activate` before first use.
         space: AddressSpace::process(PROC_SLOT, domains::PARKED),
         server: AddressSpace::process(SERVER_SLOT, domains::PARKED),
+        host: AddressSpace::process(HOST_SLOT, domains::PARKED),
+        manager: AddressSpace::process(MANAGER_SLOT, domains::PARKED),
+        pe_prot: [None; PE_PAGES],
         file: RamFile {
             phys: 0,
             refs: 0,
@@ -387,7 +426,7 @@ mod image {
             // give the PC as the process saw it. Relocating is right for all
             // three: addresses already at or above 32 MiB pass through.
             let mva = layout::mva(a.addr, s.pid);
-            match vm.handle_fault(&s.space, mva, access) {
+            match vm.handle_fault(space_of(s, s.pid), mva, access) {
                 Ok(o) => {
                     s.faults += 1;
                     s.last = Some(o);
@@ -738,64 +777,34 @@ mod image {
                 return Err("image refused");
             }
             s.file.pe_file = file_phys;
-            let a5 = s.domains.activate(PROC_SLOT);
-            let a6 = s.domains.activate(SERVER_SLOT);
-            s.space.set_domain(a5.domain);
-            s.server.set_domain(a6.domain);
-            for (space, slot) in [(&mut s.space, PROC_SLOT), (&mut s.server, SERVER_SLOT)] {
-                let base = layout::slot_base(slot);
-                // Each view page as its section says; a page no section
-                // covers stays unmapped (a guard).
-                for page in 0..image.pages() {
-                    let Some(q) = image.page_protection(page) else {
-                        continue;
-                    };
-                    let prot = if q.exec {
-                        Prot::RX
-                    } else if q.write {
-                        Prot::RW
-                    } else {
-                        Prot::R
-                    };
-                    space
-                        .map(Region {
-                            start: base + LOAD_BASE + page * 4096,
-                            len: 4096,
-                            prot,
-                            backing: Backing::File {
-                                object: PE_OBJECT,
-                                offset: page * 4096,
-                                shared: q.shared,
-                            },
-                        })
-                        .map_err(|e| e.name())?;
-                }
-                for region in [
-                    Region {
-                        start: base + testprog::DATA,
-                        len: 4096,
-                        prot: Prot::RW,
-                        backing: Backing::Zero,
-                    },
-                    // Stacks: per thread and call depth (`stack_top`).
-                    Region {
-                        start: base + STACK_VA,
-                        len: STACK_REGION,
-                        prot: Prot::RW,
-                        backing: Backing::Zero,
-                    },
-                ] {
-                    space.map(region).map_err(|e| e.name())?;
-                }
+            for page in 0..image.pages() {
+                s.pe_prot[page as usize] = image.page_protection(page);
+            }
+            let prot = s.pe_prot;
+            for slot in [PROC_SLOT, SERVER_SLOT, HOST_SLOT, MANAGER_SLOT] {
+                let a = s.domains.activate(slot);
+                let space = space_mut(s, slot);
+                space.set_domain(a.domain);
+                map_process(space, slot, &prot)?;
             }
             Ok(image.pages())
         });
         let pe_pages = *mapped.as_ref().unwrap_or(&0);
         let mapped = mapped.map(|_| ());
+        // Ports: the server's (unsupervised); the host's, supervised by the
+        // manager, which holds it with every right (its handle 0); the
+        // manager's own, which clients hold (their handle 1).
         let client_handle = IPC.with(|i| -> Option<Handle> {
             let server = LOAD_BASE + TEXT_RVA + programs.server;
             let (port, _) = i.ipc.open(SERVER_SLOT as u8, server).ok()?;
-            i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()
+            let h = i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()?;
+            let (host, _) = i.ipc.open(HOST_SLOT as u8, server).ok()?;
+            i.ipc.install(MANAGER_SLOT as u8, host, Rights::ALL).ok()?;
+            let manager = LOAD_BASE + TEXT_RVA + programs.manager;
+            let (mport, _) = i.ipc.open(MANAGER_SLOT as u8, manager).ok()?;
+            i.ipc.install(PROC_SLOT as u8, mport, Rights::CALL).ok()?;
+            RUN.with(|r| r.supervised = Some((host, MANAGER_SLOT as u8)));
+            Some(h)
         });
         // Threads: this code becomes the boot thread; an idle thread; the
         // clients, each entering the client program in slot 5.
@@ -839,12 +848,119 @@ mod image {
 
     /// A client: enters the client program in its process, for good.
     extern "C" fn client_thread(_: usize) -> ! {
-        let (me, entry, h) = RUN.with(|r| {
+        let (me, entry, arg) = RUN.with(|r| {
             r.slots[r.current.index()] = PROC_SLOT as u8;
-            (r.current, r.entry, r.handle)
+            let role = r.next_role;
+            r.next_role += 1;
+            (r.current, r.entry, u32::from(r.handle) | role << 8)
         });
         switch_to(PROC_SLOT);
-        user::enter_user_at(entry, stack_top(me, 0), u32::from(h))
+        user::enter_user_at(entry, stack_top(me, 0), arg)
+    }
+
+    fn space_of(s: &State, slot: u32) -> &AddressSpace {
+        match slot {
+            SERVER_SLOT => &s.server,
+            HOST_SLOT => &s.host,
+            MANAGER_SLOT => &s.manager,
+            _ => &s.space,
+        }
+    }
+
+    fn space_mut(s: &mut State, slot: u32) -> &mut AddressSpace {
+        match slot {
+            SERVER_SLOT => &mut s.server,
+            HOST_SLOT => &mut s.host,
+            MANAGER_SLOT => &mut s.manager,
+            _ => &mut s.space,
+        }
+    }
+
+    /// Maps a test process: the image (each view page as its section says;
+    /// a page no section covers stays unmapped, a guard), its data page and
+    /// its stacks.
+    fn map_process(
+        space: &mut AddressSpace,
+        slot: u32,
+        pe: &[Option<Protection>; PE_PAGES],
+    ) -> Result<(), &'static str> {
+        let base = layout::slot_base(slot);
+        for (page, q) in (0u32..).zip(pe) {
+            let Some(q) = q else {
+                continue;
+            };
+            let prot = if q.exec {
+                Prot::RX
+            } else if q.write {
+                Prot::RW
+            } else {
+                Prot::R
+            };
+            space
+                .map(Region {
+                    start: base + LOAD_BASE + page * 4096,
+                    len: 4096,
+                    prot,
+                    backing: Backing::File {
+                        object: PE_OBJECT,
+                        offset: page * 4096,
+                        shared: q.shared,
+                    },
+                })
+                .map_err(|e| e.name())?;
+        }
+        for region in [
+            Region {
+                start: base + testprog::DATA,
+                len: 4096,
+                prot: Prot::RW,
+                backing: Backing::Zero,
+            },
+            // Stacks: per thread and call depth (`stack_top`).
+            Region {
+                start: base + STACK_VA,
+                len: STACK_REGION,
+                prot: Prot::RW,
+                backing: Backing::Zero,
+            },
+        ] {
+            space.map(region).map_err(|e| e.name())?;
+        }
+        Ok(())
+    }
+
+    /// Restarts the supervised server in `slot` (no thread is inside): its
+    /// whole address space is dropped and mapped afresh (code and constants
+    /// come back from the shared page cache, everything writable zeroed),
+    /// and its port's generation moves on, so every handle but the server's
+    /// and its supervisor's is stale.
+    fn restart_server(slot: u8) {
+        let Some((port, supervisor)) = RUN.with(|r| r.supervised) else {
+            return;
+        };
+        let remapped = with_vm(|vm, s| {
+            let prot = s.pe_prot;
+            let base = layout::slot_base(u32::from(slot));
+            let space = space_mut(s, u32::from(slot));
+            vm.unmap(space, base, layout::SLOT_SIZE).is_ok()
+                && map_process(space, u32::from(slot), &prot).is_ok()
+        });
+        let renewed = IPC.with(|i| i.ipc.restart(port, Some(supervisor))).is_ok();
+        // Its data page reads zero again (a fresh demand-zero page).
+        let back = STATE.with(|s| s.pid);
+        switch_to(u32::from(slot));
+        let word = rt::try_read((layout::slot_base(u32::from(slot)) + testprog::DATA) as usize);
+        switch_to(back);
+        RUN.with(|r| {
+            r.restarting &= !(1 << slot);
+            r.restarts += 1;
+            r.restart_clean = remapped && renewed && word == Some(0);
+        });
+    }
+
+    /// Whether the server in `slot` is waiting to be restarted.
+    fn restarting(slot: u8) -> bool {
+        RUN.with(|r| r.restarting & 1 << slot != 0)
     }
 
     /// Where thread `t`'s user stack starts at call depth `depth` (0: its
@@ -938,20 +1054,39 @@ mod image {
                     i.ipc.call(me.0, slot, Handle(f.arg(0) as u8))
                 });
                 match r {
+                    Ok(_) if r.is_ok_and(|e| restarting(e.slot)) => {
+                        let _ = IPC.with(|i| i.ipc.ret(me.0));
+                        f.set_result(ERR_RESTARTING);
+                    }
                     Ok(e) => {
                         // The server runs as a nested activation of this
                         // thread: the caller's registers and slot wait in
                         // this frame on the kernel stack. The server gets
                         // its arguments and nothing else, on its stack for
                         // this depth.
+                        // The server is told who called: the kernel's word,
+                        // not the caller's.
                         enter_slot(me, e.slot);
-                        let result = user::call_user(
+                        RUN.with(|r| r.inside[usize::from(e.slot)] += 1);
+                        let mut result = user::call_user(
                             me.index(),
                             e.entry,
                             stack_top(me, e.depth),
-                            [0, f.arg(1), f.arg(2), f.arg(3)],
+                            [u32::from(slot), f.arg(1), f.arg(2), f.arg(3)],
                         );
                         enter_slot(me, slot);
+                        let left = RUN.with(|r| {
+                            r.inside[usize::from(e.slot)] -= 1;
+                            r.inside[usize::from(e.slot)]
+                        });
+                        if restarting(e.slot) {
+                            if result != ERR_FAULT {
+                                result = ERR_RESTARTED;
+                            }
+                            if left == 0 {
+                                restart_server(e.slot);
+                            }
+                        }
                         f.set_result(result);
                     }
                     Err(e) => f.set_result(ERR | e as u32),
@@ -960,6 +1095,15 @@ mod image {
             SYS_RETURN => {
                 finish_call(me, f.arg(0));
                 f.set_result(ERR | IpcError::NotInCall as u32);
+            }
+            SYS_GRANT => {
+                // A copy of a handle this process holds (with GRANT), into
+                // another's table, with the same rights or fewer.
+                let from = STATE.with(|s| s.pid) as u8;
+                let to = f.arg(1) as u8;
+                let rights = Rights::from_bits(f.arg(2));
+                let r = IPC.with(|i| i.ipc.grant(from, Handle(f.arg(0) as u8), to, rights));
+                f.set_result(r.map_or_else(|e| ERR | e as u32, |h| u32::from(h.0)));
             }
             SYS_DONE => done(me, f),
             _ => f.set_result(ERR | 0xFF),
@@ -991,19 +1135,20 @@ mod image {
             with_vm(|vm, s| {
                 load_pe_page(vm, addr);
                 let mva = layout::mva(addr, s.pid);
-                let space = if s.pid == SERVER_SLOT {
-                    &s.server
-                } else {
-                    &s.space
-                };
-                vm.handle_fault(space, mva, access).is_ok()
+                vm.handle_fault(space_of(s, s.pid), mva, access).is_ok()
             })
         });
         if resolved {
             return;
         }
-        // A server faulting inside a call: the caller gets an error.
-        finish_call(RUN.with(|r| r.current), ERR_FAULT);
+        // A server faulting inside a call: the caller gets an error, and a
+        // supervised server restarts once every thread has left it.
+        let me = RUN.with(|r| r.current);
+        let slot = RUN.with(|r| r.slots[me.index()]);
+        if IPC.with(|i| i.ipc.depth(me.0)) > 0 && slot == HOST_SLOT as u8 {
+            RUN.with(|r| r.restarting |= 1 << slot);
+        }
+        finish_call(me, ERR_FAULT);
         on_fault(kind, addr)
     }
 
@@ -1169,6 +1314,22 @@ mod image {
         let loads = STATE.with(|s| s.file.pe_loads);
         let demand = loads == 3 && pe_pages == 5;
         ok &= report_ipc(uart, "PE pages loaded on demand", demand, loads);
+        // Supervision: client 0's five results, kept in its own memory.
+        switch_to(PROC_SLOT);
+        let base = (layout::slot_base(PROC_SLOT) + testprog::RESTART_RESULTS) as usize;
+        let mut d = [0u32; 5];
+        for (k, v) in d.iter_mut().enumerate() {
+            *v = rt::try_read(base + 4 * k).unwrap_or(0);
+        }
+        let (restarts, clean) = RUN.with(|r| (r.restarts, r.restart_clean));
+        let opened = d[0] < 32 && d[1] == 7;
+        ok &= report_ipc(uart, "service manager", opened, d[0]);
+        let restarted = d[2] == ERR_FAULT
+            && d[3] == ERR | IpcError::Stale as u32
+            && d[4] == 7
+            && restarts == 1
+            && clean;
+        ok &= report_ipc(uart, "supervised restart", restarted, d[3]);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         ok
     }
