@@ -38,11 +38,21 @@ const VOL_ZC: u16 = 1 << 7;
 const VOL_0DB: u16 = 0x79;
 const VOL_MIN: u16 = 0x30;
 
+/// Where sound goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    /// Headphones only (plugged in: the speaker is muted).
+    Headphones,
+    /// The speaker (and the headphone pair, harmlessly, with nothing in).
+    Speaker,
+}
+
 /// The codec, found and set up.
 pub struct Wm8750<I> {
     i2c: I,
     addr: u8,
     level: u32,
+    output: Output,
 }
 
 impl<I: I2cBus> Wm8750<I> {
@@ -57,6 +67,7 @@ impl<I: I2cBus> Wm8750<I> {
             i2c,
             addr,
             level: 0,
+            output: Output::Speaker,
         };
         let setup = [
             (reg::RESET, 0),
@@ -97,17 +108,39 @@ impl<I: I2cBus> Wm8750<I> {
         self.level
     }
 
-    /// Sets both output pairs to `level` (0-100): 0 mutes, 100 is 0 dB,
-    /// in 1 dB steps between, which is even to the ear.
+    /// Sets the outputs to `level` (0-100): 0 mutes, 100 is 0 dB, in 1 dB
+    /// steps between, which is even to the ear. The speaker pair stays
+    /// muted while headphones are the output.
     pub fn set_level(&mut self, level: u32) -> Result<(), I2cError> {
         let level = level.min(100);
         let code = volume_code(level);
-        for (left, right) in [(reg::LOUT1, reg::ROUT1), (reg::LOUT2, reg::ROUT2)] {
-            self.set(left, VOL_ZC | code)?;
-            self.set(right, VOL_ZC | VOL_UPDATE | code)?;
+        let speaker = if self.output == Output::Headphones {
+            0
+        } else {
+            code
+        };
+        for (left, right, c) in [
+            (reg::LOUT1, reg::ROUT1, code),
+            (reg::LOUT2, reg::ROUT2, speaker),
+        ] {
+            self.set(left, VOL_ZC | c)?;
+            self.set(right, VOL_ZC | VOL_UPDATE | c)?;
         }
         self.level = level;
         Ok(())
+    }
+
+    /// Routes sound to `output` (headphones plugged in or not), at the
+    /// current level.
+    pub fn route(&mut self, output: Output) -> Result<(), I2cError> {
+        self.output = output;
+        self.set_level(self.level)
+    }
+
+    /// Where sound goes now.
+    #[must_use]
+    pub fn output(&self) -> Output {
+        self.output
     }
 
     /// Gives the bus back.
@@ -189,6 +222,20 @@ mod tests {
         };
         assert_eq!(e, I2cError::NoDevice);
         assert!(b.regs.is_empty(), "nothing written to the bus");
+    }
+
+    #[test]
+    fn headphones_mute_the_speaker_and_unplugging_brings_it_back() {
+        let mut codec = Wm8750::init(bus(0x1A), 100).ok().unwrap();
+        codec.route(Output::Headphones).unwrap();
+        let last =
+            |regs: &[(u8, u16)], r: u8| regs.iter().rev().find(|w| w.0 == r).unwrap().1 & 0x7F;
+        assert_eq!(last(&codec.i2c.regs, reg::LOUT2), 0);
+        assert_eq!(last(&codec.i2c.regs, reg::ROUT2), 0);
+        assert_eq!(last(&codec.i2c.regs, reg::LOUT1), VOL_0DB);
+        codec.route(Output::Speaker).unwrap();
+        assert_eq!(last(&codec.i2c.regs, reg::ROUT2), VOL_0DB);
+        assert_eq!(codec.output(), Output::Speaker);
     }
 
     #[test]
