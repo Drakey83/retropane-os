@@ -127,5 +127,27 @@ Facts that shape the design:
 
 ## Open questions
 
-- 63 processes (FCSE's limit): taken as enough (CE5 allowed 32); revisit
-  if a real workload says otherwise.
+- 31 processes (CE5's layout, slots 2-32): taken as enough (CE5 allowed
+  32); revisit if a real workload says otherwise.
+
+## Implementation notes (step 3, 2026-10-12)
+
+How decisions 2, 5 and 6 are carried out, within the decision above:
+
+- **Caller identity.** A server is entered with the caller's slot in `r0`,
+  put there by the kernel: a server can't be lied to about who called.
+- **Handing out handles.** `SYS_GRANT(handle, slot, rights)` puts a copy of
+  a handle the server holds (with `GRANT`) into another process's table,
+  with the same rights or fewer, and returns its number there. The service
+  manager answers "open service X" this way.
+- **Supervision and restart.** A port may have a supervisor (the service
+  manager). When its server faults inside a call, that call fails with
+  `ERR_FAULT`, and the server is marked *restarting*: new calls fail at
+  once, and calls already inside it return an error instead of anything
+  the broken instance produced. When the last thread has left, the kernel
+  resets the server's writable memory (it comes back zero-filled; code and
+  constants stay, shared), bumps the port's generation (every handle taken
+  before turns `Stale`) and renews the server's and the supervisor's own
+  handles. Clients ask the manager again for a fresh handle. A port with
+  no supervisor keeps the earlier behaviour: the faulting call fails, the
+  server stays.

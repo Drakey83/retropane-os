@@ -58,6 +58,13 @@ impl Rights {
         Self(self.0 | other.0)
     }
 
+    /// Rights from their bits (`CALL` 1, `GRANT` 2; others ignored): for
+    /// rights a process asks for in a system call.
+    #[must_use]
+    pub const fn from_bits(bits: u32) -> Self {
+        Self((bits & 3) as u8)
+    }
+
     /// Whether every right in `other` is in `self`.
     #[must_use]
     pub const fn contains(self, other: Self) -> bool {
@@ -336,19 +343,24 @@ impl Ipc {
     }
 
     /// The server was restarted: the port stays, but handles taken before
-    /// now are stale (the server's own handle is renewed).
-    pub fn restart(&mut self, port: PortId) -> Result<(), Error> {
+    /// now are stale. The server's own handles are renewed, and so are its
+    /// supervisor's (`supervisor`), which hands out fresh ones.
+    pub fn restart(&mut self, port: PortId, supervisor: Option<u8>) -> Result<(), Error> {
         let p = self
             .ports
             .get_mut(usize::from(port.0))
             .filter(|p| p.server != 0)
             .ok_or(Error::Closed)?;
-        p.generation = p.generation.wrapping_add(1);
-        let (server, generation) = (p.server, p.generation);
+        let server = p.server;
+        let sup = supervisor.map(Self::slot_ok).transpose()?;
         let s = Self::slot_ok(server)?;
-        for w in &mut self.tables[s] {
-            if let Some(e) = Entry::decode(*w).filter(|e| e.port() == port.0) {
-                *w = e.with_generation(generation).0;
+        p.generation = p.generation.wrapping_add(1);
+        let generation = p.generation;
+        for t in core::iter::once(s).chain(sup) {
+            for w in &mut self.tables[t] {
+                if let Some(e) = Entry::decode(*w).filter(|e| e.port() == port.0) {
+                    *w = e.with_generation(generation).0;
+                }
             }
         }
         Ok(())
