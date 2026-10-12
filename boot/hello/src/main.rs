@@ -22,7 +22,7 @@ mod image {
     use core::cell::RefCell;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::{self, Console};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, crash, pattern};
 
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
@@ -52,12 +52,11 @@ mod image {
     /// Crash output: the UART plus, if the display is up, a red box at the
     /// bottom of the screen (the real X51v has no serial port).
     fn crash_out() -> Out<PxaUart<rp_hal_pxa27x::Mmio>> {
-        let con = rp_hal_x51v::devices::emergency_vram().map(|vram| {
-            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+        let con = rp_hal_x51v::devices::emergency_mbx().map(|(regs, vram)| {
             let (x, y, w, h) = console::BOOT_LOG;
-            Console::new(
-                &mut vram[plane.offset..],
-                plane.stride,
+            crash::emergency_console(
+                regs,
+                vram,
                 (x, y + h - 64),
                 (w, 64),
                 console::BOOT_LOG_SCALE,
