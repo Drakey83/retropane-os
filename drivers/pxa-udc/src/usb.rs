@@ -1,8 +1,9 @@
-//! Hardware-independent USB device logic for a CDC-ACM serial port: the
-//! descriptors (`const` data, nothing built at run time), SETUP parsing, and
-//! answers to the standard and CDC requests that reach software. The PXA27x
-//! answers SET_ADDRESS, SET_CONFIGURATION and SET_INTERFACE in hardware
-//! (docs/hw/udc.md), so they never arrive here.
+//! Hardware-independent USB device logic for a composite device (ADR-0014):
+//! a CDC-ACM serial port plus a USB Mass Storage interface. The descriptors
+//! (`const` data, nothing built at run time), SETUP parsing, and answers to
+//! the standard, CDC and mass-storage class requests that reach software.
+//! The PXA27x answers SET_ADDRESS, SET_CONFIGURATION and SET_INTERFACE in
+//! hardware (docs/hw/udc.md), so they never arrive here.
 
 /// pid.codes' open-source vendor ID (ADR-0012).
 pub const VENDOR_ID: u16 = 0x1209;
@@ -24,6 +25,12 @@ pub const EP_OUT: u8 = 1;
 pub const EP_IN: u8 = 2;
 /// Notification (interrupt IN) endpoint number.
 pub const EP_NOTIFY: u8 = 3;
+/// Mass storage bulk OUT endpoint number.
+pub const EP_MSC_OUT: u8 = 4;
+/// Mass storage bulk IN endpoint number.
+pub const EP_MSC_IN: u8 = 5;
+/// The mass storage interface number.
+pub const MSC_INTERFACE: u16 = 2;
 
 const fn lo(v: u16) -> u8 {
     v.to_le_bytes()[0]
@@ -32,23 +39,26 @@ const fn hi(v: u16) -> u8 {
     v.to_le_bytes()[1]
 }
 
-/// The device descriptor: class 0x02 (CDC) at device level, which Windows
-/// 10/11, macOS and Linux bind to their built-in serial drivers.
+/// The device descriptor: class 0xEF/0x02/0x01 ("uses Interface Association
+/// Descriptors"), so Windows 10/11, macOS and Linux bind their built-in
+/// serial driver to the CDC pair and their storage driver to the mass
+/// storage interface, with no INF.
 pub const DEVICE: [u8; 18] = [
     18,
     1, // DEVICE
     0x00,
     0x02, // USB 2.0 (full speed)
+    0xEF,
     0x02,
-    0x00,
-    0x00, // class CDC
+    0x01, // miscellaneous: IAD
     EP0_SIZE as u8,
     lo(VENDOR_ID),
     hi(VENDOR_ID),
     lo(PRODUCT_ID),
     hi(PRODUCT_ID),
-    0x00,
-    0x26, // bcdDevice 26.00: RetroPane 26
+    0x01,
+    0x26, // bcdDevice 26.01: the composite layout (26.00 was serial only;
+    // a new revision makes Windows enumerate it afresh)
     1,
     2,
     3, // manufacturer, product, serial strings
@@ -56,21 +66,32 @@ pub const DEVICE: [u8; 18] = [
 ];
 
 /// Total length of [`CONFIG`].
-const CONFIG_LEN: u16 = 67;
+const CONFIG_LEN: u16 = 98;
 
-/// Configuration 1: a communication interface (CDC-ACM, one interrupt IN
-/// endpoint) and a data interface (bulk OUT + bulk IN).
+/// Configuration 1: the serial port (a communication interface with one
+/// interrupt IN endpoint and a data interface with a bulk pair, grouped by
+/// an Interface Association Descriptor) and the mass storage interface
+/// (SCSI transparent command set, Bulk-Only Transport, its own bulk pair).
 pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     // Configuration
     9,
     2,
     lo(CONFIG_LEN),
     hi(CONFIG_LEN),
-    2,    // interfaces
+    3,    // interfaces
     1,    // bConfigurationValue
     0,    // no string
     0xC0, // self-powered (battery)
     50,   // 100 mA
+    // Interface association: interfaces 0-1 are one CDC-ACM function
+    8,
+    0x0B,
+    0,
+    2,
+    0x02,
+    0x02,
+    0x01,
+    0,
     // Interface 0: communication, ACM
     9,
     4,
@@ -138,6 +159,32 @@ pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     BULK_SIZE as u8,
     0,
     0,
+    // Interface 2: mass storage, SCSI transparent, Bulk-Only Transport
+    9,
+    4,
+    MSC_INTERFACE as u8,
+    0,
+    2,
+    0x08,
+    0x06,
+    0x50,
+    0,
+    // Bulk OUT 0x04
+    7,
+    5,
+    EP_MSC_OUT,
+    0x02,
+    BULK_SIZE as u8,
+    0,
+    0,
+    // Bulk IN 0x85
+    7,
+    5,
+    0x80 | EP_MSC_IN,
+    0x02,
+    BULK_SIZE as u8,
+    0,
+    0,
 ];
 
 /// A string descriptor from ASCII text (UTF-16LE, no terminator).
@@ -170,11 +217,13 @@ mod s1 {
 }
 mod s2 {
     use super::string;
-    string_descriptor!(PRODUCT, "RetroPane 26 console");
+    string_descriptor!(PRODUCT, "RetroPane 26");
 }
 mod s3 {
     use super::string;
-    string_descriptor!(SERIAL, "RP26-0001");
+    // 16 upper-case hex digits, as the Bulk-Only Transport specification
+    // requires ("RP260001" in hex): Windows keys the drive letter on it.
+    string_descriptor!(SERIAL, "5250323630303031");
 }
 pub use s1::MANUFACTURER;
 pub use s2::PRODUCT;
@@ -228,6 +277,12 @@ pub enum Reply<'a> {
     Stall,
 }
 
+/// Mass storage class request codes (Bulk-Only Transport 3.1, 3.2).
+mod msc {
+    pub const GET_MAX_LUN: u8 = 0xFE;
+    pub const RESET: u8 = 0xFF;
+}
+
 /// CDC request codes.
 mod cdc {
     pub const SET_LINE_CODING: u8 = 0x20;
@@ -248,6 +303,10 @@ pub struct Cdc {
     buf: [u8; 7],
     /// The pending OUT data request.
     pending_out: u8,
+    /// Get Max LUN's answer.
+    max_lun: u8,
+    /// The host sent Bulk-Only Mass Storage Reset.
+    msc_reset: bool,
 }
 
 impl Default for Cdc {
@@ -265,7 +324,19 @@ impl Cdc {
             control: 0,
             buf: [0; 7],
             pending_out: 0,
+            max_lun: 0,
+            msc_reset: false,
         }
+    }
+
+    /// Sets Get Max LUN's answer (logical units - 1).
+    pub fn set_max_lun(&mut self, max_lun: u8) {
+        self.max_lun = max_lun;
+    }
+
+    /// Whether the host asked for a mass storage reset since the last call.
+    pub fn take_msc_reset(&mut self) -> bool {
+        core::mem::take(&mut self.msc_reset)
     }
 
     /// Whether the host has the port open (DTR set: terminal programs and
@@ -336,6 +407,14 @@ impl Cdc {
                 Reply::Ack
             }
             (0x21, cdc::SEND_BREAK) => Reply::Ack,
+            (0xA1, msc::GET_MAX_LUN) if s.index == MSC_INTERFACE && s.value == 0 => {
+                self.buf[0] = self.max_lun;
+                Reply::In(&self.buf[..1.min(want)])
+            }
+            (0x21, msc::RESET) if s.index == MSC_INTERFACE && s.value == 0 && want == 0 => {
+                self.msc_reset = true;
+                Reply::Ack
+            }
             _ => Reply::Stall,
         }
     }

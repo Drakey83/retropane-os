@@ -90,9 +90,12 @@ pub const BUDGETS: &[Budget] = &[
     // It must also stay inside its 1 MiB home (boot/loader/link.x).
     // Ratcheted 22 -> 41 KiB on 2026-10-11 (test image, owner's rule): SD
     // card writes and the FAT32 copy-then-swap (ADR-0013), ~37 KiB measured.
+    // Ratcheted 41 -> 52 KiB on 2026-10-12 (test image): the SD card as a
+    // USB drive (ADR-0014: composite descriptors, the Bulk-Only/SCSI stack,
+    // 2.6 KiB of it in rp-usb-msc), 46.6 KiB measured, +~10%.
     Budget {
         image: "rp-loader",
-        max_load: 41 * 1024,
+        max_load: 52 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.

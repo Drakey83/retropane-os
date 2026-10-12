@@ -259,6 +259,7 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-loadproto",
+ "rp-usb-msc",
 ]
 
 [[package]]
@@ -324,6 +325,13 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-usb-msc"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
 ]
 
 [[package]]

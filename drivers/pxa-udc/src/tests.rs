@@ -438,8 +438,8 @@ fn reads_split_into_16_byte_packets_with_a_short_last_one() {
         }
         h.poll(3);
     }
-    // 67 bytes: four full packets, then 3.
-    assert_eq!(sizes, [16, 16, 16, 16, 3]);
+    // 98 bytes: six full packets, then 2.
+    assert_eq!(sizes, [16, 16, 16, 16, 16, 16, 2]);
 }
 
 #[test]
@@ -585,7 +585,27 @@ fn descriptors_are_consistent() {
     }
     assert_eq!(i, c.len());
     // The endpoint table matches the descriptors.
-    assert_eq!(endpoints, [(0x83, 3, 16), (0x01, 2, 64), (0x82, 2, 64)]);
+    assert_eq!(
+        endpoints,
+        [
+            (0x83, 3, 16),
+            (0x01, 2, 64),
+            (0x82, 2, 64),
+            (0x04, 2, 64),
+            (0x85, 2, 64)
+        ]
+    );
+    assert_eq!(c[4], 3, "three interfaces");
+    assert_eq!(&c[9..13], &[8, 0x0B, 0, 2], "IAD over interfaces 0-1");
+    assert_eq!(&usb::DEVICE[4..7], &[0xEF, 0x02, 0x01]);
+    // The serial number: 16 upper-case hex digits (Bulk-Only Transport).
+    let serial: Vec<u8> = usb::SERIAL[2..].iter().step_by(2).copied().collect();
+    assert_eq!(serial.len(), 16);
+    assert!(
+        serial
+            .iter()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_lowercase())
+    );
     for (slot, cfg) in TABLE {
         let number = ((cfg >> 15) & 0xF) as u8;
         let is_in = cfg & (1 << 12) != 0;
@@ -598,4 +618,34 @@ fn descriptors_are_consistent() {
     }
     assert_eq!(usb::PRODUCT[0] as usize, usb::PRODUCT.len());
     assert_eq!(&usb::PRODUCT[2..6], &[b'R', 0, b'e', 0]);
+}
+
+#[test]
+fn a_setup_that_arrives_before_the_reset_is_handled_survives_it() {
+    let mut h = Host::new();
+    h.reset();
+    // The host resets and, too soon, sends GET_DESCRIPTOR before the
+    // driver has seen the reset.
+    h.sim().isr1 |= reg::RESET;
+    let d = h.control_in([0x80, 6, 0, 1, 0, 0, 18, 0]).unwrap();
+    assert_eq!(d, usb::DEVICE);
+}
+
+#[test]
+fn mass_storage_class_requests() {
+    let mut h = Host::new();
+    h.reset();
+    h.udc.set_msc_luns(2);
+    // Get Max LUN on the storage interface: 1 (two units).
+    let d = h.control_in([0xA1, 0xFE, 0, 0, 2, 0, 1, 0]).unwrap();
+    assert_eq!(d, [1]);
+    // ... but not on the serial port's interfaces: STALL.
+    assert!(h.control_in([0xA1, 0xFE, 0, 0, 0, 0, 1, 0]).is_none());
+    // Bulk-Only Mass Storage Reset: acknowledged and reported once.
+    // The bus reset at attach is reported first (the function starts clean).
+    assert!(h.udc.take_msc_reset());
+    h.setup([0x21, 0xFF, 0, 0, 2, 0, 0, 0]);
+    h.poll(3);
+    assert!(h.udc.take_msc_reset());
+    assert!(!h.udc.take_msc_reset());
 }

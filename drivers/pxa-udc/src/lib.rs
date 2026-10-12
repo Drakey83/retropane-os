@@ -110,10 +110,12 @@ pub mod reg {
     pub const SP: u32 = 1 << 7;
 }
 
-/// The UDC's endpoint slots used (A = 1, B = 2, C = 3).
+/// The UDC's endpoint slots used (A = 1 ... E = 5).
 const SLOT_NOTIFY: usize = 1;
 const SLOT_IN: usize = 2;
 const SLOT_OUT: usize = 3;
+const SLOT_MSC_OUT: usize = 4;
+const SLOT_MSC_IN: usize = 5;
 
 /// One `UDCCRx` value: configuration 1, alternate setting 0.
 const fn endpoint(interface: u32, number: u8, kind: u32, is_in: bool, size: usize) -> u32 {
@@ -134,13 +136,24 @@ const fn endpoint(interface: u32, number: u8, kind: u32, is_in: bool, size: usiz
 /// data moved either way (measured on the real X51v). The Linux PXA27x
 /// driver does the same for its serial gadget ("multiple interfaces are
 /// really broken on the pxa").
-const TABLE: [(usize, u32); 3] = [
+///
+/// The mass storage pair (descriptor interface 2) is in interface 0 for
+/// the same reason (ADR-0014).
+const TABLE: [(usize, u32); 5] = [
     (
         SLOT_NOTIFY,
         endpoint(0, usb::EP_NOTIFY, 3, true, usb::NOTIFY_SIZE),
     ),
     (SLOT_IN, endpoint(0, usb::EP_IN, 2, true, usb::BULK_SIZE)),
     (SLOT_OUT, endpoint(0, usb::EP_OUT, 2, false, usb::BULK_SIZE)),
+    (
+        SLOT_MSC_OUT,
+        endpoint(0, usb::EP_MSC_OUT, 2, false, usb::BULK_SIZE),
+    ),
+    (
+        SLOT_MSC_IN,
+        endpoint(0, usb::EP_MSC_IN, 2, true, usb::BULK_SIZE),
+    ),
 ];
 
 /// Errors.
@@ -233,7 +246,7 @@ pub struct Udc<B> {
     bus: B,
     cdc: Cdc,
     ep0: Ep0,
-    ep0_buf: [u8; 80],
+    ep0_buf: [u8; 128],
     ep0_len: usize,
     ep0_pos: usize,
     configuration: u8,
@@ -241,6 +254,11 @@ pub struct Udc<B> {
     tx: Ring<512>,
     /// A bulk IN packet is waiting for the host.
     in_busy: bool,
+    /// A mass storage IN packet is waiting for the host.
+    msc_in_busy: bool,
+    /// A bus reset or a mass storage reset happened: the storage function
+    /// must abandon its command ([`Udc::take_msc_reset`]).
+    msc_reset: bool,
     stats: Stats,
 }
 
@@ -251,13 +269,15 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             bus,
             cdc: Cdc::new(),
             ep0: Ep0::Idle,
-            ep0_buf: [0; 80],
+            ep0_buf: [0; 128],
             ep0_len: 0,
             ep0_pos: 0,
             configuration: 0,
             rx: Ring::new(),
             tx: Ring::new(),
             in_busy: false,
+            msc_in_busy: false,
+            msc_reset: false,
             stats: Stats {
                 resets: 0,
                 setups: 0,
@@ -412,11 +432,25 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     fn bus_reset(&mut self) {
         self.stats.resets += 1;
         self.configuration = 0;
-        self.bus.write32(reg::csr(0), reg::FTF | reg::OPC);
+        // Flush endpoint 0, but keep a SETUP that has already arrived: its
+        // OPC is part of what `poll_ep0` waits for, and clearing it would
+        // lose the host's first request (a host that ignores the 10 ms reset
+        // recovery, or a slow poll; found with the emulator's host).
+        let setup_waiting = self.bus.read32(reg::csr(0)) & reg::SA != 0;
+        self.bus.write32(
+            reg::csr(0),
+            if setup_waiting {
+                reg::FTF
+            } else {
+                reg::FTF | reg::OPC
+            },
+        );
         self.ep0 = Ep0::Idle;
         self.rx.clear();
         self.tx.clear();
         self.in_busy = false;
+        self.msc_in_busy = false;
+        self.msc_reset = true;
     }
 
     /// SET_CONFIGURATION/SET_INTERFACE, already done by the hardware:
@@ -515,6 +549,85 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
                 self.ep0 = Ep0::Stall;
             }
         }
+        if self.cdc.take_msc_reset() {
+            self.msc_reset = true;
+        }
+    }
+
+    /// Sets the mass storage function's logical unit count (Get Max LUN).
+    pub fn set_msc_luns(&mut self, luns: u8) {
+        self.cdc.set_max_lun(luns.saturating_sub(1));
+    }
+
+    /// Whether a bus reset or a mass storage reset happened since the last
+    /// call: the storage function abandons its command.
+    pub fn take_msc_reset(&mut self) -> bool {
+        core::mem::take(&mut self.msc_reset)
+    }
+
+    /// Takes the next mass storage OUT packet, if one arrived.
+    pub fn msc_read(&mut self, buf: &mut [u8; usb::BULK_SIZE]) -> Option<usize> {
+        if !self.configured() {
+            return None;
+        }
+        let csr = self.bus.read32(reg::csr(SLOT_MSC_OUT));
+        if csr & reg::PC == 0 {
+            return None;
+        }
+        let count = ((self.bus.read32(reg::bcr(SLOT_MSC_OUT)) & 0x3FF) as usize).min(buf.len());
+        let mut got = 0;
+        while got < count {
+            let w = self.bus.read32(reg::dr(SLOT_MSC_OUT)).to_le_bytes();
+            let n = (count - got).min(4);
+            buf[got..got + n].copy_from_slice(&w[..n]);
+            got += 4;
+        }
+        self.stats.rx_bytes += count as u32;
+        self.bus.write32(reg::csr(SLOT_MSC_OUT), reg::PC);
+        Some(count)
+    }
+
+    /// Whether a mass storage IN packet can be queued: one in flight, the
+    /// next only after the previous one's packet-complete (as for the
+    /// serial port's bulk IN).
+    pub fn msc_can_write(&mut self) -> bool {
+        if !self.configured() {
+            return false;
+        }
+        let csr = self.bus.read32(reg::csr(SLOT_MSC_IN));
+        if self.msc_in_busy {
+            if csr & reg::PC == 0 {
+                return false;
+            }
+            self.bus.write32(reg::csr(SLOT_MSC_IN), reg::PC);
+            self.msc_in_busy = false;
+            return true;
+        }
+        csr & reg::BNF != 0
+    }
+
+    /// Queues one mass storage IN packet (at most 64 bytes; shorter, even
+    /// empty, ends the transfer). Call only after [`Udc::msc_can_write`].
+    pub fn msc_write(&mut self, data: &[u8]) {
+        let csr = self.bus.read32(reg::csr(SLOT_MSC_IN));
+        let stale = csr & (reg::PC | reg::TRN);
+        if stale != 0 {
+            self.bus.write32(reg::csr(SLOT_MSC_IN), stale);
+        }
+        let data = &data[..data.len().min(usb::BULK_SIZE)];
+        let (words, rest) = data.as_chunks::<4>();
+        for w in words {
+            self.bus
+                .write32(reg::dr(SLOT_MSC_IN), u32::from_le_bytes(*w));
+        }
+        for &b in rest {
+            self.bus.write8(reg::dr(SLOT_MSC_IN), b);
+        }
+        if data.len() < usb::BULK_SIZE {
+            self.bus.write32(reg::csr(SLOT_MSC_IN), reg::SP);
+        }
+        self.stats.tx_bytes += data.len() as u32;
+        self.msc_in_busy = true;
     }
 
     /// Writes the next endpoint 0 packet. A short packet (including an

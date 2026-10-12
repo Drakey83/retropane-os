@@ -16,6 +16,7 @@ members = [
     "drivers/sdcard",
     "drivers/pxa-mmc",
     "drivers/pxa-udc",
+    "drivers/usb-msc",
     "kernel/mm",
     "kernel/pe",
     "kernel/lz4",
@@ -69,6 +70,8 @@ opt-level = "s"
 [profile.release.package.rp-drv-pxa-mmc]
 opt-level = "s"
 [profile.release.package.rp-fat]
+opt-level = "s"
+[profile.release.package.rp-usb-msc]
 opt-level = "s"
 [profile.release.package.rp-drv-cpld]
 opt-level = "s"

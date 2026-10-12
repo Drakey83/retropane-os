@@ -34,13 +34,32 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 2. ADR-0014: the SD card as a drive in Windows (USB mass storage)
 
-- [ ] ADR: composite device (serial port for development + mass storage),
-      bulk-only transport, the SCSI commands Windows, macOS and Linux use.
-- [ ] Driver: the mass-storage function over the existing UDC driver, the
-      SD card behind it as a block device.
-- [ ] Emulator: the fork's built-in host enumerates the composite device and
-      reads/writes the drive; a `cargo xtask emu` boot mounts the FAT32 image
-      through it and checks a file.
+- [x] ADR-0014 written and accepted, with a Security section.
+- [x] `drivers/usb-msc` (Bulk-Only + SCSI, LUNs), composite descriptors and
+      the mass storage endpoints in `pxa-udc`, capacity from the CSD in
+      `sdcard`, the loader runs the drive next to the serial port.
+- [x] Emulator rp-v0.9.0: descriptor-driven routing, the drive bridged to a
+      second chardev; `boot_loader_drive` mounts the card through USB with
+      `rp-fat`, reads and writes both ways, checks the ownership rules and
+      hostile input. Two real bugs found on the way (ADR-0014 status).
+- Done so far against the plan: driverless class, composite, ownership by
+  construction (busy refusal, medium-changed, eject), multi-block 32 KiB
+  transfers, card absence as "not present", stable serial, LUN-ready for CF.
+  Write-protect is plumbed (`Storage::read_only`, MODE SENSE, refused writes)
+  but not yet wired to the switch: GPIO27's polarity is unconfirmed, so it
+  waits for item 10's probe run rather than risk a wrong read-only card.
+- **Iterate:** composite instead of a mode switch; corruption made impossible
+  by construction (the device and PC never write the card at once, the PC is
+  told when the device changed it, eject hands it back) rather than "please
+  eject first"; every SCSI command host-tested including 5,000 random
+  commands; the whole stack tested end to end through the emulated drive
+  before the device; two latent USB timing bugs found and fixed for the real
+  hardware on the way; LUNs ready for the CF card with no USB work.
+- **Modernize:** the card shows up as a drive on any 2026 PC with no driver
+  or sync software (Windows Mobile never offered it at all); standard
+  compliant serial so it keeps its drive letter; hostile-input-proof parser
+  per docs/security.md; storage exposure noted as development-only until the
+  OS asks the user for consent.
 - Improvements planned, all of them:
   - driverless on Windows 11, macOS and Linux (standard class, no INF);
   - composite, so `cargo xtask load` keeps working while the drive is

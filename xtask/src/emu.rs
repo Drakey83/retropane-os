@@ -542,6 +542,34 @@ fn usb_args(n: u16) -> [String; 6] {
     ]
 }
 
+/// QEMU arguments for the UDC model's mass storage chardev (ADR-0014).
+fn msc_args(n: u16) -> [String; 4] {
+    [
+        "-chardev".into(),
+        format!(
+            "socket,id=msc,host=127.0.0.1,port={},server=on,wait=off",
+            usb_port(n)
+        ),
+        "-global".into(),
+        "pxa27x-udc.msc=msc".into(),
+    ]
+}
+
+/// Whether the emulator's UDC model bridges a mass storage function
+/// (retropane-qemu after rp-v0.8.0).
+fn has_msc_model(root: &Path) -> bool {
+    let out = match emulator(root) {
+        Ok(Emulator::Native(exe)) => Command::new(exe)
+            .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
+            .output(),
+        Ok(Emulator::Wsl) => {
+            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+        }
+        Err(_) => return false,
+    };
+    out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("msc="))
+}
+
 /// Whether the emulator in use has the USB device controller model
 /// (retropane-qemu after rp-v0.6.0). Older releases skip the USB tests.
 fn has_usb_model(root: &Path) -> bool {
@@ -822,6 +850,313 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         return Err("startup.txt changed on the card".into());
     }
     eprintln!("    file to card OK: replaced through the loader, verified in the image");
+    Ok(())
+}
+
+/// A USB Mass Storage host over the UDC model's framed chardev: each OUT
+/// transfer goes as a 4-byte length and its bytes, each IN packet comes as
+/// a 1-byte length and its bytes (ADR-0014).
+struct Bot {
+    s: std::net::TcpStream,
+    tag: u32,
+}
+
+/// One command's outcome.
+struct BotReply {
+    data: Vec<u8>,
+    status: u8,
+    residue: u32,
+}
+
+impl Bot {
+    fn connect(n: u16) -> Result<Self, String> {
+        Ok(Self {
+            s: usb_connect(n)?,
+            tag: 1,
+        })
+    }
+
+    fn send_transfer(&mut self, data: &[u8]) -> Result<(), String> {
+        let mut f = (data.len() as u32).to_le_bytes().to_vec();
+        f.extend_from_slice(data);
+        self.s.write_all(&f).map_err(|e| e.to_string())
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8], deadline: Instant) -> Result<(), String> {
+        let mut got = 0;
+        while got < buf.len() {
+            if Instant::now() > deadline {
+                return Err("drive: no answer".into());
+            }
+            match self.s.read(&mut buf[got..]) {
+                Ok(0) => return Err("drive: connection closed".into()),
+                Ok(n) => got += n,
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(())
+    }
+
+    fn packet(&mut self, deadline: Instant) -> Result<Vec<u8>, String> {
+        let mut n = [0u8; 1];
+        self.read_exact(&mut n, deadline)?;
+        let mut p = vec![0u8; usize::from(n[0])];
+        self.read_exact(&mut p, deadline)?;
+        Ok(p)
+    }
+
+    /// Sends a raw transfer that isn't a command (hostile-input tests).
+    fn junk(&mut self, data: &[u8]) -> Result<(), String> {
+        self.send_transfer(data)
+    }
+
+    fn command(
+        &mut self,
+        cb: &[u8],
+        len: u32,
+        dir_in: bool,
+        out: &[u8],
+    ) -> Result<BotReply, String> {
+        self.tag = self.tag.wrapping_add(1);
+        let mut c = vec![0u8; 31];
+        c[..4].copy_from_slice(b"USBC");
+        c[4..8].copy_from_slice(&self.tag.to_le_bytes());
+        c[8..12].copy_from_slice(&len.to_le_bytes());
+        c[12] = if dir_in { 0x80 } else { 0 };
+        c[14] = cb.len() as u8;
+        c[15..15 + cb.len()].copy_from_slice(cb);
+        self.send_transfer(&c)?;
+        if !out.is_empty() {
+            self.send_transfer(out)?;
+        }
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut data = Vec::new();
+        loop {
+            let p = self.packet(deadline)?;
+            if p.len() == 13 && &p[..4] == b"USBS" && p[4..8] == self.tag.to_le_bytes() {
+                return Ok(BotReply {
+                    data,
+                    status: p[12],
+                    residue: u32::from_le_bytes([p[8], p[9], p[10], p[11]]),
+                });
+            }
+            data.extend_from_slice(&p);
+        }
+    }
+
+    fn sense(&mut self) -> Result<(u8, u8, u8), String> {
+        let r = self.command(&[0x03, 0, 0, 0, 18, 0], 18, true, &[])?;
+        Ok((r.data[2], r.data[12], r.data[13]))
+    }
+}
+
+fn rw10(op: u8, lba: u32, count: u16) -> [u8; 10] {
+    let mut cb = [0u8; 10];
+    cb[0] = op;
+    cb[2..6].copy_from_slice(&lba.to_be_bytes());
+    cb[7..9].copy_from_slice(&count.to_be_bytes());
+    cb
+}
+
+impl rp_hal_api::BlockDevice for Bot {
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), rp_hal_api::BlockError> {
+        for (i, chunk) in buf.chunks_mut(64 * 512).enumerate() {
+            let at = lba + (i * 64) as u32;
+            let n = (chunk.len() / 512) as u16;
+            let r = self
+                .command(&rw10(0x28, at, n), chunk.len() as u32, true, &[])
+                .map_err(|_| rp_hal_api::BlockError::Device)?;
+            if r.status != 0 || r.data.len() != chunk.len() {
+                return Err(rp_hal_api::BlockError::Device);
+            }
+            chunk.copy_from_slice(&r.data);
+        }
+        Ok(())
+    }
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), rp_hal_api::BlockError> {
+        for (i, chunk) in buf.chunks(64 * 512).enumerate() {
+            let at = lba + (i * 64) as u32;
+            let n = (chunk.len() / 512) as u16;
+            let r = self
+                .command(&rw10(0x2A, at, n), chunk.len() as u32, false, chunk)
+                .map_err(|_| rp_hal_api::BlockError::Device)?;
+            if r.status != 0 {
+                return Err(rp_hal_api::BlockError::Device);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads `name` from the card through the drive.
+fn drive_file(bot: &mut Bot, name: &str) -> Result<Vec<u8>, String> {
+    let mut vol = rp_fat::Volume::mount(&mut *bot, rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("drive: mount: {}", e.name()))?;
+    let f = vol
+        .find(name)
+        .map_err(|e| format!("drive: {name}: {}", e.name()))?;
+    let mut out = Vec::new();
+    let mut scratch = vec![0u8; 32 * 1024];
+    vol.read_file(&f, &mut scratch, |c| out.extend_from_slice(c))
+        .map_err(|e| format!("drive: {name}: {}", e.name()))?;
+    Ok(out)
+}
+
+/// The SD card as a USB drive (ADR-0014), end to end in the emulator: the
+/// loader's mass storage interface next to its serial port; the test mounts
+/// the FAT32 card image through the drive with `rp-fat`, reads a file,
+/// replaces another (copy-then-swap through SCSI writes), checks that a
+/// serial `put` is refused while the PC writes and accepted after, that the
+/// drive then reports the medium changed, and that malformed commands fail
+/// cleanly. The image on the host is checked afterwards.
+pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
+    if !has_msc_model(root) {
+        eprintln!("    drive: skipped (this emulator's USB model has no mass storage bridge)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let old: Vec<u8> = (0..5000u32).map(|i| (i * 3) as u8).collect();
+    let script = b"set ramaddr 0xa8000000\r\n".to_vec();
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024,
+        sectors_per_cluster: 8,
+        files: &[
+            rp_fat::format::Entry {
+                name: "retropane.bin",
+                data: &old,
+            },
+            rp_fat::format::Entry {
+                name: "startup.txt",
+                data: &script,
+            },
+        ],
+        blocked_clusters: &[],
+    });
+    let blocks = (image.len() / 512) as u32;
+    let sd = root.join("target/emulator/sd-drive.img");
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let via_drive = b"written through the USB drive\r\n".to_vec();
+    let via_serial: Vec<u8> = (0..9000u32).map(|i| (i * 11 + 1) as u8).collect();
+    let put = rp_loadproto::file_frame("retropane.bin", &via_serial);
+    let mut args: Vec<String> = usb_args(5).to_vec();
+    args.extend(msc_args(6));
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut bot = Bot::connect(6)?;
+        let mut serial = usb_connect(5)?;
+        usb_read_until(&mut serial, "RPLOAD1 READY", 10)?;
+        // The drive becomes ready.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let r = bot.command(&[0; 6], 0, false, &[])?;
+            if r.status == 0 {
+                break;
+            }
+            let _ = bot.sense()?;
+            if Instant::now() > deadline {
+                return Err("drive: never became ready".into());
+            }
+        }
+        let r = bot.command(&[0x12, 0, 0, 0, 36, 0], 36, true, &[])?;
+        if r.data.len() != 36 || &r.data[8..16] != b"RetroPan" || r.data[1] & 0x80 == 0 {
+            return Err(format!("drive: INQUIRY {:?}", r.data));
+        }
+        let r = bot.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+        let last = u32::from_be_bytes([r.data[0], r.data[1], r.data[2], r.data[3]]);
+        if last + 1 != blocks {
+            return Err(format!(
+                "drive: capacity {} blocks, image {blocks}",
+                last + 1
+            ));
+        }
+        if drive_file(&mut bot, "retropane.bin")? != old {
+            return Err("drive: retropane.bin read through the drive differs".into());
+        }
+        // Replace a file through the drive (the PC's side).
+        {
+            let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
+                .map_err(|e| format!("drive: mount: {}", e.name()))?;
+            let mut scratch = vec![0u8; 32 * 1024];
+            vol.replace("startup.txt", &via_drive, &mut scratch)
+                .map_err(|e| format!("drive: replace: {}", e.name()))?;
+        }
+        // The device refuses to write while the PC just wrote...
+        serial.write_all(&put).map_err(|e| e.to_string())?;
+        let r = usb_read_until(&mut serial, "RPL ", 20)?;
+        let r = r + &usb_read_until(&mut serial, "\n", 5)?;
+        if !r.contains("RPL ERR card busy") {
+            return Err(format!("serial put during a drive write: {r:?}"));
+        }
+        // ... and accepts once the PC has been quiet for the grace period.
+        std::thread::sleep(Duration::from_millis(2500));
+        serial.write_all(&put).map_err(|e| e.to_string())?;
+        let r = usb_read_until(&mut serial, "RPL OK", 30)?;
+        let _ = r;
+        // The drive reports the change once, then works.
+        let r = bot.command(&[0; 6], 0, false, &[])?;
+        if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
+            return Err("drive: no 'medium changed' after the device wrote".into());
+        }
+        if drive_file(&mut bot, "retropane.bin")? != via_serial {
+            return Err("drive: doesn't show the file the device wrote".into());
+        }
+        if drive_file(&mut bot, "startup.txt")? != via_drive {
+            return Err("drive: lost the file it wrote".into());
+        }
+        // Hostile input: junk transfers are ignored, an out-of-range and a
+        // wrapping read fail with sense, and the drive keeps working.
+        bot.junk(&[0x55; 31])?;
+        bot.junk(b"USBC")?;
+        let r = bot.command(&rw10(0x28, blocks, 1), 512, true, &[])?;
+        if r.status != 1 || bot.sense()? != (0x05, 0x21, 0x00) {
+            return Err("drive: out-of-range read not refused".into());
+        }
+        let r = bot.command(&rw10(0x28, u32::MAX, 2), 1024, true, &[])?;
+        if r.status != 1 || r.residue != 1024 {
+            return Err("drive: wrapping read not refused".into());
+        }
+        let r = bot.command(&[0; 6], 0, false, &[])?;
+        if r.status != 0 {
+            return Err("drive: not ready after hostile input".into());
+        }
+        // Throughput (emulator wall clock; the device's number is the real one).
+        let t = Instant::now();
+        let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[])?;
+        if r.status != 0 || r.data.len() != 2048 * 512 {
+            return Err("drive: 1 MiB read failed".into());
+        }
+        eprintln!(
+            "    drive: 1 MiB read in {} ms through the emulated drive",
+            t.elapsed().as_millis()
+        );
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    if card_file(&sd, "startup.txt")? != via_drive || card_file(&sd, "retropane.bin")? != via_serial
+    {
+        return Err("drive: the card image doesn't hold both writes".into());
+    }
+    eprintln!(
+        "    drive OK: the card mounted over USB mass storage, files read and written both ways, ownership rules and hostile input checked"
+    );
     Ok(())
 }
 
