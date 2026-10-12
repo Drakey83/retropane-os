@@ -957,6 +957,33 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(written)
     }
 
+    /// Deletes the file, or the empty folder, at `path`: its entry set
+    /// first (file entry's sector first, so it vanishes at once), then its
+    /// clusters freed in the bitmap; a cut in between leaks space.
+    #[inline(never)]
+    pub fn remove(&mut self, path: &str) -> Result<(), Error> {
+        let (dir, leaf) = self.parent_of(path)?;
+        let (file, at) = self.find_set(dir, leaf)?;
+        if file.is_dir {
+            let inside = self.dir_of(&file)?;
+            let mut any = false;
+            self.walk_dir(inside, &mut |_, _, _| {
+                any = true;
+                true
+            })?;
+            if any {
+                return Err(Error::NotEmpty);
+            }
+        }
+        self.set_dirty(true)?;
+        self.delete_set(dir, &at)?;
+        self.release(&file)?;
+        if !self.was_dirty {
+            self.set_dirty(false)?;
+        }
+        Ok(())
+    }
+
     /// Sets or clears VolumeDirty (outside the boot checksum by design);
     /// PercentInUse becomes "unknown", which it now is.
     fn set_dirty(&mut self, dirty: bool) -> Result<(), Error> {
@@ -2308,6 +2335,43 @@ mod tests {
                 let mut seen = vec![0u8; (v.clusters as usize + 2).div_ceil(8)];
                 let _ = v.check(&mut seen, &mut [0u8; 1024]);
             }
+        }
+    }
+
+    #[test]
+    fn exfat_removal_leaves_a_clean_volume_and_survives_power_cuts() {
+        let (img, a, _) = image();
+        let mut scratch = vec![0u8; 2048];
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        v.put("box/inner.txt", &pattern(3000, 3), &mut scratch)
+            .unwrap();
+        assert_eq!(v.remove("box"), Err(Error::NotEmpty));
+        v.remove("box/inner.txt").unwrap();
+        v.remove("box").unwrap();
+        v.remove("A Fragmented File With A Long Name.dat").unwrap();
+        assert_eq!(v.find("box"), Err(Error::NotFound));
+        let h = health(&mut v);
+        assert!(h.clean() && h.lost == 0 && h.files == 2, "{h:?}");
+        assert!(!dirty(&v));
+        let base = v.into_inner().data;
+        let total = {
+            let mut v = ExVolume::mount(Mem(base.clone()), PARTITION_START).unwrap();
+            v.remove("retropane.bin").unwrap();
+            v.dev.writes
+        };
+        for fail_at in 0..total {
+            let mut disk = Mem(base.clone());
+            disk.fail_at = Some(fail_at);
+            let mut v = ExVolume::mount(disk, PARTITION_START).unwrap();
+            assert!(v.remove("retropane.bin").is_err());
+            let mut v = ExVolume::mount(Mem(v.into_inner().data), PARTITION_START).unwrap();
+            match v.find("retropane.bin") {
+                Ok(_) => assert_eq!(read_all(&mut v, "retropane.bin", 2048), a),
+                Err(Error::NotFound) => {}
+                Err(e) => panic!("write {fail_at}: {e:?}"),
+            }
+            let h = health(&mut v);
+            assert!(h.clean(), "write {fail_at}: {h:?}");
         }
     }
 

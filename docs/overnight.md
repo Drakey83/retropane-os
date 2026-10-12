@@ -571,10 +571,21 @@ on the host or in the emulator first.
       read).
     - **Modernize:** RFC-checked crypto building blocks, timing-safe
       comparison, checked on the real instruction set.
-33. **Deleting files**: `rm` on FAT32 and exFAT, crash-safe (the entry goes
-    in one sector write, then the clusters are freed: a cut leaks space at
-    worst), through the loader (`cargo xtask rm`), checked with `card
-    check` after power cuts at every write.
+33. **Deleting files**: **done (emulator).** `remove` on FAT32 (the short
+    entry and the long-name entries in its sector in one write, those that
+    spill into the sector before next, then the chain freed in both FATs
+    and FSInfo) and exFAT (the entry set, file entry's sector first, then
+    the bitmap), files or empty folders (`NotEmpty` otherwise); a power cut
+    at any write leaves the file whole or gone, never damage (`check` after
+    every cut). Loader `rm` (`cargo xtask rm`): refused on a locked card,
+    while the PC writes, and for the files the device boots from. 3 tests;
+    the emulator put test deletes a file, is refused the loader and a
+    non-empty folder, and finds the file gone from the image.
+    `rp-loader` budget 124 -> 128 KiB.
+    - **Iterate:** deletion as crash-safe as writing, proven by the checker;
+      no stray long-name fragments; the boot files protected.
+    - **Modernize:** card housekeeping from the PC's terminal, with guard
+      rails a modern tool has.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only

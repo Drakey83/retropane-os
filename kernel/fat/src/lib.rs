@@ -59,6 +59,8 @@ pub enum Error {
     Exists,
     /// The partition isn't exFAT (or its boot region checksum is wrong).
     NotExFat,
+    /// The folder still holds files or folders.
+    NotEmpty,
 }
 
 impl From<BlockError> for Error {
@@ -80,6 +82,7 @@ impl Error {
             Self::BadName => "bad name",
             Self::Exists => "exists",
             Self::NotExFat => "not exFAT",
+            Self::NotEmpty => "folder not empty",
         }
     }
 }
@@ -830,6 +833,88 @@ impl<D: BlockDevice> Volume<D> {
         found.ok_or(Error::NotFound)
     }
 
+    /// Deletes the file, or the empty folder, at `path`. Crash-safe by
+    /// order: the entry goes first (with its long-name entries when they
+    /// share its sector: one write, so the name vanishes at once), then the
+    /// clusters are freed; a cut in between leaks space, which `check`
+    /// reports as lost.
+    #[inline(never)]
+    pub fn remove(&mut self, path: &str) -> Result<(), Error> {
+        let (dir, leaf) = self.parent_of(path)?;
+        let (file, is_dir) = match self.find_entry(dir, leaf, false) {
+            Ok(f) => (f, false),
+            Err(Error::NotFound) => (self.find_entry(dir, leaf, true)?, true),
+            Err(e) => return Err(e),
+        };
+        if is_dir {
+            let mut entries = 0u32;
+            self.walk_dir(file.first_cluster, &mut |_, _, e, _| {
+                if e[0] != b'.' && e[11] & 0x08 == 0 {
+                    entries += 1;
+                }
+                entries > 0
+            })?;
+            if entries > 0 {
+                return Err(Error::NotEmpty);
+            }
+        }
+        self.dev.read_blocks(file.entry_lba, &mut self.buf)?;
+        let i = usize::from(file.entry_index) * 32;
+        let short: [u8; 11] = self.buf[i..i + 11].try_into().unwrap_or([0; 11]);
+        let sum = short_checksum(&short);
+        self.buf[i] = 0xE5;
+        // Its long-name entries just before it, in this sector.
+        let mut k = usize::from(file.entry_index);
+        let mut spilled = k == 0;
+        while k > 0 {
+            k -= 1;
+            let o = k * 32;
+            if self.buf[o + 11] & 0x3F != ATTR_LONG_NAME
+                || self.buf[o + 13] != sum
+                || self.buf[o] == 0xE5
+            {
+                break;
+            }
+            let last = self.buf[o] & 0x40 != 0;
+            self.buf[o] = 0xE5;
+            if last {
+                break;
+            }
+            spilled = k == 0;
+        }
+        self.dev.write_blocks(file.entry_lba, &self.buf)?;
+        // ... and those at the end of the sector before, in the same cluster.
+        let first_of_cluster =
+            (file.entry_lba - self.data_start).is_multiple_of(self.sectors_per_cluster);
+        if spilled && !first_of_cluster {
+            let lba = file.entry_lba - 1;
+            self.dev.read_blocks(lba, &mut self.buf)?;
+            let mut changed = false;
+            for k in (0..ENTRIES).rev() {
+                let o = k * 32;
+                if self.buf[o + 11] & 0x3F != ATTR_LONG_NAME
+                    || self.buf[o + 13] != sum
+                    || self.buf[o] == 0xE5
+                {
+                    break;
+                }
+                let last = self.buf[o] & 0x40 != 0;
+                self.buf[o] = 0xE5;
+                changed = true;
+                if last {
+                    break;
+                }
+            }
+            if changed {
+                self.dev.write_blocks(lba, &self.buf)?;
+            }
+        }
+        if file.first_cluster != 0 {
+            self.free_chain(file.first_cluster)?;
+        }
+        Ok(())
+    }
+
     // --- Reading -----------------------------------------------------------
 
     /// Reads `file` in order, calling `f` with each piece; `scratch` (whole
@@ -1369,6 +1454,14 @@ impl<D: BlockDevice> AnyVolume<D> {
                 let file = v.find(path)?;
                 v.read_file(&file, scratch, f)
             }
+        }
+    }
+
+    /// Deletes the file or empty folder at `path` (crash-safe on either).
+    pub fn remove(&mut self, path: &str) -> Result<(), Error> {
+        match self {
+            Self::Fat32(v) => v.remove(path),
+            Self::ExFat(v) => v.remove(path),
         }
     }
 
