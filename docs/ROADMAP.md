@@ -47,7 +47,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 ## Phase 2 — Kernel
 **Goal:** a real kernel with threads, memory protection and full-speed clocks.
 
-- [ ] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET kit ready: `cargo xtask sdkit` boots the on-screen hardware probe; awaiting first run on the device)*
+- [x] SD loader (a Windows Mobile app that hands off to our kernel; no flashing) *(HaRET boots RetroPane on the device since 2026-10-11; the resident loader then takes every image over USB, and updates its own files on the card: ADR-0012, ADR-0013)*
 - [x] Physical frame allocator (`kernel/mm`, host-tested, benchmarked) *(2026-10-11)*; ADR-0006 (chip-specific memory design) accepted 2026-10-11
 - [ ] On-screen debug text *(boot log done 2026-10-11)* and crash screen (using the display inherited from Windows Mobile), plus a crash log that survives reboot *(crash log done 2026-10-12 for images under the resident loader: back to the loader, report to the PC and onto the card as `crashlog.txt`)*
 - [x] **USB device driver early:** CDC-ACM console over the stock cradle, with no custom PC drivers (ADR-0012). Working on the device 2026-10-11: the X51v is a driverless COM port on Windows 11, and the resident loader takes images and returns their output over it. Hands-off since the same evening: `cargo xtask load` re-finds the device through a Windows device restart (the pull-up is a fixed resistor)
@@ -55,11 +55,11 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] FCSE slot model (ADR-0003) and demand-paged VM (ADR-0005), 624 MHz turbo plus frequency scaling *(VM layer done 2026-10-11 and running live in `boot/kernel`: own page tables, real page faults resolved by demand paging and copy-on-write, FCSE slots; ADR-0008 accepted. Kernel-space device map and per-process domain protection also live; next: reclaim)*
 - [x] Interrupt controller, OS timer tick, idle mode (no busy-waiting) *(2026-10-10)*; unowned sources masked and reported *(2026-10-11)*
 - [x] Interrupt ownership: drivers handle interrupts in their own thread via `IrqLine`, never in interrupt mode (ADR-0007, accepted and implemented 2026-10-11: mask-and-signal first-level handler, per-pin GPIO lines; hello sleeps until a button or the pen wakes it)
-- [ ] Scheduler (256 priorities, priority inheritance) *(ADR-0010 accepted; scheduler core, context switch and tickless alarm done and live in `boot/threads` 2026-10-11, with user mode and SWI system calls, then preemption, user faults in the thread's context, lazy iWMMXt, interrupt threads and the KData page; next: the scheduler in the kernel image)*
+- [ ] Scheduler (256 priorities, priority inheritance) *(ADR-0010 accepted; scheduler core, context switch and tickless alarm done and live in `boot/threads` 2026-10-11, with user mode and SWI system calls, then preemption, user faults in the thread's context, lazy iWMMXt, interrupt threads and the KData page; all 13 tests pass on the real X51v 2026-10-12; next: the scheduler in the kernel image, and the ~12 µs device switch time vs the 2 µs target)*
 - [ ] Processes, threads, sync objects, IPC, driver host process
 - [ ] Compressed RAM and storage codec (ADR-0005 rules 4, 6) *(LZ4 block codec done 2026-10-11: safe decoder, page compressor, on-target benchmarks; compressed page store `kernel/mm::zpool`: 200 mixed pages in 39% of the RAM; wired into the VM and live in `rp-kernel`, handles stored in page-table entries)*
 - [ ] PE loader (host-tested with synthetic PE files) *(format layer done 2026-10-11: `kernel/pe` parses, fills image-view pages, relocates per page and lists imports; verified on 12 real WM6 DLLs; ADR-0009 accepted)*
-- [ ] Performance suite v1: context switch, IRQ latency, memcpy bandwidth
+- [x] Performance suite v1: context switch, IRQ latency, memcpy bandwidth *(2026-10-12: device numbers via `cargo xtask load rp-threads` and the probe; docs/perf.md)*
 
 **Exit:** multiple processes running, with protected memory, on device and emulator; perf baseline recorded.
 
@@ -68,11 +68,11 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 
 - [ ] Display (pxafb passthrough first, then native 2700G planes)
 - [x] Touch (TSC2046 via SSP1 + GPIO), keypad buttons: drivers + emulator tests *(calibration UI still to do)*
-- [ ] Backlight (PWM), power button
-- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled SD/SDHC init + block reads done: drivers/sdcard, drivers/pxa-mmc; emulator test reads the MBR)*
-- [ ] CompactFlash (PXA PC Card socket 1, DMA where possible)
+- [ ] Backlight (PWM), power button *(backlight done 2026-10-12 in the emulator: `rp-drv-pxa-pwm`, `cargo xtask backlight`; device run and the power button to do)*
+- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled, 4-bit, multi-block reads and writes with recovery for slow and failing blocks, hot swap and the lock switch; FAT32 read/create/replace (crash-safe), exFAT read; the card as a USB drive (ADR-0014); all 2026-10-11/12. To do: DMA, exFAT writes, subdirectories)*
+- [ ] CompactFlash (PXA PC Card socket 1, DMA where possible) *(spec `docs/hw/cf.md` and the probe's socket readings 2026-10-12; driver to do, then LUN 1 of the USB drive)*
 - [ ] Audio (WM8750, I²S, DMA)
-- [ ] USB client (serial gadget for development networking)
+- [x] USB client (serial gadget for development networking) *(CDC-ACM serial, and since 2026-10-12 a composite device with USB mass storage: ADR-0012, ADR-0014)*
 - [ ] **RE:** full CPLD register map in `docs/hw/cpld.md` *(v0.1 from AxDroid facts; confirm and complete from Dell's OAL in `nk.exe`)*
 
 **Exit:** touch, keys, SD, CF and audio pass hardware-in-the-loop tests.
