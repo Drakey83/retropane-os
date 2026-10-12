@@ -1,12 +1,12 @@
 {
-  "emulator": "rp-v0.6.0",
+  "emulator": "rp-v0.7.0",
   "results": {
     "chase_sdram_256k": 61462.0,
     "chase_sram_256k": 61462.0,
     "fb_pattern_vga": 128821.0,
     "fb_solid_fill_vga": 92205.0,
     "frames_alloc_free_split": 567.0,
-    "frames_fill_drain_1024": 165323.0,
+    "frames_fill_drain_1024": 165354.0,
     "lz4_compress_noise": 33462.0,
     "lz4_compress_page": 132500.0,
     "lz4_compress_text": 88327.0,
