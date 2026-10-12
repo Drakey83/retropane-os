@@ -57,6 +57,8 @@ pub enum Error {
     BadName,
     /// A file of that name already exists (to create).
     Exists,
+    /// The partition isn't exFAT (or its boot region checksum is wrong).
+    NotExFat,
 }
 
 impl From<BlockError> for Error {
@@ -77,6 +79,7 @@ impl Error {
             Self::Corrupt => "corrupt",
             Self::BadName => "bad name",
             Self::Exists => "exists",
+            Self::NotExFat => "not exFAT",
         }
     }
 }
@@ -1123,6 +1126,8 @@ fn short_to_display(short: &[u8], nt: u8, out: &mut [u8; 12]) -> usize {
 
 #[cfg(any(test, feature = "std"))]
 pub mod format;
+
+pub mod exfat;
 
 #[cfg(test)]
 mod tests;

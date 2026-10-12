@@ -83,9 +83,12 @@ pub const BUDGETS: &[Budget] = &[
     // and return-to-loader path (ADR-0012), 40.9 KiB measured, +~10%.
     // Ratcheted 45 -> 53 KiB on 2026-10-11 (test image, owner's rule): the
     // card's FAT32 root listing (ADR-0013), 47.5 KiB measured, +~10%.
+    // Ratcheted 53 -> 60 KiB on 2026-10-12 (test image): the PC Card
+    // registers and CF line, and the exFAT reader for SDXC cards (the
+    // probe's emulated card is exFAT); 54.6 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 53 * 1024,
+        max_load: 60 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
