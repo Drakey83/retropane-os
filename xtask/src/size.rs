@@ -14,11 +14,14 @@ pub struct Budget {
 
 /// Current budgets.
 ///
-/// Rules (ADR-0005 rule 7): budgets only tighten, except by a raise the
-/// project owner approves, with the reason written next to the budget. After
-/// an approved raise the budget is *ratcheted*: set to the measured size plus
+/// Rules (ADR-0005 rule 7). **OS components** (what ships on the device,
+/// starting with `rp-kernel`: RAM taken from apps) only tighten, except by
+/// a raise the project owner approves, with the reason written next to the
+/// budget. **Test and bring-up images** (never shipped) may be raised
+/// without asking, with the reason written here (owner's decision,
+/// 2026-10-11). Every raise is *ratcheted*: set to the measured size plus
 /// about 10%, not to a round number with room to spare, so growth can't
-/// accumulate unreviewed. Every raise is logged in docs/perf.md.
+/// accumulate unreviewed, and logged in docs/perf.md.
 pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-hello",
