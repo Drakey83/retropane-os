@@ -210,6 +210,35 @@ mod target {
         });
     }
 
+    /// SHA-256 and HMAC on the target: checked against the published
+    /// vectors (the ARM build, not just the host's), then timed on a 4 KiB
+    /// page and a 64-byte message (the TLS record and handshake shapes).
+    pub fn crypto(r: &mut Runner, page: &mut [u8]) {
+        use rp_crypto::{HmacSha256, Sha256, ct_eq};
+        // The published answers, computed by this build on this CPU.
+        let abc = Sha256::digest(b"abc");
+        let want_abc: [u8; 8] = [0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea];
+        let tag = HmacSha256::mac(b"Jefe", b"what do ya want for nothing?");
+        let want_tag: [u8; 8] = [0x5b, 0xdc, 0xc1, 0x46, 0xbf, 0x60, 0x75, 0x4e];
+        r.check(
+            "crypto",
+            ct_eq(&abc[..8], &want_abc) && ct_eq(&tag[..8], &want_tag),
+            "",
+        );
+        let Some(page) = page.get_mut(..4096) else {
+            return;
+        };
+        for (i, b) in page.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        r.run("sha256_4k", 8, &mut || {
+            black_box(Sha256::digest(black_box(&*page)));
+        });
+        r.run("hmac_sha256_64b", 64, &mut || {
+            black_box(HmacSha256::mac(b"key", black_box(&page[..64])));
+        });
+    }
+
     /// TLB-miss cost: one read per 1 MiB section of SDRAM, over
     /// [`TLB_FIT`] sections (all fit the 32-entry D-TLB) and [`TLB_SPILL`]
     /// (every read misses). The reads stay in cache (each section's address is

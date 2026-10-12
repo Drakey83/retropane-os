@@ -66,6 +66,7 @@ mod image {
             suite::chase(&mut r, "chase_sram_256k", sram);
         }
         suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
+        suite::crypto(&mut r, sd_buf);
         if let Some((_regs, vram)) = rp_hal_x51v::devices::take_mbx() {
             let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
             let end = plane.offset + plane.stride * usize::from(plane.height);
