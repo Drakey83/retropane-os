@@ -126,15 +126,11 @@ mod image {
         );
         step(BLUE);
 
-        let kept = Plane::decode(gsctrl, gscadr, gsadr, MBX_VRAM_SIZE as usize)
-            .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
-        let (plane, note) = match kept {
-            Some(p) => (p, "kept WM plane"),
-            None => {
-                let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-                Display::new(regs).enable(&X51V_VGA, &p);
-                (p, "reprogrammed")
-            }
+        let (plane, kept) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
+        let note = if kept {
+            "kept WM plane"
+        } else {
+            "reprogrammed"
         };
         let scratch = rp_hal_x51v::devices::take_scratch().is_some();
         step(WHITE);

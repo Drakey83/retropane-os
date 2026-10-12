@@ -256,6 +256,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image: plane blending at scan-out (overnight item 60); the
+    // scene is generated, not stored. 19.2 KiB measured, + ~10%.
+    Budget {
+        image: "rp-blend",
+        max_load: 22 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

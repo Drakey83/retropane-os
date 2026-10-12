@@ -26,13 +26,12 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_cpld::Cpld;
+    use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
     use rp_drv_pxa_udc::reg::{DPPUE, HXOE, UP2OCR};
-    use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -143,21 +142,10 @@ mod image {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
 
-        let Some((mut regs, vram)) = devices::take_mbx() else {
+        let Some((regs, vram)) = devices::take_mbx() else {
             halt()
         };
-        let plane = Plane::decode(
-            regs.read32(reg::GSCTRL),
-            regs.read32(reg::GSCADR),
-            regs.read32(reg::GSADR),
-            MBX_VRAM_SIZE as usize,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640)
-        .unwrap_or_else(|| {
-            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            Display::new(regs).enable(&X51V_VGA, &p);
-            p
-        });
+        let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let mut con = Console::new(
             &mut vram[plane.offset..end],

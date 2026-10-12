@@ -36,6 +36,7 @@ members = [
     "boot/crash",
     "boot/hang",
     "boot/picture",
+    "boot/blend",
     "boot/usb",
     "boot/reconnect",
     "boot/loadproto",
