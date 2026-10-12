@@ -48,7 +48,10 @@ Ten rules, each owned by a layer and checked in CI where possible.
    swap device worth using.
 7. **Budgets are part of the build.** Every image and subsystem has a size budget
    (DESIGN §11). `cargo xtask` reports sizes and fails when a budget is exceeded,
-   and budgets only ever get tightened. *(Code-size check: in place now for the
+   and budgets only ever get tightened. A raise needs the owner's approval for
+   OS components (what ships on the device); test and bring-up images may be
+   raised with a logged reason (owner's decision, 2026-10-11). Raises are
+   ratcheted to measured + ~10%. *(Code-size check: in place now for the
    bring-up image; RAM budgets arrive with the kernel.)*
 8. **Rust built for size where speed doesn't matter.** Per-crate optimisation
    levels (`opt-level = "s"`/`"z"` for cold code, `3` for hot paths), LTO,
