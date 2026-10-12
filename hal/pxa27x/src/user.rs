@@ -109,6 +109,51 @@ rp_uabt_entry:
     bl      rp_user_fault
     b       rp_user_return              @ resume at the (fixed) instruction
 
+    @ rp_call_user(pc, user_sp, args: *const [u32; 4], link: *mut u32) -> u32:
+    @ runs user code as a nested activation on this thread's kernel stack
+    @ (a migrating call, ADR-0016). The continuation (r4-r11, lr, the link
+    @ word's address, CPSR, the previous continuation: 12 words, so the
+    @ stack stays 8-byte aligned) is pushed here and *link points at it;
+    @ rp_resume_call returns from this function with a result.
+    .global rp_call_user
+rp_call_user:
+    push    {{r4-r11, lr}}
+    mrs     r4, cpsr
+    ldr     r5, [r3]                    @ the enclosing call's continuation
+    push    {{r3, r4, r5}}
+    str     sp, [r3]                    @ this one is now the innermost
+    msr     cpsr_c, #0xDF               @ SYS mode (user registers), IRQs off
+    mov     sp, r1
+    mov     lr, #0
+    msr     cpsr_c, #0xD3               @ back to SVC
+    mov     lr, r0
+    mov     r0, #0x50                   @ user mode, IRQs on, FIQ masked
+    msr     spsr_cxsf, r0
+    ldmia   r2, {{r0-r3}}               @ the call's arguments, nothing else
+    mov     r4, #0
+    mov     r5, #0
+    mov     r6, #0
+    mov     r7, #0
+    mov     r8, #0
+    mov     r9, #0
+    mov     r10, #0
+    mov     r11, #0
+    mov     r12, #0
+    movs    pc, lr
+
+    @ rp_resume_call(continuation, result) -> !: drops everything on the
+    @ kernel stack below the continuation (the callee's frames) and returns
+    @ `result` from the rp_call_user that pushed it.
+    .global rp_resume_call
+rp_resume_call:
+    msr     cpsr_c, #0xD3               @ IRQs off while the stack moves
+    mov     sp, r0
+    pop     {{r3, r4, r5}}
+    str     r5, [r3]                    @ the enclosing call is innermost again
+    msr     cpsr_c, r4                  @ the caller's mode and IRQ state
+    mov     r0, r1
+    pop     {{r4-r11, pc}}
+
     @ rp_enter_user(pc, user_sp, arg): first entry to user mode, never returns.
     .global rp_enter_user
 rp_enter_user:
@@ -306,6 +351,63 @@ pub fn enter_user(entry: extern "C" fn(usize) -> !, stack: &'static mut [u32], a
     // may execute (the caller maps it so); the SVC stack pointer stays at
     // this thread's kernel stack for later SWIs.
     unsafe { rp_enter_user(entry as usize as u32, top as u32, arg as u32) }
+}
+
+unsafe extern "C" {
+    fn rp_call_user(pc: u32, sp: u32, args: *const [u32; 4], link: *mut u32) -> u32;
+    fn rp_resume_call(continuation: u32, result: u32) -> !;
+}
+
+/// Per thread: its innermost migrating call's continuation on its kernel
+/// stack (0: not in a call). One word per thread: a caller's registers wait
+/// on its own kernel stack, not in a kernel table (which at 128 threads and
+/// 4 nested calls would be 34 KiB).
+static mut CALLS: [u32; crate::thread::MAX_THREADS] = [0; crate::thread::MAX_THREADS];
+
+/// Runs user code at `pc` on the user stack `sp` with `r0`-`r3 = args`
+/// and every other register zero, as a nested activation of thread
+/// `thread` (a migrating call: the caller's state stays on this kernel
+/// stack). Returns the value the kernel passes to [`resume_call`] for this
+/// thread, from a system call or fault the callee makes.
+///
+/// The caller switches address space (PID, domains) before and after; the
+/// kernel bounds nesting (each level holds ~250 bytes of kernel stack).
+///
+/// # Panics
+/// If `thread` is out of range.
+pub fn call_user(thread: usize, pc: u32, sp: u32, args: [u32; 4]) -> u32 {
+    assert!(thread < crate::thread::MAX_THREADS, "no such thread slot");
+    // SAFETY: the word belongs to the running thread (`thread`), which is
+    // the only code touching it; rp_call_user keeps the continuation it
+    // points at on this stack, below this frame, until rp_resume_call pops
+    // it. User mode reaches only what the page tables allow.
+    unsafe {
+        rp_call_user(
+            pc,
+            sp & !7,
+            &raw const args,
+            (&raw mut CALLS).cast::<u32>().add(thread),
+        )
+    }
+}
+
+/// Ends thread `thread`'s innermost migrating call: its [`call_user`]
+/// returns `result`, and everything the callee left on the kernel stack is
+/// dropped. Returns (doing nothing) only when the thread is in no call.
+/// Call it from the thread's own system-call or fault handler.
+///
+/// # Panics
+/// If `thread` is out of range.
+pub fn resume_call(thread: usize, result: u32) {
+    assert!(thread < crate::thread::MAX_THREADS, "no such thread slot");
+    // SAFETY: as in `call_user`: the running thread's own word.
+    let c = unsafe { (&raw const CALLS).cast::<u32>().add(thread).read() };
+    if c != 0 {
+        // SAFETY: `c` is a continuation rp_call_user pushed on this thread's
+        // kernel stack, above the handler running now (which is part of the
+        // callee's activation and is discarded).
+        unsafe { rp_resume_call(c, result) }
+    }
 }
 
 /// Makes system call `number` with arguments `a0`-`a2` (user side).

@@ -670,6 +670,44 @@ on the host or in the emulator first.
       (domains), and the tables are fixed, zero-initialised and half the
       size of a naive layout.
 
+## Eleventh tier (added 2026-10-12, same rules)
+
+38. **Calls carried on the caller's kernel stack** (ADR-0016): **done
+    (emulator).** A migrating call now runs the server as a nested
+    activation of the calling thread (`user::call_user`): the caller's
+    registers wait in its own kernel stack frame, and the server's
+    `SYS_RETURN` or fault resumes it (`user::resume_call`), dropping
+    whatever the server left on the stack. The kernel keeps one word per
+    thread (its innermost continuation) instead of a table of saved
+    registers (at 128 threads and 4 levels that table would have been
+    34 KiB). Each call depth gets its own server stack page, demand paged.
+    New checks: a server calling itself 4 levels deep (`IPC nested OK`)
+    and the fifth level refused with the error passed up unchanged
+    (`IPC too deep OK`); the emulator test requires both.
+    - **Iterate:** CE's thread migration, with nesting bounded and checked
+      and kernel stack use bounded by it.
+    - **Modernize:** no per-call kernel table to exhaust or leak through;
+      a server's crash, return or refusal all resume the caller the same
+      way, and the server never sees the caller's registers.
+
+39. **The scheduler in the kernel image** (ADR-0010, ADR-0016): threads
+    from `kernel/sched` running in process slots, two client threads in
+    the same server at once, preempted mid-call (quantum expiry while in
+    the server), each switch restoring the thread's current slot (the
+    server's while it is in a call), per-thread server stacks.
+
+40. **A process from a PE file** (ADR-0009): the kernel loads a small
+    PE built by xtask (sections, relocations, W^X) into a slot through
+    `kernel/pe`'s image views, demand paged, instead of copied test code.
+
+41. **Reclaim** (ADR-0005): when free frames run low, compress the
+    coldest pages (a clock over the page tables, accessed bits emulated
+    with faults); host tests, then live in the kernel image.
+
+42. **Service manager and driver hosts** (ADR-0016 step 3): a first user
+    process that owns the port table and starts hosts per driver class;
+    restart a crashed host with its clients' handles turning `Stale`.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
