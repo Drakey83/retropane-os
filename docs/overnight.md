@@ -445,10 +445,21 @@ on the host or in the emulator first.
       expected of any device; unknown polarity handled by logging levels,
       not guessing silently.
     - **Modernize:** automatic output switching, tested end to end.
-25. **Growing folders**: a full exFAT folder, or a FAT32 folder other than
-    the root, takes another cluster instead of answering "no room"
-    (crash-safe: the new cluster zeroed and linked before any entry uses
-    it).
+25. **Growing folders**: **done.** FAT32 already grew every folder (root
+    included). exFAT now does too: a zeroed cluster marked used first; the
+    root links it through the FAT; a folder stays one run when the next
+    cluster is free, or its run is chained through the FAT first (ignored
+    while its entry still says "no FAT chain"); then one sector write of
+    the folder's own entry (size, chain flag) makes it part of the folder.
+    New sets that spill into sectors not there yet grow the folder before
+    anything is written. Tests: folders growing in one run, by a chain,
+    and the root; a power cut at every write of a put that grows a folder,
+    with free space full of valid-looking entries, so a cluster that isn't
+    zeroed shows up (the test fails with the zeroing removed; an earlier
+    version of it didn't, and was fixed).
+    - **Iterate:** folders keep exFAT's contiguous layout when they can;
+      growth is crash-safe by order; the test proves the zeroing matters.
+    - **Modernize:** no folder size limit on SDXC cards.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
