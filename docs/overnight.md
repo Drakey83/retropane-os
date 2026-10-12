@@ -118,11 +118,21 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 5. CF card groundwork
 
-- [ ] `docs/hw/cf.md`: the PXA27x PC Card socket, the X51v's CF power (CPLD)
-      and card-detect, from the PXA manual and the board sources, every row
-      with its confidence and evidence.
-- [ ] The probe reports the socket's state read-only (power, detect, the
-      card's attribute memory if present). No driver writes yet.
+- [x] `docs/hw/cf.md`: socket 1, detect/ready/reset GPIOs, the PXA27x
+      windows and timing registers, the card side (CIS, ATA), safety rules
+      for experiments, open questions.
+- [x] The probe reports the PC Card timing registers and a decoded CF line;
+      run on the Axim: both sockets set up identically by Windows Mobile
+      (MCMEM 0x00020508, MCATT 0x00020E08, MCIO 0x00020510), MECR 3, detect
+      GPIO13 = 0, ready = 1, reset driven 0. Attribute memory deliberately
+      not read with nobody present (a bus stall would mean Dell's prompt).
+- **Needs the owner:** is a CF card in the slot? (settles detect polarity);
+  which CPLD bit powers the slot (Dell OAL analysis: Fable-level RE).
+- **Iterate:** the spec separates what's confirmed on the device from what
+  the manual says, and the probe captures the state the driver must
+  reproduce, before any driver code exists.
+- **Modernize:** planned as LUN 1 of the USB drive (no USB work), with
+  LBA28 cards up to 128 GiB (stock Windows Mobile handled far less).
 
 ## 6. GPIO14 / GPIO2
 
