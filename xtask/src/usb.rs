@@ -21,6 +21,14 @@ const VID_PID: &str = "VID_1209&PID_0001";
 const BANNER: &str = "RetroPane 26 USB console OK";
 /// The line sent for the echo check.
 const PROBE: &str = "RetroPane echo test 26";
+/// The scheduled task that restarts the Axim's USB device entry with admin
+/// rights (`cargo xtask load --setup` creates it once). The X51v's D+
+/// pull-up is a fixed resistor (docs/hw/udc.md), so the PC never notices
+/// the device leaving and returning; restarting its device entry makes
+/// Windows enumerate it afresh, which a cable replug otherwise did.
+const RESTART_TASK: &str = "RetroPane USB restart";
+/// The Axim's device instance (its serial number is fixed in the firmware).
+const INSTANCE_ID: &str = r"USB\VID_1209&PID_0001\RP26-0001";
 
 /// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
 fn open_port() -> String {
@@ -78,10 +86,19 @@ if ($reply -like 'RPL ERR*') {{ exit 0 }}
 # within half a second of saying OK, and the port may go away first.
 # The device disconnects to run the image. If the image returns to the
 # loader, it reconnects and sends the run log: reopen the port and read it.
-$deadline = (Get-Date).AddSeconds({LOG_WAIT_SECS})
+    $deadline = (Get-Date).AddSeconds({LOG_WAIT_SECS})
 $done = $false
+# The PC doesn't notice the device leaving and returning by itself: every
+# few seconds, restart its device entry (admin rights come from the
+# scheduled task; without it this is a no-op and a cable replug is needed).
+$lastKick = Get-Date
 while (-not $done -and (Get-Date) -lt $deadline) {{
     Start-Sleep -Milliseconds 500
+    if (((Get-Date) - $lastKick).TotalSeconds -ge 8) {{
+        schtasks /Run /TN '{RESTART_TASK}' 2>&1 | Out-Null
+        $lastKick = Get-Date
+        Start-Sleep -Milliseconds 2500
+    }}
     $dev = Get-CimInstance Win32_PnPEntity | Where-Object {{ $_.PNPDeviceID -like 'USB\{VID_PID}*' -and $_.Name -match '\(COM\d+\)' }} | Select-Object -First 1
     if (-not $dev) {{ continue }}
     $port = [regex]::Match($dev.Name, 'COM\d+').Value
@@ -167,6 +184,40 @@ fn powershell(script: &str) -> Result<std::process::Output, String> {
         .arg(encode_command(script))
         .output()
         .map_err(|e| format!("powershell: {e}"))
+}
+
+/// Creates the admin scheduled task that restarts the Axim's USB device
+/// entry (one UAC prompt, once). Without it, every `load` needs a cable
+/// replug for the PC to find the loader again.
+pub fn setup_restart_task() -> Result<(), String> {
+    let register = format!(
+        "Register-ScheduledTask -TaskName '{RESTART_TASK}' -Action (New-ScheduledTaskAction \
+         -Execute 'pnputil.exe' -Argument '/restart-device \"{INSTANCE_ID}\"') -RunLevel Highest \
+         -Force | Out-Null"
+    );
+    // Elevated through UAC (the user approves the prompt), then waited for.
+    let script = format!(
+        "$p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList \
+         '-NoProfile','-EncodedCommand','{}'; exit $p.ExitCode",
+        encode_command(&register)
+    );
+    let out = powershell(&script)?;
+    if !out.status.success() {
+        return Err(format!(
+            "creating the task failed (UAC declined?){}",
+            stderr_note(&out.stderr)
+        ));
+    }
+    let check = powershell(&format!(
+        "if (Get-ScheduledTask -TaskName '{RESTART_TASK}' -ErrorAction SilentlyContinue) {{ 'OK' }}"
+    ))?;
+    if !String::from_utf8_lossy(&check.stdout).contains("OK") {
+        return Err("the task was not created".into());
+    }
+    eprintln!(
+        "    task '{RESTART_TASK}' created: cargo xtask load now re-finds the Axim by itself"
+    );
+    Ok(())
 }
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
@@ -345,6 +396,12 @@ mod tests {
     fn the_script_looks_for_our_ids() {
         assert!(script().contains("USB\\VID_1209&PID_0001*"));
         assert!(load_script(Path::new("x.frame")).contains("USB\\VID_1209&PID_0001*"));
+    }
+
+    #[test]
+    fn the_log_wait_kicks_the_device_restart_task() {
+        let s = load_script(Path::new("x.frame"));
+        assert!(s.contains("schtasks /Run /TN 'RetroPane USB restart'"));
     }
 
     #[test]

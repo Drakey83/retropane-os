@@ -40,6 +40,8 @@ commands:
             its sync cable: find the COM port, check the banner and echo
   load      send an image (name, e.g. rp-probe, or a .bin) to an X51v running
             the resident loader (target/sdkit/loader) over USB
+            (--setup: create the admin task that lets it re-find the Axim
+            after each run without a cable replug; one UAC prompt, once)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -71,8 +73,10 @@ fn main() -> ExitCode {
         }
         "load" => {
             eprintln!("==> load {flag}");
-            if flag.is_empty() {
-                Err("usage: cargo xtask load <image name | file.bin>".into())
+            if flag == "--setup" {
+                usb::setup_restart_task()
+            } else if flag.is_empty() {
+                Err("usage: cargo xtask load <image name | file.bin> | --setup".into())
             } else {
                 usb::load(&workspace_root(), &flag)
             }
