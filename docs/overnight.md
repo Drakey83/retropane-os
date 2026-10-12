@@ -627,6 +627,26 @@ on the host or in the emulator first.
     Device: try the Thumb loader in RAM first (`cargo xtask load
     rp-loader`, the card's loader untouched), then `cargo xtask install`.
 
+36. **IPC, step 1: the rules** (ADR-0016, accepted): **done (host tests;
+    the emulator test comes with step 2).** `rp-kernel-ipc`: ports opened
+    by a server slot, per-process handle tables (a handle is an index into
+    the caller's own table: other processes' handles can't be named),
+    rights that can only shrink when handed on (`GRANT`), migrating-call
+    frames with bounded nesting (4), a faulting server unwinding to its
+    caller, restarts and port reuse bumping a generation so old handles
+    fail as `Stale` instead of reaching a new server, exits closing ports
+    and emptying tables; all fixed-size. 9 tests, one of them 100,000
+    random operations from hostile processes checking a call only ever
+    passes through a live handle with `CALL`. Step 2 (needs threads and
+    processes in one image, the kernel's next step per ADR-0010): the
+    context switch that carries a call (FCSE PID and domain switch, the
+    per-thread server stack), its emulator test and a round-trip timing.
+    Step 3: the service manager and the per-class driver hosts.
+    - **Iterate:** CE's migrating calls with the checks CE lacked: no
+      global handle namespace, rights, stale-handle safety after restarts.
+    - **Modernize:** capability-style handles, verified against random
+      hostile use before any of it runs.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
