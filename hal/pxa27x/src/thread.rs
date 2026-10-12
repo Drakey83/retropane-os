@@ -3,35 +3,36 @@
 //! The kernel is non-preemptive (ADR-0010 rule 4): a thread gives up the CPU
 //! only at a scheduling point (a wait, a sleep, a yield, or the return from
 //! an exception), always by calling [`switch`]. So a context is just what the
-//! ARM calling convention says a callee must preserve: `r4`-`r11`, the stack
-//! pointer and the return address. Ten words, saved and loaded with one `stm`
-//! and one `ldm`.
-//!
-//! Contexts live here, indexed by thread number (the scheduler's `Tid`), so
-//! the kernel never handles raw stack pointers.
+//! ARM calling convention says a callee must preserve: `r4`-`r11` and the
+//! return address, pushed on the thread's own kernel stack with one `push`.
+//! Only the stack pointer stays here, indexed by thread number (the
+//! scheduler's `Tid`): one word per thread instead of ten (512 bytes for
+//! 128 threads, not 5 KiB), and the kernel never handles raw stack
+//! pointers.
 
 use core::ptr::addr_of_mut;
 
 /// Threads the HAL keeps contexts for (matches the scheduler's table).
 pub const MAX_THREADS: usize = 128;
 
-/// A saved thread: `r4`-`r11`, `sp`, `lr`.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Context([u32; 10]);
+/// Per thread: its kernel stack pointer while it isn't running (its
+/// `r4`-`r11` and return address are pushed just above).
+static mut SPS: [u32; MAX_THREADS] = [0; MAX_THREADS];
 
-static mut CONTEXTS: [Context; MAX_THREADS] = [Context([0; 10]); MAX_THREADS];
+/// Words `rp_switch` pushes: `r4`-`r11`, `lr`.
+const SAVED_WORDS: usize = 9;
 
 core::arch::global_asm!(
     r#"
     .section .text.rp_switch, "ax"
     .global rp_switch
     .arm
-    @ rp_switch(from: *mut Context, to: *const Context)
+    @ rp_switch(from_sp: *mut u32, to_sp: *const u32)
 rp_switch:
-    stmia   r0, {{r4-r11, sp, lr}}
-    ldmia   r1, {{r4-r11, sp, lr}}
-    bx      lr
+    push    {{r4-r11, lr}}
+    str     sp, [r0]
+    ldr     sp, [r1]
+    pop     {{r4-r11, pc}}              @ interworks: returns to ARM or Thumb
 
     @ A new thread's first "return": r4 = entry, r5 = argument. Interrupts on
     @ (FIQ stays masked), then the entry function, which never returns.
@@ -45,7 +46,7 @@ rp_thread_start:
 );
 
 unsafe extern "C" {
-    fn rp_switch(from: *mut Context, to: *const Context);
+    fn rp_switch(from_sp: *mut u32, to_sp: *const u32);
     fn rp_thread_start();
 }
 
@@ -57,17 +58,20 @@ unsafe extern "C" {
 pub fn prepare(i: usize, stack: &'static mut [u32], entry: extern "C" fn(usize) -> !, arg: usize) {
     assert!(i < MAX_THREADS, "no such thread slot");
     assert!(stack.len() >= 64, "stack too small");
-    // Full descending stack, 8-byte aligned top (AAPCS).
-    let top = (stack.as_mut_ptr() as usize + stack.len() * 4) & !7;
-    let mut c = Context([0; 10]);
-    c.0[0] = entry as usize as u32; // r4
-    c.0[1] = arg as u32; // r5
-    c.0[8] = top as u32; // sp
-    c.0[9] = rp_thread_start as *const () as usize as u32; // lr
+    // Full descending stack, 8-byte aligned top (AAPCS): the first switch
+    // pops the saved words and leaves sp at the top, aligned.
+    let base = stack.as_ptr() as usize;
+    let top = (((base + stack.len() * 4) & !7) - base) / 4 - SAVED_WORDS;
+    let frame = &mut stack[top..top + SAVED_WORDS];
+    frame.fill(0);
+    frame[0] = entry as usize as u32; // r4
+    frame[1] = arg as u32; // r5
+    frame[8] = rp_thread_start as *const () as usize as u32; // lr -> pc
+    let sp = frame.as_ptr() as usize as u32;
     // SAFETY: slot `i` belongs to a thread that isn't running (it's being
     // created), and the kernel prepares and switches with IRQs masked or from
     // the one running thread, so nothing else touches this slot now.
-    unsafe { addr_of_mut!(CONTEXTS[i]).write(c) };
+    unsafe { addr_of_mut!(SPS[i]).write(sp) };
 }
 
 /// Saves the running thread's context in slot `from` and resumes thread `to`
@@ -86,12 +90,13 @@ pub fn switch(from: usize, to: usize) {
     // Media-unit access follows its owner (lazy iWMMXt switching).
     crate::iwmmxt::on_switch(to);
     // SAFETY: the two slots are distinct and IRQs are masked, so these are
-    // the only references; `rp_switch` saves the callee-saved registers, sp
-    // and lr of this call into `from` and loads `to`'s, which hold either a
-    // previous `switch` call's state (so it returns there) or a `prepare`d
-    // start. Every thread runs in SVC mode with its own stack.
+    // the only references; `rp_switch` pushes this call's callee-saved
+    // registers and return address on this thread's stack, keeps sp in
+    // `from`'s slot and resumes `to`'s stack, which holds either a previous
+    // `switch` call's words (so it returns there) or a `prepare`d start.
+    // Every thread runs in SVC mode with its own stack.
     unsafe {
-        rp_switch(addr_of_mut!(CONTEXTS[from]), addr_of_mut!(CONTEXTS[to]));
+        rp_switch(addr_of_mut!(SPS[from]), addr_of_mut!(SPS[to]));
     }
     // Back in `from`'s context: restore its interrupt state.
     if was {

@@ -65,12 +65,24 @@ pub const BUDGETS: &[Budget] = &[
         // a page-aligned page in the image). Measured 41.3 KiB + ~10%. The
         // handle tables are 4 KiB of zeroed RAM, sized to CE5's 31 process
         // slots, inside the existing zero budget.
-        max_load: 46 * 1024,
+        // Raised 46 -> 55 KiB on 2026-10-12 (approved by the owner): the
+        // scheduler (ADR-0010) joined the kernel image: threads, events,
+        // preemption and the idle loop, with two client threads in a
+        // server at once. Measured 50.1 KiB + ~10%. Building the start-up
+        // code as Thumb was tried and grew the image (helpers it inlined
+        // were outlined), so it stays ARM.
+        max_load: 55 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
         // allocator).
-        max_zero: 112 * 1024,
+        // Raised 112 -> 120 KiB on 2026-10-12 (approved by the owner): the
+        // scheduler's thread and event tables (4.3 KiB). Already cut to
+        // fit: thread contexts on each thread's own stack (512 B for 128
+        // threads, not 5 KiB), the port table without `Option`, and callers'
+        // slots kept in their kernel stack frames, not an IPC table.
+        // Measured 112.9 KiB + ~6%.
+        max_zero: 120 * 1024,
     },
     // Threads test harness (ADR-0010): scheduler tables (~4 KiB, .bss) and
     // the harness itself; one image per subsystem's test keeps each budget
@@ -91,7 +103,9 @@ pub const BUDGETS: &[Budget] = &[
         // real X51v's switch and interrupt numbers reach the PC, plus the
         // shared crash path; 28.1 KiB measured, +~10%.
         max_load: 32 * 1024,
-        max_zero: 30 * 1024,
+        // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
+        // threads' own stacks (24.3 KiB measured, +~10%).
+        max_zero: 27 * 1024,
     },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").

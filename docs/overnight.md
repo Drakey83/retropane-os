@@ -690,11 +690,28 @@ on the host or in the emulator first.
       a server's crash, return or refusal all resume the caller the same
       way, and the server never sees the caller's registers.
 
-39. **The scheduler in the kernel image** (ADR-0010, ADR-0016): threads
-    from `kernel/sched` running in process slots, two client threads in
-    the same server at once, preempted mid-call (quantum expiry while in
-    the server), each switch restoring the thread's current slot (the
-    server's while it is in a call), per-thread server stacks.
+39. **The scheduler in the kernel image** (ADR-0010, ADR-0016): **done
+    (emulator).** `rp-kernel` runs `kernel/sched`: the boot thread, an idle
+    thread (tickless) and two client threads in slot 5, both calling the
+    server in slot 6 1,011 times at once on a ~150 us quantum. Every system
+    call is a scheduling point and interrupts from user mode preempt, so
+    threads are switched inside calls (`IPC preempted in calls OK`, required
+    by the emulator test); each switch restores the slot the thread runs in
+    (the server's while in a call). User stacks per thread and call depth,
+    demand paged. Every earlier check now has to pass for both clients.
+    Memory: thread contexts moved onto each thread's own kernel stack (one
+    word per thread, not ten: -4.6 KB, also in `rp-threads`); the caller's
+    slot waits in its kernel stack frame, so the IPC crate no longer keeps
+    caller frames (-512 B); ports without `Option` (-256 B); `install`
+    refuses closed ports. Thumb for the start-up code was tried and grew
+    the image (outlined helpers): kept ARM. Kernel budgets 46 -> 55 KiB
+    code, 112 -> 120 KiB RAM, approved by the owner.
+    - **Iterate:** CE's priority scheduler and thread migration in one
+      kernel, with the switch state where the thread already is (its
+      stack) instead of in tables sized for the worst case.
+    - **Modernize:** preemption tested inside cross-process calls, no
+      shared server stack between threads, nothing per-thread that a
+      hostile process can grow.
 
 40. **A process from a PE file** (ADR-0009): the kernel loads a small
     PE built by xtask (sections, relocations, W^X) into a slot through

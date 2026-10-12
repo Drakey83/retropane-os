@@ -24,7 +24,7 @@ fn a_call_goes_to_the_server_and_comes_back() {
         }
     );
     assert_eq!(ipc.depth(5), 1);
-    assert_eq!(ipc.ret(5), Ok(Return { slot: APP }));
+    assert_eq!(ipc.ret(5), Ok(()));
     assert_eq!(ipc.ret(5), Err(Error::NotInCall));
 }
 
@@ -62,7 +62,7 @@ fn rights_never_grow() {
 }
 
 #[test]
-fn nesting_is_bounded_and_unwinds_in_order() {
+fn nesting_is_bounded_and_unwinds() {
     let mut ipc = Ipc::new();
     let mut slots = vec![];
     let mut handles = vec![];
@@ -80,8 +80,8 @@ fn nesting_is_bounded_and_unwinds_in_order() {
         ipc.call(1, slots[MAX_DEPTH], handles[MAX_DEPTH]),
         Err(Error::TooDeep)
     );
-    for d in (0..MAX_DEPTH).rev() {
-        assert_eq!(ipc.ret(1), Ok(Return { slot: slots[d] }));
+    for _ in 0..MAX_DEPTH {
+        assert_eq!(ipc.ret(1), Ok(()));
     }
 }
 
@@ -89,10 +89,10 @@ fn nesting_is_bounded_and_unwinds_in_order() {
 fn a_faulting_server_unwinds_to_its_caller() {
     let (mut ipc, _, h) = setup();
     ipc.call(5, APP, h).unwrap();
-    assert_eq!(ipc.fault(5), Some(Return { slot: APP }));
+    assert!(ipc.fault(5));
     assert_eq!(ipc.depth(5), 0);
     // A fault outside any call is the thread's own process's.
-    assert_eq!(ipc.fault(5), None);
+    assert!(!ipc.fault(5));
 }
 
 #[test]
@@ -174,7 +174,7 @@ fn random_operations_never_break_the_rules() {
                         Entry::decode(ipc.tables[usize::from(slot - FIRST_SLOT)][usize::from(h.0)])
                             .unwrap();
                     assert!(entry.rights().contains(Rights::CALL));
-                    let p = ipc.ports[usize::from(entry.port())].unwrap();
+                    let p = ipc.ports[usize::from(entry.port())];
                     assert!(
                         p.open == 1 && p.generation == entry.generation() && p.server == e.slot
                     );

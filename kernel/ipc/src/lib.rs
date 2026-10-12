@@ -5,9 +5,11 @@
 //! processes reach it only through a **handle** in their own handle table,
 //! with **rights**: `CALL` to call it, `GRANT` to hand it on (only ever with
 //! the same rights or fewer). A call **migrates** the calling thread into
-//! the server's slot: [`Ipc::call`] checks everything and pushes a frame
-//! (where to come back to), [`Ipc::ret`] pops it; a server that faults
-//! mid-call unwinds to its caller ([`Ipc::fault`]), which gets an error.
+//! the server's slot: [`Ipc::call`] checks everything and counts the
+//! nesting, [`Ipc::ret`] uncounts it; a server that faults mid-call unwinds
+//! to its caller ([`Ipc::fault`]), which gets an error. Where to come back
+//! to (the caller's slot and registers) is the kernel's: it keeps them in
+//! the caller's own kernel stack frame, so no table here holds them.
 //! Restarting a server bumps its port's **generation**, so handles taken
 //! before the restart fail cleanly instead of reaching the new instance.
 //!
@@ -92,16 +94,25 @@ pub enum Error {
     Range,
 }
 
+/// A port. All zero means never used (no server is slot 0), so the table
+/// needs no `Option` (8 bytes a port, not 12) and starts zeroed (`.bss`).
 #[derive(Clone, Copy)]
 struct Port {
-    server: u8,
     entry: u32,
     generation: u16,
-    /// 1 while open. A byte, not a `bool`: a `bool` gives `Option<Port>` a
-    /// niche, so `None` would be the byte 2 and every `Ipc` static would be
-    /// stored in the image instead of zeroed at start (13.7 KB, measured).
+    server: u8,
+    /// 1 while open. A byte, not a `bool`: a `bool` niche once moved every
+    /// `Ipc` static into the image instead of zeroed RAM (13.7 KB,
+    /// measured).
     open: u8,
 }
+
+const NO_PORT: Port = Port {
+    entry: 0,
+    generation: 0,
+    server: 0,
+    open: 0,
+};
 
 /// A handle table entry, stored as one word: 0 when empty, else bit 31
 /// set, the generation in bits 8..24, the rights in bits 6..8 and the port
@@ -160,19 +171,11 @@ pub struct Enter {
     pub depth: usize,
 }
 
-/// Where a thread goes back to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Return {
-    /// The caller's slot.
-    pub slot: u8,
-}
-
 /// The kernel's IPC tables.
 pub struct Ipc {
-    ports: [Option<Port>; MAX_PORTS],
+    ports: [Port; MAX_PORTS],
     tables: [[u32; MAX_HANDLES]; MAX_SLOTS],
-    /// Per thread: the caller slots of the calls it is in.
-    frames: [[u8; MAX_DEPTH]; MAX_THREADS],
+    /// Per thread: the calls it is in.
     depth: [u8; MAX_THREADS],
 }
 
@@ -187,9 +190,8 @@ impl Ipc {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            ports: [None; MAX_PORTS],
+            ports: [NO_PORT; MAX_PORTS],
             tables: [[Entry::EMPTY; MAX_HANDLES]; MAX_SLOTS],
-            frames: [[0; MAX_DEPTH]; MAX_THREADS],
             depth: [0; MAX_THREADS],
         }
     }
@@ -212,20 +214,20 @@ impl Ipc {
         let i = self
             .ports
             .iter()
-            .position(|p| p.is_none_or(|p| p.open == 0))
+            .position(|p| p.open == 0)
             .ok_or(Error::Full)?;
-        let generation = self.ports[i].map_or(0, |p| p.generation.wrapping_add(1));
-        self.ports[i] = Some(Port {
+        let generation = self.ports[i].generation.wrapping_add(1);
+        self.ports[i] = Port {
             server,
             entry,
             generation,
             open: 1,
-        });
+        };
         let port = PortId(i as u8);
         match self.install(server, port, Rights::ALL) {
             Ok(h) => Ok((port, h)),
             Err(e) => {
-                self.ports[i] = None;
+                self.ports[i].open = 0;
                 Err(e)
             }
         }
@@ -238,15 +240,15 @@ impl Ipc {
         let p = self
             .ports
             .get(usize::from(port.0))
-            .copied()
-            .flatten()
+            .filter(|p| p.open == 1)
             .ok_or(Error::Closed)?;
+        let generation = p.generation;
         let table = &mut self.tables[s];
         let i = table
             .iter()
             .position(|&w| w == Entry::EMPTY)
             .ok_or(Error::Full)?;
-        table[i] = Entry::new(port.0, rights, p.generation).0;
+        table[i] = Entry::new(port.0, rights, generation).0;
         Ok(Handle(i as u8))
     }
 
@@ -271,7 +273,7 @@ impl Ipc {
 
     /// The port a handle names, if it is still the same one.
     fn live(&self, e: Entry) -> Result<Port, Error> {
-        let p = self.ports[usize::from(e.port())].ok_or(Error::Closed)?;
+        let p = self.ports[usize::from(e.port())];
         if p.open == 0 {
             return Err(Error::Closed);
         }
@@ -296,7 +298,6 @@ impl Ipc {
         if d >= MAX_DEPTH {
             return Err(Error::TooDeep);
         }
-        self.frames[t][d] = slot;
         self.depth[t] += 1;
         Ok(Enter {
             slot: p.server,
@@ -305,8 +306,8 @@ impl Ipc {
         })
     }
 
-    /// Thread `tid` returns from the call it is in: where it goes back to.
-    pub fn ret(&mut self, tid: u8) -> Result<Return, Error> {
+    /// Thread `tid` returns from the call it is in.
+    pub fn ret(&mut self, tid: u8) -> Result<(), Error> {
         let t = usize::from(tid);
         if t >= MAX_THREADS {
             return Err(Error::Range);
@@ -316,16 +317,14 @@ impl Ipc {
             return Err(Error::NotInCall);
         }
         self.depth[t] = d - 1;
-        Ok(Return {
-            slot: self.frames[t][usize::from(d - 1)],
-        })
+        Ok(())
     }
 
     /// The server faulted while `tid` was in it: unwind one call (the
-    /// caller gets an error); `None` if the thread wasn't in a call (the
+    /// caller gets an error); false if the thread wasn't in a call (the
     /// fault is its own process's).
-    pub fn fault(&mut self, tid: u8) -> Option<Return> {
-        self.ret(tid).ok()
+    pub fn fault(&mut self, tid: u8) -> bool {
+        self.ret(tid).is_ok()
     }
 
     /// Calls `tid` is in.
@@ -342,7 +341,7 @@ impl Ipc {
         let p = self
             .ports
             .get_mut(usize::from(port.0))
-            .and_then(Option::as_mut)
+            .filter(|p| p.server != 0)
             .ok_or(Error::Closed)?;
         p.generation = p.generation.wrapping_add(1);
         let (server, generation) = (p.server, p.generation);
@@ -359,7 +358,7 @@ impl Ipc {
     /// handle table empties.
     pub fn exit(&mut self, slot: u8) -> Result<(), Error> {
         let s = Self::slot_ok(slot)?;
-        for p in self.ports.iter_mut().flatten() {
+        for p in &mut self.ports {
             if p.server == slot {
                 p.open = 0;
             }

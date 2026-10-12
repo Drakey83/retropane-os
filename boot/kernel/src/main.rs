@@ -14,13 +14,16 @@
 //! 5. Checks FCSE relocation, measures the zero-fill fault cost, unmaps
 //!    everything and checks every frame came back.
 //!
-//! 6. IPC (ADR-0016): a client process in slot 5 calls a server process in
-//!    slot 6 through a port. Each call migrates the client's thread into the
-//!    server's slot (PID and domain switched, the server's own stack, the
-//!    client's other registers cleared) and back with the result; a server
-//!    that faults unwinds to its caller with an error; a handle the client
-//!    doesn't have is refused; each process sees only its own memory at the
-//!    same address.
+//! 6. Threads and IPC (ADR-0010, ADR-0016): the scheduler starts an idle
+//!    thread and two client threads in process slot 5, which call a server
+//!    process in slot 6 through a port at the same time, on a short quantum
+//!    so they are preempted inside calls. Each call runs the server as a
+//!    nested activation of the calling thread (PID and domain switched, a
+//!    server stack per thread and depth, the caller's other registers
+//!    cleared) and returns its result; the server calls itself 4 deep and
+//!    the fifth level is refused; a server that faults unwinds to its
+//!    caller with an error; a handle the client doesn't have is refused;
+//!    each process sees only its own memory at the same address.
 //!
 //! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
 //! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
@@ -41,7 +44,7 @@ mod image {
     use rp_hal_pxa27x::rt::{self, Global};
     use rp_hal_pxa27x::testprog::{self, SYS_CALL, SYS_DONE, SYS_RETURN};
     use rp_hal_pxa27x::user::{self, Frame};
-    use rp_hal_pxa27x::{Mmio, cpu, devmap};
+    use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
     use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
@@ -53,6 +56,7 @@ mod image {
         AddressSpace, Backing, IoError, Outcome, PageCache, Prot, Region, Vm, access_for,
     };
     use rp_kernel_mm::zpool::{ZBuffers, ZPool};
+    use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -189,8 +193,21 @@ mod image {
     /// Where the programs' page appears in both processes, and their stacks.
     const CODE_VA: u32 = 0x0000_8000;
     const STACK_VA: u32 = 0x0004_0000;
-    /// The one thread the test runs (the boot thread, gone to user mode).
-    const TID: u8 = 1;
+    /// User stack pages per thread: its own, then one per call depth (a
+    /// thread in a server runs on that server's page for the depth).
+    const STACK_PAGES: u32 = 1 + rp_kernel_ipc::MAX_DEPTH as u32;
+    /// The stacks region in each process (demand paged: only touched pages
+    /// cost a frame).
+    const STACK_REGION: u32 = 64 * 4096;
+    /// Client threads, each running the whole client program in slot 5 at
+    /// once, sharing the server.
+    const CLIENTS: usize = 2;
+    /// Kernel stacks taken off the top of the pool (4 KiB each): the idle
+    /// thread's and the clients'; the boot thread keeps its own.
+    const KSTACKS: usize = 1 + CLIENTS;
+    /// A short quantum (~150 us) so the clients are preempted many times,
+    /// inside calls too.
+    const QUANTUM: u32 = 500;
     /// What a refused or failed call returns: an error code with the top
     /// bits set (no sum of two small numbers looks like it).
     const ERR: u32 = 0xFFFF_FF00;
@@ -203,16 +220,46 @@ mod image {
 
     struct IpcState {
         ipc: Ipc,
-        vm_ok: bool,
         first_call: u32,
         calls: u32,
     }
 
     static IPC: Global<IpcState> = Global::new(IpcState {
         ipc: Ipc::new(),
-        vm_ok: false,
         first_call: 0,
         calls: 0,
+    });
+
+    /// The scheduler (all-zero when empty: `.bss`).
+    static SCHED: Global<Scheduler> = Global::new(Scheduler::new());
+
+    /// Who runs, and where.
+    struct Run {
+        current: Tid,
+        /// Per thread: the slot it runs in now (its process's, or a
+        /// server's while in a call; 0 for kernel threads).
+        slots: [u8; rp_kernel_sched::MAX_THREADS],
+        /// Set by each client as it finishes.
+        done: Eid,
+        /// The client program's entry and the handle it calls through.
+        entry: u32,
+        handle: u8,
+        /// Each client's report (the `SYS_DONE` registers r0-r5).
+        results: [[u32; 6]; CLIENTS],
+        finished: usize,
+        /// Thread switches away from a thread that was inside a call.
+        in_call_switches: u32,
+    }
+
+    static RUN: Global<Run> = Global::new(Run {
+        current: Tid(0),
+        slots: [0; rp_kernel_sched::MAX_THREADS],
+        done: Eid(0),
+        entry: 0,
+        handle: 0,
+        results: [[0; 6]; CLIENTS],
+        finished: 0,
+        in_call_switches: 0,
     });
 
     /// Everything else the VM owns.
@@ -346,8 +393,13 @@ mod image {
         // 1-2. Frames, then the kernel's own page tables.
         let Some(pool) = take_ram_pool() else { halt() };
         let pool: &'static mut [u32] = pool;
+        // The top frames are kernel stacks for threads, never handed out.
+        let (pool, kstacks) = pool.split_at_mut(pool.len() - KSTACKS * 1024);
+        let mut kstacks = kstacks.chunks_exact_mut(1024);
         let built = FRAMES.with(|frames| -> Result<u32, &'static str> {
-            frames.add_range(0, POOL_FRAMES).map_err(|e| e.name())?;
+            frames
+                .add_range(0, POOL_FRAMES - KSTACKS)
+                .map_err(|e| e.name())?;
             let l1_frame = FrameAlloc::alloc(frames, 2).ok_or("no L1")?;
             let l1 = BASE + l1_frame as u32 * 4096;
             let i = word(l1);
@@ -614,12 +666,10 @@ mod image {
                         prot: Prot::RW,
                         backing: Backing::Zero,
                     },
-                    // A stack page per call depth (the server may be called
-                    // by itself); demand paged, so unused depths cost
-                    // nothing.
+                    // Stacks: per thread and call depth (`stack_top`).
                     Region {
                         start: base + STACK_VA,
-                        len: 4096 * rp_kernel_ipc::MAX_DEPTH as u32,
+                        len: STACK_REGION,
                         prot: Prot::RW,
                         backing: Backing::Zero,
                     },
@@ -630,19 +680,119 @@ mod image {
             Ok(())
         });
         let client_handle = IPC.with(|i| -> Option<Handle> {
-            i.vm_ok = ok;
             let (port, _) = i.ipc.open(SERVER_SLOT as u8, CODE_VA + server_off).ok()?;
             i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()
         });
-        let (Ok(()), Some(h)) = (mapped, client_handle) else {
+        // Threads: this code becomes the boot thread; an idle thread; the
+        // clients, each entering the client program in slot 5.
+        let threads = SCHED.with(|s| -> Option<Eid> {
+            s.set_quantum(QUANTUM);
+            let boot = s.create(0, 150).ok()?;
+            let _ = s.schedule(rt::ticks());
+            let done = s.create_event(false, false).ok()?;
+            let idle = s.create(0, LOWEST).ok()?;
+            thread::prepare(idle.index(), kstacks.next()?, idle_thread, 0);
+            for _ in 0..CLIENTS {
+                let t = s.create(PROC_SLOT as u8, 200).ok()?;
+                thread::prepare(t.index(), kstacks.next()?, client_thread, 0);
+            }
+            RUN.with(|r| r.current = boot);
+            Some(done)
+        });
+        let (Ok(()), Some(h), Some(done)) = (mapped, client_handle, threads) else {
             let _ = uart.write_str("IPC setup FAIL\n");
             halt()
         };
+        RUN.with(|r| {
+            r.done = done;
+            r.entry = CODE_VA + client_off;
+            r.handle = h.0;
+        });
         user::set_syscall_handler(on_syscall);
         user::set_user_fault_handler(on_user_fault);
+        rt::set_preempt_hook(reschedule);
+        let _ = writeln!(uart, "IPC {CLIENTS} clients starting (handle {})", h.0);
+        while RUN.with(|r| r.finished) < CLIENTS {
+            wait(done);
+        }
+        ok &= report_clients(&mut uart);
+        if ok {
+            let _ = uart.write_str(super::MARKER);
+            let _ = uart.write_str("\n");
+        }
+        halt()
+    }
+
+    /// A client: enters the client program in its process, for good.
+    extern "C" fn client_thread(_: usize) -> ! {
+        let (me, entry, h) = RUN.with(|r| {
+            r.slots[r.current.index()] = PROC_SLOT as u8;
+            (r.current, r.entry, r.handle)
+        });
         switch_to(PROC_SLOT);
-        let _ = writeln!(uart, "IPC client starting (handle {})", h.0);
-        user::enter_user_at(CODE_VA + client_off, STACK_VA + 4096, u32::from(h.0))
+        user::enter_user_at(entry, stack_top(me, 0), u32::from(h))
+    }
+
+    /// Where thread `t`'s user stack starts at call depth `depth` (0: its
+    /// own process), in whichever slot it runs.
+    fn stack_top(t: Tid, depth: usize) -> u32 {
+        STACK_VA + 4096 * (u32::from(t.0) * STACK_PAGES + depth as u32 + 1)
+    }
+
+    extern "C" fn idle_thread(_: usize) -> ! {
+        loop {
+            let due = match SCHED.with(|s| s.next_deadline()) {
+                Some(at) => !rt::set_alarm(at),
+                None => false,
+            };
+            if !due {
+                rt::idle_until_interrupt(|| SCHED.with(|s| s.has_ready()));
+            }
+            reschedule();
+        }
+    }
+
+    /// A scheduling point: runs the most urgent ready thread, in the slot
+    /// it was running in (a server's, if it is inside a call).
+    fn reschedule() {
+        let (next, deadline) = SCHED.with(|s| (s.schedule(rt::ticks()), s.next_deadline()));
+        if let Some(at) = deadline
+            && !rt::set_alarm(at)
+        {
+            let _ = rt::set_alarm(rt::ticks().wrapping_add(64));
+        }
+        let Some(next) = next else {
+            return;
+        };
+        let (cur, slot) = RUN.with(|r| {
+            (
+                core::mem::replace(&mut r.current, next),
+                r.slots[next.index()],
+            )
+        });
+        if cur != next {
+            if IPC.with(|i| i.ipc.depth(cur.0)) > 0 {
+                RUN.with(|r| r.in_call_switches += 1);
+            }
+            if slot != 0 {
+                switch_to(u32::from(slot));
+            }
+            thread::switch(cur.index(), next.index());
+        }
+    }
+
+    /// Blocks the running thread until `e` is set.
+    fn wait(e: Eid) {
+        if SCHED.with(|s| s.wait(e, None)) == Ok(None) {
+            reschedule();
+        }
+    }
+
+    /// Whether the running thread's quantum (or a sleeper's time) is up.
+    fn deadline_passed() -> bool {
+        SCHED
+            .with(|s| s.next_deadline())
+            .is_some_and(|d| rt::ticks().wrapping_sub(d) as i32 >= 0)
     }
 
     /// Runs slot `slot`: its domain in the DACR, its PID.
@@ -656,7 +806,13 @@ mod image {
     }
 
     /// The test's system calls: a migrating call, its return, the report.
+    /// Each is a scheduling point: a thread whose quantum ran out while
+    /// in the kernel gives way here.
     fn on_syscall(f: &mut Frame) {
+        if deadline_passed() {
+            reschedule();
+        }
+        let me = RUN.with(|r| r.current);
         match f.number() {
             SYS_CALL => {
                 let slot = STATE.with(|s| s.pid) as u8;
@@ -665,42 +821,50 @@ mod image {
                         i.first_call = rt::ticks();
                     }
                     i.calls += 1;
-                    i.ipc.call(TID, slot, Handle(f.arg(0) as u8))
+                    i.ipc.call(me.0, slot, Handle(f.arg(0) as u8))
                 });
                 match r {
                     Ok(e) => {
                         // The server runs as a nested activation of this
-                        // thread: the caller's registers wait in this frame
-                        // on the kernel stack. The server gets its arguments
-                        // and nothing else, on its stack for this depth.
-                        switch_to(u32::from(e.slot));
+                        // thread: the caller's registers and slot wait in
+                        // this frame on the kernel stack. The server gets
+                        // its arguments and nothing else, on its stack for
+                        // this depth.
+                        enter_slot(me, e.slot);
                         let result = user::call_user(
-                            usize::from(TID),
+                            me.index(),
                             e.entry,
-                            STACK_VA + 4096 * e.depth as u32,
+                            stack_top(me, e.depth),
                             [0, f.arg(1), f.arg(2), f.arg(3)],
                         );
+                        enter_slot(me, slot);
                         f.set_result(result);
                     }
                     Err(e) => f.set_result(ERR | e as u32),
                 }
             }
             SYS_RETURN => {
-                finish_call(f.arg(0));
+                finish_call(me, f.arg(0));
                 f.set_result(ERR | IpcError::NotInCall as u32);
             }
-            SYS_DONE => done(f),
+            SYS_DONE => done(me, f),
             _ => f.set_result(ERR | 0xFF),
         }
     }
 
-    /// Ends the call this thread is in: back to the caller's slot, and its
-    /// `SYS_CALL` returns `result`. Returns only if the thread is in no
-    /// call.
-    fn finish_call(result: u32) {
-        if let Some(r) = IPC.with(|i| i.ipc.ret(TID).ok()) {
-            switch_to(u32::from(r.slot));
-            user::resume_call(usize::from(TID), result);
+    /// Thread `t` now runs in `slot` (switched now, and on every switch
+    /// back to it).
+    fn enter_slot(t: Tid, slot: u8) {
+        RUN.with(|r| r.slots[t.index()] = slot);
+        switch_to(u32::from(slot));
+    }
+
+    /// Ends the call thread `t` is in: its `SYS_CALL` returns `result` (and
+    /// switches back to the caller's slot). Returns only if the thread is
+    /// in no call.
+    fn finish_call(t: Tid, result: u32) {
+        if IPC.with(|i| i.ipc.ret(t.0)).is_ok() {
+            user::resume_call(t.index(), result);
         }
     }
 
@@ -724,58 +888,55 @@ mod image {
             return;
         }
         // A server faulting inside a call: the caller gets an error.
-        finish_call(ERR_FAULT);
+        finish_call(RUN.with(|r| r.current), ERR_FAULT);
         on_fault(kind, addr)
     }
 
-    /// The client's report: check it, and the server's own word.
-    fn done(f: &mut Frame) -> ! {
+    /// A client's report: kept for the boot thread, then the thread ends.
+    fn done(me: Tid, f: &mut Frame) -> ! {
+        let done = RUN.with(|r| {
+            let n = r.finished.min(CLIENTS - 1);
+            r.results[n].copy_from_slice(&f.r[..6]);
+            r.finished += 1;
+            r.done
+        });
+        let _ = SCHED.with(|s| {
+            let _ = s.set_event(done);
+            s.exit(me)
+        });
+        reschedule();
+        unreachable!("an exited thread never runs again")
+    }
+
+    /// Checks every client's report, the server's own word, and that
+    /// threads were switched while inside calls.
+    fn report_clients(uart: &mut PxaUart<Mmio>) -> bool {
         let ticks = rt::ticks().wrapping_sub(IPC.with(|i| i.first_call));
-        let (sum, fault_err, handle_err, word) = (f.arg(0), f.arg(1), f.arg(2), f.arg(3));
-        let mut uart = PxaUart::new(rt::emergency_uart());
         switch_to(SERVER_SLOT);
         let server_word = rt::try_read((layout::slot_base(SERVER_SLOT) + testprog::DATA) as usize);
-        switch_to(PROC_SLOT);
+        let (results, switches) = RUN.with(|r| (r.results, r.in_call_switches));
         let calls = IPC.with(|i| i.calls);
-        let mut ok = IPC.with(|i| i.vm_ok);
-        ok &= report_ipc(&mut uart, "call", sum == 42, sum);
-        ok &= report_ipc(&mut uart, "server fault", fault_err == ERR_FAULT, fault_err);
-        ok &= report_ipc(
-            &mut uart,
-            "foreign handle",
-            handle_err == ERR | IpcError::BadHandle as u32,
-            handle_err,
-        );
-        let (nested, too_deep) = (f.r[4], f.r[5]);
-        ok &= report_ipc(&mut uart, "nested", nested == 45, nested);
-        ok &= report_ipc(
-            &mut uart,
-            "too deep",
-            too_deep == ERR | IpcError::TooDeep as u32,
-            too_deep,
-        );
-        ok &= report_ipc(
-            &mut uart,
-            "isolation",
-            word == 0x1111_1111 && server_word == Some(0x2222_2222),
-            word,
-        );
+        let all = |f: &dyn Fn(&[u32; 6]) -> bool| results.iter().all(f);
+        let first = results[0];
+        let mut ok = report_ipc(uart, "call", all(&|r| r[0] == 42), first[0]);
+        ok &= report_ipc(uart, "server fault", all(&|r| r[1] == ERR_FAULT), first[1]);
+        let bad = ERR | IpcError::BadHandle as u32;
+        ok &= report_ipc(uart, "foreign handle", all(&|r| r[2] == bad), first[2]);
+        ok &= report_ipc(uart, "nested", all(&|r| r[4] == 45), first[4]);
+        let deep = ERR | IpcError::TooDeep as u32;
+        ok &= report_ipc(uart, "too deep", all(&|r| r[5] == deep), first[5]);
+        let isolated = all(&|r| r[3] == 0x1111_1111) && server_word == Some(0x2222_2222);
+        ok &= report_ipc(uart, "isolation", isolated, first[3]);
+        ok &= report_ipc(uart, "preempted in calls", switches > 0, switches);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
-        if ok {
-            let _ = uart.write_str(super::MARKER);
-            let _ = uart.write_str("\n");
-        }
-        halt()
+        ok
     }
 
     fn report_ipc(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
         let _ = uart.write_str("IPC ");
         let _ = uart.write_str(what);
         if pass {
-            let _ = uart.write_str(
-                " OK
-",
-            );
+            let _ = uart.write_str(" OK\n");
         } else {
             let _ = writeln!(uart, " FAIL (got {got:#010x})");
         }
@@ -786,10 +947,7 @@ mod image {
         let _ = uart.write_str("VM ");
         let _ = uart.write_str(what);
         if pass {
-            let _ = uart.write_str(
-                " OK
-",
-            );
+            let _ = uart.write_str(" OK\n");
         } else {
             let _ = writeln!(uart, " FAIL (got {got:#010x})");
         }
