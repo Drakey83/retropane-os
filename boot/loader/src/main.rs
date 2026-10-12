@@ -39,7 +39,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_fat::Volume;
+    use rp_fat::{AnyVolume, Volume};
     use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, handoff, rt};
@@ -288,15 +288,26 @@ mod image {
         }
     }
 
+    /// Where the card's first partition starts (0: no partition table).
+    fn partition_start(sd: &mut Sd) -> Result<u32, &'static str> {
+        let mut block = [0u8; rp_drv_sdcard::BLOCK];
+        sd.read(0, &mut block).map_err(|_| "card read")?;
+        Ok(mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start))
+    }
+
     /// Mounts the card's first partition afresh: the PC may have written
     /// it (as a drive) since the last time, so nothing cached is trusted.
     fn mount(sd: &mut Sd) -> Result<Volume<&mut Sd>, &'static str> {
-        let mut block = [0u8; rp_drv_sdcard::BLOCK];
-        sd.read(0, &mut block).map_err(|_| "card read")?;
-        let start = mbr_partitions(&block)
-            .and_then(|p| p[0])
-            .map_or(0, |p| p.start);
+        let start = partition_start(sd)?;
         Volume::mount(sd, start).map_err(|_| "not FAT32")
+    }
+
+    /// Mounts the first partition as FAT32 or exFAT, for storing files.
+    fn mount_any(sd: &mut Sd) -> Result<AnyVolume<&mut Sd>, &'static str> {
+        let start = partition_start(sd)?;
+        AnyVolume::mount(sd, start).map_err(|_| "not FAT32 or exFAT")
     }
 
     /// Writes a file frame to the card and checks it back; the reply line.
@@ -328,7 +339,7 @@ mod image {
             let _ = reply.write_str("RPL ERR card: no card\r\n");
             return;
         };
-        let mut vol = match mount(sd) {
+        let mut vol = match mount_any(sd) {
             Ok(v) => v,
             Err(why) => {
                 let _ = write!(reply, "RPL ERR card: {why}\r\n");
@@ -351,11 +362,9 @@ mod image {
         // Read back through the FAT code and compare with what was sent.
         let mut crc = !0u32;
         let mut got = 0usize;
-        let check = vol.find(name).and_then(|f| {
-            vol.read_file(&f, scratch, |chunk| {
-                crc = crc32_update(crc, chunk);
-                got += chunk.len();
-            })
+        let check = vol.read_back(name, scratch, |chunk| {
+            crc = crc32_update(crc, chunk);
+            got += chunk.len();
         });
         let want = crc32_update(!0, contents);
         match check {
@@ -1306,7 +1315,9 @@ mod image {
         let Some(sd) = lun.card.as_mut() else {
             return false;
         };
-        let Ok(mut vol) = mount(sd) else { return false };
+        let Ok(mut vol) = mount_any(sd) else {
+            return false;
+        };
         vol.put("crashlog.txt", run.log, scratch).is_ok()
     }
 

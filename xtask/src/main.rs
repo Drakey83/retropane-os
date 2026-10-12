@@ -176,6 +176,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_put(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))

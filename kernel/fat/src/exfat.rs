@@ -5,7 +5,19 @@
 //! Mount checks the boot region's checksum and every field it uses; the
 //! root directory's entry sets are checked against their set checksums;
 //! files are read contiguously ("no FAT chain") or through the FAT, with
-//! bytes past the valid data length read as zeros. Read-only for now.
+//! bytes past the valid data length read as zeros.
+//!
+//! Writing ([`ExVolume::put`], root directory): the allocation bitmap, not
+//! a FAT scan, finds free space, and a file that fits in one free run is
+//! stored with no FAT chain at all (exFAT's contiguous files); only when the
+//! card is too fragmented are clusters chained through the FAT. As on
+//! FAT32 (`Volume::replace`), the order makes a power cut harmless: data
+//! and bitmap first, then one sector write switches the directory (a
+//! replaced file's file and stream entries share a sector; a new file's set
+//! fits one sector or is written last-sector-first behind the end of the
+//! directory), then the old clusters are freed. The boot sector's
+//! VolumeDirty flag is set for the duration, so a cut is checked by the
+//! next PC to see the card. No timestamps yet (no clock).
 //!
 //! Security (docs/security.md): every length, offset and cluster number
 //! from the card is checked before use, chains and directories are bounded,
@@ -13,7 +25,7 @@
 
 use rp_hal_api::BlockDevice;
 
-use crate::{Error, NAME_MAX, SECTOR};
+use crate::{Error, NAME_MAX, SECTOR, Written};
 
 const ENTRY: usize = 32;
 const FAT_EOC: u32 = 0xFFFF_FFFF;
@@ -22,10 +34,22 @@ const FAT_BAD: u32 = 0xFFFF_FFF7;
 const T_FILE: u8 = 0x85;
 const T_STREAM: u8 = 0xC0;
 const T_NAME: u8 = 0xC1;
+const T_BITMAP: u8 = 0x81;
 const ATTR_DIRECTORY: u16 = 0x10;
+const ATTR_ARCHIVE: u16 = 0x20;
+/// Stream extension flags.
+const ALLOC_POSSIBLE: u8 = 0x01;
+const NO_FAT_CHAIN: u8 = 0x02;
+/// Boot sector VolumeFlags (byte 106): the volume may be inconsistent.
+const VOLUME_DIRTY: u8 = 0x02;
+/// Directory entries per sector.
+const SLOTS: usize = SECTOR / ENTRY;
 /// A file entry set: the file entry, the stream extension, up to 17 name
 /// entries (255 characters).
 const MAX_SECONDARY: usize = 18;
+/// Entries of a set kept while walking: enough for any name this module
+/// can be asked for (the checksum covers the rest as they pass).
+const KEEP: usize = 2 + NAME_MAX.div_ceil(15);
 
 /// A root-directory file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,9 +64,35 @@ pub struct ExFile {
     pub is_dir: bool,
 }
 
+/// What [`ExVolume::walk_slots`] calls per entry: sector, the sector's
+/// place in the directory, slot, entry; `true` stops the walk.
+type SlotVisit<'a> = dyn FnMut(u32, u32, usize, &[u8; ENTRY]) -> bool + 'a;
+
+/// Where a file's entry set is: its file entry's sector (and that
+/// sector's place in the directory) and slot, and the set itself.
+struct Found {
+    lba: u32,
+    nth: u32,
+    slot: usize,
+    /// The set's first entries (all of them when `count <= KEEP`).
+    set: [[u8; ENTRY]; KEEP],
+    /// Entries in the set.
+    count: usize,
+    /// The name was decoded whole (not cut, nothing outside ASCII), so it
+    /// can be matched: a cut name must not match its first characters.
+    whole: bool,
+}
+
 /// A mounted exFAT volume.
 pub struct ExVolume<D> {
     dev: D,
+    /// The boot sector.
+    base: u32,
+    /// VolumeDirty was already set at mount (then a write leaves it set).
+    was_dirty: bool,
+    /// The allocation bitmap: first sector and length in bytes (found on
+    /// the first write).
+    bitmap: Option<(u32, u32)>,
     fat_start: u32,
     heap_start: u32,
     cluster_shift: u32,
@@ -65,6 +115,7 @@ fn le64(b: &[u8], o: usize) -> u64 {
 
 /// The boot region checksum over `sector` (sector `index` of 0..11): bytes
 /// 106, 107 (VolumeFlags) and 112 (PercentInUse) of sector 0 don't count.
+#[inline(never)]
 fn boot_checksum(mut sum: u32, index: usize, sector: &[u8]) -> u32 {
     for (i, &b) in sector.iter().enumerate() {
         if index == 0 && matches!(i, 106 | 107 | 112) {
@@ -75,22 +126,28 @@ fn boot_checksum(mut sum: u32, index: usize, sector: &[u8]) -> u32 {
     sum
 }
 
-/// The entry set checksum: all entries, without bytes 2-3 of the first.
-fn set_checksum(set: &[[u8; ENTRY]]) -> u16 {
-    let mut sum = 0u16;
-    for (k, e) in set.iter().enumerate() {
-        for (i, &b) in e.iter().enumerate() {
-            if k == 0 && (i == 2 || i == 3) {
-                continue;
-            }
+/// Adds one entry to an entry set checksum (bytes 2-3 of the first entry,
+/// where the checksum lives, don't count).
+#[inline(never)]
+fn sum_entry(mut sum: u16, e: &[u8; ENTRY], first: bool) -> u16 {
+    for (i, &b) in e.iter().enumerate() {
+        if !(first && (i == 2 || i == 3)) {
             sum = sum.rotate_right(1).wrapping_add(u16::from(b));
         }
     }
     sum
 }
 
+/// The entry set checksum.
+fn set_checksum(set: &[[u8; ENTRY]]) -> u16 {
+    set.iter()
+        .enumerate()
+        .fold(0, |sum, (k, e)| sum_entry(sum, e, k == 0))
+}
+
 impl<D: BlockDevice> ExVolume<D> {
     /// Mounts the exFAT volume whose boot sector is at `base`.
+    #[inline(never)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
         let mut buf = [0u8; SECTOR];
         // The boot region: 11 sectors checksummed, sector 11 repeats the sum.
@@ -144,6 +201,9 @@ impl<D: BlockDevice> ExVolume<D> {
         }
         Ok(Self {
             dev,
+            base,
+            was_dirty: b[106] & VOLUME_DIRTY != 0,
+            bitmap: None,
             fat_start: base + fat_offset,
             heap_start: base + heap_offset,
             cluster_shift,
@@ -165,6 +225,11 @@ impl<D: BlockDevice> ExVolume<D> {
         self.clusters
     }
 
+    /// The block device.
+    pub fn device(&self) -> &D {
+        &self.dev
+    }
+
     /// Gives the device back.
     pub fn into_inner(self) -> D {
         self.dev
@@ -179,6 +244,7 @@ impl<D: BlockDevice> ExVolume<D> {
         self.heap_start + ((c - 2) << self.cluster_shift)
     }
 
+    #[inline(never)]
     fn fat_next(&mut self, c: u32) -> Result<Option<u32>, Error> {
         let sector = self.fat_start + c / (SECTOR as u32 / 4);
         self.dev.read_blocks(sector, &mut self.buf)?;
@@ -192,47 +258,24 @@ impl<D: BlockDevice> ExVolume<D> {
         }
     }
 
-    /// Calls `f` for each root-directory file whose entry set checks out,
-    /// with its name (ASCII; other characters as `?`, cut at [`NAME_MAX`]);
-    /// stops when `f` returns `true`.
-    fn walk_root(&mut self, f: &mut dyn FnMut(&[u8], &ExFile) -> bool) -> Result<(), Error> {
-        let mut set = [[0u8; ENTRY]; MAX_SECONDARY + 1];
-        let mut want = 0usize; // entries still to collect for the set
-        let mut have = 0usize;
+    /// Calls `f` with every root-directory entry up to and including the
+    /// end-of-directory entry: its sector, that sector's place in the
+    /// directory, and its slot. Stops when `f` returns `true`.
+    #[inline(never)]
+    fn walk_slots(&mut self, f: &mut SlotVisit<'_>) -> Result<(), Error> {
         let mut cluster = self.root_cluster;
         let mut visited = 0u32;
+        let mut nth = 0u32;
         loop {
             let lba = self.cluster_lba(cluster);
             for s in 0..1u32 << self.cluster_shift {
                 self.dev.read_blocks(lba + s, &mut self.buf)?;
-                for i in 0..SECTOR / ENTRY {
-                    let mut e = [0u8; ENTRY];
-                    e.copy_from_slice(&self.buf[i * ENTRY..(i + 1) * ENTRY]);
-                    let t = e[0];
-                    if t == 0 {
+                for (i, e) in self.buf.as_chunks::<ENTRY>().0.iter().enumerate() {
+                    if f(lba + s, nth, i, e) || e[0] == 0 {
                         return Ok(());
                     }
-                    if want > 0 {
-                        set[have] = e;
-                        have += 1;
-                        want -= 1;
-                        if want == 0
-                            && let Some((name, n, file)) = self.parse_set(&set[..have])
-                            && f(&name[..n], &file)
-                        {
-                            return Ok(());
-                        }
-                        continue;
-                    }
-                    if t == T_FILE {
-                        let secondary = usize::from(e[1]);
-                        if (2..=MAX_SECONDARY).contains(&secondary) {
-                            set[0] = e;
-                            have = 1;
-                            want = secondary;
-                        }
-                    }
                 }
+                nth += 1;
             }
             visited += 1;
             match self.fat_next(cluster)? {
@@ -243,38 +286,177 @@ impl<D: BlockDevice> ExVolume<D> {
         }
     }
 
-    /// Checks and decodes a file entry set.
-    fn parse_set(&self, set: &[[u8; ENTRY]]) -> Option<([u8; NAME_MAX], usize, ExFile)> {
-        if set_checksum(set) != le16(&set[0], 2) || set[1][0] != T_STREAM {
-            return None;
+    /// The directory's `nth` sector, if the directory has that many.
+    fn dir_sector(&mut self, nth: u32) -> Result<Option<u32>, Error> {
+        let mut cluster = self.root_cluster;
+        let hops = nth >> self.cluster_shift;
+        if hops >= self.clusters {
+            return Err(Error::Corrupt);
         }
-        let st = &set[1];
-        let name_len = usize::from(st[3]);
-        let file = ExFile {
-            first_cluster: le32(st, 20),
-            size: le64(st, 24),
-            valid: le64(st, 8).min(le64(st, 24)),
-            contiguous: st[1] & 0x02 != 0,
-            is_dir: le16(&set[0], 4) & ATTR_DIRECTORY != 0,
-        };
-        let mut name = [0u8; NAME_MAX];
-        let mut n = 0;
-        for e in set[2..].iter().filter(|e| e[0] == T_NAME) {
-            for k in 0..15 {
-                if n >= name_len.min(NAME_MAX) {
-                    break;
-                }
-                let c = le16(e, 2 + 2 * k);
-                name[n] = if c < 0x80 { c as u8 } else { b'?' };
-                n += 1;
+        for _ in 0..hops {
+            match self.fat_next(cluster)? {
+                Some(c) => cluster = c,
+                None => return Ok(None),
             }
         }
-        (n > 0).then_some((name, n, file))
+        Ok(Some(
+            self.cluster_lba(cluster) + (nth & ((1 << self.cluster_shift) - 1)),
+        ))
     }
 
+    /// Calls `f` for each root-directory file whose entry set checks out,
+    /// with its name (ASCII; other characters as `?`, cut at [`NAME_MAX`])
+    /// and where its set is; stops when `f` returns `true`.
+    fn walk_root(
+        &mut self,
+        f: &mut dyn FnMut(&[u8], &ExFile, &Found) -> bool,
+    ) -> Result<(), Error> {
+        let mut found = Found {
+            lba: 0,
+            nth: 0,
+            slot: 0,
+            set: [[0u8; ENTRY]; KEEP],
+            count: 0,
+            whole: false,
+        };
+        let mut want = 0usize; // entries still to collect for the set
+        let mut seen = 0usize;
+        let mut sum = 0u16;
+        self.walk_slots(&mut |lba, nth, slot, e| {
+            if e[0] == 0 {
+                return true;
+            }
+            if want > 0 {
+                if seen < KEEP {
+                    found.set[seen] = *e;
+                }
+                seen += 1;
+                sum = sum_entry(sum, e, false);
+                want -= 1;
+                if want > 0 {
+                    return false;
+                }
+                found.count = seen;
+                let Some((name, n, file, whole)) = parse_set(&found.set[..seen.min(KEEP)], sum)
+                else {
+                    return false;
+                };
+                found.whole = whole;
+                return f(&name[..n], &file, &found);
+            }
+            if e[0] == T_FILE {
+                let secondary = usize::from(e[1]);
+                if (2..=MAX_SECONDARY).contains(&secondary) {
+                    found.lba = lba;
+                    found.nth = nth;
+                    found.slot = slot;
+                    found.set[0] = *e;
+                    seen = 1;
+                    sum = sum_entry(0, e, true);
+                    want = secondary;
+                }
+            }
+            false
+        })
+    }
+}
+
+/// Checks (against `sum`, the whole set's checksum) and decodes a file
+/// entry set from its first entries; also whether the name came out whole.
+#[inline(never)]
+fn parse_set(set: &[[u8; ENTRY]], sum: u16) -> Option<([u8; NAME_MAX], usize, ExFile, bool)> {
+    if sum != le16(&set[0], 2) || set[1][0] != T_STREAM {
+        return None;
+    }
+    let st = &set[1];
+    let name_len = usize::from(st[3]);
+    let file = ExFile {
+        first_cluster: le32(st, 20),
+        size: le64(st, 24),
+        valid: le64(st, 8).min(le64(st, 24)),
+        contiguous: st[1] & 0x02 != 0,
+        is_dir: le16(&set[0], 4) & ATTR_DIRECTORY != 0,
+    };
+    let mut name = [0u8; NAME_MAX];
+    let mut n = 0;
+    let mut ascii = true;
+    for e in set[2..].iter().filter(|e| e[0] == T_NAME) {
+        for k in 0..15 {
+            if n >= name_len.min(NAME_MAX) {
+                break;
+            }
+            let c = le16(e, 2 + 2 * k);
+            ascii &= c < 0x80;
+            name[n] = if c < 0x80 { c as u8 } else { b'?' };
+            n += 1;
+        }
+    }
+    (n > 0).then_some((name, n, file, ascii && n == name_len))
+}
+
+/// The stream extension's name hash: over the up-cased name's UTF-16
+/// code units, low byte first (ASCII names: the up-case table's mapping
+/// for ASCII is the plain one).
+#[inline(never)]
+fn name_hash(name: &[u8]) -> u16 {
+    let mut h = 0u16;
+    for &c in name {
+        for b in u16::from(c.to_ascii_uppercase()).to_le_bytes() {
+            h = h.rotate_right(1).wrapping_add(u16::from(b));
+        }
+    }
+    h
+}
+
+/// A file entry set for `name` (ASCII, checked by the caller): the file
+/// entry, the stream extension, the name entries; checksummed.
+fn build_set(
+    name: &[u8],
+    first_cluster: u32,
+    size: u64,
+    contiguous: bool,
+) -> ([[u8; ENTRY]; KEEP], usize) {
+    let names = name.len().div_ceil(15);
+    let count = 2 + names;
+    let mut set = [[0u8; ENTRY]; KEEP];
+    set[0][0] = T_FILE;
+    set[0][1] = (1 + names) as u8;
+    set[0][4..6].copy_from_slice(&ATTR_ARCHIVE.to_le_bytes());
+    set[1][0] = T_STREAM;
+    set[1][3] = name.len() as u8;
+    set[1][4..6].copy_from_slice(&name_hash(name).to_le_bytes());
+    for (k, chunk) in name.chunks(15).enumerate() {
+        set[2 + k][0] = T_NAME;
+        for (i, &c) in chunk.iter().enumerate() {
+            set[2 + k][2 + 2 * i] = c;
+        }
+    }
+    set_stream(&mut set[..count], first_cluster, size, contiguous);
+    (set, count)
+}
+
+/// Points a set's stream extension at new contents and re-checksums it.
+fn set_stream(set: &mut [[u8; ENTRY]], first_cluster: u32, size: u64, contiguous: bool) {
+    let st = &mut set[1];
+    st[1] = ALLOC_POSSIBLE
+        | if contiguous && size > 0 {
+            NO_FAT_CHAIN
+        } else {
+            0
+        };
+    st[8..16].copy_from_slice(&size.to_le_bytes());
+    st[20..24].copy_from_slice(&first_cluster.to_le_bytes());
+    st[24..32].copy_from_slice(&size.to_le_bytes());
+    let attrs = le16(&set[0], 4) | ATTR_ARCHIVE;
+    set[0][4..6].copy_from_slice(&attrs.to_le_bytes());
+    let sum = set_checksum(set);
+    set[0][2..4].copy_from_slice(&sum.to_le_bytes());
+}
+
+impl<D: BlockDevice> ExVolume<D> {
     /// Calls `f` with each root file's name and details.
     pub fn for_each_root(&mut self, mut f: impl FnMut(&[u8], &ExFile)) -> Result<(), Error> {
-        self.walk_root(&mut |n, file| {
+        self.walk_root(&mut |n, file, _| {
             f(n, file);
             false
         })
@@ -282,16 +464,414 @@ impl<D: BlockDevice> ExVolume<D> {
 
     /// Finds a root file by name (ASCII, case-insensitive).
     pub fn find(&mut self, name: &str) -> Result<ExFile, Error> {
+        self.find_set(name).map(|(file, _)| file)
+    }
+
+    #[inline(never)]
+    fn find_set(&mut self, name: &str) -> Result<(ExFile, Found), Error> {
         let want = name.as_bytes();
         let mut found = None;
-        self.walk_root(&mut |n, file| {
-            let hit = n.eq_ignore_ascii_case(want);
+        self.walk_root(&mut |n, file, at| {
+            let hit = at.whole && n.eq_ignore_ascii_case(want);
             if hit {
-                found = Some(*file);
+                found = Some((
+                    *file,
+                    Found {
+                        lba: at.lba,
+                        nth: at.nth,
+                        slot: at.slot,
+                        set: at.set,
+                        count: at.count,
+                        whole: at.whole,
+                    },
+                ));
             }
             hit
         })?;
         found.ok_or(Error::NotFound)
+    }
+
+    /// Replaces the root file `name`'s contents, or creates it. See the
+    /// module documentation for the write order that makes a power cut
+    /// harmless.
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    #[inline(never)]
+    pub fn put(&mut self, name: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        assert!(scratch.len() >= SECTOR, "scratch must hold a sector");
+        crate::check_new_name(name.as_bytes())?;
+        let old = match self.find_set(name) {
+            Ok((file, _)) if file.is_dir => return Err(Error::Exists),
+            Ok(found) => Some(found),
+            Err(Error::NotFound) => None,
+            Err(e) => return Err(e),
+        };
+        self.set_dirty(true)?;
+        let written = match self.store(data, scratch) {
+            // Refused before anything was written: the volume is as it was.
+            Err(Error::NoRoom) if !self.was_dirty => {
+                self.set_dirty(false)?;
+                return Err(Error::NoRoom);
+            }
+            r => r?,
+        };
+        let size = data.len() as u64;
+        match old {
+            Some((file, at)) if at.slot + 1 < SLOTS && at.count <= KEEP => {
+                // The swap: file and stream entries share this sector (and
+                // the whole set is known, for its checksum).
+                let mut set = at.set;
+                set_stream(
+                    &mut set[..at.count],
+                    written.first_cluster,
+                    size,
+                    written.contiguous,
+                );
+                self.dev.read_blocks(at.lba, &mut self.buf)?;
+                let o = at.slot * ENTRY;
+                if self.buf[o..o + ENTRY] != at.set[0] {
+                    return Err(Error::Corrupt); // changed under us
+                }
+                self.buf[o..o + ENTRY].copy_from_slice(&set[0]);
+                self.buf[o + ENTRY..o + 2 * ENTRY].copy_from_slice(&set[1]);
+                self.dev.write_blocks(at.lba, &self.buf)?;
+                self.release(&file)?;
+            }
+            Some((file, at)) => {
+                // The file entry ends its sector (or the set has entries
+                // past the name, a vendor's): a new set, then the old one
+                // deleted (a cut between leaves both, both whole).
+                let (set, count) = build_set(
+                    name.as_bytes(),
+                    written.first_cluster,
+                    size,
+                    written.contiguous,
+                );
+                self.add_set(&set[..count])?;
+                self.delete_set(&at)?;
+                self.release(&file)?;
+            }
+            None => {
+                let (set, count) = build_set(
+                    name.as_bytes(),
+                    written.first_cluster,
+                    size,
+                    written.contiguous,
+                );
+                self.add_set(&set[..count])?;
+            }
+        }
+        if !self.was_dirty {
+            self.set_dirty(false)?;
+        }
+        Ok(written)
+    }
+
+    /// Sets or clears VolumeDirty (outside the boot checksum by design);
+    /// PercentInUse becomes "unknown", which it now is.
+    fn set_dirty(&mut self, dirty: bool) -> Result<(), Error> {
+        self.dev.read_blocks(self.base, &mut self.buf)?;
+        let flags = self.buf[106];
+        self.buf[106] = if dirty {
+            flags | VOLUME_DIRTY
+        } else {
+            flags & !VOLUME_DIRTY
+        };
+        self.buf[112] = 0xFF;
+        if self.buf[106] != flags || dirty {
+            self.dev.write_blocks(self.base, &self.buf)?;
+        }
+        Ok(())
+    }
+
+    /// The allocation bitmap: the root's bitmap entry, checked to cover
+    /// every cluster and to be one run (as formatters write it).
+    fn bitmap(&mut self) -> Result<(u32, u32), Error> {
+        if let Some(b) = self.bitmap {
+            return Ok(b);
+        }
+        let mut entry = None;
+        self.walk_slots(&mut |_, _, _, e| {
+            let hit = e[0] == T_BITMAP;
+            if hit {
+                entry = Some((le32(e, 20), le64(e, 24)));
+            }
+            hit
+        })?;
+        let (first, len) = entry.ok_or(Error::Corrupt)?;
+        let need = self.clusters.div_ceil(8);
+        let spans = need.div_ceil(self.cluster_bytes() as u32);
+        if !self.valid_cluster(first)
+            || len < u64::from(need)
+            || u64::from(first) + u64::from(spans) > 2 + u64::from(self.clusters)
+        {
+            return Err(Error::Corrupt);
+        }
+        let mut c = first;
+        for _ in 1..spans {
+            match self.fat_next(c)? {
+                Some(next) if next == c + 1 => c = next,
+                _ => return Err(Error::Corrupt),
+            }
+        }
+        let b = (self.cluster_lba(first), need);
+        self.bitmap = Some(b);
+        Ok(b)
+    }
+
+    /// The first run of `n` free clusters from cluster `from` on, and how
+    /// many free clusters the scan saw (all of them from `from` when there
+    /// is no such run).
+    fn scan(&mut self, from: u32, n: u32, scratch: &mut [u8]) -> Result<(Option<u32>, u32), Error> {
+        let (lba0, bytes) = self.bitmap()?;
+        let total = self.clusters;
+        let per = (scratch.len() / SECTOR) as u32;
+        let sectors = bytes.div_ceil(SECTOR as u32);
+        let bits_per = SECTOR as u32 * 8;
+        let mut bit = from.saturating_sub(2);
+        let (mut start, mut run, mut free) = (bit, 0u32, 0u32);
+        while bit < total {
+            let sector = bit / bits_per;
+            let secs = (sectors - sector).min(per);
+            let chunk = &mut scratch[..secs as usize * SECTOR];
+            self.dev.read_blocks(lba0 + sector, chunk)?;
+            let end = ((sector + secs) * bits_per).min(total);
+            while bit < end {
+                let byte = chunk[(bit / 8 - sector * SECTOR as u32) as usize];
+                let step = if bit.is_multiple_of(8) && bit + 8 <= end && (byte == 0 || byte == 0xFF)
+                {
+                    8
+                } else {
+                    1
+                };
+                if (byte >> (bit % 8)) & ((1u16 << step) - 1) as u8 == 0 {
+                    if run == 0 {
+                        start = bit;
+                    }
+                    run += step;
+                    free += step;
+                    if run >= n {
+                        return Ok((Some(start + 2), free));
+                    }
+                } else {
+                    run = 0;
+                }
+                bit += step;
+            }
+        }
+        Ok((None, free))
+    }
+
+    /// Marks clusters `first..first + n` used or free in the bitmap.
+    fn mark(&mut self, first: u32, n: u32, used: bool) -> Result<(), Error> {
+        let (lba0, _) = self.bitmap()?;
+        let bits_per = SECTOR as u32 * 8;
+        let mut bit = first - 2;
+        let end = bit + n;
+        while bit < end {
+            let sector = bit / bits_per;
+            let upto = end.min((sector + 1) * bits_per);
+            self.dev.read_blocks(lba0 + sector, &mut self.buf)?;
+            for b in bit..upto {
+                let i = (b % bits_per / 8) as usize;
+                if used {
+                    self.buf[i] |= 1 << (b % 8);
+                } else {
+                    self.buf[i] &= !(1 << (b % 8));
+                }
+            }
+            self.dev.write_blocks(lba0 + sector, &self.buf)?;
+            bit = upto;
+        }
+        Ok(())
+    }
+
+    fn fat_set(&mut self, c: u32, v: u32) -> Result<(), Error> {
+        let sector = self.fat_start + c / (SECTOR as u32 / 4);
+        self.dev.read_blocks(sector, &mut self.buf)?;
+        let o = (c % (SECTOR as u32 / 4)) as usize * 4;
+        self.buf[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        self.dev.write_blocks(sector, &self.buf)?;
+        Ok(())
+    }
+
+    /// Writes `data` from sector `lba` on (the last partial sector through
+    /// `scratch`, zero-padded).
+    fn write_data(&mut self, lba: u32, data: &[u8], scratch: &mut [u8]) -> Result<(), Error> {
+        let whole = data.len() / SECTOR * SECTOR;
+        if whole > 0 {
+            self.dev.write_blocks(lba, &data[..whole])?;
+        }
+        if whole < data.len() {
+            let tail = &mut scratch[..SECTOR];
+            tail.fill(0);
+            tail[..data.len() - whole].copy_from_slice(&data[whole..]);
+            self.dev.write_blocks(lba + (whole / SECTOR) as u32, tail)?;
+        }
+        Ok(())
+    }
+
+    /// Stores `data` in free clusters, marked used: one run with no FAT
+    /// chain if there is one long enough, else chained through the FAT.
+    #[inline(never)]
+    fn store(&mut self, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        let cb = self.cluster_bytes();
+        let n = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
+        if n == 0 {
+            return Ok(Written {
+                first_cluster: 0,
+                clusters: 0,
+                contiguous: true,
+            });
+        }
+        let (run, free) = self.scan(2, n, scratch)?;
+        if let Some(first) = run {
+            self.write_data(self.cluster_lba(first), data, scratch)?;
+            self.mark(first, n, true)?;
+            return Ok(Written {
+                first_cluster: first,
+                clusters: n,
+                contiguous: true,
+            });
+        }
+        if free < n {
+            return Err(Error::NoRoom);
+        }
+        let mut first = 0;
+        let mut prev = None;
+        let mut from = 2;
+        for chunk in data.chunks(cb) {
+            let (Some(c), _) = self.scan(from, 1, scratch)? else {
+                return Err(Error::NoRoom);
+            };
+            self.write_data(self.cluster_lba(c), chunk, scratch)?;
+            self.mark(c, 1, true)?;
+            match prev {
+                Some(p) => self.fat_set(p, c)?,
+                None => first = c,
+            }
+            prev = Some(c);
+            from = c + 1;
+        }
+        if let Some(p) = prev {
+            self.fat_set(p, FAT_EOC)?;
+        }
+        Ok(Written {
+            first_cluster: first,
+            clusters: n,
+            contiguous: false,
+        })
+    }
+
+    /// Frees an old file's clusters in the bitmap (FAT entries of free
+    /// clusters mean nothing in exFAT, so they stay).
+    fn release(&mut self, file: &ExFile) -> Result<(), Error> {
+        if file.size == 0 || !self.valid_cluster(file.first_cluster) {
+            return Ok(());
+        }
+        let n = file
+            .size
+            .div_ceil(self.cluster_bytes() as u64)
+            .min(u64::from(self.clusters)) as u32;
+        if file.contiguous {
+            if u64::from(file.first_cluster) + u64::from(n) > 2 + u64::from(self.clusters) {
+                return Err(Error::Corrupt);
+            }
+            return self.mark(file.first_cluster, n, false);
+        }
+        let mut c = file.first_cluster;
+        for k in 0..n {
+            let next = self.fat_next(c)?;
+            self.mark(c, 1, false)?;
+            match next {
+                Some(nc) if k + 1 < n => c = nc,
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes an entry set into the root directory: into deleted entries
+    /// within one sector (one write), or at the end of the directory, the
+    /// sectors after the first written first, so the set exists only once
+    /// its file entry's sector (which ends the directory until then) lands.
+    #[inline(never)]
+    fn add_set(&mut self, set: &[[u8; ENTRY]]) -> Result<(), Error> {
+        let count = set.len();
+        let mut middle = None;
+        let mut end = None;
+        let mut run = (0usize, 0usize); // start slot, length
+        self.walk_slots(&mut |lba, nth, slot, e| {
+            if slot == 0 {
+                run = (0, 0);
+            }
+            if e[0] == 0 {
+                end = Some((lba, nth, slot));
+                return true;
+            }
+            if e[0] & 0x80 == 0 {
+                if run.1 == 0 {
+                    run.0 = slot;
+                }
+                run.1 += 1;
+                if run.1 >= count {
+                    middle = Some((lba, run.0));
+                    return true;
+                }
+            } else {
+                run.1 = 0;
+            }
+            false
+        })?;
+        if let Some((lba, slot)) = middle {
+            return self.write_entries(lba, slot, set);
+        }
+        let (lba, nth, slot) = end.ok_or(Error::NoRoom)?;
+        // The pieces in later sectors first, the file entry's sector last.
+        let spill = (slot + count).div_ceil(SLOTS) as u32;
+        for k in (1..spill).rev() {
+            let at = self.dir_sector(nth + k)?.ok_or(Error::NoRoom)?;
+            let from = k as usize * SLOTS - slot;
+            let to = (from + SLOTS).min(count);
+            self.write_entries(at, 0, &set[from..to])?;
+        }
+        self.write_entries(lba, slot, &set[..(SLOTS - slot).min(count)])
+    }
+
+    fn write_entries(
+        &mut self,
+        lba: u32,
+        slot: usize,
+        entries: &[[u8; ENTRY]],
+    ) -> Result<(), Error> {
+        self.dev.read_blocks(lba, &mut self.buf)?;
+        for (k, e) in entries.iter().enumerate() {
+            let o = (slot + k) * ENTRY;
+            self.buf[o..o + ENTRY].copy_from_slice(e);
+        }
+        self.dev.write_blocks(lba, &self.buf)?;
+        Ok(())
+    }
+
+    /// Marks a set's entries unused (its file entry's sector first).
+    fn delete_set(&mut self, at: &Found) -> Result<(), Error> {
+        let spill = (at.slot + at.count).div_ceil(SLOTS) as u32;
+        for k in 0..spill {
+            let lba = if k == 0 {
+                at.lba
+            } else {
+                self.dir_sector(at.nth + k)?.ok_or(Error::Corrupt)?
+            };
+            self.dev.read_blocks(lba, &mut self.buf)?;
+            let from = if k == 0 { at.slot } else { 0 };
+            let to = (at.slot + at.count - k as usize * SLOTS).min(SLOTS);
+            for s in from..to {
+                self.buf[s * ENTRY] &= 0x7F;
+            }
+            self.dev.write_blocks(lba, &self.buf)?;
+        }
+        Ok(())
     }
 
     /// Reads `file` in order, calling `f` with each piece (at most
@@ -300,6 +880,7 @@ impl<D: BlockDevice> ExVolume<D> {
     ///
     /// # Panics
     /// If `scratch` is shorter than a sector.
+    #[inline(never)]
     pub fn read_file(
         &mut self,
         file: &ExFile,
@@ -486,6 +1067,7 @@ pub mod format {
             set[1][0] = 0xC0;
             set[1][1] = 0x01 | if f.fragment { 0 } else { 0x02 };
             set[1][3] = name.len() as u8;
+            set[1][4..6].copy_from_slice(&super::name_hash(f.name.as_bytes()).to_le_bytes());
             set[1][8..16].copy_from_slice(&(f.data.len() as u64).to_le_bytes());
             set[1][20..24].copy_from_slice(&first.to_le_bytes());
             set[1][24..32].copy_from_slice(&(f.data.len() as u64).to_le_bytes());
@@ -561,17 +1143,44 @@ mod tests {
     use super::*;
     use rp_hal_api::BlockError;
 
-    struct Mem(Vec<u8>);
+    /// A card in memory; writes can be made to fail from the `fail_at`th
+    /// on (a power cut: that write and every later one never land).
+    #[allow(non_snake_case)]
+    fn Mem(data: Vec<u8>) -> Mem {
+        Mem {
+            data,
+            writes: 0,
+            fail_at: None,
+        }
+    }
+
+    struct Mem {
+        data: Vec<u8>,
+        writes: usize,
+        fail_at: Option<usize>,
+    }
 
     impl BlockDevice for Mem {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             let o = lba as usize * SECTOR;
-            let src = self.0.get(o..o + buf.len()).ok_or(BlockError::OutOfRange)?;
+            let src = self
+                .data
+                .get(o..o + buf.len())
+                .ok_or(BlockError::OutOfRange)?;
             buf.copy_from_slice(src);
             Ok(())
         }
-        fn write_blocks(&mut self, _: u32, _: &[u8]) -> Result<(), BlockError> {
-            Err(BlockError::ReadOnly)
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            if self.fail_at.is_some_and(|f| self.writes >= f) {
+                return Err(BlockError::Device);
+            }
+            self.writes += 1;
+            let o = lba as usize * SECTOR;
+            self.data
+                .get_mut(o..o + buf.len())
+                .ok_or(BlockError::OutOfRange)?
+                .copy_from_slice(buf);
+            Ok(())
         }
     }
 
@@ -613,6 +1222,327 @@ mod tests {
             ],
         );
         (img, a, b)
+    }
+
+    /// Whether cluster `c` is marked used in the bitmap.
+    fn used(v: &mut ExVolume<Mem>, c: u32) -> bool {
+        let (lba0, _) = v.bitmap().unwrap();
+        let bit = (c - 2) as usize;
+        v.dev.data[lba0 as usize * SECTOR + bit / 8] >> (bit % 8) & 1 == 1
+    }
+
+    fn used_count(v: &mut ExVolume<Mem>) -> u32 {
+        (2..2 + v.clusters).filter(|&c| used(v, c)).count() as u32
+    }
+
+    /// Every cluster of every file is marked used (a power cut must never
+    /// leave live data in "free" space), and the boot region still checks.
+    fn consistent(v: &mut ExVolume<Mem>) {
+        let mut files = Vec::new();
+        v.for_each_root(|n, f| files.push((String::from_utf8_lossy(n).into_owned(), *f)))
+            .unwrap();
+        for (name, f) in files {
+            if f.size == 0 {
+                continue;
+            }
+            let n = f.size.div_ceil(v.cluster_bytes() as u64) as u32;
+            let mut c = f.first_cluster;
+            for k in 0..n {
+                assert!(used(v, c), "{name}: cluster {c} is marked free");
+                if k + 1 < n {
+                    c = if f.contiguous {
+                        c + 1
+                    } else {
+                        v.fat_next(c).unwrap().unwrap()
+                    };
+                }
+            }
+        }
+        let img = v.dev.data.clone();
+        assert!(ExVolume::mount(Mem(img), PARTITION_START).is_ok());
+    }
+
+    fn dirty(v: &ExVolume<Mem>) -> bool {
+        v.dev.data[PARTITION_START as usize * SECTOR + 106] & VOLUME_DIRTY != 0
+    }
+
+    #[test]
+    fn replace_and_create_keep_the_bitmap_and_checksums_right() {
+        let (img, _, b) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        let before = used_count(&mut v);
+        let old = v.find("retropane.bin").unwrap();
+        let new = pattern(20_000, 7);
+        let w = v.put("RetroPane.bin", &new, &mut scratch).unwrap();
+        assert!(w.contiguous && w.clusters == 10);
+        assert_eq!(read_all(&mut v, "retropane.bin", 4096), new);
+        assert_eq!(
+            read_all(&mut v, "a fragmented file with a long name.dat", 512),
+            b
+        );
+        // 9,000 bytes (5 clusters) out, 20,000 (10) in.
+        assert_eq!(used_count(&mut v), before - 5 + 10);
+        assert!(!used(&mut v, old.first_cluster));
+        assert!(!dirty(&v));
+        // Create: short, long (64), mixed case; and an empty file.
+        let long = "L".repeat(30) + &"o".repeat(30) + ".txt";
+        for (name, data) in [
+            ("new.txt", pattern(100, 3)),
+            (long.as_str(), pattern(3000, 4)),
+            ("Mixed Case.Dat", pattern(4096, 5)),
+            ("zero", Vec::new()),
+        ] {
+            v.put(name, &data, &mut scratch).unwrap();
+            assert_eq!(read_all(&mut v, &name.to_uppercase(), 512), data);
+        }
+        // The name hash is over the up-cased name, as Windows looks it up.
+        let (_, at) = v.find_set("mixed case.dat").unwrap();
+        assert_eq!(le16(&at.set[1], 4), name_hash(b"MIXED CASE.DAT"));
+        assert_eq!(name_hash(b"Mixed Case.Dat"), name_hash(b"MIXED CASE.DAT"));
+        // Replace with nothing, then with something again.
+        v.put("new.txt", b"", &mut scratch).unwrap();
+        assert_eq!(read_all(&mut v, "new.txt", 512), b"");
+        v.put("new.txt", b"back", &mut scratch).unwrap();
+        assert_eq!(read_all(&mut v, "new.txt", 512), b"back");
+        consistent(&mut v);
+        // Bad names and folders are refused.
+        assert_eq!(v.put("a*b", b"x", &mut scratch), Err(Error::BadName));
+        assert_eq!(
+            v.put(&"n".repeat(65), b"x", &mut scratch),
+            Err(Error::BadName)
+        );
+    }
+
+    /// A file whose name is longer than this module reads (cut at
+    /// NAME_MAX) must not be taken for one named by its first characters.
+    #[test]
+    fn a_cut_long_name_never_matches_its_prefix() {
+        let long = "x".repeat(80);
+        let img = build(
+            4096,
+            2,
+            &[Entry {
+                name: &long,
+                data: b"keep me",
+                fragment: false,
+            }],
+        );
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let prefix = &long[..NAME_MAX];
+        assert_eq!(v.find(prefix), Err(Error::NotFound));
+        let mut scratch = vec![0u8; 4096];
+        v.put(prefix, b"new", &mut scratch).unwrap();
+        // Two files now: the long one untouched.
+        let mut n = 0;
+        let mut long_data = None;
+        v.for_each_root(|name, f| {
+            n += 1;
+            if name.len() == NAME_MAX && f.size == 7 {
+                long_data = Some(*f);
+            }
+        })
+        .unwrap();
+        assert_eq!(n, 2);
+        let f = long_data.expect("the long-named file is still there");
+        let mut got = Vec::new();
+        v.read_file(&f, &mut scratch, |c| got.extend_from_slice(c))
+            .unwrap();
+        assert_eq!(got, b"keep me");
+    }
+
+    #[test]
+    fn too_big_is_refused_with_the_card_unchanged() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        let huge = vec![1u8; 4 * 1024 * 1024];
+        assert_eq!(v.put("big.bin", &huge, &mut scratch), Err(Error::NoRoom));
+        assert!(!dirty(&v));
+        assert!(v.find("big.bin").is_err());
+        let mut v2 = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        assert_eq!(used_count(&mut v), used_count(&mut v2));
+    }
+
+    #[test]
+    fn a_fragmented_card_gets_a_fat_chain() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 512];
+        // Every other free cluster taken: no run of two is left.
+        let free: Vec<u32> = (2..2 + v.clusters).filter(|&c| !used(&mut v, c)).collect();
+        for &c in free.iter().step_by(2) {
+            v.mark(c, 1, true).unwrap();
+        }
+        let data = pattern(7000, 9); // 4 clusters
+        let w = v.put("frag.bin", &data, &mut scratch).unwrap();
+        assert!(!w.contiguous);
+        assert_eq!(w.first_cluster, free[1]);
+        let f = v.find("frag.bin").unwrap();
+        assert!(!f.contiguous);
+        assert_eq!(read_all(&mut v, "frag.bin", 512), data);
+        // Replaced by a contiguous file (once room is made), the chain's
+        // clusters are freed.
+        for &c in free.iter().step_by(2) {
+            v.mark(c, 1, false).unwrap();
+        }
+        let w2 = v.put("frag.bin", &pattern(5000, 1), &mut scratch).unwrap();
+        assert!(w2.contiguous);
+        for k in [1usize, 3, 5, 7] {
+            if w2.first_cluster > free[k] || free[k] >= w2.first_cluster + w2.clusters {
+                assert!(
+                    !used(&mut v, free[k]),
+                    "old chain cluster {} still used",
+                    free[k]
+                );
+            }
+        }
+        consistent(&mut v);
+    }
+
+    /// Sets whose file entry ends a sector take the add-then-delete path,
+    /// and sets created across sectors at the end of the directory.
+    #[test]
+    fn sets_across_sector_boundaries() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 4096];
+        // Root: bitmap, up-case, then sets of 3, 5, 3 entries: slot 13 next.
+        // Six 3-entry files fill 13..30; the next set's file entry is at 31
+        // (the last slot of the second sector) and spills into the third.
+        for i in 0..6 {
+            v.put(&format!("f{i}"), &[i as u8; 10], &mut scratch)
+                .unwrap();
+        }
+        let edge = "a name long enough for two name entries";
+        v.put(edge, b"first", &mut scratch).unwrap();
+        let (_, at) = v.find_set(edge).unwrap();
+        assert_eq!((at.nth, at.slot), (1, 15));
+        v.put(edge, b"second", &mut scratch).unwrap();
+        assert_eq!(read_all(&mut v, edge, 512), b"second");
+        let mut seen = 0;
+        v.for_each_root(|n, _| seen += usize::from(n == edge.as_bytes()))
+            .unwrap();
+        assert_eq!(seen, 1, "the old set is gone");
+        for i in 0..6 {
+            assert_eq!(read_all(&mut v, &format!("f{i}"), 512), [i as u8; 10]);
+        }
+        consistent(&mut v);
+    }
+
+    /// A power cut at every write of each kind of put: afterwards the file
+    /// is whole (old or new; absent for a create), the others untouched,
+    /// no live cluster marked free, and the card marked dirty.
+    #[test]
+    fn power_loss_at_every_write_is_harmless() {
+        let (img, a, b) = image();
+        let mut scratch = vec![0u8; 2048];
+        let new = pattern(12_000, 11);
+        let edge = "a name long enough for two name entries";
+        // A card where the edge-case set already exists.
+        let mut prep = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        for i in 0..6 {
+            prep.put(&format!("f{i}"), &[1; 10], &mut scratch).unwrap();
+        }
+        prep.put(edge, b"old", &mut scratch).unwrap();
+        let edge_img = prep.into_inner().data;
+        // Fragmented: every other free cluster taken.
+        let mut frag = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+        let free: Vec<u32> = (2..2 + frag.clusters)
+            .filter(|&c| !used(&mut frag, c))
+            .collect();
+        for &c in free.iter().step_by(2) {
+            frag.mark(c, 1, true).unwrap();
+        }
+        let frag_img = frag.into_inner().data;
+        // (card, file put, its old contents if it existed)
+        type Case<'a> = (&'a Vec<u8>, &'a str, Option<&'a [u8]>);
+        let cases: [Case<'_>; 4] = [
+            (&img, "retropane.bin", Some(&a)),
+            (&img, "brand new.bin", None),
+            (&edge_img, edge, Some(b"old")),
+            (&frag_img, "retropane.bin", Some(&a)),
+        ];
+        for (base, name, old) in cases {
+            let total = {
+                let mut v = ExVolume::mount(Mem(base.clone()), PARTITION_START).unwrap();
+                v.put(name, &new, &mut scratch).unwrap();
+                v.dev.writes
+            };
+            for fail_at in 0..total {
+                let mut disk = Mem(base.clone());
+                disk.fail_at = Some(fail_at);
+                let mut v = ExVolume::mount(disk, PARTITION_START).unwrap();
+                assert!(v.put(name, &new, &mut scratch).is_err());
+                let after = v.into_inner().data;
+                let mut v = ExVolume::mount(Mem(after), PARTITION_START).unwrap();
+                match (v.find(name), old) {
+                    (Ok(_), _) => {
+                        let got = read_all(&mut v, name, 2048);
+                        assert!(
+                            got == new || old.is_some_and(|o| got == o),
+                            "{name} at write {fail_at}: neither old nor new"
+                        );
+                    }
+                    (Err(Error::NotFound), None) => {}
+                    (r, _) => panic!("{name} at write {fail_at}: {r:?}"),
+                }
+                if name != "retropane.bin" {
+                    assert_eq!(read_all(&mut v, "retropane.bin", 2048), a);
+                }
+                assert_eq!(
+                    read_all(&mut v, "a fragmented file with a long name.dat", 2048),
+                    b
+                );
+                consistent(&mut v);
+                assert!(
+                    fail_at == 0 || dirty(&v),
+                    "{name}: a cut left the card clean"
+                );
+            }
+        }
+    }
+
+    /// Writing to a hostile card: errors, never a panic or a loop.
+    #[test]
+    fn writing_to_hostile_exfat_cards_never_panics() {
+        let (base_img, _, _) = image();
+        let base = PARTITION_START as usize * SECTOR;
+        let mut x: u64 = 0x5EED_2026;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        let mut scratch = vec![0u8; 4096];
+        for i in 0..1500 {
+            let mut img = base_img.clone();
+            for _ in 0..1 + rnd() % 6 {
+                let region = match i % 3 {
+                    0 => base..base + SECTOR,
+                    1 => base + 24 * SECTOR..base + 48 * SECTOR,
+                    _ => base..img.len(),
+                };
+                let at = region.start + (rnd() as usize % region.len());
+                img[at] = rnd() as u8;
+            }
+            let mut sum = 0u32;
+            for k in 0..11 {
+                sum = boot_checksum(sum, k, &img[base + k * SECTOR..base + (k + 1) * SECTOR]);
+            }
+            for w in img[base + 11 * SECTOR..base + 12 * SECTOR]
+                .as_chunks_mut::<4>()
+                .0
+            {
+                w.copy_from_slice(&sum.to_le_bytes());
+            }
+            let Ok(mut v) = ExVolume::mount(Mem(img), PARTITION_START) else {
+                continue;
+            };
+            let _ = v.put("retropane.bin", &[7; 5000], &mut scratch);
+            let _ = v.put("new file.txt", &[8; 3000], &mut scratch);
+        }
     }
 
     #[test]

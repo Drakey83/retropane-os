@@ -810,16 +810,107 @@ impl rp_hal_api::BlockDevice for Disk {
 /// Reads root-directory file `name` from a FAT32 disk image.
 fn card_file(image: &Path, name: &str) -> Result<Vec<u8>, String> {
     let data = std::fs::read(image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let mut vol = rp_fat::Volume::mount(Disk(data), rp_fat::format::PARTITION_START)
+    // FAT32 or exFAT, whichever the image holds (both formatters put the
+    // partition at the same place).
+    let mut vol = rp_fat::AnyVolume::mount(Disk(data), rp_fat::format::PARTITION_START)
         .map_err(|e| format!("card image: {}", e.name()))?;
-    let f = vol
-        .find(name)
-        .map_err(|e| format!("{name}: {}", e.name()))?;
     let mut out = Vec::new();
     let mut scratch = vec![0u8; 64 * 1024];
-    vol.read_file(&f, &mut scratch, |c| out.extend_from_slice(c))
+    vol.read_back(name, &mut scratch, |c| out.extend_from_slice(c))
         .map_err(|e| format!("{name}: {}", e.name()))?;
     Ok(out)
+}
+
+/// Writing files to an exFAT card (SDXC) through the loader: a file
+/// replaced and one created, a folder refused (exFAT folders aren't
+/// written yet), everything checked in the image afterwards, and the
+/// volume left clean (VolumeDirty clear).
+pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    exFAT put: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let old: Vec<u8> = (0..3000u32).map(|i| (i * 3) as u8).collect();
+    let new: Vec<u8> = (0..70_000u32).map(|i| (i * 17 + 1) as u8).collect();
+    let created: Vec<u8> = (0..9000u32).map(|i| (i * 7 + 2) as u8).collect();
+    let script = b"set ramaddr 0xa8000000\r\n".to_vec();
+    let image = rp_fat::exfat::format::build(
+        32 * 1024, // 16 MiB
+        3,         // 4 KiB clusters
+        &[
+            rp_fat::exfat::format::Entry {
+                name: "retropane.bin",
+                data: &old,
+                fragment: false,
+            },
+            rp_fat::exfat::format::Entry {
+                name: "startup.txt",
+                data: &script,
+                fragment: true,
+            },
+        ],
+    );
+    let sd = root.join("target/emulator/sd-exfat.img");
+    std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let args = usb_args(2);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&rp_loadproto::file_frame("retropane.bin", &new))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ", 40)?;
+        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let line = reply
+            .lines()
+            .find(|l| l.starts_with("RPL "))
+            .unwrap_or("")
+            .to_string();
+        if !line.starts_with("RPL OK 70000 bytes") || !line.contains("contiguous") {
+            return Err(format!("unexpected reply to the exFAT put: {line:?}"));
+        }
+        eprintln!("    loader (exFAT): {line}");
+        s.write_all(&rp_loadproto::file_frame("New File.dat", &created))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 9000 bytes", 40)?;
+        s.write_all(&rp_loadproto::file_frame("Apps/x.txt", b"x"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR bad name", 20)?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    if card_file(&sd, "retropane.bin")? != new {
+        return Err("exFAT: retropane.bin on the card isn't what was sent".into());
+    }
+    if card_file(&sd, "NEW FILE.DAT")? != created {
+        return Err("exFAT: the created file isn't on the card".into());
+    }
+    if card_file(&sd, "startup.txt")? != script {
+        return Err("exFAT: startup.txt changed".into());
+    }
+    let after = std::fs::read(&sd).map_err(|e| e.to_string())?;
+    let flags = after[rp_fat::exfat::format::PARTITION_START as usize * 512 + 106];
+    if flags & 0x02 != 0 {
+        return Err("exFAT: the volume was left marked dirty".into());
+    }
+    eprintln!(
+        "    exFAT put OK: replaced and created through the loader, folder refused, volume clean"
+    );
+    Ok(())
 }
 
 /// Most read commands `boot_loader_put`'s write may take (FAT search in
