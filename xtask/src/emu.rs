@@ -626,6 +626,12 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("{prop}=")))
 }
 
+/// Whether a device at `path` in the running emulator has `prop`.
+fn device_has_runtime(mon: &mut crate::screen::Monitor, path: &str, prop: &str) -> bool {
+    mon.query(&format!("qom-list {path}"))
+        .is_ok_and(|out| out.contains(prop))
+}
+
 /// Whether the emulator's UDC model bridges a mass storage function
 /// (retropane-qemu after rp-v0.8.0).
 fn has_msc_model(root: &Path) -> bool {
@@ -1472,6 +1478,31 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
         let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
         if dcr != "1024" {
             return Err(format!("backlight: 100% isn't full duty (DCR {dcr})"));
+        }
+        // The power button, if this emulator has it: a press turns the
+        // screen off, the next brings it back at the level it had.
+        if device_has_runtime(&mut mon, "/machine/peripheral/power", "pressed") {
+            s.write_all(&rp_loadproto::control_frame("backlight 60"))
+                .map_err(|e| e.to_string())?;
+            usb_read_until(&mut s, "RPL OK backlight 60%", 10)?;
+            let press = |mon: &mut crate::screen::Monitor| -> Result<(), String> {
+                mon.query("qom-set /machine/peripheral/power pressed true")?;
+                std::thread::sleep(Duration::from_millis(400));
+                mon.query("qom-set /machine/peripheral/power pressed false")?;
+                std::thread::sleep(Duration::from_millis(800));
+                Ok(())
+            };
+            press(&mut mon)?;
+            let off = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+            press(&mut mon)?;
+            let on = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+            // 60% -> 0.36 of 216 counts = 77.
+            if off != "0" || on != "77" {
+                return Err(format!(
+                    "power button: screen off/on gave DCR {off} then {on}; wanted 0, 77"
+                ));
+            }
+            eprintln!("    power button OK: press turned the screen off, the next back on at 60%");
         }
         Ok(())
     };

@@ -32,6 +32,7 @@ booted through HaRET. Details in the per-block files.
 | CPU ID (CP15 c0) | `0x69054117` | Intel XScale, PXA27x core, revision 7 | confirmed | rp-light on device |
 | CP15 c1 at handoff | `0x00002A7A` | MMU, D-cache and I-cache off; alignment checking **on**; write buffer, branch prediction and high vectors set (HaRET's state) | confirmed | rp-light on device |
 | Panel (CPLD ID) | 3.7" Sharp VGA | `cpld.md` panel ID decode is right | confirmed | rp-light on device |
+| Power button | GPIO0, reads 0 at rest; WM arms both edges (`GRER0`/`GFER0` bit 0) | the button's line; pressed level unconfirmed (the loader doesn't depend on it) | likely | probe via the loader, 2026-10-12 |
 | FFUART | transmitter drains | clocked and working once enabled (no connector pins verified) | confirmed | rp-light `serial: alive` |
 | RAM start | `0xA8000000` | HaRET must be told (`ramaddr`); nothing at `0xA0000000` | confirmed | `memory-map.md` |
 | Framebuffer | `0x0C000000`, RGB565 480 × 640 | WM's plane, reused as-is | confirmed | `2700g.md` |
