@@ -116,7 +116,25 @@ model with a built-in host that enumerates like Windows.
   and HaRET, and Windows writes a mounted drive by itself (its System
   Volume Information folder), so nothing reaches the card unless asked.
   The emulator test checks both states and the switch.
-- Device run: pending (overnight queue item 3).
+- **Device run (2026-10-12, overnight):** Windows 11 enumerated the composite
+  device first time: "USB Composite Device" with "USB Serial Device (COM4)"
+  and "RetroPan SD card USB Device", read-only volume, 3,997,171,712 bytes
+  (= the CSD capacity, 7,806,976 blocks). The serial port kept working
+  alongside (every later `load`, `drive`, `card` command went through it).
+  Reads worked (tens of MB) except one range: the owner's card has a weak
+  block at 10880 inside the first FAT that reads in 0.79 s alone and never
+  within a multi-block read (docs/hw/sd.md). Windows reads the whole FAT
+  at mount, so it retried that range indefinitely and its storage stack
+  stalled. Six driver fixes followed (sd.md "Reads that fail"), each with a
+  host test, and the emulator now models the slow block; the block itself
+  stays unreadable on this card once provoked. The drive was switched off
+  for the night (`cargo xtask drive off`: "no medium") so the PC stays
+  responsive; `cargo xtask drive on` offers it again. Decision for the
+  owner: scrub the block (one rewrite of its own contents, after a card
+  backup) or use another card.
+- Added on the way: `cargo xtask drive status` (counters, last card error
+  with the status word), `cargo xtask card scan <lba> <count>` (block by
+  block, slowest read), `drive on|off`.
 
 ## Security
 

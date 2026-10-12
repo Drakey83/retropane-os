@@ -81,6 +81,9 @@ mod image {
     struct Lun {
         card: Option<Sd>,
         writable: bool,
+        /// Offered to the PC (`drive off` makes it "no medium", like an
+        /// empty card reader: the PC stops using it at once).
+        offered: bool,
     }
 
     impl BlockDevice for Lun {
@@ -106,7 +109,7 @@ mod image {
             self.card.as_ref().map_or(0, SdCard::blocks)
         }
         fn present(&self) -> bool {
-            self.card.as_ref().is_some_and(|c| c.blocks() > 0)
+            self.offered && self.card.as_ref().is_some_and(|c| c.blocks() > 0)
         }
         fn read_only(&self) -> bool {
             !self.writable
@@ -137,14 +140,14 @@ mod image {
 
     /// A reply line built on the stack.
     struct Line {
-        buf: [u8; 96],
+        buf: [u8; 256],
         len: usize,
     }
 
     impl Line {
         const fn new() -> Self {
             Self {
-                buf: [0; 96],
+                buf: [0; 256],
                 len: 0,
             }
         }
@@ -272,19 +275,83 @@ mod image {
         }
     }
 
+    /// `card scan <lba> <count>` (at most 4096 blocks): reads the range one
+    /// block at a time and reports failures, the first failing block with
+    /// the card's error, and the slowest read: finds slow or unreadable
+    /// areas without the PC's own retries in the way.
+    #[inline(never)]
+    fn card_scan(lun: &mut Lun, args: &[u8], out: &mut Line) {
+        let mut nums = args
+            .split(|&b| b == b' ')
+            .filter(|w| !w.is_empty())
+            .map(|w| {
+                w.iter().try_fold(0u32, |n, &d| {
+                    d.is_ascii_digit()
+                        .then(|| n.checked_mul(10)?.checked_add(u32::from(d - b'0')))
+                        .flatten()
+                })
+            });
+        let (Some(Some(lba)), Some(Some(count)), None) = (nums.next(), nums.next(), nums.next())
+        else {
+            let _ = out.write_str(LoadError::BadCommand.reply());
+            return;
+        };
+        let Some(sd) = lun.card.as_mut() else {
+            let _ = out.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let count = count.min(4096);
+        let mut block = [0u8; rp_drv_sdcard::BLOCK];
+        let (mut failed, mut first, mut slowest, mut slowest_at) = (0u32, None, 0u32, 0u32);
+        for b in lba..lba.saturating_add(count) {
+            let t = rt::ticks();
+            let r = sd.read(b, &mut block);
+            let us = rt::ticks().wrapping_sub(t) / 3;
+            if us > slowest {
+                slowest = us;
+                slowest_at = b;
+            }
+            if r.is_err() {
+                failed += 1;
+                first.get_or_insert(b);
+            }
+        }
+        let _ = write!(
+            out,
+            "RPL OK scan {lba}+{count}: {failed} failed (first {}), slowest {slowest} us at {slowest_at}{}\r\n",
+            first.unwrap_or(0),
+            if failed > 0 {
+                card_note(sd)
+            } else {
+                Note {
+                    what: "",
+                    failure: None,
+                    status: 0,
+                }
+            },
+        );
+    }
+
     /// The card's own error behind a device error, for the reply.
     fn card_note(sd: &Sd) -> Note {
         let what = match sd.last_error() {
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Timeout)) => "timeout",
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Crc)) => "CRC",
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Data)) => "data",
-            Some(rp_drv_sdcard::Error::CardStatus(_)) => "status",
+            Some(rp_drv_sdcard::Error::CardStatus(v)) => {
+                return Note {
+                    what: "status",
+                    failure: None,
+                    status: v,
+                };
+            }
             Some(_) => "error",
             None => "",
         };
         Note {
             what,
             failure: sd.host().last_failure(),
+            status: 0,
         }
     }
 
@@ -293,6 +360,8 @@ mod image {
     struct Note {
         what: &'static str,
         failure: Option<(u8, u32)>,
+        /// The card's status word, for a card status error.
+        status: u32,
     }
 
     impl core::fmt::Display for Note {
@@ -301,6 +370,9 @@ mod image {
                 return Ok(());
             }
             write!(f, " (card: {}", self.what)?;
+            if self.status != 0 {
+                write!(f, " {:#010x}", self.status)?;
+            }
             if let Some((cmd, stat)) = self.failure {
                 write!(f, " on CMD{cmd} stat {stat:#x}")?;
             }
@@ -399,6 +471,7 @@ mod image {
         let mut lun = Lun {
             card: open_card(),
             writable: false,
+            offered: true,
         };
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
@@ -526,7 +599,50 @@ mod image {
                         ..
                     },
                 )) => {
+                    let mut status = Line::new();
                     let reply = match f.command(dest) {
+                        Ok(b"drive status") => {
+                            let s = msc.stats();
+                            let _ = write!(
+                                status,
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}\r\n",
+                                s.commands,
+                                s.failed,
+                                s.blocks_read,
+                                s.io_errors,
+                                s.last_error.0,
+                                s.last_error.1,
+                                lun.card.as_ref().map_or(0, SdCard::read_retries),
+                                lun.card.as_ref().map_or(0, SdCard::read_fallbacks),
+                                lun.card.as_ref().map_or(0, SdCard::slow_reads),
+                                lun.card.as_ref().map_or(0, SdCard::weak_ranges),
+                                lun.card.as_ref().map_or(
+                                    Note {
+                                        what: "",
+                                        failure: None,
+                                        status: 0,
+                                    },
+                                    card_note
+                                ),
+                            );
+                            status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"card scan ") => {
+                            if watchdog.armed() {
+                                watchdog.feed(RUN_LIMIT);
+                            }
+                            card_scan(&mut lun, &c[10..], &mut status);
+                            status.as_str()
+                        }
+                        Ok(b"drive off") | Ok(b"drive on") => {
+                            lun.offered = f.command(dest) == Ok(b"drive on");
+                            msc.medium_changed(0);
+                            if lun.offered {
+                                "RPL OK drive offered to the PC\r\n"
+                            } else {
+                                "RPL OK drive off: no medium for the PC\r\n"
+                            }
+                        }
                         Ok(b"drive rw") | Ok(b"drive ro") => {
                             lun.writable = f.command(dest) == Ok(b"drive rw");
                             // The PC re-reads the medium and its protection.
@@ -563,11 +679,9 @@ mod image {
                     // The verdict goes at the top of the image's run log, so
                     // it reaches the PC whatever the image then does.
                     devices::log_write(if intact {
-                        b"[loader: image intact after the cache flush]
-"
+                        b"[loader: image intact after the cache flush]\n"
                     } else {
-                        b"[loader: image CHANGED after the cache flush]
-"
+                        b"[loader: image CHANGED after the cache flush]\n"
                     });
                     // A run limit: an image that hangs (never returns, never
                     // feeds the watchdog) resets the device, and the loader

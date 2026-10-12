@@ -32,9 +32,13 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 22 * 1024,
         max_zero: 20 * 1024,
     },
+    // Ratcheted 24 -> 27 KiB on 2026-10-12 (test image): the SD driver's
+    // recovery for slow and failing reads (block-by-block fallback, CMD12 +
+    // CMD13 recovery, slow-clock retry), found on the owner's card;
+    // 24.5 KiB measured, +~10%.
     Budget {
         image: "rp-bench",
-        max_load: 24 * 1024,
+        max_load: 27 * 1024,
         max_zero: 20 * 1024,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
@@ -93,9 +97,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 41 -> 52 KiB on 2026-10-12 (test image): the SD card as a
     // USB drive (ADR-0014: composite descriptors, the Bulk-Only/SCSI stack,
     // 2.6 KiB of it in rp-usb-msc), 46.6 KiB measured, +~10%.
+    // Ratcheted 52 -> 58 KiB on 2026-10-12 (test image): card diagnostics
+    // over USB (`drive status`, `card scan`), which found the owner's slow
+    // card block, and the USB layout fallback; 52.2 KiB measured, +~10%.
     Budget {
         image: "rp-loader",
-        max_load: 52 * 1024,
+        max_load: 58 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.

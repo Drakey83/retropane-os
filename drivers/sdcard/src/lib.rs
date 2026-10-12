@@ -152,12 +152,30 @@ const OCR_BUSY: u32 = 1 << 31;
 const OCR_CCS: u32 = 1 << 30;
 const OCR_VOLTAGES: u32 = 0x00FF_8000; // 2.7-3.6 V
 const CMD8_ARG: u32 = 0x1AA; // 2.7-3.6 V, check pattern 0xAA
-/// Card status bits that indicate an error (out of range .. card ECC etc.).
-const STATUS_ERRORS: u32 = 0xFDF9_0008;
+/// Card status bits that mean *this* command failed (out of range, address,
+/// ECC, ...). Not COM_CRC_ERROR (bit 23) or ILLEGAL_COMMAND (bit 22): those
+/// report the *previous* command (a command that is itself illegal or
+/// garbled gets no response at all), so a command that answered with them
+/// succeeded. Counting them made one unanswered CMD12 fail every later
+/// read on the X51v (status 0x00400900 on good CMD17s).
+const STATUS_ERRORS: u32 = 0xFD39_0008;
 /// Card status: ready for data (not busy programming).
 const STATUS_READY_FOR_DATA: u32 = 1 << 8;
 /// Card status: the current state, `prg` = programming.
 const STATE_PRG: u32 = 7;
+/// Ranges remembered as weak (multi-block reads failed there).
+const WEAK_RANGES: usize = 8;
+/// Card state: transfer (selected, idle, ready for commands).
+const STATE_TRAN: u32 = 4;
+/// CMD13 polls while recovering from a failed transfer.
+const RECOVER_POLLS: u32 = 1000;
+/// Clock for re-reading a block the card is slow on (a quarter of the
+/// transfer clock: the controller's read timeout counts card clocks).
+pub const SLOW_READ_HZ: u32 = TRANSFER_HZ / 4;
+/// Extra attempts at a read that failed in transfer (a CRC error or a
+/// stalled block): seen on the X51v as an occasional 64-block read failing
+/// under load (ADR-0014's drive), as mature SD stacks retry.
+const READ_RETRIES: u32 = 2;
 /// CMD13 polls while a write is being programmed (each is a card command,
 /// about a millisecond; the specification allows 250 ms per block).
 const READY_TRIES: u32 = 200_000;
@@ -182,6 +200,16 @@ pub struct SdCard<H> {
     /// Read commands issued (a multiple-block read counts once): each costs
     /// a few milliseconds of start-up on the X51v whatever its length.
     reads: u32,
+    /// Reads that succeeded on a retry.
+    read_retries: u32,
+    /// Multi-block reads that succeeded block by block.
+    read_fallbacks: u32,
+    /// Single blocks read at the slower clock.
+    slow_reads: u32,
+    /// Ranges (first block, count) read block by block from now on.
+    weak: [(u32, u32); WEAK_RANGES],
+    weak_len: u8,
+    weak_next: u8,
 }
 
 impl<H: SdHost> SdCard<H> {
@@ -240,6 +268,12 @@ impl<H: SdHost> SdCard<H> {
             blocks,
             last_error: None,
             reads: 0,
+            read_retries: 0,
+            read_fallbacks: 0,
+            slow_reads: 0,
+            weak: [(0, 0); WEAK_RANGES],
+            weak_len: 0,
+            weak_next: 0,
         })
     }
 
@@ -259,6 +293,12 @@ impl<H: SdHost> SdCard<H> {
     #[must_use]
     pub fn reads(&self) -> u32 {
         self.reads
+    }
+
+    /// Reads that needed a retry and then succeeded.
+    #[must_use]
+    pub fn read_retries(&self) -> u32 {
+        self.read_retries
     }
 
     /// Whether the 4-bit data bus is in use.
@@ -288,7 +328,35 @@ impl<H: SdHost> SdCard<H> {
     }
 
     /// Reads block `lba` (512 bytes).
+    // One copy, however many callers (ADR-0005 rule 8: size).
+    #[inline(never)]
     pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
+        let first = self.read_once(lba, buf);
+        if !matches!(first, Err(Error::Host(_))) {
+            return first;
+        }
+        // A block the card is slow on: the controller's read timeout counts
+        // card clocks, so a quarter of the clock gives it four times longer
+        // (the owner's card has one 0.79 s block, past the full-speed
+        // timeout). Back to full speed whatever happens.
+        // A quarter of the clock first, then the slowest the host offers
+        // (card-clock timeouts: up to ~64 times longer at 305 kHz).
+        let mut result = first;
+        for hz in [SLOW_READ_HZ, INIT_HZ] {
+            self.recover();
+            self.host.set_clock(hz);
+            result = self.read_once(lba, buf);
+            self.host.set_clock(TRANSFER_HZ);
+            if result.is_ok() {
+                self.slow_reads = self.slow_reads.wrapping_add(1);
+                return result;
+            }
+        }
+        self.recover();
+        result
+    }
+
+    fn read_once(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
         self.reads = self.reads.wrapping_add(1);
         let addr = self.address(lba);
         check(
@@ -297,12 +365,124 @@ impl<H: SdHost> SdCard<H> {
         )
     }
 
+    /// Single blocks that needed the slower clock to read.
+    #[must_use]
+    pub fn slow_reads(&self) -> u32 {
+        self.slow_reads
+    }
+
     /// Reads `buf.len() / 512` consecutive blocks from `lba` with one
     /// command when the host can (otherwise block by block).
     ///
     /// # Panics
     /// If `buf` isn't a whole number of blocks.
+    // One copy, however many callers (ADR-0005 rule 8: size).
+    #[inline(never)]
     pub fn read_many(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        let blocks = (buf.len() / BLOCK) as u32;
+        if blocks > 1 && self.touches_weak(lba, blocks) {
+            // A range a multi-block read failed on before: block by block,
+            // so the weak block only ever sees gentle single reads.
+            return self.read_singly(lba, buf);
+        }
+        let mut result = self.read_many_once(lba, buf);
+        // A transfer error (CRC, a stalled block) may pass on a retry; a read
+        // timeout won't: the card is slow on some block in the range, and
+        // the multi-block command's timeout is shorter than a single
+        // block's (measured on the owner's card: one block takes 0.79 s,
+        // which CMD18 never survives and CMD17 does). So timeouts go
+        // straight to reading block by block.
+        for _ in 0..READ_RETRIES {
+            match result {
+                Err(Error::Host(HostError::Crc | HostError::Data)) => {}
+                _ => break,
+            }
+            self.recover();
+            result = self.read_many_once(lba, buf);
+            if result.is_ok() {
+                self.read_retries = self.read_retries.wrapping_add(1);
+            }
+        }
+        if matches!(result, Err(Error::Host(_))) && blocks > 1 {
+            // Remember the range: on the owner's card, every further
+            // multi-block read of a weak block leaves the card unable to
+            // deliver it for a while, so retrying that way makes it worse.
+            self.remember_weak(lba, blocks);
+            self.recover();
+            result = self.read_singly(lba, buf);
+            if result.is_ok() {
+                self.read_fallbacks = self.read_fallbacks.wrapping_add(1);
+            }
+        }
+        result
+    }
+
+    fn read_singly(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        buf.as_chunks_mut::<BLOCK>()
+            .0
+            .iter_mut()
+            .zip(lba..)
+            .try_for_each(|(block, b)| self.read(b, block))
+    }
+
+    fn touches_weak(&self, lba: u32, blocks: u32) -> bool {
+        let end = lba.saturating_add(blocks);
+        self.weak[..usize::from(self.weak_len)]
+            .iter()
+            .any(|&(start, n)| lba < start.saturating_add(n) && start < end)
+    }
+
+    fn remember_weak(&mut self, lba: u32, blocks: u32) {
+        if self.touches_weak(lba, blocks) {
+            return;
+        }
+        // A small ring: the newest ranges win.
+        let i = usize::from(self.weak_next) % WEAK_RANGES;
+        self.weak[i] = (lba, blocks);
+        self.weak_next = self.weak_next.wrapping_add(1);
+        self.weak_len = (self.weak_len + 1).min(WEAK_RANGES as u8);
+    }
+
+    /// How many ranges are read block by block (multi-block reads failed
+    /// there).
+    #[must_use]
+    pub fn weak_ranges(&self) -> usize {
+        usize::from(self.weak_len)
+    }
+
+    /// After a failed transfer: reads (and so clears) the card's status.
+    /// When a read times out the card has already left the data state, so
+    /// the CMD12 that stops it is illegal and unanswered, and the card
+    /// reports ILLEGAL_COMMAND in its *next* response (SD specification,
+    /// "clear on read" bits; seen on the X51v as a good CMD17 failing right
+    /// after a timed-out CMD18). CMD13 takes that report; its status is
+    /// deliberately not checked.
+    ///
+    /// The card may instead still be sending (the controller gave up on a
+    /// slow block, the card didn't): then the next command would be illegal
+    /// and unanswered. So: CMD12 first (it stops a card that is still
+    /// sending, and is harmlessly illegal for one that isn't), then CMD13
+    /// until the card is back in the transfer state, ready for data.
+    fn recover(&mut self) {
+        let _ = self.host.command(Command::new(12, 0, Response::R1b));
+        let arg = u32::from(self.rca) << 16;
+        for _ in 0..RECOVER_POLLS {
+            if let Ok(r) = self.host.command(Command::new(13, arg, Response::R1))
+                && (r[0] >> 9) & 0xF == STATE_TRAN
+                && r[0] & STATUS_READY_FOR_DATA != 0
+            {
+                return;
+            }
+        }
+    }
+
+    /// Multi-block reads that failed and then succeeded block by block.
+    #[must_use]
+    pub fn read_fallbacks(&self) -> u32 {
+        self.read_fallbacks
+    }
+
+    fn read_many_once(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         if buf.len() > BLOCK && self.host.can_read_multiple() {
             self.reads = self.reads.wrapping_add(1);
@@ -353,6 +533,8 @@ impl<H: SdHost> SdCard<H> {
     ///
     /// # Panics
     /// If `buf` isn't a whole number of blocks.
+    // One copy, however many callers (ADR-0005 rule 8: size).
+    #[inline(never)]
     pub fn write_many(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         if buf.len() > BLOCK && self.host.can_write_multiple() {
@@ -491,6 +673,22 @@ mod tests {
         wide: bool,
         /// Data commands answer with an error status.
         fail_status: bool,
+        /// Multi-block reads that fail in transfer before one succeeds.
+        flaky_reads: u32,
+        /// A block the card is too slow on for a multi-block read (a read
+        /// timeout), though it reads alone.
+        slow_block: Option<usize>,
+        /// A block that can't be read at all.
+        bad_block: Option<usize>,
+        /// A block too slow to read alone at full speed (fine slower).
+        very_slow_block: Option<usize>,
+        /// The last data transfer ended early (the card left the data state).
+        transfer_aborted: bool,
+        /// ILLEGAL_COMMAND is reported in the next response.
+        illegal_pending: bool,
+        /// The card is still sending a block the controller gave up on:
+        /// any command but CMD12 is illegal (unanswered).
+        still_sending: bool,
         /// CMD13 polls still reporting "programming" after a write.
         busy_polls: u32,
     }
@@ -512,6 +710,13 @@ mod tests {
                 capable: false,
                 wide: false,
                 fail_status: false,
+                flaky_reads: 0,
+                slow_block: None,
+                bad_block: None,
+                very_slow_block: None,
+                transfer_aborted: false,
+                illegal_pending: false,
+                still_sending: false,
                 busy_polls: 0,
             }
         }
@@ -535,6 +740,19 @@ mod tests {
                 } else {
                     [0, 0x0009_0000, 0x4000_0000, 0]
                 });
+            }
+            if self.still_sending {
+                if c.index == 12 {
+                    self.still_sending = false;
+                    return Ok([0x0B00, 0, 0, 0]);
+                }
+                self.illegal_pending = true;
+                return Err(HostError::Timeout);
+            }
+            if c.index == 12 && core::mem::take(&mut self.transfer_aborted) {
+                // Not in a data state: illegal, unanswered, reported later.
+                self.illegal_pending = true;
+                return Err(HostError::Timeout);
             }
             let app = core::mem::take(&mut self.expect_app);
             let r = match (c.index, app) {
@@ -573,15 +791,38 @@ mod tests {
                 (12, _) => 0x0B00,
                 _ => return Err(HostError::Timeout),
             };
-            Ok([r, 0, 0, 0])
+            let illegal = if core::mem::take(&mut self.illegal_pending) {
+                1 << 22
+            } else {
+                0
+            };
+            Ok([r | illegal, 0, 0, 0])
         }
         fn read_block(&mut self, c: Command, buf: &mut [u8; BLOCK]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
+            if self.still_sending {
+                self.illegal_pending = true;
+                return Err(HostError::Timeout);
+            }
             let block = if self.sdhc {
                 c.arg
             } else {
                 c.arg / BLOCK as u32
             } as usize;
+            if self.bad_block == Some(block) {
+                return Err(HostError::Timeout);
+            }
+            if self.very_slow_block == Some(block) && self.clocks.last() == Some(&TRANSFER_HZ) {
+                // The card goes on sending after the controller gave up.
+                self.transfer_aborted = false;
+                self.still_sending = true;
+                return Err(HostError::Timeout);
+            }
+            if core::mem::take(&mut self.illegal_pending) {
+                // The previous command's error, reported now.
+                buf.copy_from_slice(&self.data[block * BLOCK..(block + 1) * BLOCK]);
+                return Ok(0x900 | 1 << 22);
+            }
             buf.copy_from_slice(&self.data[block * BLOCK..(block + 1) * BLOCK]);
             Ok(self.data_status())
         }
@@ -596,11 +837,22 @@ mod tests {
         }
         fn read_blocks(&mut self, c: Command, buf: &mut [u8]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
+            if self.flaky_reads > 0 {
+                self.flaky_reads -= 1;
+                return Err(HostError::Crc);
+            }
             let first = if self.sdhc {
                 c.arg
             } else {
                 c.arg / BLOCK as u32
             } as usize;
+            let range = first..first + buf.len() / BLOCK;
+            if self.slow_block.is_some_and(|b| range.contains(&b))
+                || self.bad_block.is_some_and(|b| range.contains(&b))
+            {
+                self.transfer_aborted = true;
+                return Err(HostError::Timeout);
+            }
             buf.copy_from_slice(&self.data[first * BLOCK..first * BLOCK + buf.len()]);
             Ok(0x900)
         }
@@ -693,6 +945,143 @@ mod tests {
             Err(BlockError::Device)
         );
         assert!(matches!(card.last_error(), Some(Error::CardStatus(_))));
+    }
+
+    #[test]
+    fn a_read_that_fails_in_transfer_is_retried() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        let mut card = SdCard::init(fake).unwrap();
+        card.host.flaky_reads = 2;
+        let mut buf = vec![0u8; 2 * BLOCK];
+        card.read_many(2, &mut buf).unwrap();
+        assert!(buf[..BLOCK].iter().all(|&b| b == 2));
+        assert_eq!(card.read_retries(), 1);
+        // Three CMD18 attempts, each followed by recovery before the next.
+        let cmds: Vec<u8> = card.host.log.iter().map(|&(i, _)| i).collect();
+        assert_eq!(cmds.iter().filter(|&&c| c == 18).count(), 3);
+        let between = &cmds[cmds.iter().position(|&c| c == 18).unwrap()..];
+        assert!(between.windows(2).any(|w| w == [12, 13]), "{between:?}");
+        // Three failures in a row: read block by block instead.
+        card.host.flaky_reads = 3;
+        card.read_many(2, &mut buf).unwrap();
+        assert!(buf[BLOCK..].iter().all(|&b| b == 3));
+        assert_eq!(card.read_fallbacks(), 1);
+    }
+
+    #[test]
+    fn a_slow_block_times_out_a_multi_block_read_and_is_read_alone() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        fake.slow_block = Some(4);
+        let mut card = SdCard::init(fake).unwrap();
+        let mut buf = vec![0u8; 4 * BLOCK];
+        card.read_many(2, &mut buf).unwrap();
+        for (i, b) in buf.chunks(BLOCK).enumerate() {
+            assert!(b.iter().all(|&x| x == 2 + i as u8), "block {i}");
+        }
+        // No retry of a command that will time out again: one CMD18, then
+        // recovery (CMD12/CMD13), then the four blocks alone.
+        let cmds: Vec<u8> = card.host.log.iter().map(|&(i, _)| i).collect();
+        let from = cmds.iter().rposition(|&c| c == 18).unwrap();
+        assert_eq!(cmds[from..].iter().filter(|&&c| c == 18).count(), 1);
+        assert_eq!(cmds[from..].iter().filter(|&&c| c == 17).count(), 4);
+        assert!(cmds[from..].ends_with(&[17, 17, 17, 17]));
+        assert_eq!((card.read_retries(), card.read_fallbacks()), (0, 1));
+    }
+
+    #[test]
+    fn a_previous_commands_error_bits_dont_fail_a_good_read() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        // ILLEGAL_COMMAND from an earlier, unanswered command arrives in
+        // this read's response; the read itself is fine.
+        card.host.illegal_pending = true;
+        let mut buf = [0u8; BLOCK];
+        card.read(5, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 5));
+        // An error about this command (OUT_OF_RANGE) still fails it.
+        assert!(check(1 << 31).is_err());
+        assert!(check(1 << 22 | 1 << 23).is_ok());
+    }
+
+    #[test]
+    fn a_block_too_slow_even_alone_is_read_at_a_slower_clock() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        fake.slow_block = Some(4);
+        fake.very_slow_block = Some(4);
+        let mut card = SdCard::init(fake).unwrap();
+        let mut buf = vec![0u8; 4 * BLOCK];
+        card.read_many(2, &mut buf).unwrap();
+        for (i, b) in buf.chunks(BLOCK).enumerate() {
+            assert!(b.iter().all(|&x| x == 2 + i as u8), "block {i}");
+        }
+        assert_eq!((card.read_fallbacks(), card.slow_reads()), (1, 1));
+        // The clock went down for the one block and back up.
+        let host = card.into_inner();
+        assert_eq!(
+            &host.clocks[host.clocks.len() - 2..],
+            [SLOW_READ_HZ, TRANSFER_HZ]
+        );
+        // After the timed-out block the card was stopped (CMD12 answered,
+        // it was still sending) before anything else.
+        let i = host
+            .log
+            .iter()
+            .rposition(|&(c, a)| c == 17 && a == 4)
+            .unwrap();
+        let before: Vec<u8> = host.log[..i]
+            .iter()
+            .rev()
+            .take(3)
+            .map(|&(c, _)| c)
+            .collect();
+        assert_eq!(
+            before,
+            [13, 12, 17],
+            "CMD17 timed out, CMD12 stopped it, CMD13 checked"
+        );
+        // And the next read is clean.
+        let mut card = SdCard::init(host).unwrap();
+        let mut one = [0u8; BLOCK];
+        card.read(0, &mut one).unwrap();
+    }
+
+    #[test]
+    fn a_range_that_failed_is_read_block_by_block_from_then_on() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        fake.slow_block = Some(4);
+        let mut card = SdCard::init(fake).unwrap();
+        let mut buf = vec![0u8; 4 * BLOCK];
+        card.read_many(2, &mut buf).unwrap();
+        assert_eq!(card.weak_ranges(), 1);
+        // Again, and an overlapping range: no CMD18 at all now.
+        let before = card.host.log.len();
+        card.read_many(2, &mut buf).unwrap();
+        card.read_many(4, &mut buf).unwrap();
+        assert!(card.host.log[before..].iter().all(|&(c, _)| c != 18));
+        assert!(buf[..BLOCK].iter().all(|&b| b == 4));
+        // Elsewhere: multi-block as usual.
+        let before = card.host.log.len();
+        let mut far = vec![0u8; 2 * BLOCK];
+        card.read_many(0, &mut far).unwrap();
+        assert!(card.host.log[before..].iter().any(|&(c, _)| c == 18));
+        assert_eq!(card.weak_ranges(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_block_is_still_an_error() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        fake.bad_block = Some(3);
+        let mut card = SdCard::init(fake).unwrap();
+        let mut buf = vec![0u8; 4 * BLOCK];
+        assert_eq!(
+            card.read_many(2, &mut buf),
+            Err(Error::Host(HostError::Timeout))
+        );
+        assert_eq!(card.read_fallbacks(), 0);
     }
 
     #[test]

@@ -40,8 +40,15 @@ pub mod reg {
     pub const TXFIFO: usize = 0x44;
 }
 
+const STRPCL_STOP: u32 = 1 << 0;
 const STRPCL_START: u32 = 1 << 1;
+/// STAT: the card clock is running.
+const STAT_CLK_EN: u32 = 1 << 8;
+/// STAT: the card didn't send the next data block within RDTO.
+const STAT_READ_TIMEOUT: u32 = 1 << 0;
 const STAT_TOUT_RES: u32 = 1 << 1;
+/// STAT: a received data block failed its CRC.
+const STAT_CRC_READ: u32 = 1 << 3;
 const STAT_DATA_DONE: u32 = 1 << 11;
 /// STAT: the card finished programming the written data.
 const STAT_PRG_DONE: u32 = 1 << 12;
@@ -118,8 +125,10 @@ pub struct PxaMmc<B> {
     wide: bool,
     /// A multi-block write is in progress: the next CMD12 stops it.
     writing: bool,
-    /// The last command that timed out and the status it left: (index, STAT).
+    /// The last command that failed and the status it left: (index, STAT).
     last_failure: Option<(u8, u32)>,
+    /// The data command in progress (for `last_failure`).
+    data_cmd: u8,
 }
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
@@ -132,6 +141,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             wide: false,
             writing: false,
             last_failure: None,
+            data_cmd: 0,
         }
     }
 
@@ -176,6 +186,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             cmdat |= CMDAT_STOP_TRAN;
         }
         self.writing = write && data_blocks > 1;
+        self.data_cmd = cmd.index;
         if data_blocks > 0 {
             self.regs.write32(reg::BLKLEN, BLOCK as u32);
             self.regs.write32(reg::NUMBLK, data_blocks);
@@ -218,6 +229,14 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
 
 impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
     fn set_clock(&mut self, hz: u32) {
+        // The rate changes only while the clock is stopped (PXA27x manual);
+        // the next command's start restarts it at the new rate.
+        self.regs.write32(reg::STRPCL, STRPCL_STOP);
+        for _ in 0..SPIN_LIMIT {
+            if self.regs.read32(reg::STAT) & STAT_CLK_EN == 0 {
+                break;
+            }
+        }
         self.regs.write32(reg::CLKRT, clkrt_for(hz));
     }
 
@@ -283,17 +302,41 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
                     ready = true;
                     break;
                 }
+                // A read timeout or CRC error ends the transfer: stop
+                // waiting at once (the card's driver retries).
+                let stat = self.regs.read32(reg::STAT);
+                if stat & (STAT_READ_TIMEOUT | STAT_CRC_READ) != 0 {
+                    return Err(self.data_failure(stat));
+                }
             }
             if !ready {
-                return Err(HostError::Data);
+                let stat = self.regs.read32(reg::STAT);
+                return Err(self.data_failure(stat));
             }
             for b in chunk {
                 *b = self.regs.read8(reg::RXFIFO);
             }
         }
-        self.wait_stat(STAT_DATA_DONE)
-            .map_err(|_| HostError::Data)?;
-        Ok(())
+        match self.wait_stat(STAT_DATA_DONE) {
+            Ok(stat) if stat & STAT_CRC_READ != 0 => Err(self.data_failure(stat)),
+            Ok(_) => Ok(()),
+            Err(_) => {
+                let stat = self.regs.read32(reg::STAT);
+                Err(self.data_failure(stat))
+            }
+        }
+    }
+
+    /// Records a failed data transfer and names it from the status bits.
+    fn data_failure(&mut self, stat: u32) -> HostError {
+        self.last_failure = Some((self.data_cmd, stat));
+        if stat & STAT_CRC_READ != 0 {
+            HostError::Crc
+        } else if stat & STAT_READ_TIMEOUT != 0 {
+            HostError::Timeout
+        } else {
+            HostError::Data
+        }
     }
 
     /// Fills the transmit FIFO, 32 bytes per FIFO request, until `buf` has
@@ -522,6 +565,37 @@ mod tests {
             Err(HostError::Timeout)
         );
         assert_eq!(mmc.last_failure(), Some((8, STAT_TOUT_RES)));
+    }
+
+    #[test]
+    fn a_crc_error_mid_read_ends_the_transfer_and_is_named() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_CRC_READ);
+        // The first FIFO request comes, then none.
+        bus.script_reads(reg::I_REG, &[I_RXFIFO_REQ]);
+        let bytes: Vec<u32> = vec![0; 32];
+        bus.script_reads(reg::RXFIFO, &bytes);
+        let mut mmc = PxaMmc::new(bus);
+        let mut buf = [0u8; 2 * BLOCK];
+        assert_eq!(
+            mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf),
+            Err(HostError::Crc)
+        );
+        assert_eq!(
+            mmc.last_failure(),
+            Some((18, STAT_END_CMD_RES | STAT_CRC_READ))
+        );
+    }
+
+    #[test]
+    fn the_clock_is_stopped_before_its_rate_changes() {
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::STAT, &[STAT_CLK_EN, STAT_CLK_EN, 0]);
+        let mut mmc = PxaMmc::new(bus);
+        mmc.set_clock(MIN_HZ);
+        let w = mmc.into_inner_for_test().writes();
+        let tail: Vec<_> = w[2..].to_vec();
+        assert_eq!(tail, [(reg::STRPCL, STRPCL_STOP), (reg::CLKRT, 6)]);
     }
 
     #[test]

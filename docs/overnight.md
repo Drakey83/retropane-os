@@ -77,9 +77,24 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 3. Device run of item 2
 
-- [ ] Only once the emulator test passes. If Windows' enumeration stalls,
-      write down exactly what was seen (docs/hw/udc.md) and leave the rest
-      for a Fable session instead of retrying blind.
+- [x] Enumeration worked first time on Windows 11 (composite: COM4 + "RetroPan
+      SD card", read-only volume, the right capacity), with a layout
+      fallback in place first so nobody could get locked out.
+- [ ] **Blocked on the card, not the code:** a weak block at 10880 in the
+      first FAT (0.79 s alone, never inside a multi-block read) makes
+      Windows' mount retry forever. Six driver fixes (sd.md "Reads that
+      fail") keep everything else working; the block itself needs a scrub
+      (one rewrite after a backup) or another card: the owner's call. The
+      drive is **off** for the night (`cargo xtask drive on` to offer it).
+- **Iterate:** a fallback layout so an unattended device run could never
+  lock the loop out; diagnostics over the serial port that turned "it's
+  slow" into a block number and a status word in minutes (`drive status`,
+  `card scan`); an SD driver that now recovers from timeouts, previous-
+  command error bits, stuck transfers and slow blocks, learns weak ranges,
+  and an emulator that reproduces the slow block.
+- **Modernize:** the drive is read-only until asked and can be withdrawn
+  like an empty reader (`drive off`), so the PC is never stuck on it; the
+  card's health problem is reported, not hidden.
 
 ## 4. FAT: create files (and directories' first step)
 
