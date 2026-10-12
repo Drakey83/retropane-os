@@ -439,6 +439,14 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
 /// Sends a command to the resident loader (`drive rw` / `drive ro`) and
 /// prints its reply.
 pub fn command(root: &Path, command: &str) -> Result<(), String> {
+    let detail = command_reply(root, command)?;
+    eprintln!("    {detail}");
+    Ok(())
+}
+
+/// Sends a control command and returns the loader's reply (after `RPL OK `),
+/// or why it failed.
+pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let frame = out.join("command.frame");
@@ -453,10 +461,66 @@ pub fn command(root: &Path, command: &str) -> Result<(), String> {
         .find_map(|l| l.trim_end().strip_prefix("REPLY "))
         .ok_or("no reply from the loader")?;
     if let Some(detail) = reply.strip_prefix("RPL OK ") {
-        eprintln!("    {detail}");
-        Ok(())
+        Ok(detail.to_string())
     } else {
         Err(format!("the loader refused `{command}`: {reply}"))
+    }
+}
+
+/// Runs the checks waiting for the device, read-only and each well inside
+/// the loader's run limit, and writes a report (target/device-check.txt):
+/// the drive's counters, the SD DMA self-test verdict, the backlight level,
+/// and a scan of the card's blocks not yet scanned, in short chunks. With
+/// `with_owner` (someone at the device: it makes sound and touches the CF
+/// socket): the CF card and a tone.
+pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
+    let mut steps: Vec<(String, String)> = vec![
+        ("drive".into(), "drive status".into()),
+        ("SD DMA".into(), "card dma".into()),
+        ("backlight".into(), "backlight".into()),
+    ];
+    // The rest of the first FAT (docs/hw/sd.md), 400 blocks a command.
+    let (first, last) = (15_074u32, 16_975u32);
+    let mut at = first;
+    while at <= last {
+        let n = (last + 1 - at).min(400);
+        steps.push((format!("scan {at}+{n}"), format!("card scan {at} {n}")));
+        at += n;
+    }
+    if with_owner {
+        steps.push(("CF card".into(), "cf".into()));
+        steps.push(("tone".into(), "tone 440 500".into()));
+    }
+    let mut report = String::new();
+    let mut failed = 0;
+    for (name, cmd) in &steps {
+        eprintln!("    {name}: {cmd}");
+        let line = match command_reply(root, cmd) {
+            Ok(r) => format!("OK   {name}: {r}"),
+            Err(e) if e.contains("no RetroPane USB port") => {
+                return Err(format!("{e} (is the Axim docked and the loader running?)"));
+            }
+            Err(e) => {
+                failed += 1;
+                format!("FAIL {name}: {e}")
+            }
+        };
+        eprintln!("    {line}");
+        report.push_str(&line);
+        report.push('\n');
+    }
+    if !with_owner {
+        report.push_str(
+            "(CF and tone skipped: run with --with-owner when someone is at the device)\n",
+        );
+    }
+    let path = root.join("target/device-check.txt");
+    std::fs::write(&path, &report).map_err(|e| format!("{}: {e}", path.display()))?;
+    eprintln!("    report: {}", path.display());
+    if failed > 0 {
+        Err(format!("{failed} of {} checks failed", steps.len()))
+    } else {
+        Ok(())
     }
 }
 

@@ -57,7 +57,15 @@ commands:
             `card scrub <lba>` rewrites a weak first-FAT sector in place,
             verified against its mirror in the second FAT; `card repair
             <lba>` restores a damaged one from the mirror (only when the
-            first copy's differing entries are invalid)
+            first copy's differing entries are invalid); `card dma` reports
+            the SD DMA self-test, `card dma writes` lets writes use DMA
+  cf        identify the CompactFlash card through the loader (read-only;
+            then it is the drive's second unit)
+  tone      `tone <hz> <ms>`: a sine through the codec (headphones; the
+            reply names the output and the CPU's busy share)
+  device-check  the read-only checks waiting for the device, in one run
+            (drive, SD DMA, backlight, the unscanned card blocks), report
+            in target/device-check.txt; --with-owner adds CF and a tone
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -123,6 +131,19 @@ fn main() -> ExitCode {
         "backlight" => {
             eprintln!("==> backlight {flag}");
             usb::command(&workspace_root(), &format!("backlight {flag}"))
+        }
+        "cf" => {
+            eprintln!("==> cf");
+            usb::command(&workspace_root(), "cf")
+        }
+        "tone" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            eprintln!("==> tone {}", rest.join(" "));
+            usb::command(&workspace_root(), &format!("tone {}", rest.join(" ")))
+        }
+        "device-check" => {
+            eprintln!("==> device-check {flag}");
+            usb::device_check(&workspace_root(), flag == "--with-owner")
         }
         "install" => {
             eprintln!("==> install");
