@@ -355,6 +355,14 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         self.stats
     }
 
+    /// Bytes queued for the host and not yet taken by it. While no program
+    /// on the PC reads the port, nothing drains: a sender that keeps
+    /// writing fills the ring and later writes are cut short.
+    #[must_use]
+    pub fn tx_pending(&self) -> usize {
+        self.tx.len()
+    }
+
     /// Queues bytes for the host; returns how many fit. Nothing is queued
     /// until the device is configured (bytes written before would be stale).
     pub fn write(&mut self, data: &[u8]) -> usize {

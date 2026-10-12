@@ -124,6 +124,13 @@ Facts (docs/hw/udc.md):
   image and returning a run log over USB, end to end. These tests skip on
   emulator releases without the model (the pinned `rp-v0.6.0`) until a new
   release is published.
+- **Idle link (2026-10-12):** the first frame after an hour idle went
+  unanswered. Cause: no IN request reaches the device while no PC program
+  reads the port (docs/hw/udc.md), so the loader's once-a-second READY
+  filled its 512-byte ring and later writes were cut short (a charter
+  violation: silently discarded output). Now at most one READY waits in the
+  ring and replies are always queued whole. Checked: after 6 idle minutes
+  the port opened to ≤1 stale line and the reply arrived at once.
 
 ## The four lenses
 

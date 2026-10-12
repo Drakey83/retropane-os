@@ -413,7 +413,12 @@ mod image {
                     // so the PC can tell "back with a log" from "restarted
                     // without one" (a hang whose log the reset wiped).
                     let _ = uart.write_str(READY);
-                    if pending.is_none() {
+                    // At most one READY waits in the USB ring: while no
+                    // program on the PC reads the port nothing drains, and
+                    // a ring full of stale READYs would cut the reply to the
+                    // next frame short (seen on the device after an hour
+                    // idle: 36 old lines, one torn, and the reply lost).
+                    if pending.is_none() && udc.tx_pending() == 0 {
                         udc.write(READY.as_bytes());
                     }
                 }
@@ -447,10 +452,11 @@ mod image {
         }
     }
 
-    /// A line to the host on both transports.
+    /// A line to the host on both transports; over USB it goes whole, the
+    /// ring draining as the PC reads (never cut short to fit).
     fn send(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, udc: &mut Udc<rp_hal_pxa27x::Mmio>, s: &str) {
         let _ = uart.write_str(s);
-        udc.write(s.as_bytes());
+        usb_bytes(udc, s.as_bytes());
     }
 
     /// The run log, framed for `cargo xtask load`; a run that didn't
