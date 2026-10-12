@@ -115,7 +115,11 @@ pub const BUDGETS: &[Budget] = &[
         // reusable process table: 5 records of 1.6 KB, initialised data).
         // Measured 76.6 KiB + ~10%. Next: region storage from a shared pool
         // instead of 64 per record (ADR queued, item 47).
-        max_load: 84 * 1024,
+        // Lowered 84 -> 82 KiB on 2026-10-12: ADR-0019 landed (item 48):
+        // regions in per-process pages, so each record shrank from 1.6 KB
+        // to ~60 B (-6.0 KB), less the 300-region check (+1.8 KB).
+        // Measured 76.7 KiB; the room goes back.
+        max_load: 82 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame

@@ -1,6 +1,7 @@
 # ADR-0019: Where the kernel keeps per-process records
 
-- **Status:** Accepted (2026-10-12, by the project owner): option 1
+- **Status:** Accepted (2026-10-12, by the project owner): option 1.
+  Implemented the same day (overnight item 48): `kernel/mm/src/regions.rs`
 - **Date:** 2026-10-12
 
 ## Context

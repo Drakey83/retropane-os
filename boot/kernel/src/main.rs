@@ -72,6 +72,7 @@ mod image {
     use rp_kernel_mm::frames::Frames;
     use rp_kernel_mm::layout;
     use rp_kernel_mm::pagetable::{FrameAlloc, Mmu, PageTables, PhysMem};
+    use rp_kernel_mm::regions::RegionPages;
     use rp_kernel_mm::space::{
         AddressSpace, Backing, IoError, Outcome, PageCache, Prot, Region, Vm, access_for,
     };
@@ -99,6 +100,9 @@ mod image {
     /// The pinned-memory test's pages.
     const PIN_VA: u32 = 0x0030_0000;
     const PIN_PAGES: u32 = 4;
+    /// Many regions (ADR-0019): one page each, a page apart, from here.
+    const MANY_VA: u32 = 0x0040_0000;
+    const MANY_REGIONS: u32 = 300;
 
     /// The test image (a PE file built at start) as a page-cache object,
     /// loaded at `LOAD_BASE`, not the base it prefers, so every absolute
@@ -635,28 +639,32 @@ mod image {
 
         // 3-4. A process in slot 5: zero-fill memory and a private file page.
         let file_frame = FRAMES.with(|f| FrameAlloc::alloc(f, 0));
-        let mapped = STATE.with(|s| -> Result<(), &'static str> {
+        let mapped = with_vm(|vm, s| -> Result<(), &'static str> {
             let f = file_frame.ok_or("no file frame")?;
             let phys = BASE + f as u32 * 4096;
-            let pool = s.pool.as_deref_mut().unwrap_or_else(|| unreachable!());
-            for (k, w) in pool[word(phys)..word(phys) + 1024].iter_mut().enumerate() {
+            for (k, w) in vm.mem.pool[word(phys)..word(phys) + 1024]
+                .iter_mut()
+                .enumerate()
+            {
                 *w = FILE_PATTERN + k as u32;
             }
             cpu::clean_invalidate_range(phys, 4096);
-            s.file.phys = phys;
+            // The VM's copy of the file: written back when `with_vm` ends.
+            vm.cache.phys = phys;
             let slot = layout::slot_base(PROC_SLOT);
-            s.procs[0]
-                .space
-                .map(Region {
+            vm.map(
+                &mut s.procs[0].space,
+                Region {
                     start: slot + ZERO_VA,
                     len: ZERO_PAGES * 4096,
                     prot: Prot::RW,
                     backing: Backing::Zero,
-                })
-                .map_err(|e| e.name())?;
-            s.procs[0]
-                .space
-                .map(Region {
+                },
+            )
+            .map_err(|e| e.name())?;
+            vm.map(
+                &mut s.procs[0].space,
+                Region {
                     start: slot + FILE_VA,
                     len: 4096,
                     prot: Prot::RW,
@@ -665,8 +673,9 @@ mod image {
                         offset: 0,
                         shared: false,
                     },
-                })
-                .map_err(|e| e.name())?;
+                },
+            )
+            .map_err(|e| e.name())?;
             s.pid = PROC_SLOT;
             Ok(())
         });
@@ -792,16 +801,17 @@ mod image {
         // faults); the next sweep ages those again and compresses the rest;
         // an evicted page comes back intact.
         let region = layout::slot_base(PROC_SLOT) + RECLAIM_VA;
-        let mapped = STATE.with(|s| {
-            s.procs[0]
-                .space
-                .map(Region {
+        let mapped = with_vm(|vm, s| {
+            vm.map(
+                &mut s.procs[0].space,
+                Region {
                     start: region,
                     len: RECLAIM_PAGES * 4096,
                     prot: Prot::RW,
                     backing: Backing::Zero,
-                })
-                .is_ok()
+                },
+            )
+            .is_ok()
         });
         for p in 0..RECLAIM_PAGES {
             cpu::poke((RECLAIM_VA + p * 4096 + 12) as usize, 0xA6E0_0000 + p);
@@ -841,15 +851,16 @@ mod image {
         // leave them where they are.
         let pin = layout::slot_base(PROC_SLOT) + PIN_VA;
         let populated = with_vm(|vm, s| {
-            s.procs[0]
-                .space
-                .map(Region {
+            vm.map(
+                &mut s.procs[0].space,
+                Region {
                     start: pin,
                     len: PIN_PAGES * 4096,
                     prot: Prot::RW.pinned(),
                     backing: Backing::Zero,
-                })
-                .ok()?;
+                },
+            )
+            .ok()?;
             vm.populate(&s.procs[0].space, pin, PIN_PAGES * 4096).ok()
         });
         let faults0 = state().0;
@@ -870,6 +881,47 @@ mod image {
         let pass = populated == Some(PIN_PAGES) && intact && faults == 0;
         ok &= report(&mut uart, "pinned", pass, faults);
 
+        // Many regions (ADR-0019): far more than the old fixed table's 64,
+        // in kernel pages that follow use. 300 one-page reservations with
+        // gaps, the last one touched, then all unmapped: every frame back,
+        // list pages included.
+        let many_base = layout::slot_base(PROC_SLOT) + MANY_VA;
+        let free_before = FRAMES.with(|f| f.free_frames() as u32);
+        let many = with_vm(|vm, s| {
+            let space = &mut s.procs[0].space;
+            let before = space.region_count();
+            for k in 0..MANY_REGIONS {
+                let region = Region {
+                    start: many_base + k * 0x2000,
+                    len: 4096,
+                    prot: Prot::RW,
+                    backing: Backing::Zero,
+                };
+                vm.map(space, region).ok()?;
+            }
+            let count = space.region_count();
+            let pages_ok = space.region_pages() == count.div_ceil(rp_kernel_mm::regions::PER_PAGE);
+            Some(count - before == MANY_REGIONS as usize && pages_ok)
+        });
+        let last = MANY_VA + (MANY_REGIONS - 1) * 0x2000;
+        cpu::poke(last as usize, 0x3A11_0000);
+        let back = rt::try_read(last as usize);
+        let unmapped = with_vm(|vm, s| {
+            vm.unmap(&mut s.procs[0].space, many_base, MANY_REGIONS * 0x2000)
+                .is_ok()
+        });
+        let free_after = FRAMES.with(|f| f.free_frames() as u32);
+        let pass = many == Some(true)
+            && back == Some(0x3A11_0000)
+            && unmapped
+            && free_after == free_before;
+        ok &= report(
+            &mut uart,
+            "many regions",
+            pass,
+            free_before.wrapping_sub(free_after),
+        );
+
         // Unmap everything: every frame and page-cache reference returns.
         let slot = layout::slot_base(PROC_SLOT);
         let (unmapped, refs) = with_vm(|vm, s| {
@@ -887,31 +939,35 @@ mod image {
         // is ever user-visible), each with its own stack and data page.
         let programs = testprog::ipc_programs();
         let file_frame = FRAMES.with(|f| FrameAlloc::alloc(f, 0));
-        let mapped = STATE.with(|s| -> Result<u32, &'static str> {
+        let mapped = with_vm(|vm, s| -> Result<u32, &'static str> {
             let f = file_frame.ok_or("no file frame")?;
             let file_phys = BASE + f as u32 * 4096;
-            let pool = s.pool.as_deref_mut().unwrap_or_else(|| unreachable!());
-            let file =
-                rp_hal_mem::words_as_bytes_mut(&mut pool[word(file_phys)..word(file_phys) + 1024]);
-            build_image(file, &programs).map_err(|e| e.name())?;
-            let image = Image::parse(file).map_err(|e| e.name())?;
-            // W^X: an image with a page both writable and executable is
-            // refused, not mapped.
-            if image.writable_code() || image.pages() as usize > PE_PAGES {
-                return Err("image refused");
-            }
-            s.file.pe_file = file_phys;
-            for page in 0..image.pages() {
-                s.pe_prot[page as usize] = image.page_protection(page);
-            }
+            let pages = {
+                let file = rp_hal_mem::words_as_bytes_mut(
+                    &mut vm.mem.pool[word(file_phys)..word(file_phys) + 1024],
+                );
+                build_image(file, &programs).map_err(|e| e.name())?;
+                let image = Image::parse(file).map_err(|e| e.name())?;
+                // W^X: an image with a page both writable and executable is
+                // refused, not mapped.
+                if image.writable_code() || image.pages() as usize > PE_PAGES {
+                    return Err("image refused");
+                }
+                for page in 0..image.pages() {
+                    s.pe_prot[page as usize] = image.page_protection(page);
+                }
+                image.pages()
+            };
+            // The VM's copy of the file: written back when `with_vm` ends.
+            vm.cache.pe_file = file_phys;
             let prot = s.pe_prot;
             for slot in [PROC_SLOT, SERVER_SLOT, HOST_SLOT, MANAGER_SLOT] {
                 let a = s.domains.activate(slot);
                 let space = space_mut(s, slot).ok_or("no process")?;
                 space.set_domain(a.domain);
-                map_process(space, slot, &prot)?;
+                map_process(&mut vm.region_pages(), space, slot, &prot)?;
             }
-            Ok(image.pages())
+            Ok(pages)
         });
         let pe_pages = *mapped.as_ref().unwrap_or(&0);
         let mapped = mapped.map(|_| ());
@@ -1013,6 +1069,7 @@ mod image {
     /// a page no section covers stays unmapped, a guard), its data page and
     /// its stacks.
     fn map_process(
+        rp: &mut impl RegionPages,
         space: &mut AddressSpace,
         slot: u32,
         pe: &[Option<Protection>; PE_PAGES],
@@ -1030,16 +1087,19 @@ mod image {
                 Prot::R
             };
             space
-                .map(Region {
-                    start: base + LOAD_BASE + page * 4096,
-                    len: 4096,
-                    prot,
-                    backing: Backing::File {
-                        object: PE_OBJECT,
-                        offset: page * 4096,
-                        shared: q.shared,
+                .map(
+                    rp,
+                    Region {
+                        start: base + LOAD_BASE + page * 4096,
+                        len: 4096,
+                        prot,
+                        backing: Backing::File {
+                            object: PE_OBJECT,
+                            offset: page * 4096,
+                            shared: q.shared,
+                        },
                     },
-                })
+                )
                 .map_err(|e| e.name())?;
         }
         for region in [
@@ -1057,7 +1117,7 @@ mod image {
                 backing: Backing::Zero,
             },
         ] {
-            space.map(region).map_err(|e| e.name())?;
+            space.map(rp, region).map_err(|e| e.name())?;
         }
         Ok(())
     }
@@ -1081,7 +1141,7 @@ mod image {
             }
             r.spawned += 1;
         });
-        let slot = STATE.with(|s| -> Option<u32> {
+        let slot = with_vm(|vm, s| -> Option<u32> {
             let slot = (MANAGER_SLOT + 1..=layout::LAST_PROCESS_SLOT)
                 .find(|&n| s.procs.iter().all(|p| p.slot != n))?;
             let i = s.procs.iter().position(|p| p.slot == 0)?;
@@ -1089,8 +1149,9 @@ mod image {
             let prot = s.pe_prot;
             let p = &mut s.procs[i];
             p.slot = slot;
-            p.space.reset_process(slot, a.domain);
-            map_process(&mut p.space, slot, &prot).ok()?;
+            let mut rp = vm.region_pages();
+            p.space.reset_process(&mut rp, slot, a.domain);
+            map_process(&mut rp, &mut p.space, slot, &prot).ok()?;
             Some(slot)
         });
         let Some(slot) = slot else {
@@ -1138,6 +1199,9 @@ mod image {
             let base = layout::slot_base(u32::from(slot));
             if let Some(p) = s.procs.iter_mut().find(|p| p.slot == u32::from(slot)) {
                 let _ = vm.unmap(&mut p.space, base, layout::SLOT_SIZE);
+                // Its region-list pages too (ADR-0019): nothing outlives it.
+                p.space
+                    .reset_process(&mut vm.region_pages(), u32::from(slot), domains::PARKED);
                 p.slot = 0;
             }
             s.domains.release(u32::from(slot));
@@ -1172,7 +1236,7 @@ mod image {
             let base = layout::slot_base(u32::from(slot));
             space_mut(s, u32::from(slot)).is_some_and(|space| {
                 vm.unmap(space, base, layout::SLOT_SIZE).is_ok()
-                    && map_process(space, u32::from(slot), &prot).is_ok()
+                    && map_process(&mut vm.region_pages(), space, u32::from(slot), &prot).is_ok()
             })
         });
         let renewed = IPC.with(|i| i.ipc.restart(port, Some(supervisor))).is_ok();

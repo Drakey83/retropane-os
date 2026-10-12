@@ -34,6 +34,7 @@
 use crate::arm::{Ap, Attrs, Cache};
 use crate::layout;
 use crate::pagetable::{FrameAlloc, MapError, Mmu, PageTables, PhysMem};
+use crate::regions::{RegionList, RegionPages};
 use crate::zpool::{Handle, Pages, ZBuffers, ZPool};
 
 const PAGE: u32 = 4096;
@@ -85,6 +86,17 @@ impl Prot {
     pub const fn is_pinned(self) -> bool {
         self.0 & 8 != 0
     }
+
+    /// The raw bits (read 1, write 2, exec 4, pinned 8), for the region
+    /// list's encoding.
+    pub(crate) const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// From raw bits; unknown bits are dropped.
+    pub(crate) const fn from_bits(b: u8) -> Self {
+        Self(b & 15)
+    }
 }
 
 /// What a region's pages hold.
@@ -126,11 +138,11 @@ pub struct Region {
 }
 
 impl Region {
-    fn end(&self) -> u64 {
+    pub(crate) fn end(&self) -> u64 {
         u64::from(self.start) + u64::from(self.len)
     }
 
-    fn contains(&self, mva: u32) -> bool {
+    pub(crate) fn contains(&self, mva: u32) -> bool {
         mva >= self.start && u64::from(mva) < self.end()
     }
 
@@ -167,9 +179,10 @@ impl Region {
 /// full.
 pub const DEFAULT_PIN_LIMIT: u32 = 64 * 1024;
 
-/// Regions per address space (ADR-0005 rule 9: bounded). A WM app with a
-/// dozen DLLs uses a few dozen.
-pub const MAX_REGIONS: usize = 64;
+/// Regions per address space (ADR-0005 rule 9: bounded; ADR-0019: kept in
+/// per-process pages, so the bound is a quota, not a reservation). A WM app
+/// with a dozen DLLs uses a few dozen; `VirtualAlloc`-heavy apps far more.
+pub const MAX_REGIONS: usize = crate::regions::MAX_REGIONS;
 
 /// Why a region operation was refused.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,10 +196,12 @@ pub enum SpaceError {
     WriteExec,
     /// A shared writable file mapping outside the shared area.
     SharedWriteNotGlobal,
-    /// [`MAX_REGIONS`] reached.
+    /// [`MAX_REGIONS`] reached (the per-process quota).
     TooManyRegions,
     /// Pinning this would exceed the space's pin limit.
     PinLimit,
+    /// No page for the region list.
+    NoMemory,
 }
 
 impl SpaceError {
@@ -200,19 +215,39 @@ impl SpaceError {
             SpaceError::SharedWriteNotGlobal => "shared write outside shared area",
             SpaceError::TooManyRegions => "too many regions",
             SpaceError::PinLimit => "pin limit",
+            SpaceError::NoMemory => "no memory for regions",
         }
     }
 }
 
-/// One address space: a window of MVAs and its regions.
+/// One address space: a window of MVAs and its regions. The regions live in
+/// kernel pages ([`RegionList`], ADR-0019); every operation that reads or
+/// changes them takes the [`RegionPages`] they come from, and the record
+/// itself stays small (about 60 bytes).
 pub struct AddressSpace {
     lo: u32,
     hi: u32,
     domain: u32,
     allow_wx: bool,
     pin_limit: u32,
-    regions: [Option<Region>; MAX_REGIONS],
-    count: usize,
+    list: RegionList,
+}
+
+/// The regions of a space in address order (see [`AddressSpace::regions`]).
+pub struct Regions<'a, P> {
+    list: &'a RegionList,
+    rp: &'a mut P,
+    i: usize,
+}
+
+impl<P: RegionPages> Iterator for Regions<'_, P> {
+    type Item = Region;
+    fn next(&mut self) -> Option<Region> {
+        (self.i < self.list.len()).then(|| {
+            self.i += 1;
+            self.list.get(self.rp, self.i - 1)
+        })
+    }
 }
 
 impl AddressSpace {
@@ -237,23 +272,20 @@ impl AddressSpace {
             domain,
             allow_wx: false,
             pin_limit: DEFAULT_PIN_LIMIT,
-            regions: [None; MAX_REGIONS],
-            count: 0,
+            list: RegionList::new(),
         }
     }
 
     /// Reuses this record for the process in `slot` (a new process): no
-    /// regions, W^X enforced, ARM `domain`. In place, so a record never
-    /// passes through a (small) kernel stack. The caller has already
-    /// unmapped everything the previous process had.
-    pub fn reset_process(&mut self, slot: u32, domain: u32) {
+    /// regions (their pages go back to `rp`), W^X enforced, ARM `domain`.
+    /// The caller has already unmapped everything the previous process had.
+    pub fn reset_process(&mut self, rp: &mut impl RegionPages, slot: u32, domain: u32) {
         self.lo = layout::slot_base(slot);
         self.hi = self.lo + layout::SLOT_SIZE;
         self.domain = domain;
         self.allow_wx = false;
         self.pin_limit = DEFAULT_PIN_LIMIT;
-        self.regions[..self.count].fill(None);
-        self.count = 0;
+        self.list.clear(rp);
     }
 
     /// Lets this space have writable, executable regions: for legacy apps
@@ -270,8 +302,8 @@ impl AddressSpace {
 
     /// Bytes of pinned regions.
     #[must_use]
-    pub fn pinned_bytes(&self) -> u64 {
-        self.regions()
+    pub fn pinned_bytes(&self, rp: &mut impl RegionPages) -> u64 {
+        self.regions(rp)
             .filter(|r| r.prot.is_pinned())
             .map(|r| u64::from(r.len))
             .sum()
@@ -296,19 +328,35 @@ impl AddressSpace {
         self.domain
     }
 
+    /// How many regions the space has.
+    #[must_use]
+    pub fn region_count(&self) -> usize {
+        self.list.len()
+    }
+
+    /// Kernel pages holding the region list.
+    #[must_use]
+    pub fn region_pages(&self) -> usize {
+        self.list.pages_used()
+    }
+
     fn is_shared_area(&self) -> bool {
         self.lo >= layout::SHARED_BASE
     }
 
     /// The regions, in address order.
-    pub fn regions(&self) -> impl Iterator<Item = &Region> {
-        self.regions[..self.count].iter().flatten()
+    pub fn regions<'a, P: RegionPages>(&'a self, rp: &'a mut P) -> Regions<'a, P> {
+        Regions {
+            list: &self.list,
+            rp,
+            i: 0,
+        }
     }
 
-    /// The region containing `mva`.
+    /// The region containing `mva` (a binary search).
     #[must_use]
-    pub fn find(&self, mva: u32) -> Option<&Region> {
-        self.regions().find(|r| r.contains(mva))
+    pub fn find(&self, rp: &mut impl RegionPages, mva: u32) -> Option<Region> {
+        self.list.find(rp, mva).map(|(_, r)| r)
     }
 
     fn check_range(&self, start: u32, len: u32) -> Result<(), SpaceError> {
@@ -337,133 +385,190 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Index of the first region ending after `addr` (the first that could
+    /// overlap a range starting there).
+    fn first_ending_after(&self, rp: &mut impl RegionPages, addr: u32) -> usize {
+        let i = self.list.first_after(rp, addr);
+        if i > 0 && self.list.get(rp, i - 1).end() > u64::from(addr) {
+            i - 1
+        } else {
+            i
+        }
+    }
+
     /// Adds a region. Nothing is mapped until it's touched.
-    pub fn map(&mut self, r: Region) -> Result<(), SpaceError> {
+    pub fn map(&mut self, rp: &mut impl RegionPages, r: Region) -> Result<(), SpaceError> {
         self.check_range(r.start, r.len)?;
         self.check_policy(r.prot, r.backing)?;
-        if self
-            .regions()
-            .any(|o| u64::from(o.start) < r.end() && u64::from(r.start) < o.end())
-        {
+        // Sorted and disjoint: only the neighbours can overlap.
+        let i = self.first_ending_after(rp, r.start);
+        if i < self.list.len() && u64::from(self.list.get(rp, i).start) < r.end() {
             return Err(SpaceError::Overlap);
         }
-        if r.prot.is_pinned() && self.pinned_bytes() + u64::from(r.len) > u64::from(self.pin_limit)
+        if r.prot.is_pinned()
+            && self.pinned_bytes(rp) + u64::from(r.len) > u64::from(self.pin_limit)
         {
             return Err(SpaceError::PinLimit);
         }
-        self.insert(r)
+        self.list.insert(rp, &r).map(|_| ())
     }
 
-    fn insert(&mut self, r: Region) -> Result<(), SpaceError> {
-        if self.count == MAX_REGIONS {
-            return Err(SpaceError::TooManyRegions);
+    /// Removes the first piece of `start..start + len` still in the regions
+    /// (splitting at the edges) and returns it, or `None` once nothing is
+    /// left. Each call is atomic: if a split can't get a page, nothing
+    /// changes.
+    pub fn carve_next(
+        &mut self,
+        rp: &mut impl RegionPages,
+        start: u32,
+        len: u32,
+    ) -> Result<Option<Region>, SpaceError> {
+        self.check_range(start, len)?;
+        let end = u64::from(start) + u64::from(len);
+        let i = self.first_ending_after(rp, start);
+        if i >= self.list.len() {
+            return Ok(None);
         }
-        let at = self.regions[..self.count]
-            .iter()
-            .position(|o| o.is_some_and(|o| o.start > r.start))
-            .unwrap_or(self.count);
-        self.regions.copy_within(at..self.count, at + 1);
-        self.regions[at] = Some(r);
-        self.count += 1;
-        Ok(())
-    }
-
-    fn remove_at(&mut self, i: usize) -> Region {
-        let r = self.regions[i].take();
-        self.regions.copy_within(i + 1..self.count, i);
-        self.count -= 1;
-        self.regions[self.count] = None;
-        r.unwrap_or_else(|| unreachable!("regions are packed"))
+        let r = self.list.get(rp, i);
+        if u64::from(r.start) >= end {
+            return Ok(None);
+        }
+        let cut_lo = r.start.max(start);
+        let cut_hi = r.end().min(end) as u32;
+        let keep_lo = r.start < cut_lo;
+        let keep_hi = u64::from(cut_hi) < r.end();
+        let high = r.slice(cut_hi, (r.end() - u64::from(cut_hi)) as u32);
+        match (keep_lo, keep_hi) {
+            (true, true) => {
+                // A hole in the middle: one more region, reserved first.
+                self.list.reserve(rp, 1)?;
+                self.list.set(rp, i, &r.slice(r.start, cut_lo - r.start));
+                self.list.insert(rp, &high)?;
+            }
+            (true, false) => self.list.set(rp, i, &r.slice(r.start, cut_lo - r.start)),
+            (false, true) => self.list.set(rp, i, &high),
+            (false, false) => {
+                self.list.remove(rp, i);
+            }
+        }
+        Ok(Some(r.slice(cut_lo, cut_hi - cut_lo)))
     }
 
     /// Removes `start..start + len` from the regions (splitting at the
     /// edges) and calls `each(piece)` for every removed piece, so the caller
-    /// can unmap its pages. Atomic: if a split would exceed
-    /// [`MAX_REGIONS`], nothing changes.
+    /// can unmap its pages. Only a hole punched in the middle of one region
+    /// needs a new entry, and that is reserved first, so a refusal changes
+    /// nothing.
     pub fn carve(
         &mut self,
+        rp: &mut impl RegionPages,
         start: u32,
         len: u32,
         mut each: impl FnMut(&Region),
     ) -> Result<(), SpaceError> {
-        self.check_range(start, len)?;
-        let end = u64::from(start) + u64::from(len);
-        // Punching a hole in the middle of one region needs one extra slot.
-        let splits = self
-            .regions()
-            .filter(|r| r.start < start && r.end() > end)
-            .count();
-        if self.count + splits > MAX_REGIONS {
-            return Err(SpaceError::TooManyRegions);
+        while let Some(piece) = self.carve_next(rp, start, len)? {
+            each(&piece);
         }
-        let mut i = 0;
-        while i < self.count {
-            let r = self.regions[i].unwrap_or_else(|| unreachable!());
-            if r.end() <= u64::from(start) || u64::from(r.start) >= end {
-                i += 1;
-                continue;
-            }
-            let cut_lo = r.start.max(start);
-            let cut_hi = r.end().min(end) as u32;
-            each(&r.slice(cut_lo, cut_hi - cut_lo));
-            self.remove_at(i);
-            if r.start < cut_lo {
-                self.insert(r.slice(r.start, cut_lo - r.start))?;
-                i += 1;
-            }
-            if u64::from(cut_hi) < r.end() {
-                self.insert(r.slice(cut_hi, (r.end() - u64::from(cut_hi)) as u32))?;
-                i += 1;
-            }
+        Ok(())
+    }
+
+    /// Splits the region containing `at` (if one starts before it) so that a
+    /// region starts exactly at `at`. Room must be reserved.
+    fn split_at(&mut self, rp: &mut impl RegionPages, at: u32) -> Result<(), SpaceError> {
+        if let Some((i, r)) = self.list.find(rp, at)
+            && r.start < at
+        {
+            self.list.set(rp, i, &r.slice(r.start, at - r.start));
+            self.list
+                .insert(rp, &r.slice(at, (r.end() - u64::from(at)) as u32))?;
         }
         Ok(())
     }
 
     /// Changes the permissions of `start..start + len`, which must be fully
     /// covered by regions. Pinned pieces stay pinned; `prot` may pin more
-    /// (within the pin limit).
-    pub fn protect(&mut self, start: u32, len: u32, prot: Prot) -> Result<(), SpaceError> {
+    /// (within the pin limit). Checked in full first, then split in place at
+    /// the two edges (at most two new entries, reserved up front): atomic,
+    /// and nothing region-sized on the kernel stack.
+    pub fn protect(
+        &mut self,
+        rp: &mut impl RegionPages,
+        start: u32,
+        len: u32,
+        prot: Prot,
+    ) -> Result<(), SpaceError> {
         self.check_range(start, len)?;
-        let mut pieces = [None; MAX_REGIONS];
-        let mut n = 0;
+        let end = u64::from(start) + u64::from(len);
         let mut covered = 0u64;
-        for r in self.regions() {
-            if r.end() > u64::from(start) && u64::from(r.start) < u64::from(start) + u64::from(len)
-            {
-                let lo = r.start.max(start);
-                let hi = r.end().min(u64::from(start) + u64::from(len)) as u32;
-                self.check_policy(prot, r.backing)?;
-                covered += u64::from(hi - lo);
-                if n < pieces.len() {
-                    pieces[n] = Some(r.slice(lo, hi - lo));
-                    n += 1;
-                }
+        let mut newly_pinned = 0u64;
+        let mut i = self.first_ending_after(rp, start);
+        while i < self.list.len() {
+            let r = self.list.get(rp, i);
+            if u64::from(r.start) >= end {
+                break;
             }
+            self.check_policy(prot, r.backing)?;
+            let piece = r.end().min(end) - u64::from(r.start.max(start));
+            covered += piece;
+            if !r.prot.is_pinned() {
+                newly_pinned += piece;
+            }
+            i += 1;
         }
         if covered != u64::from(len) {
             return Err(SpaceError::BadRange);
         }
-        if prot.is_pinned() {
-            let newly: u64 = pieces[..n]
-                .iter()
-                .flatten()
-                .filter(|p| !p.prot.is_pinned())
-                .map(|p| u64::from(p.len))
-                .sum();
-            if self.pinned_bytes() + newly > u64::from(self.pin_limit) {
-                return Err(SpaceError::PinLimit);
-            }
+        if prot.is_pinned() && self.pinned_bytes(rp) + newly_pinned > u64::from(self.pin_limit) {
+            return Err(SpaceError::PinLimit);
         }
-        self.carve(start, len, |_| {})?;
-        for p in pieces[..n].iter().flatten() {
-            let prot = if p.prot.is_pinned() {
+        self.list.reserve(rp, 2)?;
+        self.split_at(rp, start)?;
+        if end < u64::from(self.hi) {
+            self.split_at(rp, end as u32)?;
+        }
+        let mut i = self.first_ending_after(rp, start);
+        while i < self.list.len() {
+            let r = self.list.get(rp, i);
+            if u64::from(r.start) >= end {
+                break;
+            }
+            let prot = if r.prot.is_pinned() {
                 prot.pinned()
             } else {
                 prot
             };
-            self.insert(Region { prot, ..*p })?;
+            self.list.set(rp, i, &Region { prot, ..r });
+            i += 1;
         }
+        // Reserved room not used goes back.
+        self.list.trim(rp);
         Ok(())
+    }
+}
+
+/// Region pages from the kernel's frame allocator, reached through its
+/// physical-memory access: kernel-private, never mapped for a process.
+pub struct KernelPages<'a, M, F> {
+    /// Physical memory.
+    pub mem: &'a mut M,
+    /// Frame allocator.
+    pub frames: &'a mut F,
+}
+
+impl<M: PhysMem, F: FrameAlloc> RegionPages for KernelPages<'_, M, F> {
+    fn alloc_page(&mut self) -> Option<u32> {
+        let f = self.frames.alloc(0)?;
+        Some(self.mem.frame_phys(f))
+    }
+    fn free_page(&mut self, page: u32) {
+        // Wiped on the way out: a freed frame can become a process's page,
+        // and the list held the layout of another process's memory.
+        self.mem.zero(page);
+        let f = self.mem.phys_frame(page);
+        self.frames.free(f);
+    }
+    fn page(&mut self, page: u32) -> &mut [u8; 4096] {
+        self.mem.kernel_page(page)
     }
 }
 
@@ -615,6 +720,19 @@ fn attrs_for(r: &Region, writable_now: bool) -> Attrs {
 }
 
 impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
+    /// Where region lists get their pages: the frame allocator.
+    pub fn region_pages(&mut self) -> KernelPages<'_, M, F> {
+        KernelPages {
+            mem: &mut *self.mem,
+            frames: &mut *self.frames,
+        }
+    }
+
+    /// Adds a region to `space` ([`AddressSpace::map`]).
+    pub fn map(&mut self, space: &mut AddressSpace, r: Region) -> Result<(), SpaceError> {
+        space.map(&mut self.region_pages(), r)
+    }
+
     /// Resolves a fault at `mva` in `space`.
     pub fn handle_fault(
         &mut self,
@@ -622,7 +740,9 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         mva: u32,
         access: Access,
     ) -> Result<Outcome, FaultError> {
-        let r = *space.find(mva).ok_or(FaultError::NoRegion)?;
+        let r = space
+            .find(&mut self.region_pages(), mva)
+            .ok_or(FaultError::NoRegion)?;
         let allowed = match access {
             Access::Read => r.prot.read(),
             Access::Write => r.prot.write(),
@@ -743,7 +863,7 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
     /// are.
     pub fn compress(&mut self, space: &AddressSpace, mva: u32) -> Result<bool, FaultError> {
         let page = mva & !(PAGE - 1);
-        let Some(r) = space.find(page) else {
+        let Some(r) = space.find(&mut self.region_pages(), page) else {
             return Ok(false);
         };
         if r.backing != Backing::Zero || r.prot.is_pinned() {
@@ -814,7 +934,9 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         let mut page = start & !(PAGE - 1);
         let end = u64::from(start) + u64::from(len);
         while u64::from(page) < end {
-            let r = *space.find(page).ok_or(FaultError::NoRegion)?;
+            let r = space
+                .find(&mut self.region_pages(), page)
+                .ok_or(FaultError::NoRegion)?;
             let access = if r.prot.write() {
                 Access::Write
             } else {
@@ -877,12 +999,12 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
     ) -> Result<Reclaimed, FaultError> {
         let mut done = Reclaimed::default();
         while done.scanned < budget && done.compressed + done.dropped < want {
-            let Some(page) = next_reclaimable(space, *hand) else {
+            let Some(page) = next_reclaimable(space, &mut self.region_pages(), *hand) else {
                 break;
             };
             *hand = page.wrapping_add(PAGE);
             done.scanned += 1;
-            let Some(r) = space.find(page).copied() else {
+            let Some(r) = space.find(&mut self.region_pages(), page) else {
                 break;
             };
             if let Some((phys, attrs)) = self.tables.translate(self.mem, page) {
@@ -935,16 +1057,11 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         start: u32,
         len: u32,
     ) -> Result<(), SpaceError> {
-        let mut pieces = [None; MAX_REGIONS + 1];
-        let mut n = 0;
-        space.carve(start, len, |p| {
-            if n < pieces.len() {
-                pieces[n] = Some(*p);
-                n += 1;
-            }
-        })?;
         let base = self.mem.frame_phys(0);
-        for p in pieces[..n].iter().flatten() {
+        // One piece at a time: carved out of the list, then its pages freed
+        // (no list-sized copy on the kernel stack).
+        while let Some(piece) = space.carve_next(&mut self.region_pages(), start, len)? {
+            let p = &piece;
             // Compressed pages first: free their copies, in bounded batches.
             let end = p.start + p.len;
             let mut at = p.start;
@@ -991,7 +1108,7 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         len: u32,
         prot: Prot,
     ) -> Result<(), SpaceError> {
-        space.protect(start, len, prot)?;
+        space.protect(&mut self.region_pages(), start, len, prot)?;
         // Downgrades take effect now; upgrades happen lazily through faults,
         // which keeps copy-on-write correct with no extra bookkeeping. Only
         // permissions change: each page keeps its cache policy.
@@ -1064,23 +1181,21 @@ fn reclaimable(r: &Region) -> bool {
     !matches!(r.backing, Backing::Phys { .. }) && !r.prot.is_pinned()
 }
 
-/// The first reclaimable page at or after `hand`, wrapping to the lowest.
-fn next_reclaimable(space: &AddressSpace, hand: u32) -> Option<u32> {
+/// The first reclaimable page at or after `hand`, wrapping to the lowest:
+/// a binary search to `hand`, then forward to the first reclaimable region.
+fn next_reclaimable(space: &AddressSpace, rp: &mut impl RegionPages, hand: u32) -> Option<u32> {
     let page = hand & !(PAGE - 1);
-    let mut next = None::<u32>;
-    let mut lowest = None::<u32>;
-    for r in space.regions().filter(|r| reclaimable(r)) {
-        if r.start <= page && page - r.start < r.len {
-            return Some(page);
-        }
-        if r.start > page && next.is_none_or(|n| r.start < n) {
-            next = Some(r.start);
-        }
-        if lowest.is_none_or(|l| r.start < l) {
-            lowest = Some(r.start);
-        }
-    }
-    next.or(lowest)
+    let n = space.region_count();
+    let from = space.first_ending_after(rp, page);
+    (from..n).chain(0..from).find_map(|i| {
+        let r = space.list.get(rp, i);
+        let at = if i == from && r.start <= page {
+            page
+        } else {
+            r.start
+        };
+        reclaimable(&r).then_some(at)
+    })
 }
 
 fn release_page<F: FrameAlloc, C: PageCache>(
@@ -1191,6 +1306,14 @@ mod tests {
             }
         }
 
+        /// Region-list pages, from the same frames the Vm uses.
+        fn rp(&mut self) -> KernelPages<'_, Ram, Frames<512>> {
+            KernelPages {
+                mem: &mut self.ram,
+                frames: &mut self.frames,
+            }
+        }
+
         /// First word of the page `mva` maps to, if any.
         fn peek(&mut self, mva: u32) -> Option<u32> {
             let (phys, _) = self.tables.translate(&mut self.ram, mva)?;
@@ -1247,7 +1370,8 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::RW, false))
+            .unwrap();
         let first = access_for(crate::arm::FaultKind::Translation, false).unwrap();
         assert_eq!(w.vm().handle_fault(&s, a, first), Ok(Outcome::Mapped));
         let second = access_for(crate::arm::FaultKind::Permission, false).unwrap();
@@ -1257,7 +1381,8 @@ mod tests {
         );
         // And a write to an unmapped page of a read-only region ends as a
         // protection error, after the same two steps.
-        s.map(zero(a + 0x1000, 0x1000, Prot::R)).unwrap();
+        s.map(&mut w.rp(), zero(a + 0x1000, 0x1000, Prot::R))
+            .unwrap();
         assert_eq!(
             w.vm().handle_fault(&s, a + 0x1000, first),
             Ok(Outcome::Mapped)
@@ -1273,7 +1398,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x3000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x3000, Prot::RW)).unwrap();
         for k in 0..3 {
             w.vm()
                 .handle_fault(&s, a + k * 0x1000, Access::Write)
@@ -1327,8 +1452,9 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x2000, Prot::RW)).unwrap();
-        s.map(file(a + 0x2000, 0x1000, Prot::R, false)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x2000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), file(a + 0x2000, 0x1000, Prot::R, false))
+            .unwrap();
         assert_eq!(w.vm().compress(&s, a), Ok(false), "not mapped yet");
         w.vm().handle_fault(&s, a, Access::Write).unwrap();
         w.vm().handle_fault(&s, a + 0x2000, Access::Read).unwrap();
@@ -1353,66 +1479,79 @@ mod tests {
 
     #[test]
     fn policy_w_x_and_shared_writes() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
         assert_eq!(
-            s.map(zero(base() + 0x10000, 0x1000, Prot::RWX)),
+            s.map(&mut rp, zero(base() + 0x10000, 0x1000, Prot::RWX)),
             Err(SpaceError::WriteExec)
         );
         assert_eq!(
-            s.map(file(base() + 0x10000, 0x1000, Prot::RW, true)),
+            s.map(&mut rp, file(base() + 0x10000, 0x1000, Prot::RW, true)),
             Err(SpaceError::SharedWriteNotGlobal)
         );
         // Read-only shared file mappings are fine anywhere.
-        s.map(file(base() + 0x10000, 0x1000, Prot::R, true))
+        s.map(&mut rp, file(base() + 0x10000, 0x1000, Prot::R, true))
             .unwrap();
         // Legacy opt-in.
         s.allow_write_exec();
-        s.map(zero(base() + 0x20000, 0x1000, Prot::RWX)).unwrap();
+        s.map(&mut rp, zero(base() + 0x20000, 0x1000, Prot::RWX))
+            .unwrap();
         // The shared area accepts shared writable mappings.
         let mut g = AddressSpace::shared(1);
-        g.map(file(layout::SHARED_BASE, 0x2000, Prot::RW, true))
+        g.map(&mut rp, file(layout::SHARED_BASE, 0x2000, Prot::RW, true))
             .unwrap();
     }
 
     #[test]
     fn ranges_must_fit_the_window_and_not_overlap() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
         assert_eq!(
-            s.map(zero(base() + 1, 0x1000, Prot::RW)),
-            Err(SpaceError::BadRange)
-        );
-        assert_eq!(s.map(zero(base(), 0, Prot::RW)), Err(SpaceError::BadRange));
-        assert_eq!(
-            s.map(zero(base() + layout::SLOT_SIZE - 0x1000, 0x2000, Prot::RW)),
+            s.map(&mut rp, zero(base() + 1, 0x1000, Prot::RW)),
             Err(SpaceError::BadRange)
         );
         assert_eq!(
-            s.map(zero(base() - 0x1000, 0x1000, Prot::RW)),
+            s.map(&mut rp, zero(base(), 0, Prot::RW)),
             Err(SpaceError::BadRange)
         );
-        s.map(zero(base() + 0x10000, 0x4000, Prot::RW)).unwrap();
         assert_eq!(
-            s.map(zero(base() + 0x13000, 0x1000, Prot::RW)),
+            s.map(
+                &mut rp,
+                zero(base() + layout::SLOT_SIZE - 0x1000, 0x2000, Prot::RW)
+            ),
+            Err(SpaceError::BadRange)
+        );
+        assert_eq!(
+            s.map(&mut rp, zero(base() - 0x1000, 0x1000, Prot::RW)),
+            Err(SpaceError::BadRange)
+        );
+        s.map(&mut rp, zero(base() + 0x10000, 0x4000, Prot::RW))
+            .unwrap();
+        assert_eq!(
+            s.map(&mut rp, zero(base() + 0x13000, 0x1000, Prot::RW)),
             Err(SpaceError::Overlap)
         );
-        s.map(zero(base() + 0x14000, 0x1000, Prot::RW)).unwrap();
-        let starts: Vec<_> = s.regions().map(|r| r.start).collect();
+        s.map(&mut rp, zero(base() + 0x14000, 0x1000, Prot::RW))
+            .unwrap();
+        let starts: Vec<_> = s.regions(&mut rp).map(|r| r.start).collect();
         assert_eq!(starts, [base() + 0x10000, base() + 0x14000]);
     }
 
     #[test]
     fn carve_splits_and_keeps_file_offsets() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
-        s.map(file(base() + 0x10000, 0x4000, Prot::R, false))
+        s.map(&mut rp, file(base() + 0x10000, 0x4000, Prot::R, false))
             .unwrap();
         let mut cut = Vec::new();
-        s.carve(base() + 0x11000, 0x2000, |r| cut.push(*r)).unwrap();
+        s.carve(&mut rp, base() + 0x11000, 0x2000, |r| cut.push(*r))
+            .unwrap();
         assert_eq!(cut.len(), 1);
         assert!(matches!(
             cut[0].backing,
             Backing::File { offset: 0x4000, .. }
         ));
-        let left: Vec<_> = s.regions().copied().collect();
+        let left: Vec<_> = s.regions(&mut rp).collect();
         assert_eq!(left.len(), 2);
         assert_eq!((left[0].start, left[0].len), (base() + 0x10000, 0x1000));
         assert_eq!((left[1].start, left[1].len), (base() + 0x13000, 0x1000));
@@ -1422,37 +1561,232 @@ mod tests {
         ));
     }
 
+    /// Every page of the space as (page, prot, backing of that page), for
+    /// comparing against the model.
+    fn pages_of(s: &AddressSpace, rp: &mut impl RegionPages) -> Vec<(u32, Prot, Backing)> {
+        let mut v = Vec::new();
+        for r in s.regions(rp) {
+            for k in 0..r.len / PAGE {
+                let p = r.slice(r.start + k * PAGE, PAGE);
+                v.push((p.start, p.prot, p.backing));
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn region_operations_match_a_page_model_and_fail_atomically() {
+        // Running out of memory only bites when a list page is full, so the
+        // list starts a little short of a page boundary (several distances),
+        // with filler regions far from where the operations happen.
+        for short in [40, 25, 12, 4] {
+            model_run(crate::regions::PER_PAGE - short, 8_000);
+        }
+    }
+
+    fn model_run(filler: usize, steps: u32) {
+        use crate::regions::tests::HeapPages;
+        use std::collections::BTreeMap;
+        let mut rp = HeapPages::default();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let far = base() + 0x100_0000;
+        for k in 0..filler as u32 {
+            s.map(&mut rp, zero(far + k * 2 * PAGE, PAGE, Prot::R))
+                .unwrap();
+        }
+        let fillers: Vec<_> = pages_of(&s, &mut rp);
+        // The model: page -> (prot, backing of that page).
+        let mut model: BTreeMap<u32, (Prot, Backing)> = BTreeMap::new();
+        let mut x = 0x9E37_79B9u32;
+        let mut rnd = move || {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            x
+        };
+        let window = 512; // pages, so operations collide often
+        let mut refused = 0;
+        for step in 0..steps {
+            // Now and then, memory runs out: whatever fails must change
+            // nothing.
+            rp.limit = (step % 7 == 3).then_some(rp.in_use());
+            let start = base() + (rnd() % window) * PAGE;
+            let len = (1 + rnd() % 24) * PAGE;
+            let before = pages_of(&s, &mut rp);
+            let prot = [Prot::R, Prot::RW, Prot::RX, Prot::NONE][rnd() as usize % 4];
+            match rnd() % 3 {
+                0 => {
+                    let r = if rnd() % 2 == 0 {
+                        zero(start, len, prot)
+                    } else {
+                        file(start, len, prot, false)
+                    };
+                    let free = (0..len / PAGE).all(|k| !model.contains_key(&(start + k * PAGE)));
+                    match s.map(&mut rp, r) {
+                        Ok(()) => {
+                            assert!(free, "mapped over existing pages");
+                            for k in 0..len / PAGE {
+                                let p = r.slice(start + k * PAGE, PAGE);
+                                model.insert(p.start, (p.prot, p.backing));
+                            }
+                        }
+                        Err(SpaceError::Overlap) => assert!(!free),
+                        Err(SpaceError::NoMemory) => assert!(rp.limit.is_some()),
+                        Err(e) => panic!("map: {e:?}"),
+                    }
+                }
+                1 => {
+                    let mut cut = Vec::new();
+                    match s.carve(&mut rp, start, len, |p| cut.push(*p)) {
+                        Ok(()) => {
+                            for k in 0..len / PAGE {
+                                model.remove(&(start + k * PAGE));
+                            }
+                            // The pieces handed out are exactly what was there.
+                            let mut got: Vec<_> = Vec::new();
+                            for p in &cut {
+                                for k in 0..p.len / PAGE {
+                                    let q = p.slice(p.start + k * PAGE, PAGE);
+                                    got.push((q.start, q.prot, q.backing));
+                                }
+                            }
+                            let want: Vec<_> = before
+                                .iter()
+                                .filter(|(a, ..)| (start..start + len).contains(a))
+                                .copied()
+                                .collect();
+                            assert_eq!(got, want);
+                        }
+                        // Only a middle hole needs memory, and it is the
+                        // first piece: nothing was handed out.
+                        Err(SpaceError::NoMemory) => assert!(cut.is_empty()),
+                        Err(e) => panic!("carve: {e:?}"),
+                    }
+                }
+                _ => {
+                    let covered = (0..len / PAGE).all(|k| model.contains_key(&(start + k * PAGE)));
+                    match s.protect(&mut rp, start, len, prot) {
+                        Ok(()) => {
+                            assert!(covered);
+                            for k in 0..len / PAGE {
+                                model.get_mut(&(start + k * PAGE)).unwrap().0 = prot;
+                            }
+                        }
+                        Err(SpaceError::BadRange) => assert!(!covered),
+                        Err(SpaceError::NoMemory) => assert!(rp.limit.is_some()),
+                        Err(e) => panic!("protect: {e:?}"),
+                    }
+                }
+            }
+            if rp.limit.is_some() && pages_of(&s, &mut rp) == before {
+                refused += 1;
+            }
+            rp.limit = None;
+            let now = pages_of(&s, &mut rp);
+            let mut want: Vec<_> = model.iter().map(|(&a, &(p, b))| (a, p, b)).collect();
+            want.extend_from_slice(&fillers);
+            assert_eq!(now, want, "step {step}");
+            // Sorted, disjoint, and every lookup agrees.
+            let rs: Vec<Region> = s.regions(&mut rp).collect();
+            assert!(rs.windows(2).all(|w| w[0].end() <= u64::from(w[1].start)));
+            if let Some(r) = rs.get(rnd() as usize % rs.len().max(1)) {
+                assert_eq!(s.find(&mut rp, r.start + r.len - 1), Some(*r));
+            }
+        }
+        assert!(refused > 0, "the out-of-memory paths never ran");
+        s.reset_process(&mut rp, SLOT, 2);
+        assert_eq!(rp.in_use(), 0, "every region page back");
+    }
+
+    #[test]
+    fn far_more_regions_than_the_old_fixed_table() {
+        // ADR-0019: a VirtualAlloc-heavy legacy app keeps hundreds of
+        // reservations. 1000 regions: 5 kernel pages, found by binary search,
+        // all given back when the process ends.
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        for k in 0..1000u32 {
+            s.map(&mut w.rp(), zero(base() + k * 0x2000, 0x1000, Prot::RW))
+                .unwrap();
+        }
+        assert_eq!(s.region_count(), 1000);
+        assert_eq!(
+            s.region_pages(),
+            1000usize.div_ceil(crate::regions::PER_PAGE)
+        );
+        assert_eq!(w.frames.free_frames(), 512 - s.region_pages());
+        let mid = base() + 777 * 0x2000;
+        assert_eq!(s.find(&mut w.rp(), mid + 0xFFF).map(|r| r.start), Some(mid));
+        assert_eq!(s.find(&mut w.rp(), mid + 0x1000), None, "the gap");
+        w.vm().handle_fault(&s, mid, Access::Write).unwrap();
+        w.vm().unmap(&mut s, base(), 1000 * 0x2000).unwrap();
+        assert_eq!(s.region_count(), 0);
+        assert_eq!(s.region_pages(), 0);
+        assert_eq!(w.frames.free_frames(), 512, "no page left behind");
+    }
+
+    #[test]
+    fn region_pages_are_wiped_before_they_go_back() {
+        // A freed list page can become another process's memory: it must not
+        // carry this one's layout.
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        s.map(&mut w.rp(), zero(base() + 0x10000, 0x1000, Prot::RW))
+            .unwrap();
+        let page = {
+            let mut rp = w.rp();
+            let (i, _) = s.list.find(&mut rp, base() + 0x10000).unwrap();
+            assert_eq!(i, 0);
+            s.list.page_of(0)
+        };
+        assert!(w.ram.page(page).iter().any(|&x| x != 0));
+        s.reset_process(&mut w.rp(), SLOT, 2);
+        assert!(w.ram.page(page).iter().all(|&x| x == 0));
+    }
+
     #[test]
     fn carve_is_atomic_when_full() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
         for i in 0..MAX_REGIONS as u32 {
-            s.map(zero(base() + 0x10000 + i * 0x4000, 0x3000, Prot::RW))
-                .unwrap();
+            s.map(
+                &mut rp,
+                zero(base() + 0x10000 + i * 0x4000, 0x3000, Prot::RW),
+            )
+            .unwrap();
         }
         // Punching a hole would need one region too many.
         assert_eq!(
-            s.carve(base() + 0x11000, 0x1000, |_| panic!("must not cut")),
+            s.carve(&mut rp, base() + 0x11000, 0x1000, |_| panic!(
+                "must not cut"
+            )),
             Err(SpaceError::TooManyRegions)
         );
-        assert_eq!(s.regions().count(), MAX_REGIONS);
+        assert_eq!(s.regions(&mut rp).count(), MAX_REGIONS);
     }
 
     #[test]
     fn protect_splits_regions() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
-        s.map(zero(base() + 0x10000, 0x3000, Prot::RW)).unwrap();
-        s.protect(base() + 0x11000, 0x1000, Prot::R).unwrap();
-        let p: Vec<_> = s.regions().map(|r| (r.start - base(), r.prot)).collect();
+        s.map(&mut rp, zero(base() + 0x10000, 0x3000, Prot::RW))
+            .unwrap();
+        s.protect(&mut rp, base() + 0x11000, 0x1000, Prot::R)
+            .unwrap();
+        let p: Vec<_> = s
+            .regions(&mut rp)
+            .map(|r| (r.start - base(), r.prot))
+            .collect();
         assert_eq!(
             p,
             [(0x10000, Prot::RW), (0x11000, Prot::R), (0x12000, Prot::RW)]
         );
         assert_eq!(
-            s.protect(base() + 0x12000, 0x2000, Prot::R),
+            s.protect(&mut rp, base() + 0x12000, 0x2000, Prot::R),
             Err(SpaceError::BadRange)
         );
         assert_eq!(
-            s.protect(base() + 0x10000, 0x1000, Prot::RWX),
+            s.protect(&mut rp, base() + 0x10000, 0x1000, Prot::RWX),
             Err(SpaceError::WriteExec)
         );
     }
@@ -1462,7 +1796,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x2000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x2000, Prot::RW)).unwrap();
         assert_eq!(w.peek(a), None, "nothing mapped up front");
         assert_eq!(
             w.vm().handle_fault(&s, a + 0x123, Access::Write),
@@ -1482,7 +1816,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x1000, Prot::R)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x1000, Prot::R)).unwrap();
         assert_eq!(
             w.vm().handle_fault(&s, a, Access::Write),
             Err(FaultError::Protection)
@@ -1509,8 +1843,10 @@ mod tests {
         let mut p1 = AddressSpace::process(5, 2);
         let mut p2 = AddressSpace::process(6, 3);
         let (b1, b2) = (layout::slot_base(5), layout::slot_base(6));
-        p1.map(file(b1 + 0x10000, 0x1000, Prot::RX, false)).unwrap();
-        p2.map(file(b2 + 0x40000, 0x1000, Prot::RX, false)).unwrap();
+        p1.map(&mut w.rp(), file(b1 + 0x10000, 0x1000, Prot::RX, false))
+            .unwrap();
+        p2.map(&mut w.rp(), file(b2 + 0x40000, 0x1000, Prot::RX, false))
+            .unwrap();
         w.vm()
             .handle_fault(&p1, b1 + 0x10000, Access::Exec)
             .unwrap();
@@ -1527,8 +1863,8 @@ mod tests {
             "offset 0x3000 = page 3"
         );
         // Only page-table frames came from the allocator (two megabytes, one
-        // slab frame).
-        assert_eq!(w.frames.free_frames(), 512 - 1);
+        // slab frame), plus each space's one region-list page.
+        assert_eq!(w.frames.free_frames(), 512 - 1 - 2);
     }
 
     #[test]
@@ -1536,7 +1872,8 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::RW, false))
+            .unwrap();
         w.vm().handle_fault(&s, a, Access::Read).unwrap();
         let (shared, attrs) = w.tables.translate(&mut w.ram, a).unwrap();
         assert!(shared >= CACHE_PHYS);
@@ -1561,7 +1898,8 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::RW, false))
+            .unwrap();
         assert_eq!(
             w.vm().handle_fault(&s, a, Access::Write),
             Ok(Outcome::Mapped)
@@ -1577,8 +1915,9 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x3000, Prot::RW)).unwrap();
-        s.map(file(a + 0x3000, 0x2000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x3000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), file(a + 0x3000, 0x2000, Prot::RW, false))
+            .unwrap();
         for off in [0, 0x1000, 0x2000] {
             w.vm().handle_fault(&s, a + off, Access::Write).unwrap();
         }
@@ -1592,7 +1931,7 @@ mod tests {
             "zero pages, copy and table freed"
         );
         assert_eq!(w.cache.total_refs(), 0, "cache reference dropped");
-        assert_eq!(s.regions().count(), 0);
+        assert_eq!(s.regions(&mut w.rp()).count(), 0);
     }
 
     #[test]
@@ -1601,7 +1940,7 @@ mod tests {
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10_0000;
         let pages = 300u32; // more than any fixed batch
-        s.map(zero(a, pages * 4096, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, pages * 4096, Prot::RW)).unwrap();
         for i in 0..pages {
             w.vm()
                 .handle_fault(&s, a + i * 4096, Access::Write)
@@ -1616,7 +1955,8 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x2000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x2000, Prot::RW, false))
+            .unwrap();
         w.vm().handle_fault(&s, a, Access::Read).unwrap();
         w.vm().prepare_user_write(&s, a + 0x800, 0x1000).unwrap();
         for off in [0, 0x1000] {
@@ -1625,7 +1965,8 @@ mod tests {
         }
         assert_eq!(w.cache.total_refs(), 0);
         // Read-only memory can't be written by the kernel on the user's behalf.
-        s.map(zero(a + 0x2000, 0x1000, Prot::R)).unwrap();
+        s.map(&mut w.rp(), zero(a + 0x2000, 0x1000, Prot::R))
+            .unwrap();
         assert_eq!(
             w.vm().prepare_user_write(&s, a + 0x2000, 4),
             Err(FaultError::Protection)
@@ -1637,7 +1978,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x1000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x1000, Prot::RW)).unwrap();
         w.vm().handle_fault(&s, a, Access::Write).unwrap();
         w.mmu.0.clear();
         w.vm().protect(&mut s, a, 0x1000, Prot::R).unwrap();
@@ -1657,7 +1998,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x1000, Prot::R, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::R, false)).unwrap();
         w.cache.fail = true;
         assert_eq!(
             w.vm().handle_fault(&s, a, Access::Read),
@@ -1666,7 +2007,7 @@ mod tests {
         // Out of frames: the zero page can't be allocated.
         let mut empty = Frames::<512>::new();
         let mut s2 = AddressSpace::process(6, 3);
-        s2.map(zero(layout::slot_base(6), 0x1000, Prot::RW))
+        s2.map(&mut w.rp(), zero(layout::slot_base(6), 0x1000, Prot::RW))
             .unwrap();
         let mut vm = Vm {
             tables: &mut w.tables,
@@ -1681,6 +2022,9 @@ mod tests {
             vm.handle_fault(&s2, layout::slot_base(6), Access::Write),
             Err(FaultError::NoMemory)
         );
+        // Ending both processes gives their region-list pages back too.
+        s.reset_process(&mut w.rp(), SLOT, 2);
+        s2.reset_process(&mut w.rp(), 6, 3);
         assert_eq!(w.frames.free_frames(), 512);
     }
 
@@ -1700,7 +2044,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x4000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x4000, Prot::RW)).unwrap();
         resident(&mut w, &s, a, 4);
         let free0 = w.frames.free_frames();
         // First sweep: everything is aged, nothing freed yet.
@@ -1750,8 +2094,9 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x2000, Prot::R, false)).unwrap();
-        s.map(file(a + 0x2000, 0x1000, Prot::R, true)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x2000, Prot::R, false)).unwrap();
+        s.map(&mut w.rp(), file(a + 0x2000, 0x1000, Prot::R, true))
+            .unwrap();
         for k in 0..3 {
             w.vm()
                 .handle_fault(&s, a + k * 0x1000, Access::Read)
@@ -1777,7 +2122,8 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(file(a, 0x1000, Prot::RW, false)).unwrap();
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::RW, false))
+            .unwrap();
         w.vm().handle_fault(&s, a, Access::Write).unwrap(); // copied
         let mut hand = a;
         w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
@@ -1797,17 +2143,21 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(Region {
-            start: a,
-            len: 0x2000,
-            prot: Prot::RW,
-            backing: Backing::Phys {
-                base: 0x4400_0000,
-                cache: crate::arm::Cache::Device,
+        s.map(
+            &mut w.rp(),
+            Region {
+                start: a,
+                len: 0x2000,
+                prot: Prot::RW,
+                backing: Backing::Phys {
+                    base: 0x4400_0000,
+                    cache: crate::arm::Cache::Device,
+                },
             },
-        })
+        )
         .unwrap();
-        s.map(zero(a + 0x8000, 0x4000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a + 0x8000, 0x4000, Prot::RW))
+            .unwrap();
         w.vm().handle_fault(&s, a, Access::Read).unwrap();
         resident(&mut w, &s, a + 0x8000, 4);
         // The hand starts in the device window: it jumps to the next
@@ -1824,6 +2174,9 @@ mod tests {
         assert_eq!(hand, a + 0x9000, "wrapped to the region's first page");
         // It stops once it freed what was asked for.
         let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        s.map(&mut w.rp(), zero(a + 0x8000, 0x4000, Prot::RW))
+            .unwrap();
         resident(&mut w, &s, a + 0x8000, 4);
         let mut hand = a + 0x8000;
         w.vm().reclaim(&s, &mut hand, 4, u32::MAX).unwrap();
@@ -1840,7 +2193,7 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x1000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x1000, Prot::RW)).unwrap();
         resident(&mut w, &s, a, 1);
         let mut hand = a;
         w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
@@ -1859,23 +2212,25 @@ mod tests {
 
     #[test]
     fn a_record_is_reused_in_place_for_another_process() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
-        s.map(zero(base() + 0x10000, 0x1000, Prot::RW)).unwrap();
+        s.map(&mut rp, zero(base() + 0x10000, 0x1000, Prot::RW))
+            .unwrap();
         s.allow_write_exec();
-        s.reset_process(9, 4);
-        assert_eq!(s.regions().count(), 0);
+        s.reset_process(&mut rp, 9, 4);
+        assert_eq!(s.regions(&mut rp).count(), 0);
         assert_eq!(s.domain(), 4);
         // Its window is slot 9's now, and W^X is back.
         let b9 = layout::slot_base(9);
         assert_eq!(
-            s.map(zero(base() + 0x10000, 0x1000, Prot::RW)),
+            s.map(&mut rp, zero(base() + 0x10000, 0x1000, Prot::RW)),
             Err(SpaceError::BadRange)
         );
         assert_eq!(
-            s.map(zero(b9 + 0x10000, 0x1000, Prot::RWX)),
+            s.map(&mut rp, zero(b9 + 0x10000, 0x1000, Prot::RWX)),
             Err(SpaceError::WriteExec)
         );
-        assert!(s.map(zero(b9 + 0x10000, 0x1000, Prot::RW)).is_ok());
+        assert!(s.map(&mut rp, zero(b9 + 0x10000, 0x1000, Prot::RW)).is_ok());
     }
 
     #[test]
@@ -1883,8 +2238,10 @@ mod tests {
         let mut w = World::new();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
-        s.map(zero(a, 0x2000, Prot::RW.pinned())).unwrap();
-        s.map(zero(a + 0x2000, 0x2000, Prot::RW)).unwrap();
+        s.map(&mut w.rp(), zero(a, 0x2000, Prot::RW.pinned()))
+            .unwrap();
+        s.map(&mut w.rp(), zero(a + 0x2000, 0x2000, Prot::RW))
+            .unwrap();
         // Populating loads the pinned pages now: no fault later.
         assert_eq!(w.vm().populate(&s, a, 0x2000), Ok(2));
         assert_eq!(w.vm().populate(&s, a, 0x2000), Ok(0), "already there");
@@ -1906,28 +2263,29 @@ mod tests {
 
     #[test]
     fn pinning_is_limited_and_survives_protect() {
+        let mut rp = crate::regions::tests::HeapPages::default();
         let mut s = AddressSpace::process(SLOT, 2);
         let a = base() + 0x10000;
         let limit = DEFAULT_PIN_LIMIT;
         assert_eq!(
-            s.map(zero(a, limit + 0x1000, Prot::RW.pinned())),
+            s.map(&mut rp, zero(a, limit + 0x1000, Prot::RW.pinned())),
             Err(SpaceError::PinLimit)
         );
-        s.map(zero(a, limit, Prot::RW.pinned())).unwrap();
-        assert_eq!(s.pinned_bytes(), u64::from(limit));
+        s.map(&mut rp, zero(a, limit, Prot::RW.pinned())).unwrap();
+        assert_eq!(s.pinned_bytes(&mut rp), u64::from(limit));
         // More pinning is refused, by map or by protect.
         let b = a + limit;
-        s.map(zero(b, 0x1000, Prot::RW)).unwrap();
+        s.map(&mut rp, zero(b, 0x1000, Prot::RW)).unwrap();
         assert_eq!(
-            s.protect(b, 0x1000, Prot::R.pinned()),
+            s.protect(&mut rp, b, 0x1000, Prot::R.pinned()),
             Err(SpaceError::PinLimit)
         );
         // Changing a pinned region's permissions keeps it pinned.
-        s.protect(a, 0x1000, Prot::R).unwrap();
-        assert!(s.find(a).unwrap().prot.is_pinned());
-        assert_eq!(s.pinned_bytes(), u64::from(limit));
+        s.protect(&mut rp, a, 0x1000, Prot::R).unwrap();
+        assert!(s.find(&mut rp, a).unwrap().prot.is_pinned());
+        assert_eq!(s.pinned_bytes(&mut rp), u64::from(limit));
         // The kernel can raise a trusted service's limit.
         s.set_pin_limit(limit + 0x1000);
-        assert!(s.protect(b, 0x1000, Prot::R.pinned()).is_ok());
+        assert!(s.protect(&mut rp, b, 0x1000, Prot::R.pinned()).is_ok());
     }
 }
