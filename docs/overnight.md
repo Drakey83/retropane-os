@@ -759,11 +759,18 @@ on the host or in the emulator first.
       modern kernels do on MMUs without them), compressed instead of
       swapped to slow flash, so no flash wear and no data leaves RAM.
 
-43. **A whole-OS memory budget** (owner's question, 2026-10-12): a
-    top-down budget for the device (kernel, services, driver hosts, shell,
-    and RAM left for apps: at least what Windows Mobile leaves, ~52 MB of
-    64), in `docs/memory-budget.md`, and an `xtask` check that the per-image
-    budgets add up within it.
+43. **A whole-OS memory budget** (owner's question, 2026-10-12): **done.**
+    `docs/memory-budget.md`: the 64 MiB split top-down, the OS's eight
+    parts at most 12 MiB together, apps at least 52 MiB (what Windows
+    Mobile leaves on the owner's X51v). `xtask cross` (so CI) checks it on
+    every build (`check_allotments`): parts plus the apps' floor fit the
+    device, each OS image counts in full against one part, a part's images
+    fit its share; a unit test covers each failure. The kernel image's
+    budgets use ~185 KiB of its 1 MiB part. No emulator test: it is a build
+    check, and the build fails without it.
+    - **Iterate:** WM never published a budget; this one is checked.
+    - **Modernize:** the apps' floor is fixed and parts trade only among
+      themselves, so OS growth has to be paid for inside the OS.
 
 42. **Service manager and driver hosts** (ADR-0016 step 3): a first user
     process that owns the port table and starts hosts per driver class;
