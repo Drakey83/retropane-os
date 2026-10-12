@@ -71,6 +71,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-crash"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-drv-cpld"
 version = "0.0.0"
 dependencies = [

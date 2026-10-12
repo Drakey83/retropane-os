@@ -109,6 +109,12 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 70 * 1024,
         max_zero: 20 * 1024,
     },
+    // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
+    Budget {
+        image: "rp-crash",
+        max_load: 8 * 1024,
+        max_zero: 20 * 1024,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
@@ -116,9 +122,11 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
     },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
+    // Ratcheted 16 -> 18 KiB on 2026-10-12: the shared crash path (crash
+    // reports marked for the loader, kept on the card); 16.1 KiB measured.
     Budget {
         image: "rp-light",
-        max_load: 16 * 1024,
+        max_load: 18 * 1024,
         max_zero: 20 * 1024,
     },
 ];

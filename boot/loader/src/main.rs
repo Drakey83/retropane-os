@@ -485,14 +485,30 @@ mod image {
         // The previous run's log (an image this loader started, now back):
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
+        let Some(scratch) = devices::take_scratch() else {
+            halt()
+        };
+        let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
         let mut pending = devices::log_take();
         if let Some(run) = &pending {
-            let how = if run.returned {
+            let how = if run.crashed {
+                "CRASHED"
+            } else if run.returned {
                 "returned"
             } else {
                 "did NOT return"
             };
             let _ = writeln!(log, "previous run {how}: {} bytes of log", run.log.len());
+            // A crash or a hang is kept on the card first, so the report
+            // survives whatever happens next (the PC may not be there).
+            if run.crashed || !run.returned {
+                let saved = save_report(&mut lun, run, &mut fat_scratch[..SCRATCH]);
+                let _ = writeln!(
+                    log,
+                    "report {} on the card",
+                    if saved { "saved" } else { "NOT saved" }
+                );
+            }
             send_log(&mut |b| uart_bytes(&mut uart, b), run);
         }
 
@@ -500,10 +516,7 @@ mod image {
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
-        let Some(scratch) = devices::take_scratch() else {
-            halt()
-        };
-        let mut msc = Msc::new(&mut scratch[..MSC_BUF], MSC_SERIAL, 1);
+        let mut msc = Msc::new(msc_buf, MSC_SERIAL, 1);
         udc.set_msc_luns(1);
         // Layout fallback: if the PC keeps trying (bus resets) but never
         // configures the composite device, offer the serial-only layout it
@@ -751,11 +764,25 @@ mod image {
 
     /// The run log, framed for `cargo xtask load`; a run that didn't
     /// return (a hang the watchdog reset) says so before the end marker.
+    /// Keeps a crash or hang report on the card as `crashlog.txt`
+    /// (replaced each time, crash-safe like every card write).
+    #[inline(never)]
+    fn save_report(lun: &mut Lun, run: &devices::PreviousRun, scratch: &mut [u8]) -> bool {
+        let Some(sd) = lun.card.as_mut() else {
+            return false;
+        };
+        let Ok(mut vol) = mount(sd) else { return false };
+        vol.put("crashlog.txt", run.log, scratch).is_ok()
+    }
+
     fn send_log(out: &mut dyn FnMut(&[u8]), run: &devices::PreviousRun) {
         out(b"RPL LOG\r\n");
         out(run.log);
         if run.overflow {
             out(b"\r\n[run log full: later output dropped]");
+        }
+        if run.crashed {
+            out(b"\r\n[the image crashed: report kept on the card as crashlog.txt]");
         }
         if !run.returned {
             out(b"\r\n[the image did not return: it hung and the device was reset]");

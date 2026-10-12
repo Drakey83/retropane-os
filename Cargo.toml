@@ -24,6 +24,7 @@ members = [
     "kernel/fat",
     "boot/hello",
     "boot/light",
+    "boot/crash",
     "boot/usb",
     "boot/reconnect",
     "boot/loadproto",

@@ -168,9 +168,21 @@ nothing writes flash; card writes only through copy-then-swap.
 Each held to the same standard: every improvement that makes sense, tested
 on the host or in the emulator first.
 
-7. **Crash log that survives a reset** (ROADMAP Phase 2): faults and panics
-   written to the reserved log area with a checksum, shown by the loader
-   and sent to the PC at the next start, so a crash is never lost.
+7. **Crash log that survives a reset** (ROADMAP Phase 2): **done.**
+   `devices::crash_to_loader` (one shared path for faults and panics):
+   message into the run log, run marked crashed, straight back to the
+   loader, which keeps the report on the card (`crashlog.txt`, crash-safe
+   write, before anything else) and sends it to the PC; `cargo xtask load`
+   fails with the reason. Hangs (watchdog) are saved the same way. New test
+   image `rp-crash` (6.6 KiB) panics on purpose; `cargo xtask emu` checks
+   the PC report, no watchdog trip, and the file on the card. On the Axim:
+   the panic came back in about a second, report on the PC and the card.
+   - **Iterate:** a crash costs a second instead of a watchdog reset and a
+     trip through Dell's prompt (which needed the owner); one crash path
+     for every image instead of copies; tested end to end.
+   - **Modernize:** crash reports persist and reach the developer by
+     themselves, like modern crash reporting, instead of a photo of the
+     screen.
 8. **Performance suite v1** (ROADMAP): context switch, IRQ latency, memcpy
    bandwidth, in the emulator baseline and on the device via the loader,
    numbers in docs/perf.md.

@@ -356,6 +356,11 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                 if log.iter().any(|l| l.contains("did not return")) {
                     return Err("the image hung: the watchdog reset the device (log above)".into());
                 }
+                if log.iter().any(|l| l.contains("[the image crashed")) {
+                    return Err(
+                        "the image crashed (log above; also on the card as crashlog.txt)".into(),
+                    );
+                }
                 // A probe report: every line's checksum, checked here.
                 let text = log.join("\n");
                 if text.contains("P1|") {

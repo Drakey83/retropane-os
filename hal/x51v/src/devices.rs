@@ -133,7 +133,7 @@ pub const LOG_BASE: usize = 0xA850_0000;
 pub const LOG_SIZE: usize = 64 * 1024;
 const LOG_MAGIC: u32 = u32::from_le_bytes(*b"RPLG");
 /// Header words: magic, bytes used, flags (bit 0 overflow, bit 1 the image
-/// returned to the loader), !magic.
+/// returned to the loader, bit 2 it crashed), !magic.
 const LOG_HEADER: usize = 16;
 const LOG_CAPACITY: usize = LOG_SIZE - LOG_HEADER;
 
@@ -206,6 +206,8 @@ pub struct PreviousRun {
     /// The image came back by itself (finished or crashed); if not, it hung
     /// and the watchdog (or a manual reset) brought the device back.
     pub returned: bool,
+    /// It came back because it crashed (a fault or a panic).
+    pub crashed: bool,
 }
 
 /// Takes the previous run's log (the loader, on start). The log is closed,
@@ -222,6 +224,7 @@ pub fn log_take() -> Option<PreviousRun> {
             log,
             overflow: flags & 1 != 0,
             returned: flags & 2 != 0,
+            crashed: flags & 4 != 0,
         })
     }
 }
@@ -243,6 +246,22 @@ pub fn return_to_loader() {
         // SAFETY: the run log's flags word (valid: checked just above).
         unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 2) };
         rp_hal_pxa27x::handoff::launch(LOADER_BASE as u32);
+    }
+}
+
+/// A crash (fault or panic) in an image the loader started: the message
+/// into the run log, the run marked as crashed, and straight back to the
+/// loader, which sends the report to the PC and keeps it on the card. No
+/// watchdog reset, so no trip through Dell's factory-restore prompt.
+/// Returns only when no loader started this run (the caller then halts).
+#[inline(never)]
+pub fn crash_to_loader(msg: core::fmt::Arguments) {
+    use core::fmt::Write;
+    let _ = writeln!(RunLog, "{msg}");
+    if loader_present() {
+        // SAFETY: the run log's flags word (valid: checked just above).
+        unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 4) };
+        return_to_loader();
     }
 }
 
