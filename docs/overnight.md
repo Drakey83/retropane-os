@@ -587,6 +587,25 @@ on the host or in the emulator first.
     - **Modernize:** card housekeeping from the PC's terminal, with guard
       rails a modern tool has.
 
+## Tenth tier (added 2026-10-12, same rules)
+
+34. **Keys as Windows Mobile programs see them**: **done (emulator).**
+    `rp_drv_pxa_keypad::keys`: each button's public CE virtual-key code
+    (D-pad: arrows and Return; Calendar, Contacts, Mail, Home, Record and
+    the wireless button: `VK_APP1`-`VK_APP6`, numbering "likely", to
+    confirm against the owner's Buttons settings), D-pad auto-repeat
+    (after 500 ms, 20 a second), and WM6's "press and hold" on the program
+    buttons (one Hold after a second; the release marked so the press
+    action doesn't also run). No button gets a job Windows Mobile didn't
+    give it (owner's rule). 4 tests (codes, repeat with a late caller, hold
+    once, independent keys across the clock wrapping). The hello image
+    reports the events; the emulator holds the D-pad (repeats) and
+    Contacts (hold). `rp-hello` budget 22 -> 24 KiB.
+    - **Iterate:** buttons behave as on the owner's Axim, measured in
+      milliseconds, with nothing new to learn.
+    - **Modernize:** press-and-hold and repeat as one tested layer every
+      program gets, instead of each app timing keys itself.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the

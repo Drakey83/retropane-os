@@ -33,6 +33,16 @@ Base `0x41500000`; clock enable `CKEN` bit 19 (clock manager `0x41300004`).
 Column 1 and row 2 aren't used by any known button. Confidence: **likely**
 (working AxDroid keymap). To confirm against Dell's keypad driver.
 
+## As programs see them
+
+`rp_drv_pxa_keypad::keys` gives each button its CE virtual-key code: the
+D-pad `VK_UP`/`VK_DOWN`/`VK_LEFT`/`VK_RIGHT` and `VK_RETURN`; the program
+buttons `VK_APP1` (Calendar), `VK_APP2` (Contacts), `VK_APP3` (Mail),
+`VK_APP4` (Home), `VK_APP5` (Record), `VK_APP6` (wireless). The program
+button numbering follows the usual Windows Mobile order: **likely**, to
+confirm in the owner's Settings, Buttons. The D-pad repeats (500 ms, then
+20 a second); program buttons have "press and hold" (1 s).
+
 ## Emulator mapping (retropane-qemu `x51v`)
 
 Arrow keys and Enter = D-pad; F1 Calendar, F2 Contacts, F3 Mail, F4 Home,

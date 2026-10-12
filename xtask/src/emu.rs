@@ -196,7 +196,7 @@ struct Step {
 const HELLO_STEPS: &[Step] = &[
     Step {
         action: Action::Hmp("sendkey up"),
-        expect: &[Expect::Text("KEY Up down"), Expect::Text("KEY Up up")],
+        expect: &[Expect::Text("KEY Up down vk 26"), Expect::Text("KEY Up up")],
     },
     Step {
         action: Action::Hmp("sendkey ret"),
@@ -211,7 +211,25 @@ const HELLO_STEPS: &[Step] = &[
     },
     Step {
         action: Action::Hmp("sendkey f4"),
-        expect: &[Expect::Text("KEY Home down"), Expect::Text("KEY Home up")],
+        expect: &[
+            Expect::Text("KEY Home down vk c4"),
+            Expect::Text("KEY Home up vk c4"),
+        ],
+    },
+    // Held: the D-pad repeats; a program button gets its press-and-hold.
+    Step {
+        action: Action::Hmp("sendkey down 900"),
+        expect: &[
+            Expect::Text("KEY Down repeat vk 28"),
+            Expect::Text("KEY Down up"),
+        ],
+    },
+    Step {
+        action: Action::Hmp("sendkey f2 1500"),
+        expect: &[
+            Expect::Text("KEY Contacts hold vk c2"),
+            Expect::Text("KEY Contacts up after hold"),
+        ],
     },
     Step {
         action: Action::TouchDown(120, 160),
