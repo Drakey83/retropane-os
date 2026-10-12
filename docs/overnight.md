@@ -485,6 +485,17 @@ on the host or in the emulator first.
     restarts drivers; a service manager hands out ports per policy. Open
     questions for the owner at its end.
 
+## Seventh tier (added 2026-10-12, same rules)
+
+28. **Browse the card from the PC**: `cargo xtask ls [folder]` and
+    `cargo xtask get <file> [local name]` through the loader, read-only,
+    FAT32 or exFAT, with the transfer checked (CRC) end to end.
+29. **Card check** (`card check`): a read-only consistency check of the
+    card's file system, as a modern fsck: FAT32 chains (loops, cross-links,
+    clusters used but marked free, lost clusters), exFAT (files against the
+    allocation bitmap, set checksums), reported, never "fixed" silently; run
+    by the emulator tests after every write test.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
