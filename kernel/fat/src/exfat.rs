@@ -7,7 +7,12 @@
 //! files are read contiguously ("no FAT chain") or through the FAT, with
 //! bytes past the valid data length read as zeros.
 //!
-//! Writing ([`ExVolume::put`], root directory): the allocation bitmap, not
+//! Folders: paths with `/` or `\` (as on FAT32); a folder is stored, as
+//! Windows stores it, in one run of clusters with no FAT chain, or chained
+//! (the root always is). [`ExVolume::mkdir`] zeroes the new folder's
+//! cluster and marks it used before the entry that makes it exist.
+//!
+//! Writing ([`ExVolume::put`]): the allocation bitmap, not
 //! a FAT scan, finds free space, and a file that fits in one free run is
 //! stored with no FAT chain at all (exFAT's contiguous files); only when the
 //! card is too fragmented are clusters chained through the FAT. As on
@@ -67,6 +72,15 @@ pub struct ExFile {
 /// What [`ExVolume::walk_slots`] calls per entry: sector, the sector's
 /// place in the directory, slot, entry; `true` stops the walk.
 type SlotVisit<'a> = dyn FnMut(u32, u32, usize, &[u8; ENTRY]) -> bool + 'a;
+
+/// A directory: its first cluster, and how its clusters follow: one run
+/// of `len` clusters (no FAT chain), or through the FAT (at most `len`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Dir {
+    first: u32,
+    contiguous: bool,
+    len: u32,
+}
 
 /// Where a file's entry set is: its file entry's sector (and that
 /// sector's place in the directory) and slot, and the set itself.
@@ -258,15 +272,38 @@ impl<D: BlockDevice> ExVolume<D> {
         }
     }
 
-    /// Calls `f` with every root-directory entry up to and including the
+    /// The root directory (always chained through the FAT).
+    fn root(&self) -> Dir {
+        Dir {
+            first: self.root_cluster,
+            contiguous: false,
+            len: self.clusters,
+        }
+    }
+
+    /// The cluster after `c` in `dir`, if it has one (`k`: clusters so far).
+    fn dir_next(&mut self, dir: Dir, c: u32, k: u32) -> Result<Option<u32>, Error> {
+        if k + 1 >= dir.len {
+            return if dir.contiguous {
+                Ok(None)
+            } else {
+                Err(Error::Corrupt) // a chain longer than the volume: a loop
+            };
+        }
+        if dir.contiguous {
+            return Ok(Some(c + 1));
+        }
+        self.fat_next(c)
+    }
+
+    /// Calls `f` with every entry of `dir` up to and including the
     /// end-of-directory entry: its sector, that sector's place in the
     /// directory, and its slot. Stops when `f` returns `true`.
     #[inline(never)]
-    fn walk_slots(&mut self, f: &mut SlotVisit<'_>) -> Result<(), Error> {
-        let mut cluster = self.root_cluster;
-        let mut visited = 0u32;
+    fn walk_slots(&mut self, dir: Dir, f: &mut SlotVisit<'_>) -> Result<(), Error> {
+        let mut cluster = dir.first;
         let mut nth = 0u32;
-        loop {
+        for k in 0.. {
             let lba = self.cluster_lba(cluster);
             for s in 0..1u32 << self.cluster_shift {
                 self.dev.read_blocks(lba + s, &mut self.buf)?;
@@ -277,24 +314,19 @@ impl<D: BlockDevice> ExVolume<D> {
                 }
                 nth += 1;
             }
-            visited += 1;
-            match self.fat_next(cluster)? {
-                Some(c) if visited < self.clusters => cluster = c,
-                Some(_) => return Err(Error::Corrupt),
-                None => return Ok(()),
+            match self.dir_next(dir, cluster, k)? {
+                Some(c) => cluster = c,
+                None => break,
             }
         }
+        Ok(())
     }
 
-    /// The directory's `nth` sector, if the directory has that many.
-    fn dir_sector(&mut self, nth: u32) -> Result<Option<u32>, Error> {
-        let mut cluster = self.root_cluster;
-        let hops = nth >> self.cluster_shift;
-        if hops >= self.clusters {
-            return Err(Error::Corrupt);
-        }
-        for _ in 0..hops {
-            match self.fat_next(cluster)? {
+    /// `dir`'s `nth` sector, if the directory has that many.
+    fn dir_sector(&mut self, dir: Dir, nth: u32) -> Result<Option<u32>, Error> {
+        let mut cluster = dir.first;
+        for k in 0..nth >> self.cluster_shift {
+            match self.dir_next(dir, cluster, k)? {
                 Some(c) => cluster = c,
                 None => return Ok(None),
             }
@@ -304,11 +336,12 @@ impl<D: BlockDevice> ExVolume<D> {
         ))
     }
 
-    /// Calls `f` for each root-directory file whose entry set checks out,
-    /// with its name (ASCII; other characters as `?`, cut at [`NAME_MAX`])
-    /// and where its set is; stops when `f` returns `true`.
-    fn walk_root(
+    /// Calls `f` for each file or folder in `dir` whose entry set checks
+    /// out, with its name (ASCII; other characters as `?`, cut at
+    /// [`NAME_MAX`]) and where its set is; stops when `f` returns `true`.
+    fn walk_dir(
         &mut self,
+        dir: Dir,
         f: &mut dyn FnMut(&[u8], &ExFile, &Found) -> bool,
     ) -> Result<(), Error> {
         let mut found = Found {
@@ -322,7 +355,7 @@ impl<D: BlockDevice> ExVolume<D> {
         let mut want = 0usize; // entries still to collect for the set
         let mut seen = 0usize;
         let mut sum = 0u16;
-        self.walk_slots(&mut |lba, nth, slot, e| {
+        self.walk_slots(dir, &mut |lba, nth, slot, e| {
             if e[0] == 0 {
                 return true;
             }
@@ -412,6 +445,7 @@ fn name_hash(name: &[u8]) -> u16 {
 /// entry, the stream extension, the name entries; checksummed.
 fn build_set(
     name: &[u8],
+    attrs: u16,
     first_cluster: u32,
     size: u64,
     contiguous: bool,
@@ -421,7 +455,7 @@ fn build_set(
     let mut set = [[0u8; ENTRY]; KEEP];
     set[0][0] = T_FILE;
     set[0][1] = (1 + names) as u8;
-    set[0][4..6].copy_from_slice(&ATTR_ARCHIVE.to_le_bytes());
+    set[0][4..6].copy_from_slice(&attrs.to_le_bytes());
     set[1][0] = T_STREAM;
     set[1][3] = name.len() as u8;
     set[1][4..6].copy_from_slice(&name_hash(name).to_le_bytes());
@@ -447,31 +481,83 @@ fn set_stream(set: &mut [[u8; ENTRY]], first_cluster: u32, size: u64, contiguous
     st[8..16].copy_from_slice(&size.to_le_bytes());
     st[20..24].copy_from_slice(&first_cluster.to_le_bytes());
     st[24..32].copy_from_slice(&size.to_le_bytes());
-    let attrs = le16(&set[0], 4) | ATTR_ARCHIVE;
-    set[0][4..6].copy_from_slice(&attrs.to_le_bytes());
     let sum = set_checksum(set);
     set[0][2..4].copy_from_slice(&sum.to_le_bytes());
 }
 
 impl<D: BlockDevice> ExVolume<D> {
     /// Calls `f` with each root file's name and details.
-    pub fn for_each_root(&mut self, mut f: impl FnMut(&[u8], &ExFile)) -> Result<(), Error> {
-        self.walk_root(&mut |n, file, _| {
+    pub fn for_each_root(&mut self, f: impl FnMut(&[u8], &ExFile)) -> Result<(), Error> {
+        self.for_each(self.root(), f)
+    }
+
+    /// Calls `f` with the name and details of each entry of the folder
+    /// `path`.
+    pub fn for_each_in(&mut self, path: &str, f: impl FnMut(&[u8], &ExFile)) -> Result<(), Error> {
+        let dir = self.open_dir(path, 0)?;
+        self.for_each(dir, f)
+    }
+
+    fn for_each(&mut self, dir: Dir, mut f: impl FnMut(&[u8], &ExFile)) -> Result<(), Error> {
+        self.walk_dir(dir, &mut |n, file, _| {
             f(n, file);
             false
         })
     }
 
-    /// Finds a root file by name (ASCII, case-insensitive).
-    pub fn find(&mut self, name: &str) -> Result<ExFile, Error> {
-        self.find_set(name).map(|(file, _)| file)
+    /// Finds a file or folder by path (`/` or `\` between names; ASCII,
+    /// case-insensitive).
+    pub fn find(&mut self, path: &str) -> Result<ExFile, Error> {
+        let (dir, leaf) = self.parent_of(path)?;
+        self.find_set(dir, leaf).map(|(file, _)| file)
+    }
+
+    /// The folder `path` names (all of it, less `skip_last` components).
+    #[inline(never)]
+    fn open_dir(&mut self, path: &str, skip_last: usize) -> Result<Dir, Error> {
+        let parts = crate::components(path)?;
+        let n = crate::components(path)?.count();
+        let mut dir = self.root();
+        for name in parts.take(n.saturating_sub(skip_last)) {
+            let (f, _) = self.find_set(dir, name)?;
+            if !f.is_dir {
+                return Err(Error::NotFound);
+            }
+            dir = self.dir_of(&f)?;
+        }
+        Ok(dir)
+    }
+
+    /// The folder an entry describes, checked against the volume.
+    fn dir_of(&self, f: &ExFile) -> Result<Dir, Error> {
+        let cb = self.cluster_bytes() as u64;
+        if !self.valid_cluster(f.first_cluster) || f.size == 0 || !f.size.is_multiple_of(cb) {
+            return Err(Error::Corrupt);
+        }
+        let len = f.size / cb;
+        if len > u64::from(self.clusters)
+            || (f.contiguous && u64::from(f.first_cluster) + len > 2 + u64::from(self.clusters))
+        {
+            return Err(Error::Corrupt);
+        }
+        Ok(Dir {
+            first: f.first_cluster,
+            contiguous: f.contiguous,
+            len: len as u32,
+        })
+    }
+
+    /// The folder holding `path`'s last component, and that component.
+    fn parent_of<'p>(&mut self, path: &'p str) -> Result<(Dir, &'p str), Error> {
+        let leaf = crate::components(path)?.next_back().ok_or(Error::BadName)?;
+        Ok((self.open_dir(path, 1)?, leaf))
     }
 
     #[inline(never)]
-    fn find_set(&mut self, name: &str) -> Result<(ExFile, Found), Error> {
+    fn find_set(&mut self, dir: Dir, name: &str) -> Result<(ExFile, Found), Error> {
         let want = name.as_bytes();
         let mut found = None;
-        self.walk_root(&mut |n, file, at| {
+        self.walk_dir(dir, &mut |n, file, at| {
             let hit = at.whole && n.eq_ignore_ascii_case(want);
             if hit {
                 found = Some((
@@ -491,17 +577,68 @@ impl<D: BlockDevice> ExVolume<D> {
         found.ok_or(Error::NotFound)
     }
 
-    /// Replaces the root file `name`'s contents, or creates it. See the
-    /// module documentation for the write order that makes a power cut
-    /// harmless.
+    /// Creates the folder `path` (its parent must exist): a zeroed cluster
+    /// marked used first, then the entry that makes it exist. An existing
+    /// file or folder of that name is [`Error::Exists`].
     ///
     /// # Panics
     /// If `scratch` is shorter than a sector.
     #[inline(never)]
-    pub fn put(&mut self, name: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+    pub fn mkdir(&mut self, path: &str, scratch: &mut [u8]) -> Result<(), Error> {
         assert!(scratch.len() >= SECTOR, "scratch must hold a sector");
+        let (parent, leaf) = self.parent_of(path)?;
+        crate::check_new_name(leaf.as_bytes())?;
+        match self.find_set(parent, leaf) {
+            Ok(_) => return Err(Error::Exists),
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        let (Some(c), _) = self.scan(2, 1, scratch)? else {
+            return Err(Error::NoRoom);
+        };
+        self.set_dirty(true)?;
+        let zero = &mut scratch[..SECTOR];
+        zero.fill(0);
+        let lba = self.cluster_lba(c);
+        for s in 0..1u32 << self.cluster_shift {
+            self.dev.write_blocks(lba + s, zero)?;
+        }
+        self.mark(c, 1, true)?;
+        let cb = self.cluster_bytes() as u64;
+        let (set, count) = build_set(leaf.as_bytes(), ATTR_DIRECTORY, c, cb, true);
+        self.add_set(parent, &set[..count])?;
+        if !self.was_dirty {
+            self.set_dirty(false)?;
+        }
+        Ok(())
+    }
+
+    /// Replaces `path`'s contents, or creates it (and any missing parent
+    /// folders, like `mkdir -p`). See the module documentation for the
+    /// write order that makes a power cut harmless.
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    #[inline(never)]
+    pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        assert!(scratch.len() >= SECTOR, "scratch must hold a sector");
+        let (dir, name) = match self.parent_of(path) {
+            Err(Error::NotFound) => {
+                let mut parts = crate::components(path)?;
+                parts.next_back();
+                for d in parts {
+                    let end = d.as_ptr() as usize - path.as_ptr() as usize + d.len();
+                    match self.mkdir(&path[..end], scratch) {
+                        Ok(()) | Err(Error::Exists) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                self.parent_of(path)?
+            }
+            r => r?,
+        };
         crate::check_new_name(name.as_bytes())?;
-        let old = match self.find_set(name) {
+        let old = match self.find_set(dir, name) {
             Ok((file, _)) if file.is_dir => return Err(Error::Exists),
             Ok(found) => Some(found),
             Err(Error::NotFound) => None,
@@ -522,6 +659,8 @@ impl<D: BlockDevice> ExVolume<D> {
                 // The swap: file and stream entries share this sector (and
                 // the whole set is known, for its checksum).
                 let mut set = at.set;
+                let attrs = le16(&set[0], 4) | ATTR_ARCHIVE; // changed
+                set[0][4..6].copy_from_slice(&attrs.to_le_bytes());
                 set_stream(
                     &mut set[..at.count],
                     written.first_cluster,
@@ -544,22 +683,24 @@ impl<D: BlockDevice> ExVolume<D> {
                 // deleted (a cut between leaves both, both whole).
                 let (set, count) = build_set(
                     name.as_bytes(),
+                    ATTR_ARCHIVE,
                     written.first_cluster,
                     size,
                     written.contiguous,
                 );
-                self.add_set(&set[..count])?;
-                self.delete_set(&at)?;
+                self.add_set(dir, &set[..count])?;
+                self.delete_set(dir, &at)?;
                 self.release(&file)?;
             }
             None => {
                 let (set, count) = build_set(
                     name.as_bytes(),
+                    ATTR_ARCHIVE,
                     written.first_cluster,
                     size,
                     written.contiguous,
                 );
-                self.add_set(&set[..count])?;
+                self.add_set(dir, &set[..count])?;
             }
         }
         if !self.was_dirty {
@@ -592,7 +733,7 @@ impl<D: BlockDevice> ExVolume<D> {
             return Ok(b);
         }
         let mut entry = None;
-        self.walk_slots(&mut |_, _, _, e| {
+        self.walk_slots(self.root(), &mut |_, _, _, e| {
             let hit = e[0] == T_BITMAP;
             if hit {
                 entry = Some((le32(e, 20), le64(e, 24)));
@@ -792,17 +933,17 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(())
     }
 
-    /// Writes an entry set into the root directory: into deleted entries
+    /// Writes an entry set into `dir`: into deleted entries
     /// within one sector (one write), or at the end of the directory, the
     /// sectors after the first written first, so the set exists only once
     /// its file entry's sector (which ends the directory until then) lands.
     #[inline(never)]
-    fn add_set(&mut self, set: &[[u8; ENTRY]]) -> Result<(), Error> {
+    fn add_set(&mut self, dir: Dir, set: &[[u8; ENTRY]]) -> Result<(), Error> {
         let count = set.len();
         let mut middle = None;
         let mut end = None;
         let mut run = (0usize, 0usize); // start slot, length
-        self.walk_slots(&mut |lba, nth, slot, e| {
+        self.walk_slots(dir, &mut |lba, nth, slot, e| {
             if slot == 0 {
                 run = (0, 0);
             }
@@ -831,7 +972,7 @@ impl<D: BlockDevice> ExVolume<D> {
         // The pieces in later sectors first, the file entry's sector last.
         let spill = (slot + count).div_ceil(SLOTS) as u32;
         for k in (1..spill).rev() {
-            let at = self.dir_sector(nth + k)?.ok_or(Error::NoRoom)?;
+            let at = self.dir_sector(dir, nth + k)?.ok_or(Error::NoRoom)?;
             let from = k as usize * SLOTS - slot;
             let to = (from + SLOTS).min(count);
             self.write_entries(at, 0, &set[from..to])?;
@@ -855,13 +996,13 @@ impl<D: BlockDevice> ExVolume<D> {
     }
 
     /// Marks a set's entries unused (its file entry's sector first).
-    fn delete_set(&mut self, at: &Found) -> Result<(), Error> {
+    fn delete_set(&mut self, dir: Dir, at: &Found) -> Result<(), Error> {
         let spill = (at.slot + at.count).div_ceil(SLOTS) as u32;
         for k in 0..spill {
             let lba = if k == 0 {
                 at.lba
             } else {
-                self.dir_sector(at.nth + k)?.ok_or(Error::Corrupt)?
+                self.dir_sector(dir, at.nth + k)?.ok_or(Error::Corrupt)?
             };
             self.dev.read_blocks(lba, &mut self.buf)?;
             let from = if k == 0 { at.slot } else { 0 };
@@ -1297,7 +1438,8 @@ mod tests {
             assert_eq!(read_all(&mut v, &name.to_uppercase(), 512), data);
         }
         // The name hash is over the up-cased name, as Windows looks it up.
-        let (_, at) = v.find_set("mixed case.dat").unwrap();
+        let root = v.root();
+        let (_, at) = v.find_set(root, "mixed case.dat").unwrap();
         assert_eq!(le16(&at.set[1], 4), name_hash(b"MIXED CASE.DAT"));
         assert_eq!(name_hash(b"Mixed Case.Dat"), name_hash(b"MIXED CASE.DAT"));
         // Replace with nothing, then with something again.
@@ -1416,7 +1558,8 @@ mod tests {
         }
         let edge = "a name long enough for two name entries";
         v.put(edge, b"first", &mut scratch).unwrap();
-        let (_, at) = v.find_set(edge).unwrap();
+        let root = v.root();
+        let (_, at) = v.find_set(root, edge).unwrap();
         assert_eq!((at.nth, at.slot), (1, 15));
         v.put(edge, b"second", &mut scratch).unwrap();
         assert_eq!(read_all(&mut v, edge, 512), b"second");
@@ -1503,6 +1646,122 @@ mod tests {
         }
     }
 
+    #[test]
+    fn folders_paths_and_put_creating_parents() {
+        let (img, a, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 2048];
+        v.mkdir("Apps", &mut scratch).unwrap();
+        assert_eq!(v.mkdir("apps", &mut scratch), Err(Error::Exists));
+        assert_eq!(v.mkdir("retropane.bin", &mut scratch), Err(Error::Exists));
+        let game = pattern(5000, 21);
+        v.put("Apps/Game One.exe", &game, &mut scratch).unwrap();
+        // Parents made as needed, either separator.
+        v.put("Apps\\Sub Folder\\deep/readme.txt", b"deep", &mut scratch)
+            .unwrap();
+        assert_eq!(read_all(&mut v, "apps/game one.exe", 4096), game);
+        assert_eq!(
+            read_all(&mut v, "Apps/Sub Folder/deep/readme.txt", 512),
+            b"deep"
+        );
+        // Replace inside a folder, and the root untouched.
+        v.put("Apps/Game One.exe", b"v2", &mut scratch).unwrap();
+        assert_eq!(read_all(&mut v, "Apps/Game One.exe", 512), b"v2");
+        assert_eq!(read_all(&mut v, "retropane.bin", 4096), a);
+        let mut apps = Vec::new();
+        v.for_each_in("Apps", |n, f| {
+            apps.push((String::from_utf8_lossy(n).into_owned(), f.is_dir))
+        })
+        .unwrap();
+        assert_eq!(
+            apps,
+            [("Game One.exe".into(), false), ("Sub Folder".into(), true)]
+        );
+        // Folders are one run, as Windows writes them.
+        let f = v.find("Apps").unwrap();
+        assert!(f.is_dir && f.contiguous && f.size == v.cluster_bytes() as u64);
+        // A file isn't a folder; missing folders aren't found.
+        assert_eq!(v.find("retropane.bin/x"), Err(Error::NotFound));
+        assert_eq!(v.find("nothere/x"), Err(Error::NotFound));
+        assert_eq!(v.find(&("a/".repeat(20) + "f")), Err(Error::BadName));
+        assert!(!dirty(&v));
+        consistent(&mut v);
+    }
+
+    #[test]
+    fn a_folder_fills_and_says_so() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 2048];
+        v.mkdir("full", &mut scratch).unwrap();
+        // 2 KiB clusters: 64 entries, 3 per short name: 21 files fit.
+        for i in 0..21 {
+            v.put(&format!("full/f{i:02}"), &[i as u8], &mut scratch)
+                .unwrap();
+        }
+        assert_eq!(
+            v.put("full/one more", b"x", &mut scratch),
+            Err(Error::NoRoom)
+        );
+        for i in 0..21 {
+            assert_eq!(read_all(&mut v, &format!("full/f{i:02}"), 512), [i as u8]);
+        }
+        consistent(&mut v);
+    }
+
+    /// A power cut at every write while making two folders and a file:
+    /// afterwards each exists whole or not at all, and no live cluster is
+    /// marked free.
+    #[test]
+    fn power_loss_while_making_folders_is_harmless() {
+        let (img, a, _) = image();
+        let mut scratch = vec![0u8; 2048];
+        let data = pattern(3000, 22);
+        let total = {
+            let mut v = ExVolume::mount(Mem(img.clone()), PARTITION_START).unwrap();
+            v.put("x/y/z.bin", &data, &mut scratch).unwrap();
+            v.dev.writes
+        };
+        for fail_at in 0..total {
+            let mut disk = Mem(img.clone());
+            disk.fail_at = Some(fail_at);
+            let mut v = ExVolume::mount(disk, PARTITION_START).unwrap();
+            assert!(v.put("x/y/z.bin", &data, &mut scratch).is_err());
+            let after = v.into_inner().data;
+            let mut v = ExVolume::mount(Mem(after), PARTITION_START).unwrap();
+            match v.find("x/y/z.bin") {
+                Ok(_) => assert_eq!(read_all(&mut v, "x/y/z.bin", 2048), data),
+                Err(Error::NotFound) => {}
+                Err(e) => panic!("write {fail_at}: {e:?}"),
+            }
+            let _ = v.for_each_in("x", |_, _| {});
+            let _ = v.for_each_in("x/y", |_, _| {});
+            assert_eq!(read_all(&mut v, "retropane.bin", 2048), a);
+            consistent(&mut v);
+        }
+    }
+
+    #[test]
+    fn a_folder_that_points_back_at_the_root_is_corrupt_not_a_loop() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 2048];
+        v.mkdir("loop", &mut scratch).unwrap();
+        // Point the folder's stream at the root cluster, chained, as long
+        // as the volume.
+        let root = v.root();
+        let (_, at) = v.find_set(root, "loop").unwrap();
+        let mut set = at.set;
+        let size = u64::from(v.clusters) * v.cluster_bytes() as u64;
+        set_stream(&mut set[..at.count], v.root_cluster, size, false);
+        let o = at.lba as usize * SECTOR + at.slot * ENTRY;
+        v.dev.data[o..o + ENTRY].copy_from_slice(&set[0]);
+        v.dev.data[o + ENTRY..o + 2 * ENTRY].copy_from_slice(&set[1]);
+        // Walks stay bounded: an error or not found, never a hang.
+        assert!(v.find("loop/loop/loop/loop/x").is_err());
+        let _ = v.put("loop/loop/new.txt", b"x", &mut scratch);
+    }
+
     /// Writing to a hostile card: errors, never a panic or a loop.
     #[test]
     fn writing_to_hostile_exfat_cards_never_panics() {
@@ -1542,6 +1801,12 @@ mod tests {
             };
             let _ = v.put("retropane.bin", &[7; 5000], &mut scratch);
             let _ = v.put("new file.txt", &[8; 3000], &mut scratch);
+            let _ = v.put(
+                "A Fragmented File With A Long Name.dat/x",
+                b"y",
+                &mut scratch,
+            );
+            let _ = v.put("dir/sub/file", &[9; 100], &mut scratch);
         }
     }
 
