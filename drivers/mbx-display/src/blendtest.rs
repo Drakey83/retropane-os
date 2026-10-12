@@ -5,14 +5,19 @@
 //! A generated wallpaper (a sky gradient, colour bars, grey steps, fine
 //! stripes and a red/blue checker) goes in the **video plane**; a glass
 //! panel with opaque text, a dark status bar and an alpha strip go in the
-//! **graphics plane** with per-pixel alpha on top. Three stages, each
-//! labelled on screen so a photo explains itself:
+//! **graphics plane** with per-pixel alpha on top. The **top half** of each
+//! colour bar and grey step is drawn opaque by the graphics plane (plain
+//! RGB), the bottom half is the video plane: on the device, any difference
+//! between the halves is the chip's colour conversion, whatever the camera
+//! does. Four stages, each labelled on screen so a photo explains itself:
 //!
 //! | Stage | Video | Graphics |
 //! |---|---|---|
 //! | A | packed 4:2:2 (UYVY) | ARGB4444 |
 //! | B | planar 4:2:0 | ARGB4444 |
 //! | C | planar 4:2:0 | ARGB8888 (to judge ARGB4444's banding) |
+//! | D | as C, video gamma off | ARGB8888 |
+//! | E | planar 4:2:0 | ARGB4444, ordered dither (C's smoothness at A's size?) |
 //!
 //! Everything lives in 2700G memory from 1 MiB up, so the loader's screen
 //! at offset 0 is never touched. Drawing builds each row in RAM and only
@@ -29,7 +34,7 @@ pub const W: usize = 480;
 /// Screen height.
 pub const H: usize = 640;
 
-/// One of the three stages.
+/// One of the stages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// Video 4:2:2, graphics ARGB4444.
@@ -38,11 +43,15 @@ pub enum Stage {
     B,
     /// Video 4:2:0, graphics ARGB8888.
     C,
+    /// As C with the video plane's gamma bit off (`VSCTRL[26]`).
+    D,
+    /// Video 4:2:0, graphics ARGB4444 with ordered dithering.
+    E,
 }
 
 impl Stage {
-    /// All three, in the order shown.
-    pub const ALL: [Self; 3] = [Self::A, Self::B, Self::C];
+    /// All of them, in the order shown.
+    pub const ALL: [Self; 5] = [Self::A, Self::B, Self::C, Self::D, Self::E];
 
     /// The stage's letter.
     #[must_use]
@@ -51,6 +60,8 @@ impl Stage {
             Self::A => 'A',
             Self::B => 'B',
             Self::C => 'C',
+            Self::D => 'D',
+            Self::E => 'E',
         }
     }
 
@@ -61,6 +72,8 @@ impl Stage {
             Self::A => ["A  video 4:2:2", "   UI ARGB4444"],
             Self::B => ["B  video 4:2:0", "   UI ARGB4444"],
             Self::C => ["C  video 4:2:0", "   UI ARGB8888"],
+            Self::D => ["D  C, no gamma", "   UI ARGB8888"],
+            Self::E => ["E  video 4:2:0", "   UI 4444 dith"],
         }
     }
 
@@ -80,6 +93,8 @@ impl Stage {
             Self::A => (gfx(PixelFormat::Argb4444, 0x10_0000), uyvy),
             Self::B => (gfx(PixelFormat::Argb4444, 0x20_0000), yuv420),
             Self::C => (gfx(PixelFormat::Argb8888, 0x30_0000), yuv420),
+            Self::D => (gfx(PixelFormat::Argb8888, 0x70_0000), yuv420),
+            Self::E => (gfx(PixelFormat::Argb4444, 0x90_0000), yuv420),
         }
     }
 }
@@ -99,7 +114,17 @@ pub const VIDEO: Layer = Layer {
 pub fn program<B: RegisterBus>(d: &mut Display<B>, stage: Stage) {
     let (gfx, video) = stage.planes();
     d.show_video(&video, VIDEO);
+    if stage == Stage::D {
+        d.regs()
+            .modify(crate::layers::reg::VSCTRL, rp_hal_api::Field::bit(26), 0);
+    }
     d.set_graphics(&gfx, GRAPHICS);
+}
+
+/// Rows where the graphics plane draws the wallpaper's own colours,
+/// opaque: the top half of the colour bars and of the grey steps.
+const fn reference_row(y: usize) -> bool {
+    (400 <= y && y < 435) || (470 <= y && y < 505)
 }
 
 /// The wallpaper's colour at `(x, y)`.
@@ -191,6 +216,10 @@ pub fn ui(stage: Stage, x: usize, y: usize) -> u32 {
     if y < STATUS_H {
         return 0x9600_0000;
     }
+    if reference_row(y) {
+        let (r, g, b) = wall(x, y);
+        return 0xFF00_0000 | (r as u32) << 16 | (g as u32) << 8 | b as u32;
+    }
     let (px, py, pw, ph) = PANEL;
     if (px..px + pw).contains(&x) && (py..py + ph).contains(&y) {
         let edge = x < px + 2 || x >= px + pw - 2 || y < py + 2 || y >= py + ph - 2;
@@ -221,6 +250,19 @@ pub const fn to_4444(c: u32) -> u16 {
     (q(c, 24) << 12 | q(c, 16) << 8 | q(c, 8) << 4 | q(c, 0)) as u16
 }
 
+/// [`to_4444`] with a 4 × 4 ordered (Bayer) dither: each channel rounds up
+/// or down by the pixel's place in the pattern, so 16 levels average out to
+/// smooth gradients at the same 2 bytes a pixel. 0 and 255 stay exact.
+#[must_use]
+pub const fn to_4444_dithered(c: u32, x: usize, y: usize) -> u16 {
+    const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    const fn q(c: u32, s: u32, t: u32) -> u32 {
+        ((c >> s & 0xFF) * 15 * 16 + t) / (255 * 16)
+    }
+    let t = (2 * BAYER[y % 4][x % 4] + 1) * 255 / 2;
+    (q(c, 24, t) << 12 | q(c, 16, t) << 8 | q(c, 8, t) << 4 | q(c, 0, t)) as u16
+}
+
 /// What the screen should show at `(x, y)`, ideally: the interface over the
 /// wallpaper with 8-bit maths and no format loss. The emulator's exact
 /// check uses [`crate::scanout`]; this one catches both sides agreeing on
@@ -240,7 +282,11 @@ pub fn intent(stage: Stage, x: usize, y: usize) -> (u8, u8, u8) {
 
 /// Sample points for [`intent`]: inside flat areas, away from edges where
 /// chroma subsampling and text blur colours.
-pub const SAMPLES: [(usize, usize); 24] = [
+pub const SAMPLES: [(usize, usize); 28] = [
+    (90, 417),
+    (330, 417),
+    (30, 487),
+    (270, 487), // reference halves (graphics plane)
     (240, 60),
     (100, 70),
     (400, 392), // sky
@@ -283,6 +329,9 @@ pub fn draw(stage: Stage, vram: &mut [u8]) {
             let c = ui(stage, x, y);
             match gfx.format {
                 PixelFormat::Argb8888 => line[x * 4..][..4].copy_from_slice(&c.to_le_bytes()),
+                _ if stage == Stage::E => {
+                    line[x * 2..][..2].copy_from_slice(&to_4444_dithered(c, x, y).to_le_bytes());
+                }
                 _ => line[x * 2..][..2].copy_from_slice(&to_4444(c).to_le_bytes()),
             }
         }
@@ -361,7 +410,11 @@ mod tests {
         for stage in Stage::ALL {
             let s = screen(stage);
             // ARGB4444 loses up to 8 per channel and alpha step; YUV a few.
-            let tol = if stage == Stage::C { 6 } else { 18 };
+            let tol = if matches!(stage, Stage::C | Stage::D) {
+                6
+            } else {
+                18
+            };
             for (x, y) in SAMPLES {
                 let got = &s[(y * W + x) * 3..][..3];
                 let (r, g, b) = intent(stage, x, y);
@@ -392,7 +445,7 @@ mod tests {
         for stage in Stage::ALL {
             let (g, v) = stage.planes();
             spans.push((g.offset, g.offset + g.stride * H));
-            if stage != Stage::C {
+            if matches!(stage, Stage::A | Stage::B) {
                 spans.push((v.offset, v.offset + v.bytes()));
             }
         }
@@ -411,5 +464,15 @@ mod tests {
         assert_eq!(ui(Stage::A, 24 + 15 * 27, 360) >> 24, 255, "and ends solid");
         assert_eq!(to_4444(0xFFFF_FFFF), 0xFFFF);
         assert_eq!(to_4444(0x8000_0000) >> 12, 8);
+        for (x, y) in [(0, 0), (3, 1), (2, 3)] {
+            assert_eq!(to_4444_dithered(0xFFFF_FFFF, x, y), 0xFFFF);
+            assert_eq!(to_4444_dithered(0, x, y), 0);
+        }
+        // Over the 4 x 4 pattern, a level between two steps averages to
+        // within one sixteenth of a step of itself.
+        let sum: u32 = (0..16)
+            .map(|i| u32::from(to_4444_dithered(0x80, i % 4, i / 4) & 0xF))
+            .sum();
+        assert!(sum.abs_diff(0x80 * 15 * 16 / 255) <= 1, "{sum}");
     }
 }

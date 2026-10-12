@@ -1025,7 +1025,13 @@ on the host or in the emulator first.
     limit. Next: DMA for writes (on the device), larger multi-block
     commands, the bus clock checked, measured before/after on the device.
 
-60. **Plane blending at scan-out**: **done (emulator), device run next.**
+60. **Plane blending at scan-out**: **done, proven on the device**
+    (2026-10-12, findings in docs/hw/2700g.md "Measured on the owner's
+    X51v"). Owner chose ARGB4444 with ordered dithering for the interface
+    (`blendtest::to_4444_dithered`). Next for the UI: the compositor's
+    flush to the graphics plane dithers as it converts (rp-gfx), a real
+    wallpaper as 4:2:0 from a JPEG, and a stage with no `VOVRCLK` to see if
+    the clock is needed. Earlier status:
     Steps 1-4 below are built: emulator rp-v0.10.0, `Display::adopt` in the
     loader and every image, `rp-blend`, `cargo xtask emu-blend` (three
     stages pixel-exact; screens in docs/img/emulator-plane-blend.png), two

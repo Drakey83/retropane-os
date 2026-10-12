@@ -1,9 +1,12 @@
 //! Test image: plane blending at scan-out (overnight item 60). The
 //! wallpaper goes in the 2700G's video plane (YUV), a glass panel with text
 //! in the graphics plane with per-pixel alpha, and the display controller
-//! mixes them as it scans out. Three stages ([`blendtest`]), each labelled
+//! mixes them as it scans out. Five stages ([`blendtest`]), each labelled
 //! on screen and held [`STAGE_SECONDS`] so the owner can photograph it:
-//! A video 4:2:2 + UI ARGB4444, B 4:2:0 + ARGB4444, C 4:2:0 + ARGB8888.
+//! A video 4:2:2 + UI ARGB4444, B 4:2:0 + ARGB4444, C 4:2:0 + ARGB8888,
+//! D as C with the video gamma bit off, E 4:2:0 + dithered ARGB4444. It
+//! checks in with the hardware watchdog, since all five outlast the
+//! deadline the loader sets at launch.
 //!
 //! The run log gets the display registers as found and, per stage, read
 //! back after programming (do they hold what was written?). Every register
@@ -20,7 +23,7 @@
 /// Printed (serial and run log) with the stage letter once a stage is up.
 pub const MARKER: &str = "RETROPANE-BLEND-";
 /// How long each stage stays up.
-pub const STAGE_SECONDS: u32 = 8;
+pub const STAGE_SECONDS: u32 = 15;
 
 #[cfg(target_os = "none")]
 mod image {
@@ -86,7 +89,7 @@ mod image {
             let _ = writeln!(RunLog, "{}{c}", super::MARKER);
             for _ in 0..super::STAGE_SECONDS * 10 {
                 rt::delay_us(100_000);
-                rt::keep_alive();
+                check_in();
             }
         }
         before.restore(d.regs());
@@ -94,6 +97,19 @@ mod image {
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
+        }
+    }
+
+    /// Checks in with the soft run limit and, when the loader armed it, the
+    /// hardware watchdog (its deadline is fixed at launch, and all the
+    /// stages together run longer than that).
+    fn check_in() {
+        /// OS timer ticks per second.
+        const TICK_1S: u32 = 3_250_000;
+        rt::keep_alive();
+        let mut wd = rt::watchdog();
+        if wd.armed() {
+            wd.feed(30 * TICK_1S);
         }
     }
 
