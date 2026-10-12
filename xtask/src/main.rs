@@ -63,6 +63,8 @@ commands:
   ls        list a folder on the card through the loader (read-only)
   get       `get <file> [local name]`: copy a file from the card, CRC
             checked end to end; never overwrites a local file
+  rm        delete a file or empty folder on the card through the loader
+            (crash-safe; the files the device boots from are refused)
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit)
   tone      `tone <hz> <ms>`: a sine through the codec (headphones; the
@@ -146,6 +148,15 @@ fn main() -> ExitCode {
                 Err("usage: cargo xtask get <file on the card> [local name]".into())
             } else {
                 usb::get(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+            }
+        }
+        "rm" => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            eprintln!("==> rm {}", rest.join(" "));
+            if rest.is_empty() {
+                Err("usage: cargo xtask rm <file or empty folder on the card>".into())
+            } else {
+                usb::command(&workspace_root(), &format!("rm {}", rest.join(" ")))
             }
         }
         "cf" => {

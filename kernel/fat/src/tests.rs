@@ -1103,3 +1103,80 @@ fn checking_hostile_volumes_never_panics_or_hangs() {
         }
     }
 }
+
+#[test]
+fn removing_files_and_empty_folders_leaves_a_clean_volume() {
+    let img = tiny_image(&[Entry {
+        name: "keep.txt",
+        data: b"keep",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    v.put(
+        "A Long Name For Removal.bin",
+        &pattern(5000, 1),
+        &mut scratch,
+    )
+    .unwrap();
+    v.put("box/inner file.txt", &pattern(1500, 2), &mut scratch)
+        .unwrap();
+    assert_eq!(v.remove("box"), Err(Error::NotEmpty));
+    v.remove("a long name for removal.BIN").unwrap();
+    v.remove("box/inner file.txt").unwrap();
+    v.remove("box").unwrap();
+    assert_eq!(v.find("A Long Name For Removal.bin"), Err(Error::NotFound));
+    assert_eq!(v.remove("nothing"), Err(Error::NotFound));
+    // Nothing left of the long names, nothing leaked.
+    let mut names = Vec::new();
+    v.for_each_root(|e| names.push(String::from_utf8_lossy(e.name).into_owned()))
+        .unwrap();
+    assert_eq!(names, ["keep.txt"]);
+    let h = health(&mut v);
+    assert!(h.clean() && h.lost == 0, "{h:?}");
+    assert_eq!(read_all(&mut v, "keep.txt", 512), b"keep");
+}
+
+#[test]
+fn power_cuts_while_removing_lose_nothing_but_space() {
+    let img = tiny_image(&[Entry {
+        name: "keep.txt",
+        data: b"keep",
+    }]);
+    let mut scratch = vec![0u8; 4096];
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    v.put(
+        "A Long Name For Removal.bin",
+        &pattern(5000, 1),
+        &mut scratch,
+    )
+    .unwrap();
+    let base = v.into_inner().data;
+    let total = {
+        let mut v = Volume::mount(MemDisk::new(base.clone()), PARTITION_START).unwrap();
+        v.remove("A Long Name For Removal.bin").unwrap();
+        v.dev.writes
+    };
+    for fail_at in 0..total {
+        let mut disk = MemDisk::new(base.clone());
+        disk.fail_at = Some(fail_at);
+        let mut v = Volume::mount(disk, PARTITION_START).unwrap();
+        assert!(v.remove("A Long Name For Removal.bin").is_err());
+        let mut v = Volume::mount(MemDisk::new(v.into_inner().data), PARTITION_START).unwrap();
+        match v.find("A Long Name For Removal.bin") {
+            Ok(_) => assert_eq!(
+                read_all(&mut v, "A Long Name For Removal.bin", 4096),
+                pattern(5000, 1)
+            ),
+            Err(Error::NotFound) => {}
+            Err(e) => panic!("write {fail_at}: {e:?}"),
+        }
+        let h = health(&mut v);
+        let damage = Health {
+            lost: 0,
+            fat_copies_differ: 0,
+            ..h
+        };
+        assert!(damage.clean(), "write {fail_at}: {h:?}");
+        assert_eq!(read_all(&mut v, "keep.txt", 512), b"keep");
+    }
+}

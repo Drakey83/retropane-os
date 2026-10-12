@@ -660,6 +660,48 @@ mod image {
         }
     }
 
+    /// What boots the device from the card (HaRET, its scripts, this
+    /// loader): `rm` won't take them, so a slip can't brick the card.
+    const BOOT_FILES: [&str; 4] = ["retropane.bin", "haret.exe", "startup.txt", "default.txt"];
+
+    /// `rm <path>`: deletes a file or an empty folder (crash-safe), never a
+    /// boot file, never on a locked card.
+    #[inline(never)]
+    fn rm_command(lun: &mut Lun, args: &[u8], reply: &mut Line) {
+        let Some(path) = arg_path(args).filter(|p| !p.is_empty()) else {
+            let _ = reply.write_str("RPL ERR usage: rm <file or empty folder>\r\n");
+            return;
+        };
+        let leaf = path.trim_start_matches(['/', '\\']);
+        if BOOT_FILES.iter().any(|b| leaf.eq_ignore_ascii_case(b)) {
+            let _ = reply.write_str("RPL ERR rm: that file boots the device\r\n");
+            return;
+        }
+        if lun.locked {
+            let _ = reply.write_str("RPL ERR card is write-protected (lock switch)\r\n");
+            return;
+        }
+        let Some(sd) = lun.card.as_mut() else {
+            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let mut vol = match mount_any(sd) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        match vol.remove(path) {
+            Ok(()) => {
+                let _ = write!(reply, "RPL OK removed {path}\r\n");
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR rm: {}\r\n", e.name());
+            }
+        }
+    }
+
     /// `card check`: a read-only check of the card's file system (FAT32 or
     /// exFAT): what it found, counted. `seen` holds a bit per cluster.
     #[inline(never)]
@@ -1671,6 +1713,16 @@ mod image {
                             // Attached (or not): the PC looks at LUN 1 again.
                             msc.medium_changed(1);
                             status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"rm ") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                rm_command(&mut lun, &c[3..], &mut status);
+                                // The PC must re-read the volume.
+                                msc.medium_changed(0);
+                                status.as_str()
+                            }
                         }
                         Ok(b"card check") => {
                             if msc.host_writing(now_ms()) {

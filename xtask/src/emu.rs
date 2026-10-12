@@ -1373,6 +1373,20 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("card peek 2048 0"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK peek 2048+0: eb 58 90", 20)?;
+        // Deleting: a file put for the purpose; the boot files refused;
+        // a folder with something in it refused.
+        s.write_all(&rp_loadproto::file_frame("remove me.txt", b"bye"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK 3 bytes", 20)?;
+        s.write_all(&rp_loadproto::control_frame("rm remove me.txt"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK removed remove me.txt", 20)?;
+        s.write_all(&rp_loadproto::control_frame("rm RetroPane.bin"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR rm: that file boots the device", 20)?;
+        s.write_all(&rp_loadproto::control_frame("rm Apps"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR rm: folder not empty", 20)?;
         // Repaired, and after every write: clean.
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
@@ -1418,6 +1432,9 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         [(damaged + fat_sectors) as usize * 512..(damaged + fat_sectors) as usize * 512 + 512];
     if one != two {
         return Err("card repair: the first FAT sector still differs from its mirror".into());
+    }
+    if card_file(&sd, "remove me.txt").is_ok() {
+        return Err("rm: the removed file is still on the card".into());
     }
     if card_file(&sd, "Apps/Sub Folder/hello.txt")? != b"hello" {
         return Err("the file in new folders isn't on the card".into());

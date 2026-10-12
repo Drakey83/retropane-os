@@ -136,9 +136,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 112 -> 124 KiB on 2026-10-12 (test image): browsing the
     // card from the PC (`ls`, `get`) and the read-only file system check
     // (`card check`, FAT32 and exFAT); 118.0 KiB measured, +~5%.
+    // Ratcheted 124 -> 128 KiB on 2026-10-12 (test image): SHA-256
+    // fingerprints, idling, `rm`; 124.7 KiB measured. ADR-0015 (Thumb for
+    // cold code, proposed) would give ~20 KiB of the loader back.
     Budget {
         image: "rp-loader",
-        max_load: 124 * 1024,
+        max_load: 128 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
