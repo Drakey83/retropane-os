@@ -49,21 +49,27 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
 /// How long [`take_mbx`] waits before the 2700G's registers are first used.
 const SETTLE_US: u32 = 500_000;
 
-/// The 2700G's local memory for crash reporting only, once [`take_mbx`] has
-/// handed it out (so the display is known to be set up). The real X51v has
-/// no serial port, so faults and panics are drawn on screen.
+/// The 2700G for crash reporting only, once [`take_mbx`] has handed it out
+/// (so the display is known to be set up): its register block, to find the
+/// plane actually on screen (`rp_drv_mbx_display::Display::on_screen`;
+/// Windows Mobile leaves it at offset 0), and its local memory. The real
+/// X51v has no serial port, so faults and panics are drawn on screen.
 #[must_use]
-pub fn emergency_vram() -> Option<&'static mut [u8]> {
+pub fn emergency_mbx() -> Option<(Mmio, &'static mut [u8])> {
     // SAFETY: a plain read of the flag; single core.
     if !unsafe { core::ptr::addr_of!(MBX_TAKEN).read() } {
         return None;
     }
     let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
-    // SAFETY: the same 16 MiB of 2700G memory as `take_mbx`. This second
-    // slice aliases the owner's, which is acceptable only because it's used
-    // on paths that never return to the owner (fault and panic handlers),
-    // like `rt::emergency_uart`.
-    Some(unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) })
+    let regs = NonNull::new((cs3 + MBX_REG_OFFSET) as *mut u32)?;
+    // SAFETY: the same register block and 16 MiB of 2700G memory as
+    // `take_mbx`. These second handles alias the owner's, which is
+    // acceptable only because they're used on paths that never return to
+    // the owner (fault and panic handlers), like `rt::emergency_uart`.
+    let regs = unsafe { Mmio::new(regs, MBX_REG_SIZE as usize) };
+    // SAFETY: as above.
+    let vram = unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) };
+    Some((regs, vram))
 }
 
 /// Where a plane the display scans out can start, as far as the beacon
@@ -78,7 +84,7 @@ const BEACON_BYTES: usize = 1 << 20;
 /// knowing the plane's layout, before any display setup and with the MMU on
 /// or off. It once filled all 16 MiB: 64 MiB of slow uncached writes over a
 /// loader's four steps, most of its boot time (530 of 742 ms, emulator).
-/// Diagnostic only: like [`emergency_vram`], it aliases the memory
+/// Diagnostic only: like [`emergency_mbx`], it aliases the memory
 /// [`take_mbx`] hands out, so callers use it only where nothing else draws.
 pub fn beacon(a: u16, b: u16) {
     let Some(r) = region("cs3_2700g") else {

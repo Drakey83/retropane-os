@@ -31,7 +31,7 @@ mod image {
 
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, crash, reg};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::diag;
@@ -77,16 +77,9 @@ mod image {
         beacon(MAGENTA, last);
         let mut uart = PxaUart::new(rt::emergency_uart());
         let _ = writeln!(uart, "\n{msg}");
-        if let Some(vram) = rp_hal_x51v::devices::emergency_vram() {
-            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            let mut c = Console::new(
-                &mut vram[plane.offset..],
-                plane.stride,
-                (0, 0),
-                (480, 64),
-                2,
-                (0xFFFF, 0x0000),
-            );
+        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
+            let mut c =
+                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
             let _ = write!(c, "{msg}");
         }
         // Started by the resident loader: the message goes to the PC too.

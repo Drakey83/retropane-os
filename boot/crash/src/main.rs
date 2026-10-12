@@ -3,6 +3,13 @@
 //! goes ([`rp_hal_x51v::devices::crash_to_loader`]): into the run log, back
 //! to the loader, to the PC as a crash, and onto the card as
 //! `crashlog.txt`. `cargo xtask emu` checks all of it.
+//!
+//! Before panicking it moves the visible plane to offset 0 of the 2700G's
+//! memory, where Windows Mobile leaves it on a real X51v (the emulator
+//! starts from reset, so the loader set one up at `FRAMEBUFFER_OFFSET`),
+//! and draws the crash box every image draws
+//! ([`rp_drv_mbx_display::crash::emergency_console`]): the box must show
+//! on that plane, not land off screen.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -14,6 +21,7 @@ pub const MARKER: &str = "RETROPANE-CRASH-TEST";
 mod image {
     use core::fmt::Write;
 
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, crash};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt;
 
@@ -31,6 +39,13 @@ mod image {
             super::MARKER
         );
         rt::set_fault_handler(on_fault);
+        if let Some((regs, _vram)) = rp_hal_x51v::devices::take_mbx() {
+            let wm = Plane {
+                offset: 0,
+                ..Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)
+            };
+            Display::new(regs).enable(&X51V_VGA, &wm);
+        }
         panic!("deliberate test panic");
     }
 
@@ -42,6 +57,16 @@ mod image {
     fn crash(msg: core::fmt::Arguments) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
         let _ = writeln!(uart, "{msg}");
+        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
+            let mut c =
+                crash::emergency_console(regs, vram, (0, 576), (480, 64), 2, (0xFFFF, 0xA800));
+            let _ = write!(c, "{msg}");
+        }
+        // Long enough for `cargo xtask emu` to see the box before the
+        // loader's own crash screen replaces it.
+        if rp_hal_x51v::devices::loader_present() {
+            rt::delay_us(3_000_000);
+        }
         rp_hal_x51v::devices::crash_to_loader(msg);
         loop {
             core::hint::spin_loop();

@@ -295,14 +295,7 @@ impl<B: RegisterBus> Display<B> {
     /// blend mode a previous program left on would cover the screen.
     /// Also says whether the plane was kept (`true`) or set up anew.
     pub fn adopt(&mut self, vram_size: usize) -> (Plane, bool) {
-        let kept = Plane::decode(
-            self.regs.read32(reg::GSCTRL),
-            self.regs.read32(reg::GSCADR),
-            self.regs.read32(reg::GSADR),
-            vram_size,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
-        if let Some(p) = kept {
+        if let Some(p) = self.scanned_out(vram_size) {
             layers::solo(&mut self.regs);
             (p, true)
         } else {
@@ -310,6 +303,28 @@ impl<B: RegisterBus> Display<B> {
             self.enable(&X51V_VGA, &p);
             (p, false)
         }
+    }
+
+    /// The 480 × 640 RGB565 plane scanning out now, if any: the plane
+    /// [`adopt`](Self::adopt) keeps. Reads registers only.
+    fn scanned_out(&mut self, vram_size: usize) -> Option<Plane> {
+        Plane::decode(
+            self.regs.read32(reg::GSCTRL),
+            self.regs.read32(reg::GSCADR),
+            self.regs.read32(reg::GSADR),
+            vram_size,
+        )
+        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640)
+    }
+
+    /// Where to draw so it shows, for crash and fault paths: the plane
+    /// scanning out now (Windows Mobile leaves it at offset 0, not
+    /// [`FRAMEBUFFER_OFFSET`]), or [`Plane::fullscreen`] if none can be
+    /// drawn into. Reads registers only, never programs the display, so it
+    /// is safe on a path that never returns to the display's owner.
+    pub fn on_screen(&mut self, vram_size: usize) -> Plane {
+        self.scanned_out(vram_size)
+            .unwrap_or(Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565))
     }
 
     /// Points the graphics plane at `plane`, in `layer`, without touching
@@ -619,6 +634,34 @@ mod tests {
         assert!(!kept);
         assert_eq!(p, Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565));
         assert_eq!(d.into_inner().value(layers::reg::VSCADR) >> 31, 0);
+    }
+
+    #[test]
+    fn on_screen_finds_wm_plane_at_offset_0_without_writing() {
+        // As measured on a real X51v after HaRET (docs/hw/2700g.md).
+        let mut bus = MockBus::new();
+        bus.preset(reg::GSCTRL, 0x3C0E_FA7F);
+        bus.preset(reg::GSCADR, 0x8000_0000);
+        bus.preset(reg::GSADR, 0x0EC0_0000);
+        let mut d = Display::new(bus);
+        let p = d.on_screen(16 << 20);
+        assert_eq!(p.offset, 0);
+        assert_eq!(
+            p,
+            Plane {
+                offset: 0,
+                ..Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)
+            }
+        );
+        assert!(d.into_inner().writes().is_empty(), "reads only");
+
+        // Scanning off (the emulator from reset): the conventional plane.
+        let mut d = Display::new(MockBus::new());
+        assert_eq!(
+            d.on_screen(16 << 20),
+            Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)
+        );
+        assert!(d.into_inner().writes().is_empty());
     }
 
     #[test]

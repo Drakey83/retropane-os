@@ -38,15 +38,35 @@ pub struct Mutant {
     pub check: Check,
 }
 
+/// `Display::on_screen` ignoring the registers: the mistake the crash
+/// boxes made before (drawn where nothing shows on the device).
+const CRASH_BOX_FROM: &str = "        self.scanned_out(vram_size)\n            .unwrap_or(Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565))";
+const CRASH_BOX_TO: &str =
+    "        let _ = vram_size;\n        Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)";
+
 /// The list. Every security or crash-safety rule with a test gets a mutant
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "display: adopt keeps a left-over video plane over the screen",
         file: "drivers/mbx-display/src/lib.rs",
-        from: "        if let Some(p) = kept {\n            layers::solo(&mut self.regs);\n",
-        to: "        if let Some(p) = kept {\n",
+        from: "        if let Some(p) = self.scanned_out(vram_size) {\n            layers::solo(&mut self.regs);\n",
+        to: "        if let Some(p) = self.scanned_out(vram_size) {\n",
         check: Check::Host(&["-p", "rp-drv-mbx-display", "adopt_keeps_wm_plane"]),
+    },
+    Mutant {
+        name: "crash box drawn at 0x60000, not on the plane on screen (off screen on the device)",
+        file: "drivers/mbx-display/src/lib.rs",
+        from: CRASH_BOX_FROM,
+        to: CRASH_BOX_TO,
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "wm_plane_at_offset_0"]),
+    },
+    Mutant {
+        name: "crash box drawn at 0x60000 (emulator: rp-crash's box on WM's plane)",
+        file: "drivers/mbx-display/src/lib.rs",
+        from: CRASH_BOX_FROM,
+        to: CRASH_BOX_TO,
+        check: Check::Emu(crate::emu::boot_loader_crash),
     },
     Mutant {
         name: "display reference: per-pixel alpha read inverted",
