@@ -35,7 +35,7 @@ wake, smooth motion. When in doubt, predictability over peak speed.
 
 | Point | Status |
 |---|---|
-| Input path pinned: pages that touch, keys and the compositor use are never compressed or evicted | Overnight item 49 |
+| Input path pinned: pages that touch, keys and the compositor use are never compressed or evicted | Done 2026-10-12: `Prot::pinned()`, `Vm::populate`, per-process pin limit (item 49) |
 | The framebuffer is write-only: compose in RAM, write only dirty rectangles, never read back | Rule in docs/hw/2700g.md (measured 61 vs 14.5 ms); item 52 |
 | iWMMXt fast paths for fills, blits, alpha and conversion, in one place | Item 52 (lazy iWMMXt switching already live) |
 | Real-time priority for input and the compositor | Scheduler has CE's 256 priorities and calls run at the caller's priority (ADR-0016); assigned when those services land |

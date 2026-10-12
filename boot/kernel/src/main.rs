@@ -95,6 +95,9 @@ mod image {
     /// The reclaim test's pages.
     const RECLAIM_VA: u32 = 0x0020_0000;
     const RECLAIM_PAGES: u32 = 16;
+    /// The pinned-memory test's pages.
+    const PIN_VA: u32 = 0x0030_0000;
+    const PIN_PAGES: u32 = 4;
 
     /// The test image (a PE file built at start) as a page-cache object,
     /// loaded at `LOAD_BASE`, not the base it prefers, so every absolute
@@ -818,6 +821,41 @@ mod image {
             && state().1 == Some(Outcome::Restored);
         ok &= report(&mut uart, "reclaim", pass, freed);
         let _ = writeln!(uart, "BENCH vm_reclaim_sweep {sweep_ticks} {RECLAIM_PAGES}");
+
+        // Pinned memory (docs/design-brief.md): pages loaded up front and
+        // never aged, compressed or evicted, so touching them never faults:
+        // the input path's guarantee. Full sweeps of the whole process
+        // leave them where they are.
+        let pin = layout::slot_base(PROC_SLOT) + PIN_VA;
+        let populated = with_vm(|vm, s| {
+            s.procs[0]
+                .space
+                .map(Region {
+                    start: pin,
+                    len: PIN_PAGES * 4096,
+                    prot: Prot::RW.pinned(),
+                    backing: Backing::Zero,
+                })
+                .ok()?;
+            vm.populate(&s.procs[0].space, pin, PIN_PAGES * 4096).ok()
+        });
+        let faults0 = state().0;
+        for p in 0..PIN_PAGES {
+            cpu::poke((PIN_VA + p * 4096) as usize, 0x919E_0000 + p);
+        }
+        for _ in 0..3 {
+            let _ = with_vm(|vm, s| {
+                let mut hand = layout::slot_base(PROC_SLOT);
+                vm.reclaim(&s.procs[0].space, &mut hand, 4096, u32::MAX)
+            });
+        }
+        let mut intact = true;
+        for p in 0..PIN_PAGES {
+            intact &= rt::try_read((PIN_VA + p * 4096) as usize) == Some(0x919E_0000 + p);
+        }
+        let faults = state().0 - faults0;
+        let pass = populated == Some(PIN_PAGES) && intact && faults == 0;
+        ok &= report(&mut uart, "pinned", pass, faults);
 
         // Unmap everything: every frame and page-cache reference returns.
         let slot = layout::slot_base(PROC_SLOT);
