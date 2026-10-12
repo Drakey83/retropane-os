@@ -57,6 +57,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | **Measured on the device** through the USB loader (no photos): 4-bit bus and 4 blocks per command | `sd_read_4_blocks` / 4 vs `sd_read_block` | 3,904,480 ns per block | 1,164,134 ns per block (**3.4×**) |
 | 2026-10-11 | **Measured on the device**: pattern rows built in RAM, framebuffer only written | `fb_pattern_vga` | 61,016,717 ns | 14,480,000 ns (**4.2×**; now equal to the solid fill) |
 | 2026-10-11 | `CTL NOW 00003A7F` on the device: MMU, D-cache, I-cache and BTB on while the benchmarks run (so the bus-latency reading of `timer_read` stands). The CPU reported turbo 624 MHz this time (520 earlier): Windows Mobile's choice at boot, not ours | — | — | — |
+| 2026-10-11 | `rp-hello` **load budget raised 20 → 22 KiB, approved by the owner**: the HAL code every image shares grew through the day (DMA stop at start-up, fault diagnostics, aligned MMU transitions, the user-fault path); hello was 4 bytes from its ceiling and had been trimmed four times to stay under | `rp-hello` loaded size | 20,476 B | 20,476 B (budget 22,528) |
 | 2026-10-11 | ADR-0010: mutexes with priority inheritance, user faults in the thread's context, lazy iWMMXt, interrupts as waitable objects, plus their live tests. Scheduler entry points kept out of line; free events via a bitmap instead of a loop LLVM unrolled to 1 KiB. **Load budget raised 17 → 27 KiB, approved by the owner** (measured + ~10%) | `rp-threads` loaded size | 16,012 B | 24,500 B |
 
 ## Real hardware
