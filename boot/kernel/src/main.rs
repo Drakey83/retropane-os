@@ -610,6 +610,9 @@ mod image {
             uart,
             "VM tables OK (L1 at {l1:#010x}, {free_after_setup} frames free)"
         );
+        // Boot time (docs/design-brief.md): entry to the kernel's own page
+        // tables and device map live.
+        let _ = writeln!(uart, "BENCH boot_kernel_tables {} 1", rt::since_start());
         // The device map: the UART answers at its kernel address, and its
         // physical address (in process slot 32) maps nothing.
         let devmap_ok = with_vm(|vm, _| {

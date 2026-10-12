@@ -58,6 +58,9 @@ mod image {
     /// D+ pull-up and cable detect (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
     const USB_DETECT: u8 = 14;
+    /// How long the USB pull-up stays off at start (OS timer ticks, 200 ms),
+    /// so the PC sees the device leave and come back.
+    const DETACH: u32 = 650_000;
     /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
     const TICK_1S: u32 = 3_250_000;
     const STATUS_H: usize = 6 * 16;
@@ -1368,6 +1371,46 @@ mod image {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         step(2);
+        // GPIO, the USB detach and the card first: they run during the
+        // display's settle time after the hand-off (`devices::take_mbx`)
+        // instead of after it (boot time, docs/design-brief.md).
+        let Some(gpio_bus) = rt::take_gpio() else {
+            halt()
+        };
+        let mut gpio = Gpio::new(gpio_bus);
+        gpio.make_input(USB_DETECT);
+        gpio.make_output(USB_PULLUP, false);
+        // The PC must see the device gone for DETACH before it comes back;
+        // card set-up runs meanwhile, and only what's left is waited for.
+        let detached_at = rt::ticks();
+        let Some(udc_bus) = rt::take_udc() else {
+            halt()
+        };
+        // The card first: once the pull-up is on, the PC expects answers
+        // within its control-transfer timeout, and card set-up (or giving up
+        // on an empty slot) must not stall them (seen in the emulator: the
+        // host gave up on the first descriptor request).
+        gpio.make_input(SD_DETECT);
+        gpio.make_input(SD_LOCK);
+        let (card, spare) = open_card();
+        let Some(scratch) = devices::take_scratch() else {
+            halt()
+        };
+        let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
+        // In: the switch says so, or a card answered anyway (so a wrong
+        // reading of the switch can't hide a working card).
+        let inserted = !gpio.read(SD_DETECT) || card.is_some();
+        let locked = gpio.read(SD_LOCK);
+        let mut lun = Lun {
+            card,
+            spare,
+            writable: false,
+            offered: true,
+            inserted,
+            locked,
+            seen: (inserted, locked),
+        };
+        let dma = check_dma(&mut lun, msc_buf);
 
         let Some((mut regs, vram)) = devices::take_mbx() else {
             halt()
@@ -1407,41 +1450,10 @@ mod image {
             halt()
         };
 
-        let Some(gpio_bus) = rt::take_gpio() else {
-            halt()
-        };
-        let mut gpio = Gpio::new(gpio_bus);
-        gpio.make_input(USB_DETECT);
-        gpio.make_output(USB_PULLUP, false);
-        rt::delay_us(200_000);
-        let Some(udc_bus) = rt::take_udc() else {
-            halt()
-        };
-        // The card first: once the pull-up is on, the PC expects answers
-        // within its control-transfer timeout, and card set-up (or giving up
-        // on an empty slot) must not stall them (seen in the emulator: the
-        // host gave up on the first descriptor request).
-        gpio.make_input(SD_DETECT);
-        gpio.make_input(SD_LOCK);
-        let (card, spare) = open_card();
-        let Some(scratch) = devices::take_scratch() else {
-            halt()
-        };
-        let (msc_buf, fat_scratch) = scratch.split_at_mut(MSC_BUF);
-        // In: the switch says so, or a card answered anyway (so a wrong
-        // reading of the switch can't hide a working card).
-        let inserted = !gpio.read(SD_DETECT) || card.is_some();
-        let locked = gpio.read(SD_LOCK);
-        let mut lun = Lun {
-            card,
-            spare,
-            writable: false,
-            offered: true,
-            inserted,
-            locked,
-            seen: (inserted, locked),
-        };
-        let dma = check_dma(&mut lun, msc_buf);
+        let waited = rt::ticks().wrapping_sub(detached_at);
+        if waited < DETACH {
+            rt::delay_us((DETACH - waited) / 13 * 4);
+        }
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
         if usb {
@@ -1531,6 +1543,10 @@ mod image {
             "SD card: {} (a drive on the PC)",
             if lun.present() { "ready" } else { "none" }
         );
+        // Boot time (docs/design-brief.md): entry to the waiting loop, every
+        // driver set up that the loop needs now (audio and CF start later,
+        // on first use).
+        let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
             // while waiting.

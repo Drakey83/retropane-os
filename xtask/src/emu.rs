@@ -392,6 +392,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
             return Err(format!("kernel check failed: no `{want}` on serial"));
         }
     }
+    check_boot(&output, &["boot_kernel_tables"])?;
     eprintln!("    kernel VM OK: page tables, demand paging, copy-on-write, FCSE, unmap");
     eprintln!("    kernel IPC OK: migrating calls between processes, fault unwind, handles");
     Ok(())
@@ -478,6 +479,45 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
 /// Must match `rp_loader::MARKER`.
 const LOADER_MARKER: &str = "RPLOAD1 READY";
 
+/// Boot-time budgets (docs/design-brief.md), in milliseconds from an
+/// image's entry. The emulator runs in real time on a shared host, so these
+/// are loose: they catch a regression of many times, not 10%. The device's
+/// numbers are what count, and go in docs/perf.md.
+const BOOT_BUDGETS_MS: &[(&str, f64)] = &[
+    // The loader: 500 ms of it is the display's settle time after the
+    // hand-off (an unexplained hang on the device, `devices::take_mbx`);
+    // GPIO, the card, the DMA self-test and the USB detach run inside it.
+    // Was 742 ms before (a 16 MiB beacon fill, then everything in turn).
+    ("boot_loader_ready", 560.0),
+    // The kernel's frame allocator, page tables and device map.
+    ("boot_kernel_tables", 100.0),
+];
+
+/// Checks the `BENCH boot_*` lines in `output` against [`BOOT_BUDGETS_MS`]:
+/// each named one must be present and within budget.
+fn check_boot(output: &str, names: &[&str]) -> Result<(), String> {
+    let measured = parse_bench(output);
+    for name in names {
+        let budget = BOOT_BUDGETS_MS
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| *b)
+            .ok_or_else(|| format!("no boot budget for {name}"))?;
+        let ms = measured
+            .iter()
+            .find(|r| r.name == *name)
+            .map(|r| r.ns / 1e6)
+            .ok_or_else(|| format!("boot time: no `BENCH {name}` line"))?;
+        if ms > budget {
+            return Err(format!(
+                "boot time: {name} took {ms:.1} ms, over its {budget} ms budget"
+            ));
+        }
+        eprintln!("    boot time {name}: {ms:.1} ms (budget {budget} ms)");
+    }
+    Ok(())
+}
+
 /// Boots the resident loader the way HaRET does (a raw binary away from its
 /// home, so it must move itself), sends it the first-light image over the
 /// serial port, and checks that image runs: relocation, the protocol, the
@@ -509,6 +549,7 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
     if !output.contains("RPL OK") {
         return Err("loader: no `RPL OK` before the image started".into());
     }
+    check_boot(&output, &["boot_loader_ready"])?;
     // The run log the loader sent after first light returned to it.
     let log = output
         .rsplit_once("RPL LOG")
