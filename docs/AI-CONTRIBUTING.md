@@ -36,6 +36,13 @@ request, 2026-10-11):
 
 If an answer is "no", say so, and either fix it or explain why not.
 
+"At least one lens" is the floor for merging, not the goal. The owner's
+standard (2026-10-12): for every part, look for every way it can beat the
+original (robustness, speed, size, safety, standards, user experience,
+testability) and do as many as make sense; one token improvement doesn't
+meet it. When a part is finished, report what was done to iterate and to
+modernize it.
+
 **The emulator follows the device.** Every fact learned on the real X51v
 that a model could reproduce goes into the emulator fork with a `cargo xtask
 emu` boot that fails without it; what can't be modelled is listed with the
