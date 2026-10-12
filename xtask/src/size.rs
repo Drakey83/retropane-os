@@ -55,7 +55,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 22 -> 24 KiB on 2026-10-12 (test image): keys as Windows
         // Mobile programs see them (virtual keys, D-pad repeat, press and
         // hold); 23.2 KiB measured, +~4%.
-        max_load: 24 * 1024,
+        // Ratcheted 24 -> 26 KiB on 2026-10-12 (test image): the crash box
+        // reads the 2700G's registers to draw on the plane actually on
+        // screen (Windows Mobile's, at offset 0); 24.2 KiB measured, +~8%.
+        max_load: 26 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -182,9 +185,12 @@ pub const BUDGETS: &[Budget] = &[
         device: OnDevice::Returns,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
+    // Ratcheted 20 -> 22 KiB on 2026-10-12 (test image): the crash box
+    // reads the 2700G's registers to draw on the plane actually on screen
+    // (Windows Mobile's, at offset 0); 20.5 KiB measured, +~7%.
     Budget {
         image: "rp-usb",
-        max_load: 20 * 1024,
+        max_load: 22 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -233,9 +239,12 @@ pub const BUDGETS: &[Budget] = &[
         device: OnDevice::Loader,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
+    // Ratcheted 8 -> 14 KiB on 2026-10-12 (test image): it now draws the
+    // crash box every image draws (the console and font), on a plane it
+    // moves to offset 0 as Windows Mobile leaves it; 12.9 KiB measured, +~9%.
     Budget {
         image: "rp-crash",
-        max_load: 8 * 1024,
+        max_load: 14 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

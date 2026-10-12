@@ -21,7 +21,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, crash, reg};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
@@ -51,16 +51,9 @@ mod image {
     fn crash(msg: core::fmt::Arguments) -> ! {
         let mut uart = PxaUart::new(rt::emergency_uart());
         let _ = writeln!(uart, "\n{msg}");
-        if let Some(vram) = rp_hal_x51v::devices::emergency_vram() {
-            let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            let mut c = Console::new(
-                &mut vram[plane.offset..],
-                plane.stride,
-                (0, 576),
-                (480, 64),
-                2,
-                (0xFFFF, 0xA800),
-            );
+        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
+            let mut c =
+                crash::emergency_console(regs, vram, (0, 576), (480, 64), 2, (0xFFFF, 0xA800));
             let _ = write!(c, "{msg}");
         }
         halt()
