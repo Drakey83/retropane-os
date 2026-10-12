@@ -38,7 +38,7 @@ rp_switch:
     @ (FIQ stays masked), then the entry function, which never returns.
     .global rp_thread_start
 rp_thread_start:
-    msr     cpsr_c, #0x53
+    msr     cpsr_c, #0x13              @ IRQs on; FIQ open (run limit)
     mov     r0, r5
     blx     r4
 1:  b       1b

@@ -370,7 +370,17 @@ pub fn setup_restart_task(root: &Path) -> Result<(), String> {
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
 /// the resident loader.
-pub fn load(root: &Path, what: &str) -> Result<(), String> {
+pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
+    // An image that never returns would run into the watchdog on the
+    // device (found 2026-10-12: rp-bench reset the Axim into Dell's
+    // factory-restore prompt). The device gets only images that come back.
+    if crate::size::on_device(what) == Some(crate::size::OnDevice::NeverReturns) && !force {
+        return Err(format!(
+            "`{what}` never returns to the loader (it runs in the emulator, or HaRET starts it \
+             directly): on the device the watchdog would reset the Axim. `rp-probe` runs the \
+             benchmarks on the device. Add --force to send it anyway."
+        ));
+    }
     let bin = if what.ends_with(".bin") {
         Path::new(what).to_path_buf()
     } else {

@@ -970,7 +970,24 @@ on the host or in the emulator first.
     limit. Next: DMA for writes (on the device), larger multi-block
     commands, the bus clock checked, measured before/after on the device.
 
-59. **No emulator-only image on the device**: `cargo xtask load` refuses
+59. **No emulator-only image on the device**: **done (emulator).** Every
+    image's budget now says what it does under the loader (`OnDevice`:
+    returns, the loader, never returns), so a new image can't be added
+    without saying; `cargo xtask load` refuses never-returning ones
+    (`rp-bench`, `rp-kernel`, `rp-hello`, `rp-usb`, `rp-hang`) unless
+    `--force`, naming `rp-probe` for device benchmarks. The soft run limit
+    is routed to **FIQ**: it gets its own stack and vector, FIQ is unmasked
+    once an image's vectors are in place, and the HAL no longer masks FIQ
+    anywhere (IRQ entry, thread start, system calls, user mode), so a
+    program spinning with interrupts off comes back with a report too.
+    `rp-hang` now spins with IRQs off; its test passes, and fails with the
+    limit routed to IRQ (checked). Unit test for FIQ routing. Kit README
+    updated.
+    - **Iterate:** the tool refuses the mistake instead of relying on
+      memory; FIQ, which CE left to drivers, is the system's watchdog line.
+    - **Modernize:** layered, uncircumventable-by-mistake watchdogs; only
+      code that never starts our runtime can still reach the hardware reset.
+    Original scope: `cargo xtask load` refuses
     images that never return to the loader (`rp-bench`, `rp-kernel`,
     `rp-hello`, `rp-usb`) unless forced; every image classified, a test
     that a new image must be. (Found 2026-10-12: rp-bench, which spins

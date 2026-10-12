@@ -10,6 +10,29 @@ pub struct Budget {
     pub max_load: u64,
     /// Max bytes of RAM not backed by the image (zeroed data + stack).
     pub max_zero: u64,
+    /// What the image does when the resident loader starts it: part of the
+    /// budget so no image can be added without saying (`cargo xtask load`
+    /// refuses the ones that never return).
+    pub device: OnDevice,
+}
+
+/// What an image does when the resident loader starts it on the device.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OnDevice {
+    /// Returns to the loader when done (or crashes back to it).
+    Returns,
+    /// The loader itself (it replaces the running one).
+    Loader,
+    /// Never returns (an emulator test, or one HaRET starts directly):
+    /// under the loader it would run into the watchdog. Refused by
+    /// `cargo xtask load` unless forced.
+    NeverReturns,
+}
+
+/// How `image` behaves under the loader (`None`: not one of ours).
+#[must_use]
+pub fn on_device(image: &str) -> Option<OnDevice> {
+    BUDGETS.iter().find(|b| b.image == image).map(|b| b.device)
 }
 
 /// Current budgets.
@@ -34,6 +57,7 @@ pub const BUDGETS: &[Budget] = &[
         // hold); 23.2 KiB measured, +~4%.
         max_load: 24 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::NeverReturns,
     },
     // Ratcheted 24 -> 27 KiB on 2026-10-12 (test image): the SD driver's
     // recovery for slow and failing reads (block-by-block fallback, CMD12 +
@@ -49,6 +73,7 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-bench",
         max_load: 34 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::NeverReturns,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
     // bookkeeping (9 KiB), stacks including a 4 KiB abort stack.
@@ -102,6 +127,7 @@ pub const BUDGETS: &[Budget] = &[
         // slots kept in their kernel stack frames, not an IPC table.
         // Measured 112.9 KiB + ~6%.
         max_zero: 120 * 1024,
+        device: OnDevice::NeverReturns,
     },
     // Threads test harness (ADR-0010): scheduler tables (~4 KiB, .bss) and
     // the harness itself; one image per subsystem's test keeps each budget
@@ -125,6 +151,7 @@ pub const BUDGETS: &[Budget] = &[
         // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
         // threads' own stacks (24.3 KiB measured, +~10%).
         max_zero: 27 * 1024,
+        device: OnDevice::Returns,
     },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").
@@ -139,12 +166,14 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-probe",
         max_load: 60 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::Returns,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
     Budget {
         image: "rp-usb",
         max_load: 20 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::NeverReturns,
     },
     // Bring-up: the resident loader (ADR-0012 U3): 19.6 KiB measured, +~10%.
     // It must also stay inside its 1 MiB home (boot/loader/link.x).
@@ -188,12 +217,14 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-loader",
         max_load: 101 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::Loader,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
     Budget {
         image: "rp-crash",
         max_load: 8 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::Returns,
     },
     // Test image: the soft run limit (runs forever on purpose); 7.8 KiB
     // measured, +~10%.
@@ -201,12 +232,14 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-hang",
         max_load: 9 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::NeverReturns,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
         max_load: 24 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::Returns,
     },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     // Ratcheted 16 -> 18 KiB on 2026-10-12: the shared crash path (crash
@@ -215,6 +248,7 @@ pub const BUDGETS: &[Budget] = &[
         image: "rp-light",
         max_load: 18 * 1024,
         max_zero: 20 * 1024,
+        device: OnDevice::Returns,
     },
 ];
 
@@ -459,6 +493,7 @@ mod tests {
             image: "k",
             max_load: 600 * 1024,
             max_zero: 500 * 1024,
+            device: OnDevice::Returns,
         }];
         let a = |bytes, images: &'static [&'static str]| Allotment {
             part: "p",
@@ -473,5 +508,13 @@ mod tests {
         // Counted twice, or with no size budget.
         assert!(check_allotments(&b, &[a(2 * MIB, &["k"]), a(MIB, &["k"])], 64 * MIB, 0).is_err());
         assert!(check_allotments(&b, &[a(MIB, &["nope"])], 64 * MIB, 0).is_err());
+    }
+
+    #[test]
+    fn images_that_never_return_are_known() {
+        assert_eq!(on_device("rp-bench"), Some(OnDevice::NeverReturns));
+        assert_eq!(on_device("rp-probe"), Some(OnDevice::Returns));
+        assert_eq!(on_device("rp-loader"), Some(OnDevice::Loader));
+        assert_eq!(on_device("nope"), None);
     }
 }

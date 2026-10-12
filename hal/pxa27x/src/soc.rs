@@ -106,6 +106,17 @@ impl<B: RegisterBus> Intc<B> {
         self.0.write32(r, v);
     }
 
+    /// Routes source `n` (0-39) to FIQ (`true`) or IRQ (`false`).
+    pub fn route_fiq(&mut self, n: u32, fiq: bool) {
+        let (r, bit) = if n < 32 {
+            (intc_reg::ICLR, 1 << n)
+        } else {
+            (intc_reg::ICLR2, 1 << (n - 32))
+        };
+        let v = self.0.read32(r);
+        self.0.write32(r, if fiq { v | bit } else { v & !bit });
+    }
+
     /// Masks source `n` (0-39).
     pub fn disable(&mut self, n: u32) {
         let (r, bit) = Self::mask_reg(n);
@@ -603,5 +614,17 @@ mod tests {
             t.0.value(ost_reg::OSMR1),
             (u32::MAX - 100).wrapping_add(1000)
         );
+    }
+
+    #[test]
+    fn sources_route_to_fiq_and_back() {
+        let mut i = Intc(MockBus::new());
+        i.0.preset(intc_reg::ICLR, 1 << 3);
+        i.route_fiq(irq::OST_4_11, true);
+        assert_eq!(i.0.value(intc_reg::ICLR), 1 << 3 | 1 << irq::OST_4_11);
+        i.route_fiq(irq::OST_4_11, false);
+        assert_eq!(i.0.value(intc_reg::ICLR), 1 << 3, "others untouched");
+        i.route_fiq(33, true);
+        assert_eq!(i.0.value(intc_reg::ICLR2), 1 << 1);
     }
 }

@@ -1,6 +1,6 @@
 //! Test image for the soft run limit (overnight item 55): started by the
-//! resident loader, it says hello, turns interrupts on (a tick) and then
-//! runs forever without checking in. The loader's soft watchdog must bring
+//! resident loader, it says hello, then spins forever with interrupts off
+//! and never checks in. The loader's soft watchdog must bring
 //! it back with a crash report, without the hardware reset (which on the
 //! X51v lands on Dell's factory-restore prompt). `cargo xtask emu` checks it.
 
@@ -32,11 +32,13 @@ mod image {
         );
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        // Interrupts on, as almost every program has them; then never
-        // return and never check in.
+        // Interrupts on, then off again, and spin: the hardest case (what
+        // rp-bench did on the device), which only the FIQ-routed run limit
+        // can stop. Never returns, never checks in.
         rt::start_tick(100);
+        rt::irq_disable();
         loop {
-            rt::wait_tick();
+            core::hint::spin_loop();
         }
     }
 
