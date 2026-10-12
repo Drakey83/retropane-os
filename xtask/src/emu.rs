@@ -854,6 +854,21 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         blocked_clusters: &taken,
     });
     let sd = root.join("target/emulator/sd-put.img");
+    // A damaged first-FAT sector in a free region (sector 20: clusters
+    // 2560-2687, all free): invalid entries, as on the owner's card. The
+    // loader's `card repair` must restore it from the second FAT.
+    let mut image = image;
+    let fat1 = rp_fat::format::PARTITION_START + 32;
+    let damaged = fat1 + 20;
+    for (k, b) in image[damaged as usize * 512..damaged as usize * 512 + 512]
+        .iter_mut()
+        .enumerate()
+    {
+        *b = if k % 4 == 3 { 0x0A } else { 0x80 | k as u8 };
+    }
+    // ... with one entry landing in range by chance, as on the owner's card.
+    let e5 = damaged as usize * 512 + 5 * 4;
+    image[e5..e5 + 4].copy_from_slice(&0x0000_0123u32.to_le_bytes());
     std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let frame = rp_loadproto::file_frame("retropane.bin", &new);
     // A file the card doesn't have: created (long name, so the loader
@@ -903,6 +918,19 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("card scrub 5"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR scrub: only first-FAT", 20)?;
+        // Repair: the damaged sector is restored; a healthy one is left.
+        s.write_all(&rp_loadproto::control_frame(&format!(
+            "card repair {damaged}"
+        )))
+        .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK repair", 20)?;
+        s.write_all(&rp_loadproto::control_frame(&format!("card repair {fat1}")))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "already matches", 20)?;
+        // Peek: the boot sector's first bytes, read-only.
+        s.write_all(&rp_loadproto::control_frame("card peek 2048 0"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK peek 2048+0: eb 58 90", 20)?;
         Ok(())
     };
     boot(
@@ -929,6 +957,17 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     }
     if card_file(&sd, "startup.txt")? != script {
         return Err("startup.txt changed on the card".into());
+    }
+    let after = std::fs::read(&sd).map_err(|e| e.to_string())?;
+    let fat_sectors = {
+        let b = &after[rp_fat::format::PARTITION_START as usize * 512..];
+        u32::from_le_bytes([b[36], b[37], b[38], b[39]])
+    };
+    let one = &after[damaged as usize * 512..damaged as usize * 512 + 512];
+    let two = &after
+        [(damaged + fat_sectors) as usize * 512..(damaged + fat_sectors) as usize * 512 + 512];
+    if one != two {
+        return Err("card repair: the first FAT sector still differs from its mirror".into());
     }
     if card_file(&sd, "RetroPane loader.lnk")? != created
         || card_file(&sd, "RETROP~1.LNK")? != created

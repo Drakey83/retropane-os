@@ -163,6 +163,25 @@ nothing writes flash; card writes only through copy-then-swap.
 - **Modernize:** the threat model's "hostile files" and "someone with a
   cable" rows are now backed by tests, not intentions.
 
+## Card repair (owner approved, 2026-10-12)
+
+- [x] `cargo xtask card scrub|repair|peek`: the weak block 10880 turned out
+      to hold *damaged* FAT data (118 of 128 entries impossible values),
+      with an intact, live mirror in the second FAT. `card repair` restored
+      it under strict evidence rules (mirroring on, the mirror's entries all
+      valid, at least 90% of the differing entries invalid in the damaged
+      copy), verified it: reads in 0.9 ms instead of 796 ms.
+- [ ] **Device reset:** a scan of the FAT's last 1,901 blocks outlasted the
+      run limit (the scan fed the watchdog only once; fixed: it feeds per
+      block). The Axim is on Dell's factory prompt until the owner presses
+      Mail; then: re-scan blocks 15,074-16,975, then `cargo xtask drive on`
+      and check Windows mounts the drive.
+- **Iterate:** never write from belief: compare with the card's own backup,
+  judge the evidence, refuse when it's ambiguous (the tool refused twice
+  before the rules matched the facts), verify after.
+- **Modernize:** a self-healing path for FAT damage that stock Windows
+  Mobile would have needed a PC and `chkdsk` for.
+
 ## Second tier (when the above is done or blocked)
 
 Each held to the same standard: every improvement that makes sense, tested
