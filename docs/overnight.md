@@ -272,3 +272,24 @@ on the host or in the emulator first.
       session (or contributor) starts from facts.
     - **Modernize:** the PC-side story is now standard classes only:
       serial, mass storage, and later NCM/MTP; no sync software.
+
+## Third tier (added 2026-10-12, same rules)
+
+14. **Emulator release bump**: rp-v0.9.4 (SD switches, PWM) into
+    `QEMU_RELEASE` once built, bench re-recorded, so GitHub CI runs the
+    locked-card and backlight tests too.
+15. **FAT subdirectories** in `rp-fat`: paths (`dir/file`), find, read,
+    create and replace inside directories, `mkdir`; `cargo xtask put`
+    takes a card path. Crash-safe as before; power-loss and hostile tests.
+16. **exFAT writes**: replace and create on exFAT cards (bitmap instead of
+    a free scan, entry-set checksums kept right), so SDXC cards get the
+    same tools as FAT32.
+17. **Power button** (GPIO0, docs/research/hardware-inventory.md): driver,
+    an `IrqLine` wait, emulator model input, and a loader action (a short
+    press reports, a long press returns to Windows Mobile by soft reset).
+18. **SD DMA**: the PXA27x DMA controller for card reads and writes
+    (emulator has a DMA model), measured against the polled path.
+
+Device items waiting for the Axim (Dell prompt: owner presses Mail):
+scan blocks 15,074-16,975, drive on + Windows mount check, backlight on the
+device, thread-switch time investigation.
