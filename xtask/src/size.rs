@@ -234,6 +234,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
+    // Test image: shows a UI concept picture on the real panel for 20 s,
+    // then returns. Almost all of it is the 600 KiB picture (480 x 640
+    // RGB565); 609.6 KiB measured, the picture fixed in size.
+    Budget {
+        image: "rp-picture",
+        max_load: 640 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

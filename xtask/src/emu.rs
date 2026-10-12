@@ -744,6 +744,133 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The concept-picture image (rp-picture): the loader starts it, the screen
+/// must show the picture exactly (the screendump against the source, after
+/// RGB565), and after its 20 s it must be back at the loader through a
+/// normal return: no run-limit crash, no reset. Only then may it go to the
+/// device.
+pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-picture.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-picture"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let want = expected_picture(root)?;
+    let shot = root.join("target/emulator/picture-screen.ppm");
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    let check = || -> Result<(), String> {
+        // Called as soon as the image says the picture is up.
+        let shown = Instant::now();
+        // The emulator redraws its screen on a timer: give it time to show
+        // the new frame (as the crash-screen check does).
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = std::fs::remove_file(&shot);
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.screendump(&guest, &shot)?;
+        let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+        if (img.width, img.height) != (480, 640) {
+            return Err(format!("picture: screen is {}x{}", img.width, img.height));
+        }
+        // The screendump widens RGB565 to 8 bits; compare in RGB565 terms.
+        let mut off = 0usize;
+        for (i, px) in want.as_chunks::<2>().0.iter().enumerate() {
+            let v = u16::from_le_bytes(*px);
+            let (r, g, b) = (img.rgb[i * 3], img.rgb[i * 3 + 1], img.rgb[i * 3 + 2]);
+            if u16::from(r >> 3) != v >> 11
+                || u16::from(g >> 2) != (v >> 5) & 63
+                || u16::from(b >> 3) != v & 31
+            {
+                off += 1;
+            }
+        }
+        if off != 0 {
+            return Err(format!(
+                "picture: {off} of 307200 pixels differ from the source"
+            ));
+        }
+        // Stay up until it has had time to return (20 s shown, then the
+        // loader's run log reaches the PC).
+        let wait = Duration::from_secs(u64::from(rp_picture_seconds()) + 6);
+        std::thread::sleep(wait.saturating_sub(shown.elapsed()));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-PICTURE-SHOWN")),
+            during: Some(&check),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or_else(|| {
+            let tail: String = output
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            format!(
+                "picture: never came back to the loader; serial ends:
+{tail}"
+            )
+        })?;
+    if !log.contains("RETROPANE-PICTURE-SHOWN") {
+        return Err(format!(
+            "picture: the run log doesn't have the marker:{log}"
+        ));
+    }
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("picture: didn't return cleanly:{log}"));
+    }
+    eprintln!(
+        "    picture OK: shown pixel-exact, back at the loader after {} s with no crash or reset",
+        rp_picture_seconds()
+    );
+    Ok(())
+}
+
+/// How long rp-picture shows its picture (kept in step with the image).
+const fn rp_picture_seconds() -> u32 {
+    20
+}
+
+/// What rp-picture shows: `local/concept/picture.rgb565`, or the generated
+/// gradient its build uses when that's absent.
+fn expected_picture(root: &Path) -> Result<Vec<u8>, String> {
+    const BYTES: usize = 480 * 640 * 2;
+    match std::fs::read(root.join("local/concept/picture.rgb565")) {
+        Ok(p) if p.len() == BYTES => Ok(p),
+        Ok(p) => Err(format!("local/concept/picture.rgb565: {} bytes", p.len())),
+        Err(_) => {
+            let mut v = Vec::with_capacity(BYTES);
+            for y in 0..640u32 {
+                for x in 0..480u32 {
+                    let px = ((x * 31 / 479) << 11) | ((y * 63 / 639) << 5) | (31 - y * 31 / 639);
+                    v.extend_from_slice(&(px as u16).to_le_bytes());
+                }
+            }
+            Ok(v)
+        }
+    }
+}
+
 /// Port of the emulated USB serial port (the UDC model's chardev); each test
 /// gets its own (`n`), so one can never reach another test's emulator.
 fn usb_port(n: u16) -> u16 {
@@ -2613,6 +2740,11 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         // Killing wsl.exe may not reach the Linux process at once; make sure
         // it's gone before the next test binds the same ports.
         let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+    }
+    // Whatever the guest printed while `during` ran is still queued: keep it,
+    // so a test can check what happened after its own waiting.
+    for chunk in serial.rx.try_iter() {
+        serial.output.push_str(&String::from_utf8_lossy(&chunk));
     }
     match result {
         Ok(()) => Ok(serial.output),

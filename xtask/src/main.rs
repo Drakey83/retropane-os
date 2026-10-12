@@ -76,6 +76,8 @@ commands:
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
             in target/device-check.txt; --with-owner adds CF and a tone
+  emu-picture  only the rp-picture check (a UI concept on screen, then
+            back to the loader): run it before `load rp-picture`
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -86,9 +88,8 @@ fn main() -> ExitCode {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
-        "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "qemu" => {
-            run_step(&cmd)
-        }
+        "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
+        | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -216,6 +217,7 @@ fn run_step(step: &str) -> Result {
         "lint" => lint(),
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
+        "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
@@ -226,6 +228,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader(&workspace_root()))
             .and_then(|()| emu::boot_loader_hang(&workspace_root()))
             .and_then(|()| emu::boot_loader_run_limit(&workspace_root()))
+            .and_then(|()| emu::boot_loader_picture(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))

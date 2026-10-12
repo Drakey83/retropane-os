@@ -1,0 +1,18 @@
+[package]
+name = "rp-picture"
+description = "Test image: shows a 480 x 640 picture (a UI concept) full screen for 20 s, then returns to the loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true
