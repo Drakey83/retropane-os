@@ -1,7 +1,11 @@
 # ADR-0017: Securing the development loader
 
-- **Status:** Proposed (2026-10-12, overnight queue item 32; needs the
-  project owner's approval before any code)
+- **Status:** Deferred until release (2026-10-12, by the project owner:
+  "keep it open until release ... this needs to eventually be locked down
+  once it's no longer in active development, but it'll just be a hassle if
+  we do it now"). The design below stands as the plan; locking the loader
+  down (or removing it from release images) is a release requirement in
+  the ROADMAP (Phase 9).
 - **Date:** 2026-10-12
 
 ## Context
