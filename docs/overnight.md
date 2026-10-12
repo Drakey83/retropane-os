@@ -223,8 +223,21 @@ on the host or in the emulator first.
      separate module so only images that read cards pay for it.
    - **Modernize:** SDXC cards up to 2 TB readable; stock Windows Mobile
      stopped at FAT and 32 GB.
-10. **SD card detect and write-protect** (GPIO12/GPIO27): driver support,
-    emulator model, probe line.
+10. **SD card detect and write-protect** (GPIO12/GPIO27): **done.** From
+    the owner's probe: detect active low (0 = card in), lock high = locked.
+    The loader reads both once a second (debounced: two readings must
+    agree), hot-swaps (a card put in is initialised on the kept controller,
+    `SdCard::try_init` hands the controller back on failure; one taken out
+    is "no medium" to the PC), and honours the lock everywhere (USB drive
+    writes, `put`, `install`, scrub, repair). Emulator rp-v0.9.3 wires both
+    lines; `boot_loader_locked` checks a locked card refuses a file and
+    stays unchanged (the emulated card itself stays writable, as a real one
+    does, so ignoring the switch fails the test).
+    - **Iterate:** hot swap without a restart; debounced switches; a card
+      that answers is used even if the switch reads oddly (a wrong polarity
+      can't hide it).
+    - **Modernize:** the lock switch respected as users expect from any
+      card reader; the drive tells the PC when the card changes.
 11. **Backlight** (PWM): spec from the PXA manual and board sources,
     driver with brightness steps and a fade, a probe test that restores
     Windows Mobile's level afterwards.

@@ -11,8 +11,8 @@
 |---|---|---|
 | Controller | PXA27x MMC at `0x41100000`, clock `CKEN` bit 12 | likely |
 | Card power | CPLD `0x16` bit 0 (docs/hw/cpld.md) | likely |
-| Card detect | GPIO12 | likely |
-| Write protect | GPIO27 | likely |
+| Card detect | GPIO12, **active low (0 = card in)** | confirmed (probe with the owner's card in, 2026-10-12) |
+| Write protect | GPIO27, high = locked | likely (reads 0 with the owner's unlocked card) |
 | Card types | SD, SDHC (the user's 4 GB card works under WM6.1); SDXC to be verified | confirmed for SDHC |
 
 ## Controller registers (M)

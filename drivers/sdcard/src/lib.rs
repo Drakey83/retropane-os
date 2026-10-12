@@ -214,7 +214,34 @@ pub struct SdCard<H> {
 
 impl<H: SdHost> SdCard<H> {
     /// Identifies and selects the card.
-    pub fn init(mut host: H) -> Result<Self, Error> {
+    pub fn init(host: H) -> Result<Self, Error> {
+        Self::try_init(host).map_err(|(e, _)| e)
+    }
+
+    /// Like [`SdCard::init`], but a failure gives the host back, so a card
+    /// inserted later can be initialised on it (hot swap).
+    pub fn try_init(mut host: H) -> Result<Self, (Error, H)> {
+        match Self::identify(&mut host) {
+            Ok((rca, high_capacity, wide, blocks)) => Ok(Self {
+                host,
+                rca,
+                high_capacity,
+                wide,
+                blocks,
+                last_error: None,
+                reads: 0,
+                read_retries: 0,
+                read_fallbacks: 0,
+                slow_reads: 0,
+                weak: [(0, 0); WEAK_RANGES],
+                weak_len: 0,
+                weak_next: 0,
+            }),
+            Err(e) => Err((e, host)),
+        }
+    }
+
+    fn identify(host: &mut H) -> Result<(u16, bool, bool, u32), Error> {
         host.set_clock(INIT_HZ);
         host.command(Command {
             init_clocks: true,
@@ -260,21 +287,7 @@ impl<H: SdHost> SdCard<H> {
             host.set_wide_bus();
         }
         host.set_clock(TRANSFER_HZ);
-        Ok(Self {
-            host,
-            rca,
-            high_capacity,
-            wide,
-            blocks,
-            last_error: None,
-            reads: 0,
-            read_retries: 0,
-            read_fallbacks: 0,
-            slow_reads: 0,
-            weak: [(0, 0); WEAK_RANGES],
-            weak_len: 0,
-            weak_next: 0,
-        })
+        Ok((rca, high_capacity, wide, blocks))
     }
 
     /// Capacity in 512-byte blocks (0 if the CSD was unreadable).
@@ -1181,6 +1194,18 @@ mod tests {
         assert_eq!(card.reads(), 2, "one read command per block");
         let host = card.into_inner();
         assert_eq!(&host.log[host.log.len() - 2..], [(17, 5), (17, 6)]);
+    }
+
+    #[test]
+    fn a_failed_init_gives_the_host_back_for_a_later_card() {
+        let mut fake = FakeCard::new(true, true);
+        fake.busy_rounds = u32::MAX; // no card answering properly
+        let (e, mut host) = SdCard::try_init(fake).err().unwrap();
+        assert_eq!(e, Error::InitTimeout);
+        // A card arrives: the same host initialises it.
+        host.busy_rounds = 1;
+        let card = SdCard::try_init(host).ok().unwrap();
+        assert!(card.is_high_capacity());
     }
 
     #[test]

@@ -1371,6 +1371,65 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The SD card's lock switch: a card the emulator inserts read-only
+/// (`readonly=on`, which the X51v model shows on GPIO27) must refuse a
+/// file from the PC, and the drive must report it write-protected.
+pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    locked card: skipped (no USB model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "a.bin",
+            data: b"old",
+        }],
+        blocked_clusters: &[],
+    });
+    let sd = root.join("target/emulator/sd-locked.img");
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    if !device_has(root, "pxa2xx-mmci", "locked") {
+        eprintln!("    locked card: skipped (this emulator has no SD lock switch)");
+        return Ok(());
+    }
+    // The lock switch is the slot's (a tab the host reads); the card itself
+    // stays writable, as on real hardware, so a loader that ignored the
+    // switch would change the image.
+    let mut args: Vec<String> = usb_args(8).to_vec();
+    args.extend(["-global".into(), "pxa2xx-mmci.locked=on".into()]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let put = rp_loadproto::file_frame("a.bin", b"new");
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(8)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&put).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR card is write-protected", 20)?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    if card_file(&sd, "a.bin")? != b"old" {
+        return Err("locked card: the file changed".into());
+    }
+    eprintln!("    locked card OK: the lock switch refused the write, the card is unchanged");
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 

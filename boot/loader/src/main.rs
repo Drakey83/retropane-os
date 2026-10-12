@@ -80,10 +80,57 @@ mod image {
     /// PC writes a mounted drive on its own (docs/security.md).
     struct Lun {
         card: Option<Sd>,
+        /// The controller, kept when no card initialised, for a card
+        /// inserted later.
+        spare: Option<PxaMmc<Mmio>>,
         writable: bool,
         /// Offered to the PC (`drive off` makes it "no medium", like an
         /// empty card reader: the PC stops using it at once).
         offered: bool,
+        /// A card is in the slot (GPIO12 low, docs/hw/sd.md).
+        inserted: bool,
+        /// The card's lock switch is on (GPIO27 high).
+        locked: bool,
+        /// The slot's last reading, for debouncing: acted on only when two
+        /// readings a second apart agree.
+        seen: (bool, bool),
+    }
+
+    /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
+    const SD_DETECT: u8 = 12;
+    const SD_LOCK: u8 = 27;
+
+    impl Lun {
+        /// Reads the slot's switches once a second; a change that holds for
+        /// two readings is acted on: a card taken out is no longer offered,
+        /// a card put in is initialised (hot swap). Returns whether the PC
+        /// should be told the medium changed.
+        #[inline(never)]
+        fn poll_slot(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
+            let now = (!gpio.read(SD_DETECT), gpio.read(SD_LOCK));
+            let stable = now == self.seen;
+            self.seen = now;
+            if !stable || (now.0 == self.inserted && now.1 == self.locked) {
+                return false;
+            }
+            let (inserted, locked) = now;
+            if inserted && !self.inserted {
+                // A (new) card: initialise it on the controller we have.
+                let host = match self.card.take() {
+                    Some(old) => Some(old.into_inner()),
+                    None => self.spare.take(),
+                };
+                if let Some(host) = host {
+                    match SdCard::try_init(host) {
+                        Ok(card) => self.card = Some(card),
+                        Err((_, host)) => self.spare = Some(host),
+                    }
+                }
+            }
+            self.inserted = inserted;
+            self.locked = locked;
+            true
+        }
     }
 
     impl BlockDevice for Lun {
@@ -94,7 +141,7 @@ mod image {
                 .read_blocks(lba, buf)
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-            if !self.writable {
+            if !self.writable || self.locked {
                 return Err(BlockError::ReadOnly);
             }
             self.card
@@ -109,10 +156,10 @@ mod image {
             self.card.as_ref().map_or(0, SdCard::blocks)
         }
         fn present(&self) -> bool {
-            self.offered && self.card.as_ref().is_some_and(|c| c.blocks() > 0)
+            self.offered && self.inserted && self.card.as_ref().is_some_and(|c| c.blocks() > 0)
         }
         fn read_only(&self) -> bool {
-            !self.writable
+            !self.writable || self.locked
         }
         fn product(&self) -> &[u8; 16] {
             b"SD card         "
@@ -167,12 +214,16 @@ mod image {
 
     /// Powers the card and identifies it.
     #[inline(never)]
-    fn open_card() -> Option<Sd> {
-        let mut cpld = Cpld::new(devices::take_cpld()?);
-        let mmc = rt::take_mmc()?;
-        cpld.set_sd_power(true);
+    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio>>) {
+        let (Some(cpld), Some(mmc)) = (devices::take_cpld(), rt::take_mmc()) else {
+            return (None, None);
+        };
+        Cpld::new(cpld).set_sd_power(true);
         rt::delay_us(10_000);
-        SdCard::init(PxaMmc::new(mmc)).ok()
+        match SdCard::try_init(PxaMmc::new(mmc)) {
+            Ok(card) => (Some(card), None),
+            Err((_, host)) => (None, Some(host)),
+        }
     }
 
     /// Mounts the card's first partition afresh: the PC may have written
@@ -201,6 +252,11 @@ mod image {
                 return;
             }
         };
+        // The lock switch is the owner's: nothing writes a locked card.
+        if lun.locked {
+            let _ = reply.write_str("RPL ERR card is write-protected (lock switch)\r\n");
+            return;
+        }
         // Never write the card while the PC (as a drive) is writing it.
         if msc.host_writing(now_ms()) {
             let _ = reply.write_str("RPL ERR card busy: the PC is writing\r\n");
@@ -706,10 +762,21 @@ mod image {
         // within its control-transfer timeout, and card set-up (or giving up
         // on an empty slot) must not stall them (seen in the emulator: the
         // host gave up on the first descriptor request).
+        gpio.make_input(SD_DETECT);
+        gpio.make_input(SD_LOCK);
+        let (card, spare) = open_card();
+        // In: the switch says so, or a card answered anyway (so a wrong
+        // reading of the switch can't hide a working card).
+        let inserted = !gpio.read(SD_DETECT) || card.is_some();
+        let locked = gpio.read(SD_LOCK);
         let mut lun = Lun {
-            card: open_card(),
+            card,
+            spare,
             writable: false,
             offered: true,
+            inserted,
+            locked,
+            seen: (inserted, locked),
         };
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
@@ -978,6 +1045,15 @@ mod image {
                     let _ = writeln!(log, "refused: {}", what(e));
                 }
                 None => {}
+            }
+            if rt::ticks().wrapping_sub(last) >= TICK_1S && lun.poll_slot(&mut gpio) {
+                msc.medium_changed(0);
+                let _ = writeln!(
+                    log,
+                    "SD card {}{}",
+                    if lun.inserted { "in" } else { "out" },
+                    if lun.locked { ", locked" } else { "" }
+                );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S {
                 last = rt::ticks();
