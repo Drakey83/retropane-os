@@ -77,6 +77,7 @@ ever did, and found one weak block:
 | Fact | Value | Confidence | Evidence |
 |---|---|---|---|
 | Block 10880 (inside the first FAT) takes 0.79 s to read alone; every other block measured takes ~4 ms | 794,241 / 794,457 us in two clean reads | confirmed | `cargo xtask card scan 10880 1` |
+| Its data was damaged too: 118 of 128 FAT entries impossible values; the mirror (second FAT) intact. Repaired from the mirror: 0.9 ms reads after | confirmed | `card scrub`/`card repair`/`card peek`, 2026-10-12 |
 | A multi-block read (CMD18) that reaches it always ends in a read timeout (`STAT` 0x2941: bit 0) | 14/14, then 36/36 failures of the same 64-block range | confirmed | `cargo xtask drive status` |
 | After such a timeout the card is still sending: the CMD12 that stops a timed-out read is unanswered (`STAT` 0x2142) and the card reports ILLEGAL_COMMAND (bit 22) in the next response | status 0x00400900 on good CMD17s | confirmed | `drive status` |
 | Once provoked, single reads of the block also time out (0x2141), at full clock, a quarter and the minimum clock; clean single reads succeed at ~0.79 s, which looks like the controller's longest read wait whatever `CLKRT` is | 2/3 clean scans succeed, none after failed CMD18s | likely | `card scan`, `drive status` |
@@ -92,11 +93,19 @@ failed is remembered and read block by block from then on. None of that
 rescues this block on this card; it does keep every other read working and
 the card responsive.
 
-**Open, for the owner:** the block can be *scrubbed*: read once while it
-reads (a clean single read does), then written back unchanged, so the card
-stores it in a fresh page and it reads fast again. That is a write to the
-first FAT, so it waits for the owner (a card backup first). Or replace the
-card: a block that slow is often the first sign of a wearing card.
+**Resolved (2026-10-12, owner approved the rewrite):** the block wasn't
+just slow, its *data* was damaged. Compared with its mirror in the second
+FAT (`cargo xtask card scrub` refused: 436 of 512 bytes differ), 118 of
+the 128 entries held values no FAT entry can have (e.g. `0x23510080` on a
+972,800-cluster card); the second FAT, which the boot sector marks as
+mirrored (ExtFlags `0x0000`), held zeros (free clusters). `cargo xtask card
+repair 10880` restored it from the mirror: verified by read-back, and its
+read time went **795,659 µs → 900 µs** (rewritten into a healthy page).
+Scanning the rest of the first FAT: blocks 9,374-15,074 all read in under
+6 ms; the last 1,901 (to 16,975) outlasted the loader's run limit and the
+device reset (the scan fed the watchdog only at its start; fixed). That
+range is still to check. A damaged FAT sector on a card is a sign of
+wear: keep a backup, and consider replacing it.
 
 ### File system
 

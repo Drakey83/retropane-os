@@ -147,6 +147,9 @@ pub struct Volume<D> {
     fat_start: u32,
     fat_sectors: u32,
     fats: u32,
+    /// The FATs are mirrored (BPB ExtFlags bit 7 clear): every copy is
+    /// written, so the second is a backup of the first.
+    mirrored: bool,
     data_start: u32,
     root_cluster: u32,
     /// Data clusters, numbered 2..2 + clusters.
@@ -328,6 +331,7 @@ impl<D: BlockDevice> Volume<D> {
         let sectors_per_cluster = u32::from(buf[13]);
         let reserved = u32::from(le16(&buf, 14));
         let fats = u32::from(buf[16]);
+        let mirrored = fats >= 2 && le16(&buf, 40) & 0x80 == 0;
         let fat_sectors = le32(&buf, 36);
         let root_cluster = le32(&buf, 44);
         let total = match le16(&buf, 19) {
@@ -380,6 +384,7 @@ impl<D: BlockDevice> Volume<D> {
             fat_start,
             fat_sectors,
             fats,
+            mirrored,
             data_start,
             root_cluster,
             clusters,
@@ -408,12 +413,14 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// The sector holding the same data as `lba` in the second FAT, when
-    /// `lba` is a sector of the first FAT and there is a second copy: the
-    /// card's own backup of it (used to scrub a weak FAT sector safely).
+    /// `lba` is a sector of the first FAT and the FATs are mirrored (with
+    /// mirroring off, only the active FAT is kept up to date, so the other
+    /// is no backup): the card's own copy, for scrubbing or repairing a
+    /// weak FAT sector safely.
     #[must_use]
     pub fn fat_mirror(&self, lba: u32) -> Option<u32> {
         let in_first = (self.fat_start..self.fat_start + self.fat_sectors).contains(&lba);
-        (in_first && self.fats >= 2).then(|| lba + self.fat_sectors)
+        (in_first && self.mirrored).then(|| lba + self.fat_sectors)
     }
 
     /// Gives the device back (flushing nothing: every operation leaves the

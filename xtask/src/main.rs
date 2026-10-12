@@ -53,7 +53,9 @@ commands:
   card      card diagnostics through the loader: `card scan <lba> <count>`
             reads blocks one by one, reports failures and the slowest read;
             `card scrub <lba>` rewrites a weak first-FAT sector in place,
-            verified against its mirror in the second FAT
+            verified against its mirror in the second FAT; `card repair
+            <lba>` restores a damaged one from the mirror (only when the
+            first copy's differing entries are invalid)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
