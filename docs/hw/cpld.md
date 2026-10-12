@@ -44,6 +44,11 @@ bit 2, `0x1C` bit 0 → GPIO89 high.
 
 ## Open questions
 
-- Read-back behaviour, and the reset value of every register.
+- The reset value of every register. Read-back works (measured
+  2026-10-12, first loader after Windows Mobile, before any RetroPane
+  write): `00=0048 02=0000 04=00a0 06=0002 08..12=0000 14=0002 16..1e=0000`.
+  What Windows Mobile leaves on is therefore readable, so the driver's
+  shadow could start from these reads instead of zero once each bit's
+  meaning is known.
 - Remaining bits: CF power, Bluetooth power and reset, backlight enable, charger.
 - Confirm all of the above from Dell's OAL code in `nk.exe`.

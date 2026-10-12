@@ -1134,6 +1134,33 @@ on the host or in the emulator first.
     pipe; try `-serial pipe:` or a TCP serial in `xtask/src/emu.rs` for
     native Windows, then make the release check use it again.
 
+62. **CF on the device: works first, breaks after a hand-over** (found
+    2026-10-12, docs/hw/cf.md "Measured on the owner's X51v"). Fix the
+    class, test first: (a) emulator: the CF card keeps its configured
+    state across a loader hand-over, so CI fails like the device; (b)
+    driver: reset the card (configuration register soft reset, then wait
+    for ready) whenever a loader takes the socket, and re-check the CIS;
+    (c) **no device wait may hold up the loader's USB loop** (a stuck CF
+    stalled image transfers part-way; recovery was padding the frame so
+    its CRC failed): bound each wait per loop pass or drop a dead card
+    after one failed command, with a mutant that hangs a card; (d) only
+    then the I: drive, read-only. Also found and fixed in the same
+    session: `drive on` while the serial-only fallback layout is up now
+    switches back to the serial + drive layout (it used to report "drive
+    offered" with no drive possible). Diagnostics in the loader: `cpld`
+    (registers as found), `cf` reports slot state, task file and sector
+    0's ends.
+
+63. **Drive icons for the cards**: owner wants the "Memory cards" icons
+    from puntodepartida.com (no licence stated: all rights reserved). For
+    now: the owner's own cards only, files in `local/icons/` (never
+    committed), shown via `autorun.inf` (`icon=`, `label=`). Owner is
+    emailing the author for permission to ship them; if no answer, the
+    repo uses the Crystal SVG pair (Everaldo Coelho, LGPL; Commons
+    `Crystal128-sd-mmc-unmount.svg`, `Crystal128-compact-flash-unmount.svg`)
+    with the licence notice next to them. My own drawn drafts were rejected
+    (deleted).
+
 59. **No emulator-only image on the device**: **done (emulator).** Every
     image's budget now says what it does under the loader (`OnDevice`:
     returns, the loader, never returns), so a new image can't be added
