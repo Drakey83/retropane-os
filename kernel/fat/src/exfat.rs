@@ -75,11 +75,14 @@ type SlotVisit<'a> = dyn FnMut(u32, u32, usize, &[u8; ENTRY]) -> bool + 'a;
 
 /// A directory: its first cluster, and how its clusters follow: one run
 /// of `len` clusters (no FAT chain), or through the FAT (at most `len`).
+/// A folder also knows where its own entry is (the sector and slot of its
+/// file entry, its set within that sector), so it can grow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Dir {
     first: u32,
     contiguous: bool,
     len: u32,
+    entry: Option<(u32, usize)>,
 }
 
 /// Where a file's entry set is: its file entry's sector (and that
@@ -278,17 +281,17 @@ impl<D: BlockDevice> ExVolume<D> {
             first: self.root_cluster,
             contiguous: false,
             len: self.clusters,
+            entry: None,
         }
     }
 
     /// The cluster after `c` in `dir`, if it has one (`k`: clusters so far).
     fn dir_next(&mut self, dir: Dir, c: u32, k: u32) -> Result<Option<u32>, Error> {
         if k + 1 >= dir.len {
-            return if dir.contiguous {
-                Ok(None)
-            } else {
-                Err(Error::Corrupt) // a chain longer than the volume: a loop
-            };
+            // A folder ends at its size. The root has no size: its bound is
+            // the volume, and a chain that long is a loop.
+            let root = dir.first == self.root_cluster && dir.entry.is_none() && !dir.contiguous;
+            return if root { Err(Error::Corrupt) } else { Ok(None) };
         }
         if dir.contiguous {
             return Ok(Some(c + 1));
@@ -519,11 +522,15 @@ impl<D: BlockDevice> ExVolume<D> {
         let n = crate::components(path)?.count();
         let mut dir = self.root();
         for name in parts.take(n.saturating_sub(skip_last)) {
-            let (f, _) = self.find_set(dir, name)?;
+            let (f, at) = self.find_set(dir, name)?;
             if !f.is_dir {
                 return Err(Error::NotFound);
             }
             dir = self.dir_of(&f)?;
+            // Growable when its whole set is in one sector and known.
+            if at.slot + at.count <= SLOTS && at.count <= KEEP {
+                dir.entry = Some((at.lba, at.slot));
+            }
         }
         Ok(dir)
     }
@@ -544,6 +551,7 @@ impl<D: BlockDevice> ExVolume<D> {
             first: f.first_cluster,
             contiguous: f.contiguous,
             len: len as u32,
+            entry: None,
         })
     }
 
@@ -606,7 +614,7 @@ impl<D: BlockDevice> ExVolume<D> {
         self.mark(c, 1, true)?;
         let cb = self.cluster_bytes() as u64;
         let (set, count) = build_set(leaf.as_bytes(), ATTR_DIRECTORY, c, cb, true);
-        self.add_set(parent, &set[..count])?;
+        self.add_set(parent, &set[..count], scratch)?;
         if !self.was_dirty {
             self.set_dirty(false)?;
         }
@@ -688,7 +696,7 @@ impl<D: BlockDevice> ExVolume<D> {
                     size,
                     written.contiguous,
                 );
-                self.add_set(dir, &set[..count])?;
+                self.add_set(dir, &set[..count], scratch)?;
                 self.delete_set(dir, &at)?;
                 self.release(&file)?;
             }
@@ -700,7 +708,7 @@ impl<D: BlockDevice> ExVolume<D> {
                     size,
                     written.contiguous,
                 );
-                self.add_set(dir, &set[..count])?;
+                self.add_set(dir, &set[..count], scratch)?;
             }
         }
         if !self.was_dirty {
@@ -937,8 +945,98 @@ impl<D: BlockDevice> ExVolume<D> {
     /// within one sector (one write), or at the end of the directory, the
     /// sectors after the first written first, so the set exists only once
     /// its file entry's sector (which ends the directory until then) lands.
+    /// A full directory grows by a cluster first.
     #[inline(never)]
-    fn add_set(&mut self, dir: Dir, set: &[[u8; ENTRY]]) -> Result<(), Error> {
+    fn add_set(
+        &mut self,
+        mut dir: Dir,
+        set: &[[u8; ENTRY]],
+        scratch: &mut [u8],
+    ) -> Result<(), Error> {
+        for _ in 0..2 {
+            match self.place_set(dir, set) {
+                Err(Error::NoRoom) => self.grow(&mut dir, scratch)?,
+                r => return r,
+            }
+        }
+        Err(Error::NoRoom)
+    }
+
+    /// Grows `dir` by one zeroed cluster, marked used before anything
+    /// links it. The root links it through the FAT. A folder keeps one run
+    /// when the next cluster is free; otherwise its run is chained through
+    /// the FAT first (ignored while its entry still says "no FAT chain").
+    /// Then one sector write of the folder's entry (size, chain flag) makes
+    /// the cluster part of it.
+    fn grow(&mut self, dir: &mut Dir, scratch: &mut [u8]) -> Result<(), Error> {
+        if dir.entry.is_none() && dir.first != self.root_cluster {
+            return Err(Error::NoRoom); // a folder whose entry spans sectors
+        }
+        // The directory's last cluster.
+        let mut last = dir.first;
+        if dir.contiguous {
+            last = dir.first + dir.len - 1;
+        } else {
+            for k in 0.. {
+                match self.dir_next(*dir, last, k)? {
+                    Some(c) => last = c,
+                    None => break,
+                }
+            }
+        }
+        let new = match self.scan(last + 1, 1, scratch)? {
+            (Some(c), _) if c == last + 1 => c,
+            _ => match self.scan(2, 1, scratch)? {
+                (Some(c), _) => c,
+                (None, _) => return Err(Error::NoRoom),
+            },
+        };
+        let zero = &mut scratch[..SECTOR];
+        zero.fill(0);
+        let lba = self.cluster_lba(new);
+        for s in 0..1u32 << self.cluster_shift {
+            self.dev.write_blocks(lba + s, zero)?;
+        }
+        self.mark(new, 1, true)?;
+        let Some((at, slot)) = dir.entry else {
+            // The root: chained, no size to change.
+            self.fat_set(new, FAT_EOC)?;
+            self.fat_set(last, new)?;
+            return Ok(());
+        };
+        let stays = dir.contiguous && new == last + 1;
+        if !stays {
+            if dir.contiguous {
+                for c in dir.first..last {
+                    self.fat_set(c, c + 1)?;
+                }
+            }
+            self.fat_set(new, FAT_EOC)?;
+            self.fat_set(last, new)?;
+        }
+        // The switch: the folder's own entry, one sector.
+        self.dev.read_blocks(at, &mut self.buf)?;
+        let count = 1 + usize::from(self.buf[slot * ENTRY + 1]);
+        if self.buf[slot * ENTRY] != T_FILE || slot + count > SLOTS || count > KEEP {
+            return Err(Error::Corrupt);
+        }
+        let mut set = [[0u8; ENTRY]; KEEP];
+        for (k, e) in set.iter_mut().take(count).enumerate() {
+            e.copy_from_slice(&self.buf[(slot + k) * ENTRY..(slot + k + 1) * ENTRY]);
+        }
+        let size = u64::from(dir.len + 1) * self.cluster_bytes() as u64;
+        set_stream(&mut set[..count], dir.first, size, stays);
+        for (k, e) in set.iter().take(count).enumerate() {
+            self.buf[(slot + k) * ENTRY..(slot + k + 1) * ENTRY].copy_from_slice(e);
+        }
+        self.dev.write_blocks(at, &self.buf)?;
+        dir.len += 1;
+        dir.contiguous = stays;
+        Ok(())
+    }
+
+    /// [`ExVolume::add_set`] without growing: `NoRoom` when it doesn't fit.
+    fn place_set(&mut self, dir: Dir, set: &[[u8; ENTRY]]) -> Result<(), Error> {
         let count = set.len();
         let mut middle = None;
         let mut end = None;
@@ -969,13 +1067,17 @@ impl<D: BlockDevice> ExVolume<D> {
             return self.write_entries(lba, slot, set);
         }
         let (lba, nth, slot) = end.ok_or(Error::NoRoom)?;
-        // The pieces in later sectors first, the file entry's sector last.
+        // Every sector it needs must exist before anything is written.
         let spill = (slot + count).div_ceil(SLOTS) as u32;
+        let mut sectors = [0u32; KEEP];
+        for k in 1..spill {
+            sectors[k as usize] = self.dir_sector(dir, nth + k)?.ok_or(Error::NoRoom)?;
+        }
+        // The pieces in later sectors first, the file entry's sector last.
         for k in (1..spill).rev() {
-            let at = self.dir_sector(dir, nth + k)?.ok_or(Error::NoRoom)?;
             let from = k as usize * SLOTS - slot;
             let to = (from + SLOTS).min(count);
-            self.write_entries(at, 0, &set[from..to])?;
+            self.write_entries(sectors[k as usize], 0, &set[from..to])?;
         }
         self.write_entries(lba, slot, &set[..(SLOTS - slot).min(count)])
     }
@@ -1689,29 +1791,122 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_fills_and_says_so() {
+    fn folders_grow_in_one_run_or_by_a_chain_and_the_root_too() {
         let (img, _, _) = image();
         let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
         let mut scratch = vec![0u8; 2048];
-        v.mkdir("full", &mut scratch).unwrap();
-        // 2 KiB clusters: 64 entries, 3 per short name: 21 files fit.
-        for i in 0..21 {
-            v.put(&format!("full/f{i:02}"), &[i as u8], &mut scratch)
+        // 2 KiB clusters: 64 entries, 3 per short name: 21 files a cluster.
+        v.mkdir("run", &mut scratch).unwrap();
+        for i in 0..50 {
+            v.put(&format!("run/f{i:02}"), &[i as u8], &mut scratch)
                 .unwrap();
         }
-        assert_eq!(
-            v.put("full/one more", b"x", &mut scratch),
-            Err(Error::NoRoom)
-        );
-        for i in 0..21 {
-            assert_eq!(read_all(&mut v, &format!("full/f{i:02}"), 512), [i as u8]);
+        let f = v.find("run").unwrap();
+        assert_eq!(f.size, 3 * 2048);
+        // The run's next clusters were taken by the files: it chained.
+        assert!(!f.contiguous);
+        for i in 0..50 {
+            assert_eq!(read_all(&mut v, &format!("run/f{i:02}"), 512), [i as u8]);
         }
-        consistent(&mut v);
+        // A folder with free space after it stays one run.
+        v.mkdir("solo", &mut scratch).unwrap();
+        let solo = v.find("solo").unwrap();
+        // Empty files take no clusters: the one after the folder stays
+        // free, so it grows in one run.
+        assert!(!used(&mut v, solo.first_cluster + 1));
+        let mut v2 = v;
+        for i in 0..30 {
+            v2.put(&format!("solo/{i:02}"), b"", &mut scratch).unwrap();
+        }
+        let solo = v2.find("solo").unwrap();
+        assert_eq!(solo.size, 2 * 2048);
+        assert!(solo.contiguous, "grew into the free cluster after it");
+        // The root grows through the FAT.
+        for i in 0..40 {
+            v2.put(&format!("root file {i:02}.txt"), &[1], &mut scratch)
+                .unwrap();
+        }
+        for i in 0..40 {
+            assert_eq!(
+                read_all(&mut v2, &format!("root file {i:02}.txt"), 512),
+                [1]
+            );
+        }
+        consistent(&mut v2);
+        assert!(!dirty(&v2));
     }
 
-    /// A power cut at every write while making two folders and a file:
-    /// afterwards each exists whole or not at all, and no live cluster is
-    /// marked free.
+    /// A power cut at every write of a put that has to grow a folder: the
+    /// folder and its files stay readable, the new file whole or absent.
+    #[test]
+    fn power_loss_while_a_folder_grows_is_harmless() {
+        let (img, _, _) = image();
+        let mut scratch = vec![0u8; 2048];
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        v.mkdir("d", &mut scratch).unwrap();
+        for i in 0..21 {
+            v.put(&format!("d/{i:02}"), &[i as u8], &mut scratch)
+                .unwrap();
+        }
+        // Taking the cluster after the folder forces a chain conversion.
+        let d = v.find("d").unwrap();
+        if !used(&mut v, d.first_cluster + 1) {
+            v.mark(d.first_cluster + 1, 1, true).unwrap();
+        }
+        // Free space full of valid entry sets for a file named "ghost": a
+        // new folder cluster that isn't zeroed would list them.
+        let (ghost, n) = build_set(b"ghost", ATTR_ARCHIVE, 0, 0, true);
+        let free: Vec<u32> = (2..2 + v.clusters).filter(|&c| !used(&mut v, c)).collect();
+        for c in free {
+            let o = v.cluster_lba(c) as usize * SECTOR;
+            for (k, e) in v.dev.data[o..o + 2048]
+                .as_chunks_mut::<ENTRY>()
+                .0
+                .iter_mut()
+                .enumerate()
+            {
+                e.copy_from_slice(&ghost[k % n]);
+            }
+        }
+        let ghosts = |v: &mut ExVolume<Mem>| {
+            let mut found = false;
+            let _ = v.for_each_in("d", |name, _| found |= name == b"ghost");
+            found
+        };
+        let full = v.into_inner().data;
+        let total = {
+            let mut v = ExVolume::mount(Mem(full.clone()), PARTITION_START).unwrap();
+            v.put("d/new", b"grown", &mut scratch).unwrap();
+            assert!(!v.find("d").unwrap().contiguous);
+            assert!(!ghosts(&mut v), "the new folder cluster wasn't zeroed");
+            v.dev.writes
+        };
+        for fail_at in 0..total {
+            let mut disk = Mem(full.clone());
+            disk.fail_at = Some(fail_at);
+            let mut v = ExVolume::mount(disk, PARTITION_START).unwrap();
+            assert!(v.put("d/new", b"grown", &mut scratch).is_err());
+            let mut v = ExVolume::mount(Mem(v.into_inner().data), PARTITION_START).unwrap();
+            for i in 0..21 {
+                assert_eq!(
+                    read_all(&mut v, &format!("d/{i:02}"), 512),
+                    [i as u8],
+                    "write {fail_at}"
+                );
+            }
+            match v.find("d/new") {
+                Ok(_) => assert_eq!(read_all(&mut v, "d/new", 512), b"grown"),
+                Err(Error::NotFound) => {}
+                Err(e) => panic!("write {fail_at}: {e:?}"),
+            }
+            assert!(
+                !ghosts(&mut v),
+                "write {fail_at}: stale entries in the folder"
+            );
+            consistent(&mut v);
+        }
+    }
+
     #[test]
     fn power_loss_while_making_folders_is_harmless() {
         let (img, a, _) = image();
