@@ -112,7 +112,8 @@ fn main() -> ExitCode {
             } else if flag.is_empty() {
                 Err("usage: cargo xtask load <image name | file.bin> | --setup".into())
             } else {
-                usb::load(&workspace_root(), &flag)
+                let force = std::env::args().skip(3).any(|a| a == "--force");
+                usb::load(&workspace_root(), &flag, force)
             }
         }
         "put" => {

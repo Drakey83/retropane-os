@@ -52,6 +52,10 @@ _start:
     ldr     sp, =__abt_stack_top
     msr     cpsr_c, #0xDB
     ldr     sp, =__exc_stack_top
+    @ FIQ: the soft run limit only (terminal: back to the loader), so it
+    @ can share the exception stack.
+    msr     cpsr_c, #0xD1
+    ldr     sp, =__exc_stack_top
     msr     cpsr_c, #0xD3
     ldr     sp, =__stack_top
 
@@ -80,7 +84,12 @@ rp_vectors:
     ldr     pc, [pc, #24]
     ldr     pc, [pc, #24]
     .word   _start, rp_undef_entry, rp_swi_fault, rp_pabt_entry
-    .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_undef_entry
+    .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_fiq_entry
+
+    @ FIQ: only the soft run limit is routed here (`arm_run_limit`). It
+    @ never returns: the program goes back to its starter.
+rp_fiq_entry:
+    bl      rp_fiq
 
     @ IRQ: move straight to SVC mode and save a full frame on the
     @ interrupted context's SVC stack (a thread's kernel stack), so the
@@ -93,7 +102,7 @@ rp_irq_entry:
     mrs     lr, spsr
     str     lr, [sp, #-12]              @ scratch: [sp-12] = cpsr
     sub     r0, sp, #12
-    msr     cpsr_c, #0xD3               @ SVC, IRQ and FIQ masked
+    msr     cpsr_c, #0x93               @ SVC, IRQ masked (FIQ open: run limit)
     sub     sp, sp, #72
     stmib   sp, {{r1-r12}}              @ r1-r12 at +4..+48
     ldmia   r0, {{r1, r2, r3}}          @ cpsr, r0, pc
@@ -593,7 +602,7 @@ pub fn arm_run_limit(ms: u32) {
     t.write32(OSCR4, 0);
     let enabled = t.read32(OIER);
     t.write32(OIER, enabled | 1 << 4);
-    intc().enable(crate::soc::irq::OST_4_11);
+    route_run_limit();
     if was {
         irq_enable();
     }
@@ -609,9 +618,38 @@ pub fn disarm_run_limit() {
     t.write32(OIER, enabled & !(1 << 4));
     t.write32(OMCR4, 0);
     t.write32(OSSR, 1 << 4);
+    let mut i = intc();
+    i.disable(crate::soc::irq::OST_4_11);
+    i.route_fiq(crate::soc::irq::OST_4_11, false);
     if was {
         irq_enable();
     }
+}
+
+/// Routes the run limit's interrupt to FIQ and unmasks it. FIQ, not IRQ:
+/// a program spinning with interrupts off (IRQ masked) is still stopped,
+/// since RetroPane code never masks FIQ once its vectors are in place.
+fn route_run_limit() {
+    let mut i = intc();
+    i.route_fiq(crate::soc::irq::OST_4_11, true);
+    i.enable(crate::soc::irq::OST_4_11);
+}
+
+/// The FIQ handler: the run limit expired (the only FIQ source). Faults
+/// with [`Fault::RunLimit`]; the program's fault handler takes it back to
+/// its starter.
+#[unsafe(no_mangle)]
+extern "C" fn rp_fiq() -> ! {
+    let expired = ost_block().read32(crate::soc::ost_reg::OSSR) & 1 << 4 != 0;
+    disarm_run_limit();
+    report_fault(
+        if expired {
+            Fault::RunLimit
+        } else {
+            Fault::Undefined
+        },
+        0,
+    )
 }
 
 /// Whether a soft run limit is armed.
@@ -1026,7 +1064,7 @@ fn ensure_intc() {
         intc().reset();
         // A run limit armed by whoever started this program stays live.
         if run_limit_armed() {
-            intc().enable(crate::soc::irq::OST_4_11);
+            route_run_limit();
         }
     }
 }
@@ -1197,6 +1235,20 @@ pub fn init_mmu() {
         );
         // The enable itself from one aligned cache line (see rp_mmu_on).
         rp_mmu_on(ctl);
+    }
+    // Vectors in place: a run limit armed by this program's starter may now
+    // stop it, even with IRQs masked (FIQ is never masked again).
+    if run_limit_armed() {
+        fiq_enable();
+    }
+}
+
+/// Unmasks FIQ (CPSR F bit) in the current mode.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+fn fiq_enable() {
+    // SAFETY: clears only the F bit; the FIQ vector is installed (callers).
+    unsafe {
+        core::arch::asm!("mrs {t}, cpsr", "bic {t}, {t}, #0x40", "msr cpsr_c, {t}", t = out(reg) _, options(nostack));
     }
 }
 

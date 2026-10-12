@@ -65,11 +65,11 @@ rp_swi_entry:
     str     lr, [sp, #60]               @ pc
     str     r9, [sp, #64]               @ cpsr
     mov     r0, sp
-    msr     cpsr_c, #0x53               @ IRQs on while the kernel works
+    msr     cpsr_c, #0x13               @ IRQs on while the kernel works
     bl      rp_syscall
     @ Back to user mode from the Frame at sp (system calls, user faults).
 rp_user_return:
-    msr     cpsr_c, #0xD3               @ IRQs off while restoring
+    msr     cpsr_c, #0x93               @ IRQs off while restoring
     ldr     r9, [sp, #64]
     msr     spsr_cxsf, r9
     ldr     lr, [sp, #60]
@@ -91,7 +91,7 @@ rp_uabt_entry:
     mov     r2, sp                      @ the six saved words
     add     sp, sp, #24                 @ copied below, before anything can
                                         @ reuse the abort stack (IRQs stay off)
-    msr     cpsr_c, #0xD3               @ SVC: the thread's kernel stack
+    msr     cpsr_c, #0x93               @ SVC: the thread's kernel stack
     sub     sp, sp, #68
     add     r3, sp, #16
     stmia   r3, {{r4-r11}}              @ r4-r11 are still the user's
@@ -105,7 +105,7 @@ rp_uabt_entry:
     nop
     mov     r1, r0
     mov     r0, sp
-    msr     cpsr_c, #0x53               @ IRQs on while the kernel works
+    msr     cpsr_c, #0x13               @ IRQs on while the kernel works
     bl      rp_user_fault
     b       rp_user_return              @ resume at the (fixed) instruction
 
@@ -122,12 +122,12 @@ rp_call_user:
     ldr     r5, [r3]                    @ the enclosing call's continuation
     push    {{r3, r4, r5}}
     str     sp, [r3]                    @ this one is now the innermost
-    msr     cpsr_c, #0xDF               @ SYS mode (user registers), IRQs off
+    msr     cpsr_c, #0x9F               @ SYS mode (user registers), IRQs off
     mov     sp, r1
     mov     lr, #0
-    msr     cpsr_c, #0xD3               @ back to SVC
+    msr     cpsr_c, #0x93               @ back to SVC
     mov     lr, r0
-    mov     r0, #0x50                   @ user mode, IRQs on, FIQ masked
+    mov     r0, #0x10                   @ user mode, IRQs and FIQ on
     msr     spsr_cxsf, r0
     ldmia   r2, {{r0-r3}}               @ the call's arguments, nothing else
     mov     r4, #0
@@ -146,7 +146,7 @@ rp_call_user:
     @ `result` from the rp_call_user that pushed it.
     .global rp_resume_call
 rp_resume_call:
-    msr     cpsr_c, #0xD3               @ IRQs off while the stack moves
+    msr     cpsr_c, #0x93               @ IRQs off while the stack moves
     mov     sp, r0
     pop     {{r3, r4, r5}}
     str     r5, [r3]                    @ the enclosing call is innermost again
@@ -157,12 +157,12 @@ rp_resume_call:
     @ rp_enter_user(pc, user_sp, arg): first entry to user mode, never returns.
     .global rp_enter_user
 rp_enter_user:
-    msr     cpsr_c, #0xDF               @ SYS mode (user registers), IRQs off
+    msr     cpsr_c, #0x9F               @ SYS mode (user registers), IRQs off
     mov     sp, r1
     mov     lr, #0
-    msr     cpsr_c, #0xD3               @ back to SVC
+    msr     cpsr_c, #0x93               @ back to SVC
     mov     lr, r0
-    mov     r0, #0x50                   @ user mode, IRQs on, FIQ masked
+    mov     r0, #0x10                   @ user mode, IRQs and FIQ on
     msr     spsr_cxsf, r0
     mov     r0, r2
     mov     r1, #0

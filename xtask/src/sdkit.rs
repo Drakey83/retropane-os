@@ -69,9 +69,11 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
           every `cargo xtask load <image>` on the PC sends a new image over
           USB and starts it. No more copying files. An image that runs past
           30 s without checking in comes back to the loader with a crash
-          report; only one that hangs with interrupts off is reset by the
-          watchdog (30 s later), which lands on Dell's restore prompt:
-          press Mail to cancel, never Contacts.
+          report, even one spinning with interrupts off. Only an image that
+          never sets up RetroPane's runtime is reset by the watchdog (30 s
+          later), which lands on Dell's restore prompt: press Mail to
+          cancel, never Contacts. `cargo xtask load` refuses images that
+          never return.
           It also updates the card: `cargo xtask put <file>` replaces a file
           in the card's root directory (verified by reading it back), and
           `cargo xtask install` puts this kit's loader, startup.txt, default.txt
