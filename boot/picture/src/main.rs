@@ -1,0 +1,94 @@
+//! Test image: puts a 480 x 640 picture on the X51v's screen for
+//! [`SHOW_SECONDS`], then goes back to the resident loader. For looking at UI
+//! concepts on the real panel (its colours, size and sharpness) before any UI
+//! code exists. The picture comes from `local/concept/picture.rgb565` at build
+//! time (see `build.rs`); it is never committed.
+//!
+//! Stays well inside the loader's 30 s run limit, checks in while it waits,
+//! and never touches flash or the cards.
+
+#![cfg_attr(target_os = "none", no_std, no_main)]
+#![forbid(unsafe_code)]
+
+/// Printed once the picture is on screen.
+pub const MARKER: &str = "RETROPANE-PICTURE-SHOWN";
+/// How long the picture stays up.
+pub const SHOW_SECONDS: u32 = 20;
+
+#[cfg(target_os = "none")]
+mod image {
+    use core::fmt::Write;
+
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_pxa_uart::PxaUart;
+    use rp_hal_api::RegisterBus;
+    use rp_hal_pxa27x::rt;
+    use rp_hal_x51v::MBX_VRAM_SIZE;
+
+    rp_hal_pxa27x::entry!(main);
+
+    static PICTURE: &[u8; 480 * 640 * 2] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/picture.rgb565"));
+
+    fn main() -> ! {
+        rt::set_fault_handler(on_fault);
+        rt::init_mmu();
+        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+            crash(format_args!("no display"))
+        };
+        // Keep the plane already scanning out if it's the right shape (no
+        // flicker); otherwise set one up.
+        let kept = Plane::decode(
+            regs.read32(reg::GSCTRL),
+            regs.read32(reg::GSCADR),
+            regs.read32(reg::GSADR),
+            MBX_VRAM_SIZE as usize,
+        )
+        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
+        let plane = kept.unwrap_or_else(|| {
+            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+            Display::new(regs).enable(&X51V_VGA, &p);
+            p
+        });
+        for (y, row) in PICTURE.as_chunks::<{ 480 * 2 }>().0.iter().enumerate() {
+            let at = plane.offset + y * plane.stride;
+            vram[at..at + row.len()].copy_from_slice(row);
+        }
+        if let Some(bus) = rt::take_ffuart() {
+            let mut uart = PxaUart::new(bus);
+            uart.init(115_200);
+            let _ = writeln!(uart, "{}", super::MARKER);
+        }
+        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{}", super::MARKER);
+        for _ in 0..super::SHOW_SECONDS * 10 {
+            rt::delay_us(100_000);
+            rt::keep_alive();
+        }
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
+        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
+    }
+
+    #[inline(never)]
+    fn crash(msg: core::fmt::Arguments) -> ! {
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        let _ = writeln!(uart, "{msg}");
+        rp_hal_x51v::devices::crash_to_loader(msg);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    #[panic_handler]
+    fn panic(info: &core::panic::PanicInfo) -> ! {
+        crash(format_args!("PANIC {}", info.message()))
+    }
+}
+
+#[cfg(not(target_os = "none"))]
+fn main() {}
