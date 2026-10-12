@@ -76,3 +76,20 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
   (shippable with attribution and their SVG sources); MerlinTheRed's plain
   set is CC BY-SA (a plainer style); the Xfce "liquid" set's licence is
   unclear (avoid).
+
+## A PDA, proudly (owner, 2026-10-12)
+
+RetroPane celebrates what PDAs excel at and doesn't pretend to be a phone:
+
+- **The organiser first:** calendar, tasks with real checkboxes, and notes
+  written with the stylus, each one tap away on the Today screen.
+- **Capture:** a quick note, and the Axim's Record button for voice memos.
+- **The VGA screen for reading, documents, music, video and games** (the
+  Axim's 3D chip).
+- **Two card slots:** SD and CF storage, shown in File Explorer.
+- **Nothing phone-ish:** no Contacts or SMS front and center; mail over
+  Wi-Fi is an Inbox.
+
+Today screen quick buttons: Note, Record, Reader, Media, Games. Start menu:
+recent programs, then Today, Calendar, Tasks, Notes, Documents, File
+Explorer (SD · CF), Inbox, Browser, Programs, Settings.
