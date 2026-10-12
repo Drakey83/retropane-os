@@ -24,8 +24,15 @@ Offsets only; no code is copied (CLEANROOM.md).
 
 RetroPane ships its own `coredll`, so the words below slot 0 are ours to
 define; only what apps inline is fixed: `+0x000` (and the TLS slots it points
-to) and `+0x008`/`+0x00C`. The kernel rewrites them on every thread switch
-(`kernel/sched::kdata`).
+to) and `+0x008`/`+0x00C`. The kernel rewrites them on every switch to
+another thread (`kernel/sched::kdata`, live in `boot/threads` since
+2026-10-11: `USER KData OK`).
+
+What RetroPane puts there (choices, ADR-0010's status notes): the TLS array
+tops each user stack, as in CE (64 slots, 8 words below slot 0 kept for
+`coredll`); the thread ID is the scheduler's thread number (1-128, never
+0); the process ID is the process slot. The page is user read-only and
+written by the kernel through its user address only.
 
 ## Open questions
 

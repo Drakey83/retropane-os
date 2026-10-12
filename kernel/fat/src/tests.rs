@@ -167,7 +167,7 @@ fn replace_with_more_data_moves_to_a_fresh_run_and_frees_the_old() {
     );
     let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
     let old_file = v.find("retropane.bin").unwrap();
-    let w = v.replace("retropane.bin", &new).unwrap();
+    let w = v.replace("retropane.bin", &new, &mut [0; 4096]).unwrap();
     assert!(w.contiguous);
     assert_eq!(w.clusters, 9);
     assert_ne!(w.first_cluster, old_file.first_cluster());
@@ -186,7 +186,7 @@ fn replace_with_more_data_moves_to_a_fresh_run_and_frees_the_old() {
     );
     // Replacing again reuses the freed space eventually: a smaller file.
     let tiny = b"tiny".to_vec();
-    v.replace("retropane.bin", &tiny).unwrap();
+    v.replace("retropane.bin", &tiny, &mut [0; 4096]).unwrap();
     assert_eq!(read_all(&mut v, "retropane.bin", 512), tiny);
     assert_eq!(v.find("retropane.bin").unwrap().size(), 4);
 }
@@ -205,16 +205,88 @@ fn replace_falls_back_to_scattered_clusters_when_no_run_is_free() {
         }],
         &blocked,
     );
-    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
-    // Reserve the tail too, so only the gaps between blocked clusters remain.
-    for c in 400..2 + v.clusters() {
-        v.fat_set(c, EOC).unwrap();
+    // Without a scratch (one FAT sector per command) and with one.
+    for scratch in [0, 4096] {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        // Reserve the tail too, so only the gaps between blocked clusters
+        // remain.
+        for c in 400..2 + v.clusters() {
+            v.fat_set(c, EOC).unwrap();
+        }
+        v.fat_flush().unwrap();
+        let w = v.replace("f.bin", &new, &mut vec![0; scratch]).unwrap();
+        assert!(!w.contiguous);
+        assert_eq!(w.clusters, 3);
+        assert_eq!(read_all(&mut v, "f.bin", 2048), new);
     }
-    v.fat_flush().unwrap();
-    let w = v.replace("f.bin", &new).unwrap();
-    assert!(!w.contiguous);
-    assert_eq!(w.clusters, 3);
-    assert_eq!(read_all(&mut v, "f.bin", 2048), new);
+}
+
+/// Scattered clusters in different FAT sectors: each search starts in the
+/// write-back cache (which holds the clusters just taken, not yet written)
+/// and goes on through the scratch; the result must match the one-sector
+/// path cluster for cluster.
+#[test]
+fn scattered_allocation_across_fat_sectors_matches_the_sector_path() {
+    let gaps = [130, 200, 260, 300, 390];
+    let blocked: Vec<u32> = (4..400).filter(|c| !gaps.contains(c)).collect();
+    let new = pattern(4500, 11); // 5 clusters
+    let img = small_image(
+        &[Entry {
+            name: "f.bin",
+            data: b"old",
+        }],
+        &blocked,
+    );
+    let mut fats = Vec::new();
+    for scratch in [0, 512, 1536, 65536] {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        for c in 400..2 + v.clusters() {
+            v.fat_set(c, EOC).unwrap();
+        }
+        v.fat_flush().unwrap();
+        let w = v.replace("f.bin", &new, &mut vec![0; scratch]).unwrap();
+        assert!(!w.contiguous);
+        assert_eq!(w.first_cluster, 130, "scratch {scratch}");
+        assert_eq!(read_all(&mut v, "f.bin", 4096), new);
+        let fat = (PARTITION_START + 32) as usize * SECTOR;
+        fats.push(v.dev.data[fat..fat + 2 * v.fat_sectors as usize * SECTOR].to_vec());
+    }
+    assert!(fats.windows(2).all(|w| w[0] == w[1]), "FATs differ");
+}
+
+/// The stale-hint case from the device (3.7 s for one write): the free
+/// space starts far behind the FSInfo hint, so the search walks most of
+/// the FAT. Reading it in runs through the scratch must take at most an
+/// eighth of the commands the one-sector path does, for the same result.
+#[test]
+fn a_long_free_cluster_search_reads_the_fat_in_runs() {
+    let taken: Vec<u32> = (10..60_000).collect();
+    let new = pattern(20_000, 12); // 40 clusters of 512 bytes
+    let img = format::build(&Image {
+        total_sectors: 2048 + 64 * 1024, // 32 MiB partition
+        sectors_per_cluster: 1,
+        files: &[Entry {
+            name: "f.bin",
+            data: b"old",
+        }],
+        blocked_clusters: &taken,
+    });
+    let mut reads = Vec::new();
+    for scratch in [0, 64 * 1024] {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        assert!(v.fat_sectors > 400, "{} FAT sectors", v.fat_sectors);
+        let w = v.replace("f.bin", &new, &mut vec![0; scratch]).unwrap();
+        assert!(w.contiguous);
+        assert_eq!(w.first_cluster, 60_000);
+        reads.push(v.dev.reads);
+        assert_eq!(read_all(&mut v, "f.bin", 4096), new);
+    }
+    let (by_sector, in_runs) = (reads[0], reads[1]);
+    eprintln!("replace: {by_sector} reads sector by sector, {in_runs} in runs");
+    assert!(
+        in_runs * 8 <= by_sector,
+        "{in_runs} reads in runs vs {by_sector} sector by sector"
+    );
 }
 
 #[test]
@@ -233,7 +305,7 @@ fn replace_refuses_when_the_card_is_full_and_keeps_the_old_file() {
     }
     v.fat_flush().unwrap();
     let big = pattern(4000, 8);
-    assert_eq!(v.replace("f.bin", &big), Err(Error::NoRoom));
+    assert_eq!(v.replace("f.bin", &big, &mut [0; 4096]), Err(Error::NoRoom));
     assert_eq!(read_all(&mut v, "f.bin", 1024), old);
     assert_eq!(v.fat_get(3).unwrap(), EOC, "the old chain is intact");
 }
@@ -248,7 +320,7 @@ fn an_empty_replacement_has_no_clusters() {
         &[],
     );
     let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
-    let w = v.replace("f.bin", b"").unwrap();
+    let w = v.replace("f.bin", b"", &mut [0; 4096]).unwrap();
     assert_eq!(w.clusters, 0);
     let f = v.find("f.bin").unwrap();
     assert_eq!((f.size(), f.first_cluster()), (0, 0));
@@ -268,19 +340,26 @@ fn power_loss_at_every_write_leaves_a_whole_file() {
         }],
         &[],
     );
+    for scratch in [0, 4096] {
+        power_loss_sweep(&img, &old, &new, scratch);
+    }
+}
+
+fn power_loss_sweep(img: &[u8], old: &[u8], new: &[u8], scratch: usize) {
     let total = {
-        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
-        v.replace("retropane.bin", &new).unwrap();
+        let mut v = Volume::mount(MemDisk::new(img.to_vec()), PARTITION_START).unwrap();
+        v.replace("retropane.bin", new, &mut vec![0; scratch])
+            .unwrap();
         v.dev.writes
     };
     assert!(total >= 4, "{total} writes: data, FATs, directory, FSInfo");
     let mut saw_old = 0;
     let mut saw_new = 0;
     for fail_at in 0..total {
-        let mut disk = MemDisk::new(img.clone());
+        let mut disk = MemDisk::new(img.to_vec());
         disk.fail_at = Some(fail_at);
         let mut v = Volume::mount(disk, PARTITION_START).unwrap();
-        let r = v.replace("retropane.bin", &new);
+        let r = v.replace("retropane.bin", new, &mut vec![0; scratch]);
         assert!(r.is_err(), "write {fail_at} should have failed");
         // Mount afresh, as after a reset.
         let data = v.into_inner().data;

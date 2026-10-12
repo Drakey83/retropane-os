@@ -444,3 +444,29 @@ fn set_priority_keeps_an_inherited_boost() {
     assert_eq!(s.priority(owner), 90, "still boosted");
     assert_eq!(s.base_priority(owner), 230);
 }
+
+#[test]
+fn the_kdata_view_follows_the_thread() {
+    let mut s = sched();
+    let a = s.create(5, NORMAL).unwrap();
+    let b = s.create(6, NORMAL).unwrap();
+    s.set_tls(a, 0x0001_FF00).unwrap();
+    let view = s.view(a);
+    assert_eq!(
+        view,
+        kdata::ThreadView {
+            tls: 0x0001_FF00,
+            thread_id: u32::from(a.0),
+            process_id: 5,
+        }
+    );
+    assert_ne!(view.thread_id, 0, "programs treat ID 0 as none");
+    assert_eq!(s.view(b).tls, 0, "no TLS until one is set");
+    assert_eq!(s.view(b).process_id, 6);
+    // A new thread in an exited one's table slot starts without TLS.
+    s.exit(a).unwrap();
+    assert_eq!(s.set_tls(a, 1), Err(Error::Invalid));
+    let c = s.create(5, NORMAL).unwrap();
+    assert_eq!(c, a);
+    assert_eq!(s.view(c).tls, 0);
+}

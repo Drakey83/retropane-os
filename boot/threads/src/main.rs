@@ -9,6 +9,10 @@
 //! nothing else can run. Then two threads drop into **user mode** and make
 //! system calls (`SWI`): each prints a letter and yields, three times, so the
 //! output must be `ABABAB`, and every call's saved CPSR must say user mode.
+//! Last, the KData page (ADR-0010 rule 8): two user threads read their TLS
+//! pointer and thread ID at `0xFFFFC800` as WM programs' inlined macros do,
+//! keep a value in TLS slot 0 across switches, and a write to the page
+//! faults (user read-only).
 //! Prints `THREADS ... OK` / `USER ... OK` lines and `BENCH` lines, then
 //! [`MARKER`]; `cargo xtask emu` checks them.
 
@@ -28,7 +32,7 @@ mod image {
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
-    use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid};
+    use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid, kdata};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -41,6 +45,8 @@ mod image {
     static SCHED: Global<Scheduler> = Global::new(Scheduler::new());
     /// The thread on the CPU.
     static CURRENT: Global<Tid> = Global::new(Tid(0));
+    /// The KData page, written on every switch to another thread.
+    static KDATA: Global<Option<&'static mut [u32; 1024]>> = Global::new(None);
     static DEMO: Global<Demo> = Global::new(Demo {
         ping: Eid(0),
         pong: Eid(0),
@@ -62,6 +68,7 @@ mod image {
     const SYS_YIELD: u32 = 1;
     const SYS_EXIT: u32 = 2;
     const SYS_MARK: u32 = 3;
+    const SYS_KDATA: u32 = 4;
     /// Marks per spinning thread, and the spin between marks (well over one
     /// quantum of work in the emulator and on the device).
     const MARKS: usize = 4;
@@ -69,6 +76,8 @@ mod image {
 
     /// User stacks handed to the user threads.
     static USTACKS: Global<[Option<&'static mut [u32]>; 2]> = Global::new([None, None]);
+    /// Where the user threads of the current pair start.
+    static UENTRY: Global<Option<extern "C" fn(usize) -> !>> = Global::new(None);
     /// What the user threads printed, and how their calls looked.
     static ULOG: Global<UserLog> = Global::new(UserLog {
         text: [0; 16],
@@ -77,6 +86,7 @@ mod image {
         mlen: 0,
         calls: 0,
         not_user: 0,
+        kdata_ok: 0,
     });
 
     struct UserLog {
@@ -86,6 +96,8 @@ mod image {
         mlen: usize,
         calls: u32,
         not_user: u32,
+        /// KData reads that matched the kernel's view of the caller.
+        kdata_ok: u32,
     }
 
     struct Demo {
@@ -123,6 +135,13 @@ mod image {
             let main = s.create(0, 150)?;
             let _ = s.schedule(rt::ticks()); // this code is now `main`, running
             CURRENT.with(|c| *c = main);
+            let view = s.view(main);
+            KDATA.with(|k| {
+                *k = rt::take_kdata_page();
+                if let Some(page) = k {
+                    kdata::switch_to(page, view);
+                }
+            });
             let ping = s.create_event(false, false)?;
             let pong = s.create_event(false, false)?;
             let done = s.create_event(false, false)?;
@@ -230,7 +249,7 @@ mod image {
         // User mode: two threads at equal priority, each printing its letter
         // and yielding three times through system calls.
         user::set_syscall_handler(on_syscall);
-        spawn_user_pair(&mut stacks, user_trampoline);
+        spawn_user_pair(&mut stacks, user_main);
         wait(done);
         wait(done);
         let (text, len, calls, not_user) = ULOG.with(|l| (l.text, l.len, l.calls, l.not_user));
@@ -254,7 +273,7 @@ mod image {
         // preemption they'd come out AAAABBBB.
         SCHED.with(|s| s.set_quantum(16_250));
         rt::set_preempt_hook(preempt);
-        spawn_user_pair(&mut stacks, spin_trampoline);
+        spawn_user_pair(&mut stacks, user_spin);
         wait(done);
         wait(done);
         let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
@@ -268,7 +287,7 @@ mod image {
         // the abort in that thread's context, ends just that thread, and the
         // other user thread carries on (ADR-0010 rule 5).
         user::set_user_fault_handler(on_user_fault);
-        spawn_user_pair(&mut stacks, fault_trampoline);
+        spawn_user_pair(&mut stacks, user_fault);
         wait(done); // the faulting thread, ended by the kernel
         wait(done); // the other one, which exits normally
         let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
@@ -281,13 +300,30 @@ mod image {
         // once; every switch between them saves one's registers and loads
         // the other's, so both values must survive.
         iwmmxt::enable_lazy();
-        spawn_user_pair(&mut stacks, wmmx_trampoline);
+        spawn_user_pair(&mut stacks, user_wmmx);
         wait(done);
         wait(done);
         let (marks, mlen) = ULOG.with(|l| (l.marks, l.mlen));
         let traps = iwmmxt::traps();
         let kept = marks[..mlen].ends_with(b"WW") && traps >= 3;
         ok &= report(&mut uart, "USER iWMMXt lazy switch", kept, traps);
+
+        // KData (ADR-0010 rule 8): two user threads read the TLS pointer and
+        // their thread ID from 0xFFFFC800 as old programs' inlined macros
+        // do, after every switch, and keep their own value in TLS slot 0
+        // through it; the kernel checks each read against its view of the
+        // caller. Then one writes to the page, which must fault (user
+        // read-only) and leave the word as it was.
+        DEMO.with(|d| d.fault_addr = 0);
+        spawn_user_pair(&mut stacks, user_kdata);
+        wait(done);
+        wait(done);
+        let good = ULOG.with(|l| l.kdata_ok);
+        let addr = DEMO.with(|d| d.fault_addr);
+        let untouched = KDATA.with(|k| k.as_ref().map(|p| p[KDATA_PROBE_WORD]) == Some(0));
+        // 3 checks per thread, all matching.
+        let pass = good == 6 && addr == KDATA_PROBE && untouched;
+        ok &= report(&mut uart, "USER KData", pass, good);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -296,29 +332,48 @@ mod image {
     }
 
     /// Starts two user threads at priority 200 (a kernel stack and a user
-    /// stack each), entering through `trampoline(0)` and `trampoline(1)`.
+    /// stack each), running `entry(0)` and `entry(1)` in user mode.
     #[inline(never)]
     fn spawn_user_pair(
         stacks: &mut impl Iterator<Item = &'static mut [u32]>,
-        trampoline: extern "C" fn(usize) -> !,
+        entry: extern "C" fn(usize) -> !,
     ) {
+        UENTRY.with(|e| *e = Some(entry));
         for i in 0..2 {
             let (Some(kstack), Some(ustack)) = (stacks.next(), stacks.next()) else {
                 panic!("out of stacks");
             };
+            // The TLS block tops the user stack (zeroed, as CE does); the
+            // identity map makes its kernel address the user one.
+            let (ustack, tls) = ustack.split_at_mut(ustack.len() - kdata::TLS_BLOCK_WORDS);
+            tls.fill(0);
+            let top = tls.as_ptr_range().end as usize as u32;
             USTACKS.with(|u| u[i] = Some(ustack));
-            let Ok(t) = SCHED.with(|s| s.create(0, 200)) else {
+            let Ok(t) = SCHED.with(|s| {
+                let t = s.create(0, 200)?;
+                s.set_tls(t, kdata::tls_at(top)).map(|()| t)
+            }) else {
                 panic!("thread table full");
             };
             thread::prepare(t.index(), kstack, trampoline, i);
         }
     }
 
+    /// Kernel side of a user thread: enter user mode at the pair's entry,
+    /// never come back (only system calls do).
+    extern "C" fn trampoline(i: usize) -> ! {
+        let (Some(stack), Some(entry)) = (USTACKS.with(|u| u[i].take()), UENTRY.with(|e| *e))
+        else {
+            finish()
+        };
+        user::enter_user(entry, stack, i)
+    }
+
     /// A scheduling point: runs the most urgent ready thread.
     fn reschedule() {
-        let (next, deadline) = SCHED.with(|s| {
+        let (next, deadline, view) = SCHED.with(|s| {
             let n = s.schedule(rt::ticks());
-            (n, s.next_deadline())
+            (n, s.next_deadline(), n.map(|t| s.view(t)))
         });
         // Tickless: the timer fires only at the next deadline (the new
         // thread's quantum end if another could take over, or a sleeper). If
@@ -334,6 +389,14 @@ mod image {
         };
         let cur = CURRENT.with(|c| core::mem::replace(c, next));
         if cur != next {
+            // KData says who runs (three words, through its one address).
+            if let Some(view) = view {
+                KDATA.with(|k| {
+                    if let Some(page) = k {
+                        kdata::switch_to(page, view);
+                    }
+                });
+            }
             thread::switch(cur.index(), next.index());
         }
     }
@@ -482,23 +545,6 @@ mod image {
         finish()
     }
 
-    /// Kernel side of a user thread: enter user mode, never come back (only
-    /// system calls do).
-    extern "C" fn user_trampoline(i: usize) -> ! {
-        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
-            finish()
-        };
-        user::enter_user(user_main, stack, i)
-    }
-
-    /// Kernel side of a spinning user thread.
-    extern "C" fn spin_trampoline(i: usize) -> ! {
-        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
-            finish()
-        };
-        user::enter_user(user_spin, stack, i)
-    }
-
     /// Runs in user mode and never yields: only preemption can switch it.
     extern "C" fn user_spin(i: usize) -> ! {
         for _ in 0..MARKS {
@@ -512,14 +558,6 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
-    }
-
-    /// Kernel side of the media test's user threads.
-    extern "C" fn wmmx_trampoline(i: usize) -> ! {
-        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
-            finish()
-        };
-        user::enter_user(user_wmmx, stack, i)
     }
 
     /// Puts a value of its own in wR0, yields a few times (the other thread
@@ -542,16 +580,37 @@ mod image {
         }
     }
 
+    /// A KData word no switch writes: the user thread's forbidden write
+    /// goes here, so a write that got through would show.
+    const KDATA_PROBE: u32 = kdata::BASE + 0x10;
+    const KDATA_PROBE_WORD: usize = ((KDATA_PROBE - kdata::PAGE) / 4) as usize;
+
+    /// Reads KData as WM programs' inlined macros do: `TlsSetValue(0, ..)`
+    /// through the TLS pointer, then after each yield (the other thread ran
+    /// meanwhile) the pointer, `GetCurrentThreadId` and `TlsGetValue(0)`,
+    /// reported for the kernel to check. Thread 0 ends by writing to the
+    /// page, which must fault.
+    extern "C" fn user_kdata(i: usize) -> ! {
+        let mine = 0x7150_0000 | i as u32;
+        user::user_write(user::user_read(kdata::BASE), mine);
+        for _ in 0..3 {
+            user::syscall(SYS_YIELD, 0, 0, 0);
+            let tls = user::user_read(kdata::BASE + kdata::off::TLS as u32);
+            let id = user::user_read(kdata::BASE + kdata::off::CURRENT_THREAD as u32);
+            let kept = user::user_read(tls) == mine;
+            user::syscall(SYS_KDATA, tls, id, u32::from(kept));
+        }
+        if i == 0 {
+            user::user_write(KDATA_PROBE, 0xBAD);
+        }
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     /// Unmapped in the bring-up map: any access aborts.
     const BAD_ADDR: u32 = 0x8000_0000;
-
-    /// Kernel side of the fault test's user threads.
-    extern "C" fn fault_trampoline(i: usize) -> ! {
-        let Some(stack) = USTACKS.with(|u| u[i].take()) else {
-            finish()
-        };
-        user::enter_user(user_fault, stack, i)
-    }
 
     /// Thread 0 touches forbidden memory; thread 1 marks `C` and exits.
     extern "C" fn user_fault(i: usize) -> ! {
@@ -619,6 +678,16 @@ mod image {
                         l.mlen += 1;
                     }
                 });
+                f.set_result(0);
+            }
+            SYS_KDATA => {
+                // What the caller read must be what the kernel says it is.
+                let view = SCHED.with(|s| s.running().map(|t| s.view(t)));
+                if view.is_some_and(|v| {
+                    v.tls != 0 && f.arg(0) == v.tls && f.arg(1) == v.thread_id && f.arg(2) == 1
+                }) {
+                    ULOG.with(|l| l.kdata_ok += 1);
+                }
                 f.set_result(0);
             }
             SYS_YIELD => {

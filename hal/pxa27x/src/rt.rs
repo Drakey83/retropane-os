@@ -981,6 +981,47 @@ pub fn init_mmu() {
     }
 }
 
+/// Single-use guard for the KData page.
+static mut KDATA_TAKEN: bool = false;
+
+/// Hands out the KData page (ADR-0010 rule 8) once, zeroed: splits the
+/// bring-up map's top MiB into pages ([`crate::mmu::high_pages`]), so the
+/// page at [`crate::mmu::KDATA_VIRT`] is user read-only and the vector page
+/// becomes kernel-only. The kernel writes the page through that one user
+/// address (privileged writes pass a user-read-only page), so a VIVT cache
+/// never holds a second alias and no write needs cache maintenance. Call
+/// after [`init_mmu`], during setup; images that never call it keep the
+/// plain section.
+#[inline(never)]
+pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
+    // SAFETY: single core, called during setup: nothing races the flag.
+    let taken = unsafe { core::ptr::addr_of_mut!(KDATA_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // Lines cached under the old mapping of this address go first.
+    crate::cpu::clean_invalidate_range(crate::mmu::KDATA_VIRT, 4096);
+    // SAFETY: HIGH_L2 and L1_TABLE are reserved SDRAM, identity-mapped
+    // (boot/link.x), used by nothing else. The new entry maps the vector
+    // page to the same physical page as the section did, so an exception
+    // taken while the TLB still holds the old entry finds its vectors.
+    unsafe {
+        let l2 = &mut *(crate::mmu::HIGH_L2 as *mut [u32; 256]);
+        crate::mmu::high_pages(l2);
+        // (An opaque length: LLVM unrolled the 32-line loop to 380 bytes.)
+        crate::cpu::clean_range(crate::mmu::HIGH_L2, core::hint::black_box(1024));
+        let l1 = (crate::mmu::L1_TABLE as *mut u32).add(crate::mmu::HIGH_L1_INDEX);
+        l1.write_volatile(crate::mmu::coarse(crate::mmu::HIGH_L2));
+        crate::cpu::clean_range(l1 as u32, 4);
+    }
+    crate::cpu::invalidate_tlb_all();
+    // SAFETY: KDATA_VIRT now maps KDATA_PHYS, reserved for it, read/write
+    // for the kernel; the flag makes this the only reference.
+    let page = unsafe { &mut *(crate::mmu::KDATA_VIRT as *mut [u32; 1024]) };
+    page.fill(0);
+    Some(page)
+}
+
 core::arch::global_asm!(
     r#"
     .section .text.rp_mmu, "ax"

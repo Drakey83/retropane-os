@@ -34,8 +34,8 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
    the name (length-prefixed) then the contents, under the usual length and
    CRC-32. The loader receives it into the image area, replaces the file,
    reads it back through the FAT code, checks the CRC, and replies
-   `RPL OK <bytes> in <ms>, <n> clusters contiguous|scattered, read back in
-   <ms>` or `RPL ERR <why>`. `cargo xtask put <file> [name]` sends one;
+   `RPL OK <bytes> in <ms>, <n> clusters contiguous|scattered (<r> reads),
+   read back in <ms>` (`<r>`: the write's read commands) or `RPL ERR <why>`. `cargo xtask put <file> [name]` sends one;
    `cargo xtask install` puts the kit's loader, `startup.txt`, `default.txt`
    and `haret.exe` on the card in one go.
 4. **Emulator test:** the loader boots with a FAT32 card image, takes a file
