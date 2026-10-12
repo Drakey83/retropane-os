@@ -222,3 +222,15 @@ fn a_supervisor_keeps_its_handle_across_a_restart() {
     assert_eq!(ipc.restart(port, Some(0)), Err(Error::Range));
     assert!(ipc.call(5, APP, new).is_ok());
 }
+
+#[test]
+fn an_exited_process_keeps_nothing() {
+    let mut ipc = Ipc::new();
+    let (port, _) = ipc.open(SERVER, 0x1000).unwrap();
+    ipc.install(APP, port, Rights::CALL).unwrap();
+    let (_, _) = ipc.open(APP, 0x2000).unwrap();
+    assert_eq!((ipc.handle_count(APP), ipc.ports_of(APP)), (2, 1));
+    ipc.exit(APP).unwrap();
+    assert_eq!((ipc.handle_count(APP), ipc.ports_of(APP)), (0, 0));
+    assert_eq!(ipc.handle_count(0), 0, "out of range counts nothing");
+}

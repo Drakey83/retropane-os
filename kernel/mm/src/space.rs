@@ -217,6 +217,19 @@ impl AddressSpace {
         }
     }
 
+    /// Reuses this record for the process in `slot` (a new process): no
+    /// regions, W^X enforced, ARM `domain`. In place, so a record never
+    /// passes through a (small) kernel stack. The caller has already
+    /// unmapped everything the previous process had.
+    pub fn reset_process(&mut self, slot: u32, domain: u32) {
+        self.lo = layout::slot_base(slot);
+        self.hi = self.lo + layout::SLOT_SIZE;
+        self.domain = domain;
+        self.allow_wx = false;
+        self.regions[..self.count].fill(None);
+        self.count = 0;
+    }
+
     /// Lets this space have writable, executable regions: for legacy apps
     /// that generate code (emulators with dynamic recompilers, for example).
     pub fn allow_write_exec(&mut self) {
@@ -1742,5 +1755,26 @@ mod tests {
             w.vm().handle_fault(&s, a, Access::Write),
             Err(FaultError::Protection)
         );
+    }
+
+    #[test]
+    fn a_record_is_reused_in_place_for_another_process() {
+        let mut s = AddressSpace::process(SLOT, 2);
+        s.map(zero(base() + 0x10000, 0x1000, Prot::RW)).unwrap();
+        s.allow_write_exec();
+        s.reset_process(9, 4);
+        assert_eq!(s.regions().count(), 0);
+        assert_eq!(s.domain(), 4);
+        // Its window is slot 9's now, and W^X is back.
+        let b9 = layout::slot_base(9);
+        assert_eq!(
+            s.map(zero(base() + 0x10000, 0x1000, Prot::RW)),
+            Err(SpaceError::BadRange)
+        );
+        assert_eq!(
+            s.map(zero(b9 + 0x10000, 0x1000, Prot::RWX)),
+            Err(SpaceError::WriteExec)
+        );
+        assert!(s.map(zero(b9 + 0x10000, 0x1000, Prot::RW)).is_ok());
     }
 }

@@ -69,6 +69,9 @@ mod image {
     const SYS_EXIT: u32 = 2;
     const SYS_MARK: u32 = 3;
     const SYS_KDATA: u32 = 4;
+    /// Stays in the kernel (interrupts on) for three quanta: the quantum
+    /// ends while the kernel runs.
+    const SYS_STALL: u32 = 5;
     /// Marks per spinning thread, and the spin between marks (well over one
     /// quantum of work in the emulator and on the device).
     const MARKS: usize = 4;
@@ -90,9 +93,14 @@ mod image {
         calls: 0,
         not_user: 0,
         kdata_ok: 0,
+        stalled: false,
+        b_after_stall: false,
     });
 
     struct UserLog {
+        /// A thread is (or was) in `SYS_STALL`, and `B` marked after that.
+        stalled: bool,
+        b_after_stall: bool,
         text: [u8; 16],
         len: usize,
         marks: [u8; 16],
@@ -302,6 +310,25 @@ mod image {
         let b_first = marks.iter().position(|&m| m == b'B').unwrap_or(usize::MAX);
         let interleaved = mlen == 2 * MARKS && b_first < a_done;
         ok &= report(&mut uart, "USER preempted", interleaved, mlen as u32);
+
+        // A quantum that ends inside the kernel: thread 0 spends three quanta
+        // in a system call (the timer fires in kernel mode, where there is no
+        // preemption), then spins in user mode with no system calls at all.
+        // Thread 1 must still run first: the preemption owed is paid on the
+        // way out of the system call. Without that it would be lost, and
+        // thread 0 would keep the CPU (marks `SB`).
+        let before = ULOG.with(|l| l.mlen);
+        spawn_user_pair(&mut stacks, user_stall);
+        wait(done);
+        wait(done);
+        let (marks, mlen, after) = ULOG.with(|l| (l.marks, l.mlen, l.b_after_stall));
+        let owed = &marks[before..mlen] == b"BS" && after;
+        ok &= report(
+            &mut uart,
+            "USER preempted after a system call",
+            owed,
+            mlen as u32,
+        );
 
         // A user thread reads memory it may not touch: the kernel handles
         // the abort in that thread's context, ends just that thread, and the
@@ -597,6 +624,25 @@ mod image {
         }
     }
 
+    /// Thread 0: three quanta in the kernel, then a long user-mode spin with
+    /// no system calls, then mark `S`. Thread 1: mark `B` at once.
+    extern "C" fn user_stall(i: usize) -> ! {
+        if i == 0 {
+            user::syscall(SYS_STALL, 0, 0, 0);
+            let mut x = 0u32;
+            for k in 0..2 * SPIN {
+                x = core::hint::black_box(x.wrapping_add(k));
+            }
+            user::syscall(SYS_MARK, u32::from(b'S'), 0, 0);
+        } else {
+            user::syscall(SYS_MARK, u32::from(b'B'), 0, 0);
+        }
+        user::syscall(SYS_EXIT, 0, 0, 0);
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     /// Puts a value of its own in wR0, yields a few times (the other thread
     /// uses wR0 meanwhile), then checks it: marks `W` if it survived.
     extern "C" fn user_wmmx(i: usize) -> ! {
@@ -713,6 +759,9 @@ mod image {
                 // the caller's (arg 1). Neither yields.
                 let (mark, mine) = (f.arg(0) as u8, f.arg(1) as u8);
                 let others = ULOG.with(|l| {
+                    if mark == b'B' && l.stalled {
+                        l.b_after_stall = true;
+                    }
                     if mark != 0 && l.mlen < l.marks.len() {
                         l.marks[l.mlen] = mark;
                         l.mlen += 1;
@@ -720,6 +769,15 @@ mod image {
                     l.marks[..l.mlen].iter().filter(|&&m| m != mine).count()
                 });
                 f.set_result(others as u32);
+            }
+            SYS_STALL => {
+                ULOG.with(|l| l.stalled = true);
+                let quantum = 16_250;
+                let start = rt::ticks();
+                while rt::ticks().wrapping_sub(start) < 3 * quantum {
+                    core::hint::spin_loop();
+                }
+                f.set_result(0);
             }
             SYS_KDATA => {
                 // What the caller read must be what the kernel says it is.

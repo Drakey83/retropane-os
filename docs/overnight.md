@@ -799,11 +799,43 @@ on the host or in the emulator first.
       faulted instance, and stale handles fail instead of reaching a new
       instance.
 
-44. **Processes created and ended at run time**: address spaces allocated
-    per process when it starts (not static records for every slot, 1.6 KB
-    each), `SYS_SPAWN`/`SYS_EXIT` for the service manager (a process from
-    an image, a first thread, a handle to the manager only), and exit
-    cleanup (ports closed, handles dropped, every frame back).
+44. **Processes created and ended at run time**: **done (emulator).** A
+    process table of 5 reusable records (memory follows the processes
+    running, not the 31 slots); lookups never fall back to another
+    process's space. `SYS_SPAWN` (the service manager only; the entry must
+    lie inside the image's code): a free slot and record, the image mapped
+    (code shared, the rest fresh), a handle to the manager only (always
+    handle 0), a first thread. `SYS_EXIT`: ports closed, handles gone, the
+    whole address space unmapped, domain and record freed, thread ended.
+    `SYS_GRANT` refuses slots with no process (closes the open note in
+    security.md). Test: the manager starts a worker twice; each sees zeroed
+    memory (the second runs in the first one's slot and record and must not
+    see its mark) and is refused a handle it was never given; after each
+    exit every frame is back and the slot holds no handles or ports
+    (`IPC spawn and exit OK`). Host tests: `reset_process`, `handle_count`,
+    `ports_of`. Kernel load budget 76 -> 84 KiB under the standing rule.
+    **Found on the way, a scheduler bug:** the emulator's preemption test
+    failed once in a while. A quantum whose timer fired while the thread
+    was inside a system call was lost (the kernel isn't preemptible, and
+    nothing re-armed the timer), so a thread could keep the CPU for good;
+    a hostile program could have timed its calls to do it on purpose. Fix:
+    an interrupt in kernel mode leaves a preemption owed, paid on the way
+    back to user mode from the system call or fault (the kernel image's
+    per-call deadline check, a workaround, is gone). New check `USER
+    preempted after a system call` (three quanta in the kernel, then a
+    user spin with no calls; the other thread must run first); with the
+    fix disabled it fails.
+    - **Iterate:** CE's process model, with records reused instead of a
+      fixed one per slot, and exits that provably leave nothing behind.
+    - **Modernize:** only the manager may create processes, a new process
+      starts with one capability, exit cleanup checked frame by frame, and
+      "need-resched on return to user" as modern kernels do.
+
+47. **ADR: kernel object memory** (for the owner's vote): process records
+    hold room for 64 regions each (1.6 KB), too few for some Windows Mobile
+    apps (each memory reservation is a region) and wasted for small
+    processes. Options: a shared region pool, regions in per-process pages
+    from the frame allocator, or a small kernel heap; pluses and minuses.
 
 45. **ADR draft: optional packs on the card** (owner's idea, 2026-10-12):
     the base system always complete in flash; optional packs (browser,

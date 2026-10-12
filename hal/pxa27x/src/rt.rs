@@ -778,8 +778,10 @@ pub fn set_signal_hook(f: fn(u32)) {
 /// Sets what runs after an interrupt taken in user mode, before returning to
 /// it: the kernel's chance to preempt the thread (quantum over, a more
 /// urgent thread woken). Runs in SVC mode on the thread's kernel stack with
-/// IRQs masked, and may switch threads. Interrupts taken in kernel mode never
-/// call it (the kernel is non-preemptive, ADR-0010 rule 4).
+/// IRQs masked, and may switch threads. Interrupts taken in kernel mode don't
+/// call it then (the kernel is non-preemptive, ADR-0010 rule 4): they leave
+/// it owed, and it runs when that system call or user fault returns to user
+/// mode, so a quantum that ends inside the kernel isn't lost.
 pub fn set_preempt_hook(f: fn()) {
     // SAFETY: set during setup, before interrupts from user mode can occur.
     unsafe { core::ptr::addr_of_mut!(PREEMPT_HOOK).write(Some(f)) }
@@ -791,11 +793,39 @@ extern "C" fn rp_irq_frame(frame: *const u32) {
     // SAFETY: `frame` is the 18-word frame the IRQ entry built; word 17 is
     // the interrupted CPSR.
     let cpsr = unsafe { frame.add(17).read() };
-    if cpsr & 0x1F == 0x10 {
+    // SAFETY: written once during setup.
+    if let Some(h) = unsafe { core::ptr::addr_of!(PREEMPT_HOOK).read() } {
+        if cpsr & 0x1F == 0x10 {
+            h();
+        } else {
+            // The kernel isn't preemptible: the hook runs on its way back
+            // to user mode instead (a quantum that ends during a system
+            // call must not be lost). SAFETY: IRQs are masked here, and the
+            // flag is otherwise touched only with IRQs masked.
+            unsafe { core::ptr::addr_of_mut!(RESCHED_PENDING).write(true) };
+        }
+    }
+}
+
+/// An interrupt arrived while the kernel ran: the preempt hook is owed on
+/// the next return to user mode.
+static mut RESCHED_PENDING: bool = false;
+
+/// On the way back to user mode (end of a system call or user fault): runs
+/// the preempt hook if an interrupt asked for it while the kernel ran.
+pub(crate) fn preempt_if_pending() {
+    let was = irqs_enabled_now();
+    irq_disable();
+    // SAFETY: IRQs are masked, so the IRQ handler can't touch the flag now.
+    let pending = unsafe { core::ptr::addr_of_mut!(RESCHED_PENDING).replace(false) };
+    if pending {
         // SAFETY: written once during setup.
         if let Some(h) = unsafe { core::ptr::addr_of!(PREEMPT_HOOK).read() } {
             h();
         }
+    }
+    if was {
+        irq_enable();
     }
 }
 

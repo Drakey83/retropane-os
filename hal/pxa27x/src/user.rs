@@ -224,6 +224,7 @@ extern "C" fn rp_syscall(frame: *mut Frame) {
         Some(f) => f(frame),
         None => crate::rt::report_fault(crate::rt::Fault::Swi, frame.pc.wrapping_sub(4)),
     }
+    crate::rt::preempt_if_pending();
 }
 
 /// Handles a fault from user mode: the user context, which fault, and the
@@ -261,6 +262,7 @@ extern "C" fn rp_user_fault(frame: *mut Frame, kind: u32) {
         Some(f) => f(frame, fault, addr),
         None => crate::rt::report_fault(fault, addr),
     }
+    crate::rt::preempt_if_pending();
 }
 
 /// Reads a word as user code (user side): for tests of the user-fault path
