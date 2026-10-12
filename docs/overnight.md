@@ -136,9 +136,12 @@ nothing writes flash; card writes only through copy-then-swap.
 
 ## 6. GPIO14 / GPIO2
 
-- [ ] A probe run that records both lines' levels and edges across docking,
-      undocking-free events (USB reset, host open/close); settle what they
-      are or narrow it down, docs/hw/udc.md updated.
+- [x] Recorded docked + enumerated: GPIO2 = 1 (output), GPIO14 = 0 (input),
+      WM's both-edge interrupt on GPIO14 still armed (docs/hw/udc.md).
+- [ ] **Needs the owner:** the same probe with the Axim *out* of the cradle
+      (one undock, `cargo xtask load rp-probe` needs USB, so: undock, tap
+      HaRET with the probe kit, photograph page 2's GPIO lines). That pair
+      of readings settles GPIO14.
 
 ## Security pass (owner's requirement, 2026-10-12)
 

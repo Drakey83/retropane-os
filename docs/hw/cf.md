@@ -83,6 +83,6 @@ understood, with the owner present.
 
 | Question | How to settle |
 |---|---|
-| GPIO13 polarity (present = 0 or 1?) | probe with and without a card (owner: one swap) |
+| GPIO13 polarity (present = 0 or 1?) | probe with and without a card (owner: one swap). Hint (P): WM arms only GPIO13's *rising* edge (`GRER0` bit 13 set, `GFER0` bit 13 clear); if that is the insertion event, present = 1 and the 0 read on 2026-10-12 means an empty slot |
 | Which CPLD bit powers the slot | Dell OAL analysis (nk.exe), or a careful CPLD experiment with the owner present |
 | Whether WM's `CIT` reflects socket 1 | probe with and without a card |
