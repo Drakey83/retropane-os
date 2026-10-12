@@ -831,13 +831,21 @@ on the host or in the emulator first.
       starts with one capability, exit cleanup checked frame by frame, and
       "need-resched on return to user" as modern kernels do.
 
-47. **ADR: kernel object memory** (for the owner's vote): process records
+47. **ADR: kernel object memory** (for the owner's vote): **drafted:
+    ADR-0019, waiting for the owner's vote** (recommends regions in
+    per-process pages from the frame allocator, with a quota).
+    Original scope: process records
     hold room for 64 regions each (1.6 KB), too few for some Windows Mobile
     apps (each memory reservation is a region) and wasted for small
     processes. Options: a shared region pool, regions in per-process pages
     from the frame allocator, or a small kernel heap; pluses and minuses.
 
 45. **ADR draft: optional packs on the card** (owner's idea, 2026-10-12):
+    **drafted: ADR-0018, waiting for the owner's vote.** Recommends one
+    complete base system in flash plus signed, verified packs that may live
+    on the card, rather than two installs; notes the real limit is RAM,
+    which files on the card don't save.
+    Original scope:
     the base system always complete in flash; optional packs (browser,
     codecs, fonts, language packs, extra game compatibility) on the card or
     in flash; nothing needed to boot or recover lives only on the card;
