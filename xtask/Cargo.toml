@@ -11,6 +11,8 @@ publish.workspace = true
 serde_json = "1"
 rp-drv-mbx-display = { path = "../drivers/mbx-display" }
 rp-loadproto = { path = "../boot/loadproto", features = ["std"] }
+rp-fat = { path = "../kernel/fat", features = ["std"] }
+rp-hal-api = { path = "../hal/api" }
 
 [lints]
 workspace = true

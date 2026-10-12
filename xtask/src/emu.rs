@@ -237,15 +237,23 @@ const SD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const SD_EXPECT_CARD: &str = "SD: SD card, RCA";
 const SD_EXPECT_PARTITION: &str = "SD: partition 1 type 0x0c start 2048 blocks 14336";
 
-/// Writes the test SD image (MBR only; the rest is zero).
+/// What the probe reports about the test image's file system.
+const SD_EXPECT_FAT: &str = "FAT32 4096 B/cluster";
+
+/// Writes the test SD image: a FAT32 volume (4 KiB clusters, as on the
+/// owner's card) holding a small `retropane.bin`, so the probe's root
+/// listing has something to show.
 fn write_sd_test_image(path: &Path) -> Result<PathBuf, String> {
-    let mut img = vec![0u8; SD_IMAGE_BYTES];
-    let e = 446;
-    img[e + 4] = 0x0C; // FAT32 LBA
-    img[e + 8..e + 12].copy_from_slice(&2048u32.to_le_bytes());
-    img[e + 12..e + 16].copy_from_slice(&14336u32.to_le_bytes());
-    img[510] = 0x55;
-    img[511] = 0xAA;
+    let bin: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
+    let img = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (SD_IMAGE_BYTES / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "retropane.bin",
+            data: &bin,
+        }],
+        blocked_clusters: &[],
+    });
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -675,6 +683,126 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A disk image in memory, for checking the emulator's card afterwards.
+struct Disk(Vec<u8>);
+
+impl rp_hal_api::BlockDevice for Disk {
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), rp_hal_api::BlockError> {
+        let o = lba as usize * 512;
+        if o + buf.len() > self.0.len() {
+            return Err(rp_hal_api::BlockError::OutOfRange);
+        }
+        buf.copy_from_slice(&self.0[o..o + buf.len()]);
+        Ok(())
+    }
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), rp_hal_api::BlockError> {
+        let o = lba as usize * 512;
+        if o + buf.len() > self.0.len() {
+            return Err(rp_hal_api::BlockError::OutOfRange);
+        }
+        self.0[o..o + buf.len()].copy_from_slice(buf);
+        Ok(())
+    }
+}
+
+/// Reads root-directory file `name` from a FAT32 disk image.
+fn card_file(image: &Path, name: &str) -> Result<Vec<u8>, String> {
+    let data = std::fs::read(image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let mut vol = rp_fat::Volume::mount(Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let f = vol
+        .find(name)
+        .map_err(|e| format!("{name}: {}", e.name()))?;
+    let mut out = Vec::new();
+    let mut scratch = vec![0u8; 64 * 1024];
+    vol.read_file(&f, &mut scratch, |c| out.extend_from_slice(c))
+        .map_err(|e| format!("{name}: {}", e.name()))?;
+    Ok(out)
+}
+
+/// Writing a file to the card through the loader (ADR-0013): a FAT32 card
+/// image with an old `retropane.bin`, a bigger new one sent over the
+/// emulated USB port, the loader's OK, and the image checked on the host
+/// afterwards: the new contents, and the other file untouched.
+pub fn boot_loader_put(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    file to card: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let old: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
+    let new: Vec<u8> = (0..70_000u32).map(|i| (i * 13 + 5) as u8).collect();
+    let script = b"set ramaddr 0xa8000000\r\n".to_vec();
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024, // 16 MiB
+        sectors_per_cluster: 8,   // 4 KiB clusters, as on the owner's card
+        files: &[
+            rp_fat::format::Entry {
+                name: "retropane.bin",
+                data: &old,
+            },
+            rp_fat::format::Entry {
+                name: "startup.txt",
+                data: &script,
+            },
+        ],
+        blocked_clusters: &[],
+    });
+    let sd = root.join("target/emulator/sd-put.img");
+    std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let frame = rp_loadproto::file_frame("retropane.bin", &new);
+    let missing = rp_loadproto::file_frame("missing.bin", b"x");
+    let args = usb_args(2);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ", 40)?;
+        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let line = reply
+            .lines()
+            .find(|l| l.starts_with("RPL "))
+            .unwrap_or("")
+            .to_string();
+        if !line.starts_with("RPL OK 70000 bytes") || !line.contains("contiguous") {
+            return Err(format!("unexpected reply to the file: {line:?}"));
+        }
+        eprintln!("    loader: {line}");
+        s.write_all(&missing).map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "RPL ERR not found", 20)?;
+        let _ = reply;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    let got = card_file(&sd, "retropane.bin")?;
+    if got != new {
+        return Err(format!(
+            "the card holds {} bytes of retropane.bin after the put, not the {} sent",
+            got.len(),
+            new.len()
+        ));
+    }
+    if card_file(&sd, "startup.txt")? != script {
+        return Err("startup.txt changed on the card".into());
+    }
+    eprintln!("    file to card OK: replaced through the loader, verified in the image");
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 
@@ -749,6 +877,11 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
         eprintln!();
     }
     let lines = check_probe_report(&output)?;
+    if !output.contains(SD_EXPECT_FAT) || !output.contains("retropane.bin 1500 B") {
+        return Err(format!(
+            "probe: no `{SD_EXPECT_FAT}` / `retropane.bin 1500 B` line in the report"
+        ));
+    }
     let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
     crate::screen::check_text_screen(&ppm)?;
     eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");

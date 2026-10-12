@@ -129,6 +129,35 @@ while (-not $done -and (Get-Date) -lt $deadline) {{
         )
 }
 
+/// Sends a file frame and reads the loader's reply (the loader stays up, so
+/// no reconnect dance; a card write and its read-back take a few seconds).
+fn put_script(frame: &Path) -> String {
+    let path = frame.display().to_string().replace('\'', "''");
+    open_port()
+        + &format!(
+            r#"$bytes = [System.IO.File]::ReadAllBytes('{path}')
+$sp.DtrEnable = $true
+$sp.RtsEnable = $true
+$sp.ReadTimeout = 5000
+$sp.WriteTimeout = 30000
+$sp.NewLine = "`r`n"
+$sp.Open()
+$sp.DiscardInBuffer()
+$sp.Write($bytes, 0, $bytes.Length)
+"SENT " + $bytes.Length
+$deadline = (Get-Date).AddSeconds({PUT_WAIT_SECS})
+while ((Get-Date) -lt $deadline) {{
+    try {{ $l = $sp.ReadLine() }} catch [System.TimeoutException] {{ continue }} catch {{ break }}
+    if ($l -like 'RPL *') {{ "REPLY " + $l; break }}
+}}
+try {{ $sp.Close() }} catch {{ }}
+"#
+        )
+}
+
+/// How long `cargo xtask put` waits for the loader's verdict on a file.
+const PUT_WAIT_SECS: u32 = 90;
+
 /// How long `cargo xtask load` waits for the image to return to the loader
 /// with its run log: the loader's 30 s run limit, then a watchdog reset and
 /// Windows Mobile's boot back into the loader.
@@ -303,6 +332,15 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                 );
             }
             if restarted {
+                if what == "rp-loader" {
+                    // A new loader sent as an image replaces the running one
+                    // in RAM (it moves itself home first) and announces
+                    // itself: that READY is the success here.
+                    eprintln!(
+                        "    the new loader is running from RAM; `cargo xtask install` puts it on the card"
+                    );
+                    return Ok(());
+                }
                 return Err(
                     "the image hung: the watchdog reset the device and the loader came \
                      back without a run log (the reset cleared it)"
@@ -341,6 +379,97 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
         }
         Some(r) => Err(format!("the loader refused the image: {r}")),
     }
+}
+
+/// Writes `file` to the card's root directory as `name` (its own name by
+/// default) through the resident loader, which replaces the file there and
+/// reads it back before saying OK.
+pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
+    let path = Path::new(file);
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("the file has no name")?
+            .to_string(),
+    };
+    let contents = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let out = root.join("target/load");
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let frame = out.join("put.frame");
+    std::fs::write(&frame, rp_loadproto::file_frame(&name, &contents))
+        .map_err(|e| format!("{}: {e}", frame.display()))?;
+    let mut text = run_put(&frame)?;
+    if text.contains("NOPORT") {
+        eprintln!("    no port yet: asking Windows to re-find the Axim");
+        let _ = powershell(&format!(
+            "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
+        ));
+        text = run_put(&frame)?;
+    }
+    if text.contains("NOPORT") {
+        return Err(format!(
+            "no RetroPane USB port ({VID_PID}) found. Is the loader running with the cable plugged in?"
+        ));
+    }
+    let reply = text
+        .lines()
+        .find_map(|l| l.trim_end().strip_prefix("REPLY "))
+        .ok_or_else(|| {
+            format!(
+                "{} bytes sent, but no reply within {PUT_WAIT_SECS} s",
+                contents.len()
+            )
+        })?;
+    if let Some(detail) = reply.strip_prefix("RPL OK") {
+        eprintln!("    {name}: {} bytes on the card:{detail}", contents.len());
+        Ok(())
+    } else {
+        Err(format!("the loader refused {name}: {reply}"))
+    }
+}
+
+fn run_put(frame: &Path) -> Result<String, String> {
+    let out = powershell(&put_script(frame))?;
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// What `cargo xtask install` puts on the card: (file in the kit, name on
+/// the card). The loader is what HaRET starts (the kit's loader folder).
+const KIT_FILES: [(&str, &str); 4] = [
+    ("loader/retropane.bin", "retropane.bin"),
+    ("loader/startup.txt", "startup.txt"),
+    ("default.txt", "default.txt"),
+    ("haret.exe", "haret.exe"),
+];
+
+/// Puts the kit's files on the card through the loader. Files the card
+/// doesn't have yet are reported, not created (ADR-0013 doesn't create).
+pub fn install(root: &Path) -> Result<(), String> {
+    let kit = root.join("target/sdkit");
+    let mut missing = Vec::new();
+    for (local, name) in KIT_FILES {
+        let path = kit.join(local);
+        if !path.exists() {
+            return Err(format!(
+                "{} is missing: run cargo xtask sdkit first",
+                path.display()
+            ));
+        }
+        match put(root, &path.display().to_string(), Some(name)) {
+            Ok(()) => {}
+            Err(e) if e.contains("not found") => {
+                eprintln!("    {name}: not on the card (copy it there once by hand)");
+                missing.push(name);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    if missing.is_empty() {
+        eprintln!("    the card is up to date; soft-reset the Axim to start the new loader");
+    }
+    Ok(())
 }
 
 /// Runs the check.
@@ -419,6 +548,14 @@ mod tests {
     fn the_log_wait_kicks_the_device_restart_task() {
         let s = load_script(Path::new("x.frame"));
         assert!(s.contains("schtasks /Run /TN 'RetroPane USB restart'"));
+    }
+
+    #[test]
+    fn the_put_script_waits_for_one_reply_line() {
+        let s = put_script(Path::new("p.frame"));
+        assert!(s.contains("ReadAllBytes('p.frame')"));
+        assert!(s.contains("-like 'RPL *'"));
+        assert!(!s.contains("schtasks"), "no reconnect dance for a put");
     }
 
     #[test]

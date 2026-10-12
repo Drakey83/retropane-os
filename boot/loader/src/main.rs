@@ -7,7 +7,13 @@
 //! HaRET had started it. So a new build reaches the device in about a second,
 //! with nobody copying files or tapping HaRET.
 //!
-//! Protocol: `rp-loadproto`. PC side: `cargo xtask load <image>`.
+//! A file frame instead replaces a file on the SD card (ADR-0013): the
+//! loader itself, HaRET, its script. Copy-then-swap in `rp-fat`, then the
+//! contents are read back and checked against the frame's CRC before the
+//! loader says OK, so what the PC sent is what the card holds.
+//!
+//! Protocol: `rp-loadproto`. PC side: `cargo xtask load <image>`,
+//! `cargo xtask put <file>`.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -19,16 +25,20 @@ pub const MARKER: &str = "RPLOAD1 READY";
 mod image {
     use core::fmt::Write;
 
+    use rp_drv_cpld::Cpld;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
+    use rp_drv_sdcard::{SdCard, mbr_partitions};
+    use rp_fat::Volume;
     use rp_hal_api::RegisterBus;
-    use rp_hal_pxa27x::{handoff, rt};
+    use rp_hal_pxa27x::{Mmio, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
-    use rp_loadproto::{LoadError, OK, READY, Receiver, feed_slice};
+    use rp_loadproto::{Frame, Kind, LoadError, OK, READY, Receiver, crc32_update, feed_slice};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -41,6 +51,129 @@ mod image {
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
+    /// The end of the image area, kept for reading a written file back
+    /// (the bigger it is, the fewer card commands the check takes).
+    const SCRATCH: usize = 64 * 1024;
+
+    /// The SD card's FAT32 volume, opened on the first file frame.
+    type Card = Volume<SdCard<PxaMmc<Mmio>>>;
+
+    /// A reply line built on the stack.
+    struct Line {
+        buf: [u8; 96],
+        len: usize,
+    }
+
+    impl Line {
+        const fn new() -> Self {
+            Self {
+                buf: [0; 96],
+                len: 0,
+            }
+        }
+        fn as_str(&self) -> &str {
+            core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        }
+    }
+
+    impl Write for Line {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let n = s.len().min(self.buf.len() - self.len);
+            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.len += n;
+            Ok(())
+        }
+    }
+
+    /// Powers the card, identifies it and mounts its first partition.
+    #[inline(never)]
+    fn open_card() -> Result<Card, &'static str> {
+        let cpld = devices::take_cpld().ok_or("no CPLD")?;
+        let mmc = rt::take_mmc().ok_or("no MMC controller")?;
+        let mut cpld = Cpld::new(cpld);
+        cpld.set_sd_power(true);
+        rt::delay_us(10_000);
+        let mut card = SdCard::init(PxaMmc::new(mmc)).map_err(|_| "no card")?;
+        let mut block = [0u8; rp_drv_sdcard::BLOCK];
+        card.read(0, &mut block).map_err(|_| "card read")?;
+        let start = mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start);
+        Volume::mount(card, start).map_err(|_| "not FAT32")
+    }
+
+    /// Writes a file frame to the card and checks it back; the reply line.
+    #[inline(never)]
+    fn put_file(card: &mut Option<Card>, frame: Frame, dest: &mut [u8], reply: &mut Line) {
+        let (payload, scratch) = dest.split_at_mut(dest.len() - SCRATCH);
+        if frame.len > payload.len() {
+            let _ = reply.write_str(LoadError::TooBig.reply());
+            return;
+        }
+        let (name, contents) = match frame.file(payload) {
+            Ok(x) => x,
+            Err(e) => {
+                let _ = reply.write_str(e.reply());
+                return;
+            }
+        };
+        if card.is_none() {
+            match open_card() {
+                Ok(c) => *card = Some(c),
+                Err(why) => {
+                    let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                    return;
+                }
+            }
+        }
+        let Some(vol) = card.as_mut() else { return };
+        let t0 = rt::ticks();
+        let written = match vol.replace(name, contents) {
+            Ok(w) => w,
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR {}\r\n", e.name());
+                return;
+            }
+        };
+        let t_write = rt::ticks().wrapping_sub(t0);
+        // Read back through the FAT code and compare with what was sent.
+        let mut crc = !0u32;
+        let mut got = 0usize;
+        let check = vol.find(name).and_then(|f| {
+            vol.read_file(&f, scratch, |chunk| {
+                crc = crc32_update(crc, chunk);
+                got += chunk.len();
+            })
+        });
+        let want = crc32_update(!0, contents);
+        match check {
+            Ok(()) if crc == want && got == contents.len() => {
+                let _ = write!(
+                    reply,
+                    "RPL OK {} bytes in {} ms, {} cluster{} {}, read back in {} ms\r\n",
+                    contents.len(),
+                    t_write / (TICK_1S / 1000),
+                    written.clusters,
+                    if written.clusters == 1 { "" } else { "s" },
+                    if written.contiguous {
+                        "contiguous"
+                    } else {
+                        "scattered"
+                    },
+                    rt::ticks().wrapping_sub(t0 + t_write) / (TICK_1S / 1000),
+                );
+            }
+            Ok(()) => {
+                let _ = write!(
+                    reply,
+                    "RPL ERR verify: {got} bytes read back, crc differs\r\n"
+                );
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR verify: {}\r\n", e.name());
+            }
+        }
+    }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
@@ -153,6 +286,7 @@ mod image {
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
+        let mut card: Option<Card> = None;
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
             // while waiting.
@@ -180,7 +314,23 @@ mod image {
                 }
             }
             match outcome {
-                Some(Ok(len)) => {
+                Some(Ok(Frame {
+                    kind: Kind::File, ..
+                })) => {
+                    let frame = outcome.and_then(Result::ok).unwrap_or(Frame {
+                        kind: Kind::File,
+                        len: 0,
+                    });
+                    // A card write can take seconds: keep the watchdog fed.
+                    if watchdog.armed() {
+                        watchdog.feed(RUN_LIMIT);
+                    }
+                    let mut reply = Line::new();
+                    put_file(&mut card, frame, dest, &mut reply);
+                    send(&mut uart, &mut udc, reply.as_str());
+                    let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
+                }
+                Some(Ok(Frame { len, .. })) => {
                     // Bring-up check: does the image survive the cache flush
                     // the launch does? Flush, drop the cache, re-read from
                     // memory and compare with the CRC the sender gave.
@@ -303,6 +453,7 @@ mod image {
         match e {
             LoadError::TooBig => "too big",
             LoadError::BadCrc => "bad CRC",
+            LoadError::BadName => "bad file name",
         }
     }
 

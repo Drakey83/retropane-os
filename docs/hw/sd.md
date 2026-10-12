@@ -22,14 +22,15 @@
 | `STRPCL` | 0x00 | `[0]` stop clock, `[1]` start clock (starts the queued command) |
 | `STAT` | 0x04 | `[1]` response timeout, `[8]` clock enabled, `[11]` data done, `[12]` programming done, `[13]` end of command/response |
 | `CLKRT` | 0x08 | card clock = 19.5 MHz >> n (n = 0..6) |
-| `CMDAT` | 0x10 | `[1:0]` response type (0 none, 1 R1/R6/R7, 2 R2, 3 R3), `[2]` data enable, `[3]` write, `[5]` busy (R1b), `[6]` 80 init clocks, `[8]` 4-bit SD data bus |
+| `CMDAT` | 0x10 | `[1:0]` response type (0 none, 1 R1/R6/R7, 2 R2, 3 R3), `[2]` data enable, `[3]` write (data goes to the card), `[5]` busy (R1b), `[6]` 80 init clocks, `[8]` 4-bit SD data bus |
 | `RESTO` / `RDTO` | 0x14 / 0x18 | response / read timeouts |
 | `BLKLEN` / `NUMBLK` | 0x1C / 0x20 | block length / count |
-| `I_REG` | 0x2C | `[0]` data done, `[5]` RX FIFO request |
+| `I_REG` | 0x2C | `[0]` data done, `[1]` programming done, `[5]` RX FIFO request, `[6]` TX FIFO request (the FIFO wants 32 bytes) |
 | `CMD` | 0x30 | `[5:0]` command index |
 | `ARGH` / `ARGL` | 0x34 / 0x38 | argument high / low 16 bits |
 | `RES` | 0x3C | response FIFO: nine 16-bit reads |
 | `RXFIFO` | 0x40 | receive data, read byte by byte, 32 bytes per request |
+| `TXFIFO` | 0x44 | transmit data, written byte by byte, 32 bytes per request |
 
 **Response decoding:** read `v` = word 0, then for *i* in 0..4 read `w1`, `w2` and
 form `resp[i] = v << 24 | w1 << 8 | w2 >> 8`, then `v = w2`. For 48-bit responses
@@ -45,6 +46,22 @@ repeat CMD55 + ACMD41 (HCS for v2) until OCR busy bit 31 is set; bit 30 = SDHC �
 CMD2 → CMD3 (RCA in response bits 31:16) → CMD7 select → CMD16 512 (SDSC only) →
 CMD17 reads a block (block address on SDHC, byte address on SDSC).
 
+**Writes (ADR-0013):** CMD24 writes one block, CMD25 a run, stopped by CMD12
+(R1b: the controller's busy wait covers the card's programming). Controller
+side: `CMDAT` data enable + write, then fill `TXFIFO` 32 bytes at a time on
+each `I_REG[6]` request; `STAT[11]` data done when the last byte went out,
+`STAT[12]` programming done when the card has stored a single block.
+Confidence: manual + emulator; real-card confirmation pending (the first
+device run writes the loader file itself, restorable by Bluetooth).
+
+### File system
+
+The card is FAT32 (partition type `0x0C`, 4 KiB clusters on the owner's
+card). `kernel/fat` (`rp-fat`) reads it and replaces files by copy-then-swap:
+new clusters first, FAT links in every copy, then one sector write switches
+the directory entry, then the old clusters are freed. The probe lists the
+root directory read-only; the loader takes `RPF1` frames (`cargo xtask put`).
+
 ## Speed (measured, real X51v)
 
 One block per command took 3.85 ms on the owner's 4 GB SDHC card, far more
@@ -56,4 +73,6 @@ and reads runs of blocks with one CMD18, stopped by CMD12.
 ## Emulator
 
 QEMU's `pxa2xx_mmci` model with an `sd-card` on `-drive if=sd`. Its response FIFO
-packing matches the layout above.
+packing matches the layout above; writes through its transmit FIFO reach the
+image file (`cargo xtask emu` replaces a file on a FAT32 card image through
+the loader and checks the image afterwards).

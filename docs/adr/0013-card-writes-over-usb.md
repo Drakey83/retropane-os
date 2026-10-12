@@ -1,6 +1,6 @@
 # ADR-0013: Writing files on the SD card over USB
 
-- **Status:** Proposed (2026-10-11)
+- **Status:** Accepted (2026-10-11, by the project owner: "go")
 - **Date:** 2026-10-11
 
 ## Context
@@ -18,20 +18,26 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
    (several) in `rp-drv-sdcard`; the PXA27x MMC controller's transmit FIFO,
    `CMDAT.WRITE` and the program-done status in `rp-drv-pxa-mmc`. Tested
    against the mock bus and, end to end, in the emulator's SD card model.
-2. **A minimal FAT32 writer (`kernel/fat`):** reads the boot sector, FAT and
-   root directory; finds a file by its 8.3 name; follows its cluster chain.
-   **Phase 1: replace in place.** A new version that fits in the clusters
-   the file already has is written over them and the directory entry's size
-   updated: no FAT changes at all, so the worst case (power lost mid-write)
-   is that one file. **Phase 2: grow.** Allocate free clusters and extend the
-   chain, updating both FAT copies, for files that outgrow their chain.
-   Writes are verified by reading back. Host tests use a FAT32 image built
-   by a small formatter in the tests themselves.
+2. **A minimal FAT32 writer (`kernel/fat`, `rp-fat`):** reads the boot
+   sector, FAT and root directory (long names included); finds a file;
+   follows its cluster chain. Replacing a file is **copy-then-swap**, not
+   in-place: the new contents go into fresh clusters (one contiguous run
+   when the card has one), the chain is linked in both FATs, then the
+   file's directory entry is switched to the new chain and size with one
+   512-byte sector write, and only then are the old clusters freed. Power
+   lost at any moment leaves the complete old file or the complete new
+   one, never a half-written loader. The contents are verified by reading
+   them back through the same FAT code and checking the frame's CRC-32.
+   Host tests use a FAT32 image built by the crate's own formatter
+   (`std` feature), which xtask also uses for the emulator's card.
 3. **A second frame type in the loader protocol:** `RPF1` = "write file":
-   name, length, CRC-32, contents. The loader receives it into the image
-   area, writes it to the card, verifies, and replies `RPL OK` / `RPL ERR`.
-   `cargo xtask put <file>` sends one; `cargo xtask load --install` puts the
-   kit's loader, HaRET and script on the card in one go.
+   the name (length-prefixed) then the contents, under the usual length and
+   CRC-32. The loader receives it into the image area, replaces the file,
+   reads it back through the FAT code, checks the CRC, and replies
+   `RPL OK <bytes> in <ms>, <n> clusters contiguous|scattered, read back in
+   <ms>` or `RPL ERR <why>`. `cargo xtask put <file> [name]` sends one;
+   `cargo xtask install` puts the kit's loader, `startup.txt`, `default.txt`
+   and `haret.exe` on the card in one go.
 4. **Emulator test:** the loader boots with a FAT32 card image, takes a file
    over the (emulated) USB port, and the test reads the image on the host
    and finds the new contents. On the device: `cargo xtask put` the loader
@@ -44,7 +50,7 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
 | 🔁 Iterate | The last manual step in the device loop goes away; the SD write path and FAT code arrive with tests on the host and in the emulator before the card is touched |
 | ✨ Modernize | The card becomes something the PC updates over a standard USB serial link, no card readers, no Bluetooth |
 | 🗄️ Legacy support | FAT32 as Windows Mobile formats it, so the card stays readable by Windows Mobile and any PC |
-| ⚡ Better / faster | Multi-block writes from the start (ADR-0012's measurement: per-command cost dominates on this card) |
+| ⚡ Better / faster | Multi-block writes from the start (ADR-0012's measurement: per-command cost dominates on this card); new contents allocated contiguously when possible, so HaRET's read of the loader is one run; the write's speed is reported in the reply and recorded in docs/perf.md |
 
 ## Alternatives considered
 
@@ -55,12 +61,33 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
 - **A raw-sector "dd" over the loader with the PC doing the FAT work:** the
   PC would need the whole FAT logic anyway, and raw sector writes to a live
   card are easier to get wrong.
+- **Replace in place (overwrite the file's own clusters):** no FAT changes,
+  but a power loss mid-write leaves a torn loader on the card. Copy-then-swap
+  costs the same code and never does.
+
+## Status notes
+
+- 2026-10-11: built. Host tests: SD writes against the fake card, the MMC
+  transmit path against the mock bus, `rp-fat` (formatter, long names,
+  contiguous and scattered replacement, full card, and the power-loss sweep:
+  the disk fails at every write index in turn and the file always reads back
+  whole as old or new). Emulator: `cargo xtask emu` boots the loader with a
+  FAT32 card image, sends a 70,000-byte `retropane.bin` over the emulated USB
+  port, gets `RPL OK ... contiguous`, a `not found` for a missing name, and
+  the image on the host holds the new contents with `startup.txt` untouched.
+  The probe lists the card's root directory, so the FAT reader meets the real
+  card read-only first. Real-card writes: pending the owner's next run
+  (`cargo xtask load rp-probe`, then `cargo xtask install`).
 
 ## Consequences
 
 - The loader grows (SD + FAT code); it's a test image, ratcheted freely
   (owner's rule, 2026-10-11).
-- First code that writes the owner's card: phase 1 only touches clusters
-  the file already owns, and the first device use is on the loader file,
-  which a Bluetooth copy can always restore.
+- First code that writes the owner's card: a replaced file's old clusters
+  are untouched until the new copy is complete and linked, the directory
+  switch is a single sector write, and nothing else on the card is
+  written. The first device use is on the loader file, which a Bluetooth
+  copy can always restore.
+- Not yet: creating new files or directories, timestamps (no clock yet),
+  freeing space when the card is full.
 - The FAT writer becomes the seed of the OS's file system support.

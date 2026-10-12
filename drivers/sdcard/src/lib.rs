@@ -6,10 +6,14 @@
 //! one, then 512-byte block reads, several at a time (CMD18 + CMD12) when the
 //! host can: an SD card takes milliseconds to start each read, so one
 //! command per block wastes most of the time (measured on the real X51v:
-//! 3.85 ms per single-block read). Host controllers implement [`SdHost`].
+//! 3.85 ms per single-block read). Writes likewise: CMD24 for one block,
+//! CMD25 + CMD12 for a run. Host controllers implement [`SdHost`]; the
+//! card implements [`BlockDevice`] for file systems.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+
+use rp_hal_api::{BlockDevice, BlockError};
 
 /// Block size used throughout.
 pub const BLOCK: usize = 512;
@@ -88,6 +92,23 @@ pub trait SdHost {
     /// Sends a multiple-block read command (CMD18) and receives
     /// `buf.len() / BLOCK` blocks; the caller then stops the card (CMD12).
     fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+        let _ = (cmd, buf);
+        Err(HostError::Data)
+    }
+    /// Sends a single-block write command (CMD24), the block, and waits for
+    /// the card to finish programming it.
+    fn write_block(&mut self, cmd: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
+        let _ = (cmd, buf);
+        Err(HostError::Data)
+    }
+    /// Whether [`write_blocks`](Self::write_blocks) works.
+    fn can_write_multiple(&self) -> bool {
+        false
+    }
+    /// Sends a multiple-block write command (CMD25) and `buf.len() / BLOCK`
+    /// blocks; the caller then stops the card (CMD12), which also waits for
+    /// the programming to finish.
+    fn write_blocks(&mut self, cmd: Command, buf: &[u8]) -> Result<u32, HostError> {
         let _ = (cmd, buf);
         Err(HostError::Data)
     }
@@ -261,9 +282,51 @@ impl<H: SdHost> SdCard<H> {
         Ok(())
     }
 
+    /// Writes block `lba` (512 bytes).
+    pub fn write(&mut self, lba: u32, buf: &[u8; BLOCK]) -> Result<(), Error> {
+        let addr = self.address(lba);
+        check(
+            self.host
+                .write_block(Command::new(24, addr, Response::R1), buf)?,
+        )
+    }
+
+    /// Writes `buf.len() / 512` consecutive blocks from `lba` with one
+    /// command when the host can (otherwise block by block).
+    ///
+    /// # Panics
+    /// If `buf` isn't a whole number of blocks.
+    pub fn write_many(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
+        assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
+        if buf.len() > BLOCK && self.host.can_write_multiple() {
+            let addr = self.address(lba);
+            let status = self
+                .host
+                .write_blocks(Command::new(25, addr, Response::R1), buf);
+            let stop = self.host.command(Command::new(12, 0, Response::R1b));
+            check(status?)?;
+            stop?;
+            return Ok(());
+        }
+        for (i, block) in buf.as_chunks::<BLOCK>().0.iter().enumerate() {
+            self.write(lba + i as u32, block)?;
+        }
+        Ok(())
+    }
+
     /// Gives the host back.
     pub fn into_inner(self) -> H {
         self.host
+    }
+}
+
+impl<H: SdHost> BlockDevice for SdCard<H> {
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        self.read_many(lba, buf).map_err(|_| BlockError::Device)
+    }
+
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        self.write_many(lba, buf).map_err(|_| BlockError::Device)
     }
 }
 
@@ -413,6 +476,76 @@ mod tests {
             buf.copy_from_slice(&self.data[first * BLOCK..first * BLOCK + buf.len()]);
             Ok(0x900)
         }
+        fn write_block(&mut self, c: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
+            self.log.push((c.index, c.arg));
+            let block = if self.sdhc {
+                c.arg
+            } else {
+                c.arg / BLOCK as u32
+            } as usize;
+            self.data[block * BLOCK..(block + 1) * BLOCK].copy_from_slice(buf);
+            Ok(0x900)
+        }
+        fn can_write_multiple(&self) -> bool {
+            self.capable
+        }
+        fn write_blocks(&mut self, c: Command, buf: &[u8]) -> Result<u32, HostError> {
+            self.log.push((c.index, c.arg));
+            let first = if self.sdhc {
+                c.arg
+            } else {
+                c.arg / BLOCK as u32
+            } as usize;
+            self.data[first * BLOCK..first * BLOCK + buf.len()].copy_from_slice(buf);
+            Ok(0x900)
+        }
+    }
+
+    #[test]
+    fn writes_go_through_cmd24_or_cmd25_and_read_back() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        let mut card = SdCard::init(fake).unwrap();
+        let one = [0xA5u8; BLOCK];
+        card.write(2, &one).unwrap();
+        let three = vec![0x5Au8; 3 * BLOCK];
+        card.write_many(4, &three).unwrap();
+        let mut back = vec![0u8; 5 * BLOCK];
+        card.read_many(2, &mut back).unwrap();
+        assert!(back[..BLOCK].iter().all(|&b| b == 0xA5));
+        assert!(
+            back[BLOCK..2 * BLOCK].iter().all(|&b| b == 3),
+            "block 3 untouched"
+        );
+        assert!(back[2 * BLOCK..].iter().all(|&b| b == 0x5A));
+        let host = card.into_inner();
+        let cmds: Vec<(u8, u32)> = host.log[host.log.len() - 5..].to_vec();
+        assert_eq!(cmds, [(24, 2), (25, 4), (12, 0), (18, 2), (12, 0)]);
+    }
+
+    #[test]
+    fn without_multiple_writes_write_many_goes_block_by_block() {
+        let mut card = SdCard::init(FakeCard::new(false, false)).unwrap();
+        let two = vec![7u8; 2 * BLOCK];
+        card.write_many(1, &two).unwrap();
+        let host = card.into_inner();
+        assert_eq!(&host.log[host.log.len() - 2..], [(24, 512), (24, 1024)]);
+        assert!(host.data[BLOCK..3 * BLOCK].iter().all(|&b| b == 7));
+    }
+
+    #[test]
+    fn the_card_is_a_block_device() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        let mut buf = vec![0u8; BLOCK];
+        BlockDevice::read_blocks(&mut card, 6, &mut buf).unwrap();
+        assert!(buf.iter().all(|&b| b == 6));
+        buf.fill(9);
+        BlockDevice::write_blocks(&mut card, 6, &buf).unwrap();
+        assert!(
+            card.into_inner().data[6 * BLOCK..7 * BLOCK]
+                .iter()
+                .all(|&b| b == 9)
+        );
     }
 
     #[test]

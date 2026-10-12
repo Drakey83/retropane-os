@@ -24,6 +24,14 @@ the Dell bootloader region** (DESIGN.md §10c).
   table in SDRAM vs SRAM, for ADR-0006). `cargo xtask emu` boots it and
   verifies every checksum.
 
+- `loadproto/` and `loader/`: the resident loader (ADR-0012) and its wire
+  protocol. Started once by HaRET, it takes images from the PC over USB
+  serial (`cargo xtask load`) and, since ADR-0013, files for the SD card
+  (`cargo xtask put`, `cargo xtask install`): the loader, HaRET and its
+  script are updated over the cable, nobody copies files.
+- `light/`, `usb/`, `reconnect/`: first light, the USB link test and the
+  reconnect experiment, each a bring-up image with its own budget.
+
 ## Booting on a real X51v from the SD card
 
 `cargo xtask sdkit` builds `target/sdkit/`: HaRET (built from pinned sources in

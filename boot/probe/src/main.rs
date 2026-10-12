@@ -233,6 +233,9 @@ mod image {
             nc: 0,
         };
         let mut sd_lines = [[b' '; 37]; 5];
+        // The card's file system: cluster size and the first root entries
+        // (ADR-0013: the FAT code meets the real card read-only first).
+        let mut fat_lines = [[b' '; 37]; 4];
         let mut panel_name = "unknown";
         step(6); // grey: the console clears it to black next
 
@@ -274,6 +277,7 @@ mod image {
                             ),
                         );
                         let mut block = [0u8; rp_drv_sdcard::BLOCK];
+                        let mut first = None;
                         if k.read(0, &mut block).is_ok()
                             && let Some(parts) = mbr_partitions(&block)
                         {
@@ -290,6 +294,40 @@ mod image {
                                         ),
                                     );
                                 }
+                            }
+                            first = parts[0].map(|p| p.start);
+                        }
+                        match rp_fat::Volume::mount(&mut k, first.unwrap_or(0)) {
+                            Ok(mut vol) => {
+                                fmt_into(
+                                    &mut fat_lines[0],
+                                    format_args!(
+                                        "FAT32 {} B/cluster, {} clusters",
+                                        vol.cluster_bytes(),
+                                        vol.clusters()
+                                    ),
+                                );
+                                let mut n = 1;
+                                let _ = vol.for_each_root(|e| {
+                                    if n < fat_lines.len() && !e.is_dir {
+                                        fmt_into(
+                                            &mut fat_lines[n],
+                                            format_args!(
+                                                " {} {} B @{}",
+                                                Ascii(e.name),
+                                                e.size,
+                                                e.first_cluster
+                                            ),
+                                        );
+                                        n += 1;
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                fmt_into(
+                                    &mut fat_lines[0],
+                                    format_args!("FAT none ({})", e.name()),
+                                );
                             }
                         }
                         card = Some(k);
@@ -370,7 +408,11 @@ mod image {
         rep.on_page(0);
         rep.line(format_args!("panel {panel_name}"));
         rep.line(format_args!("display {display_note} @{:06X}", plane.offset));
-        for l in sd_lines.iter().filter(|l| l.iter().any(|&b| b != b' ')) {
+        for l in sd_lines
+            .iter()
+            .chain(fat_lines.iter())
+            .filter(|l| l.iter().any(|&b| b != b' '))
+        {
             rep.line(format_args!("{}", Ascii(l)));
         }
         rep.line(format_args!(

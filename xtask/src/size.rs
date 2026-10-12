@@ -73,9 +73,11 @@ pub const BUDGETS: &[Budget] = &[
     // dominate. Built for size (opt-level "s").
     // Raised 40 -> 45 KiB on 2026-10-11 (approved by the owner): the run log
     // and return-to-loader path (ADR-0012), 40.9 KiB measured, +~10%.
+    // Ratcheted 45 -> 53 KiB on 2026-10-11 (test image, owner's rule): the
+    // card's FAT32 root listing (ADR-0013), 47.5 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 45 * 1024,
+        max_load: 53 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
@@ -86,9 +88,11 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Bring-up: the resident loader (ADR-0012 U3): 19.6 KiB measured, +~10%.
     // It must also stay inside its 1 MiB home (boot/loader/link.x).
+    // Ratcheted 22 -> 41 KiB on 2026-10-11 (test image, owner's rule): SD
+    // card writes and the FAT32 copy-then-swap (ADR-0013), ~37 KiB measured.
     Budget {
         image: "rp-loader",
-        max_load: 22 * 1024,
+        max_load: 41 * 1024,
         max_zero: 20 * 1024,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.

@@ -1,6 +1,6 @@
 [package]
 name = "rp-loader"
-description = "Resident loader (ADR-0012 U3): receives images from the PC over USB serial (or the FFUART) and starts them"
+description = "Resident loader (ADR-0012 U3, ADR-0013): receives images from the PC over USB serial (or the FFUART) and starts them; writes files to the SD card"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,10 @@ rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-fat = { path = "../../kernel/fat" }
 rp-loadproto = { path = "../loadproto" }
 
 [lints]

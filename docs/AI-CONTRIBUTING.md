@@ -25,6 +25,17 @@ Every change must advance at least one of these four lenses and set back none:
    muscle memory still works.
 4. **Better/faster:** it uses the hardware more fully than the original did.
 
+At every new step (an ADR, a crate, a driver, an image, a protocol), answer
+three questions in the plan and again in the summary (the owner's standing
+request, 2026-10-11):
+
+- Am I being clever and making this better, or just reverse engineering it
+  to work the way it did?
+- Am I keeping the file size down? (Measured size against the budget.)
+- Am I doing anything to modernize it, wherever and whenever I can?
+
+If an answer is "no", say so, and either fix it or explain why not.
+
 ## The box (non-negotiable constraints)
 
 - Intel PXA270 (XScale ARMv5TE), single core, 624 MHz. No Thumb-2, no atomics

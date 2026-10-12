@@ -36,18 +36,25 @@ pub mod reg {
     pub const RES: usize = 0x3C;
     /// Receive FIFO.
     pub const RXFIFO: usize = 0x40;
+    /// Transmit FIFO.
+    pub const TXFIFO: usize = 0x44;
 }
 
 const STRPCL_START: u32 = 1 << 1;
 const STAT_TOUT_RES: u32 = 1 << 1;
 const STAT_DATA_DONE: u32 = 1 << 11;
+/// STAT: the card finished programming the written data.
+const STAT_PRG_DONE: u32 = 1 << 12;
 const STAT_END_CMD_RES: u32 = 1 << 13;
 const CMDAT_DATA_EN: u32 = 1 << 2;
+/// CMDAT: the data goes to the card.
+const CMDAT_WRITE: u32 = 1 << 3;
 const CMDAT_BUSY: u32 = 1 << 5;
 const CMDAT_INIT: u32 = 1 << 6;
 /// CMDAT: 4-bit SD data bus.
 const CMDAT_SD_4DAT: u32 = 1 << 8;
 const I_RXFIFO_REQ: u32 = 1 << 5;
+const I_TXFIFO_REQ: u32 = 1 << 6;
 const FIFO_BYTES: usize = 32;
 
 /// Base card clock.
@@ -122,6 +129,15 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     }
 
     fn issue(&mut self, cmd: Command, data_blocks: u32) -> Result<[u32; 4], HostError> {
+        self.issue_data(cmd, data_blocks, false)
+    }
+
+    fn issue_data(
+        &mut self,
+        cmd: Command,
+        data_blocks: u32,
+        write: bool,
+    ) -> Result<[u32; 4], HostError> {
         self.regs.write32(reg::CMD, u32::from(cmd.index & 0x3F));
         self.regs.write32(reg::ARGH, cmd.arg >> 16);
         self.regs.write32(reg::ARGL, cmd.arg & 0xFFFF);
@@ -133,6 +149,9 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             self.regs.write32(reg::BLKLEN, BLOCK as u32);
             self.regs.write32(reg::NUMBLK, data_blocks);
             cmdat |= CMDAT_DATA_EN;
+            if write {
+                cmdat |= CMDAT_WRITE;
+            }
             if self.wide {
                 cmdat |= CMDAT_SD_4DAT;
             }
@@ -187,6 +206,26 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
         self.receive(buf)?;
         Ok(status)
     }
+
+    fn write_block(&mut self, cmd: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
+        let status = self.issue_data(cmd, 1, true)?[0];
+        self.transmit(buf)?;
+        // One block: the card programs it now; the controller reports when
+        // the card is done (CMD25 runs leave that to the CMD12 that stops them).
+        self.wait_stat(STAT_PRG_DONE).map_err(|_| HostError::Data)?;
+        Ok(status)
+    }
+
+    fn can_write_multiple(&self) -> bool {
+        true
+    }
+
+    fn write_blocks(&mut self, cmd: Command, buf: &[u8]) -> Result<u32, HostError> {
+        let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        let status = self.issue_data(cmd, blocks, true)?[0];
+        self.transmit(buf)?;
+        Ok(status)
+    }
 }
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
@@ -206,6 +245,29 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
             }
             for b in chunk {
                 *b = self.regs.read8(reg::RXFIFO);
+            }
+        }
+        self.wait_stat(STAT_DATA_DONE)
+            .map_err(|_| HostError::Data)?;
+        Ok(())
+    }
+
+    /// Fills the transmit FIFO, 32 bytes per FIFO request, until `buf` has
+    /// gone out and the controller reports the transfer done.
+    fn transmit(&mut self, buf: &[u8]) -> Result<(), HostError> {
+        for chunk in buf.chunks(FIFO_BYTES) {
+            let mut ready = false;
+            for _ in 0..SPIN_LIMIT {
+                if self.regs.read32(reg::I_REG) & I_TXFIFO_REQ != 0 {
+                    ready = true;
+                    break;
+                }
+            }
+            if !ready {
+                return Err(HostError::Data);
+            }
+            for &b in chunk {
+                self.regs.write8(reg::TXFIFO, b);
             }
         }
         self.wait_stat(STAT_DATA_DONE)
@@ -330,6 +392,59 @@ mod tests {
         let w = mmc.into_inner_for_test().writes();
         assert!(w.contains(&(reg::NUMBLK, 3)));
         assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_SD_4DAT)));
+    }
+
+    #[test]
+    fn writes_a_block_through_the_fifo_and_waits_for_programming() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE | STAT_PRG_DONE);
+        bus.preset(reg::I_REG, I_TXFIFO_REQ);
+        let mut mmc = PxaMmc::new(bus);
+        let block: [u8; BLOCK] = core::array::from_fn(|i| i as u8);
+        mmc.write_block(Command::new(24, 9, Response::R1), &block)
+            .unwrap();
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_WRITE)));
+        assert!(w.contains(&(reg::ARGL, 9)) && w.contains(&(reg::NUMBLK, 1)));
+        let fifo: Vec<u32> = w
+            .iter()
+            .filter(|(o, _)| *o == reg::TXFIFO)
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(fifo.len(), BLOCK);
+        assert_eq!(fifo[0], 0);
+        assert_eq!(fifo[511], 255);
+    }
+
+    #[test]
+    fn a_card_that_never_finishes_programming_is_a_data_error() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_TXFIFO_REQ);
+        let mut mmc = PxaMmc::new(bus);
+        assert_eq!(
+            mmc.write_block(Command::new(24, 0, Response::R1), &[0; BLOCK]),
+            Err(HostError::Data)
+        );
+    }
+
+    #[test]
+    fn multiple_block_writes_leave_the_programming_wait_to_cmd12() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_TXFIFO_REQ);
+        let mut mmc = PxaMmc::new(bus);
+        mmc.set_wide_bus();
+        assert!(mmc.can_write_multiple());
+        mmc.write_blocks(Command::new(25, 4, Response::R1), &[1u8; 2 * BLOCK])
+            .unwrap();
+        let w = mmc.into_inner_for_test().writes();
+        assert!(w.contains(&(reg::NUMBLK, 2)));
+        assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN | CMDAT_WRITE | CMDAT_SD_4DAT)));
+        assert_eq!(
+            w.iter().filter(|(o, _)| *o == reg::TXFIFO).count(),
+            2 * BLOCK
+        );
     }
 
     #[test]
