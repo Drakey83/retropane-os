@@ -1,4 +1,5 @@
-//! First-level page tables (ARMv5 / XScale "section" mappings) and the
+//! First-level page tables (ARMv5 / XScale "section" mappings, plus the top
+//! MiB as 4 KiB pages for the vectors and KData: [`high_pages`]) and the
 //! bring-up memory map.
 //!
 //! This is a flat identity map for bring-up: it turns on the MMU so the caches,
@@ -71,6 +72,43 @@ pub fn build(table: &mut [u32; 4096], regions: &[Region]) {
 pub const L1_TABLE: u32 = 0xA800_4000;
 /// Physical page holding the exception vectors, mapped at 0xFFFF0000.
 pub const VECTORS_PHYS: u32 = 0xA80F_0000;
+
+/// The KData page's user address (ADR-0010 rule 8): `PUserKData`
+/// (`0xFFFFC800`) is inside it.
+pub const KDATA_VIRT: u32 = 0xFFFF_C000;
+/// Physical page behind [`KDATA_VIRT`] (reserved SDRAM, boot/link.x).
+pub const KDATA_PHYS: u32 = 0xA80F_1000;
+/// Physical second-level table for the top MiB once it is split into
+/// pages ([`high_pages`]; 1 KiB, reserved SDRAM, boot/link.x).
+pub const HIGH_L2: u32 = 0xA80F_2000;
+/// The top MiB's index in the first-level table.
+pub const HIGH_L1_INDEX: usize = 0xFFF;
+
+/// A first-level coarse-table descriptor (domain 0) for the 1 KiB-aligned
+/// second-level table at `table`.
+#[must_use]
+pub const fn coarse(table: u32) -> u32 {
+    (table & !0x3FF) | 0b01
+}
+
+/// A second-level small-page (4 KiB) descriptor, write-back cacheable,
+/// with `ap` (`0b01` kernel only, `0b10` kernel read/write and user
+/// read-only) for all four subpages.
+#[must_use]
+pub const fn small_page(phys: u32, ap: u32) -> u32 {
+    let ap4 = (ap << 10) | (ap << 8) | (ap << 6) | (ap << 4);
+    (phys & 0xFFFF_F000) | ap4 | (1 << 3) | (1 << 2) | 0b10
+}
+
+/// The top MiB as pages instead of a section: the vector page (kernel
+/// only: the section left it, and the rest of SDRAM's first MiB,
+/// user-writable) and the KData page (user read-only, kernel read/write);
+/// the rest faults. A section can't give one page its own permissions.
+pub fn high_pages(l2: &mut [u32; 256]) {
+    l2.fill(0);
+    l2[((0xFFFF_0000u32 >> 12) & 0xFF) as usize] = small_page(VECTORS_PHYS, 0b01);
+    l2[((KDATA_VIRT >> 12) & 0xFF) as usize] = small_page(KDATA_PHYS, 0b10);
+}
 
 /// The X51v bring-up map (docs/hw: PXA27x memory map, X51v chip selects).
 pub const X51V_BRINGUP: &[Region] = &[
@@ -161,6 +199,25 @@ mod tests {
         // The vector page and table live in the first, mapped, MiB of SDRAM.
         assert_eq!(VECTORS_PHYS & 0xFFF0_0000, 0xA800_0000);
         assert_eq!(L1_TABLE % (16 * 1024), 0);
+    }
+
+    #[test]
+    fn the_top_mib_as_pages_holds_vectors_and_kdata_only() {
+        let mut l2 = [0xFFFF_FFFFu32; 256];
+        high_pages(&mut l2);
+        let at = |a: u32| l2[((a >> 12) & 0xFF) as usize];
+        // Vectors: kernel-only (AP 01 in every subpage), write-back.
+        assert_eq!(at(0xFFFF_0000), 0xA80F_055E);
+        // KData: user read-only (AP 10), write-back.
+        assert_eq!(at(0xFFFF_C800), 0xA80F_1AAE);
+        assert_eq!(l2.iter().filter(|&&d| d != 0).count(), 2, "the rest faults");
+        assert_eq!(coarse(HIGH_L2), 0xA80F_2001);
+        // Reserved pages between the vectors and the D-cache clean region.
+        for p in [KDATA_PHYS, HIGH_L2] {
+            assert!(p > VECTORS_PHYS && p + 4096 <= 0xA80F_8000);
+        }
+        assert_eq!(HIGH_L2 % 1024, 0);
+        assert_eq!(HIGH_L1_INDEX, (KDATA_VIRT >> 20) as usize);
     }
 
     #[test]
