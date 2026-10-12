@@ -131,7 +131,7 @@ mod image {
         let written = match vol.replace(name, contents) {
             Ok(w) => w,
             Err(e) => {
-                let _ = write!(reply, "RPL ERR {}\r\n", e.name());
+                let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol));
                 return;
             }
         };
@@ -170,8 +170,44 @@ mod image {
                 );
             }
             Err(e) => {
-                let _ = write!(reply, "RPL ERR verify: {}\r\n", e.name());
+                let _ = write!(reply, "RPL ERR verify: {}{}\r\n", e.name(), card_note(vol));
             }
+        }
+    }
+
+    /// The card's own error behind a device error, for the reply.
+    fn card_note(vol: &Card) -> Note {
+        let what = match vol.device().last_error() {
+            Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Timeout)) => "timeout",
+            Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Crc)) => "CRC",
+            Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Data)) => "data",
+            Some(rp_drv_sdcard::Error::CardStatus(_)) => "status",
+            Some(_) => "error",
+            None => "",
+        };
+        Note {
+            what,
+            failure: vol.device().host().last_failure(),
+        }
+    }
+
+    /// `card_note`'s text: the error and, for a timeout, which command and
+    /// the status register it left.
+    struct Note {
+        what: &'static str,
+        failure: Option<(u8, u32)>,
+    }
+
+    impl core::fmt::Display for Note {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            if self.what.is_empty() {
+                return Ok(());
+            }
+            write!(f, " (card: {}", self.what)?;
+            if let Some((cmd, stat)) = self.failure {
+                write!(f, " on CMD{cmd} stat {stat:#x}")?;
+            }
+            f.write_str(")")
         }
     }
 

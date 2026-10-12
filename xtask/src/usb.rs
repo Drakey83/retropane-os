@@ -331,16 +331,17 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
                     payload.len()
                 );
             }
+            if what == "rp-loader" && (restarted || returned) {
+                // A new loader sent as an image replaces the running one in
+                // RAM (it moves itself home first) and announces itself; it
+                // never "returns", so the run log says the image didn't,
+                // and that is the success here.
+                eprintln!(
+                    "    the new loader is running from RAM; `cargo xtask install` puts it on the card"
+                );
+                return Ok(());
+            }
             if restarted {
-                if what == "rp-loader" {
-                    // A new loader sent as an image replaces the running one
-                    // in RAM (it moves itself home first) and announces
-                    // itself: that READY is the success here.
-                    eprintln!(
-                        "    the new loader is running from RAM; `cargo xtask install` puts it on the card"
-                    );
-                    return Ok(());
-                }
                 return Err(
                     "the image hung: the watchdog reset the device and the loader came \
                      back without a run log (the reset cleared it)"

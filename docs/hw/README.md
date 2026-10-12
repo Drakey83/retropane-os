@@ -4,6 +4,9 @@ This folder is the **specification** side of the clean room (see
 [`../CLEANROOM.md`](../CLEANROOM.md)). Drivers and emulator models are written
 from these documents only.
 
+What the emulator reproduces of these facts, and what it can't:
+[`emulator.md`](emulator.md).
+
 ## Format
 
 One file per hardware block (`cpld.md`, `mbx/registers.md`, `acx100.md`...).

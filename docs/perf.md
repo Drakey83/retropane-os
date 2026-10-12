@@ -64,6 +64,19 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 ## Real hardware
 
+### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)
+
+| File | Bytes | Write | Read back | Clusters |
+|---|---|---|---|---|
+| `retropane.bin` (loader) | 36,870 | 36 ms | 23 ms | 10, contiguous |
+| `startup.txt` | 116 | 14 ms | 1 ms | 1 |
+| `haret.exe` | 142,848 | 85 ms (811 ms on a second run: the card's own housekeeping) | 83 ms | 35, contiguous |
+
+About 1.7 MB/s each way through the FAT layer, multi-block commands, 4-bit
+bus; write times vary with the card's internal erase/garbage collection. Open lead: the free-cluster scan after a stale FSInfo hint reads the FAT
+one sector per command (3.7 s once on this card); reading the FAT in runs
+would make it ~20× faster.
+
 First run on the owner's X51v (2026-10-11, `rp-probe` build `8bd30913+`,
 core at 520 MHz turbo as Windows Mobile left it; every line checksum-verified,
 raw values in `docs/hw/probe-2026-10-11.md`). The emulator counts
