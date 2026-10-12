@@ -894,6 +894,15 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPL OK 6000 bytes", 40)?;
         s.write_all(&bad).map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR bad name", 20)?;
+        // Scrub: a first-FAT sector is rewritten and verified; anything
+        // without a mirror is refused.
+        let fat1 = rp_fat::format::PARTITION_START + 32;
+        s.write_all(&rp_loadproto::control_frame(&format!("card scrub {fat1}")))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK scrub", 20)?;
+        s.write_all(&rp_loadproto::control_frame("card scrub 5"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR scrub: only first-FAT", 20)?;
         Ok(())
     };
     boot(

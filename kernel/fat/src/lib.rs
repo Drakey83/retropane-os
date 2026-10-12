@@ -407,6 +407,15 @@ impl<D: BlockDevice> Volume<D> {
         self.clusters
     }
 
+    /// The sector holding the same data as `lba` in the second FAT, when
+    /// `lba` is a sector of the first FAT and there is a second copy: the
+    /// card's own backup of it (used to scrub a weak FAT sector safely).
+    #[must_use]
+    pub fn fat_mirror(&self, lba: u32) -> Option<u32> {
+        let in_first = (self.fat_start..self.fat_start + self.fat_sectors).contains(&lba);
+        (in_first && self.fats >= 2).then(|| lba + self.fat_sectors)
+    }
+
     /// Gives the device back (flushing nothing: every operation leaves the
     /// FAT written).
     pub fn into_inner(self) -> D {
