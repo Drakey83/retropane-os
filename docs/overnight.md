@@ -487,9 +487,21 @@ on the host or in the emulator first.
 
 ## Seventh tier (added 2026-10-12, same rules)
 
-28. **Browse the card from the PC**: `cargo xtask ls [folder]` and
-    `cargo xtask get <file> [local name]` through the loader, read-only,
-    FAT32 or exFAT, with the transfer checked (CRC) end to end.
+28. **Browse the card from the PC**: **done (emulator).** `cargo xtask ls
+    [folder]` and `cargo xtask get <file> [local name]`: the loader sends
+    `RPD` data lines before its reply (a listing entry each; a file as
+    base64, a third bigger than the bytes rather than double as hex) and
+    the reply carries the length and CRC-32, which the PC checks. FAT32 or
+    exFAT (`AnyVolume::list`); refused while the PC writes through the
+    drive; `get` never overwrites a local file. Base64 in `rp-loadproto`
+    (3 tests: known values, any data in any pieces, rubbish refused).
+    Emulator: the put test lists a new folder and fetches the 70 KB file it
+    put, byte for byte. `read_back` takes a `dyn` callback now, so each file
+    system's reader exists once in the loader (−2.4 KB).
+    - **Iterate:** files come back checked end to end; nothing on either
+      side is overwritten by accident.
+    - **Modernize:** the card browsable from the PC's terminal over the
+      same cable, besides the drive.
 29. **Card check** (`card check`): a read-only consistency check of the
     card's file system, as a modern fsck: FAT32 chains (loops, cross-links,
     clusters used but marked free, lost clusters), exFAT (files against the

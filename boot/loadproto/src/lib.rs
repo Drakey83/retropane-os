@@ -26,6 +26,8 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod b64;
+
 #[cfg(all(feature = "std", not(test)))]
 extern crate std;
 

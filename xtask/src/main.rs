@@ -59,6 +59,9 @@ commands:
             <lba>` restores a damaged one from the mirror (only when the
             first copy's differing entries are invalid); `card dma` reports
             the SD DMA self-test, `card dma writes` lets writes use DMA
+  ls        list a folder on the card through the loader (read-only)
+  get       `get <file> [local name]`: copy a file from the card, CRC
+            checked end to end; never overwrites a local file
   cf        identify the CompactFlash card through the loader (read-only;
             then it is the drive's second unit)
   tone      `tone <hz> <ms>`: a sine through the codec (headphones; the
@@ -131,6 +134,18 @@ fn main() -> ExitCode {
         "backlight" => {
             eprintln!("==> backlight {flag}");
             usb::command(&workspace_root(), &format!("backlight {flag}"))
+        }
+        "ls" => {
+            eprintln!("==> ls {flag}");
+            usb::ls(&workspace_root(), &flag)
+        }
+        "get" => {
+            eprintln!("==> get {flag}");
+            if flag.is_empty() {
+                Err("usage: cargo xtask get <file on the card> [local name]".into())
+            } else {
+                usb::get(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+            }
         }
         "cf" => {
             eprintln!("==> cf");

@@ -1355,7 +1355,7 @@ impl<D: BlockDevice> AnyVolume<D> {
         &mut self,
         path: &str,
         scratch: &mut [u8],
-        f: impl FnMut(&[u8]),
+        f: &mut dyn FnMut(&[u8]),
     ) -> Result<(), Error> {
         match self {
             Self::Fat32(v) => {
@@ -1366,6 +1366,15 @@ impl<D: BlockDevice> AnyVolume<D> {
                 let file = v.find(path)?;
                 v.read_file(&file, scratch, f)
             }
+        }
+    }
+
+    /// Calls `f` with each entry of the folder `path` ("" for the root):
+    /// its name, whether it is a folder, and its size in bytes.
+    pub fn list(&mut self, path: &str, f: &mut dyn FnMut(&[u8], bool, u64)) -> Result<(), Error> {
+        match self {
+            Self::Fat32(v) => v.for_each_in(path, |e| f(e.name, e.is_dir, u64::from(e.size))),
+            Self::ExFat(v) => v.for_each_in(path, |n, e| f(n, e.is_dir, e.size)),
         }
     }
 

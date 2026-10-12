@@ -815,15 +815,26 @@ fn any_volume_mounts_either_kind_and_puts_and_reads_back() {
             "{kind} mounted as the wrong kind"
         );
         let mut got = Vec::new();
-        v.read_back("A.TXT", &mut scratch, |c| got.extend_from_slice(c))
+        v.read_back("A.TXT", &mut scratch, &mut |c| got.extend_from_slice(c))
             .unwrap();
         assert_eq!(got, was);
         v.put("crashlog.txt", b"report", &mut scratch).unwrap();
         let mut got = Vec::new();
-        v.read_back("crashlog.txt", &mut scratch, |c| got.extend_from_slice(c))
-            .unwrap();
+        v.read_back("crashlog.txt", &mut scratch, &mut |c| {
+            got.extend_from_slice(c)
+        })
+        .unwrap();
         assert_eq!(got, b"report");
         assert!(v.device().writes > 0);
+        let mut names = Vec::new();
+        v.list("", &mut |n, d, size| {
+            names.push((String::from_utf8_lossy(n).into_owned(), d, size))
+        })
+        .unwrap();
+        assert!(
+            names.contains(&("crashlog.txt".into(), false, 6)),
+            "{kind}: {names:?}"
+        );
     }
     // Neither: refused.
     let blank = vec![0u8; 4096 * SECTOR];

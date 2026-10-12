@@ -155,6 +155,117 @@ try {{ $sp.Close() }} catch {{ }}
         )
 }
 
+/// Like [`put_script`], but also passes on every `RPD ` data line before
+/// the reply (listings, files).
+fn query_script(frame: &Path) -> String {
+    put_script(frame).replace(
+        "    if ($l -like 'RPL *') {",
+        "    if ($l -like 'RPD *') { $l; continue }\n    if ($l -like 'RPL *') {",
+    )
+}
+
+/// Sends a control command; returns its `RPD` data lines (without the
+/// prefix) and the reply after `RPL OK `.
+pub fn query(root: &Path, command: &str) -> Result<(Vec<String>, String), String> {
+    let out = root.join("target/load");
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let frame = out.join("query.frame");
+    std::fs::write(&frame, rp_loadproto::control_frame(command))
+        .map_err(|e| format!("{}: {e}", frame.display()))?;
+    let out = powershell(&query_script(&frame))?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if text.contains("NOPORT") {
+        return Err(format!("no RetroPane USB port ({VID_PID}) found"));
+    }
+    parse_query(&text, command)
+}
+
+/// The data lines and the OK reply in a query's output.
+pub fn parse_query(text: &str, command: &str) -> Result<(Vec<String>, String), String> {
+    let data = text
+        .lines()
+        .filter_map(|l| l.trim_end().strip_prefix("RPD "))
+        .map(str::to_string)
+        .collect();
+    let reply = text
+        .lines()
+        .find_map(|l| {
+            let l = l.trim_end();
+            l.strip_prefix("REPLY ")
+                .or_else(|| l.starts_with("RPL ").then_some(l))
+        })
+        .ok_or("no reply from the loader")?;
+    match reply.strip_prefix("RPL OK ") {
+        Some(ok) => Ok((data, ok.to_string())),
+        None => Err(format!("the loader refused `{command}`: {reply}")),
+    }
+}
+
+/// A file's base64 lines decoded and checked against the reply's length
+/// and CRC (`<n> bytes crc <hex>`).
+pub fn decode_file(lines: &[String], reply: &str) -> Result<Vec<u8>, String> {
+    let mut data = Vec::new();
+    let mut buf = [0u8; rp_loadproto::b64::LINE_BYTES];
+    for l in lines {
+        let n = rp_loadproto::b64::decode(l.as_bytes(), &mut buf)
+            .ok_or_else(|| format!("bad data line from the loader: {l:?}"))?;
+        data.extend_from_slice(&buf[..n]);
+    }
+    let mut words = reply.split_whitespace();
+    let len: usize = words
+        .next()
+        .and_then(|w| w.parse().ok())
+        .ok_or("no length in the reply")?;
+    let crc = words
+        .nth(2)
+        .and_then(|w| u32::from_str_radix(w, 16).ok())
+        .ok_or("no CRC in the reply")?;
+    if data.len() != len || rp_loadproto::crc32(&data) != crc {
+        return Err(format!(
+            "the file arrived damaged: {} bytes (sent {len}), CRC {:08x} (sent {crc:08x})",
+            data.len(),
+            rp_loadproto::crc32(&data)
+        ));
+    }
+    Ok(data)
+}
+
+/// `cargo xtask ls [folder]`.
+pub fn ls(root: &Path, folder: &str) -> Result<(), String> {
+    let (entries, reply) = query(root, &format!("ls {folder}"))?;
+    for e in &entries {
+        let (size, name) = e.split_once(' ').unwrap_or(("?", e));
+        if size == "d" {
+            println!("{:>12}  {name}/", "");
+        } else {
+            println!("{size:>12}  {name}");
+        }
+    }
+    eprintln!("    {reply}");
+    Ok(())
+}
+
+/// `cargo xtask get <file> [local]`: never overwrites a local file.
+pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
+    let name = local.unwrap_or_else(|| file.rsplit(['/', '\\']).next().unwrap_or(file));
+    let dest = Path::new(name);
+    if dest.exists() {
+        return Err(format!(
+            "{} already exists: name another file to save to",
+            dest.display()
+        ));
+    }
+    let (lines, reply) = query(root, &format!("get {file}"))?;
+    let data = decode_file(&lines, &reply)?;
+    std::fs::write(dest, &data).map_err(|e| format!("{}: {e}", dest.display()))?;
+    eprintln!(
+        "    {} bytes, CRC checked, saved as {}",
+        data.len(),
+        dest.display()
+    );
+    Ok(())
+}
+
 /// How long `cargo xtask put` waits for the loader's verdict on a file.
 const PUT_WAIT_SECS: u32 = 90;
 

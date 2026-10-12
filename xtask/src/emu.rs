@@ -850,7 +850,7 @@ fn card_file(image: &Path, name: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("card image: {}", e.name()))?;
     let mut out = Vec::new();
     let mut scratch = vec![0u8; 64 * 1024];
-    vol.read_back(name, &mut scratch, |c| out.extend_from_slice(c))
+    vol.read_back(name, &mut scratch, &mut |c| out.extend_from_slice(c))
         .map_err(|e| format!("{name}: {}", e.name()))?;
     Ok(out)
 }
@@ -1304,6 +1304,25 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         ))
         .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK 5 bytes", 20)?;
+        // Browse and fetch, as `cargo xtask ls` and `get` do.
+        s.write_all(&rp_loadproto::control_frame("ls Apps/Sub Folder"))
+            .map_err(|e| e.to_string())?;
+        let text = usb_read_until(&mut s, "RPL OK 1 entries", 20)?;
+        let (entries, _) = crate::usb::parse_query(&text, "ls")?;
+        if entries != ["5 hello.txt"] {
+            return Err(format!("ls: {entries:?}"));
+        }
+        s.write_all(&rp_loadproto::control_frame("get retropane.bin"))
+            .map_err(|e| e.to_string())?;
+        let text = usb_read_until(&mut s, "RPL OK 70000 bytes crc", 40)?;
+        let text = usb_read_until(&mut s, "\n", 10).map(|t| text + &t)?;
+        let (lines, reply) = crate::usb::parse_query(&text, "get")?;
+        if crate::usb::decode_file(&lines, &reply)? != new {
+            return Err("get: the file fetched isn't the one put".into());
+        }
+        s.write_all(&rp_loadproto::control_frame("get no such file"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR", 20)?;
         // Scrub: a first-FAT sector is rewritten and verified; anything
         // without a mirror is refused.
         let fat1 = rp_fat::format::PARTITION_START + 32;
