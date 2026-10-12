@@ -111,8 +111,9 @@ while (-not $done -and (Get-Date) -lt $deadline) {{
         $sp.Open()
     }} catch {{ continue }}
     $inlog = $false
+    $sp.NewLine = "`n"
     while ((Get-Date) -lt $deadline) {{
-        try {{ $l = $sp.ReadLine() }}
+        try {{ $l = $sp.ReadLine().TrimEnd("`r") }}
         catch [System.TimeoutException] {{ continue }}
         catch {{ break }}
         if ($l -eq 'RPL LOG') {{ $inlog = $true; continue }}
