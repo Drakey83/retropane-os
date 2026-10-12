@@ -561,7 +561,8 @@ on the host or in the emulator first.
     compare. The bench now checks SHA-256 and HMAC on the target (and
     fails if the check is missing, as for the memory and SD checks) and
     times them: 4 KiB hashed in ~253k instructions, a 64-byte HMAC in ~21k.
-    `rp-bench` budget 30 -> 34 KiB. ADR-0017: pairing confirmed with a
+    `rp-bench` budget 30 -> 34 KiB. ADR-0017 (deferred by the owner until
+    release, then required): pairing confirmed with a
     hardware button on the device (as phones do for USB debugging), the
     key kept in RAM only (nothing on the card to steal: the card is a
     drive), every later frame HMAC-tagged with a sequence number, the drive
