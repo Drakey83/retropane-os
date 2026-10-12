@@ -79,6 +79,7 @@ mod image {
     use rp_kernel_pe::build::{self, Header, SectionSpec};
     use rp_kernel_pe::{Dir, Image, Protection, Relocations, dir, scn};
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
+    use rp_kernel_trace::{Kind, Ring};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -306,6 +307,14 @@ mod image {
     /// The scheduler (all-zero when empty: `.bss`).
     static SCHED: Global<Scheduler> = Global::new(Scheduler::new());
 
+    /// The trace ring (docs/design-brief.md): the newest kernel events,
+    /// always on (2 KiB, `.bss`).
+    static TRACE: Global<Ring<128>> = Global::new(Ring::new());
+
+    fn trace(kind: Kind, a: u32, b: u32) {
+        TRACE.with(|t| t.record(rt::ticks(), kind, a, b));
+    }
+
     /// Who runs, and where.
     struct Run {
         current: Tid,
@@ -499,6 +508,7 @@ mod image {
                 Ok(o) => {
                     s.faults += 1;
                     s.last = Some(o);
+                    trace(Kind::Fault, o as u32, a.addr);
                     true
                 }
                 Err(e) => {
@@ -1104,6 +1114,7 @@ mod image {
             return Err(ERR | IpcError::Full as u32);
         }
         let entry = LOAD_BASE + TEXT_RVA + off;
+        trace(Kind::Spawn, slot, entry);
         thread::prepare(t.index(), stack, process_thread, entry as usize);
         Ok(slot)
     }
@@ -1121,6 +1132,7 @@ mod image {
     /// the thread ends.
     fn exit_process(me: Tid, code: u32) -> ! {
         let slot = RUN.with(|r| r.slots[me.index()]);
+        trace(Kind::Exit, u32::from(slot), code);
         let _ = IPC.with(|i| i.ipc.exit(slot));
         with_vm(|vm, s| {
             let base = layout::slot_base(u32::from(slot));
@@ -1151,6 +1163,7 @@ mod image {
     /// and its port's generation moves on, so every handle but the server's
     /// and its supervisor's is stale.
     fn restart_server(slot: u8) {
+        trace(Kind::Restart, u32::from(slot), 0);
         let Some((port, supervisor)) = RUN.with(|r| r.supervised) else {
             return;
         };
@@ -1224,6 +1237,7 @@ mod image {
             if slot != 0 {
                 switch_to(u32::from(slot));
             }
+            trace(Kind::Switch, u32::from(cur.0), u32::from(next.0));
             thread::switch(cur.index(), next.index());
         }
     }
@@ -1275,6 +1289,7 @@ mod image {
                         // not the caller's.
                         enter_slot(me, e.slot);
                         RUN.with(|r| r.inside[usize::from(e.slot)] += 1);
+                        trace(Kind::Call, u32::from(e.slot), e.depth as u32);
                         let mut result = user::call_user(
                             me.index(),
                             e.entry,
@@ -1282,6 +1297,7 @@ mod image {
                             [u32::from(slot), f.arg(1), f.arg(2), f.arg(3)],
                         );
                         enter_slot(me, slot);
+                        trace(Kind::Return, u32::from(slot), result);
                         let left = RUN.with(|r| {
                             r.inside[usize::from(e.slot)] -= 1;
                             r.inside[usize::from(e.slot)]
@@ -1574,8 +1590,45 @@ mod image {
             && spawned[0] > MANAGER_SLOT
             && clean;
         ok &= report_ipc(uart, "spawn and exit", lifecycle, exits[1]);
+        ok &= check_trace(uart);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         ok
+    }
+
+    /// The trace ring after the run: it wrapped many times and kept the
+    /// newest 128 events intact and in order; and a record costs little.
+    fn check_trace(uart: &mut PxaUart<Mmio>) -> bool {
+        let (total, intact, ordered) = TRACE.with(|t| {
+            let mut prev: Option<(u32, u32)> = None;
+            let (mut n, mut ordered) = (0u32, true);
+            for e in t.events() {
+                if let Some((seq, time)) = prev {
+                    ordered &= e.seq == seq + 1 && e.time.wrapping_sub(time) < 1 << 31;
+                }
+                prev = Some((e.seq, e.time));
+                n += 1;
+            }
+            (t.total(), n, ordered)
+        });
+        // The cost of one record, over 1000.
+        let start = rt::ticks();
+        for i in 0..1000 {
+            trace(Kind::Mark, i, i);
+        }
+        let ticks = rt::ticks().wrapping_sub(start);
+        let pass = total > 4 * 128 && intact == 128 && ordered;
+        let _ = writeln!(uart, "BENCH trace_event {ticks} 1000");
+        report_as_trace(uart, pass, total)
+    }
+
+    fn report_as_trace(uart: &mut PxaUart<Mmio>, pass: bool, total: u32) -> bool {
+        let _ = uart.write_str("TRACE ring");
+        if pass {
+            let _ = writeln!(uart, " OK ({total} events, newest 128 kept)");
+        } else {
+            let _ = writeln!(uart, " FAIL (got {total})");
+        }
+        pass
     }
 
     fn report_ipc(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {

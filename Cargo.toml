@@ -29,6 +29,7 @@ members = [
     "kernel/fat",
     "kernel/crypto",
     "kernel/ipc",
+    "kernel/trace",
     "boot/hello",
     "boot/light",
     "boot/crash",

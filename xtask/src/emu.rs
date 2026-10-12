@@ -363,6 +363,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    "TRACE ring OK",
 ];
 
 /// Boots the kernel image: the VM layer live on the CPU, with real page
@@ -1473,6 +1474,23 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         if !reply.contains("RPL OK check clean") {
             return Err(format!("card check after the repair: {reply:?}"));
         }
+        // Long file-system work keeps the watchdog fed as it reads (found
+        // on the device: a 4 GB card check outlasted the 30 s run limit).
+        s.write_all(&rp_loadproto::control_frame("drive status"))
+            .map_err(|e| e.to_string())?;
+        let status = usb_read_until(&mut s, "%\r\n", 10)?;
+        let kept: u32 = status
+            .split("kept alive ")
+            .nth(1)
+            .and_then(|t| t.split(',').next())
+            .and_then(|n| n.trim().parse().ok())
+            .ok_or_else(|| format!("no keep-alive count in {status:?}"))?;
+        if kept < 100 {
+            return Err(format!(
+                "card commands didn't keep the watchdog fed: {kept}"
+            ));
+        }
+        eprintln!("    keep-alive OK: card commands fed the watchdog at {kept} block reads");
         Ok(())
     };
     boot(

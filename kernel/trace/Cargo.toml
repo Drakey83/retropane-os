@@ -1,0 +1,11 @@
+[package]
+name = "rp-kernel-trace"
+description = "An always-on, fixed-size ring of kernel events, readable after the fact (docs/design-brief.md)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

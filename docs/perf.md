@@ -92,6 +92,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | Processes at run time in `rp-kernel` (SYS_SPAWN/SYS_EXIT, a 5-record process table of 1.6 KB records in initialised data). **Kernel load budget 76 -> 84 KiB, owner's standing rule** | `rp-kernel` loaded size | 70,732 B | 78,432 B |
 | 2026-10-12 | Loader boot time, first measured: the bring-up beacon filled all 16 MiB of 2700G memory four times (now 1 MiB, where a plane lies); GPIO, card, DMA self-test and USB detach moved inside the 500 ms display settle. Emulator real time | `boot_loader_ready` | 742 ms | 504 ms |
 | 2026-10-12 | Kernel: entry to its own page tables and device map. Emulator real time | `boot_kernel_tables` | — | 2-3 ms |
+| 2026-10-12 | **Measured on the device**: SD DMA self-test passed on the real X51v (reads on, 120 transfers); drive 7,377 blocks read, 0 errors, 0 retries | SD DMA on device | pending | passed |
 
 ## Real hardware
 
