@@ -102,3 +102,6 @@ opt-level = "s"
 # measurable gain (the call path is a few loads and compares).
 [profile.release.package.rp-kernel-ipc]
 opt-level = "s"
+# Image loading runs once per page per image (cold, ADR-0005 rule 8).
+[profile.release.package.rp-kernel-pe]
+opt-level = "s"

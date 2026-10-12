@@ -356,6 +356,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC too deep OK",
     "IPC isolation OK",
     "IPC preempted in calls OK",
+    "IPC PE image relocated OK",
+    "IPC PE pages loaded on demand OK",
 ];
 
 /// Boots the kernel image: the VM layer live on the CPU, with real page

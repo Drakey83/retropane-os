@@ -496,3 +496,124 @@ fn mutated_images_never_panic() {
         }
     }
 }
+
+#[test]
+fn the_writer_matches_the_reference_builder() {
+    let (want, b) = sample();
+    let specs: Vec<build::SectionSpec> = b
+        .sections
+        .iter()
+        .map(|(name, rva, vsize, raw, ch)| build::SectionSpec {
+            name: name.as_bytes(),
+            rva: *rva,
+            vsize: *vsize,
+            data: raw,
+            characteristics: *ch,
+        })
+        .collect();
+    let h = build::Header {
+        machine: b.machine,
+        image_base: b.base,
+        entry: 0x1000,
+        dll: b.dll,
+        relocs: None,
+    };
+    let mut out = vec![0xEE; want.len() + 100];
+    let n = build::write(&mut out, &h, &specs).unwrap();
+    assert_eq!(&out[..n], &want[..]);
+    // Too small a buffer, a long name: refused, never a panic.
+    assert_eq!(
+        build::write(&mut out[..want.len() - 1], &h, &specs),
+        Err(Error::Truncated)
+    );
+    let mut long = specs.clone();
+    long[0].name = b".toolongname";
+    assert_eq!(build::write(&mut out, &h, &long), Err(Error::BadLayout));
+}
+
+#[test]
+fn pages_load_relocated_in_any_order() {
+    // .text has absolute addresses: one mid-page, one straddling into the
+    // next page; .data points back into .text.
+    let base = 0x0001_0000u32;
+    let mut text = pattern(0x1800, 3);
+    text[0x40..0x44].copy_from_slice(&(base + 0x1234).to_le_bytes());
+    text[0xFFE..0x1002].copy_from_slice(&(base + 0x2FF0).to_le_bytes());
+    let mut data = vec![0u8; 0x10];
+    data[8..12].copy_from_slice(&(base + 0x1040).to_le_bytes());
+    let mut rel = vec![0u8; 64];
+    let a = build::reloc_block(&mut rel, 0x1000, &[0x040, 0xFFE]).unwrap();
+    let b = build::reloc_block(&mut rel[a..], 0x3000, &[0x008]).unwrap();
+    rel.truncate(a + b);
+    let h = build::Header {
+        machine: MACHINE_ARM,
+        image_base: base,
+        entry: 0x1000,
+        dll: false,
+        relocs: Some(Dir {
+            rva: 0x4000,
+            size: rel.len() as u32,
+        }),
+    };
+    let secs = [
+        build::SectionSpec {
+            name: b".text",
+            rva: 0x1000,
+            vsize: 0x1800,
+            data: &text,
+            characteristics: TEXT,
+        },
+        build::SectionSpec {
+            name: b".data",
+            rva: 0x3000,
+            vsize: 0x10,
+            data: &data,
+            characteristics: DATA,
+        },
+        build::SectionSpec {
+            name: b".reloc",
+            rva: 0x4000,
+            vsize: rel.len() as u32,
+            data: &rel,
+            characteristics: scn::READ,
+        },
+    ];
+    let mut file = vec![0u8; 0x4000];
+    let n = build::write(&mut file, &h, &secs).unwrap();
+    file.truncate(n);
+    let img = Image::parse(&file).unwrap();
+    assert!(!img.writable_code());
+    let d = img.dirs[dir::BASERELOC];
+    let mut relbuf = vec![0u8; d.size as usize];
+    img.read_view(d.rva, &mut relbuf, reader(&file)).unwrap();
+    let relocs = Relocations::new(&relbuf).unwrap();
+    let delta = 0x00F0_0000u32;
+    let mut pages = vec![[0u8; 4096]; img.pages() as usize];
+    for p in (0..img.pages()).rev() {
+        img.load_page(p, &mut pages[p as usize], &relocs, delta, reader(&file))
+            .unwrap();
+    }
+    let word = |p: usize, o: usize| u32::from_le_bytes(pages[p][o..o + 4].try_into().unwrap());
+    assert_eq!(word(1, 0x40), base + 0x1234 + delta);
+    let mut straddle = [0u8; 4];
+    straddle[..2].copy_from_slice(&pages[1][0xFFE..]);
+    straddle[2..].copy_from_slice(&pages[2][..2]);
+    assert_eq!(u32::from_le_bytes(straddle), base + 0x2FF0 + delta);
+    assert_eq!(word(3, 8), base + 0x1040 + delta);
+    // Unlisted bytes are the file's.
+    assert_eq!(&pages[1][0x44..0x48], &text[0x44..0x48]);
+    // At the preferred base nothing changes.
+    let mut same = [0u8; 4096];
+    img.load_page(1, &mut same, &relocs, 0, reader(&file))
+        .unwrap();
+    assert_eq!(&same[..0x800], &text[..0x800]);
+}
+
+#[test]
+fn writable_code_is_found() {
+    let b = Builder::new().section(".text", 0x1000, 0x100, pattern(0x100, 1), TEXT | scn::WRITE);
+    let img = Image::parse(&b.build()).unwrap();
+    assert!(img.writable_code());
+    let (file, _) = sample();
+    assert!(!Image::parse(&file).unwrap().writable_code());
+}
