@@ -193,8 +193,17 @@ on the host or in the emulator first.
      switch-time lead can be chased one suspect at a time.
    - **Modernize:** honest measurement instead of assumptions: the switch
      misses its target and says so.
-9. **exFAT reading** in `rp-fat`: SDXC cards (64 GB+) ship as exFAT; stock
-   Windows Mobile can't read them at all. Host-tested with a formatter.
+9. **exFAT reading** in `rp-fat`: **done.** `rp_fat::exfat` from the
+   published specification: boot-region checksum and every field checked at
+   mount, entry-set checksums, contiguous and FAT-chained files, zeros past
+   the valid data length; a host formatter builds test cards; 5 tests incl.
+   2,000 hostile cards. The probe falls back to exFAT and its emulated card
+   is now exFAT ("exFAT 4096 B/cluster", file listed).
+   - **Iterate:** checksums verified (boot region and every entry set), so a
+     damaged card is refused or the damaged entry skipped, not misread;
+     separate module so only images that read cards pay for it.
+   - **Modernize:** SDXC cards up to 2 TB readable; stock Windows Mobile
+     stopped at FAT and 32 GB.
 10. **SD card detect and write-protect** (GPIO12/GPIO27): driver support,
     emulator model, probe line.
 11. **Backlight** (PWM): spec from the PXA manual and board sources,

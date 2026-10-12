@@ -237,8 +237,10 @@ const SD_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const SD_EXPECT_CARD: &str = "SD: SD card, RCA";
 const SD_EXPECT_PARTITION: &str = "SD: partition 1 type 0x0c start 2048 blocks 14336";
 
-/// What the probe reports about the test image's file system.
-const SD_EXPECT_FAT: &str = "FAT32 4096 B/cluster";
+/// What the probe reports about its test card's file system: exFAT (an
+/// SDXC card's), so the probe covers the exFAT reader on the target; the
+/// FAT32 path is covered by the loader's card tests.
+const SD_EXPECT_FAT: &str = "exFAT 4096 B/cluster";
 
 /// Writes the test SD image: a FAT32 volume (4 KiB clusters, as on the
 /// owner's card) holding a small `retropane.bin`, so the probe's root
@@ -1375,7 +1377,18 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
         .join("target")
         .join("emulator")
         .join("probe-screen.ppm");
-    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-test.img"))?;
+    let bin: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
+    let exfat = rp_fat::exfat::format::build(
+        (SD_IMAGE_BYTES / 512) as u32,
+        3, // 4 KiB clusters
+        &[rp_fat::exfat::format::Entry {
+            name: "retropane.bin",
+            data: &bin,
+            fragment: false,
+        }],
+    );
+    let sd = root.join("target/emulator/sd-probe-exfat.img");
+    std::fs::write(&sd, exfat).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
         root,
         &Boot {

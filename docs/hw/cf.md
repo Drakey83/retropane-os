@@ -19,7 +19,7 @@ with no USB work.
 | Item | Value | Confidence | Evidence |
 |---|---|---|---|
 | Socket | PXA27x PC Card socket 1 | confirmed (code) | (C) |
-| Card detect | GPIO13 | confirmed (code); polarity unknown | (C); reads 0 on the owner's device (P), card presence at the time not recorded |
+| Card detect | GPIO13, **active low: 0 = card present** | confirmed | (C); reads 0 with the owner's CF card in the slot (P, owner, 2026-10-12); WM arms only the rising edge (removal) |
 | Card ready / IRQ | GPIO84 | confirmed (code) | (C); reads 1 (P) |
 | Card reset | GPIO36, an output | confirmed (code) | (C); WM leaves it an output, driven 0 (P) |
 | Card power | a CPLD bit (docs/hw/cpld.md: "CF power") | likely; which bit unknown | (C), Dell OAL to analyse |

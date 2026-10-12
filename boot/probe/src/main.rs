@@ -323,10 +323,33 @@ mod image {
                                 });
                             }
                             Err(e) => {
-                                fmt_into(
-                                    &mut fat_lines[0],
-                                    format_args!("FAT none ({})", e.name()),
-                                );
+                                match rp_fat::exfat::ExVolume::mount(&mut k, first.unwrap_or(0)) {
+                                    // SDXC cards: exFAT.
+                                    Ok(mut vol) => {
+                                        fmt_into(
+                                            &mut fat_lines[0],
+                                            format_args!(
+                                                "exFAT {} B/cluster, {} clusters",
+                                                vol.cluster_bytes(),
+                                                vol.clusters()
+                                            ),
+                                        );
+                                        let mut n = 1;
+                                        let _ = vol.for_each_root(|name, f| {
+                                            if n < fat_lines.len() && !f.is_dir {
+                                                fmt_into(
+                                                    &mut fat_lines[n],
+                                                    format_args!(" {} {} B", Ascii(name), f.size),
+                                                );
+                                                n += 1;
+                                            }
+                                        });
+                                    }
+                                    Err(_) => fmt_into(
+                                        &mut fat_lines[0],
+                                        format_args!("FAT none ({})", e.name()),
+                                    ),
+                                }
                             }
                         }
                         card = Some(k);
