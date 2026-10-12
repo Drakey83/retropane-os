@@ -36,6 +36,10 @@ struct Disk {
     writes: usize,
     read_only: bool,
     fail_reads: bool,
+    /// Writes to this block are refused as write-protected (a guarded
+    /// block on a writable drive); `fail_writes` fails them as errors.
+    guarded: Option<u32>,
+    fail_writes: bool,
     present: bool,
 }
 
@@ -50,6 +54,8 @@ impl Disk {
             writes: 0,
             read_only: false,
             fail_reads: false,
+            guarded: None,
+            fail_writes: false,
             present: true,
         }
     }
@@ -70,6 +76,13 @@ impl BlockDevice for Disk {
         let o = lba as usize * BLOCK;
         assert!(o + buf.len() <= self.data.len(), "write past the end");
         self.writes += 1;
+        let n = (buf.len() / BLOCK) as u32;
+        if self.guarded.is_some_and(|g| (lba..lba + n).contains(&g)) {
+            return Err(BlockError::ReadOnly);
+        }
+        if self.fail_writes {
+            return Err(BlockError::Device);
+        }
         self.data[o..o + buf.len()].copy_from_slice(buf);
         Ok(())
     }
@@ -374,6 +387,28 @@ fn write_protection_is_honoured_and_reported() {
     assert_eq!(disk.data, before);
     let (d, _) = run(&mut msc, &mut disk, 4, true, &[0x1A, 0, 0, 0, 4, 0], &[]);
     assert_eq!(d[2] & 0x80, 0x80, "MODE SENSE write-protect bit");
+}
+
+/// A writable drive whose storage refuses one write (the loader's boot-file
+/// guard) reports that write as write-protected, so the PC says "write
+/// protected" rather than an I/O error; other failures stay write errors.
+#[test]
+fn a_refused_block_is_reported_as_write_protected() {
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(16);
+    disk.guarded = Some(3);
+    let before = disk.data.clone();
+    let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(3, 1), &[9; 512]);
+    assert_eq!(csw.status, 1);
+    assert_eq!(sense(&mut msc, &mut disk), (0x07, 0x27, 0x00));
+    assert_eq!(disk.data, before);
+    let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(5, 1), &[9; 512]);
+    assert_eq!(csw.status, 0, "other blocks are writable");
+    disk.fail_writes = true;
+    let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(6, 1), &[9; 512]);
+    assert_eq!(csw.status, 1);
+    assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x0C, 0x00));
 }
 
 #[test]

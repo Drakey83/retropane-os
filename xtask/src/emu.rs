@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.10.0";
+pub const QEMU_RELEASE: &str = "rp-v0.10.1";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -2055,7 +2055,11 @@ impl rp_hal_api::BlockDevice for Bot {
                 .command(&rw10(0x2A, at, n), chunk.len() as u32, false, chunk)
                 .map_err(|_| rp_hal_api::BlockError::Device)?;
             if r.status != 0 {
-                return Err(rp_hal_api::BlockError::Device);
+                // As a PC does: ask why. DATA PROTECT is "write-protected".
+                return Err(match self.sense() {
+                    Ok((0x07, 0x27, 0x00)) => rp_hal_api::BlockError::ReadOnly,
+                    _ => rp_hal_api::BlockError::Device,
+                });
             }
         }
         Ok(())
@@ -2154,32 +2158,67 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         if drive_file(&mut bot, "retropane.bin")? != old {
             return Err("drive: retropane.bin read through the drive differs".into());
         }
-        // Read-only by default: MODE SENSE says so and a write is refused.
-        let r = bot.command(&[0x1A, 0, 0x3F, 0, 255, 0], 255, true, &[])?;
-        if r.data.get(2).is_none_or(|b| b & 0x80 == 0) {
-            return Err("drive: not reported write-protected at start".into());
+        // Writable by default (ADR-0014, the boot-file guard): MODE SENSE
+        // says so, but the PC can't change what boots the device.
+        let write_protected = |bot: &mut Bot| -> Result<bool, String> {
+            let r = bot.command(&[0x1A, 0, 0x3F, 0, 255, 0], 255, true, &[])?;
+            Ok(r.data.get(2).is_some_and(|b| b & 0x80 != 0))
+        };
+        if write_protected(&mut bot)? {
+            return Err("drive: write-protected at start (should be guarded, writable)".into());
         }
-        let r = bot.command(&rw10(0x2A, 100, 1), 512, false, &[0; 512])?;
-        if r.status != 1 || bot.sense()? != (0x07, 0x27, 0x00) {
-            return Err("drive: a write was accepted while read-only".into());
+        let refuses_boot_file = |bot: &mut Bot, why: &str| -> Result<(), String> {
+            let mut vol = rp_fat::Volume::mount(&mut *bot, rp_fat::format::PARTITION_START)
+                .map_err(|e| format!("drive: mount: {}", e.name()))?;
+            let mut scratch = vec![0u8; 32 * 1024];
+            // Refused as write-protected, not failed some other way.
+            let protected = Err(rp_fat::Error::Device(rp_hal_api::BlockError::ReadOnly));
+            let replaced = vol
+                .replace("retropane.bin", b"not a loader", &mut scratch)
+                .map(|_| ());
+            let removed = vol.remove("startup.txt");
+            if replaced != protected || removed != protected {
+                return Err(format!(
+                    "drive: boot files not protected ({why}): replace {replaced:?}, remove {removed:?}"
+                ));
+            }
+            Ok(())
+        };
+        refuses_boot_file(&mut bot, "at start")?;
+        if drive_file(&mut bot, "retropane.bin")? != old {
+            return Err("drive: a refused write changed retropane.bin".into());
         }
-        // The PC asks for read-write over the serial port.
-        serial
-            .write_all(&rp_loadproto::control_frame("drive rw"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut serial, "RPL OK drive read-write", 10)?;
-        let r = bot.command(&[0; 6], 0, false, &[])?;
-        if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
-            return Err("drive: no 'medium changed' after the mode change".into());
+        // `drive ro` locks it all, `drive rw` gives the guarded drive back.
+        for (cmd, reply, wp) in [
+            ("drive ro", "RPL OK drive read-only", true),
+            ("drive rw", "RPL OK drive read-write", false),
+        ] {
+            serial
+                .write_all(&rp_loadproto::control_frame(cmd))
+                .map_err(|e| e.to_string())?;
+            usb_read_until(&mut serial, reply, 10)?;
+            let r = bot.command(&[0; 6], 0, false, &[])?;
+            if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
+                return Err(format!("drive: no 'medium changed' after {cmd}"));
+            }
+            if write_protected(&mut bot)? != wp {
+                return Err(format!("drive: protection wrong after {cmd}"));
+            }
+            if wp {
+                let r = bot.command(&rw10(0x2A, 100, 1), 512, false, &[0; 512])?;
+                if r.status != 1 || bot.sense()? != (0x07, 0x27, 0x00) {
+                    return Err("drive: a write was accepted while read-only".into());
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(2500)); // the write grace
-        // Replace a file through the drive (the PC's side).
+        // Write a new file through the drive (the PC's side).
         {
             let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
                 .map_err(|e| format!("drive: mount: {}", e.name()))?;
             let mut scratch = vec![0u8; 32 * 1024];
-            vol.replace("startup.txt", &via_drive, &mut scratch)
-                .map_err(|e| format!("drive: replace: {}", e.name()))?;
+            vol.put("notes.txt", &via_drive, &mut scratch)
+                .map_err(|e| format!("drive: put: {}", e.name()))?;
         }
         // The device refuses to write while the PC just wrote...
         serial.write_all(&put).map_err(|e| e.to_string())?;
@@ -2201,8 +2240,15 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         if drive_file(&mut bot, "retropane.bin")? != via_serial {
             return Err("drive: doesn't show the file the device wrote".into());
         }
-        if drive_file(&mut bot, "startup.txt")? != via_drive {
+        if drive_file(&mut bot, "notes.txt")? != via_drive {
             return Err("drive: lost the file it wrote".into());
+        }
+        // The guard follows the device's own write: the new loader's
+        // clusters are protected now.
+        std::thread::sleep(Duration::from_millis(2500));
+        refuses_boot_file(&mut bot, "after the device replaced it")?;
+        if drive_file(&mut bot, "retropane.bin")? != via_serial {
+            return Err("drive: a refused write changed the new retropane.bin".into());
         }
         // Hostile input: junk transfers are ignored, an out-of-range and a
         // wrapping read fail with sense, and the drive keeps working.
@@ -2261,8 +2307,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(120),
         },
     )?;
-    if card_file(&sd, "startup.txt")? != via_drive || card_file(&sd, "retropane.bin")? != via_serial
-    {
+    if card_file(&sd, "notes.txt")? != via_drive || card_file(&sd, "retropane.bin")? != via_serial {
         return Err("drive: the card image doesn't hold both writes".into());
     }
     eprintln!(

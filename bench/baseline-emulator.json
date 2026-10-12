@@ -1,5 +1,5 @@
 {
-  "emulator": "rp-v0.10.0",
+  "emulator": "rp-v0.10.1",
   "results": {
     "chase_sdram_256k": 61462.0,
     "chase_sram_256k": 61462.0,

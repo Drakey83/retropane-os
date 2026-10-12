@@ -1150,6 +1150,19 @@ on the host or in the emulator first.
     offered" with no drive possible). Diagnostics in the loader: `cpld`
     (registers as found), `cf` reports slot state, task file and sector
     0's ends.
+    **Progress (2026-10-12 evening):** (b) and (c) done and unit-tested
+    (hardware reset + READY wait before any access; a card that times out
+    is dead after one timeout and the loader lets it go; failed slots are
+    retried by the next `cf`); (c) **proven on the device** (a dying card
+    no longer stalls the loader). But the device showed the real fault is
+    different: the card works when taken, then within seconds everything
+    reads 0 and READY drops to 0, and the reset doesn't bring it back;
+    also on the first `cf` after Windows Mobile. Looks like the slot
+    losing power (docs/hw/cf.md "Second session"). GPIO84 did not drop
+    while GPIO36 was held, so GPIO36 = RESET is not confirmed. **Next:**
+    fresh boot (owner at the Axim), `cf log` before and after `cf` to time
+    READY's drop; then find what powers the slot. (a) waits until the
+    mechanism is known, so the emulator models the real fault.
 
 63. **Drive icons for the cards**: owner wants the "Memory cards" icons
     from puntodepartida.com (no licence stated: all rights reserved). For
@@ -1159,7 +1172,32 @@ on the host or in the emulator first.
     repo uses the Crystal SVG pair (Everaldo Coelho, LGPL; Commons
     `Crystal128-sd-mmc-unmount.svg`, `Crystal128-compact-flash-unmount.svg`)
     with the licence notice next to them. My own drawn drafts were rejected
-    (deleted).
+    (deleted). **SD card done (2026-10-12):** `card-sd.ico` (from the
+    256 px PNG, 16-256 px sizes) and `autorun.inf` (`icon=` only) put on the
+    owner's SD card; owner: "looks great". Files in `local/icons/` (also
+    `autorun-cf.inf` + `card-compact-flash.ico` for the CF card, once item
+    62 lets it attach).
+
+64. **Remote reset back to Windows Mobile** (owner, 2026-10-12: wanted for
+    more than the CF card). Today only the stylus reset (a hardware reset)
+    boots Windows Mobile; the only reset software can cause is the
+    watchdog's, and Dell's start-up code stops at its factory prompt after
+    one (owner presses Mail). Bounded RE on the ROM dumps (`local/rom-*`):
+    find where Dell's boot code chooses "prompt or boot Windows Mobile" and
+    whether anything we control before a watchdog reset reaches it (RAM
+    kept by self-refresh, `RCSR`/`PSPR`, a flash flag, the CPLD). If
+    something does: `cargo xtask reboot-wm`, tested on the device. If
+    nothing does: write that up as a dead end and stop. Clean-room rules
+    apply (facts only into docs/hw).
+
+65. **Windows keeps a stale view after the loader writes the card**
+    (found 2026-10-12): after `cargo xtask put`, Explorer and `dir` still
+    showed the old root; `drive off` + `drive on` straight after didn't
+    help either, only off, ~8 s, on. The loader's "medium changed" isn't
+    enough for Windows to drop its cache. Class fix: after any loader
+    write (`put`, `rm`, `install`), take the medium away long enough for
+    Windows to notice, then give it back, with an emulator check that the
+    PC's view matches the card afterwards.
 
 59. **No emulator-only image on the device**: **done (emulator).** Every
     image's budget now says what it does under the loader (`OnDevice`:
