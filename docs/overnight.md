@@ -350,6 +350,28 @@ on the host or in the emulator first.
       measured, not assumed (instruction-count bench plus a device baseline
       row in the probe).
 
+## Fourth tier (added 2026-10-12, same rules)
+
+19. **CompactFlash**: the PXA PC Card socket and a CF card in True IDE /
+    memory mode (ATA PIO through the socket's windows; GPIO13 detect,
+    timings from `docs/hw/cf.md`), as `BlockDevice`, so the file systems
+    and the USB drive (LUN 1) get it. Emulator: wire QEMU's PC Card socket
+    and its CF ("microdrive") model into the x51v machine. The owner has a
+    CF card in the slot: device run only after the emulator passes,
+    read-only first.
+20. **exFAT folders**: paths on exFAT as on FAT32 (`mkdir`, `put` creating
+    parents), so SDXC cards organise the same way.
+21. **Thumb for cold code**: measure building cold paths (loader commands,
+    file systems, bring-up) as Thumb (`#[instruction_set(arm::t32)]` or a
+    Thumb target for cold crates) against ARM; adopt where it saves size
+    without touching hot paths.
+22. **Audio**: WM8750 codec over I2S with DMA (QEMU has both models): a
+    tone through the loader, measured, as the start of ROADMAP Phase 3
+    audio.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
-scan blocks 15,074-16,975, drive on + Windows mount check, backlight on the
-device, thread-switch time investigation.
+scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
+power button on the device, thread-switch time investigation, SD DMA on the
+device (`cargo xtask card dma` after boot: the self-test verdict; then
+`card dma writes` and a `put`, which verifies by read-back), exFAT image
+check with `fsck.exfat` (needs exfatprogs in WSL: the owner installs it).
