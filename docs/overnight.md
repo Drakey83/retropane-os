@@ -476,8 +476,8 @@ on the host or in the emulator first.
       that is known to work; the cause stands out.
     - **Modernize:** a readable crash report on the device itself, as any
       modern OS shows, besides the PC and the card.
-27. **Processes and IPC: design**: **ADR-0016 proposed; waits for the
-    owner.** Service calls migrate the calling thread into the server (CE's
+27. **Processes and IPC: design**: **ADR-0016 accepted by the owner
+    (2026-10-12) with a driver host per driver class.** Service calls migrate the calling thread into the server (CE's
     own model: fast, the caller's priority, drivers see their caller), on
     ports reached only through handles; bulk data moves page by page from
     owner to owner (no shared pages between slots: VIVT caches would alias
