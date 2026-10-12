@@ -18,6 +18,10 @@ use policy::{DepKind, Placement};
 use serde_json::Value;
 
 const TARGET_SPEC: &str = "targets/armv5te-x51v-none-eabi.json";
+/// The Thumb variant of the target (ADR-0015: cold code as Thumb).
+const THUMB_TARGET_SPEC: &str = "targets/thumbv5te-x51v-none-eabi.json";
+/// Images built as Thumb (ADR-0015); empty it to go back to all-ARM.
+const THUMB_IMAGES: &[&str] = &["rp-loader"];
 
 const USAGE: &str = "\
 usage: cargo xtask <command>
@@ -412,6 +416,25 @@ fn cross() -> Result {
     }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     cargo(&refs)?;
+    // ADR-0015: these images are built as Thumb code (the HAL's assembly
+    // stays ARM, marked per function), then put where the ARM build put
+    // them, so everything downstream (sizes, the emulator, the SD kit) uses
+    // them unchanged. Reverting to all-ARM is emptying this list.
+    for image in THUMB_IMAGES {
+        cargo(&[
+            "build",
+            "--release",
+            "--target",
+            THUMB_TARGET_SPEC,
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zjson-target-spec",
+            "-p",
+            image,
+        ])?;
+        let from = workspace_root().join("target/thumbv5te-x51v-none-eabi/release").join(image);
+        let to = workspace_root().join("target/armv5te-x51v-none-eabi/release").join(image);
+        std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
     // Bare-metal images: OS crates that are binaries only.
     let images: Vec<&str> = crates
         .iter()

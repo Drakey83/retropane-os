@@ -205,6 +205,7 @@ unsafe extern "C" {
     fn rp_iwmmxt_load(state: *const State);
 }
 
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 fn cpar() -> u32 {
     let v: u32;
     // SAFETY: reading CPAR has no side effects.
@@ -215,6 +216,7 @@ fn cpar() -> u32 {
 }
 
 /// Media-unit access on or off for the running thread.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 fn set_access(on: bool) {
     let old = cpar();
     let new = if on { old | 3 } else { old & !3 };
