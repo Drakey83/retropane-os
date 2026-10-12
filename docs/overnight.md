@@ -476,10 +476,14 @@ on the host or in the emulator first.
       that is known to work; the cause stands out.
     - **Modernize:** a readable crash report on the device itself, as any
       modern OS shows, besides the PC and the card.
-27. **Processes and IPC: design (ADR-0016, proposed)**: how processes,
-    the driver host and message passing should work on this hardware
-    (FCSE slots, the ADR-0010 scheduler), written for the owner to approve
-    before any code.
+27. **Processes and IPC: design**: **ADR-0016 proposed; waits for the
+    owner.** Service calls migrate the calling thread into the server (CE's
+    own model: fast, the caller's priority, drivers see their caller), on
+    ports reached only through handles; bulk data moves page by page from
+    owner to owner (no shared pages between slots: VIVT caches would alias
+    them); notifications are events; the driver host supervises and
+    restarts drivers; a service manager hands out ports per policy. Open
+    questions for the owner at its end.
 
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
