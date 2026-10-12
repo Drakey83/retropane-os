@@ -221,6 +221,7 @@ extern "C" fn rp_user_fault(frame: *mut Frame, kind: u32) {
 /// Reads a word as user code (user side): for tests of the user-fault path
 /// (an address the user may not access faults like any user access).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn user_read(addr: u32) -> u32 {
     let v: u32;
     // SAFETY: a plain load. In user mode the MMU checks it; a bad address
@@ -238,6 +239,7 @@ pub fn user_read(addr: u32) -> u32 {
 
 /// Writes `value` to `addr` (user side: in user mode the MMU checks it, and
 /// a refused write raises an abort the kernel's user-fault handler gets).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn user_write(addr: u32, value: u32) {
     // SAFETY: a plain store, checked by the MMU in user mode as above.
     unsafe {
@@ -252,6 +254,7 @@ pub fn user_write(addr: u32, value: u32) {
 
 /// Writes media register `wR0` (user side; with lazy switching, a thread's
 /// first media instruction traps once and then runs).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn wmmx_write(v: u64) {
     // SAFETY: TMCRR wR0 (MCRR to coprocessor 0) only changes wR0.
     unsafe {
@@ -266,6 +269,7 @@ pub fn wmmx_write(v: u64) {
 
 /// Reads media register `wR0` (user side).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn wmmx_read() -> u64 {
     let (lo, hi): (u32, u32);
     // SAFETY: TMRRC from wR0 (MRRC from coprocessor 0) only reads it.
@@ -296,6 +300,7 @@ pub fn enter_user(entry: extern "C" fn(usize) -> !, stack: &'static mut [u32], a
 }
 
 /// Makes system call `number` with arguments `a0`-`a2` (user side).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn syscall(number: u32, a0: u32, a1: u32, a2: u32) -> u32 {
     let r: u32;
     // SAFETY: SWI enters the kernel, which may only change r0 (the result)

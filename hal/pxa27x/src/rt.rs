@@ -246,6 +246,7 @@ pub fn emergency_uart() -> Mmio {
 
 /// Reads the CPU's Main ID register (CP15 c0).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn cpu_id() -> u32 {
     let id: u32;
     // SAFETY: reading the ID register has no side effects and is allowed in
@@ -626,6 +627,7 @@ fn fixup_for(pc: u32) -> Option<u32> {
 /// resolve, another process's domain, no permission. For the kernel touching
 /// memory it can't trust (system-call pointers, protection tests).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn try_read(addr: usize) -> Option<u32> {
     let (value, failed): (u32, u32);
     // SAFETY: a single load; if it aborts and the VM can't resolve it, the
@@ -654,6 +656,7 @@ pub fn try_read(addr: usize) -> Option<u32> {
 /// Writes `value` to `addr`, returning false instead of faulting if it can't
 /// be written (see [`try_read`]).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn try_write(addr: usize, value: u32) -> bool {
     let failed: u32;
     // SAFETY: a single store to an address the caller chose to probe; if it
@@ -1015,6 +1018,7 @@ pub(crate) fn irqs_enabled_now() -> bool {
     irqs_enabled()
 }
 
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 fn irqs_enabled() -> bool {
     let cpsr: u32;
     // SAFETY: reading CPSR has no side effects.
@@ -1024,6 +1028,7 @@ fn irqs_enabled() -> bool {
 
 /// Turns on the bring-up MMU: identity map ([`crate::mmu::X51V_BRINGUP`]),
 /// I/D caches, write buffer, branch prediction and high vectors.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn init_mmu() {
     unsafe extern "C" {
         static rp_vectors: [u32; 16];
@@ -1139,6 +1144,7 @@ pub fn fault_probe(addr: usize) -> u32 {
 
 /// Masks IRQs at the CPU.
 #[inline]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn irq_disable() {
     // SAFETY: setting the I bit in CPSR only defers interrupts.
     unsafe {
@@ -1148,6 +1154,7 @@ pub fn irq_disable() {
 
 /// Unmasks IRQs at the CPU.
 #[inline]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn irq_enable() {
     // SAFETY: the vectors and IRQ stack are set up by `_start` / `init_mmu`.
     unsafe {
@@ -1157,6 +1164,7 @@ pub fn irq_enable() {
 
 /// Enters idle mode until an unmasked interrupt is pending (PWRMODE = 1).
 #[inline]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn idle() {
     // SAFETY: idle stops the core clock until an interrupt; state is kept.
     unsafe { core::arch::asm!("mcr p14, 0, {m}, c7, c0, 0", m = in(reg) 1u32, options(nostack)) }

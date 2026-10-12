@@ -60,6 +60,7 @@ pub const BOOT_TAGS: u32 = 0xA800_0100;
 /// address in identity-mapped SDRAM), as HaRET would: everything this
 /// image changed in the CPU's memory system is put back, so the next image
 /// sees the same state a cold HaRET boot gives it.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn launch(entry: u32) -> ! {
     // Interrupts off first: nothing may run between the clean and the jump.
     // SAFETY: masking interrupts in CPSR has no memory effects.

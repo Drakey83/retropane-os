@@ -1,7 +1,11 @@
 # ADR-0015: Thumb for cold code
 
-- **Status:** Proposed (2026-10-12, overnight queue item 21; adoption waits
-  for the project owner)
+- **Status:** Accepted (2026-10-12, by the project owner: "let's try it,
+  with the understanding that we revert and do it all ARM if I manually
+  test and doing it this way makes the OS feel too sluggish"). Steps 1 and
+  2 done the same night: the loader is Thumb (127.7 -> 94.2 KB, every
+  emulator test passing). Reverting is emptying `THUMB_IMAGES` in
+  `xtask/src/main.rs`.
 - **Date:** 2026-10-12
 
 ## Context

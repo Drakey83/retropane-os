@@ -196,6 +196,7 @@ pub unsafe fn compare(a: *const u8, b: *const u8, n: usize) -> i32 {
 
 /// Copies `bytes` (a multiple of 32) between word-aligned buffers.
 #[inline(always)]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
     if bytes > 0 {
@@ -205,16 +206,17 @@ unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
             core::arch::asm!(
                 "2:",
                 "pld [r1, #64]",
-                "ldmia r1!, {{r3, r4, r5, r7, r8, r9, r10, r12}}",
+                "ldmia r1!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
                 "subs r2, r2, #32",
-                "stmia r0!, {{r3, r4, r5, r7, r8, r9, r10, r12}}",
+                "stmia r0!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
                 "bne 2b",
-                // r6 and r11 are reserved by LLVM on this target.
+                // r6 and the frame pointer (r11 in ARM code, r7 in Thumb)
+                // are reserved by LLVM; lr is free to clobber in both.
                 inout("r0") dst => _,
                 inout("r1") src => _,
                 inout("r2") bytes => _,
-                out("r3") _, out("r4") _, out("r5") _, out("r7") _,
-                out("r8") _, out("r9") _, out("r10") _, out("r12") _,
+                out("r3") _, out("r4") _, out("r5") _, out("r8") _,
+                out("r9") _, out("r10") _, out("r12") _, out("lr") _,
                 options(nostack),
             );
         }
@@ -230,6 +232,7 @@ unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
 
 /// Fills `bytes` (a multiple of 32) of a word-aligned buffer with `word`.
 #[inline(always)]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 unsafe fn set_aligned_32(dst: *mut u32, word: u32, bytes: usize) {
     #[cfg(all(target_arch = "arm", target_os = "none"))]
     if bytes > 0 {
@@ -237,18 +240,18 @@ unsafe fn set_aligned_32(dst: *mut u32, word: u32, bytes: usize) {
         // multiple of 32.
         unsafe {
             core::arch::asm!(
-                "mov r4, r3", "mov r5, r3", "mov r7, r3", "mov r8, r3",
+                "mov r4, r3", "mov r5, r3", "mov r8, r3", "mov lr, r3",
                 "mov r9, r3", "mov r10, r3", "mov r12, r3",
                 "2:",
                 "subs r2, r2, #32",
-                "stmia r0!, {{r3, r4, r5, r7, r8, r9, r10, r12}}",
+                "stmia r0!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
                 "bne 2b",
-                // r6 and r11 are reserved by LLVM on this target.
+                // r6 and the frame pointer are reserved; lr is free.
                 inout("r0") dst => _,
                 inout("r2") bytes => _,
                 in("r3") word,
-                out("r4") _, out("r5") _, out("r7") _, out("r8") _,
-                out("r9") _, out("r10") _, out("r12") _,
+                out("r4") _, out("r5") _, out("r8") _, out("r9") _,
+                out("r10") _, out("r12") _, out("lr") _,
                 options(nostack),
             );
         }

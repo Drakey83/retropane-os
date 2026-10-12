@@ -607,6 +607,26 @@ on the host or in the emulator first.
     - **Modernize:** press-and-hold and repeat as one tested layer every
       program gets, instead of each app timing keys itself.
 
+35. **Thumb for cold code, steps 1-2** (ADR-0015, accepted by the owner
+    with a revert condition): **done (emulator).** Every HAL function with
+    inline assembly marked `instruction_set(arm::a32)` (31 functions; a
+    no-op in ARM builds); the global assembly was already `.arm`; the
+    copy/fill loops use lr instead of r7 (Thumb's frame pointer), same
+    speed (bench unchanged). A Thumb target; `xtask cross` builds the
+    images in `THUMB_IMAGES` as Thumb (now the loader: 127.7 -> 94.2 KB)
+    and puts them where everything downstream expects. Every emulator test
+    passes with the Thumb loader; drive and put timings unchanged within
+    noise. Findings: ARM-only instructions in Thumb functions are build
+    errors, as planned; exception returns (`movs pc, lr`, `ldm ...^`)
+    already restore the Thumb bit; system calls pass their number in r7,
+    so the call stub stays ARM (it is).
+    - **Iterate:** a third of the loader back without touching its speed;
+      one list decides ARM or Thumb per image.
+    - **Modernize:** mixed-ISA builds checked by the compiler, measured,
+      reversible in one line.
+    Device: try the Thumb loader in RAM first (`cargo xtask load
+    rp-loader`, the card's loader untouched), then `cargo xtask install`.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the

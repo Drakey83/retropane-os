@@ -80,6 +80,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 | 2026-10-12 | The loader sleeps between polls after 50 ms of quiet (1 ms tick, XScale idle mode) | Waiting loader asleep (emulator) | 0% | 99% (answers in 1-2 ms; the drive still reads 1 MiB in ~3 s) |
 
+| 2026-10-12 | ADR-0015 step 2: the loader built as Thumb (the HAL's assembly marked ARM per function; global assembly already `.arm`), every emulator test passing; budget lowered 128 -> 101 KiB | `rp-loader` loaded size | 127,664 B | 94,208 B (−26%) |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

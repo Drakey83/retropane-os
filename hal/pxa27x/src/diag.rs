@@ -194,6 +194,7 @@ mod target {
 
     /// Reads the coprocessor registers.
     #[must_use]
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn coprocessors() -> Cp {
         let mut c = Cp::default();
         // SAFETY: reads of ID, control, TTB, DACR, PID, CPAR and CLKCFG have
@@ -251,6 +252,7 @@ mod target {
     ///
     /// # Panics
     /// If `to` isn't 16 KiB aligned and 16 KiB long.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn move_l1_table(to: &mut [u8]) {
         assert!(to.len() >= 16 * 1024 && (to.as_ptr() as usize).is_multiple_of(16 * 1024));
         // TTB takes a physical address: valid here only because the

@@ -19,6 +19,7 @@ pub const CLEAN_REGION: u32 = 0xA80F_8000;
 
 /// CPWAIT: makes a CP15 change take effect before the next instruction.
 #[inline(always)]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 fn cpwait() {
     // SAFETY: reads a CP15 register and waits on it; no state changes.
     unsafe {
@@ -34,6 +35,7 @@ fn cpwait() {
 
 /// Writes back and discards the D-cache lines, and discards the I-cache
 /// lines, of `mva..mva + len`.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn clean_invalidate_range(mva: u32, len: u32) {
     let mut line = mva & !(LINE - 1);
     let end = mva.saturating_add(len);
@@ -57,6 +59,7 @@ pub fn clean_invalidate_range(mva: u32, len: u32) {
 /// Writes back (without discarding) the D-cache lines of `va..va + len`:
 /// for memory the kernel wrote through one address that the MMU or another
 /// address will read.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn clean_range(va: u32, len: u32) {
     let mut line = va & !(LINE - 1);
     let end = va.saturating_add(len);
@@ -70,6 +73,7 @@ pub fn clean_range(va: u32, len: u32) {
 
 /// Writes back and discards the whole D-cache, and discards the I-cache and
 /// branch target buffer.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn clean_invalidate_all() {
     let mut line = CLEAN_REGION;
     while line < CLEAN_REGION + DCACHE_SIZE {
@@ -96,12 +100,14 @@ pub fn clean_invalidate_all() {
 }
 
 /// Waits for buffered writes to reach memory.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn drain_write_buffer() {
     // SAFETY: draining the write buffer only waits.
     unsafe { core::arch::asm!("mcr p15, 0, {}, c7, c10, 4", in(reg) 0u32, options(nostack)) };
 }
 
 /// Discards the instruction and data TLB entries for `mva`.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn invalidate_tlb_entry(mva: u32) {
     // SAFETY: TLB entries are refetched from the page tables on demand.
     unsafe {
@@ -116,6 +122,7 @@ pub fn invalidate_tlb_entry(mva: u32) {
 }
 
 /// Discards every TLB entry.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn invalidate_tlb_all() {
     // SAFETY: as in `invalidate_tlb_entry`.
     unsafe { core::arch::asm!("mcr p15, 0, {}, c8, c7, 0", in(reg) 0u32, options(nostack)) };
@@ -126,6 +133,7 @@ pub fn invalidate_tlb_all() {
 /// aligned). The caller must have written the table back to memory
 /// ([`clean_range`]) and it must map the code running now at its current
 /// address.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn switch_table(table: u32) {
     assert!(
         table.is_multiple_of(16 * 1024),
@@ -147,6 +155,7 @@ pub fn switch_table(table: u32) {
 }
 
 /// Sets the Domain Access Control Register.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn set_dacr(dacr: u32) {
     // SAFETY: changes which domains are accessible; the caller's own code and
     // stack are in domain 0, which RetroPane always keeps accessible.
@@ -159,6 +168,7 @@ pub fn set_dacr(dacr: u32) {
 ///
 /// # Panics
 /// If `pid` is 128 or more.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn set_pid(pid: u32) {
     assert!(pid < 128, "the FCSE PID is 7 bits");
     // SAFETY: the running kernel lives above 32 MiB, so relocating the bottom
@@ -169,6 +179,7 @@ pub fn set_pid(pid: u32) {
 
 /// Reads the Fault Status and Fault Address registers (after a data abort).
 #[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn fault_registers() -> (u32, u32) {
     let (fsr, far): (u32, u32);
     // SAFETY: reading FSR and FAR has no side effects.

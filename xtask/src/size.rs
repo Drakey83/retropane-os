@@ -142,9 +142,11 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 124 -> 128 KiB on 2026-10-12 (test image): SHA-256
     // fingerprints, idling, `rm`; 124.7 KiB measured. ADR-0015 (Thumb for
     // cold code, proposed) would give ~20 KiB of the loader back.
+    // Lowered 128 -> 101 KiB on 2026-10-12: built as Thumb (ADR-0015,
+    // accepted), 124.7 -> 92.0 KiB; measured + ~10%.
     Budget {
         image: "rp-loader",
-        max_load: 128 * 1024,
+        max_load: 101 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.
