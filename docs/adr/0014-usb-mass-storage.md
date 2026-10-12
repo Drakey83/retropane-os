@@ -99,6 +99,15 @@ model with a built-in host that enumerates like Windows.
   USB's 10 ms, and a driver handling the reset afterwards lost the request
   (fixed in the model, and the driver now keeps a SETUP that has already
   arrived). Both would have bitten the real device.
+- **Layout fallback (safety net):** if the PC keeps enumerating (bus
+  resets) but never configures the composite device within 25 s, the loader
+  offers the serial-only layout, byte for byte what it presented before this
+  ADR (checked against the old source: same descriptors, revision 26.00,
+  serial `RP26-0001`), and alternates while the PC keeps failing. No host
+  can lock the development loop out, and a device run is safe with nobody
+  at the Axim. Tested in the emulator with a host that refuses composite
+  devices (`accept-composite=off`, rp-v0.9.1); with the fallback disabled
+  the test fails.
 - Device run: pending (overnight queue item 3).
 
 ## Security

@@ -554,6 +554,19 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
         }
     }
 
+    /// Chooses the composite layout (serial port + drive, the default) or
+    /// the serial-only fallback. Call while disabled; the host sees it at the
+    /// next enumeration.
+    pub fn set_composite(&mut self, on: bool) {
+        self.cdc.set_composite(on);
+    }
+
+    /// Whether the composite layout is presented.
+    #[must_use]
+    pub fn composite(&self) -> bool {
+        self.cdc.composite()
+    }
+
     /// Sets the mass storage function's logical unit count (Get Max LUN).
     pub fn set_msc_luns(&mut self, luns: u8) {
         self.cdc.set_max_lun(luns.saturating_sub(1));

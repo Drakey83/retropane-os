@@ -70,6 +70,9 @@ mod image {
     const MSC_BUF: usize = 32 * 1024;
     /// The drive's serial number: the USB serial string (16 hex digits).
     const MSC_SERIAL: &[u8] = b"5250323630303031";
+    /// How long the PC may try to enumerate a layout without configuring it
+    /// before the loader offers the other one (composite <-> serial only).
+    const LAYOUT_PATIENCE: u32 = 25 * TICK_1S;
 
     /// The SD card as the drive's logical unit 0 (absent when no card
     /// answered at startup).
@@ -415,6 +418,11 @@ mod image {
         };
         let mut msc = Msc::new(&mut scratch[..MSC_BUF], MSC_SERIAL, 1);
         udc.set_msc_luns(1);
+        // Layout fallback: if the PC keeps trying (bus resets) but never
+        // configures the composite device, offer the serial-only layout it
+        // already knows, so no host can lock the loop out; and back again.
+        let mut layout_since = rt::ticks();
+        let mut layout_resets = udc.stats().resets;
         let _ = writeln!(
             log,
             "SD card: {} (a drive on the PC)",
@@ -429,6 +437,37 @@ mod image {
             udc.poll();
             if udc.take_msc_reset() {
                 msc.reset();
+            }
+            if udc.configured() {
+                layout_since = rt::ticks();
+                layout_resets = udc.stats().resets;
+            } else if udc.stats().resets != layout_resets
+                && rt::ticks().wrapping_sub(layout_since) > LAYOUT_PATIENCE
+            {
+                let composite = !udc.composite();
+                udc.disable();
+                udc.set_composite(composite);
+                let _ = udc.enable();
+                layout_since = rt::ticks();
+                layout_resets = udc.stats().resets;
+                let _ = writeln!(
+                    log,
+                    "PC didn't configure the device: offering the {} layout",
+                    if composite {
+                        "serial + drive"
+                    } else {
+                        "serial-only"
+                    }
+                );
+                let _ = writeln!(
+                    uart,
+                    "USB layout: {}",
+                    if composite {
+                        "composite"
+                    } else {
+                        "serial-only"
+                    }
+                );
             }
             msc.poll(&mut Pipe(&mut udc), &mut [&mut lun], now_ms());
             if udc.host_open() {

@@ -632,6 +632,45 @@ fn a_setup_that_arrives_before_the_reset_is_handled_survives_it() {
 }
 
 #[test]
+fn the_serial_only_fallback_is_the_old_layout() {
+    // Derived from the composite configuration at compile time; check it is
+    // exactly the pre-ADR-0014 layout: two interfaces, no IAD, three
+    // endpoints, class CDC, revision 26.00, the old serial number.
+    let c = &usb::CONFIG_SERIAL;
+    assert_eq!(c.len(), 67);
+    assert_eq!(usize::from(u16::from_le_bytes([c[2], c[3]])), 67);
+    assert_eq!(c[4], 2);
+    let mut i = 0;
+    let mut kinds = Vec::new();
+    while i < c.len() {
+        kinds.push(c[i + 1]);
+        i += usize::from(c[i]);
+    }
+    assert_eq!(i, c.len());
+    assert!(!kinds.contains(&0x0B), "no IAD");
+    assert_eq!(kinds.iter().filter(|&&k| k == 5).count(), 3);
+    assert_eq!(&usb::DEVICE_SERIAL[4..7], &[0x02, 0, 0]);
+    assert_eq!(&usb::DEVICE_SERIAL[12..14], &[0x00, 0x26]);
+    let mut h = Host::new();
+    h.udc.set_composite(false);
+    h.reset();
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 1, 0, 0, 18, 0]).unwrap(),
+        usb::DEVICE_SERIAL
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 0, 2, 0, 0, 255, 0]).unwrap(),
+        usb::CONFIG_SERIAL
+    );
+    assert_eq!(
+        h.control_in([0x80, 6, 3, 3, 9, 4, 255, 0]).unwrap(),
+        usb::SERIAL_LEGACY
+    );
+    // No storage requests in the serial-only layout.
+    assert!(h.control_in([0xA1, 0xFE, 0, 0, 2, 0, 1, 0]).is_none());
+}
+
+#[test]
 fn mass_storage_class_requests() {
     let mut h = Host::new();
     h.reset();
