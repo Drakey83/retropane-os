@@ -297,9 +297,18 @@ on the host or in the emulator first.
 16. **exFAT writes**: replace and create on exFAT cards (bitmap instead of
     a free scan, entry-set checksums kept right), so SDXC cards get the
     same tools as FAT32.
-17. **Power button** (GPIO0, docs/research/hardware-inventory.md): driver,
-    an `IrqLine` wait, emulator model input, and a loader action (a short
-    press reports, a long press returns to Windows Mobile by soft reset).
+17. **Power button**: **done in the emulator; device run pending.** GPIO0,
+    resting at 0 with WM watching both edges (probe). The loader takes the
+    resting level at start and counts a 30 ms-debounced change from it as a
+    press (polarity needn't be known); a press fades the screen off, the
+    next back on at the level it had. Emulator rp-v0.9.5: an `x51v-button`
+    model on GPIO0 pressed through `qom-set`; the backlight test presses it
+    twice and checks PWM0 (0, then 60%). The planned long-press "back to
+    Windows Mobile" was dropped: the only software reset on the PXA27x is
+    the watchdog, which lands on Dell's prompt; recorded here instead.
+    - **Iterate:** polarity-proof by design; debounced; the screen comes
+      back exactly as it was.
+    - **Modernize:** press for screen off/on with a fade, as on any phone.
 18. **SD DMA**: the PXA27x DMA controller for card reads and writes
     (emulator has a DMA model), measured against the polled path.
 

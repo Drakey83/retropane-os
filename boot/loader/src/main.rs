@@ -97,6 +97,64 @@ mod image {
         seen: (bool, bool),
     }
 
+    /// The power button (GPIO0, docs/hw/README.md).
+    const POWER_BUTTON: u8 = 0;
+    /// A press must hold this long (OS timer ticks: 30 ms) to count.
+    const DEBOUNCE: u32 = 3_250_000 / 1000 * 30;
+
+    /// The power button: a debounced press is a change away from the level
+    /// the button rested at when the loader started, so its polarity needn't
+    /// be known (unconfirmed on the device). A press turns the screen off,
+    /// the next one back on at the level it had, as phones do.
+    struct PowerButton {
+        rest: bool,
+        down: bool,
+        since: u32,
+        saved_level: Option<u32>,
+    }
+
+    impl PowerButton {
+        fn new(gpio: &mut Gpio<Mmio>) -> Self {
+            gpio.make_input(POWER_BUTTON);
+            Self {
+                rest: gpio.read(POWER_BUTTON),
+                down: false,
+                since: rt::ticks(),
+                saved_level: None,
+            }
+        }
+
+        /// Returns `true` once per press (when it has held for [`DEBOUNCE`]).
+        fn pressed(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
+            let down = gpio.read(POWER_BUTTON) != self.rest;
+            if down != self.down {
+                self.down = down;
+                self.since = rt::ticks();
+                return false;
+            }
+            if down && self.since != 0 && rt::ticks().wrapping_sub(self.since) >= DEBOUNCE {
+                self.since = 0; // reported; wait for the release
+                return true;
+            }
+            false
+        }
+
+        /// Screen off (remembering the level) or back on.
+        fn toggle(&mut self, bl: &mut Backlight<Mmio>) -> bool {
+            match self.saved_level.take() {
+                Some(level) => {
+                    bl.fade_to(level, &mut |us| rt::delay_us(us));
+                    true
+                }
+                None => {
+                    self.saved_level = Some(bl.level());
+                    bl.fade_to(0, &mut |us| rt::delay_us(us));
+                    false
+                }
+            }
+        }
+    }
+
     /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
     const SD_DETECT: u8 = 12;
     const SD_LOCK: u8 = 27;
@@ -845,6 +903,7 @@ mod image {
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 1);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
+        let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(1);
         // Layout fallback: if the PC keeps trying (bus resets) but never
         // configures the composite device, offer the serial-only layout it
@@ -1072,6 +1131,16 @@ mod image {
                     let _ = writeln!(log, "refused: {}", what(e));
                 }
                 None => {}
+            }
+            if power.pressed(&mut gpio)
+                && let Some(bl) = backlight.as_mut()
+            {
+                let on = power.toggle(bl);
+                let _ = writeln!(
+                    uart,
+                    "power button: screen {}",
+                    if on { "on" } else { "off" }
+                );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && lun.poll_slot(&mut gpio) {
                 msc.medium_changed(0);
