@@ -129,6 +129,137 @@ mod target {
         });
     }
 
+    /// Pixel paths (item 52, `rp-gfx`): composing in RAM, the glass tint,
+    /// an alpha icon, photo conversion, and copying to the framebuffer, whole
+    /// screen and a clock-sized dirty rectangle. `work` needs 640 KiB of RAM
+    /// (one 480 x 640 surface plus a little). Pairs: the one-multiply blend
+    /// vs the per-channel reference; a full flush vs a dirty one.
+    pub fn gfx(r: &mut Runner, work: &mut [u8], fb: Option<(&mut [u8], &Plane)>) {
+        use rp_gfx::dirty::{self, Dirty};
+        use rp_gfx::{AlphaImage, Gradient, Rect, Surface, Tint, blend_reference, rgb};
+
+        const W: u32 = 480;
+        const H: u32 = 640;
+        let (surf, rest) = work.split_at_mut((W * H * 2) as usize);
+        let (Some(px), true) = (
+            rp_hal_mem::bytes_as_pixels_mut(surf),
+            rest.len() >= 64 * 64 * 3 + 480 * 3,
+        ) else {
+            r.check("gfx", false, "work area too small or misaligned");
+            return;
+        };
+        let (icon_bytes, rest) = rest.split_at_mut(64 * 64 * 2);
+        let (alpha, rest) = rest.split_at_mut(64 * 64);
+        let photo = &mut rest[..480 * 3];
+        let Some(icon) = rp_hal_mem::bytes_as_pixels_mut(icon_bytes) else {
+            r.check("gfx", false, "icon misaligned");
+            return;
+        };
+        for (k, (p, a)) in icon.iter_mut().zip(alpha.iter_mut()).enumerate() {
+            *p = (k as u16).wrapping_mul(2654);
+            // A round icon: solid inside, soft edge, clear corners.
+            let (x, y) = ((k % 64) as i32 - 32, (k / 64) as i32 - 32);
+            let d = x * x + y * y;
+            *a = if d < 784 {
+                255
+            } else if d < 1024 {
+                128
+            } else {
+                0
+            };
+        }
+        for (k, b) in photo.iter_mut().enumerate() {
+            *b = (k * 7) as u8;
+        }
+        // The per-channel blend a straightforward version would write, over
+        // the whole screen: the "before" for `gfx_blend_fill_vga`.
+        let a5 = rp_gfx::alpha5(160);
+        r.run("gfx_blend_reference_vga", 2, &mut || {
+            for p in px.iter_mut() {
+                *p = blend_reference(black_box(0x4208), *p, a5);
+            }
+        });
+        let Some(mut s) = Surface::new(px, W, H, W as usize) else {
+            r.check("gfx", false, "surface");
+            return;
+        };
+        let screen = s.bounds();
+        let mut g = Gradient::new();
+        g.set(
+            W,
+            Tint {
+                color: rgb(6, 8, 11),
+                alpha: 190,
+            },
+            Tint {
+                color: rgb(78, 86, 92),
+                alpha: 107,
+            },
+        );
+
+        r.run("gfx_fill_vga", 3, &mut || s.fill(black_box(screen), 0x2945));
+        r.run("gfx_glass_vga", 2, &mut || s.tint(black_box(screen), &g));
+        r.run("gfx_blend_fill_vga", 2, &mut || {
+            s.blend_fill(black_box(screen), 0x4208, 160);
+        });
+        let img = AlphaImage {
+            px: icon,
+            alpha,
+            w: 64,
+            h: 64,
+        };
+        r.run("gfx_icon_64", 20, &mut || {
+            s.draw_alpha(&img, black_box(200), 100)
+        });
+        r.run("gfx_photo_row_480", 20, &mut || {
+            s.put_rgb888_row(0, black_box(7), photo)
+        });
+
+        // Self-check: the fast blends against the reference, pixel by pixel
+        // on a band, on the target's own arithmetic.
+        let mut ok = true;
+        s.fill(screen, 0);
+        for x in 0..W {
+            s.fill(Rect::new(x, 0, 1, 4), (x as u16).wrapping_mul(977));
+        }
+        let before: [u16; 64] = core::array::from_fn(|k| s.get(k as u32 * 7, 2).unwrap_or(0));
+        s.blend_fill(Rect::new(0, 0, W, 4), 0x7BEF, 200);
+        for (k, &b) in before.iter().enumerate() {
+            let want = blend_reference(0x7BEF, b, rp_gfx::alpha5(200));
+            ok &= s.get(k as u32 * 7, 2) == Some(want);
+        }
+
+        if let Some((fb, plane)) = fb {
+            let stride = plane.stride;
+            r.run("gfx_flush_vga", 3, &mut || {
+                let _ = dirty::flush(&s.view(), fb, stride, &[black_box(screen)]);
+            });
+            let mut d = Dirty::<8>::new(screen);
+            d.add(Rect::new(371, 9, 101, 24)); // the title bar's clock
+            r.run("gfx_flush_clock", 50, &mut || {
+                let _ = dirty::flush(&s.view(), fb, stride, black_box(d.rects()));
+            });
+            // Only the dirty words were written: a marked pixel just outside
+            // stays, one inside matches the surface.
+            let at = |x: usize, y: usize| y * stride + x * 2;
+            let (out_x, in_x) = (368usize, 400usize);
+            fb[at(out_x, 20)..at(out_x, 20) + 2].copy_from_slice(&0xBEEFu16.to_le_bytes());
+            s.fill(Rect::new(370, 9, 102, 24), 0x1234);
+            let _ = dirty::flush(&s.view(), fb, stride, d.rects());
+            let px_at = |fb: &[u8], x| u16::from_le_bytes([fb[at(x, 20)], fb[at(x, 20) + 1]]);
+            ok &= px_at(fb, out_x) == 0xBEEF && px_at(fb, in_x) == 0x1234;
+        }
+        r.check(
+            "gfx",
+            ok,
+            if ok {
+                ""
+            } else {
+                "fast path differs from the reference or flush overreached"
+            },
+        );
+    }
+
     /// Full-screen fills on the 2700G's memory.
     pub fn framebuffer(r: &mut Runner, fb: &mut [u8], plane: &Plane) {
         r.run("fb_pattern_vga", 3, &mut || {

@@ -375,7 +375,12 @@ mod image {
                 suite::tlb(&mut r, "tlb_fit_16_l1sram", "tlb_spill_60_l1sram");
             }
             if offscreen.len() >= screen_end - plane.offset {
-                suite::framebuffer(&mut r, &mut offscreen[..screen_end - plane.offset], &plane);
+                // Off screen, like the fills: the log stays readable.
+                let fb = &mut offscreen[..screen_end - plane.offset];
+                suite::gfx(&mut r, bench_ram, Some((&mut *fb, &plane)));
+                suite::framebuffer(&mut r, fb, &plane);
+            } else {
+                suite::gfx(&mut r, bench_ram, None);
             }
             if let Some(k) = card.as_mut() {
                 // Programmed I/O here: the device baseline DMA is judged against.

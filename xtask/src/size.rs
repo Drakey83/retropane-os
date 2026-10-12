@@ -69,9 +69,14 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 30 -> 34 KiB on 2026-10-12 (test image): SHA-256 and HMAC
     // checked on the target and timed (opt-level 3: the hash is hot code
     // for TLS later); 32.9 KiB measured, +~3%.
+    // Ratcheted 34 -> 46 KiB on 2026-10-12 (test image): the pixel paths
+    // (item 52, `rp-gfx`) benchmarked and checked on the target: fills, the
+    // glass tint, alpha icons, photo rows, framebuffer flushes, and the
+    // per-channel reference they're compared with; 39.6 KiB measured, +~16%
+    // (left there for the iWMMXt paths to come).
     Budget {
         image: "rp-bench",
-        max_load: 34 * 1024,
+        max_load: 46 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -166,9 +171,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 53 -> 60 KiB on 2026-10-12 (test image): the PC Card
     // registers and CF line, and the exFAT reader for SDXC cards (the
     // probe's emulated card is exFAT); 54.6 KiB measured, +~10%.
+    // Ratcheted 60 -> 70 KiB on 2026-10-12 (diagnostics image): the pixel
+    // paths' benchmarks and on-target check (item 52), so the real X51v
+    // measures them too; `Dirty::add` rewritten as a loop on the way
+    // (-1.8 KB); 64.1 KiB measured, +~9%.
     Budget {
         image: "rp-probe",
-        max_load: 60 * 1024,
+        max_load: 70 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

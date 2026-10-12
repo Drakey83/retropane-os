@@ -27,6 +27,40 @@ pub fn words_as_bytes_mut(words: &mut [u32]) -> &mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), len) }
 }
 
+/// Views 16-bit pixels as bytes (little-endian on the X51v), for copying a
+/// composed RAM surface into the framebuffer with the burst `memcpy`.
+/// Always sound, for the same reasons as [`words_as_bytes_mut`].
+pub fn pixels_as_bytes(px: &[u16]) -> &[u8] {
+    // SAFETY: the pointer comes from a valid `&[u16]` covering exactly
+    // `2 * len` bytes; u8 has alignment 1 and no invalid values; the
+    // returned slice borrows `px` for its whole lifetime.
+    unsafe { core::slice::from_raw_parts(px.as_ptr().cast::<u8>(), px.len() * 2) }
+}
+
+/// Views 16-bit pixels as mutable bytes, for filling with [`fill32`]'s burst
+/// stores. Always sound, as [`words_as_bytes_mut`].
+pub fn pixels_as_bytes_mut(px: &mut [u16]) -> &mut [u8] {
+    let len = px.len() * 2;
+    // SAFETY: as `words_as_bytes_mut`: a valid `&mut [u16]` covering exactly
+    // `len` bytes, reborrowed mutably for the result's whole lifetime.
+    unsafe { core::slice::from_raw_parts_mut(px.as_mut_ptr().cast::<u8>(), len) }
+}
+
+/// Views bytes as 16-bit pixels, if they start 2-byte aligned (`None`
+/// otherwise); an odd last byte is left out. For using a byte region (scratch
+/// RAM) as a drawing surface.
+pub fn bytes_as_pixels_mut(bytes: &mut [u8]) -> Option<&mut [u16]> {
+    if bytes.as_ptr() as usize & 1 != 0 {
+        return None;
+    }
+    let len = bytes.len() / 2;
+    // SAFETY: the start is 2-byte aligned (checked), the range covers
+    // `2 * len <= bytes.len()` bytes of a valid `&mut [u8]`, every bit
+    // pattern is a valid u16, and the result reborrows `bytes` mutably for
+    // its whole lifetime.
+    Some(unsafe { core::slice::from_raw_parts_mut(bytes.as_mut_ptr().cast::<u16>(), len) })
+}
+
 /// Copies `n` bytes forward. Regions may overlap only if `dst <= src`.
 ///
 /// # Safety
@@ -378,6 +412,23 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pixels_view_as_bytes_and_back() {
+        let px = [0x0201u16, 0x0403];
+        assert_eq!(pixels_as_bytes(&px), &[1, 2, 3, 4]);
+        let mut w = [0u32; 2];
+        let bytes = words_as_bytes_mut(&mut w);
+        let p = bytes_as_pixels_mut(bytes).unwrap();
+        assert_eq!(p.len(), 4);
+        p[1] = 0xBEEF;
+        assert_eq!(w[0], 0xBEEF_0000);
+        // Misaligned: refused, not a misaligned reference.
+        let mut w = [0u32; 2];
+        let bytes = words_as_bytes_mut(&mut w);
+        assert!(bytes_as_pixels_mut(&mut bytes[1..]).is_none());
+        assert_eq!(bytes_as_pixels_mut(&mut bytes[2..7]).unwrap().len(), 2);
+    }
 
     #[test]
     fn words_view_as_little_endian_bytes() {

@@ -9,6 +9,7 @@ members = [
     "drivers/pxa-uart",
     "drivers/mbx-display",
     "drivers/cpld",
+    "drivers/gfx",
     "drivers/pxa-keypad",
     "drivers/pxa-gpio",
     "drivers/pxa-ssp",

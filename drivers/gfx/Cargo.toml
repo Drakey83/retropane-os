@@ -1,0 +1,14 @@
+[package]
+name = "rp-gfx"
+description = "Pixel paths for the X51v's 16-bit screen: rectangles, fills, copies, glass tints, alpha icons, photo conversion, dirty-rectangle flushes to the write-only framebuffer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-mem = { path = "../../hal/mem" }
+
+[lints]
+workspace = true

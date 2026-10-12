@@ -972,9 +972,31 @@ on the host or in the emulator first.
     long card commands, so slow-at-full-size problems are caught before the
     device.
 
-52. **Display fast paths**: fills, copies, alpha blending and colour
-    conversion in one module, iWMMXt where it pays, written for the
-    write-only framebuffer with dirty rectangles; benchmarks before/after.
+52. **Display fast paths**: **done (emulator), iWMMXt next.** `rp-gfx`
+    (`drivers/gfx`): rectangles clipped with saturating arithmetic, fills
+    through `fill32`'s burst stores, copies and overlapping scrolls, the
+    glass tint as a per-column precomputed gradient, alpha icons, photo rows
+    with a 4x4 ordered dither, and dirty rectangles that merge as they're
+    added and are widened to whole words so every flush takes `memcpy`'s
+    burst path, writing the framebuffer only. Blends use the RGB565
+    "spread" trick: three channels in one multiply, bit-exact with the
+    per-channel reference (every alpha, tested). Emulator benchmarks
+    (instructions, so work done): full-screen blend 3.08 vs 7.99 ms
+    (2.6x less work), fill 0.96 vs 9.3 ms before `fill32` (9.7x), a
+    clock-sized flush 0.0025 ms against 0.13 ms for the whole screen.
+    On-target check `CHECK gfx` (fast paths against the reference on the
+    CPU itself, a flush that writes nothing outside its rectangle),
+    required by `cargo xtask bench`, which `cargo xtask emu` now runs too
+    (so a regression past the baseline fails the suite).
+    - 🔁 Iterate: one module for every pixel path (the console and crash
+      screen move onto it as they're touched), each against a reference.
+    - ✨ Modernize / better: compose in RAM, write-only flushes, dirty
+      rectangles, word-aligned bursts, dithered photo conversion; no unsafe
+      (pixel byte views added to `rp-hal-mem`); hostile rectangles draw
+      nothing. `Dirty::add` rewritten as a loop when it measured 1.9 KB.
+    - Next: real-device numbers (the probe runs the same suite), then
+      iWMMXt for the blend and tint where the device shows the CPU, not
+      memory, is the limit.
 
 53. **Testing rules written down**: mutation testing for the memory
     manager, scheduler and file-system crash paths (a list of mutants each

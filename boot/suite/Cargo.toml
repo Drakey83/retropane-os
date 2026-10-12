@@ -14,6 +14,8 @@ rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-kernel-mm = { path = "../../kernel/mm" }
 rp-lz4 = { path = "../../kernel/lz4" }
 rp-crypto = { path = "../../kernel/crypto" }
+rp-gfx = { path = "../../drivers/gfx" }
+rp-hal-mem = { path = "../../hal/mem" }
 
 [lints]
 workspace = true

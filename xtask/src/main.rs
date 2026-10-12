@@ -239,7 +239,10 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
-            .and_then(|()| emu::boot_loader_backlight(&workspace_root())),
+            .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
+            // The benchmark image's on-target checks (pixel paths, memory,
+            // crypto, SD) and no regression past the baseline.
+            .and_then(|()| emu::bench(&workspace_root(), false)),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",
