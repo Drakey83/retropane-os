@@ -1,9 +1,11 @@
 //! The PXA27x DMA controller, for device FIFOs (PXA27x Developer's Manual,
 //! DMA controller chapter).
 //!
-//! One channel, used through [`rp_hal_api::DmaEngine`]: a transfer between a
-//! device FIFO and a memory buffer, paced by the device's request line, in
-//! descriptor mode (4 KiB per descriptor, so up to 256 KiB per transfer).
+//! Channels 0 and 1, each through [`rp_hal_api::DmaEngine`] (a transfer
+//! between a device FIFO and a memory buffer, paced by the device's request
+//! line, in descriptor mode: 4 KiB per descriptor, up to 128 KiB) or
+//! [`rp_hal_api::DmaRing`] (a buffer looped into a device without end, for
+//! audio: the last descriptor points back at the first).
 //! The cache maintenance the VIVT caches need is done here, so no caller
 //! can forget it: buffers are cleaned (and for reads discarded) before the
 //! transfer, and reads discarded again after, so the CPU sees what the
@@ -13,7 +15,7 @@
 //! bytes long) in identity-mapped memory (the bring-up map): the DMA
 //! controller sees physical addresses.
 
-use rp_hal_api::DmaEngine;
+use rp_hal_api::{DmaEngine, DmaRing, Port, Width};
 
 use crate::cpu;
 
@@ -42,20 +44,34 @@ const DCMD_INCSRC: u32 = 1 << 31;
 const DCMD_INCTRG: u32 = 1 << 30;
 const DCMD_FLOWSRC: u32 = 1 << 29;
 const DCMD_FLOWTRG: u32 = 1 << 28;
-/// 32-byte bursts (a FIFO request's worth), byte-wide FIFO accesses.
-const DCMD_SIZE32_WIDTH1: u32 = (3 << 16) | (1 << 14);
+/// 32-byte bursts (a FIFO request's worth).
+const DCMD_SIZE32: u32 = 3 << 16;
+
+/// The DCMD width field for a port.
+fn width(w: Width) -> u32 {
+    match w {
+        Width::Byte => 1 << 14,
+        Width::Half => 2 << 14,
+        Width::Word => 3 << 14,
+    }
+}
+
+/// Channels handed out ([`crate::rt::take_dma`]): each has its own chain.
+pub const CHANNELS: u32 = 2;
 
 /// Bytes per descriptor (under the 8,191 the length field holds).
 const CHUNK: usize = 4096;
-/// Descriptors: up to 256 KiB per transfer.
-const DESCRIPTORS: usize = 64;
+/// Descriptors per channel: up to 128 KiB per transfer (the largest any
+/// caller moves is 64 KiB; bigger ones are refused and go by the FIFO).
+const DESCRIPTORS: usize = 32;
 
 #[repr(C, align(16))]
 struct Chain([[u32; 4]; DESCRIPTORS]);
 
-/// The descriptor chain (only one DMA user: the flag in `rt` hands out one
-/// [`Dma`]).
-static mut CHAIN: Chain = Chain([[0; 4]; DESCRIPTORS]);
+/// A descriptor chain per channel (the flags in `rt` hand each channel out
+/// once, so each chain has one user).
+static mut CHAINS: [Chain; CHANNELS as usize] =
+    [const { Chain([[0; 4]; DESCRIPTORS]) }; CHANNELS as usize];
 
 /// The DMA channel handed out by [`crate::rt::take_dma`].
 pub struct Dma {
@@ -63,6 +79,8 @@ pub struct Dma {
     request: u8,
     /// The armed transfer's buffer (address, length) and direction.
     armed: Option<(u32, u32, bool)>,
+    /// The running ring: its address and length.
+    ring: Option<(u32, u32)>,
 }
 
 fn write(addr: usize, v: u32) {
@@ -83,50 +101,71 @@ impl Dma {
             ch,
             request: 0,
             armed: None,
+            ring: None,
         }
     }
 
-    fn arm(&mut self, request: u8, fifo: u32, addr: u32, len: usize, to_device: bool) -> bool {
-        // Whole cache lines only: a line shared with other data could be
-        // dirtied by the CPU mid-transfer and written back over what the
-        // device wrote. Callers fall back to programmed I/O.
-        let lines = (addr | len as u32) & (cpu::LINE - 1) == 0;
-        if self.armed.is_some() || !lines || len == 0 || len > CHUNK * DESCRIPTORS {
-            return false;
-        }
-        // Dirty lines would overwrite what the device writes when evicted;
-        // for writes, memory must hold what the CPU wrote.
-        cpu::clean_invalidate_range(addr, len as u32);
-        // SAFETY: CHAIN is only touched by the single `Dma` (see above), and
-        // never while a transfer that reads it runs (armed is None here).
-        let chain = unsafe { &mut *core::ptr::addr_of_mut!(CHAIN) };
+    /// This channel's descriptor chain.
+    fn chain(&mut self) -> &'static mut Chain {
+        // SAFETY: each channel's chain is touched only by its one `Dma`
+        // (handed out once by `rt::take_dma`), and never while the
+        // controller reads it (callers check `armed` and `ring` first).
+        unsafe { &mut (*core::ptr::addr_of_mut!(CHAINS))[self.ch as usize] }
+    }
+
+    /// Fills the chain for `len` bytes at `addr` and starts the channel;
+    /// `looped` points the last descriptor back at the first.
+    fn program(&mut self, port: Port, addr: u32, len: usize, to_device: bool, looped: bool) {
+        let chain = self.chain();
         let n = len.div_ceil(CHUNK);
         let base = chain.0.as_ptr() as u32;
         for (i, d) in chain.0.iter_mut().take(n).enumerate() {
             let at = addr + (i * CHUNK) as u32;
             let piece = (len - i * CHUNK).min(CHUNK) as u32;
-            d[0] = if i + 1 == n {
-                DDADR_STOP
-            } else {
+            d[0] = if i + 1 < n {
                 base + 16 * (i as u32 + 1)
+            } else if looped {
+                base
+            } else {
+                DDADR_STOP
             };
+            let cmd = DCMD_SIZE32 | width(port.width) | piece;
             if to_device {
                 d[1] = at;
-                d[2] = fifo;
-                d[3] = DCMD_INCSRC | DCMD_FLOWTRG | DCMD_SIZE32_WIDTH1 | piece;
+                d[2] = port.addr;
+                d[3] = DCMD_INCSRC | DCMD_FLOWTRG | cmd;
             } else {
-                d[1] = fifo;
+                d[1] = port.addr;
                 d[2] = at;
-                d[3] = DCMD_INCTRG | DCMD_FLOWSRC | DCMD_SIZE32_WIDTH1 | piece;
+                d[3] = DCMD_INCTRG | DCMD_FLOWSRC | cmd;
             }
         }
         // The controller reads the chain from memory.
         cpu::clean_range(base, (16 * n) as u32);
         write(dcsr(self.ch), 0);
-        write(drcmr(request), DRCMR_MAPVLD | self.ch);
+        write(drcmr(port.request), DRCMR_MAPVLD | self.ch);
         write(ddadr(self.ch), base);
         write(dcsr(self.ch), DCSR_RUN);
-        self.request = request;
+        self.request = port.request;
+    }
+
+    fn arm(&mut self, port: Port, addr: u32, len: usize, to_device: bool) -> bool {
+        // Whole cache lines only: a line shared with other data could be
+        // dirtied by the CPU mid-transfer and written back over what the
+        // device wrote. Callers fall back to programmed I/O.
+        let lines = (addr | len as u32) & (cpu::LINE - 1) == 0;
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || !lines
+            || len == 0
+            || len > CHUNK * DESCRIPTORS
+        {
+            return false;
+        }
+        // Dirty lines would overwrite what the device writes when evicted;
+        // for writes, memory must hold what the CPU wrote.
+        cpu::clean_invalidate_range(addr, len as u32);
+        self.program(port, addr, len, to_device, false);
         self.armed = Some((addr, len as u32, to_device));
         true
     }
@@ -144,14 +183,14 @@ impl Dma {
 }
 
 impl DmaEngine for Dma {
-    fn arm_from_device(&mut self, request: u8, fifo: u32, buf: &mut [u8]) -> bool {
+    fn arm_from_device(&mut self, port: Port, buf: &mut [u8]) -> bool {
         let (addr, len) = (buf.as_mut_ptr() as u32, buf.len());
-        self.arm(request, fifo, addr, len, false)
+        self.arm(port, addr, len, false)
     }
 
-    fn arm_to_device(&mut self, request: u8, fifo: u32, buf: &[u8]) -> bool {
+    fn arm_to_device(&mut self, port: Port, buf: &[u8]) -> bool {
         let (addr, len) = (buf.as_ptr() as u32, buf.len());
-        self.arm(request, fifo, addr, len, true)
+        self.arm(port, addr, len, true)
     }
 
     fn done(&mut self) -> Option<bool> {
@@ -170,5 +209,45 @@ impl DmaEngine for Dma {
 
     fn abort(&mut self) {
         self.stop();
+    }
+}
+
+impl DmaRing for Dma {
+    fn start(&mut self, port: Port, ring: &[u8]) -> bool {
+        let (addr, len) = (ring.as_ptr() as u32, ring.len());
+        // At least two descriptors, all whole: the engine can be reading
+        // one part while the CPU refills another.
+        let ok = len >= 2 * CHUNK && len.is_multiple_of(CHUNK) && len <= CHUNK * DESCRIPTORS;
+        if self.armed.is_some() || self.ring.is_some() || !ok || addr & (cpu::LINE - 1) != 0 {
+            return false;
+        }
+        cpu::clean_range(addr, len as u32);
+        self.program(port, addr, len, true, true);
+        self.ring = Some((addr, len as u32));
+        true
+    }
+
+    fn position(&mut self) -> Option<usize> {
+        let (addr, len) = self.ring?;
+        // DSADR: the source address the channel reads next.
+        let at = read(ddadr(self.ch) + 4).wrapping_sub(addr);
+        Some((at.min(len.saturating_sub(1))) as usize)
+    }
+
+    fn filled(&mut self, part: &[u8]) {
+        let (at, len) = (part.as_ptr() as u32, part.len() as u32);
+        if let Some((addr, size)) = self.ring
+            && at >= addr
+            && at - addr + len <= size
+        {
+            cpu::clean_range(at, len);
+        }
+    }
+
+    fn stop(&mut self) {
+        if self.ring.take().is_some() {
+            write(dcsr(self.ch), 0);
+            write(drcmr(self.request), 0);
+        }
     }
 }

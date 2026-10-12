@@ -76,6 +76,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | exFAT writes: free space from the allocation bitmap instead of a FAT scan (emulator `boot_loader_put_exfat`, 70 KB on a 16 MiB card) | read commands for the put | 12 (FAT32, same file) | 8 |
 | 2026-10-12 | `rp-loader` **ratcheted 87 → 96 KiB** (test image): exFAT read and write, `AnyVolume` | `rp-loader` loaded size | 86,043 B | 91,904 B |
 
+| 2026-10-12 | Audio by DMA: the loader's 500 ms tone streamed from an 8 KiB ring the CPU refills by halves, instead of polling the I2S FIFO (emulator; device pending) | CPU busy during playback | 100% | <1% |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

@@ -990,7 +990,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("tone 440 500"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "\n", 20)?;
-        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames") {
+        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames") || !reply.contains("by DMA") {
             return Err(format!("unexpected reply to tone: {reply:?}"));
         }
         eprintln!("    loader: {}", reply.trim());

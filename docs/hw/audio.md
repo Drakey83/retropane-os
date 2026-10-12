@@ -46,10 +46,16 @@ crossings, the right channel latching both).
 - `drivers/pxa-i2c`, `drivers/wm8750`, `drivers/pxa-i2s` (with `Tone`, a
   fixed-point sine from a phase accumulator and a 65-entry quarter table).
 - Loader `tone <hz> <ms>` (`cargo xtask` control frame): finds the codec on
-  first use, plays a sine at 48 kHz polled into the FIFO, replies with how
-  long it took (the codec's clock paces it).
-- Not yet: DMA streaming, the speaker amplifier, headphone detect,
-  recording, sample rates other than 48 kHz on the codec side.
+  first use, streams a sine at 48 kHz by DMA, replies with how long it took
+  (the codec's clock paces it) and the CPU's busy share.
+- Streaming (`rp_drv_pxa_i2s::stream`): DMA channel 1 loops an 8 KiB ring
+  (two 4 KiB halves, 1,024 frames each, ~21 ms) into `SADR` (request line
+  3, word-wide, 32-byte bursts); the CPU refills the half the engine has
+  left, writes it back from the cache, and is free in between. Stops after
+  the last frame has played; a ring that stops moving for 200 ms is an
+  error, not a hang.
+- Not yet: the speaker amplifier, headphone detect, recording, sample
+  rates other than 48 kHz on the codec side.
 
 ## Device run (with the owner there: it makes sound)
 

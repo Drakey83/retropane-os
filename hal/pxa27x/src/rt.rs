@@ -205,8 +205,8 @@ static mut SSP1_TAKEN: bool = false;
 static mut MMC_TAKEN: bool = false;
 /// Single-use guard for PWM0.
 static mut PWM0_TAKEN: bool = false;
-/// Single-use guard for the DMA channel.
-static mut DMA_TAKEN: bool = false;
+/// Single-use guards for the DMA channels (one bit each).
+static mut DMA_TAKEN: u32 = 0;
 
 /// Hands out the FFUART register bank once.
 ///
@@ -422,16 +422,20 @@ pub fn take_mmc() -> Option<Mmio> {
 /// CKEN bit for the DMA controller.
 pub const CKEN_DMA: u32 = 24;
 
-/// Hands out DMA channel 0 once (`_start` stopped every channel), with the
-/// controller's clock enabled.
-pub fn take_dma() -> Option<crate::dma::Dma> {
-    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
-    let taken = unsafe { core::ptr::addr_of_mut!(DMA_TAKEN).replace(true) };
-    if taken {
+/// Hands out DMA channel `ch` (0 or 1: [`crate::dma::CHANNELS`]) once
+/// (`_start` stopped every channel), with the controller's clock enabled.
+pub fn take_dma(ch: u32) -> Option<crate::dma::Dma> {
+    if ch >= crate::dma::CHANNELS {
         return None;
     }
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { &mut *core::ptr::addr_of_mut!(DMA_TAKEN) };
+    if *taken & (1 << ch) != 0 {
+        return None;
+    }
+    *taken |= 1 << ch;
     enable_clock(CKEN_DMA);
-    Some(crate::dma::Dma::new(0))
+    Some(crate::dma::Dma::new(ch))
 }
 
 /// CKEN bit for PWM0 (and PWM2).

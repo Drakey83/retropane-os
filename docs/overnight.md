@@ -420,9 +420,20 @@ on the host or in the emulator first.
 
 ## Fifth tier (added 2026-10-12, same rules)
 
-23. **Audio streaming by DMA**: the DMA engine generalised (port width,
-    a ring of descriptors that loops), the I2S fed from a ring the CPU
-    refills by halves; the CPU's share measured against the polled tone.
+23. **Audio streaming by DMA**: **done (emulator).** `DmaEngine` takes a
+    `Port` (request line, FIFO address, access width); `DmaRing` loops a
+    buffer (the last descriptor points at the first) and reports where it
+    reads; channels 0 (SD) and 1 (audio), each with its own chain (32
+    descriptors, so two channels cost the RAM one did). `stream` refills
+    the half the engine has left; 2 new tests (every frame in order then
+    silence; a stuck engine reported). The loader's `tone` now streams:
+    500 ms in 517 ms with the CPU busy under 1% (polled: 100%); recorded
+    pitch 439.5 Hz. Bench unchanged (SD on the new API).
+    - **Iterate:** the CPU is free while sound plays; the ring's cache rule
+      is enforced by handing the engine the bytes written; stalls are
+      errors.
+    - **Modernize:** double-buffered DMA audio, the shape of every modern
+      audio stack, measured in CI.
 24. **Headphone detect**: GPIO83 read, debounced, reported (and the output
     routed: headphones vs speaker); emulator models the jack as a switch.
 25. **Growing folders**: a full exFAT folder, or a FAT32 folder other than

@@ -1,8 +1,8 @@
 //! PXA27x I2S controller (PXA27x Developer's Manual, I2S chapter),
 //! playback: the PXA as clock master (bit clock and the codec's 256 fs
-//! system clock), 16-bit stereo frames through the transmit FIFO, polled.
-//! DMA for streams comes with the audio service; a polled FIFO is enough
-//! for tones and tests.
+//! system clock), 16-bit stereo frames through the transmit FIFO: polled
+//! ([`PxaI2s::try_write`]), or streamed by DMA from a ring the CPU refills
+//! by halves ([`stream`]), which leaves the CPU free between refills.
 //!
 //! Also [`Tone`]: a sine from a phase accumulator and a quarter-wave table,
 //! no floating point, exact to 1/65536 Hz.
@@ -10,7 +10,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use rp_hal_api::RegisterBus;
+use rp_hal_api::{DmaRing, Port, RegisterBus, Width};
 
 mod reg {
     pub const SACR0: usize = 0x00;
@@ -30,6 +30,103 @@ const SACR0_TFTH_8: u32 = 8 << 8;
 const SACR1_DREC: u32 = 1 << 3;
 /// Transmit FIFO not full.
 const SASR0_TNF: u32 = 1 << 0;
+
+/// The transmit FIFO as a DMA port: request line 3, word-wide (one
+/// stereo frame per access).
+pub const TX_PORT: Port = Port {
+    request: 3,
+    addr: 0x4040_0000 + reg::SADR as u32,
+    width: Width::Word,
+};
+
+/// What a [`stream`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Streamed {
+    /// Halves of the ring played (each refilled once).
+    pub halves: u32,
+    /// Ticks (the caller's clock) spent filling: the CPU's share.
+    pub busy: u32,
+    /// Ticks from start to stop.
+    pub total: u32,
+}
+
+/// Why a stream stopped early.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamError {
+    /// The engine refused the ring (size, alignment, busy).
+    Refused,
+    /// The engine stopped moving.
+    Stalled,
+}
+
+/// Plays `frames` frames from `source` through `dma` (to a started I2S,
+/// [`TX_PORT`]) by looping `ring` (two halves, whole DMA chunks): both
+/// halves filled, then each refilled as the engine leaves it; zeros once
+/// `source` ends; stops when the last frame has played. `now` is the
+/// caller's clock, `stall` how many of its ticks without the engine moving
+/// count as stalled, `idle` what to do while waiting (feed a watchdog,
+/// sleep).
+pub fn stream(
+    dma: &mut dyn DmaRing,
+    ring: &mut [u8],
+    source: &mut dyn Iterator<Item = u32>,
+    frames: u32,
+    now: &mut dyn FnMut() -> u32,
+    stall: u32,
+    idle: &mut dyn FnMut(),
+) -> Result<Streamed, StreamError> {
+    let half = ring.len() / 2;
+    let per_half = (half / 4) as u32;
+    if per_half == 0 {
+        return Err(StreamError::Refused);
+    }
+    let halves = frames.div_ceil(per_half);
+    let mut left = frames;
+    let mut fill = |part: &mut [u8], left: &mut u32| {
+        for f in part.as_chunks_mut::<4>().0 {
+            let v = if *left > 0 {
+                *left -= 1;
+                source.next().unwrap_or(0)
+            } else {
+                0
+            };
+            *f = v.to_le_bytes();
+        }
+    };
+    let t0 = now();
+    fill(&mut ring[..], &mut left);
+    dma.filled(ring);
+    if !dma.start(TX_PORT, ring) {
+        return Err(StreamError::Refused);
+    }
+    let mut stats = Streamed::default();
+    let mut next = 0usize; // the half to refill once the engine leaves it
+    let mut since = now();
+    while stats.halves < halves {
+        let Some(pos) = dma.position() else {
+            dma.stop();
+            return Err(StreamError::Stalled);
+        };
+        if pos / half != next {
+            let t = now();
+            let at = next * half;
+            fill(&mut ring[at..at + half], &mut left);
+            dma.filled(&ring[at..at + half]);
+            stats.busy = stats.busy.wrapping_add(now().wrapping_sub(t));
+            stats.halves += 1;
+            next ^= 1;
+            since = now();
+        } else if now().wrapping_sub(since) > stall {
+            dma.stop();
+            return Err(StreamError::Stalled);
+        } else {
+            idle();
+        }
+    }
+    dma.stop();
+    stats.total = now().wrapping_sub(t0);
+    Ok(stats)
+}
 
 /// Sample rates (the divider for each, PXA27x manual's table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -187,6 +284,111 @@ mod tests {
             .map(|w| w.1)
             .collect();
         assert_eq!(sent, [1, 3]);
+    }
+
+    /// A ring engine modelled in its own memory: `start` and `filled`
+    /// copy what the CPU wrote, and each `position` reads `speed` bytes on,
+    /// recording what it played.
+    struct FakeRing {
+        mem: Vec<u8>,
+        base: usize,
+        running: bool,
+        pos: usize,
+        speed: usize,
+        heard: Vec<u32>,
+    }
+
+    impl DmaRing for FakeRing {
+        fn start(&mut self, port: Port, ring: &[u8]) -> bool {
+            assert_eq!(port, TX_PORT);
+            self.mem = ring.to_vec();
+            self.base = ring.as_ptr() as usize;
+            self.running = true;
+            true
+        }
+        fn position(&mut self) -> Option<usize> {
+            if !self.running {
+                return None;
+            }
+            for _ in 0..self.speed / 4 {
+                let b = &self.mem[self.pos..self.pos + 4];
+                self.heard
+                    .push(u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                self.pos = (self.pos + 4) % self.mem.len();
+            }
+            Some(self.pos)
+        }
+        fn filled(&mut self, part: &[u8]) {
+            if self.running {
+                let at = part.as_ptr() as usize - self.base;
+                self.mem[at..at + part.len()].copy_from_slice(part);
+            }
+        }
+        fn stop(&mut self) {
+            self.running = false;
+        }
+    }
+
+    fn fake(speed: usize) -> FakeRing {
+        FakeRing {
+            mem: Vec::new(),
+            base: 0,
+            running: false,
+            pos: 0,
+            speed,
+            heard: Vec::new(),
+        }
+    }
+
+    fn ticking() -> impl FnMut() -> u32 {
+        let mut t = 0u32;
+        move || {
+            t += 1;
+            t
+        }
+    }
+
+    #[test]
+    fn a_stream_plays_every_frame_then_silence_and_stops() {
+        let mut dma = fake(256);
+        let mut ring = vec![0u8; 8192];
+        let mut src = 1..;
+        let mut source = std::iter::from_fn(|| src.next());
+        let stats = stream(
+            &mut dma,
+            &mut ring,
+            &mut source,
+            5000,
+            &mut ticking(),
+            1000,
+            &mut || {},
+        )
+        .unwrap();
+        // 4 KiB halves hold 1024 frames: 5000 frames are 5 halves.
+        assert_eq!(stats.halves, 5);
+        assert!(!dma.running, "stopped");
+        // Everything in order, nothing lost or repeated, then zeros.
+        assert_eq!(dma.heard[..5000], (1..=5000).collect::<Vec<u32>>()[..]);
+        assert!(dma.heard[5000..].iter().all(|&x| x == 0));
+        assert!(stats.busy < stats.total);
+    }
+
+    #[test]
+    fn a_stuck_engine_is_reported_not_waited_on_forever() {
+        let mut dma = fake(0);
+        let mut ring = vec![0u8; 8192];
+        let mut source = std::iter::repeat(7u32);
+        let r = stream(
+            &mut dma,
+            &mut ring,
+            &mut source,
+            48_000,
+            &mut ticking(),
+            100,
+            &mut || {},
+        );
+        assert_eq!(r, Err(StreamError::Stalled));
+        assert!(!dma.running, "stopped after a stall");
     }
 
     #[test]
