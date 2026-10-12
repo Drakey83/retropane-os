@@ -275,9 +275,11 @@ on the host or in the emulator first.
 
 ## Third tier (added 2026-10-12, same rules)
 
-14. **Emulator release bump**: rp-v0.9.4 (SD switches, PWM) into
-    `QEMU_RELEASE` once built, bench re-recorded, so GitHub CI runs the
-    locked-card and backlight tests too.
+14. **Emulator release bump**: **done.** rp-v0.9.4 (SD switches, PWM) in
+    `QEMU_RELEASE`, bench re-recorded; GitHub CI now runs the locked-card
+    and backlight tests too.
+    - **Iterate / modernize:** the public CI covers every emulator test the
+      local runs do; nothing silently skipped on GitHub.
 15. **FAT subdirectories** in `rp-fat`: **done.** Paths with `/` or `\`
     (`.`/`..` and more than 16 levels refused), find/read/create/replace in
     folders, `mkdir` (first cluster with `.`/`..` written and linked before
