@@ -402,7 +402,7 @@ mod image {
         // Read back through the FAT code and compare with what was sent.
         let mut crc = !0u32;
         let mut got = 0usize;
-        let check = vol.read_back(name, scratch, |chunk| {
+        let check = vol.read_back(name, scratch, &mut |chunk| {
             crc = crc32_update(crc, chunk);
             got += chunk.len();
         });
@@ -594,6 +594,109 @@ mod image {
             sd.host_mut().set_dma(false, false);
             DmaPolicy {
                 verdict: "off (self-test: DMA reads differed)",
+            }
+        }
+    }
+
+    /// The path a command names (spaces inside it kept; "" is the root).
+    fn arg_path(args: &[u8]) -> Option<&str> {
+        core::str::from_utf8(args.trim_ascii()).ok()
+    }
+
+    /// `ls [folder]`: one `RPD` line per entry (`d` for a folder, else its
+    /// size in bytes, then the name), then the reply. Read-only.
+    #[inline(never)]
+    fn ls_command(lun: &mut Lun, args: &[u8], out: &mut dyn FnMut(&[u8]), reply: &mut Line) {
+        let Some(path) = arg_path(args) else {
+            let _ = reply.write_str("RPL ERR bad name\r\n");
+            return;
+        };
+        let Some(sd) = lun.card.as_mut() else {
+            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let mut vol = match mount_any(sd) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        let mut n = 0u32;
+        let r = vol.list(path, &mut |name, dir, size| {
+            let mut l = Line::new();
+            let _ = l.write_str("RPD ");
+            if dir {
+                let _ = l.write_str("d ");
+            } else {
+                let _ = write!(l, "{size} ");
+            }
+            for &b in name {
+                let _ = l.write_char(if b.is_ascii_graphic() || b == b' ' {
+                    char::from(b)
+                } else {
+                    '?'
+                });
+            }
+            let _ = l.write_str("\r\n");
+            out(l.as_str().as_bytes());
+            n += 1;
+        });
+        match r {
+            Ok(()) => {
+                let _ = write!(reply, "RPL OK {n} entries\r\n");
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR {}\r\n", e.name());
+            }
+        }
+    }
+
+    /// `get <file>`: the file as base64 `RPD` lines, then `RPL OK <bytes>
+    /// bytes crc <crc32>` so the PC checks what it got. Read-only.
+    #[inline(never)]
+    fn get_command(
+        lun: &mut Lun,
+        args: &[u8],
+        scratch: &mut [u8],
+        out: &mut dyn FnMut(&[u8]),
+        reply: &mut Line,
+    ) {
+        let Some(path) = arg_path(args).filter(|p| !p.is_empty()) else {
+            let _ = reply.write_str("RPL ERR usage: get <file>\r\n");
+            return;
+        };
+        let Some(sd) = lun.card.as_mut() else {
+            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let mut vol = match mount_any(sd) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        let mut enc = rp_loadproto::b64::Encoder::new();
+        let mut crc = !0u32;
+        let mut total = 0u64;
+        let mut line = |l: &[u8]| {
+            out(b"RPD ");
+            out(l);
+            out(b"\r\n");
+        };
+        let r = vol.read_back(path, scratch, &mut |piece| {
+            crc = crc32_update(crc, piece);
+            total += piece.len() as u64;
+            enc.feed(piece, &mut line);
+        });
+        enc.finish(&mut line);
+        match r {
+            Ok(()) => {
+                let _ = write!(reply, "RPL OK {total} bytes crc {:08x}\r\n", !crc);
+            }
+            Err(e) => {
+                let _ = write!(reply, "RPL ERR {}\r\n", e.name());
             }
         }
     }
@@ -1461,6 +1564,33 @@ mod image {
                                 &mut status,
                             );
                             status.as_str()
+                        }
+                        Ok(c) if c == b"ls" || c.starts_with(b"ls ") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                ls_command(
+                                    &mut lun,
+                                    &c[2..],
+                                    &mut |b| usb_bytes(&mut udc, b),
+                                    &mut status,
+                                );
+                                status.as_str()
+                            }
+                        }
+                        Ok(c) if c.starts_with(b"get ") => {
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                get_command(
+                                    &mut lun,
+                                    &c[4..],
+                                    &mut fat_scratch[..SCRATCH],
+                                    &mut |b| usb_bytes(&mut udc, b),
+                                    &mut status,
+                                );
+                                status.as_str()
+                            }
                         }
                         Ok(b"cf") => {
                             cf_command(&mut cf, &mut gpio, &mut status);
