@@ -30,6 +30,7 @@ pub const MARKER: &str = "RPLOAD1 READY";
 mod image {
     use core::fmt::Write;
 
+    use rp_drv_cf::CfCard;
     use rp_drv_cpld::Cpld;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
@@ -158,6 +159,8 @@ mod image {
 
     /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
     const SD_DETECT: u8 = 12;
+    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
+    const CF_DETECT: u8 = 13;
     const SD_LOCK: u8 = 27;
 
     impl Lun {
@@ -556,6 +559,66 @@ mod image {
                 verdict: "off (self-test: DMA reads differed)",
             }
         }
+    }
+
+    /// The CompactFlash slot: not looked at until the owner asks (`cf`), so
+    /// nothing touches the socket unasked; then the card, or why not.
+    enum CfSlot {
+        Untried,
+        Card(CfCard<Mmio, Mmio>),
+        Failed(&'static str),
+    }
+
+    /// `cf`: identifies the CompactFlash card, read-only: model, capacity,
+    /// whether its write cache is off, and its first partition. The socket
+    /// is touched only when GPIO13 says a card is in it.
+    #[inline(never)]
+    fn cf_command(slot: &mut CfSlot, gpio: &mut Gpio<Mmio>, out: &mut Line) {
+        if gpio.read(CF_DETECT) {
+            let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
+            return;
+        }
+        if let CfSlot::Untried = slot {
+            *slot = match devices::take_cf() {
+                None => CfSlot::Failed("socket unavailable"),
+                Some((attr, common)) => {
+                    match CfCard::init(attr, common, &mut |ms| rt::delay_us(ms * 1000)) {
+                        Ok(card) => CfSlot::Card(card),
+                        Err((e, _, _)) => CfSlot::Failed(e.name()),
+                    }
+                }
+            };
+        }
+        let card = match slot {
+            CfSlot::Card(c) => c,
+            CfSlot::Failed(why) => {
+                let _ = write!(out, "RPL ERR cf: {why}\r\n");
+                return;
+            }
+            CfSlot::Untried => return,
+        };
+        let mut block = [0u8; rp_drv_cf::SECTOR];
+        let first = match card.read_blocks(0, &mut block) {
+            Err(_) => "sector 0 unreadable",
+            Ok(()) => match mbr_partitions(&block).and_then(|p| p[0]) {
+                Some(p) if p.kind == 0x0C || p.kind == 0x0B => "FAT32 partition",
+                Some(p) if p.kind == 0x07 => "exFAT/NTFS partition",
+                Some(p) if p.kind == 0x06 || p.kind == 0x04 || p.kind == 0x0E => "FAT16 partition",
+                Some(_) => "other partition",
+                None => "no partition table",
+            },
+        };
+        let _ = write!(
+            out,
+            "RPL OK cf: {} MB ({} sectors), write cache {}, {first}, model ",
+            card.sectors() / 2048,
+            card.sectors(),
+            if card.write_cache_off() { "off" } else { "on" },
+        );
+        for &b in card.model().iter().take(40) {
+            let _ = out.write_char(char::from(b));
+        }
+        let _ = out.write_str("\r\n");
     }
 
     /// `card dma` reports the DMA policy; `card dma writes` lets writes use
@@ -1001,6 +1064,7 @@ mod image {
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 1);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
+        let mut cf = CfSlot::Untried;
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(1);
         // Layout fallback: if the PC keeps trying (bus resets) but never
@@ -1127,6 +1191,10 @@ mod image {
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
                             backlight_command(backlight.as_mut(), &c[9..], &mut status);
+                            status.as_str()
+                        }
+                        Ok(b"cf") => {
+                            cf_command(&mut cf, &mut gpio, &mut status);
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"card dma") => {

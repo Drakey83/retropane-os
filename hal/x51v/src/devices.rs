@@ -12,6 +12,7 @@ use crate::{MBX_REG_OFFSET, MBX_REG_SIZE, MBX_VRAM_SIZE, region};
 
 static mut MBX_TAKEN: bool = false;
 static mut CPLD_TAKEN: bool = false;
+static mut CF_TAKEN: bool = false;
 static mut SCRATCH_TAKEN: bool = false;
 
 /// Hands out the Intel 2700G once: its register block and its local memory.
@@ -92,6 +93,49 @@ pub fn take_cpld() -> Option<Mmio> {
     // SAFETY: CS4 holds the CPLD's 0x20-byte register window (docs/hw/cpld.md),
     // identity-mapped with the MMU off; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x20) })
+}
+
+/// CompactFlash socket (PXA27x PC Card socket 1, docs/hw/cf.md): offsets of
+/// its attribute and common memory windows in the socket's region.
+const CF_ATTR: usize = 0x0800_0000;
+const CF_COMMON: usize = 0x0C00_0000;
+/// Memory controller (docs/hw/cf.md): `MECR`, and socket 1's timings.
+const MECR: usize = 0x14;
+const MCMEM1: usize = 0x2C;
+const MCATT1: usize = 0x34;
+const MCIO1: usize = 0x3C;
+
+/// Hands out the CompactFlash socket's attribute and common memory windows
+/// once (enough for the CIS, the configuration registers and the ATA task
+/// file), with the socket enabled (`MECR`: two sockets, card inserted) and
+/// timed as Windows Mobile times it (the probe's readings). Whether a card
+/// is in the slot is GPIO13's to say (low = in); touch the windows only
+/// then.
+pub fn take_cf() -> Option<(Mmio, Mmio)> {
+    // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
+    let taken = unsafe { core::ptr::addr_of_mut!(CF_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    let mc = va(region("memory_ctrl")?.base as usize) as *mut u32;
+    for (reg, value) in [
+        (MCMEM1, 0x0002_0508),
+        (MCATT1, 0x0002_0E08),
+        (MCIO1, 0x0002_0510),
+        (MECR, 0x0000_0003),
+    ] {
+        // SAFETY: memory controller registers (PXA27x memory map,
+        // identity-mapped device memory); these four are the PC Card
+        // socket's and are only written here, under the flag above.
+        unsafe { mc.byte_add(reg).write_volatile(value) };
+    }
+    let base = va(region("pcmcia1_cf")?.base as usize);
+    let attr = NonNull::new((base + CF_ATTR) as *mut u32)?;
+    let common = NonNull::new((base + CF_COMMON) as *mut u32)?;
+    // SAFETY: the socket's attribute and common memory windows (64 MiB
+    // each; 4 KiB handed out), identity-mapped device memory; the flag
+    // guarantees one owner.
+    Some(unsafe { (Mmio::new(attr, 0x1000), Mmio::new(common, 0x1000)) })
 }
 
 /// Where every image is loaded and started (HaRET's `ramaddr` + 32 KiB).

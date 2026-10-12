@@ -63,6 +63,7 @@ a later pass (the owner's standing requirement, 2026-10-12). Every ADR has a
 | 2026-10-12 | `rp-fat` mount | A forged FAT size or root cluster overflowed the sector arithmetic: a panic in test builds, reads of the wrong sectors in release | Fixed: the geometry is validated with checked arithmetic at mount; 1,500-card corruption test |
 | 2026-10-12 | `rp-loadproto`, `rp-usb-msc`, `pxa-udc`, `kernel/pe` | Random-input tests added (20,000 / 5,000 / 52,000 / 5,000 cases) | No findings |
 | 2026-10-12 | `rp-fat` exFAT | Names are read cut at 64 characters, so a file with a longer name matched a lookup of its first 64: a `put` of that shorter name would have overwritten the other file | Fixed: only names decoded whole (not cut, all ASCII) match; test `a_cut_long_name_never_matches_its_prefix`, which fails without the fix |
+| 2026-10-12 | `rp-drv-cf` | 3,000 hostile cards (random CIS bytes, random IDENTIFY words) | No findings: I/O cards and bad CIS refused untouched, capacity taken only as the card states it and every transfer kept inside it, every wait bounded |
 | 2026-10-12 | `rp-fat` exFAT writes | Writing to hostile cards (1,500 corrupted images, boot checksum re-signed so the damage passes mount) and a power cut at every write of four kinds of put | No findings: errors, no panics or loops; no live cluster ever left marked free |
 
 ## Checklist for every ADR and parser

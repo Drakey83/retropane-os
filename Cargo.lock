@@ -87,6 +87,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-drv-cf"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-drv-cpld"
 version = "0.0.0"
 dependencies = [
@@ -271,6 +278,7 @@ dependencies = [
 name = "rp-loader"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-cf",
  "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",

@@ -18,6 +18,7 @@ members = [
     "drivers/pxa-udc",
     "drivers/usb-msc",
     "drivers/pxa-pwm",
+    "drivers/cf",
     "kernel/mm",
     "kernel/pe",
     "kernel/lz4",

@@ -352,13 +352,25 @@ on the host or in the emulator first.
 
 ## Fourth tier (added 2026-10-12, same rules)
 
-19. **CompactFlash**: the PXA PC Card socket and a CF card in True IDE /
-    memory mode (ATA PIO through the socket's windows; GPIO13 detect,
-    timings from `docs/hw/cf.md`), as `BlockDevice`, so the file systems
-    and the USB drive (LUN 1) get it. Emulator: wire QEMU's PC Card socket
-    and its CF ("microdrive") model into the x51v machine. The owner has a
-    CF card in the slot: device run only after the emulator passes,
-    read-only first.
+19. **CompactFlash**: **step one done (emulator); LUN 1 next.**
+    `rp-drv-cf`: memory mode (every CF storage card has it), CIS checked
+    (only fixed disks taken; I/O cards untouched), soft reset, IDENTIFY
+    (LBA28 capacity, model), write cache off, READ / WRITE SECTORS (256 per
+    command), all waits bounded; 8 tests against a simulated card
+    (including 3,000 hostile cards and a bad sector). Board HAL
+    `take_cf()` (Windows Mobile's socket timings, `MECR`). Loader `cf`
+    command: identify, read-only, only when GPIO13 says a card is in.
+    Emulator rp-v0.9.7: QEMU's PC Card socket and CF card model wired into
+    the x51v machine, detect on GPIO13; `boot_loader_cf` identifies a
+    16 MB card, and the put test checks an empty slot is reported, not
+    touched.
+    - **Iterate:** the write cache goes off, so the file systems' crash
+      safety holds on CF too (Windows Mobile's driver leaves it on);
+      non-storage cards are recognised from the CIS and left alone; the
+      socket is never touched unless the detect line says a card is there.
+    - **Modernize:** one `BlockDevice` for SD and CF, so the same file
+      systems, the USB drive and the tools work on both; CF cards past
+      WM's limits (LBA28: up to 128 GiB).
 20. **exFAT folders**: paths on exFAT as on FAT32 (`mkdir`, `put` creating
     parents), so SDXC cards organise the same way.
 21. **Thumb for cold code**: measure building cold paths (loader commands,
