@@ -87,6 +87,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-crypto"
+version = "0.0.0"
+
+[[package]]
 name = "rp-drv-cf"
 version = "0.0.0"
 dependencies = [
@@ -301,6 +305,7 @@ dependencies = [
 name = "rp-loader"
 version = "0.0.0"
 dependencies = [
+ "rp-crypto",
  "rp-drv-cf",
  "rp-drv-cpld",
  "rp-drv-mbx-display",
@@ -456,6 +461,7 @@ checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 name = "xtask"
 version = "0.0.0"
 dependencies = [
+ "rp-crypto",
  "rp-drv-mbx-display",
  "rp-fat",
  "rp-hal-api",

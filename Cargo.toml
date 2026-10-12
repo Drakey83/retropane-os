@@ -27,6 +27,7 @@ members = [
     "kernel/lz4",
     "kernel/sched",
     "kernel/fat",
+    "kernel/crypto",
     "boot/hello",
     "boot/light",
     "boot/crash",

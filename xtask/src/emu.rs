@@ -791,7 +791,14 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(1)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK", 15)?;
+        let ok = usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
+        let ok = usb_read_until(
+            &mut s, "
+", 10,
+        )
+        .map(|t| ok + &t)?;
+        let theirs = ok.rsplit("RPL OK sha256 ").next().unwrap_or("").trim();
+        crate::usb::check_digest(theirs, &payload, "image over USB")?;
         // The loader disconnects to run the image and reconnects when it
         // returns (the emulated host enumerates it again); the socket stays
         // up throughout, and the run log arrives once the port is reopened.
@@ -1136,6 +1143,8 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
             .find(|l| l.starts_with("RPL "))
             .unwrap_or("")
             .to_string();
+        let theirs = line.rsplit("sha256 ").next().unwrap_or("").trim();
+        crate::usb::check_digest(theirs, &new, "file on the card")?;
         if !line.starts_with("RPL OK 70000 bytes") || !line.contains("contiguous") {
             return Err(format!("unexpected reply to the exFAT put: {line:?}"));
         }
@@ -1284,6 +1293,8 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
             .find(|l| l.starts_with("RPL "))
             .unwrap_or("")
             .to_string();
+        let theirs = line.rsplit("sha256 ").next().unwrap_or("").trim();
+        crate::usb::check_digest(theirs, &new, "file on the card")?;
         if !line.starts_with("RPL OK 70000 bytes") || !line.contains("contiguous") {
             return Err(format!("unexpected reply to the file: {line:?}"));
         }

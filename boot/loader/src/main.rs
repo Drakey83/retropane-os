@@ -50,7 +50,7 @@ mod image {
     use rp_hal_pxa27x::{Mmio, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
-    use rp_loadproto::{Frame, Kind, LoadError, OK, READY, Receiver, crc32_update, feed_slice};
+    use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
     use rp_usb_msc::{BulkPipe, Msc, Storage};
 
     rp_hal_pxa27x::entry!(main);
@@ -399,19 +399,23 @@ mod image {
         };
         let t_write = rt::ticks().wrapping_sub(t0);
         let reads = vol.device().reads().wrapping_sub(reads0);
-        // Read back through the FAT code and compare with what was sent.
+        // Read back through the FAT code and compare with what was sent;
+        // the SHA-256 of what the card now holds goes back to the PC.
         let mut crc = !0u32;
         let mut got = 0usize;
+        let mut sha = rp_crypto::Sha256::new();
         let check = vol.read_back(name, scratch, &mut |chunk| {
             crc = crc32_update(crc, chunk);
+            sha.update(chunk);
             got += chunk.len();
         });
+        let digest = rp_crypto::hex(&sha.finish());
         let want = crc32_update(!0, contents);
         match check {
             Ok(()) if crc == want && got == contents.len() => {
                 let _ = write!(
                     reply,
-                    "RPL OK {} bytes in {} ms, {} cluster{} {} ({} reads), read back in {} ms\r\n",
+                    "RPL OK {} bytes in {} ms, {} cluster{} {} ({} reads), read back in {} ms, sha256 {}\r\n",
                     contents.len(),
                     t_write / (TICK_1S / 1000),
                     written.clusters,
@@ -423,6 +427,7 @@ mod image {
                     },
                     reads,
                     rt::ticks().wrapping_sub(t0 + t_write) / (TICK_1S / 1000),
+                    core::str::from_utf8(&digest).unwrap_or(""),
                 );
             }
             Ok(()) => {
@@ -1722,7 +1727,13 @@ mod image {
                     // memory and compare with the CRC the sender gave.
                     rp_hal_pxa27x::cpu::clean_invalidate_all();
                     let intact = rp_loadproto::crc32(&dest[..len]) == rx.expected_crc();
-                    send(&mut uart, &mut udc, OK);
+                    // A fingerprint of what will run, for the PC to compare.
+                    let mut ok = Line::new();
+                    let digest = rp_crypto::hex(&rp_crypto::Sha256::digest(&dest[..len]));
+                    let _ = ok.write_str("RPL OK sha256 ");
+                    let _ = ok.write_str(core::str::from_utf8(&digest).unwrap_or(""));
+                    let _ = ok.write_str("\r\n");
+                    send(&mut uart, &mut udc, ok.as_str());
                     let _ = writeln!(log, "image OK, {len} bytes: starting");
                     // Let the reply leave over USB before disconnecting: on
                     // the device, 50 ms was not enough for the PC's program to

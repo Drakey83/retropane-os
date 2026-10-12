@@ -1,0 +1,11 @@
+[package]
+name = "rp-crypto"
+description = "Cryptographic primitives (SHA-256 first): no unsafe, no allocation, checked against published test vectors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
