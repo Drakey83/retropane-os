@@ -14,6 +14,8 @@
 
 use core::ptr::NonNull;
 
+use rp_hal_api::RegisterBus;
+
 use crate::devmap::va;
 use crate::{FFUART_BASE, Mmio, UART_WINDOW};
 
@@ -491,6 +493,9 @@ pub enum Fault {
     PrefetchAbort,
     /// Data abort.
     DataAbort,
+    /// The program ran past the run limit its starter set (the soft
+    /// watchdog, [`arm_run_limit`]) without checking in.
+    RunLimit,
 }
 
 impl Fault {
@@ -502,6 +507,7 @@ impl Fault {
             Self::Swi => "Swi",
             Self::PrefetchAbort => "PrefetchAbort",
             Self::DataAbort => "DataAbort",
+            Self::RunLimit => "RunLimit",
         }
     }
 }
@@ -554,6 +560,73 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     Some(crate::soc::SpareTimer(unsafe {
         Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
     }))
+}
+
+/// The whole OS timer block (channels 0-11), for the run limit.
+fn ost_block() -> Mmio {
+    // SAFETY: the OS timer's register window, channels 0-11 (0xE0 bytes).
+    // The run limit touches only channel 4's registers and bit 4 of the
+    // shared status and enable registers (read-modify-write with IRQs
+    // masked, or from the IRQ handler).
+    unsafe { Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0xE0) }
+}
+
+/// Arms the *soft watchdog*: if the program started next doesn't check in
+/// ([`keep_alive`]) within `ms` milliseconds, an interrupt makes it fault
+/// with [`Fault::RunLimit`], and its fault handler takes it back to its
+/// starter (the loader) with a crash report, instead of the hardware
+/// watchdog resetting the device (which lands the X51v on Dell's factory
+/// prompt). OS timer channel 4 keeps its settings across the hand-off, so
+/// every image built on this runtime is covered without doing anything.
+/// The hardware watchdog stays as the backstop, for a program that hangs
+/// with interrupts off.
+pub fn arm_run_limit(ms: u32) {
+    use crate::soc::ost_reg::{OIER, OMCR4, OSCR4, OSMR4, OSSR};
+    let was = irqs_enabled_now();
+    irq_disable();
+    let mut t = ost_block();
+    let enabled = t.read32(OIER);
+    t.write32(OIER, enabled & !(1 << 4));
+    t.write32(OSSR, 1 << 4);
+    t.write32(OMCR4, 2); // 1 ms ticks
+    t.write32(OSMR4, ms.max(1));
+    t.write32(OSCR4, 0);
+    let enabled = t.read32(OIER);
+    t.write32(OIER, enabled | 1 << 4);
+    intc().enable(crate::soc::irq::OST_4_11);
+    if was {
+        irq_enable();
+    }
+}
+
+/// Turns the soft watchdog off (the program is back, or never started).
+pub fn disarm_run_limit() {
+    use crate::soc::ost_reg::{OIER, OMCR4, OSSR};
+    let was = irqs_enabled_now();
+    irq_disable();
+    let mut t = ost_block();
+    let enabled = t.read32(OIER);
+    t.write32(OIER, enabled & !(1 << 4));
+    t.write32(OMCR4, 0);
+    t.write32(OSSR, 1 << 4);
+    if was {
+        irq_enable();
+    }
+}
+
+/// Whether a soft run limit is armed.
+#[must_use]
+pub fn run_limit_armed() -> bool {
+    ost_block().read32(crate::soc::ost_reg::OIER) & 1 << 4 != 0
+}
+
+/// Checks in with the soft watchdog: the run limit starts again from now
+/// (nothing happens if none is armed). Long-running programs call it as
+/// they make progress, as they feed the hardware watchdog.
+pub fn keep_alive() {
+    if run_limit_armed() {
+        ost_block().write32(crate::soc::ost_reg::OSCR4, 0);
+    }
 }
 
 fn ostimer() -> crate::soc::OsTimer<Mmio> {
@@ -758,6 +831,7 @@ pub(crate) fn report_fault(kind: Fault, addr: u32) -> ! {
         Fault::Swi => 2,
         Fault::PrefetchAbort => 3,
         Fault::DataAbort => 4,
+        Fault::RunLimit => 5,
     };
     rp_fault(code, addr)
 }
@@ -768,6 +842,7 @@ extern "C" fn rp_fault(kind: u32, addr: u32) -> ! {
         2 => Fault::Swi,
         3 => Fault::PrefetchAbort,
         4 => Fault::DataAbort,
+        5 => Fault::RunLimit,
         _ => Fault::Undefined,
     };
     // SAFETY: written once during setup, before any exception can occur.
@@ -850,6 +925,14 @@ pub(crate) fn preempt_if_pending() {
 
 fn rp_irq() {
     let pending = intc().pending();
+    // The soft watchdog: the program ran past its limit. Disarm (one shot)
+    // and fault, which its handler turns into a return to the loader.
+    if pending & (1 << crate::soc::irq::OST_4_11) != 0
+        && ost_block().read32(crate::soc::ost_reg::OSSR) & 1 << 4 != 0
+    {
+        disarm_run_limit();
+        report_fault(Fault::RunLimit, 0);
+    }
     if pending & (1 << crate::soc::irq::OST1) != 0 {
         // SAFETY: the IRQ handler is the only writer of TICKS (main code only
         // reads it), and TICK_PERIOD is set before the tick interrupt is enabled.
@@ -865,7 +948,7 @@ fn rp_irq() {
     }
     // Everything else: mask and signal its owner, or mask and record it as
     // unclaimed (ADR-0007). No driver code runs here.
-    let other = pending & !(1 << crate::soc::irq::OST1);
+    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::OST_4_11);
     if other != 0 {
         // SAFETY: we're in the IRQ handler with IRQs masked, and main code
         // only touches DISPATCH with IRQs masked, so this access is exclusive.
@@ -941,6 +1024,10 @@ fn ensure_intc() {
     let ready = unsafe { core::ptr::addr_of_mut!(INTC_READY).replace(true) };
     if !ready {
         intc().reset();
+        // A run limit armed by whoever started this program stays live.
+        if run_limit_armed() {
+            intc().enable(crate::soc::irq::OST_4_11);
+        }
     }
 }
 

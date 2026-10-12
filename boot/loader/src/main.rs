@@ -1398,6 +1398,8 @@ mod image {
     }
 
     fn main() -> ! {
+        // A program that ran past its soft limit is back: its timer goes off.
+        rt::disarm_run_limit();
         step(0);
         let Some(bus) = rt::take_ffuart() else { halt() };
         let mut uart = PxaUart::new(bus);
@@ -1524,7 +1526,9 @@ mod image {
                     panel,
                     plane.stride,
                     (480, CRASH_H),
-                    if run.crashed {
+                    if run.log.windows(8).any(|w| w == b"RunLimit") {
+                        "The program ran past its time limit"
+                    } else if run.crashed {
                         "The program crashed"
                     } else {
                         "The program stopped responding"
@@ -1582,6 +1586,8 @@ mod image {
         // driver set up that the loop needs now (audio and CF start later,
         // on first use).
         let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
+        // The next image's soft run limit (`limit`), in milliseconds.
+        let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
             // while waiting.
@@ -1776,6 +1782,22 @@ mod image {
                                 status.as_str()
                             }
                         }
+                        Ok(c) if c.starts_with(b"limit ") => {
+                            // The next image's run limit, 1-30 s (tests use a
+                            // short one; never longer than the default).
+                            match core::str::from_utf8(&c[6..])
+                                .ok()
+                                .and_then(|t| t.trim().parse::<u32>().ok())
+                                .filter(|n| (1..=30).contains(n))
+                            {
+                                Some(n) => {
+                                    limit_ms = n * 1000;
+                                    let _ = write!(status, "RPL OK limit {n} s\r\n");
+                                    status.as_str()
+                                }
+                                None => "RPL ERR limit: 1 to 30 seconds\r\n",
+                            }
+                        }
                         Ok(b"card check") => {
                             if msc.host_writing(now_ms()) {
                                 "RPL ERR card busy: the PC is writing\r\n"
@@ -1889,10 +1911,17 @@ mod image {
                     // feeds the watchdog) resets the device, and the loader
                     // comes back (started again by Windows Mobile's StartUp
                     // folder on the device; the emulator restarts it).
-                    watchdog.feed(RUN_LIMIT);
+                    //
+                    // Two layers (overnight item 55): the soft limit first, an
+                    // interrupt that makes the image fault back here with a
+                    // crash report and no reset; the hardware watchdog 30 s
+                    // later, only for an image that hangs with interrupts
+                    // off (its reset lands the X51v on Dell's factory prompt).
+                    watchdog.feed(limit_ms / 1000 * TICK_1S + RUN_LIMIT);
                     // Nothing of the loader's may fire under the image.
                     rt::stop_tick();
                     rt::irq_disable();
+                    rt::arm_run_limit(limit_ms);
                     handoff::launch(IMAGE_BASE as u32);
                 }
                 Some(Err(e)) => {

@@ -225,6 +225,8 @@ mod image {
             if watchdog.armed() {
                 watchdog.feed(30 * TICK_1S);
             }
+            // The soft run limit too (the loader's first line of defence).
+            rt::keep_alive();
             rig.udc.poll();
         }
         rig.udc.stats()

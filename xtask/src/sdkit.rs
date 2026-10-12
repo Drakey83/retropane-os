@@ -67,8 +67,11 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
           has done (resets, setups, configured, open, bytes).
 - loader/ Resident loader: start it once with HaRET, cable plugged in; then
           every `cargo xtask load <image>` on the PC sends a new image over
-          USB and starts it. No more copying files. An image that hangs is
-          reset by the watchdog after 30 s.
+          USB and starts it. No more copying files. An image that runs past
+          30 s without checking in comes back to the loader with a crash
+          report; only one that hangs with interrupts off is reset by the
+          watchdog (30 s later), which lands on Dell's restore prompt:
+          press Mail to cancel, never Contacts.
           It also updates the card: `cargo xtask put <file>` replaces a file
           in the card's root directory (verified by reading it back), and
           `cargo xtask install` puts this kit's loader, startup.txt, default.txt

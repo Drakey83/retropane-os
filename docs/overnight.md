@@ -922,11 +922,37 @@ on the host or in the emulator first.
     printing it as a timeline.
 
 55. **Soft watchdog** (owner's device kept landing on Dell's restore
-    prompt): a timer interrupt at the run limit returns a hung or too-long
-    program to the loader with a crash screen and its log, instead of the
-    hardware reset; the hardware watchdog stays as the last resort with a
-    longer limit. Emulator tests run at the owner's card size too, so work
-    that is fine on a tiny test card but too slow on a real one is caught.
+    prompt): **done (emulator); card-size tests split out as item 57.** The
+    loader arms OS timer channel 4 (1 ms ticks) before starting a program;
+    its settings survive the hand-off, so every image built on the runtime
+    is covered with nothing to do. Past the limit, the runtime's interrupt
+    handler raises `Fault::RunLimit` through the program's own fault
+    handler, which returns to the loader with a crash report; the loader's
+    crash screen says "The program ran past its time limit". Programs check
+    in with `rt::keep_alive()` (rp-reconnect does, its only user so far).
+    The hardware watchdog is now a backstop 30 s later, for a program that
+    hangs with interrupts off. `limit <s>` (1-30) shortens the next run's
+    limit for tests. New `rp-hang` test image; emulator test: back after
+    its 2 s limit with a report and no reset (4 s in all); the hardware
+    backstop test still resets a hang with interrupts off. Kit README
+    updated (press Mail, never Contacts).
+    - **Iterate:** WM had no run limit at all; ours no longer turns a slow
+      program into a factory-reset scare.
+    - **Modernize:** layered watchdogs (soft first, hard as backstop) as
+      modern kernels do, with no per-program code needed.
+
+56. **Intermittent: a reply's second USB packet stalls** (seen once in the
+    emulator, 2026-10-12, item 55's run): the tone reply came back cut at
+    exactly 64 bytes (one packet) and the rest never arrived within 20 s;
+    the rerun passed. The loader puts the whole reply in the send ring and
+    services USB every 1 ms, so something intermittently stops the ring
+    draining. Next: a stress test sending a long reply hundreds of times to
+    reproduce it on demand, then fix and keep the test.
+
+57. **Tests at the owner's card size**: emulator runs with a card image as
+    large as the owner's (4 GB and 32 GB, sparse files), for the loader's
+    long card commands, so slow-at-full-size problems are caught before the
+    device.
 
 52. **Display fast paths**: fills, copies, alpha blending and colour
     conversion in one module, iWMMXt where it pays, written for the

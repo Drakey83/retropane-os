@@ -248,6 +248,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-hang"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-hello"
 version = "0.0.0"
 dependencies = [
