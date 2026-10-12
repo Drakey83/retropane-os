@@ -116,6 +116,25 @@ model with a built-in host that enumerates like Windows.
   and HaRET, and Windows writes a mounted drive by itself (its System
   Volume Information folder), so nothing reaches the card unless asked.
   The emulator test checks both states and the switch.
+- **Writable, boot files guarded (2026-10-12, owner's choice):** the SD
+  card is now writable by default, like any USB drive (drag and drop,
+  rename the volume, delete), except what boots the device. The PC writes
+  sectors, not files, so `rp_fat::Guard` records the boot files'
+  directory entries (name, attributes, first cluster, size), their chains
+  in every FAT copy and their data clusters, plus the partition table and
+  the boot sector's geometry, and refuses any write that would change
+  them (DATA PROTECT, so Windows says "write protected"). Everything else
+  passes: new files and folders, other files' changes and deletes, the
+  volume label. Formatting the card is refused too. The guard is rebuilt
+  from the card after start-up, a card change and anything the PC tool
+  asks (`put`, `rm`, `install`, an image's run); when it can't be built
+  (exFAT, a boot file in more than 8 pieces, unmirrored FATs) the card is
+  read-only, as before. `drive ro` still locks it; `drive rw` also makes
+  the CF card writable (it stays read-only by default until it stays
+  attached, item 62). Device run: Windows wrote and deleted files; its
+  delete of `default.txt` was refused on the card (Windows' cached view
+  showed it gone until the drive was offered again, item 65); the boot
+  files stayed identical to a backup.
 - **Device run (2026-10-12, overnight):** Windows 11 enumerated the composite
   device first time: "USB Composite Device" with "USB Serial Device (COM4)"
   and "RetroPan SD card USB Device", read-only volume, 3,997,171,712 bytes

@@ -71,7 +71,8 @@ commands:
   rm        delete a file or empty folder on the card through the loader
             (crash-safe; the files the device boots from are refused)
   cf        identify the CompactFlash card through the loader (read-only;
-            then it is the drive's second unit)
+            then it is the drive's second unit); `cf log`: READY changes,
+            attach and drop times; `cf soft`: no hardware reset (diagnostics)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
   tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
@@ -175,8 +176,16 @@ fn main() -> ExitCode {
             }
         }
         "cf" => {
-            eprintln!("==> cf");
-            usb::command(&workspace_root(), "cf")
+            // `cf soft`: without the hardware reset (diagnostics only).
+            // `cf soft`: without the hardware reset; `cf log`: the slot's
+            // timestamped events (diagnostics only).
+            let cmd = match std::env::args().nth(2).as_deref() {
+                Some("soft") => "cf soft",
+                Some("log") => "cf log",
+                _ => "cf",
+            };
+            eprintln!("==> {cmd}");
+            usb::command(&workspace_root(), cmd)
         }
         "cpld" => {
             eprintln!("==> cpld");

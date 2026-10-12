@@ -146,6 +146,8 @@ type Visit<'a> = dyn FnMut(u32, u8, &[u8; 32], &[u8]) -> bool + 'a;
 /// A mounted FAT32 partition.
 pub struct Volume<D> {
     dev: D,
+    /// The partition's first sector (the boot sector).
+    base: u32,
     sectors_per_cluster: u32,
     fat_start: u32,
     fat_sectors: u32,
@@ -397,6 +399,7 @@ impl<D: BlockDevice> Volume<D> {
         }
         Ok(Self {
             dev,
+            base,
             sectors_per_cluster,
             fat_start,
             fat_sectors,
@@ -1400,7 +1403,9 @@ pub mod format;
 pub mod exfat;
 
 pub mod check;
+pub mod guard;
 pub use check::Health;
+pub use guard::Guard;
 
 /// A FAT32 or exFAT volume, whichever the boot sector says: what a caller
 /// that only stores and reads files needs (the loader's `put`, crash

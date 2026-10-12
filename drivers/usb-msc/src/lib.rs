@@ -16,7 +16,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use rp_hal_api::BlockDevice;
+use rp_hal_api::{BlockDevice, BlockError};
 
 /// Bulk packet size (full speed).
 pub const PACKET: usize = 64;
@@ -603,15 +603,22 @@ impl<'b> Msc<'b> {
         let chunk = (self.blocks_left as usize * BLOCK).min(self.buf.len());
         if self.buf_len == chunk {
             let blocks = (chunk / BLOCK) as u32;
-            if !self.failed
-                && luns[self.lun]
-                    .write_blocks(self.lba, &self.buf[..chunk])
-                    .is_err()
-            {
+            let result = if self.failed {
+                Ok(())
+            } else {
+                luns[self.lun].write_blocks(self.lba, &self.buf[..chunk])
+            };
+            if let Err(e) = result {
                 self.stats.io_errors += 1;
                 self.stats.last_error = (self.lba, blocks);
-                // Keep taking the host's data; report the failure at the end.
-                self.units[self.lun].sense = Sense::WRITE_ERROR;
+                // Keep taking the host's data; report the failure at the end:
+                // a write the storage refuses (a guarded block) as
+                // write-protected, so the PC says so instead of "I/O error".
+                self.units[self.lun].sense = if e == BlockError::ReadOnly {
+                    Sense::WRITE_PROTECTED
+                } else {
+                    Sense::WRITE_ERROR
+                };
                 self.failed = true;
                 self.stats.failed += 1;
             }

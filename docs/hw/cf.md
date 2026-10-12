@@ -93,9 +93,20 @@ hands out the attribute and common windows. The loader's `cf` command
 when GPIO13 reads a card; nothing touches the socket at start-up.
 
 The USB drive's second unit (LUN 1, "CF card") is the CF card: an empty
-card reader until `cf` attaches it, read-only until `drive rw` (as the SD
+card reader until `cf` attaches it, read-only until `drive rw` (unlike the SD
 card), and back to empty when GPIO13 says the card left (attach it again
 with `cf`). Windows shows it as a second removable drive.
+
+Taking the card (2026-10-12, item 62): `CfCard::init` first holds RESET
+(GPIO36) for 1 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
+without touching either window (a card in reset or busy may hold the
+bus), then reads the CIS. A card that runs out a wait during a transfer is
+**dead**: every later transfer fails at once without touching it, and the
+loader lets it go (an empty reader for the PC, so Windows stops
+retrying); `cf` takes it again from a reset. So a stuck card costs one
+timeout, never a stalled USB loop. `cf soft` takes it without the reset
+(diagnostics); `cf log` reports READY's changes and the attach and drop
+times since start-up.
 
 Not yet: card power (the CPLD bit is unknown; the loader relies on Windows
 Mobile having left the slot powered, as HaRET hands over), the card's
@@ -124,7 +135,26 @@ partition; reads and writes fine under Windows Mobile in the same slot.
 | Card pulled out and pushed back in while the loader ran (card fully seated) | GPIO13 then reads **high** ("no card") and stays high: either GPIO13 isn't a plain detect line (the card's ready line would go quiet unpowered), or removal cuts the slot's power and only Windows Mobile restores it. Either way the loader must power and reset the slot itself. Also: a slot whose attach failed is never retried (`CfSlot::Failed` sticks), even after a re-insert |
 | CPLD registers, read before RetroPane's first write | `00=0048 04=00a0 06=0002 14=0002`, the rest 0, including `0x16`: our only write (`0x16 = 0x0001`, SD power) clears nothing Windows Mobile set, so the CF slot keeps Windows Mobile's power |
 
-**So:** the socket works when RetroPane is its first owner after Windows
+Second session (2026-10-12 evening, loader with the hardware reset):
+
+| Run | Result |
+|---|---|
+| Old loader, first `cf` after Windows Mobile (fresh boot) | **Fails too** this time: sector 0 ends in zeros, status `00`. So the fault is not (only) a hand-over |
+| That loader, then `cargo xtask load rp-loader` | Transfer froze at 24,517 / 97,800 bytes (Windows retrying the dead card's reads held up the USB loop: item 62 (c), seen again) |
+| Fresh boot, new loader, `cf` (GPIO36 held 1 ms, then released) | **Works**: FAT32 partition, status `50`. But GPIO84 stayed **high** while GPIO36 was held, so GPIO36 is not shown to be RESET (or 1 ms is too short to see READY drop) |
+| Seconds later, Windows' first read of the CF unit | Failed: the card stopped answering; the loader let it go and **stayed responsive** (the stall fix works) |
+| `cf` again | `timeout`: GPIO84 now reads **0** (was 1), and stays 0 for 3 s after the reset pulse |
+
+**Reading:** the card works when first taken, then goes quiet within
+seconds: everything reads 0 (status, the end of a sector, READY). Together
+with the re-insert finding (GPIO13 high after a re-insert), this looks like
+the **slot losing power** shortly after RetroPane starts using it, and only
+Windows Mobile turning it back on, rather than a card left in a bad state.
+Not yet known what turns it off. Next: log GPIO84 with timestamps from the
+loader's start, to see exactly when it drops and what happened just
+before.
+
+**So (first session's reading, now in doubt):** the socket works when RetroPane is its first owner after Windows
 Mobile and breaks when a loader inherits it from an earlier RetroPane run.
 The driver assumes a fresh socket; the fix is to put the card into a known
 state whenever a loader takes the socket (a card reset), not to trust what

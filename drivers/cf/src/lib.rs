@@ -3,7 +3,10 @@
 //! the socket's common-memory window and the card's Card Information
 //! Structure (CIS) and configuration registers in attribute memory.
 //!
-//! [`CfCard::init`] reads the CIS (only fixed-disk cards are taken: a Wi-Fi
+//! [`CfCard::init`] first resets the card through the socket's RESET line
+//! and waits for its READY line ([`CfLines`]): an earlier owner (Windows
+//! Mobile, or a RetroPane run before a loader hand-over) may have left it in
+//! any state, so nothing about it is trusted. Then it reads the CIS (only fixed-disk cards are taken: a Wi-Fi
 //! or modem card in the slot is left alone), selects memory mode, turns the
 //! card's interrupts off (the driver polls), identifies it (ATA IDENTIFY
 //! DEVICE: LBA28 capacity, model) and turns its write cache off, so the
@@ -72,6 +75,64 @@ const WRITE_SPIN_LIMIT: u32 = 20_000_000;
 /// specification allows rotating Microdrives far longer than flash).
 const READY_MS: u32 = 3000;
 
+/// RESET held for (the specification asks 10 µs).
+const RESET_HOLD_MS: u32 = 1;
+/// After RESET is released, before the card's lines mean anything (PC Card
+/// reset set-up time).
+const RESET_SETUP_MS: u32 = 20;
+
+/// The socket's control lines, as the board wires them.
+pub trait CfLines {
+    /// Drives the card's RESET line (asserted: the card is held in reset).
+    fn set_reset(&mut self, asserted: bool);
+    /// The card's READY line (memory mode: RDY/-BSY, high when ready).
+    fn ready(&mut self) -> bool;
+}
+
+/// A board without the lines (or a test of the soft path): no hardware
+/// reset, the card counted ready at once.
+pub struct NoLines;
+
+impl CfLines for NoLines {
+    fn set_reset(&mut self, _: bool) {}
+    fn ready(&mut self) -> bool {
+        true
+    }
+}
+
+/// What the hardware reset saw (diagnostics: proves the board's lines).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ResetSeen {
+    /// READY read low while RESET was held: the lines are the card's.
+    pub busy_in_reset: bool,
+    /// Milliseconds after the set-up time until READY went high.
+    pub ready_ms: u32,
+}
+
+/// Resets the card through its RESET line and waits for READY, touching
+/// neither window: a card in reset or busy may hold the bus. Every wait is
+/// bounded.
+pub fn hard_reset(
+    lines: &mut dyn CfLines,
+    delay_ms: &mut dyn FnMut(u32),
+) -> Result<ResetSeen, CfError> {
+    lines.set_reset(true);
+    delay_ms(RESET_HOLD_MS);
+    let busy_in_reset = !lines.ready();
+    lines.set_reset(false);
+    delay_ms(RESET_SETUP_MS);
+    for ready_ms in 0..READY_MS {
+        if lines.ready() {
+            return Ok(ResetSeen {
+                busy_in_reset,
+                ready_ms,
+            });
+        }
+        delay_ms(1);
+    }
+    Err(CfError::Timeout)
+}
+
 /// Why a card couldn't be used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CfError {
@@ -108,6 +169,9 @@ pub struct CfCard<A, C> {
     cache_off: bool,
     /// The last error register the card reported.
     last_error: u8,
+    /// The card stopped answering (a wait ran out): every later transfer
+    /// fails at once, so a dead card costs one timeout, not one per retry.
+    dead: bool,
 }
 
 /// What the CIS says: the configuration registers' base, if a fixed disk.
@@ -157,13 +221,20 @@ fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<u32, CfError> {
 
 impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
     /// Takes the card in the socket: `attr` and `common` are the socket's
-    /// attribute and common memory windows (powered, timings set), `delay_ms`
-    /// waits. The windows come back with the error if it can't be used.
+    /// attribute and common memory windows (powered, timings set), `lines`
+    /// its RESET and READY lines, `delay_ms` waits. The card is reset first
+    /// ([`hard_reset`]). The windows come back with the error if it can't be
+    /// used.
     pub fn init(
         mut attr: A,
         common: C,
+        lines: &mut dyn CfLines,
         delay_ms: &mut dyn FnMut(u32),
-    ) -> Result<Self, (CfError, A, C)> {
+    ) -> Result<(Self, ResetSeen), (CfError, A, C)> {
+        let seen = match hard_reset(lines, delay_ms) {
+            Ok(s) => s,
+            Err(e) => return Err((e, attr, common)),
+        };
         let config = match walk_cis(&mut attr) {
             Ok(c) => c,
             Err(e) => return Err((e, attr, common)),
@@ -175,9 +246,10 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
             model: [b' '; 40],
             cache_off: false,
             last_error: 0,
+            dead: false,
         };
         match card.start(config as usize, delay_ms) {
-            Ok(()) => Ok(card),
+            Ok(()) => Ok((card, seen)),
             Err(e) => Err((e, card.attr, card.common)),
         }
     }
@@ -265,6 +337,13 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
         self.last_error
     }
 
+    /// The card stopped answering: it is not used again until it is taken
+    /// anew ([`CfCard::into_inner`], then [`CfCard::init`], which resets it).
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.dead
+    }
+
     /// The status and error registers as they are now (diagnostics: what
     /// a card that stopped answering says about itself).
     pub fn registers(&mut self) -> (u8, u8) {
@@ -334,6 +413,15 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
         CfError::Device(self.last_error)
     }
 
+    /// A transfer failed: a card that ran out a wait is dead from now on (a
+    /// refused sector is the card answering, so it stays in use).
+    fn failed(&mut self, e: CfError) -> BlockError {
+        if e == CfError::Timeout {
+            self.dead = true;
+        }
+        BlockError::Device
+    }
+
     /// Checks a transfer stays on the card.
     fn range(&self, lba: u32, len: usize) -> Result<u32, BlockError> {
         if !len.is_multiple_of(SECTOR) {
@@ -350,39 +438,44 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> CfCard<A, C> {
 impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16> BlockDevice for CfCard<A, C> {
     fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
         self.range(lba, buf.len())?;
+        if self.dead {
+            return Err(BlockError::Device);
+        }
         // At most 256 sectors per command (a count of 0 means 256).
         for (i, run) in buf.chunks_mut(256 * SECTOR).enumerate() {
             let at = lba + (i * 256) as u32;
             let count = (run.len() / SECTOR) as u8; // 256 wraps to 0
             self.command(CMD_READ_SECTORS, at, count)
-                .map_err(|_| BlockError::Device)?;
+                .map_err(|e| self.failed(e))?;
             for sector in run.as_chunks_mut::<SECTOR>().0 {
-                self.wait_drq().map_err(|_| BlockError::Device)?;
+                self.wait_drq().map_err(|e| self.failed(e))?;
                 for pair in sector.as_chunks_mut::<2>().0 {
                     *pair = self.common.read16(reg::DATA).to_le_bytes();
                 }
             }
-            self.finish(SPIN_LIMIT).map_err(|_| BlockError::Device)?;
+            self.finish(SPIN_LIMIT).map_err(|e| self.failed(e))?;
         }
         Ok(())
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
         self.range(lba, buf.len())?;
+        if self.dead {
+            return Err(BlockError::Device);
+        }
         for (i, run) in buf.chunks(256 * SECTOR).enumerate() {
             let at = lba + (i * 256) as u32;
             let count = (run.len() / SECTOR) as u8;
             self.command(CMD_WRITE_SECTORS, at, count)
-                .map_err(|_| BlockError::Device)?;
+                .map_err(|e| self.failed(e))?;
             for sector in run.as_chunks::<SECTOR>().0 {
-                self.wait_drq().map_err(|_| BlockError::Device)?;
+                self.wait_drq().map_err(|e| self.failed(e))?;
                 for pair in sector.as_chunks::<2>().0 {
                     self.common.write16(reg::DATA, u16::from_le_bytes(*pair));
                 }
             }
             // Done when the card has programmed the last sector.
-            self.finish(WRITE_SPIN_LIMIT)
-                .map_err(|_| BlockError::Device)?;
+            self.finish(WRITE_SPIN_LIMIT).map_err(|e| self.failed(e))?;
         }
         Ok(())
     }
