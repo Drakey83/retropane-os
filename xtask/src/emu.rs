@@ -2520,7 +2520,7 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
     }
     eprintln!("    fault path OK: deliberate unmapped read reported as a data abort");
     // Checks that must have run (and passed), not merely not failed.
-    for check in ["mem", "crypto", "sd_multi_block_matches"] {
+    for check in ["mem", "crypto", "sd_multi_block_matches", "gfx"] {
         if !output.contains(&format!("CHECK {check} OK")) {
             return Err(format!(
                 "on-target check `{check}` missing or failed:\n{output}"
