@@ -461,6 +461,17 @@ on the host or in the emulator first.
       growth is crash-safe by order; the test proves the zeroing matters.
     - **Modernize:** no folder size limit on SDXC cards.
 
+## Sixth tier (added 2026-10-12, same rules)
+
+26. **Crash screen**: when an image panics or faults, the display shows
+    what happened (message, location, registers for a fault) in a readable
+    layout, as well as the log going to the PC and the card; emulator test
+    by screenshot.
+27. **Processes and IPC: design (ADR-0016, proposed)**: how processes,
+    the driver host and message passing should work on this hardware
+    (FCSE slots, the ADR-0010 scheduler), written for the owner to approve
+    before any code.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail):
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
 power button on the device, thread-switch time investigation, SD DMA on the
