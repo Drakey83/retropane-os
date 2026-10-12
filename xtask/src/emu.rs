@@ -2096,17 +2096,39 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
     );
     let sd = root.join("target/emulator/sd-probe-exfat.img");
     std::fs::write(&sd, exfat).map_err(|e| format!("{}: {e}", sd.display()))?;
+    // The report may still be drawing when its last serial line goes out
+    // (seen on a busy CI runner): screenshot until it is complete, for up
+    // to 10 s.
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    let screen = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        let mut last = String::new();
+        for _ in 0..20 {
+            let _ = std::fs::remove_file(&shot);
+            mon.screendump(&guest, &shot)?;
+            let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
+            match crate::screen::check_text_screen(&ppm) {
+                Ok(()) => return Ok(()),
+                Err(e) => last = e,
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Err(last)
+    };
     let output = boot(
         root,
         &Boot {
             image: &image,
             marker: PROBE_MARKER,
-            screenshot: Some(&shot),
+            screenshot: None,
             sd_image: Some(&sd),
             steps: &[],
             extra: &[],
             input: None,
-            during: None,
+            during: Some(&screen),
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -2120,8 +2142,6 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
             "probe: no `{SD_EXPECT_FAT}` / `retropane.bin 1500 B` line in the report"
         ));
     }
-    let ppm = std::fs::read(&shot).map_err(|e| format!("{}: {e}", shot.display()))?;
-    crate::screen::check_text_screen(&ppm)?;
     eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");
     Ok(())
 }

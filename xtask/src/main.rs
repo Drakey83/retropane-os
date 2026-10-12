@@ -431,8 +431,12 @@ fn cross() -> Result {
             "-p",
             image,
         ])?;
-        let from = workspace_root().join("target/thumbv5te-x51v-none-eabi/release").join(image);
-        let to = workspace_root().join("target/armv5te-x51v-none-eabi/release").join(image);
+        let from = workspace_root()
+            .join("target/thumbv5te-x51v-none-eabi/release")
+            .join(image);
+        let to = workspace_root()
+            .join("target/armv5te-x51v-none-eabi/release")
+            .join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
     // Bare-metal images: OS crates that are binaries only.
