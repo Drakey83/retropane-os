@@ -487,6 +487,61 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The crash path: the loader starts an image that panics on purpose; the
+/// panic must come back to the loader (no watchdog reset), reach the PC as
+/// a crash report, and be kept on the card as `crashlog.txt`.
+pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let crash = dir.join("rp-crash.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-crash"), &crash)?;
+    let payload = std::fs::read(&crash).map_err(|e| format!("{}: {e}", crash.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+    });
+    let sd = root.join("target/emulator/sd-crash.img");
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL END")),
+            during: None,
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("crash: no run log after the image crashed")?;
+    if !log.contains("PANIC deliberate test panic") || !log.contains("[the image crashed") {
+        return Err(format!("crash: the run log doesn't report the crash:{log}"));
+    }
+    if log.contains("did not return") {
+        return Err("crash: went through a watchdog reset instead of back to the loader".into());
+    }
+    let saved = card_file(&sd, "crashlog.txt")?;
+    if !String::from_utf8_lossy(&saved).contains("PANIC deliberate test panic") {
+        return Err("crash: crashlog.txt on the card doesn't hold the report".into());
+    }
+    eprintln!(
+        "    crash path OK: the panic came back to the loader, reached the PC and is on the card"
+    );
+    Ok(())
+}
+
 /// Sends the loader an image that hangs (one `b .` instruction, MMU and
 /// IRQs off) and checks recovery: after the run limit the watchdog resets
 /// the machine, the loader starts again and reports that the run didn't

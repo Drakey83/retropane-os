@@ -155,11 +155,10 @@ mod image {
             let _ = write!(c, "{msg}");
         }
         // Started by the resident loader: the message reaches the PC too.
-        let _ = writeln!(rp_hal_x51v::devices::RunLog, "{msg}");
         if rp_hal_x51v::devices::loader_present() {
-            rt::delay_us(3_000_000);
-            rp_hal_x51v::devices::return_to_loader();
+            rt::delay_us(3_000_000); // time to read the screen
         }
+        rp_hal_x51v::devices::crash_to_loader(msg);
         halt()
     }
 
