@@ -154,6 +154,13 @@ const OCR_VOLTAGES: u32 = 0x00FF_8000; // 2.7-3.6 V
 const CMD8_ARG: u32 = 0x1AA; // 2.7-3.6 V, check pattern 0xAA
 /// Card status bits that indicate an error (out of range .. card ECC etc.).
 const STATUS_ERRORS: u32 = 0xFDF9_0008;
+/// Card status: ready for data (not busy programming).
+const STATUS_READY_FOR_DATA: u32 = 1 << 8;
+/// Card status: the current state, `prg` = programming.
+const STATE_PRG: u32 = 7;
+/// CMD13 polls while a write is being programmed (each is a card command,
+/// about a millisecond; the specification allows 250 ms per block).
+const READY_TRIES: u32 = 200_000;
 const ACMD41_TRIES: u32 = 1000;
 
 /// Clock during identification.
@@ -168,6 +175,8 @@ pub struct SdCard<H> {
     rca: u16,
     high_capacity: bool,
     wide: bool,
+    /// The last failure behind a [`BlockDevice`] error (which carries none).
+    last_error: Option<Error>,
 }
 
 impl<H: SdHost> SdCard<H> {
@@ -220,7 +229,14 @@ impl<H: SdHost> SdCard<H> {
             rca,
             high_capacity,
             wide,
+            last_error: None,
         })
+    }
+
+    /// The card error behind the last [`BlockDevice`] failure, if any.
+    #[must_use]
+    pub fn last_error(&self) -> Option<Error> {
+        self.last_error
     }
 
     /// Whether the 4-bit data bus is in use.
@@ -288,7 +304,24 @@ impl<H: SdHost> SdCard<H> {
         check(
             self.host
                 .write_block(Command::new(24, addr, Response::R1), buf)?,
-        )
+        )?;
+        self.wait_ready()
+    }
+
+    /// Waits until the card has finished programming (CMD13: ready for
+    /// data, not in the `prg` state). Host controllers' own busy handling
+    /// doesn't always cover the programming after a stop (seen on the
+    /// X51v: the command after a multi-block write got no response).
+    fn wait_ready(&mut self) -> Result<(), Error> {
+        let arg = u32::from(self.rca) << 16;
+        for _ in 0..READY_TRIES {
+            let status = self.host.command(Command::new(13, arg, Response::R1))?[0];
+            check(status)?;
+            if status & STATUS_READY_FOR_DATA != 0 && (status >> 9) & 0xF != STATE_PRG {
+                return Ok(());
+            }
+        }
+        Err(Error::Host(HostError::Timeout))
     }
 
     /// Writes `buf.len() / 512` consecutive blocks from `lba` with one
@@ -306,12 +339,18 @@ impl<H: SdHost> SdCard<H> {
             let stop = self.host.command(Command::new(12, 0, Response::R1b));
             check(status?)?;
             stop?;
-            return Ok(());
+            return self.wait_ready();
         }
         for (i, block) in buf.as_chunks::<BLOCK>().0.iter().enumerate() {
             self.write(lba + i as u32, block)?;
         }
         Ok(())
+    }
+
+    /// The host controller, for its diagnostics.
+    #[must_use]
+    pub fn host(&self) -> &H {
+        &self.host
     }
 
     /// Gives the host back.
@@ -322,11 +361,17 @@ impl<H: SdHost> SdCard<H> {
 
 impl<H: SdHost> BlockDevice for SdCard<H> {
     fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-        self.read_many(lba, buf).map_err(|_| BlockError::Device)
+        self.read_many(lba, buf).map_err(|e| {
+            self.last_error = Some(e);
+            BlockError::Device
+        })
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-        self.write_many(lba, buf).map_err(|_| BlockError::Device)
+        self.write_many(lba, buf).map_err(|e| {
+            self.last_error = Some(e);
+            BlockError::Device
+        })
     }
 }
 
@@ -388,6 +433,10 @@ mod tests {
         /// Offers the 4-bit bus and multiple-block reads.
         capable: bool,
         wide: bool,
+        /// Data commands answer with an error status.
+        fail_status: bool,
+        /// CMD13 polls still reporting "programming" after a write.
+        busy_polls: u32,
     }
 
     impl FakeCard {
@@ -406,7 +455,13 @@ mod tests {
                 data,
                 capable: false,
                 wide: false,
+                fail_status: false,
+                busy_polls: 0,
             }
+        }
+
+        fn data_status(&self) -> u32 {
+            if self.fail_status { 0x8000_0900 } else { 0x900 }
         }
     }
 
@@ -441,6 +496,14 @@ mod tests {
                 (2, _) => 0x0353_4453, // CID word
                 (3, _) => 0xBEEF_0500, // RCA 0xBEEF
                 (7, _) | (16, _) => 0x0700,
+                (13, _) => {
+                    if self.busy_polls > 0 {
+                        self.busy_polls -= 1;
+                        STATE_PRG << 9 // programming, not ready
+                    } else {
+                        0x900 // tran state, ready for data
+                    }
+                }
                 (6, true) if c.arg == 2 => 0x0920,
                 (12, _) => 0x0B00,
                 _ => return Err(HostError::Timeout),
@@ -455,7 +518,7 @@ mod tests {
                 c.arg / BLOCK as u32
             } as usize;
             buf.copy_from_slice(&self.data[block * BLOCK..(block + 1) * BLOCK]);
-            Ok(0x900)
+            Ok(self.data_status())
         }
         fn can_wide_bus(&self) -> bool {
             self.capable
@@ -478,6 +541,9 @@ mod tests {
         }
         fn write_block(&mut self, c: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
+            if self.busy_polls != u32::MAX {
+                self.busy_polls = 2;
+            }
             let block = if self.sdhc {
                 c.arg
             } else {
@@ -491,6 +557,9 @@ mod tests {
         }
         fn write_blocks(&mut self, c: Command, buf: &[u8]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
+            if self.busy_polls != u32::MAX {
+                self.busy_polls = 3;
+            }
             let first = if self.sdhc {
                 c.arg
             } else {
@@ -519,8 +588,20 @@ mod tests {
         );
         assert!(back[2 * BLOCK..].iter().all(|&b| b == 0x5A));
         let host = card.into_inner();
-        let cmds: Vec<(u8, u32)> = host.log[host.log.len() - 5..].to_vec();
-        assert_eq!(cmds, [(24, 2), (25, 4), (12, 0), (18, 2), (12, 0)]);
+        // Every write is followed by CMD13 polls until the card is ready
+        // (the fake stays "programming" for 2 polls after CMD24, 3 after
+        // CMD25 + CMD12).
+        let cmds: Vec<u8> = host.log.iter().map(|&(i, _)| i).collect();
+        let tail = &cmds[cmds.len() - 12..];
+        assert_eq!(tail, [24, 13, 13, 13, 25, 12, 13, 13, 13, 13, 18, 12]);
+    }
+
+    #[test]
+    fn a_card_that_never_finishes_programming_times_out() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        card.host.busy_polls = u32::MAX; // stuck in programming
+        let r = card.write(1, &[0u8; BLOCK]);
+        assert_eq!(r, Err(Error::Host(HostError::Timeout)));
     }
 
     #[test]
@@ -529,8 +610,24 @@ mod tests {
         let two = vec![7u8; 2 * BLOCK];
         card.write_many(1, &two).unwrap();
         let host = card.into_inner();
-        assert_eq!(&host.log[host.log.len() - 2..], [(24, 512), (24, 1024)]);
+        let writes: Vec<(u8, u32)> = host.log.iter().copied().filter(|&(i, _)| i == 24).collect();
+        assert_eq!(writes, [(24, 512), (24, 1024)]);
         assert!(host.data[BLOCK..3 * BLOCK].iter().all(|&b| b == 7));
+    }
+
+    #[test]
+    fn a_block_device_failure_keeps_the_card_error() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        assert_eq!(card.last_error(), None);
+        let mut buf = [0u8; BLOCK];
+        // CMD17 to the fake's unknown block range: the fake copies from its
+        // data, so make the failure a card status error instead.
+        card.host.fail_status = true;
+        assert_eq!(
+            BlockDevice::read_blocks(&mut card, 1, &mut buf),
+            Err(BlockError::Device)
+        );
+        assert!(matches!(card.last_error(), Some(Error::CardStatus(_))));
     }
 
     #[test]

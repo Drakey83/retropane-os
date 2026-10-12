@@ -49,6 +49,10 @@ const STAT_END_CMD_RES: u32 = 1 << 13;
 const CMDAT_DATA_EN: u32 = 1 << 2;
 /// CMDAT: the data goes to the card.
 const CMDAT_WRITE: u32 = 1 << 3;
+/// CMDAT: this command (CMD12) stops a multi-block write; without it the
+/// controller, still in write mode, never issues the command (seen on the
+/// X51v: a command timeout with no response flag).
+const CMDAT_STOP_TRAN: u32 = 1 << 10;
 const CMDAT_BUSY: u32 = 1 << 5;
 const CMDAT_INIT: u32 = 1 << 6;
 /// CMDAT: 4-bit SD data bus.
@@ -61,6 +65,10 @@ const FIFO_BYTES: usize = 32;
 pub const BASE_HZ: u32 = 19_500_000;
 /// Poll iterations before declaring a timeout.
 const SPIN_LIMIT: u32 = 2_000_000;
+/// Poll iterations for writes: a card may stay busy programming for up to
+/// 250 ms per block (SD specification), and a multi-block write stalls the
+/// transmit FIFO request for that long between blocks.
+const WRITE_SPIN_LIMIT: u32 = 60_000_000;
 
 /// Slowest card clock: 19.5 MHz >> 6 = 304.6875 kHz (still under the 400 kHz
 /// the SD identification phase allows).
@@ -108,6 +116,10 @@ pub struct PxaMmc<B> {
     regs: B,
     /// The card was switched to the 4-bit bus (ACMD6).
     wide: bool,
+    /// A multi-block write is in progress: the next CMD12 stops it.
+    writing: bool,
+    /// The last command that timed out and the status it left: (index, STAT).
+    last_failure: Option<(u8, u32)>,
 }
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
@@ -115,11 +127,26 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     pub fn new(mut regs: B) -> Self {
         regs.write32(reg::RESTO, 0x7F);
         regs.write32(reg::RDTO, 0xFFFF);
-        Self { regs, wide: false }
+        Self {
+            regs,
+            wide: false,
+            writing: false,
+            last_failure: None,
+        }
+    }
+
+    /// The last command that timed out and the status register it left.
+    #[must_use]
+    pub fn last_failure(&self) -> Option<(u8, u32)> {
+        self.last_failure
     }
 
     fn wait_stat(&mut self, mask: u32) -> Result<u32, HostError> {
-        for _ in 0..SPIN_LIMIT {
+        self.wait_stat_for(mask, SPIN_LIMIT)
+    }
+
+    fn wait_stat_for(&mut self, mask: u32, limit: u32) -> Result<u32, HostError> {
+        for _ in 0..limit {
             let s = self.regs.read32(reg::STAT);
             if s & mask != 0 {
                 return Ok(s);
@@ -145,6 +172,10 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
         if cmd.init_clocks {
             cmdat |= CMDAT_INIT;
         }
+        if cmd.index == 12 && self.writing {
+            cmdat |= CMDAT_STOP_TRAN;
+        }
+        self.writing = write && data_blocks > 1;
         if data_blocks > 0 {
             self.regs.write32(reg::BLKLEN, BLOCK as u32);
             self.regs.write32(reg::NUMBLK, data_blocks);
@@ -159,10 +190,22 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
         self.regs.write32(reg::CMDAT, cmdat);
         self.regs.write32(reg::STRPCL, STRPCL_START);
 
-        let stat = self.wait_stat(STAT_END_CMD_RES | STAT_TOUT_RES)?;
-        if stat & STAT_TOUT_RES != 0 {
-            return Err(HostError::Timeout);
-        }
+        // A busy-signalled command (R1b: CMD7, and the CMD12 that stops a
+        // multi-block write) ends only when the card has finished
+        // programming, which can take far longer than any read.
+        let limit = if cmd.response == Response::R1b {
+            WRITE_SPIN_LIMIT
+        } else {
+            SPIN_LIMIT
+        };
+        match self.wait_stat_for(STAT_END_CMD_RES | STAT_TOUT_RES, limit) {
+            Ok(s) if s & STAT_TOUT_RES == 0 => {}
+            r => {
+                let s = r.unwrap_or_else(|_| self.regs.read32(reg::STAT));
+                self.last_failure = Some((cmd.index, s));
+                return Err(HostError::Timeout);
+            }
+        };
         let mut words = [0u16; 9];
         if cmd.response != Response::None {
             for w in &mut words {
@@ -212,7 +255,8 @@ impl<B: RegisterBus + RegisterBus8> SdHost for PxaMmc<B> {
         self.transmit(buf)?;
         // One block: the card programs it now; the controller reports when
         // the card is done (CMD25 runs leave that to the CMD12 that stops them).
-        self.wait_stat(STAT_PRG_DONE).map_err(|_| HostError::Data)?;
+        self.wait_stat_for(STAT_PRG_DONE, WRITE_SPIN_LIMIT)
+            .map_err(|_| HostError::Data)?;
         Ok(status)
     }
 
@@ -257,7 +301,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
     fn transmit(&mut self, buf: &[u8]) -> Result<(), HostError> {
         for chunk in buf.chunks(FIFO_BYTES) {
             let mut ready = false;
-            for _ in 0..SPIN_LIMIT {
+            for _ in 0..WRITE_SPIN_LIMIT {
                 if self.regs.read32(reg::I_REG) & I_TXFIFO_REQ != 0 {
                     ready = true;
                     break;
@@ -270,7 +314,7 @@ impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
                 self.regs.write8(reg::TXFIFO, b);
             }
         }
-        self.wait_stat(STAT_DATA_DONE)
+        self.wait_stat_for(STAT_DATA_DONE, WRITE_SPIN_LIMIT)
             .map_err(|_| HostError::Data)?;
         Ok(())
     }
@@ -445,6 +489,39 @@ mod tests {
             w.iter().filter(|(o, _)| *o == reg::TXFIFO).count(),
             2 * BLOCK
         );
+    }
+
+    #[test]
+    fn the_stop_after_a_multi_block_write_says_so() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_TXFIFO_REQ);
+        let mut mmc = PxaMmc::new(bus);
+        mmc.write_blocks(Command::new(25, 0, Response::R1), &[0u8; 2 * BLOCK])
+            .unwrap();
+        mmc.command(Command::new(12, 0, Response::R1b)).unwrap();
+        // A later CMD12 (after a read) is a plain command again.
+        mmc.command(Command::new(12, 0, Response::R1b)).unwrap();
+        let w = mmc.into_inner_for_test().writes();
+        let cmdats: Vec<u32> = w
+            .iter()
+            .filter(|(o, _)| *o == reg::CMDAT)
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(cmdats[1], 1 | CMDAT_BUSY | CMDAT_STOP_TRAN);
+        assert_eq!(cmdats[2], 1 | CMDAT_BUSY);
+    }
+
+    #[test]
+    fn a_timed_out_command_is_remembered() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_TOUT_RES);
+        let mut mmc = PxaMmc::new(bus);
+        assert_eq!(
+            mmc.command(Command::new(8, 0x1AA, Response::R1)),
+            Err(HostError::Timeout)
+        );
+        assert_eq!(mmc.last_failure(), Some((8, STAT_TOUT_RES)));
     }
 
     #[test]

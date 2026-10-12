@@ -254,6 +254,12 @@ impl<D: BlockDevice> Volume<D> {
         self.dev
     }
 
+    /// The device, for its own diagnostics.
+    #[must_use]
+    pub fn device(&self) -> &D {
+        &self.dev
+    }
+
     fn cluster_lba(&self, cluster: u32) -> u32 {
         self.data_start + (cluster - 2) * self.sectors_per_cluster
     }

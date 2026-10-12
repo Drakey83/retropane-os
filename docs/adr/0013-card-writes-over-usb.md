@@ -76,8 +76,17 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
   port, gets `RPL OK ... contiguous`, a `not found` for a missing name, and
   the image on the host holds the new contents with `startup.txt` untouched.
   The probe lists the card's root directory, so the FAT reader meets the real
-  card read-only first. Real-card writes: pending the owner's next run
-  (`cargo xtask load rp-probe`, then `cargo xtask install`).
+  card read-only first.
+- 2026-10-11, on the owner's X51v: the probe read the card's FAT32 (4 KiB
+  clusters, 972,800 clusters, files found); the new loader was sent to the
+  old one as an image (`cargo xtask load rp-loader`: it moves itself home
+  and takes over, no Bluetooth); `cargo xtask install` then wrote the
+  loader, both scripts and HaRET to the card, each verified by read-back.
+  Two device-only facts fixed on the way (docs/hw/sd.md): the PXA needs
+  `CMDAT` stop-transmission on the CMD12 that ends a multi-block write, and
+  the card stays busy after that CMD12, so the driver polls CMD13 until
+  ready before the next command. Measured ~1.7 MB/s each way. **The last
+  manual step in the device loop is gone.**
 
 ## Consequences
 

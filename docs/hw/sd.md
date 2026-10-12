@@ -22,7 +22,7 @@
 | `STRPCL` | 0x00 | `[0]` stop clock, `[1]` start clock (starts the queued command) |
 | `STAT` | 0x04 | `[1]` response timeout, `[8]` clock enabled, `[11]` data done, `[12]` programming done, `[13]` end of command/response |
 | `CLKRT` | 0x08 | card clock = 19.5 MHz >> n (n = 0..6) |
-| `CMDAT` | 0x10 | `[1:0]` response type (0 none, 1 R1/R6/R7, 2 R2, 3 R3), `[2]` data enable, `[3]` write (data goes to the card), `[5]` busy (R1b), `[6]` 80 init clocks, `[8]` 4-bit SD data bus |
+| `CMDAT` | 0x10 | `[1:0]` response type (0 none, 1 R1/R6/R7, 2 R2, 3 R3), `[2]` data enable, `[3]` write (data goes to the card), `[5]` busy (R1b), `[6]` 80 init clocks, `[8]` 4-bit SD data bus, `[10]` stop transmission (the CMD12 ending a multi-block **write**; without it the controller never issues it: command timeout, `STAT` = 0x142) |
 | `RESTO` / `RDTO` | 0x14 / 0x18 | response / read timeouts |
 | `BLKLEN` / `NUMBLK` | 0x1C / 0x20 | block length / count |
 | `I_REG` | 0x2C | `[0]` data done, `[1]` programming done, `[5]` RX FIFO request, `[6]` TX FIFO request (the FIFO wants 32 bytes) |
@@ -46,13 +46,23 @@ repeat CMD55 + ACMD41 (HCS for v2) until OCR busy bit 31 is set; bit 30 = SDHC �
 CMD2 → CMD3 (RCA in response bits 31:16) → CMD7 select → CMD16 512 (SDSC only) →
 CMD17 reads a block (block address on SDHC, byte address on SDSC).
 
-**Writes (ADR-0013):** CMD24 writes one block, CMD25 a run, stopped by CMD12
-(R1b: the controller's busy wait covers the card's programming). Controller
-side: `CMDAT` data enable + write, then fill `TXFIFO` 32 bytes at a time on
-each `I_REG[6]` request; `STAT[11]` data done when the last byte went out,
-`STAT[12]` programming done when the card has stored a single block.
-Confidence: manual + emulator; real-card confirmation pending (the first
-device run writes the loader file itself, restorable by Bluetooth).
+**Writes (ADR-0013, confirmed on the X51v 2026-10-11):** CMD24 writes one
+block, CMD25 a run, stopped by CMD12 with `CMDAT[10]` set. Controller side:
+`CMDAT` data enable + write, then fill `TXFIFO` 32 bytes at a time on each
+`I_REG[6]` request; `STAT[11]` data done when the last byte went out,
+`STAT[12]` programming done after a single block. **The controller's busy
+wait on the stop does not cover the card's programming:** the command after
+a CMD25 + CMD12 run got no response (`STAT` 0x142: response timeout,
+transmit FIFO empty, clock on). RetroPane polls CMD13 after every write
+until the card is ready for data and out of the `prg` state, which the
+specification allows for up to 250 ms per block. The emulator's model needs
+neither the stop bit nor the poll, so neither could be found there.
+
+Measured on the owner's 4 GB SDHC card (4-bit bus, 19.5 MHz, through the
+FAT layer, verified by read-back): 36,870 B in 36 ms, 142,848 B in 85 ms
+(1.7 MB/s), read back at 1.7 MB/s. A first write after a stale FSInfo hint
+took 3.7 s: the free-cluster scan reads the FAT a sector per command
+(1,490 sectors × 2.5 ms); the hint is kept current afterwards.
 
 ### File system
 
@@ -75,4 +85,9 @@ and reads runs of blocks with one CMD18, stopped by CMD12.
 QEMU's `pxa2xx_mmci` model with an `sd-card` on `-drive if=sd`. Its response FIFO
 packing matches the layout above; writes through its transmit FIFO reach the
 image file (`cargo xtask emu` replaces a file on a FAT32 card image through
-the loader and checks the image afterwards).
+the loader and checks the image afterwards). Upstream's model never issued a
+stop-transmission command (`CMDAT[10]`) and left the previous command's
+end flag set, so a driver written for the real controller saw a false
+"done" and a card still waiting for data; the fork's model (rp-v0.8.0)
+issues it once the transfer is finished, as the hardware does. The model
+needs no CMD13 ready wait, so that finding is device-only.

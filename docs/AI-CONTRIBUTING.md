@@ -36,6 +36,12 @@ request, 2026-10-11):
 
 If an answer is "no", say so, and either fix it or explain why not.
 
+**The emulator follows the device.** Every fact learned on the real X51v
+that a model could reproduce goes into the emulator fork with a `cargo xtask
+emu` boot that fails without it; what can't be modelled is listed with the
+reason in `docs/hw/emulator.md`. The emulator is only trusted for what that
+table says it models.
+
 ## The box (non-negotiable constraints)
 
 - Intel PXA270 (XScale ARMv5TE), single core, 624 MHz. No Thumb-2, no atomics
