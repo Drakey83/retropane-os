@@ -963,6 +963,21 @@ on the host or in the emulator first.
     suite must kill, run by `cargo xtask mutants`), and fuzzing from the day
     a parser lands, in docs/testing.md.
 
+58. **SD throughput is ours to win** (measured 2026-10-12 on the owner's
+    new 32 GB card): big transfers run at ~1.4-1.9 MB/s on both cards, a
+    fraction of what the 4-bit bus carries, while the new card's single
+    commands are 4.4x faster than the old card's; so the driver is the
+    limit. Next: DMA for writes (on the device), larger multi-block
+    commands, the bus clock checked, measured before/after on the device.
+
+59. **No emulator-only image on the device**: `cargo xtask load` refuses
+    images that never return to the loader (`rp-bench`, `rp-kernel`,
+    `rp-hello`, `rp-usb`) unless forced; every image classified, a test
+    that a new image must be. (Found 2026-10-12: rp-bench, which spins
+    forever when done, was sent to the Axim and the hardware backstop reset
+    it into Dell's prompt.) With the soft watchdog moved to FIQ, so a
+    program spinning with interrupts off comes back too.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
