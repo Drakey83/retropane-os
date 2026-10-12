@@ -138,6 +138,9 @@ dependencies = [
 [[package]]
 name = "rp-drv-sdcard"
 version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+]
 
 [[package]]
 name = "rp-drv-tsc2046"
@@ -145,6 +148,13 @@ version = "0.0.0"
 dependencies = [
  "rp-hal-api",
  "rp-hal-mock",
+]
+
+[[package]]
+name = "rp-fat"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
 ]
 
 [[package]]
@@ -237,10 +247,14 @@ dependencies = [
 name = "rp-loader"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
+ "rp-drv-pxa-mmc",
  "rp-drv-pxa-uart",
  "rp-drv-pxa-udc",
+ "rp-drv-sdcard",
+ "rp-fat",
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
@@ -269,6 +283,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-drv-sdcard",
  "rp-drv-tsc2046",
+ "rp-fat",
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
@@ -375,6 +390,8 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "rp-drv-mbx-display",
+ "rp-fat",
+ "rp-hal-api",
  "rp-loadproto",
  "serde_json",
 ]

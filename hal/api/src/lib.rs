@@ -53,6 +53,35 @@ pub trait RegisterBus8 {
     fn write8(&mut self, offset: usize, value: u8);
 }
 
+/// Storage addressed in 512-byte blocks (an SD card, a disk image in tests).
+pub trait BlockDevice {
+    /// Reads `buf.len() / 512` blocks starting at `lba` into `buf`, whose
+    /// length is a whole number of blocks.
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError>;
+    /// Writes `buf` (a whole number of blocks) starting at `lba`.
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError>;
+}
+
+impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
+    fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        (**self).read_blocks(lba, buf)
+    }
+    fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        (**self).write_blocks(lba, buf)
+    }
+}
+
+/// Why a block transfer failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockError {
+    /// The block is past the end of the device.
+    OutOfRange,
+    /// The device reported an error (details in its own log, if any).
+    Device,
+    /// The device is write-protected.
+    ReadOnly,
+}
+
 /// A digital output pin.
 pub trait OutputPin {
     /// Drives the pin high.

@@ -69,6 +69,11 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
           every `cargo xtask load <image>` on the PC sends a new image over
           USB and starts it. No more copying files. An image that hangs is
           reset by the watchdog after 30 s.
+          It also updates the card: `cargo xtask put <file>` replaces a file
+          in the card's root directory (verified by reading it back), and
+          `cargo xtask install` puts this kit's loader, startup.txt, default.txt
+          and haret.exe there in one go. Soft-reset afterwards to start the
+          new loader. Files not yet on the card are reported, not created.
           Optional, for runs that need nobody at the device:
           * startup.txt: copy it next to haret.exe and HaRET boots by itself
             when started (no \"Run\" tap). Delete it to get the menu back.

@@ -21,6 +21,7 @@ rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
 rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-fat = { path = "../../kernel/fat" }
 
 [lints]
 workspace = true

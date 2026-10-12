@@ -42,6 +42,10 @@ commands:
             the resident loader (target/sdkit/loader) over USB
             (--setup: create the admin task that lets it re-find the Axim
             after each run without a cable replug; one UAC prompt, once)
+  put       write a file to the X51v's SD card over USB through the resident
+            loader (ADR-0013): cargo xtask put <file> [name on the card]
+  install   put the kit's loader, HaRET and scripts on the card the same way
+            (replaces the files already there; run cargo xtask sdkit first)
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -80,6 +84,18 @@ fn main() -> ExitCode {
             } else {
                 usb::load(&workspace_root(), &flag)
             }
+        }
+        "put" => {
+            eprintln!("==> put {flag}");
+            if flag.is_empty() {
+                Err("usage: cargo xtask put <file> [name on the card]".into())
+            } else {
+                usb::put(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+            }
+        }
+        "install" => {
+            eprintln!("==> install");
+            usb::install(&workspace_root())
         }
         "bench" => {
             eprintln!("==> bench");
@@ -126,7 +142,8 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader(&workspace_root()))
             .and_then(|()| emu::boot_loader_hang(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
-            .and_then(|()| emu::boot_loader_usb(&workspace_root())),
+            .and_then(|()| emu::boot_loader_usb(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",

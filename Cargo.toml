@@ -20,6 +20,7 @@ members = [
     "kernel/pe",
     "kernel/lz4",
     "kernel/sched",
+    "kernel/fat",
     "boot/hello",
     "boot/light",
     "boot/usb",
@@ -64,6 +65,10 @@ panic = "abort"
 [profile.release.package.rp-hello]
 opt-level = "s"
 [profile.release.package.rp-drv-sdcard]
+opt-level = "s"
+[profile.release.package.rp-drv-pxa-mmc]
+opt-level = "s"
+[profile.release.package.rp-fat]
 opt-level = "s"
 [profile.release.package.rp-drv-cpld]
 opt-level = "s"

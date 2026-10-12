@@ -6,14 +6,20 @@
 //!
 //! | Bytes | Field |
 //! |---|---|
-//! | 4 | magic `RPL1` |
+//! | 4 | magic: `RPL1` (an image to run) or `RPF1` (a file for the SD card) |
 //! | 4 | payload length, little-endian |
 //! | 4 | CRC-32 (IEEE) of the payload, little-endian |
-//! | n | payload: the raw image, loaded at the images' link address |
+//! | n | payload |
 //!
-//! The device answers [`OK`] or an `RPL ERR` line and, on success, starts the
-//! image. Bytes before a magic are skipped, so a terminal's stray input or a
-//! half-sent earlier frame can't wedge it.
+//! An image's payload is the raw image, loaded at the images' link address.
+//! A file's payload is the name's length (one byte), the name, then the
+//! contents; the device replaces the root-directory file of that name on
+//! the card (ADR-0013) and stays in the loader.
+//!
+//! The device answers [`OK`] (with details after it for a file) or an
+//! `RPL ERR` line and, for an image, starts it. Bytes before a magic are
+//! skipped, so a terminal's stray input or a half-sent earlier frame can't
+//! wedge it.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -21,8 +27,12 @@
 #[cfg(all(feature = "std", not(test)))]
 extern crate std;
 
-/// Frame start.
+/// Frame start: an image to run.
 pub const MAGIC: [u8; 4] = *b"RPL1";
+/// Frame start: a file for the card.
+pub const FILE_MAGIC: [u8; 4] = *b"RPF1";
+/// Longest file name in a file frame.
+pub const NAME_MAX: usize = 64;
 /// Sent by the device about once a second while it waits.
 pub const READY: &str = "RPLOAD1 READY\r\n";
 /// Sent once a frame arrived intact, just before the image starts.
@@ -70,6 +80,8 @@ pub enum LoadError {
     TooBig,
     /// The payload arrived damaged.
     BadCrc,
+    /// A file frame's name is missing, too long, or longer than the payload.
+    BadName,
 }
 
 impl LoadError {
@@ -79,7 +91,41 @@ impl LoadError {
         match self {
             Self::TooBig => "RPL ERR too big\r\n",
             Self::BadCrc => "RPL ERR bad crc\r\n",
+            Self::BadName => "RPL ERR bad name\r\n",
         }
+    }
+}
+
+/// What a frame carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// An image to run.
+    Image,
+    /// A file to write to the card.
+    File,
+}
+
+/// A frame that arrived intact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Frame {
+    /// What it carries.
+    pub kind: Kind,
+    /// Payload length (in `dest[..len]`).
+    pub len: usize,
+}
+
+impl Frame {
+    /// Splits a file frame's payload into its name and contents.
+    pub fn file<'d>(&self, dest: &'d [u8]) -> Result<(&'d str, &'d [u8]), LoadError> {
+        if self.kind != Kind::File || self.len == 0 {
+            return Err(LoadError::BadName);
+        }
+        let n = usize::from(dest[0]);
+        if n == 0 || n > NAME_MAX || 1 + n > self.len {
+            return Err(LoadError::BadName);
+        }
+        let name = core::str::from_utf8(&dest[1..1 + n]).map_err(|_| LoadError::BadName)?;
+        Ok((name, &dest[1 + n..self.len]))
     }
 }
 
@@ -97,6 +143,7 @@ enum State {
 #[derive(Debug)]
 pub struct Receiver {
     state: State,
+    kind: Kind,
     header: [u8; 8],
     len: usize,
     want_crc: u32,
@@ -115,6 +162,7 @@ impl Receiver {
     pub const fn new() -> Self {
         Self {
             state: State::Magic(0),
+            kind: Kind::Image,
             header: [0; 8],
             len: 0,
             want_crc: 0,
@@ -129,12 +177,23 @@ impl Receiver {
     }
 
     /// Feeds one byte. The payload goes into `dest[..len]`. Returns the
-    /// payload length when a frame completes intact, or why it was refused;
-    /// either way the receiver is ready for the next frame.
-    pub fn feed(&mut self, b: u8, dest: &mut [u8]) -> Option<Result<usize, LoadError>> {
+    /// frame when it completes intact, or why it was refused; either way the
+    /// receiver is ready for the next frame.
+    pub fn feed(&mut self, b: u8, dest: &mut [u8]) -> Option<Result<Frame, LoadError>> {
         match self.state {
             State::Magic(n) => {
-                self.state = if b == MAGIC[n] {
+                // The two magics differ only in their third byte.
+                let want = match self.kind {
+                    Kind::Image => MAGIC,
+                    Kind::File => FILE_MAGIC,
+                };
+                if n == 2 && b == FILE_MAGIC[2] {
+                    self.kind = Kind::File;
+                } else if n == 2 && b == MAGIC[2] {
+                    self.kind = Kind::Image;
+                }
+                let matched = b == want[n] || (n == 2 && (b == MAGIC[2] || b == FILE_MAGIC[2]));
+                self.state = if matched {
                     if n + 1 == MAGIC.len() {
                         State::Header(0)
                     } else {
@@ -179,9 +238,12 @@ impl Receiver {
     }
 
     /// The frame is complete; [`feed_slice`] checks its CRC over `dest`.
-    fn finish(&mut self) -> Result<usize, LoadError> {
+    fn finish(&mut self) -> Result<Frame, LoadError> {
         self.state = State::Magic(0);
-        Ok(self.len)
+        Ok(Frame {
+            kind: self.kind,
+            len: self.len,
+        })
     }
 
     /// The CRC the frame's header promised.
@@ -198,12 +260,12 @@ pub fn feed_slice(
     rx: &mut Receiver,
     data: &[u8],
     dest: &mut [u8],
-) -> (usize, Option<Result<usize, LoadError>>) {
+) -> (usize, Option<Result<Frame, LoadError>>) {
     for (i, &b) in data.iter().enumerate() {
         if let Some(r) = rx.feed(b, dest) {
-            let r = r.and_then(|len| {
-                if crc32(&dest[..len]) == rx.expected_crc() {
-                    Ok(len)
+            let r = r.and_then(|f| {
+                if crc32(&dest[..f.len]) == rx.expected_crc() {
+                    Ok(f)
                 } else {
                     Err(LoadError::BadCrc)
                 }
@@ -214,11 +276,30 @@ pub fn feed_slice(
     (data.len(), None)
 }
 
-/// Builds a frame (the host side, and tests).
+/// Builds an image frame (the host side, and tests).
 #[cfg(any(test, feature = "std"))]
 #[must_use]
 pub fn frame(payload: &[u8]) -> std::vec::Vec<u8> {
-    let mut f = MAGIC.to_vec();
+    framed(MAGIC, payload)
+}
+
+/// Builds a file frame for the card's root-directory file `name`.
+///
+/// # Panics
+/// If the name is empty or longer than [`NAME_MAX`].
+#[cfg(any(test, feature = "std"))]
+#[must_use]
+pub fn file_frame(name: &str, contents: &[u8]) -> std::vec::Vec<u8> {
+    assert!(!name.is_empty() && name.len() <= NAME_MAX, "bad file name");
+    let mut payload = std::vec![name.len() as u8];
+    payload.extend_from_slice(name.as_bytes());
+    payload.extend_from_slice(contents);
+    framed(FILE_MAGIC, &payload)
+}
+
+#[cfg(any(test, feature = "std"))]
+fn framed(magic: [u8; 4], payload: &[u8]) -> std::vec::Vec<u8> {
+    let mut f = magic.to_vec();
     f.extend_from_slice(&(payload.len() as u32).to_le_bytes());
     f.extend_from_slice(&crc32(payload).to_le_bytes());
     f.extend_from_slice(payload);
@@ -243,8 +324,45 @@ mod tests {
         let f = frame(&payload);
         let (used, r) = feed_slice(&mut rx, &f, &mut dest);
         assert_eq!(used, f.len());
-        assert_eq!(r, Some(Ok(1000)));
+        assert_eq!(
+            r,
+            Some(Ok(Frame {
+                kind: Kind::Image,
+                len: 1000
+            }))
+        );
         assert_eq!(&dest[..1000], &payload[..]);
+    }
+
+    #[test]
+    fn receives_a_file_frame_and_splits_its_name() {
+        let f = file_frame("retropane.bin", b"contents");
+        let mut dest = [0u8; 64];
+        let mut rx = Receiver::new();
+        let (_, r) = feed_slice(&mut rx, &f, &mut dest);
+        let frame = r.unwrap().unwrap();
+        assert_eq!(frame.kind, Kind::File);
+        assert_eq!(frame.file(&dest), Ok(("retropane.bin", &b"contents"[..])));
+        // And an image frame next, after a file: the kind follows the magic.
+        let g = frame_for_test(b"img");
+        let (_, r) = feed_slice(&mut rx, &g, &mut dest);
+        assert_eq!(r.unwrap().unwrap().kind, Kind::Image);
+    }
+
+    fn frame_for_test(p: &[u8]) -> Vec<u8> {
+        frame(p)
+    }
+
+    #[test]
+    fn a_file_frame_with_a_bad_name_is_refused_by_the_split() {
+        let mut dest = [0u8; 64];
+        let mut rx = Receiver::new();
+        // Name length says 10, payload has 3 bytes.
+        let f = framed(FILE_MAGIC, &[10, b'a', b'b']);
+        let (_, r) = feed_slice(&mut rx, &f, &mut dest);
+        let frame = r.unwrap().unwrap();
+        assert_eq!(frame.file(&dest), Err(LoadError::BadName));
+        assert_eq!(LoadError::BadName.reply(), "RPL ERR bad name\r\n");
     }
 
     #[test]
@@ -255,7 +373,7 @@ mod tests {
         let mut dest = [0u8; 64];
         let mut rx = Receiver::new();
         let (_, r) = feed_slice(&mut rx, &stream, &mut dest);
-        assert_eq!(r, Some(Ok(5)));
+        assert_eq!(r.unwrap().unwrap().len, 5);
         assert_eq!(&dest[..5], b"image");
     }
 
@@ -272,7 +390,10 @@ mod tests {
         );
         // And the next frame is received normally.
         let g = frame(b"good");
-        assert_eq!(feed_slice(&mut rx, &g, &mut dest).1, Some(Ok(4)));
+        assert_eq!(
+            feed_slice(&mut rx, &g, &mut dest).1.unwrap().unwrap().len,
+            4
+        );
     }
 
     #[test]
@@ -294,9 +415,9 @@ mod tests {
         let mut dest = [0u8; 16];
         let mut rx = Receiver::new();
         let (used, r) = feed_slice(&mut rx, &stream, &mut dest);
-        assert_eq!(r, Some(Ok(3)));
+        assert_eq!(r.unwrap().unwrap().len, 3);
         let (_, r) = feed_slice(&mut rx, &stream[used..], &mut dest);
-        assert_eq!(r, Some(Ok(3)));
+        assert_eq!(r.unwrap().unwrap().len, 3);
         assert_eq!(&dest[..3], b"two");
     }
 

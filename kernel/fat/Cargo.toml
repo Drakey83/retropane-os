@@ -1,0 +1,18 @@
+[package]
+name = "rp-fat"
+description = "FAT32 for the SD card: find and read files, replace a file by copy-then-swap (ADR-0013)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# The formatter (`format`), for host tests and the emulator's card image.
+std = []
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[lints]
+workspace = true
