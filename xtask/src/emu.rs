@@ -346,6 +346,13 @@ const KERNEL_EXPECT: &[&str] = &[
     "VM fault loop OK",
     "VM compressed RAM OK",
     "VM unmap OK",
+    // IPC (ADR-0016): two user processes, a migrating call and back 1000
+    // times, a faulting server unwound to its caller, a forged handle
+    // refused, and each process's memory its own.
+    "IPC call OK",
+    "IPC server fault OK",
+    "IPC foreign handle OK",
+    "IPC isolation OK",
 ];
 
 /// Boots the kernel image: the VM layer live on the CPU, with real page
@@ -376,6 +383,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!("    kernel VM OK: page tables, demand paging, copy-on-write, FCSE, unmap");
+    eprintln!("    kernel IPC OK: migrating calls between processes, fault unwind, handles");
     Ok(())
 }
 

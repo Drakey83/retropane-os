@@ -2,7 +2,9 @@
 
 - **Status:** Accepted (2026-10-12, by the project owner) with decision 5
   as amended: a driver host per driver class from the start (the owner
-  chose the more isolated variant)
+  chose the more isolated variant). Step 1 (`rp-kernel-ipc`, the rules)
+  and step 2 (the migrating call live in `rp-kernel`, emulator-tested)
+  done the same night; step 3 (service manager, driver hosts) next.
 - **Date:** 2026-10-12
 
 ## Context
@@ -37,8 +39,9 @@ Facts that shape the design:
 
 ## Decision (proposed)
 
-1. **A process is a slot plus a handle table.** Up to 63 processes (FCSE
-   PIDs 1-63, 32 MB each), created from a PE image (ADR-0009) with a first
+1. **A process is a slot plus a handle table.** Up to 31 processes (slots
+   2-32 of CE5's layout, 32 MB each: FCSE has PIDs up to 63, but above
+   slot 32 lies the shared-file area WM apps expect; corrected 2026-10-12), created from a PE image (ADR-0009) with a first
    thread. Its pages are visible to it only (per-process page permissions
    through ARM domains: a process's slot is in its own domain, enabled in
    DACR while it runs), improving on CE5, where any process could read any

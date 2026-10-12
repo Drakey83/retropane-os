@@ -23,8 +23,16 @@
 pub const MAX_PORTS: usize = 64;
 /// Handles per process.
 pub const MAX_HANDLES: usize = 32;
-/// Process slots (FCSE: 1..=63; 0 is the running process's alias).
-pub const MAX_SLOTS: usize = 64;
+/// The first and last process slots (`rp_kernel_mm::layout`, CE5's
+/// layout: slot 0 is the running process's alias, slot 1 shared code, and
+/// above slot 32 lies the shared-file area, so 31 processes). The kernel
+/// checks at build time that these match the layout.
+pub const FIRST_SLOT: u8 = 2;
+/// See [`FIRST_SLOT`].
+pub const LAST_SLOT: u8 = 32;
+/// Process slots, so handle tables: one per process, none for slots that
+/// can't hold one (4 KiB in all, not the 8 KiB of a table per FCSE PID).
+pub const MAX_SLOTS: usize = (LAST_SLOT - FIRST_SLOT + 1) as usize;
 /// Threads (as the scheduler numbers them).
 pub const MAX_THREADS: usize = 128;
 /// Nested calls a thread may be in (a service calling a service...).
@@ -89,14 +97,56 @@ struct Port {
     server: u8,
     entry: u32,
     generation: u16,
-    open: bool,
+    /// 1 while open. A byte, not a `bool`: a `bool` gives `Option<Port>` a
+    /// niche, so `None` would be the byte 2 and every `Ipc` static would be
+    /// stored in the image instead of zeroed at start (13.7 KB, measured).
+    open: u8,
 }
 
-#[derive(Clone, Copy)]
-struct Entry {
-    port: u8,
-    generation: u16,
-    rights: Rights,
+/// A handle table entry, stored as one word: 0 when empty, else bit 31
+/// set, the generation in bits 8..24, the rights in bits 6..8 and the port
+/// (64 ports) in bits 0..6. No `Option` and no padding: the system's handle
+/// tables are exactly 8 KiB, all zero at start (so in `.bss`, not the image).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Entry(u32);
+
+impl Entry {
+    const EMPTY: u32 = 0;
+    const USED: u32 = 1 << 31;
+
+    const fn new(port: u8, rights: Rights, generation: u16) -> Self {
+        Self(
+            Self::USED
+                | (generation as u32) << 8
+                | ((rights.0 & 3) as u32) << 6
+                | (port & 0x3F) as u32,
+        )
+    }
+
+    /// The entry a table word holds, if any.
+    const fn decode(word: u32) -> Option<Self> {
+        if word & Self::USED == 0 {
+            None
+        } else {
+            Some(Self(word))
+        }
+    }
+
+    const fn port(self) -> u8 {
+        (self.0 & 0x3F) as u8
+    }
+
+    const fn rights(self) -> Rights {
+        Rights(((self.0 >> 6) & 3) as u8)
+    }
+
+    const fn generation(self) -> u16 {
+        (self.0 >> 8) as u16
+    }
+
+    const fn with_generation(self, generation: u16) -> Self {
+        Self(self.0 & !0x00FF_FF00 | (generation as u32) << 8)
+    }
 }
 
 /// Where a call goes: switch to `slot` and run `entry`.
@@ -120,7 +170,7 @@ pub struct Return {
 /// The kernel's IPC tables.
 pub struct Ipc {
     ports: [Option<Port>; MAX_PORTS],
-    tables: [[Option<Entry>; MAX_HANDLES]; MAX_SLOTS],
+    tables: [[u32; MAX_HANDLES]; MAX_SLOTS],
     /// Per thread: the caller slots of the calls it is in.
     frames: [[u8; MAX_DEPTH]; MAX_THREADS],
     depth: [u8; MAX_THREADS],
@@ -138,16 +188,16 @@ impl Ipc {
     pub const fn new() -> Self {
         Self {
             ports: [None; MAX_PORTS],
-            tables: [[None; MAX_HANDLES]; MAX_SLOTS],
+            tables: [[Entry::EMPTY; MAX_HANDLES]; MAX_SLOTS],
             frames: [[0; MAX_DEPTH]; MAX_THREADS],
             depth: [0; MAX_THREADS],
         }
     }
 
+    /// A process slot's table index.
     fn slot_ok(slot: u8) -> Result<usize, Error> {
-        let s = usize::from(slot);
-        if (1..MAX_SLOTS).contains(&s) {
-            Ok(s)
+        if (FIRST_SLOT..=LAST_SLOT).contains(&slot) {
+            Ok(usize::from(slot - FIRST_SLOT))
         } else {
             Err(Error::Range)
         }
@@ -162,14 +212,14 @@ impl Ipc {
         let i = self
             .ports
             .iter()
-            .position(|p| p.is_none_or(|p| !p.open))
+            .position(|p| p.is_none_or(|p| p.open == 0))
             .ok_or(Error::Full)?;
         let generation = self.ports[i].map_or(0, |p| p.generation.wrapping_add(1));
         self.ports[i] = Some(Port {
             server,
             entry,
             generation,
-            open: true,
+            open: 1,
         });
         let port = PortId(i as u8);
         match self.install(server, port, Rights::ALL) {
@@ -192,12 +242,11 @@ impl Ipc {
             .flatten()
             .ok_or(Error::Closed)?;
         let table = &mut self.tables[s];
-        let i = table.iter().position(Option::is_none).ok_or(Error::Full)?;
-        table[i] = Some(Entry {
-            port: port.0,
-            generation: p.generation,
-            rights,
-        });
+        let i = table
+            .iter()
+            .position(|&w| w == Entry::EMPTY)
+            .ok_or(Error::Full)?;
+        table[i] = Entry::new(port.0, rights, p.generation).0;
         Ok(Handle(i as u8))
     }
 
@@ -205,8 +254,7 @@ impl Ipc {
         let s = Self::slot_ok(slot)?;
         self.tables[s]
             .get(usize::from(h.0))
-            .copied()
-            .flatten()
+            .and_then(|&w| Entry::decode(w))
             .ok_or(Error::BadHandle)
     }
 
@@ -214,20 +262,20 @@ impl Ipc {
     /// among the handle's own; `GRANT` needed).
     pub fn grant(&mut self, from: u8, h: Handle, to: u8, rights: Rights) -> Result<Handle, Error> {
         let e = self.entry(from, h)?;
-        if !e.rights.contains(Rights::GRANT) || !e.rights.contains(rights) {
+        if !e.rights().contains(Rights::GRANT) || !e.rights().contains(rights) {
             return Err(Error::NoRight);
         }
         self.live(e)?;
-        self.install(to, PortId(e.port), rights)
+        self.install(to, PortId(e.port()), rights)
     }
 
     /// The port a handle names, if it is still the same one.
     fn live(&self, e: Entry) -> Result<Port, Error> {
-        let p = self.ports[usize::from(e.port)].ok_or(Error::Closed)?;
-        if !p.open {
+        let p = self.ports[usize::from(e.port())].ok_or(Error::Closed)?;
+        if p.open == 0 {
             return Err(Error::Closed);
         }
-        if p.generation != e.generation {
+        if p.generation != e.generation() {
             return Err(Error::Stale);
         }
         Ok(p)
@@ -240,7 +288,7 @@ impl Ipc {
             return Err(Error::Range);
         }
         let e = self.entry(slot, h)?;
-        if !e.rights.contains(Rights::CALL) {
+        if !e.rights().contains(Rights::CALL) {
             return Err(Error::NoRight);
         }
         let p = self.live(e)?;
@@ -298,9 +346,10 @@ impl Ipc {
             .ok_or(Error::Closed)?;
         p.generation = p.generation.wrapping_add(1);
         let (server, generation) = (p.server, p.generation);
-        for e in self.tables[usize::from(server)].iter_mut().flatten() {
-            if e.port == port.0 {
-                e.generation = generation;
+        let s = Self::slot_ok(server)?;
+        for w in &mut self.tables[s] {
+            if let Some(e) = Entry::decode(*w).filter(|e| e.port() == port.0) {
+                *w = e.with_generation(generation).0;
             }
         }
         Ok(())
@@ -312,20 +361,20 @@ impl Ipc {
         let s = Self::slot_ok(slot)?;
         for p in self.ports.iter_mut().flatten() {
             if p.server == slot {
-                p.open = false;
+                p.open = 0;
             }
         }
-        self.tables[s] = [None; MAX_HANDLES];
+        self.tables[s] = [Entry::EMPTY; MAX_HANDLES];
         Ok(())
     }
 
     /// Drops a handle from `slot`'s table.
     pub fn close(&mut self, slot: u8, h: Handle) -> Result<(), Error> {
         let s = Self::slot_ok(slot)?;
-        let e = self.tables[s]
+        let w = self.tables[s]
             .get_mut(usize::from(h.0))
             .ok_or(Error::BadHandle)?;
-        if e.take().is_none() {
+        if Entry::decode(core::mem::take(w)).is_none() {
             return Err(Error::BadHandle);
         }
         Ok(())

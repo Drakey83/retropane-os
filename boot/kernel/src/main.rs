@@ -14,8 +14,17 @@
 //! 5. Checks FCSE relocation, measures the zero-fill fault cost, unmaps
 //!    everything and checks every frame came back.
 //!
-//! Each step prints `VM <step> OK` on serial (or `FAIL` with details), then
-//! [`MARKER`] if all passed; `cargo xtask emu` checks them.
+//! 6. IPC (ADR-0016): a client process in slot 5 calls a server process in
+//!    slot 6 through a port. Each call migrates the client's thread into the
+//!    server's slot (PID and domain switched, the server's own stack, the
+//!    client's other registers cleared) and back with the result; a server
+//!    that faults unwinds to its caller with an error; a handle the client
+//!    doesn't have is refused; each process sees only its own memory at the
+//!    same address.
+//!
+//! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
+//! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
+//! them.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -30,8 +39,11 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
     use rp_hal_pxa27x::rt::{self, Global};
+    use rp_hal_pxa27x::testprog::{self, SYS_CALL, SYS_DONE, SYS_RETURN};
+    use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
+    use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
     use rp_kernel_mm::domains::{self, Domains};
     use rp_kernel_mm::frames::Frames;
@@ -172,9 +184,59 @@ mod image {
     /// overflowed it into the frame allocator).
     static ZBUF: Global<ZBuffers> = Global::new(ZBuffers::new());
 
+    /// The IPC test's server process and what it needs.
+    const SERVER_SLOT: u32 = 6;
+    /// Where the programs' page appears in both processes, and their stacks.
+    const CODE_VA: u32 = 0x0000_8000;
+    const STACK_VA: u32 = 0x0004_0000;
+    /// The one thread the test runs (the boot thread, gone to user mode).
+    const TID: u8 = 1;
+    /// What a refused or failed call returns: an error code with the top
+    /// bits set (no sum of two small numbers looks like it).
+    const ERR: u32 = 0xFFFF_FF00;
+    const ERR_FAULT: u32 = ERR | 0xFE;
+    // The IPC tables hold one handle table per process slot of the layout.
+    const _: () = assert!(
+        rp_kernel_ipc::FIRST_SLOT as u32 == layout::FIRST_PROCESS_SLOT
+            && rp_kernel_ipc::LAST_SLOT as u32 == layout::LAST_PROCESS_SLOT
+    );
+
+    /// A caller's registers while its thread is inside a server.
+    #[derive(Clone, Copy)]
+    struct Saved {
+        r: [u32; 13],
+        sp: u32,
+        lr: u32,
+        pc: u32,
+        cpsr: u32,
+    }
+
+    struct IpcState {
+        ipc: Ipc,
+        saved: [Saved; rp_kernel_ipc::MAX_DEPTH],
+        vm_ok: bool,
+        first_call: u32,
+        calls: u32,
+    }
+
+    static IPC: Global<IpcState> = Global::new(IpcState {
+        ipc: Ipc::new(),
+        saved: [Saved {
+            r: [0; 13],
+            sp: 0,
+            lr: 0,
+            pc: 0,
+            cpsr: 0,
+        }; rp_kernel_ipc::MAX_DEPTH],
+        vm_ok: false,
+        first_call: 0,
+        calls: 0,
+    });
+
     /// Everything else the VM owns.
     struct State {
         space: AddressSpace,
+        server: AddressSpace,
         domains: Domains,
         file: RamFile,
         pool: Option<&'static mut [u32]>,
@@ -189,6 +251,7 @@ mod image {
         domains: Domains::new(),
         // Its real domain comes from `Domains::activate` before first use.
         space: AddressSpace::process(PROC_SLOT, domains::PARKED),
+        server: AddressSpace::process(SERVER_SLOT, domains::PARKED),
         file: RamFile { phys: 0, refs: 0 },
         pool: None,
         l1: 0,
@@ -530,6 +593,204 @@ mod image {
         let pass = unmapped && free_now == free_after_setup - 1 && refs == 0 && zpool_empty;
         ok &= report(&mut uart, "unmap", pass, free_now);
 
+        // 6. IPC: the client (slot 5) and the server (slot 6), each with the
+        // programs' page (user code, copied into a frame of its own: no page
+        // of the kernel image is ever user-visible), a stack and a data page.
+        let (code, client_off, server_off) = testprog::ipc_programs();
+        let code_frame = FRAMES.with(|f| FrameAlloc::alloc(f, 0));
+        let mapped = STATE.with(|s| -> Result<(), &'static str> {
+            let f = code_frame.ok_or("no code frame")?;
+            let code_phys = BASE + f as u32 * 4096;
+            let pool = s.pool.as_deref_mut().unwrap_or_else(|| unreachable!());
+            let page = &mut pool[word(code_phys)..word(code_phys) + 1024];
+            page.fill(0);
+            page.get_mut(..code.len())
+                .ok_or("code too big")?
+                .copy_from_slice(code);
+            // Out of the D-cache (and any stale I-cache lines) before user
+            // mode fetches it through another address.
+            cpu::clean_invalidate_range(code_phys, 4096);
+            let a5 = s.domains.activate(PROC_SLOT);
+            let a6 = s.domains.activate(SERVER_SLOT);
+            s.space.set_domain(a5.domain);
+            s.server.set_domain(a6.domain);
+            for (space, slot) in [(&mut s.space, PROC_SLOT), (&mut s.server, SERVER_SLOT)] {
+                let base = layout::slot_base(slot);
+                for region in [
+                    Region {
+                        start: base + CODE_VA,
+                        len: 4096,
+                        prot: Prot::RX,
+                        backing: Backing::Phys {
+                            base: code_phys,
+                            cache: Cache::WriteBack,
+                        },
+                    },
+                    Region {
+                        start: base + testprog::DATA,
+                        len: 4096,
+                        prot: Prot::RW,
+                        backing: Backing::Zero,
+                    },
+                    Region {
+                        start: base + STACK_VA,
+                        len: 4096,
+                        prot: Prot::RW,
+                        backing: Backing::Zero,
+                    },
+                ] {
+                    space.map(region).map_err(|e| e.name())?;
+                }
+            }
+            Ok(())
+        });
+        let client_handle = IPC.with(|i| -> Option<Handle> {
+            i.vm_ok = ok;
+            let (port, _) = i.ipc.open(SERVER_SLOT as u8, CODE_VA + server_off).ok()?;
+            i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()
+        });
+        let (Ok(()), Some(h)) = (mapped, client_handle) else {
+            let _ = uart.write_str("IPC setup FAIL\n");
+            halt()
+        };
+        user::set_syscall_handler(on_syscall);
+        user::set_user_fault_handler(on_user_fault);
+        switch_to(PROC_SLOT);
+        let _ = writeln!(uart, "IPC client starting (handle {})", h.0);
+        user::enter_user_at(CODE_VA + client_off, STACK_VA + 4096, u32::from(h.0))
+    }
+
+    /// Runs slot `slot`: its domain in the DACR, its PID.
+    fn switch_to(slot: u32) {
+        let a = STATE.with(|s| {
+            s.pid = slot;
+            s.domains.activate(slot)
+        });
+        cpu::set_dacr(a.dacr);
+        cpu::set_pid(slot);
+    }
+
+    /// The test's system calls: a migrating call, its return, the report.
+    fn on_syscall(f: &mut Frame) {
+        match f.number() {
+            SYS_CALL => {
+                let slot = STATE.with(|s| s.pid) as u8;
+                let r = IPC.with(|i| {
+                    if i.calls == 0 {
+                        i.first_call = rt::ticks();
+                    }
+                    i.calls += 1;
+                    let e = i.ipc.call(TID, slot, Handle(f.arg(0) as u8))?;
+                    i.saved[e.depth - 1] = Saved {
+                        r: f.r,
+                        sp: f.sp,
+                        lr: f.lr,
+                        pc: f.pc,
+                        cpsr: f.cpsr,
+                    };
+                    Ok::<_, IpcError>(e)
+                });
+                match r {
+                    Ok(e) => {
+                        // The server gets its arguments and nothing else of
+                        // the caller's registers.
+                        let (a1, a2, a3) = (f.arg(1), f.arg(2), f.arg(3));
+                        f.r = [0; 13];
+                        f.r[1] = a1;
+                        f.r[2] = a2;
+                        f.r[3] = a3;
+                        f.lr = 0;
+                        f.sp = STACK_VA + 4096;
+                        f.pc = e.entry;
+                        f.cpsr = 0x10;
+                        switch_to(u32::from(e.slot));
+                    }
+                    Err(e) => f.set_result(ERR | e as u32),
+                }
+            }
+            SYS_RETURN => {
+                let result = f.arg(0);
+                if unwind(f) {
+                    f.set_result(result);
+                } else {
+                    f.set_result(ERR | IpcError::NotInCall as u32);
+                }
+            }
+            SYS_DONE => done(f),
+            _ => f.set_result(ERR | 0xFF),
+        }
+    }
+
+    /// Back to the caller of the call this thread is in: its registers and
+    /// its slot. False when it isn't in a call.
+    fn unwind(f: &mut Frame) -> bool {
+        let back = IPC.with(|i| {
+            let d = i.ipc.depth(TID);
+            i.ipc.ret(TID).ok().map(|r| (r, i.saved[d - 1]))
+        });
+        let Some((r, s)) = back else {
+            return false;
+        };
+        f.r = s.r;
+        f.sp = s.sp;
+        f.lr = s.lr;
+        f.pc = s.pc;
+        f.cpsr = s.cpsr;
+        switch_to(u32::from(r.slot));
+        true
+    }
+
+    /// Faults in user mode: demand paging first; a server faulting inside a
+    /// call unwinds to its caller with an error; anything else stops.
+    fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
+        let prefetch = matches!(kind, rt::Fault::PrefetchAbort);
+        let (fsr, _) = cpu::fault_registers();
+        let resolved = access_for(arm::classify(fsr), prefetch).is_some_and(|access| {
+            with_vm(|vm, s| {
+                let mva = layout::mva(addr, s.pid);
+                let space = if s.pid == SERVER_SLOT {
+                    &s.server
+                } else {
+                    &s.space
+                };
+                vm.handle_fault(space, mva, access).is_ok()
+            })
+        });
+        if resolved {
+            return;
+        }
+        if unwind(f) {
+            f.set_result(ERR_FAULT);
+            return;
+        }
+        on_fault(kind, addr)
+    }
+
+    /// The client's report: check it, and the server's own word.
+    fn done(f: &mut Frame) -> ! {
+        let ticks = rt::ticks().wrapping_sub(IPC.with(|i| i.first_call));
+        let (sum, fault_err, handle_err, word) = (f.arg(0), f.arg(1), f.arg(2), f.arg(3));
+        let mut uart = PxaUart::new(rt::emergency_uart());
+        switch_to(SERVER_SLOT);
+        let server_word = rt::try_read((layout::slot_base(SERVER_SLOT) + testprog::DATA) as usize);
+        switch_to(PROC_SLOT);
+        let calls = IPC.with(|i| i.calls);
+        let mut ok = IPC.with(|i| i.vm_ok);
+        ok &= report_ipc(&mut uart, "call", sum == 42, sum);
+        ok &= report_ipc(&mut uart, "server fault", fault_err == ERR_FAULT, fault_err);
+        ok &= report_ipc(
+            &mut uart,
+            "foreign handle",
+            handle_err == ERR | IpcError::BadHandle as u32,
+            handle_err,
+        );
+        ok &= report_ipc(
+            &mut uart,
+            "isolation",
+            word == 0x1111_1111 && server_word == Some(0x2222_2222),
+            word,
+        );
+        let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -537,11 +798,28 @@ mod image {
         halt()
     }
 
+    fn report_ipc(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
+        let _ = uart.write_str("IPC ");
+        let _ = uart.write_str(what);
+        if pass {
+            let _ = uart.write_str(
+                " OK
+",
+            );
+        } else {
+            let _ = writeln!(uart, " FAIL (got {got:#010x})");
+        }
+        pass
+    }
+
     fn report(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {
         let _ = uart.write_str("VM ");
         let _ = uart.write_str(what);
         if pass {
-            let _ = uart.write_str(" OK\n");
+            let _ = uart.write_str(
+                " OK
+",
+            );
         } else {
             let _ = writeln!(uart, " FAIL (got {got:#010x})");
         }
