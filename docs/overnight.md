@@ -485,7 +485,12 @@ on the host or in the emulator first.
     restarts drivers; a service manager hands out ports per policy. Open
     questions for the owner at its end.
 
-Device items waiting for the Axim (Dell prompt: owner presses Mail):
+Device items waiting for the Axim (Dell prompt: owner presses Mail).
+**First, one command:** `cargo xtask device-check` runs every read-only
+check below in one go (drive counters, the SD DMA self-test verdict, the
+backlight, the unscanned blocks 15,074-16,975 in 400-block commands) and
+writes `target/device-check.txt`; `cargo xtask device-check --with-owner`
+adds the CF card and a tone (someone at the device: it makes sound).
 scan blocks 15,074-16,975, drive on + Windows mount check, backlight and
 power button on the device, thread-switch time investigation, SD DMA on the
 device (`cargo xtask card dma` after boot: the self-test verdict; then
