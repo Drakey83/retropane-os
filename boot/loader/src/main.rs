@@ -12,6 +12,11 @@
 //! contents are read back and checked against the frame's CRC before the
 //! loader says OK, so what the PC sent is what the card holds.
 //!
+//! Meanwhile the SD card is a drive on the PC (ADR-0014): a USB mass
+//! storage interface next to the serial port. The two never write the card
+//! at once: a file frame is refused while the PC is writing, and after one
+//! the PC is told the medium changed, so it re-reads the volume.
+//!
 //! Protocol: `rp-loadproto`. PC side: `cargo xtask load <image>`,
 //! `cargo xtask put <file>`.
 
@@ -34,11 +39,12 @@ mod image {
     use rp_drv_pxa_udc::Udc;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_fat::Volume;
-    use rp_hal_api::RegisterBus;
+    use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
     use rp_hal_pxa27x::{Mmio, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_loadproto::{Frame, Kind, LoadError, OK, READY, Receiver, crc32_update, feed_slice};
+    use rp_usb_msc::{BulkPipe, Msc, Storage};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -56,8 +62,64 @@ mod image {
     /// fewer card commands each takes).
     const SCRATCH: usize = 64 * 1024;
 
-    /// The SD card's FAT32 volume, opened on the first file frame.
-    type Card = Volume<SdCard<PxaMmc<Mmio>>>;
+    /// The SD card.
+    type Sd = SdCard<PxaMmc<Mmio>>;
+
+    /// Staging buffer for the drive's block transfers (in the scratch
+    /// area, not the image: 64 sectors per card command).
+    const MSC_BUF: usize = 32 * 1024;
+    /// The drive's serial number: the USB serial string (16 hex digits).
+    const MSC_SERIAL: &[u8] = b"5250323630303031";
+
+    /// The SD card as the drive's logical unit 0 (absent when no card
+    /// answered at startup).
+    struct Lun(Option<Sd>);
+
+    impl BlockDevice for Lun {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            self.0
+                .as_mut()
+                .ok_or(BlockError::Device)?
+                .read_blocks(lba, buf)
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            self.0
+                .as_mut()
+                .ok_or(BlockError::Device)?
+                .write_blocks(lba, buf)
+        }
+    }
+
+    impl Storage for Lun {
+        fn blocks(&self) -> u32 {
+            self.0.as_ref().map_or(0, SdCard::blocks)
+        }
+        fn present(&self) -> bool {
+            self.0.as_ref().is_some_and(|c| c.blocks() > 0)
+        }
+        fn product(&self) -> &[u8; 16] {
+            b"SD card         "
+        }
+    }
+
+    /// The UDC's mass storage endpoints as the drive's bulk pipe.
+    struct Pipe<'a>(&'a mut Udc<Mmio>);
+
+    impl BulkPipe for Pipe<'_> {
+        fn read_packet(&mut self, buf: &mut [u8; 64]) -> Option<usize> {
+            self.0.msc_read(buf)
+        }
+        fn can_write(&mut self) -> bool {
+            self.0.msc_can_write()
+        }
+        fn write_packet(&mut self, data: &[u8]) {
+            self.0.msc_write(data);
+        }
+    }
+
+    fn now_ms() -> u32 {
+        rt::ticks() / (TICK_1S / 1000)
+    }
 
     /// A reply line built on the stack.
     struct Line {
@@ -86,26 +148,30 @@ mod image {
         }
     }
 
-    /// Powers the card, identifies it and mounts its first partition.
+    /// Powers the card and identifies it.
     #[inline(never)]
-    fn open_card() -> Result<Card, &'static str> {
-        let cpld = devices::take_cpld().ok_or("no CPLD")?;
-        let mmc = rt::take_mmc().ok_or("no MMC controller")?;
-        let mut cpld = Cpld::new(cpld);
+    fn open_card() -> Option<Sd> {
+        let mut cpld = Cpld::new(devices::take_cpld()?);
+        let mmc = rt::take_mmc()?;
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
-        let mut card = SdCard::init(PxaMmc::new(mmc)).map_err(|_| "no card")?;
+        SdCard::init(PxaMmc::new(mmc)).ok()
+    }
+
+    /// Mounts the card's first partition afresh: the PC may have written
+    /// it (as a drive) since the last time, so nothing cached is trusted.
+    fn mount(sd: &mut Sd) -> Result<Volume<&mut Sd>, &'static str> {
         let mut block = [0u8; rp_drv_sdcard::BLOCK];
-        card.read(0, &mut block).map_err(|_| "card read")?;
+        sd.read(0, &mut block).map_err(|_| "card read")?;
         let start = mbr_partitions(&block)
             .and_then(|p| p[0])
             .map_or(0, |p| p.start);
-        Volume::mount(card, start).map_err(|_| "not FAT32")
+        Volume::mount(sd, start).map_err(|_| "not FAT32")
     }
 
     /// Writes a file frame to the card and checks it back; the reply line.
     #[inline(never)]
-    fn put_file(card: &mut Option<Card>, frame: Frame, dest: &mut [u8], reply: &mut Line) {
+    fn put_file(lun: &mut Lun, msc: &mut Msc<'_>, frame: Frame, dest: &mut [u8], reply: &mut Line) {
         let (payload, scratch) = dest.split_at_mut(dest.len() - SCRATCH);
         if frame.len > payload.len() {
             let _ = reply.write_str(LoadError::TooBig.reply());
@@ -118,22 +184,30 @@ mod image {
                 return;
             }
         };
-        if card.is_none() {
-            match open_card() {
-                Ok(c) => *card = Some(c),
-                Err(why) => {
-                    let _ = write!(reply, "RPL ERR card: {why}\r\n");
-                    return;
-                }
-            }
+        // Never write the card while the PC (as a drive) is writing it.
+        if msc.host_writing(now_ms()) {
+            let _ = reply.write_str("RPL ERR card busy: the PC is writing\r\n");
+            return;
         }
-        let Some(vol) = card.as_mut() else { return };
+        let Some(sd) = lun.0.as_mut() else {
+            let _ = reply.write_str("RPL ERR card: no card\r\n");
+            return;
+        };
+        let mut vol = match mount(sd) {
+            Ok(v) => v,
+            Err(why) => {
+                let _ = write!(reply, "RPL ERR card: {why}\r\n");
+                return;
+            }
+        };
+        // Whatever happens next, the PC must re-read the volume.
+        msc.medium_changed(0);
         let t0 = rt::ticks();
         let reads0 = vol.device().reads();
         let written = match vol.replace(name, contents, scratch) {
             Ok(w) => w,
             Err(e) => {
-                let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol));
+                let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), card_note(vol.device()));
                 return;
             }
         };
@@ -174,14 +248,19 @@ mod image {
                 );
             }
             Err(e) => {
-                let _ = write!(reply, "RPL ERR verify: {}{}\r\n", e.name(), card_note(vol));
+                let _ = write!(
+                    reply,
+                    "RPL ERR verify: {}{}\r\n",
+                    e.name(),
+                    card_note(vol.device())
+                );
             }
         }
     }
 
     /// The card's own error behind a device error, for the reply.
-    fn card_note(vol: &Card) -> Note {
-        let what = match vol.device().last_error() {
+    fn card_note(sd: &Sd) -> Note {
+        let what = match sd.last_error() {
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Timeout)) => "timeout",
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Crc)) => "CRC",
             Some(rp_drv_sdcard::Error::Host(rp_drv_sdcard::HostError::Data)) => "data",
@@ -191,7 +270,7 @@ mod image {
         };
         Note {
             what,
-            failure: vol.device().host().last_failure(),
+            failure: sd.host().last_failure(),
         }
     }
 
@@ -299,6 +378,11 @@ mod image {
         let Some(udc_bus) = rt::take_udc() else {
             halt()
         };
+        // The card first: once the pull-up is on, the PC expects answers
+        // within its control-transfer timeout, and card set-up (or giving up
+        // on an empty slot) must not stall them (seen in the emulator: the
+        // host gave up on the first descriptor request).
+        let mut lun = Lun(open_card());
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
         if usb {
@@ -326,7 +410,16 @@ mod image {
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
-        let mut card: Option<Card> = None;
+        let Some(scratch) = devices::take_scratch() else {
+            halt()
+        };
+        let mut msc = Msc::new(&mut scratch[..MSC_BUF], MSC_SERIAL, 1);
+        udc.set_msc_luns(1);
+        let _ = writeln!(
+            log,
+            "SD card: {} (a drive on the PC)",
+            if lun.present() { "ready" } else { "none" }
+        );
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
             // while waiting.
@@ -334,6 +427,10 @@ mod image {
                 watchdog.feed(RUN_LIMIT);
             }
             udc.poll();
+            if udc.take_msc_reset() {
+                msc.reset();
+            }
+            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun], now_ms());
             if udc.host_open() {
                 if let Some(run) = pending.take() {
                     send_log(&mut |b| usb_bytes(&mut udc, b), &run);
@@ -366,7 +463,7 @@ mod image {
                         watchdog.feed(RUN_LIMIT);
                     }
                     let mut reply = Line::new();
-                    put_file(&mut card, frame, dest, &mut reply);
+                    put_file(&mut lun, &mut msc, frame, dest, &mut reply);
                     send(&mut uart, &mut udc, reply.as_str());
                     let _ = writeln!(log, "{}", reply.as_str().trim_ascii_end());
                 }

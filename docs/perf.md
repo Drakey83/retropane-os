@@ -64,6 +64,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-11 | ADR-0010: mutexes with priority inheritance, user faults in the thread's context, lazy iWMMXt, interrupts as waitable objects, plus their live tests. Scheduler entry points kept out of line; free events via a bitmap instead of a loop LLVM unrolled to 1 KiB. **Load budget raised 17 → 27 KiB, approved by the owner** (measured + ~10%) | `rp-threads` loaded size | 16,012 B | 24,500 B |
 | 2026-10-11 | ADR-0010 rule 8: KData written on every switch (3 words through its one user address, no cache maintenance), the top MiB split into pages, TLS blocks on user stacks, and the `USER KData` test. Paid for in part by one shared user-thread trampoline instead of five (−576 B) and an opaque length that stopped LLVM unrolling a 32-line cache clean (−320 B). Inside the 27 KiB budget, no raise. Zeroed RAM 28,968 → 29,496 B (a TLS word per thread). `thread_switch` smoke number unchanged within noise (emulator real time, ticks per 2,000 switches: 218,114 before, 204,689 and 222,276 in two runs after); `cargo xtask bench` flat | `rp-threads` loaded size | 24,564 B | 26,092 B |
 
+| 2026-10-12 | `rp-loader`: the SD card as a USB drive (ADR-0014). **Ratcheted 41 → 52 KiB** (test image): composite descriptors, the Bulk-Only/SCSI stack (2.6 KiB `Msc::poll`), card capacity from the CSD; the 32 KiB transfer buffer is in the scratch area, not the image | `rp-loader` loaded size | 39,400 B | 47,743 B |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)
