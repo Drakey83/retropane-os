@@ -114,9 +114,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 70 -> 78 KiB on 2026-10-12 (test image): card repair tools
     // (scrub, repair, peek), SD hot swap and the lock switch; 70.3 KiB
     // measured, +~10%.
+    // Ratcheted 78 -> 87 KiB on 2026-10-12 (test image): card folders
+    // (paths, mkdir, put creating parents) and the backlight command;
+    // 79.0 KiB measured, +~10%.
     Budget {
         image: "rp-loader",
-        max_load: 78 * 1024,
+        max_load: 87 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.

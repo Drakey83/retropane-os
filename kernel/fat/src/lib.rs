@@ -136,7 +136,7 @@ pub struct Written {
     pub contiguous: bool,
 }
 
-/// What [`Volume::walk_root`] calls per entry: sector, index, raw entry,
+/// What [`Volume::walk_dir`] calls per entry: sector, index, raw entry,
 /// long name; `true` stops the walk.
 type Visit<'a> = dyn FnMut(u32, u8, &[u8; 32], &[u8]) -> bool + 'a;
 
@@ -208,6 +208,19 @@ fn check_new_name(name: &[u8]) -> Result<(), Error> {
         return Err(Error::BadName);
     }
     Ok(())
+}
+
+/// Most directory levels a path may have.
+const MAX_DEPTH: usize = 16;
+
+/// A path's components (`/` or `\` between them; empty ones skipped);
+/// `.`, `..` and more than [`MAX_DEPTH`] levels are refused.
+fn components(path: &str) -> Result<impl DoubleEndedIterator<Item = &str>, Error> {
+    let parts = || path.split(['/', '\\']).filter(|p| !p.is_empty());
+    if parts().count() > MAX_DEPTH || parts().any(|p| p == "." || p == "..") {
+        return Err(Error::BadName);
+    }
+    Ok(parts())
 }
 
 /// Characters allowed in an 8.3 short name besides letters and digits.
@@ -664,8 +677,11 @@ impl<D: BlockDevice> Volume<D> {
     /// Walks the root directory, calling `f` with each entry's sector,
     /// index, raw 32 bytes and assembled long name (empty when it has
     /// none) until `f` returns `true`. Returns whether it did.
-    fn walk_root(&mut self, f: &mut Visit<'_>) -> Result<bool, Error> {
-        let mut cluster = self.root_cluster;
+    fn walk_dir(&mut self, dir: u32, f: &mut Visit<'_>) -> Result<bool, Error> {
+        let mut cluster = dir;
+        if !self.valid_cluster(cluster) {
+            return Err(Error::Corrupt);
+        }
         let mut visited = 0u32;
         self.lfn_valid = false;
         self.lfn_len = 0;
@@ -709,8 +725,22 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Calls `f` for every file and subdirectory in the root directory
     /// (volume labels and deleted entries skipped).
-    pub fn for_each_root(&mut self, mut f: impl FnMut(&DirEntry<'_>)) -> Result<(), Error> {
-        self.walk_root(&mut |_, _, e, lfn| {
+    pub fn for_each_root(&mut self, f: impl FnMut(&DirEntry<'_>)) -> Result<(), Error> {
+        self.for_each_in("", f)
+    }
+
+    /// Calls `f` for every file and subdirectory in the directory at `path`
+    /// (`""` or `"/"`: the root; `.` and `..` entries skipped).
+    pub fn for_each_in(
+        &mut self,
+        path: &str,
+        mut f: impl FnMut(&DirEntry<'_>),
+    ) -> Result<(), Error> {
+        let dir = self.resolve_dir(path)?;
+        self.walk_dir(dir, &mut |_, _, e, lfn| {
+            if e[0] == b'.' {
+                return false; // . and ..
+            }
             if e[11] & 0x08 != 0 {
                 return false; // volume label
             }
@@ -728,14 +758,58 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
-    /// Finds a file in the root directory by name (ASCII, case-insensitive;
-    /// long or short form).
-    pub fn find(&mut self, name: &str) -> Result<File, Error> {
+    /// Finds a file by path (`name`, `dir/name` or `dir\name`; ASCII,
+    /// case-insensitive; long or short forms).
+    pub fn find(&mut self, path: &str) -> Result<File, Error> {
+        let (dir, leaf) = self.parent_of(path)?;
+        self.find_in(dir, leaf)
+    }
+
+    /// The directory cluster a path's parent names, and its last component.
+    fn parent_of<'p>(&mut self, path: &'p str) -> Result<(u32, &'p str), Error> {
+        let mut parts = components(path)?;
+        let leaf = parts.next_back().ok_or(Error::BadName)?;
+        let mut dir = self.root_cluster;
+        for d in parts {
+            dir = self.lookup_dir(dir, d)?;
+        }
+        Ok((dir, leaf))
+    }
+
+    /// The cluster of the directory at `path` (the root for `""`).
+    fn resolve_dir(&mut self, path: &str) -> Result<u32, Error> {
+        let mut dir = self.root_cluster;
+        for d in components(path)? {
+            dir = self.lookup_dir(dir, d)?;
+        }
+        Ok(dir)
+    }
+
+    /// The subdirectory `name` of `dir`.
+    fn lookup_dir(&mut self, dir: u32, name: &str) -> Result<u32, Error> {
+        match self.find_entry(dir, name, true)?.first_cluster {
+            // A subdirectory pointing at the root (or nowhere) is corrupt.
+            c if self.valid_cluster(c) && c != self.root_cluster => Ok(c),
+            _ => Err(Error::Corrupt),
+        }
+    }
+
+    /// Finds a file in directory `dir` by name.
+    fn find_in(&mut self, dir: u32, name: &str) -> Result<File, Error> {
+        check_name(name.as_bytes())?;
+        self.find_entry(dir, name, false)
+    }
+
+    /// The entry `name` in `dir` that is a directory (`want_dir`) or a file:
+    /// one matching walk for both (long or short name, case-insensitive;
+    /// volume labels and `.`/`..` never match).
+    #[inline(never)]
+    fn find_entry(&mut self, dir: u32, name: &str, want_dir: bool) -> Result<File, Error> {
         let want = name.as_bytes();
-        check_name(want)?;
         let mut found = None;
-        self.walk_root(&mut |lba, index, e, lfn| {
-            if e[11] & (0x08 | ATTR_DIRECTORY) != 0 {
+        self.walk_dir(dir, &mut |lba, index, e, lfn| {
+            let is_dir = e[11] & ATTR_DIRECTORY != 0;
+            if is_dir != want_dir || e[11] & 0x08 != 0 || e[0] == b'.' {
                 return false;
             }
             let mut short = [0u8; 12];
@@ -890,11 +964,81 @@ impl<D: BlockDevice> Volume<D> {
         Ok(written)
     }
 
-    /// Replaces `name`'s contents, or creates it when it doesn't exist.
-    pub fn put(&mut self, name: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
-        match self.replace(name, data, scratch) {
-            Err(Error::NotFound) => self.create(name, data, scratch),
+    /// Replaces `path`'s contents, or creates it (and any missing parent
+    /// directories, like `mkdir -p`) when it doesn't exist.
+    pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        match self.replace(path, data, scratch) {
+            Err(Error::NotFound) => {
+                let mut parts = components(path)?;
+                parts.next_back();
+                for d in parts {
+                    // `d` is a slice of `path`: its end is where the prefix
+                    // naming this directory ends.
+                    let end = d.as_ptr() as usize - path.as_ptr() as usize + d.len();
+                    match self.mkdir(&path[..end], scratch) {
+                        Ok(()) | Err(Error::Exists) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                self.create(path, data, scratch)
+            }
             r => r,
+        }
+    }
+
+    /// Creates the directory `path` (its parent must exist): its first
+    /// cluster with `.` and `..` is written and linked before the entry
+    /// that makes it exist. An existing directory is [`Error::Exists`].
+    pub fn mkdir(&mut self, path: &str, scratch: &mut [u8]) -> Result<(), Error> {
+        let (parent, leaf) = self.parent_of(path)?;
+        check_new_name(leaf.as_bytes())?;
+        match self.lookup_dir(parent, leaf) {
+            Ok(_) => return Err(Error::Exists),
+            Err(Error::NotFound) => {}
+            Err(e) => return Err(e),
+        }
+        if self.find_in(parent, leaf).is_ok() {
+            return Err(Error::Exists); // a file of that name
+        }
+        let hint = self.fsinfo_hint()?;
+        let Some(c) = self.find_free_run(hint, 1, scratch)? else {
+            return Err(Error::NoRoom);
+        };
+        // The new directory's first cluster: . and .., then empty.
+        let lba = self.cluster_lba(c);
+        for sec in 0..self.sectors_per_cluster {
+            self.buf = [0; SECTOR];
+            if sec == 0 {
+                let dot = |name: &[u8; 11], cluster: u32| {
+                    let mut e = [0u8; 32];
+                    e[..11].copy_from_slice(name);
+                    e[11] = ATTR_DIRECTORY;
+                    e[20..22].copy_from_slice(&((cluster >> 16) as u16).to_le_bytes());
+                    e[26..28].copy_from_slice(&(cluster as u16).to_le_bytes());
+                    e
+                };
+                // `..` of a top-level directory is cluster 0 (the root).
+                let up = if parent == self.root_cluster {
+                    0
+                } else {
+                    parent
+                };
+                self.buf[..32].copy_from_slice(&dot(b".          ", c));
+                self.buf[32..64].copy_from_slice(&dot(b"..         ", up));
+            }
+            self.dev.write_blocks(lba + sec, &self.buf)?;
+        }
+        self.fat_set(c, EOC)?;
+        self.fat_flush()?;
+        match self.add_entry(parent, leaf, ATTR_DIRECTORY, c, 0, scratch) {
+            Ok(grown) => {
+                self.fsinfo_adjust(-i64::from(1 + grown), Some(c + 1))?;
+                Ok(())
+            }
+            Err(e) => {
+                self.free_chain(c)?;
+                Err(e)
+            }
         }
     }
 
@@ -906,17 +1050,53 @@ impl<D: BlockDevice> Volume<D> {
     /// A full root directory grows by a cluster.
     pub fn create(
         &mut self,
-        name: &str,
+        path: &str,
         data: &[u8],
         scratch: &mut [u8],
     ) -> Result<Written, Error> {
-        let n = name.as_bytes();
-        check_new_name(n)?;
-        match self.find(name) {
+        let (dir, leaf) = self.parent_of(path)?;
+        check_new_name(leaf.as_bytes())?;
+        match self.find_in(dir, leaf) {
             Ok(_) => return Err(Error::Exists),
             Err(Error::NotFound) => {}
             Err(e) => return Err(e),
         }
+        if self.lookup_dir(dir, leaf).is_ok() {
+            return Err(Error::Exists); // a directory of that name
+        }
+        let hint = self.fsinfo_hint()?;
+        let written = self.store(data, hint, scratch)?;
+        let size = u32::try_from(data.len()).map_err(|_| Error::NoRoom)?;
+        match self.add_entry(dir, leaf, 0x20, written.first_cluster, size, scratch) {
+            Ok(grown) => {
+                self.fsinfo_adjust(
+                    -i64::from(written.clusters + grown),
+                    Some(self.next_hint(&written, hint)),
+                )?;
+                Ok(written)
+            }
+            Err(err) => {
+                if written.first_cluster != 0 {
+                    self.free_chain(written.first_cluster)?;
+                }
+                Err(err)
+            }
+        }
+    }
+
+    /// Writes the directory entries (long-name entries when needed, then
+    /// the short entry, in the last sector written) for `leaf` in `dir`;
+    /// returns how many clusters the directory grew by.
+    fn add_entry(
+        &mut self,
+        dir: u32,
+        leaf: &str,
+        attr: u8,
+        first_cluster: u32,
+        size: u32,
+        scratch: &mut [u8],
+    ) -> Result<u32, Error> {
+        let n = leaf.as_bytes();
         // The short name: the 8.3 form itself, or BASIS~N with long-name
         // entries, N the first free number.
         let (short, nt, lfn) = match plain_short(n) {
@@ -925,7 +1105,7 @@ impl<D: BlockDevice> Volume<D> {
                 let mut k = 1;
                 loop {
                     let s = numbered_short(n, k);
-                    if !self.short_exists(&s)? {
+                    if !self.short_exists(dir, &s)? {
                         break (s, 0, true);
                     }
                     k += 1;
@@ -943,28 +1123,17 @@ impl<D: BlockDevice> Volume<D> {
             entries[..count].copy_from_slice(&l[..count]);
         }
 
-        let hint = self.fsinfo_hint()?;
-        let written = self.store(data, hint, scratch)?;
-        let size = u32::try_from(data.len()).map_err(|_| Error::NoRoom)?;
         let e = &mut entries[count];
         e[..11].copy_from_slice(&short);
-        e[11] = 0x20;
+        e[11] = attr;
         e[12] = nt;
-        e[20..22].copy_from_slice(&((written.first_cluster >> 16) as u16).to_le_bytes());
-        e[26..28].copy_from_slice(&(written.first_cluster as u16).to_le_bytes());
+        e[20..22].copy_from_slice(&((first_cluster >> 16) as u16).to_le_bytes());
+        e[26..28].copy_from_slice(&(first_cluster as u16).to_le_bytes());
         e[28..32].copy_from_slice(&size.to_le_bytes());
         count += 1;
 
         let mut grown = 0;
-        let slots = match self.free_slots(count, scratch, &mut grown) {
-            Ok(s) => s,
-            Err(err) => {
-                if written.first_cluster != 0 {
-                    self.free_chain(written.first_cluster)?;
-                }
-                return Err(err);
-            }
-        };
+        let slots = self.free_slots(dir, count, scratch, &mut grown)?;
         // Sector by sector, in order: the short entry is the last slot, so
         // its sector is written last.
         let mut i = 0;
@@ -978,11 +1147,7 @@ impl<D: BlockDevice> Volume<D> {
             }
             self.dev.write_blocks(lba, &self.buf)?;
         }
-        self.fsinfo_adjust(
-            -i64::from(written.clusters + grown),
-            Some(self.next_hint(&written, hint)),
-        )?;
-        Ok(written)
+        Ok(grown)
     }
 
     fn next_hint(&self, w: &Written, hint: u32) -> u32 {
@@ -993,23 +1158,24 @@ impl<D: BlockDevice> Volume<D> {
         }
     }
 
-    /// Whether a root entry has the short name `short`.
-    fn short_exists(&mut self, short: &[u8; 11]) -> Result<bool, Error> {
-        self.walk_root(&mut |_, _, e, _| e[..11] == short[..])
+    /// Whether an entry of `dir` has the short name `short`.
+    fn short_exists(&mut self, dir: u32, short: &[u8; 11]) -> Result<bool, Error> {
+        self.walk_dir(dir, &mut |_, _, e, _| e[..11] == short[..])
     }
 
-    /// Finds `need` consecutive free slots in the root directory (deleted
-    /// or past its end), growing it by a zeroed cluster if it has none;
+    /// Finds `need` consecutive free slots in directory `dir` (deleted or
+    /// past its end), growing it by a zeroed cluster if it has none;
     /// returns their (sector, index), in order.
     fn free_slots(
         &mut self,
+        dir: u32,
         need: usize,
         scratch: &mut [u8],
         grown: &mut u32,
     ) -> Result<[(u32, u8); LFN_MAX + 1], Error> {
         let mut run = [(0u32, 0u8); LFN_MAX + 1];
         let mut len = 0;
-        let mut cluster = self.root_cluster;
+        let mut cluster = dir;
         let mut visited = 0u32;
         loop {
             let lba = self.cluster_lba(cluster);

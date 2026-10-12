@@ -127,7 +127,9 @@ fn finds_by_long_or_short_name_case_insensitively() {
     assert_eq!(f.size(), 1);
     assert_eq!(v.find("retrop~1.bin").unwrap(), f);
     assert_eq!(v.find("nothere.bin"), Err(Error::NotFound));
-    assert_eq!(v.find("bad\\name"), Err(Error::BadName));
+    // A separator makes it a path: into a folder that doesn't exist.
+    assert_eq!(v.find("bad\\name"), Err(Error::NotFound));
+    assert_eq!(v.find("a/../retropane.bin"), Err(Error::BadName));
 }
 
 #[test]
@@ -508,7 +510,6 @@ fn refuses_names_fat_does_not_allow() {
         ".",
         "..",
         "",
-        "a/b",
     ] {
         assert_eq!(
             v.create(bad, b"z", &mut scratch),
@@ -788,4 +789,109 @@ fn out_of_range_clusters_and_absurd_geometry_are_refused() {
     if let Ok(mut v) = Volume::mount(MemDisk::new(bad), PARTITION_START) {
         assert!(v.find("a.bin").is_err());
     }
+}
+
+#[test]
+fn folders_paths_and_put_creating_parents() {
+    let img = tiny_image(&[Entry {
+        name: "top.txt",
+        data: b"top",
+    }]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    v.mkdir("Apps", &mut scratch).unwrap();
+    assert_eq!(v.mkdir("apps", &mut scratch), Err(Error::Exists));
+    assert_eq!(v.mkdir("top.txt", &mut scratch), Err(Error::Exists));
+    let a = pattern(5000, 21);
+    v.create("Apps/Game One.exe", &a, &mut scratch).unwrap();
+    // put creates missing parents, either separator.
+    v.put("Apps\\Sub Folder\\deep/readme.txt", b"deep", &mut scratch)
+        .unwrap();
+    assert_eq!(read_all(&mut v, "apps/game one.exe", 4096), a);
+    assert_eq!(read_all(&mut v, "APPS/GAMEON~1.EXE", 4096), a);
+    assert_eq!(
+        read_all(&mut v, "Apps/Sub Folder/deep/readme.txt", 512),
+        b"deep"
+    );
+    // Replace inside a folder.
+    v.put("Apps/Game One.exe", b"v2", &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "Apps/Game One.exe", 512), b"v2");
+    // Listings: the root shows the folder, the folder its contents (no . or ..).
+    let mut root = Vec::new();
+    v.for_each_root(|e| root.push((String::from_utf8_lossy(e.name).into_owned(), e.is_dir)))
+        .unwrap();
+    assert_eq!(root, [("top.txt".into(), false), ("Apps".into(), true)]);
+    let mut apps = Vec::new();
+    v.for_each_in("Apps", |e| {
+        apps.push(String::from_utf8_lossy(e.name).into_owned())
+    })
+    .unwrap();
+    assert_eq!(apps, ["Game One.exe", "Sub Folder"]);
+    // Short names are per folder: the same long name in another folder
+    // gets ~1 again.
+    v.put("Other/Game One.exe", b"o", &mut scratch).unwrap();
+    assert_eq!(read_all(&mut v, "OTHER/GAMEON~1.EXE", 512), b"o");
+    // A file isn't a folder.
+    assert_eq!(v.find("top.txt/x"), Err(Error::NotFound));
+    assert_eq!(v.find("nothere/x"), Err(Error::NotFound));
+    // Too deep.
+    let deep = "a/".repeat(20) + "f";
+    assert_eq!(v.find(&deep), Err(Error::BadName));
+}
+
+#[test]
+fn a_folder_grows_and_power_loss_while_putting_into_new_folders_is_safe() {
+    let img = tiny_image(&[]);
+    let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    for i in 0..40 {
+        let name = format!("Many/a rather long name number {i}.txt");
+        v.put(&name, name.as_bytes(), &mut scratch).unwrap();
+    }
+    for i in 0..40 {
+        let name = format!("Many/a rather long name number {i}.txt");
+        assert_eq!(read_all(&mut v, &name, 512), name.as_bytes());
+    }
+    // Power loss at every write of a put that makes two folders and a file.
+    let data = pattern(3000, 22);
+    let total = {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        v.put("x/y/z.bin", &data, &mut scratch).unwrap();
+        v.dev.writes
+    };
+    for fail_at in 0..total {
+        let mut disk = MemDisk::new(img.clone());
+        disk.fail_at = Some(fail_at);
+        let mut v = Volume::mount(disk, PARTITION_START).unwrap();
+        assert!(v.put("x/y/z.bin", &data, &mut scratch).is_err());
+        let after = v.into_inner().data;
+        let mut v = Volume::mount(MemDisk::new(after), PARTITION_START).unwrap();
+        match v.find("x/y/z.bin") {
+            Ok(_) => assert_eq!(read_all(&mut v, "x/y/z.bin", 4096), data),
+            Err(Error::NotFound) => {}
+            Err(e) => panic!("write {fail_at}: {e:?}"),
+        }
+        // Whatever exists is walkable.
+        let _ = v.for_each_in("x", |_| {});
+        let _ = v.for_each_in("x/y", |_| {});
+    }
+}
+
+#[test]
+fn a_folder_that_points_back_at_the_root_is_corrupt_not_a_loop() {
+    let img = tiny_image(&[]);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let mut scratch = vec![0u8; 4096];
+    v.mkdir("loop", &mut scratch).unwrap();
+    // Point the folder's entry at the root cluster.
+    let root = v.root_cluster;
+    let lba = v.cluster_lba(root);
+    let mut sector = [0u8; SECTOR];
+    v.dev.read_blocks(lba, &mut sector).unwrap();
+    let i = (0..ENTRIES)
+        .find(|&i| &sector[i * 32..i * 32 + 4] == b"LOOP")
+        .unwrap();
+    sector[i * 32 + 26..i * 32 + 28].copy_from_slice(&(root as u16).to_le_bytes());
+    v.dev.write_blocks(lba, &sector).unwrap();
+    assert_eq!(v.find("loop/loop/loop/x"), Err(Error::Corrupt));
 }
