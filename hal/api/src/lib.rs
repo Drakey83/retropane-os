@@ -77,12 +77,12 @@ impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
 /// (non-blocking, so the device driver can watch the device's own errors
 /// at the same time) or `abort`.
 pub trait DmaEngine {
-    /// Arms a transfer of `buf.len()` bytes from the FIFO at physical
-    /// address `fifo` into `buf`. `buf` must not be touched until `finish`
-    /// or `abort`. False if it can't (too long, already armed).
-    fn arm_from_device(&mut self, request: u8, fifo: u32, buf: &mut [u8]) -> bool;
-    /// Arms a transfer of `buf` into the FIFO at physical address `fifo`.
-    fn arm_to_device(&mut self, request: u8, fifo: u32, buf: &[u8]) -> bool;
+    /// Arms a transfer of `buf.len()` bytes from `port` into `buf`. `buf`
+    /// must not be touched until `done` says it ended, or `abort`. False if
+    /// it can't (too long, misaligned, already armed).
+    fn arm_from_device(&mut self, port: Port, buf: &mut [u8]) -> bool;
+    /// Arms a transfer of `buf` into `port`.
+    fn arm_to_device(&mut self, port: Port, buf: &[u8]) -> bool;
     /// `None` while the armed transfer runs; once it has ended, `Some(true)`
     /// (or `Some(false)` on a bus error) and the engine is disarmed.
     fn done(&mut self) -> Option<bool>;
@@ -90,15 +90,57 @@ pub trait DmaEngine {
     fn abort(&mut self);
 }
 
+/// A device FIFO a DMA engine serves: the device's request line, the
+/// FIFO's physical address, and the width of each access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Port {
+    /// DMA request line.
+    pub request: u8,
+    /// Physical address of the FIFO register.
+    pub addr: u32,
+    /// Bytes per FIFO access.
+    pub width: Width,
+}
+
+/// Bytes per FIFO access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    /// One byte.
+    Byte,
+    /// Two bytes.
+    Half,
+    /// Four bytes.
+    Word,
+}
+
+/// A DMA engine looping a buffer into a device without end (audio): the
+/// CPU refills the part the engine has passed. Positions are byte offsets
+/// in the ring.
+pub trait DmaRing {
+    /// Starts looping `ring` into `port`. The CPU may write the ring while
+    /// it runs, behind the position, then must hand what it wrote to
+    /// [`DmaRing::filled`].
+    /// `ring` must outlive the loop: call [`DmaRing::stop`] before reusing
+    /// it. False if it can't (size, alignment, busy).
+    fn start(&mut self, port: Port, ring: &[u8]) -> bool;
+    /// Where in the ring the engine reads next, if running.
+    fn position(&mut self) -> Option<usize>;
+    /// The CPU wrote `part` (a piece of the running ring): make it visible
+    /// to the engine (write back the cache).
+    fn filled(&mut self, part: &[u8]);
+    /// Stops the loop.
+    fn stop(&mut self);
+}
+
 /// No DMA: every arm is refused, so drivers use programmed I/O.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoDma;
 
 impl DmaEngine for NoDma {
-    fn arm_from_device(&mut self, _: u8, _: u32, _: &mut [u8]) -> bool {
+    fn arm_from_device(&mut self, _: Port, _: &mut [u8]) -> bool {
         false
     }
-    fn arm_to_device(&mut self, _: u8, _: u32, _: &[u8]) -> bool {
+    fn arm_to_device(&mut self, _: Port, _: &[u8]) -> bool {
         false
     }
     fn done(&mut self) -> Option<bool> {

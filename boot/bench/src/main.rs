@@ -74,7 +74,7 @@ mod image {
         if let (Some(cpld), Some(mmc), Some(dma)) = (
             rp_hal_x51v::devices::take_cpld(),
             rt::take_mmc(),
-            rt::take_dma(),
+            rt::take_dma(0),
         ) {
             Cpld::new(cpld).set_sd_power(true);
             rt::delay_us(10_000);

@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 
 use rp_drv_sdcard::{BLOCK, Command, HostError, Response, SdHost};
-use rp_hal_api::{DmaEngine, NoDma, RegisterBus, RegisterBus8};
+use rp_hal_api::{DmaEngine, NoDma, Port, RegisterBus, RegisterBus8, Width};
 
 /// Register offsets.
 pub mod reg {
@@ -78,6 +78,18 @@ pub const PHYS_BASE: u32 = 0x4110_0000;
 pub const DREQ_RX: u8 = 21;
 /// DMA request line for the transmit FIFO.
 pub const DREQ_TX: u8 = 22;
+/// The receive FIFO as a DMA port (byte-wide).
+const RX_PORT: Port = Port {
+    request: DREQ_RX,
+    addr: PHYS_BASE + reg::RXFIFO as u32,
+    width: Width::Byte,
+};
+/// The transmit FIFO as a DMA port.
+const TX_PORT: Port = Port {
+    request: DREQ_TX,
+    addr: PHYS_BASE + reg::TXFIFO as u32,
+    width: Width::Byte,
+};
 const I_RXFIFO_REQ: u32 = 1 << 5;
 const I_TXFIFO_REQ: u32 = 1 << 6;
 const FIFO_BYTES: usize = 32;
@@ -323,11 +335,7 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
 
     fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
         let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
-        self.dma_on = blocks > 1
-            && self.dma_reads
-            && self
-                .dma
-                .arm_from_device(DREQ_RX, PHYS_BASE + reg::RXFIFO as u32, buf);
+        self.dma_on = blocks > 1 && self.dma_reads && self.dma.arm_from_device(RX_PORT, buf);
         let status = self.issue(cmd, blocks)?[0];
         if self.dma_on {
             self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, SPIN_LIMIT)?;
@@ -354,11 +362,7 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
 
     fn write_blocks(&mut self, cmd: Command, buf: &[u8]) -> Result<u32, HostError> {
         let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
-        self.dma_on = blocks > 1
-            && self.dma_writes
-            && self
-                .dma
-                .arm_to_device(DREQ_TX, PHYS_BASE + reg::TXFIFO as u32, buf);
+        self.dma_on = blocks > 1 && self.dma_writes && self.dma.arm_to_device(TX_PORT, buf);
         let status = self.issue_data(cmd, blocks, true)?[0];
         if self.dma_on {
             self.dma_wait(0, WRITE_SPIN_LIMIT)?;
@@ -760,15 +764,17 @@ mod tests {
     }
 
     impl DmaEngine for FakeDma {
-        fn arm_from_device(&mut self, req: u8, fifo: u32, buf: &mut [u8]) -> bool {
-            let ok = self.arm(req, fifo, buf.len());
+        fn arm_from_device(&mut self, port: Port, buf: &mut [u8]) -> bool {
+            assert_eq!(port.width, Width::Byte);
+            let ok = self.arm(port.request, port.addr, buf.len());
             if ok {
                 buf.fill(0xD4);
             }
             ok
         }
-        fn arm_to_device(&mut self, req: u8, fifo: u32, buf: &[u8]) -> bool {
-            self.arm(req, fifo, buf.len())
+        fn arm_to_device(&mut self, port: Port, buf: &[u8]) -> bool {
+            assert_eq!(port.width, Width::Byte);
+            self.arm(port.request, port.addr, buf.len())
         }
         fn done(&mut self) -> Option<bool> {
             assert!(self.armed, "polled while disarmed");
