@@ -44,3 +44,17 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
 - Mock-ups D-H on the concept canvas; G (Today screen) and H (the icon
   family: sunny, clear night, partly cloudy, cloudy, rain, thunderstorm,
   snow, cloudy night) use the photoreal icons.
+
+## An ode to Windows Mobile (owner, 2026-10-12)
+
+- The design is an ode to Windows Mobile: WM's structure (status bar, Today
+  screen, Start, two softkeys) and the WM 6.x era's best home screen, HTC
+  Sense (TouchFLO 3D): the flip clock above the weather, painted sky
+  scenes, a daily/hourly forecast, modernized; plus the calendar line and
+  the quick-launch row from the first concepts.
+- **No Windows 8 / Metro design language:** no live tiles, no flat
+  single-colour squares, no big lowercase pivot headings.
+- No other company's marks: no Microsoft four-colour logo, no HTC or
+  Microsoft fonts (Segoe is not ours to ship), no copied artwork.
+- Concepts I (Sense tribute) and K (full sky) on the canvas follow this;
+  J (tiles) is set aside.
