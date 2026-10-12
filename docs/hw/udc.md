@@ -29,7 +29,7 @@ owner's X51v by `rp-probe` (`probe-2026-10-11.md`).
 | `UDCICR1` | `0x008` | the same for P–X, plus `[27]` reset, `[28]` suspend, `[29]` resume, `[30]` SOF, `[31]` configuration change | likely | (M) |
 | `UDCISR0` / `UDCISR1` | `0x00C` / `0x010` | interrupt status, same layout as the enables; write 1 to clear | likely | (M) |
 | `UDCFNR` | `0x014` | frame number | likely | (M) |
-| `UP2OCR` | `0x020` | port 2 transceiver control (pull-ups/downs, `[16]` HXS host/device select) | likely; X51v use unknown | (M) |
+| `UP2OCR` | `0x020` | port 2 transceiver control: `[26:24]` SEOS (0 = on-chip transceiver; 2/4/6 = device controller through GPIO pads / external OTG transceiver / external charge pump; odd values the host controller), `[17]` HXOE transceiver output enable, `[16]` HXS output select (0 device, 1 host), `[7:6]` D−/D+ pull-up bypass, `[5:4]` D−/D+ pull-up enable, `[3:2]` D−/D+ pull-down enable, `[1:0]` charge pump. Reset: HXOE = HXS = 1, all resistors off. **WM leaves it `0x00020000`: on-chip transceiver, device output, and no on-chip D+ pull-up, yet the PC enumerates the device: the X51v has an external D+ pull-up resistor** (no software control found, see wiring) | confirmed (manual + measured) | PXA27x manual §12.5.2–12.6.3, real X51v |
 | `UDCCSR0` | `0x100` | endpoint 0 control/status, see below | likely | (M) |
 | `UDCCSRx` | `0x100 + 4x` | endpoint x = 1..23 (A..X) control/status | likely | (M) |
 | `UDCBCRx` | `0x200 + 4x` | bytes in the OUT FIFO (`[9:0]`) | likely | (M) |

@@ -70,6 +70,12 @@ Facts (docs/hw/udc.md):
   flight, only the active interface's endpoints work, and the transceiver
   output bit. Open: the PC notices the device only after a cable replug
   (the D+ pull-up control is not GPIO2, or not only).
+- **Hands-off on the device (2026-10-11 evening):** `cargo xtask load
+  rp-light` with nobody touching the Axim: image in, run, back, log read,
+  three times in a row. The missing piece was on the PC: the X51v's D+
+  pull-up is a fixed resistor (manual + measurement), so Windows never sees
+  the device leave; an admin scheduled task (`cargo xtask load --setup`,
+  once) restarts the device entry instead, kicked every 8 s while waiting.
 - **U3 works on the device (2026-10-11):** the loader took first light
   over USB (`cargo xtask load rp-light`), started it, got control back, and
   handed its run log to the PC: the first device run with no file copy and
