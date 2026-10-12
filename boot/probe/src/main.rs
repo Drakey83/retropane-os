@@ -381,7 +381,7 @@ mod image {
         let mut i = 0;
         for (title, regs) in diag::GROUPS {
             let page = match *title {
-                "CLOCKS" | "MEMORY" => 0,
+                "CLOCKS" | "MEMORY" | "PC CARD" => 0,
                 _ => 1,
             };
             rep.on_page(page);
@@ -392,6 +392,23 @@ mod image {
                 i += 1;
             }
             rep.pairs(&pairs[..regs.len()]);
+            if *title == "PC CARD" {
+                // The CF slot's lines (docs/hw/cf.md): card detect GPIO13,
+                // ready GPIO84, reset GPIO36 (level, and 'o' when an output);
+                // MECR's sockets (NOS) and card-inserted (CIT) bits.
+                let level = |g: u32| (gpio_word(&soc, "GPLR", g) >> (g % 32)) & 1;
+                let out = |g: u32| (gpio_word(&soc, "GPDR", g) >> (g % 32)) & 1 != 0;
+                let mecr = reg_value(&soc, "MECR");
+                rep.line(format_args!(
+                    "CF det13={} rdy84={} rst36={}{} NOS{} CIT{}",
+                    level(13),
+                    level(84),
+                    level(36),
+                    if out(36) { "o" } else { "i" },
+                    mecr & 1,
+                    (mecr >> 1) & 1
+                ));
+            }
             if *title == "CLOCKS" {
                 let ccsr = soc[3];
                 let l = ccsr & 0x1F;
@@ -553,6 +570,29 @@ mod image {
     }
 
     /// Formats into a fixed line buffer (cut if too long).
+    /// The snapshot value of the whitelisted register `name` (0 if absent).
+    fn reg_value(soc: &[u32; diag::COUNT], name: &str) -> u32 {
+        diag::GROUPS
+            .iter()
+            .flat_map(|(_, regs)| regs.iter())
+            .position(|r| r.name == name)
+            .map_or(0, |i| soc[i])
+    }
+
+    /// The `GPLRn`/`GPDRn` word holding `gpio`.
+    fn gpio_word(soc: &[u32; diag::COUNT], prefix: &str, gpio: u32) -> u32 {
+        let n = b'0' + (gpio / 32) as u8;
+        diag::GROUPS
+            .iter()
+            .flat_map(|(_, regs)| regs.iter())
+            .position(|r| {
+                r.name.len() == prefix.len() + 1
+                    && r.name.starts_with(prefix)
+                    && r.name.as_bytes()[prefix.len()] == n
+            })
+            .map_or(0, |i| soc[i])
+    }
+
     fn fmt_into(buf: &mut [u8; 37], args: core::fmt::Arguments) {
         struct W<'a>(&'a mut [u8; 37], usize);
         impl Write for W<'_> {

@@ -46,6 +46,19 @@ pub const GROUPS: &[(&str, &[Reg])] = &[
         ],
     ),
     (
+        // PC Card socket timing (socket 0: Wi-Fi, socket 1: CompactFlash,
+        // docs/hw/cf.md): how Windows Mobile set them up.
+        "PC CARD",
+        &[
+            r("MCMEM0", 0x4800_0028),
+            r("MCMEM1", 0x4800_002C),
+            r("MCATT0", 0x4800_0030),
+            r("MCATT1", 0x4800_0034),
+            r("MCIO0", 0x4800_0038),
+            r("MCIO1", 0x4800_003C),
+        ],
+    ),
+    (
         "INTC",
         &[
             r("ICMR", 0x40D0_0004),
