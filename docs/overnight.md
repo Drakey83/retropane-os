@@ -394,10 +394,14 @@ on the host or in the emulator first.
       (`cargo xtask put Apps/Game.exe` works on both file systems).
     A full folder answers "no room" (folders don't grow yet: 4 KiB+
     clusters give 40+ files per folder, SDXC's usual 128 KiB, 1,300+).
-21. **Thumb for cold code**: measure building cold paths (loader commands,
-    file systems, bring-up) as Thumb (`#[instruction_set(arm::t32)]` or a
-    Thumb target for cold crates) against ARM; adopt where it saves size
-    without touching hot paths.
+21. **Thumb for cold code**: **measured; ADR-0015 proposed, adoption waits
+    for the owner** (it changes how every image is built). The file
+    systems and CF driver as the loader builds them: ARM 30,421 B, Thumb
+    21,083 B (−31%); roughly 20 KiB back in the loader. Per-crate
+    `+thumb-mode` was tried and rejected (rustc: unstable, unsound, being
+    removed). Proposed: a Thumb target for cold code with the HAL's
+    coprocessor assembly and hot loops marked ARM, where a missed mark is a
+    build error, not a device fault; steps measured in the emulator first.
 22. **Audio**: WM8750 codec over I2S with DMA (QEMU has both models): a
     tone through the loader, measured, as the start of ROADMAP Phase 3
     audio.
