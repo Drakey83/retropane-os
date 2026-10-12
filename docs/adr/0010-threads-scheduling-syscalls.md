@@ -1,6 +1,8 @@
 # ADR-0010: Threads, scheduling and the system-call boundary
 
-- **Status:** Accepted (2026-10-11, by the project owner)
+- **Status:** Accepted (2026-10-11, by the project owner); every rule
+  implemented and live in `boot/threads` (2026-10-11, see Implementation
+  status), moving into the kernel image next
 - **Date:** 2026-10-11
 
 ## Context
@@ -148,9 +150,30 @@ Constraints and facts that shape the design:
   owner's ROM (docs/research/kdata.md) shows programs read `+0x000` (the TLS
   pointer: 89 modules) and `+0x008` (the current thread ID: MFC/ATL
   runtimes). `kernel/sched::kdata::switch_to` writes those words (and
-  `+0x00C`, the process ID). Wiring it into the switch needs the kernel
-  image's page tables for the high page (the bring-up map's 1 MiB sections
-  can't hold a separate user-read-only page): next, with the kernel image.
+  `+0x00C`, the process ID).
+- **KData wired into the switch (rule 8, 2026-10-11):** every switch to
+  another thread writes the next thread's view (`Scheduler::view`: three
+  words) into the page. `rt::take_kdata_page` splits the bring-up map's top
+  MiB into 4 KiB pages (a coarse table at `0xA80F2000`): the vector page,
+  now kernel-only (the section had left it and the rest of SDRAM's first MiB
+  user-writable), and KData at `0xFFFFC000` (frame `0xA80F1000`), user
+  read-only. The kernel writes it through that one user address, so the
+  VIVT cache never holds a second alias and a switch needs no cache
+  maintenance. Live in `boot/threads` (`USER KData OK`): two user threads
+  read the TLS pointer and thread ID from `0xFFFFC800` as the inlined macros
+  do and keep their own value in TLS slot 0 across switches (6 checks
+  against the kernel's view), and a user write to the page faults and
+  changes nothing; both checks were mutation-tested (no write on the switch;
+  a user-writable page). Choices where the ADR and kdata.md left room,
+  the simplest consistent with the measured layout: the thread ID is the
+  scheduler's thread number (1-128, never 0, as handles never are); the
+  process ID is the process slot; each user thread's TLS array is the top
+  256 bytes of its user stack with 8 words below slot 0 for our `coredll`
+  (CE's uses -0x14..-0x0C), zeroed at creation, as CE places it; kernel
+  threads have none (pointer 0). The kernel image keeps its own page tables
+  (`PageTables`); it maps the same two pages (`mmu::high_pages`' layout)
+  when the scheduler moves into it. Not yet checked on the device: the
+  first coarse table a test image installs.
 
 ## Open questions
 

@@ -89,6 +89,8 @@ struct Thread {
     /// (as opposed to timing out).
     waiting_on: u8,
     signalled: bool,
+    /// User address of its TLS slot array (0: none, a kernel thread).
+    tls: u32,
 }
 
 const EMPTY: Thread = Thread {
@@ -104,6 +106,7 @@ const EMPTY: Thread = Thread {
     quantum: 0,
     waiting_on: NONE,
     signalled: false,
+    tls: 0,
 };
 
 /// Wait objects: CE's events (manual or auto reset) and mutexes share one
@@ -308,6 +311,27 @@ impl Scheduler {
     #[must_use]
     pub fn priority(&self, t: Tid) -> u8 {
         self.threads[usize::from(t.0)].priority
+    }
+
+    /// Records the user address of a thread's TLS slot array (see
+    /// [`kdata::tls_at`]), which [`view`](Self::view) reports.
+    pub fn set_tls(&mut self, t: Tid, tls: u32) -> Result<(), Error> {
+        let i = self.valid(t)?;
+        self.threads[usize::from(i)].tls = tls;
+        Ok(())
+    }
+
+    /// What the KData page must say while `t` runs (ADR-0010 rule 8): its
+    /// TLS array, its ID (the thread number, never 0) and its process's
+    /// (the process slot).
+    #[must_use]
+    pub fn view(&self, t: Tid) -> kdata::ThreadView {
+        let th = &self.threads[usize::from(t.0)];
+        kdata::ThreadView {
+            tls: th.tls,
+            thread_id: u32::from(t.0),
+            process_id: u32::from(th.slot),
+        }
     }
 
     // ---- the ready queues -------------------------------------------------

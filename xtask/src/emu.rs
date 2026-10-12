@@ -372,6 +372,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER preempted OK",
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
+    "USER KData OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -402,7 +403,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
     );
     Ok(())
 }
@@ -720,10 +721,17 @@ fn card_file(image: &Path, name: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Most read commands `boot_loader_put`'s write may take (FAT search in
+/// runs; see docs/perf.md).
+const MAX_PUT_READS: u32 = 15;
+
 /// Writing a file to the card through the loader (ADR-0013): a FAT32 card
 /// image with an old `retropane.bin`, a bigger new one sent over the
 /// emulated USB port, the loader's OK, and the image checked on the host
-/// afterwards: the new contents, and the other file untouched.
+/// afterwards: the new contents, and the other file untouched. Most of the
+/// card is taken behind the FSInfo hint, so the free-cluster scan walks
+/// ~90% of the FAT first (the stale-hint case that cost 3.7 s on the
+/// device); the loader reports its read commands.
 pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    file to card: skipped (this emulator has no USB controller model)");
@@ -733,6 +741,8 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let old: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
     let new: Vec<u8> = (0..70_000u32).map(|i| (i * 13 + 5) as u8).collect();
     let script = b"set ramaddr 0xa8000000\r\n".to_vec();
+    // Clusters 8..3600 of ~4,080 in use, the hint (cluster 5) before them.
+    let taken: Vec<u32> = (8..3600).collect();
     let image = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 32 * 1024, // 16 MiB
         sectors_per_cluster: 8,   // 4 KiB clusters, as on the owner's card
@@ -746,7 +756,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
                 data: &script,
             },
         ],
-        blocked_clusters: &[],
+        blocked_clusters: &taken,
     });
     let sd = root.join("target/emulator/sd-put.img");
     std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
@@ -769,6 +779,18 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
             return Err(format!("unexpected reply to the file: {line:?}"));
         }
         eprintln!("    loader: {line}");
+        // 35 read commands when the FAT was read one sector per command
+        // (2026-10-11); reading it in runs, 12.
+        let reads: u32 = line
+            .split_once(" (")
+            .and_then(|(_, r)| r.split_once(" reads)"))
+            .and_then(|(n, _)| n.parse().ok())
+            .ok_or_else(|| format!("no read count in {line:?}"))?;
+        if reads > MAX_PUT_READS {
+            return Err(format!(
+                "the write took {reads} read commands (at most {MAX_PUT_READS}): is the FAT search reading sector by sector again?"
+            ));
+        }
         s.write_all(&missing).map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "RPL ERR not found", 20)?;
         let _ = reply;
