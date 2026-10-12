@@ -352,6 +352,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC call OK",
     "IPC server fault OK",
     "IPC foreign handle OK",
+    "IPC nested OK",
+    "IPC too deep OK",
     "IPC isolation OK",
 ];
 

@@ -4,7 +4,10 @@
   as amended: a driver host per driver class from the start (the owner
   chose the more isolated variant). Step 1 (`rp-kernel-ipc`, the rules)
   and step 2 (the migrating call live in `rp-kernel`, emulator-tested)
-  done the same night; step 3 (service manager, driver hosts) next.
+  done the same night; a call is carried as a nested activation on the
+  calling thread's kernel stack (one word per thread for the innermost
+  continuation, no table of saved registers); step 3 (service manager,
+  driver hosts) next.
 - **Date:** 2026-10-12
 
 ## Context

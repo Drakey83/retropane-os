@@ -13,11 +13,18 @@
 //! 4. calls through handle 9, which it doesn't have (an error comes back);
 //! 5. reads `DATA` back (still its own `0x1111_1111`, though the server
 //!    wrote `0x2222_2222` at the same address in its slot);
-//! 6. reports: `SYS_DONE` with the last sum, both errors and its word.
+//! 6. calls with 20, 22 and a nesting count of 3: the server calls itself
+//!    3 more times (4 calls deep, the limit) and each level adds 1: 45;
+//! 7. the same with 4: the fifth level is refused (`TooDeep`), and the
+//!    error comes back up unchanged;
+//! 8. reports: `SYS_DONE` with the last sum, both errors, its word, and
+//!    the two nested results in `r4`, `r5`.
 //!
-//! The server, given the arguments in `r1`, `r2`: faults if they are both
-//! zero (a load from an unmapped address), else writes `0x2222_2222` at
-//! `DATA` and returns their sum.
+//! The server, given the arguments in `r1`, `r2` and a nesting count in
+//! `r3`: with a count, calls itself (handle 0, its own port) with the
+//! count less one and returns the result plus one (errors unchanged);
+//! else faults if `r1`, `r2` are both zero (a load from an unmapped
+//! address), else writes `0x2222_2222` at `DATA` and returns their sum.
 
 /// System calls the programs make (`r7`).
 pub const SYS_CALL: u32 = 1;
@@ -48,6 +55,7 @@ rp_ipc_client:
 1:  mov     r0, r4
     mov     r1, #20
     mov     r2, #22
+    mov     r3, #0                  @ no nesting
     mov     r7, #1                  @ SYS_CALL
     swi     #0
     mov     r8, r0                  @ the sum
@@ -66,6 +74,22 @@ rp_ipc_client:
     swi     #0
     mov     r11, r0                 @ the error
     ldr     r6, [r5]                @ our word, untouched
+    mov     r0, r4                  @ nested: 4 calls deep
+    mov     r1, #20
+    mov     r2, #22
+    mov     r3, #3
+    mov     r7, #1
+    swi     #0
+    mov     r9, r0
+    mov     r0, r4                  @ nested one level too deep
+    mov     r1, #20
+    mov     r2, #22
+    mov     r3, #4
+    mov     r7, #1
+    swi     #0
+    mov     r12, r0
+    mov     r4, r9
+    mov     r5, r12
     mov     r0, r8
     mov     r1, r10
     mov     r2, r11
@@ -75,7 +99,17 @@ rp_ipc_client:
 2:  b       2b
 
 rp_ipc_server:
-    orrs    r3, r1, r2
+    cmp     r3, #0
+    beq     4f
+    mov     r0, #0                  @ our own port
+    sub     r3, r3, #1
+    mov     r7, #1                  @ SYS_CALL (r1, r2 unchanged)
+    swi     #0
+    cmn     r0, #256                @ an error (0xFFFFFFxx) goes back as is
+    addcc   r0, r0, #1
+    mov     r7, #2                  @ SYS_RETURN
+    swi     #0
+4:  orrs    r3, r1, r2
     ldreq   r3, =0xDEAD0000         @ both zero: fault
     ldreq   r3, [r3]
     ldr     r5, =0x00020000

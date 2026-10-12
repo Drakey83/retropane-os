@@ -201,19 +201,8 @@ mod image {
             && rp_kernel_ipc::LAST_SLOT as u32 == layout::LAST_PROCESS_SLOT
     );
 
-    /// A caller's registers while its thread is inside a server.
-    #[derive(Clone, Copy)]
-    struct Saved {
-        r: [u32; 13],
-        sp: u32,
-        lr: u32,
-        pc: u32,
-        cpsr: u32,
-    }
-
     struct IpcState {
         ipc: Ipc,
-        saved: [Saved; rp_kernel_ipc::MAX_DEPTH],
         vm_ok: bool,
         first_call: u32,
         calls: u32,
@@ -221,13 +210,6 @@ mod image {
 
     static IPC: Global<IpcState> = Global::new(IpcState {
         ipc: Ipc::new(),
-        saved: [Saved {
-            r: [0; 13],
-            sp: 0,
-            lr: 0,
-            pc: 0,
-            cpsr: 0,
-        }; rp_kernel_ipc::MAX_DEPTH],
         vm_ok: false,
         first_call: 0,
         calls: 0,
@@ -632,9 +614,12 @@ mod image {
                         prot: Prot::RW,
                         backing: Backing::Zero,
                     },
+                    // A stack page per call depth (the server may be called
+                    // by itself); demand paged, so unused depths cost
+                    // nothing.
                     Region {
                         start: base + STACK_VA,
-                        len: 4096,
+                        len: 4096 * rp_kernel_ipc::MAX_DEPTH as u32,
                         prot: Prot::RW,
                         backing: Backing::Zero,
                     },
@@ -680,69 +665,48 @@ mod image {
                         i.first_call = rt::ticks();
                     }
                     i.calls += 1;
-                    let e = i.ipc.call(TID, slot, Handle(f.arg(0) as u8))?;
-                    i.saved[e.depth - 1] = Saved {
-                        r: f.r,
-                        sp: f.sp,
-                        lr: f.lr,
-                        pc: f.pc,
-                        cpsr: f.cpsr,
-                    };
-                    Ok::<_, IpcError>(e)
+                    i.ipc.call(TID, slot, Handle(f.arg(0) as u8))
                 });
                 match r {
                     Ok(e) => {
-                        // The server gets its arguments and nothing else of
-                        // the caller's registers.
-                        let (a1, a2, a3) = (f.arg(1), f.arg(2), f.arg(3));
-                        f.r = [0; 13];
-                        f.r[1] = a1;
-                        f.r[2] = a2;
-                        f.r[3] = a3;
-                        f.lr = 0;
-                        f.sp = STACK_VA + 4096;
-                        f.pc = e.entry;
-                        f.cpsr = 0x10;
+                        // The server runs as a nested activation of this
+                        // thread: the caller's registers wait in this frame
+                        // on the kernel stack. The server gets its arguments
+                        // and nothing else, on its stack for this depth.
                         switch_to(u32::from(e.slot));
+                        let result = user::call_user(
+                            usize::from(TID),
+                            e.entry,
+                            STACK_VA + 4096 * e.depth as u32,
+                            [0, f.arg(1), f.arg(2), f.arg(3)],
+                        );
+                        f.set_result(result);
                     }
                     Err(e) => f.set_result(ERR | e as u32),
                 }
             }
             SYS_RETURN => {
-                let result = f.arg(0);
-                if unwind(f) {
-                    f.set_result(result);
-                } else {
-                    f.set_result(ERR | IpcError::NotInCall as u32);
-                }
+                finish_call(f.arg(0));
+                f.set_result(ERR | IpcError::NotInCall as u32);
             }
             SYS_DONE => done(f),
             _ => f.set_result(ERR | 0xFF),
         }
     }
 
-    /// Back to the caller of the call this thread is in: its registers and
-    /// its slot. False when it isn't in a call.
-    fn unwind(f: &mut Frame) -> bool {
-        let back = IPC.with(|i| {
-            let d = i.ipc.depth(TID);
-            i.ipc.ret(TID).ok().map(|r| (r, i.saved[d - 1]))
-        });
-        let Some((r, s)) = back else {
-            return false;
-        };
-        f.r = s.r;
-        f.sp = s.sp;
-        f.lr = s.lr;
-        f.pc = s.pc;
-        f.cpsr = s.cpsr;
-        switch_to(u32::from(r.slot));
-        true
+    /// Ends the call this thread is in: back to the caller's slot, and its
+    /// `SYS_CALL` returns `result`. Returns only if the thread is in no
+    /// call.
+    fn finish_call(result: u32) {
+        if let Some(r) = IPC.with(|i| i.ipc.ret(TID).ok()) {
+            switch_to(u32::from(r.slot));
+            user::resume_call(usize::from(TID), result);
+        }
     }
 
     /// Faults in user mode: demand paging first; a server faulting inside a
     /// call unwinds to its caller with an error; anything else stops.
-    fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
+    fn on_user_fault(_: &mut Frame, kind: rt::Fault, addr: u32) {
         let prefetch = matches!(kind, rt::Fault::PrefetchAbort);
         let (fsr, _) = cpu::fault_registers();
         let resolved = access_for(arm::classify(fsr), prefetch).is_some_and(|access| {
@@ -759,10 +723,8 @@ mod image {
         if resolved {
             return;
         }
-        if unwind(f) {
-            f.set_result(ERR_FAULT);
-            return;
-        }
+        // A server faulting inside a call: the caller gets an error.
+        finish_call(ERR_FAULT);
         on_fault(kind, addr)
     }
 
@@ -783,6 +745,14 @@ mod image {
             "foreign handle",
             handle_err == ERR | IpcError::BadHandle as u32,
             handle_err,
+        );
+        let (nested, too_deep) = (f.r[4], f.r[5]);
+        ok &= report_ipc(&mut uart, "nested", nested == 45, nested);
+        ok &= report_ipc(
+            &mut uart,
+            "too deep",
+            too_deep == ERR | IpcError::TooDeep as u32,
+            too_deep,
         );
         ok &= report_ipc(
             &mut uart,
