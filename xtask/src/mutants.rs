@@ -146,6 +146,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-gfx", "dirty"]),
     },
     Mutant {
+        name: "tick re-armed without checking the counter hasn't passed it (a 22-minute freeze)",
+        file: "hal/pxa27x/src/soc.rs",
+        from: "        self.arm1(next, period);",
+        to: "        self.0.write32(ost_reg::OSMR1, next);",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "a_late_tick"]),
+    },
+    Mutant {
         name: "soft run limit not routed to FIQ (IRQs-off hangs reset the device)",
         file: "hal/pxa27x/src/rt.rs",
         from: "    i.route_fiq(crate::soc::irq::OST_4_11, true);",

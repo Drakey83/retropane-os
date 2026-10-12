@@ -959,13 +959,32 @@ on the host or in the emulator first.
     - **Modernize:** layered watchdogs (soft first, hard as backstop) as
       modern kernels do, with no per-program code needed.
 
-56. **Intermittent: a reply's second USB packet stalls** (seen once in the
-    emulator, 2026-10-12, item 55's run): the tone reply came back cut at
-    exactly 64 bytes (one packet) and the rest never arrived within 20 s;
-    the rerun passed. The loader puts the whole reply in the send ring and
-    services USB every 1 ms, so something intermittently stops the ring
-    draining. Next: a stress test sending a long reply hundreds of times to
-    reproduce it on demand, then fix and keep the test.
+56. **Intermittent: a reply's second USB packet stalls**: **fixed
+    (host-tested); it was the tick, not USB.** Seen twice in the emulator,
+    both times on a tone reply cut at exactly 64 bytes (one packet). The
+    second time (2026-10-12) the serial log showed the loader printing no
+    `RPLOAD1 READY` (once a second, unconditionally) for 20 s after the
+    reply: the whole loop had stopped, right after the one `udc.poll()`
+    that sent the first packet, in `wait_tick`. Cause: the 1 ms tick
+    re-armed itself by reading the counter, then writing match 1 a few
+    instructions later; a handler running almost a whole period late
+    (QEMU's host thread pausing at the end of a tone, "Resetting rate
+    control") let the counter pass the deadline in between. Match 1 is an
+    equality compare, so the next tick came only when the counter wrapped:
+    22 minutes. On the device the same window exists (an FIQ between the
+    read and the write); a loader with the watchdog armed would then reset
+    onto Dell's factory prompt. Fix (`OsTimer::arm1`, class: every match-1
+    write): read the counter after writing, as `alarm` already did; if the
+    deadline was missed and hasn't fired, move it ahead (doubling) and try
+    again. `start` too. Guard test: an OS timer whose counter moves at
+    every register access, every lateness around the edge and across the
+    wrap (fails on the old code: late 997 ticks of 1000, 1 tick per
+    access); a mutant keeps it biting. Not reproducible on demand in the
+    emulator (it needs the host to pause inside a window of a few
+    instructions), so the soak test this item planned can't fail without
+    the fix; the host test is the check. Watchdog feeds (30 s ahead) and
+    the run limit (counter reset after the match is set) don't have the
+    window.
 
 57. **Tests at the owner's card size**: emulator runs with a card image as
     large as the owner's (4 GB and 32 GB, sparse files), for the loader's
