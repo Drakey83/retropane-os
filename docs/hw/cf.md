@@ -121,6 +121,7 @@ partition; reads and writes fine under Windows Mobile in the same slot.
 | A loader that had been reloaded over USB several times, `cf` | IDENTIFY and SET FEATURES work, but sector 0 comes back with its end zeroed (`00 00` for `55 aa`) and status reads `0x00` after; every later read fails (Windows retried sector 0 endlessly) |
 | A loader started by another loader that had used the socket, `cf` | `not a storage card`: the CIS reads back as garbage |
 | GPIO13 with the card in | low (so low = card in, as the driver assumes) |
+| Card pulled out and pushed back in while the loader ran (card fully seated) | GPIO13 then reads **high** ("no card") and stays high: either GPIO13 isn't a plain detect line (the card's ready line would go quiet unpowered), or removal cuts the slot's power and only Windows Mobile restores it. Either way the loader must power and reset the slot itself. Also: a slot whose attach failed is never retried (`CfSlot::Failed` sticks), even after a re-insert |
 | CPLD registers, read before RetroPane's first write | `00=0048 04=00a0 06=0002 14=0002`, the rest 0, including `0x16`: our only write (`0x16 = 0x0001`, SD power) clears nothing Windows Mobile set, so the CF slot keeps Windows Mobile's power |
 
 **So:** the socket works when RetroPane is its first owner after Windows
