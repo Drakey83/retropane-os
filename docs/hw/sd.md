@@ -109,6 +109,12 @@ wear: keep a backup, and consider replacing it.
 
 ### File system
 
+SDXC cards (64 GB and up) come as exFAT: `rp-fat` reads and writes those
+too (root directory for now), through the allocation bitmap, storing a file
+that fits one free run with no FAT chain; the loader's `put` and crash
+reports mount whichever the card has (`AnyVolume`). Same crash-safety
+order as below, plus exFAT's VolumeDirty flag for the duration.
+
 The card is FAT32 (partition type `0x0C`, 4 KiB clusters on the owner's
 card). `kernel/fat` (`rp-fat`) reads it and replaces files by copy-then-swap:
 new clusters first, FAT links in every copy, then one sector write switches

@@ -120,9 +120,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 78 -> 87 KiB on 2026-10-12 (test image): card folders
     // (paths, mkdir, put creating parents) and the backlight command;
     // 79.0 KiB measured, +~10%.
+    // Ratcheted 87 -> 96 KiB on 2026-10-12 (test image): exFAT reading and
+    // writing for SDXC cards (put and crash reports on either file system,
+    // ~16 KiB at opt-level 3); the loader is now built for size like the
+    // other cold images, which took 11 KiB back; 89.8 KiB measured, +~7%.
     Budget {
         image: "rp-loader",
-        max_load: 87 * 1024,
+        max_load: 96 * 1024,
         max_zero: 20 * 1024,
     },
     // Test image: the crash path (panics on purpose); 6.6 KiB measured, +~10%.

@@ -337,6 +337,7 @@ const LFN_MAX: usize = NAME_MAX.div_ceil(13);
 
 impl<D: BlockDevice> Volume<D> {
     /// Mounts the FAT32 partition whose first sector is `base`.
+    #[inline(never)]
     pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
         let mut buf = [0u8; SECTOR];
         dev.read_blocks(base, &mut buf)?;
@@ -837,6 +838,7 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// # Panics
     /// If `scratch` is shorter than a sector.
+    #[inline(never)]
     pub fn read_file(
         &mut self,
         file: &File,
@@ -966,6 +968,7 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Replaces `path`'s contents, or creates it (and any missing parent
     /// directories, like `mkdir -p`) when it doesn't exist.
+    #[inline(never)]
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
         match self.replace(path, data, scratch) {
             Err(Error::NotFound) => {
@@ -1310,6 +1313,70 @@ fn short_to_display(short: &[u8], nt: u8, out: &mut [u8; 12]) -> usize {
 pub mod format;
 
 pub mod exfat;
+
+/// A FAT32 or exFAT volume, whichever the boot sector says: what a caller
+/// that only stores and reads files needs (the loader's `put`, crash
+/// reports), so SDXC cards work wherever SD and SDHC cards do.
+// No heap to box the larger variant into; one lives briefly on the stack.
+#[allow(clippy::large_enum_variant)]
+pub enum AnyVolume<D> {
+    /// FAT32 (SD and SDHC cards).
+    Fat32(Volume<D>),
+    /// exFAT (SDXC cards).
+    ExFat(exfat::ExVolume<D>),
+}
+
+impl<D: BlockDevice> AnyVolume<D> {
+    /// Mounts the volume whose boot sector is at `base`.
+    pub fn mount(mut dev: D, base: u32) -> Result<Self, Error> {
+        let mut boot = [0u8; SECTOR];
+        dev.read_blocks(base, &mut boot)?;
+        if &boot[3..11] == b"EXFAT   " {
+            exfat::ExVolume::mount(dev, base).map(Self::ExFat)
+        } else {
+            Volume::mount(dev, base).map(Self::Fat32)
+        }
+    }
+
+    /// Replaces or creates the file (crash-safe on either). exFAT: root
+    /// directory only for now.
+    pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        match self {
+            Self::Fat32(v) => v.put(path, data, scratch),
+            Self::ExFat(v) => v.put(path, data, scratch),
+        }
+    }
+
+    /// Reads the file in order, calling `f` with each piece.
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    pub fn read_back(
+        &mut self,
+        path: &str,
+        scratch: &mut [u8],
+        f: impl FnMut(&[u8]),
+    ) -> Result<(), Error> {
+        match self {
+            Self::Fat32(v) => {
+                let file = v.find(path)?;
+                v.read_file(&file, scratch, f)
+            }
+            Self::ExFat(v) => {
+                let file = v.find(path)?;
+                v.read_file(&file, scratch, f)
+            }
+        }
+    }
+
+    /// The block device.
+    pub fn device(&self) -> &D {
+        match self {
+            Self::Fat32(v) => v.device(),
+            Self::ExFat(v) => v.device(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

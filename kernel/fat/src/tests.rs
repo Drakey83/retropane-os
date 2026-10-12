@@ -792,6 +792,45 @@ fn out_of_range_clusters_and_absurd_geometry_are_refused() {
 }
 
 #[test]
+fn any_volume_mounts_either_kind_and_puts_and_reads_back() {
+    let fat = tiny_image(&[Entry {
+        name: "a.txt",
+        data: b"fat",
+    }]);
+    let ex = crate::exfat::format::build(
+        4096,
+        2,
+        &[crate::exfat::format::Entry {
+            name: "a.txt",
+            data: b"exfat",
+            fragment: false,
+        }],
+    );
+    let mut scratch = vec![0u8; 4096];
+    for (img, was, kind) in [(fat, &b"fat"[..], "fat32"), (ex, &b"exfat"[..], "exfat")] {
+        let mut v = AnyVolume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+        assert_eq!(
+            matches!(v, AnyVolume::ExFat(_)),
+            kind == "exfat",
+            "{kind} mounted as the wrong kind"
+        );
+        let mut got = Vec::new();
+        v.read_back("A.TXT", &mut scratch, |c| got.extend_from_slice(c))
+            .unwrap();
+        assert_eq!(got, was);
+        v.put("crashlog.txt", b"report", &mut scratch).unwrap();
+        let mut got = Vec::new();
+        v.read_back("crashlog.txt", &mut scratch, |c| got.extend_from_slice(c))
+            .unwrap();
+        assert_eq!(got, b"report");
+        assert!(v.device().writes > 0);
+    }
+    // Neither: refused.
+    let blank = vec![0u8; 4096 * SECTOR];
+    assert!(AnyVolume::mount(MemDisk::new(blank), PARTITION_START).is_err());
+}
+
+#[test]
 fn folders_paths_and_put_creating_parents() {
     let img = tiny_image(&[Entry {
         name: "top.txt",

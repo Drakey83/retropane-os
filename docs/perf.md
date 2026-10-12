@@ -72,6 +72,10 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | (same change, new row: 32 KiB, a cluster's worth, 8 descriptors) | `sd_read_64_blocks` | — | 12,923 ns |
 | 2026-10-12 | `rp-bench` **ratcheted 27 → 30 KiB** (test image): the DMA channel, the controller's DMA path and the 64-block row | `rp-bench` loaded size | 26,608 B | 28,764 B |
 
+| 2026-10-12 | `rp-loader` built at opt-level "s" (ADR-0005 rule 8: it is cold code). The generic drivers and file systems are compiled in the loader's crate, so their own crates' "s" never applied there. Emulator drive and put timings unchanged within noise (1 MiB read 2,792 → 2,836 ms) | `rp-loader` loaded size | 104,427 B | 91,904 B (−12%) |
+| 2026-10-12 | exFAT writes: free space from the allocation bitmap instead of a FAT scan (emulator `boot_loader_put_exfat`, 70 KB on a 16 MiB card) | read commands for the put | 12 (FAT32, same file) | 8 |
+| 2026-10-12 | `rp-loader` **ratcheted 87 → 96 KiB** (test image): exFAT read and write, `AnyVolume` | `rp-loader` loaded size | 86,043 B | 91,904 B |
+
 ## Real hardware
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

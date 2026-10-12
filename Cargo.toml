@@ -80,6 +80,12 @@ opt-level = "s"
 opt-level = "s"
 [profile.release.package.rp-probe]
 opt-level = "s"
+# The loader is cold code too (it waits on the PC); the generic drivers and
+# file systems it links are compiled here, in its crate, so this is what
+# builds them for size. Its hot paths (memcpy, the FIFOs' DMA) don't depend
+# on it.
+[profile.release.package.rp-loader]
+opt-level = "s"
 # The kernel image's own crate is bring-up and test-harness code (cold); the
 # kernel libraries it links (kernel/mm, kernel/lz4) keep opt-level 3.
 [profile.release.package.rp-kernel]

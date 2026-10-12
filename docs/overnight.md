@@ -294,9 +294,28 @@ on the host or in the emulator first.
       and absurd depths refused; less code for both kinds of entry.
     - **Modernize:** `cargo xtask put file Apps/Game.exe` organises the card
       like any modern device, folders made as needed.
-16. **exFAT writes**: replace and create on exFAT cards (bitmap instead of
-    a free scan, entry-set checksums kept right), so SDXC cards get the
-    same tools as FAT32.
+16. **exFAT writes**: **done (emulator).** `ExVolume::put` replaces and
+    creates root-directory files: free space from the allocation bitmap; a
+    file that fits one free run is stored with no FAT chain (exFAT's
+    contiguous files), else chained through the FAT; data and bitmap first,
+    then one sector write switches the directory (in place when the file
+    and stream entries share a sector, else a new set then the old one
+    deleted; new sets at the end of the directory are written
+    last-sector-first behind the end marker), then the old clusters freed;
+    VolumeDirty set for the duration; name hashes computed as Windows
+    looks names up. `AnyVolume` lets the loader's `put` and crash reports
+    use either file system. Tests: 7 new (power cut at every write of four
+    kinds of put, hostile cards, fragmentation, sector boundaries, a cut
+    long name that matched its prefix: a real bug, fixed). Emulator:
+    `boot_loader_put_exfat`. Independent check still to do: `fsck.exfat`
+    (exfatprogs, not installed in WSL; installing needs the owner).
+    - **Iterate:** contiguous files need no FAT writes at all; fewer reads
+      than FAT32 (8 vs 12 for the same put); the directory walk checks set
+      checksums as entries stream past instead of buffering whole sets;
+      the loader is built for size (−12%), paying for the feature.
+    - **Modernize:** SDXC cards (64 GB+) get the same crash-safe tools as
+      SD/SDHC; the dirty flag tells the next PC to check the card after a
+      cut, as modern file systems do.
 17. **Power button**: **done in the emulator; device run pending.** GPIO0,
     resting at 0 with WM watching both edges (probe). The loader takes the
     resting level at start and counts a 30 ms-debounced change from it as a
