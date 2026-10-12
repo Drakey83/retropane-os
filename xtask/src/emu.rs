@@ -510,6 +510,40 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     });
     let sd = root.join("target/emulator/sd-crash.img");
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    // The crash screen: once the loader is back, a red band at the top of
+    // its log area (below the 96-pixel status lines) and the log's end.
+    let shot = root.join("target/emulator/crash-screen.ppm");
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    let check_screen = || -> Result<(), String> {
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = std::fs::remove_file(&shot);
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.screendump(&guest, &shot)?;
+        let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+        let px = |x: u32, y: u32| {
+            let o = ((y * img.width + x) * 3) as usize;
+            (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2])
+        };
+        let (r, g, b) = px(470, 96 + 4);
+        if r < 200 || g > 40 || b > 40 {
+            return Err(format!("crash screen: no red band (pixel {r},{g},{b})"));
+        }
+        // Text in the band (white) and below it (the log, light grey).
+        // White as the screendump quantises RGB565 (about 248, 252, 248).
+        let white = (0..480).any(|x| {
+            let (r, g, b) = px(x, 96 + 10);
+            r > 230 && g > 230 && b > 230
+        });
+        let text =
+            (96 + 50..96 + 320).any(|y| (0..480).any(|x| px(x, y).0 > 200 && px(x, y).1 > 200));
+        if !white || !text {
+            return Err(format!("crash screen: band text {white}, log text {text}"));
+        }
+        Ok(())
+    };
     let output = boot(
         root,
         &Boot {
@@ -520,7 +554,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
             steps: &[],
             extra: &[],
             input: Some((&frame, "RPL END")),
-            during: None,
+            during: Some(&check_screen),
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -539,7 +573,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         return Err("crash: crashlog.txt on the card doesn't hold the report".into());
     }
     eprintln!(
-        "    crash path OK: the panic came back to the loader, reached the PC and is on the card"
+        "    crash path OK: the panic came back to the loader, reached the PC and the card, and is on the screen"
     );
     Ok(())
 }
