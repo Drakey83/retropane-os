@@ -50,6 +50,8 @@ commands:
             PC write it, `drive ro` (the default at start) makes it read-only,
             `drive off`/`drive on` withdraws/offers the card (an empty reader
             to the PC), `drive status` reports counters and the last card error
+  backlight the X51v's backlight through the loader: `backlight` reports
+            it, `backlight <0-100>` fades to that level (perceptual percent)
   card      card diagnostics through the loader: `card scan <lba> <count>`
             reads blocks one by one, reports failures and the slowest read;
             `card scrub <lba>` rewrites a weak first-FAT sector in place,
@@ -118,6 +120,10 @@ fn main() -> ExitCode {
             eprintln!("==> card {}", rest.join(" "));
             usb::command(&workspace_root(), &format!("card {}", rest.join(" ")))
         }
+        "backlight" => {
+            eprintln!("==> backlight {flag}");
+            usb::command(&workspace_root(), &format!("backlight {flag}"))
+        }
         "install" => {
             eprintln!("==> install");
             usb::install(&workspace_root())
@@ -172,7 +178,8 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_put(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
-            .and_then(|()| emu::boot_loader_locked(&workspace_root())),
+            .and_then(|()| emu::boot_loader_locked(&workspace_root()))
+            .and_then(|()| emu::boot_loader_backlight(&workspace_root())),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",

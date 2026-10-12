@@ -203,6 +203,8 @@ static mut GPIO_TAKEN: bool = false;
 static mut SSP1_TAKEN: bool = false;
 /// Single-use guard for the MMC controller.
 static mut MMC_TAKEN: bool = false;
+/// Single-use guard for PWM0.
+static mut PWM0_TAKEN: bool = false;
 
 /// Hands out the FFUART register bank once.
 ///
@@ -376,6 +378,24 @@ pub fn take_mmc() -> Option<Mmio> {
     // SAFETY: the MMC controller's register window (PXA27x memory map, up to
     // 0x50 used), identity-mapped; the flag guarantees one owner.
     Some(unsafe { Mmio::new(base, 0x100) })
+}
+
+/// CKEN bit for PWM0 (and PWM2).
+pub const CKEN_PWM0: u32 = 0;
+
+/// Hands out PWM0 (the X51v's backlight) once, with its clock enabled.
+pub fn take_pwm0() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(PWM0_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_PWM0);
+    let base = NonNull::new(va(0x40B0_0000) as *mut u32)?;
+    // SAFETY: PWM0's three registers (PXA27x memory map, 0x10 bytes; PWM2
+    // follows at +0x10 and is not handed out), identity-mapped; the flag
+    // guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x10) })
 }
 
 // --------------------------------------------------------------------------

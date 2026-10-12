@@ -238,9 +238,17 @@ on the host or in the emulator first.
       can't hide it).
     - **Modernize:** the lock switch respected as users expect from any
       card reader; the drive tells the PC when the card changes.
-11. **Backlight** (PWM): spec from the PXA manual and board sources,
-    driver with brightness steps and a fade, a probe test that restores
-    Windows Mobile's level afterwards.
+11. **Backlight** (PWM): **done in the emulator; device run pending (the
+    Axim is on Dell's prompt).** docs/hw/backlight.md; `rp-drv-pxa-pwm`
+    (4 tests): perceptual levels, a floor above 0, full duty at 100,
+    16-step fades, Windows Mobile's period kept (audible-whine reasoning
+    recorded); `cargo xtask backlight [0-100]`; emulator rp-v0.9.4 models
+    PWM0-3, and `boot_loader_backlight` checks the registers via the
+    monitor (new `Monitor::query`).
+    - **Iterate:** levels that look linear, smooth fades, no accidental
+      black; the existing period respected; registers checked by a test.
+    - **Modernize:** brightness controllable from the PC; the fade and the
+      perceptual scale are what users expect of a 2026 device.
 12. **Compatibility corpus scanner** (ROADMAP Phase 3 start): a host tool
     that reads the import tables of WM6 executables (the `kernel/pe`
     parser already handles 12 real DLLs) and ranks the APIs RetroPane

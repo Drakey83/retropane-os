@@ -8,6 +8,38 @@ use std::time::{Duration, Instant};
 
 use rp_drv_mbx_display::{console, pattern};
 
+/// `text` without terminal control sequences (`ESC [ ... letter`) and
+/// carriage returns, which the monitor's line editor sends.
+fn strip_terminal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => {
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for n in chars.by_ref() {
+                        if n.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            }
+            '\r' => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+#[test]
+fn terminal_sequences_are_stripped() {
+    assert_eq!(
+        strip_terminal("qom-get x\u{1b}[K\r\n19\r\n(qemu) "),
+        "qom-get x\n19\n(qemu) "
+    );
+}
+
 /// A connection to QEMU's human monitor.
 pub struct Monitor {
     stream: TcpStream,
@@ -41,6 +73,32 @@ impl Monitor {
         let mut sink = [0u8; 1024];
         let _ = self.stream.read(&mut sink);
         Ok(())
+    }
+
+    /// Sends a command and returns what QEMU printed before its next prompt.
+    pub fn query(&mut self, cmd: &str) -> Result<String, String> {
+        // Drop anything still pending.
+        let mut sink = [0u8; 1024];
+        while matches!(self.stream.read(&mut sink), Ok(n) if n > 0) {}
+        writeln!(self.stream, "{cmd}").map_err(|e| e.to_string())?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 512];
+        while Instant::now() < deadline {
+            if let Ok(n) = self.stream.read(&mut buf)
+                && n > 0
+            {
+                got.extend_from_slice(&buf[..n]);
+                let text = strip_terminal(&String::from_utf8_lossy(&got));
+                // The echo, the answer, then a fresh prompt.
+                if let Some((_, rest)) = text.rsplit_once(cmd)
+                    && let Some((answer, _)) = rest.split_once("(qemu)")
+                {
+                    return Ok(answer.trim().to_string());
+                }
+            }
+        }
+        Err(format!("monitor: no answer to `{cmd}`"))
     }
 
     /// Screenshots the 2700G console to `guest_path` (as QEMU sees it) and
