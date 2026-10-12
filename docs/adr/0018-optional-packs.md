@@ -58,7 +58,12 @@ Constraints that shape the answer:
    its packs first (asking to save, as on shutdown). If the card is pulled
    anyway, those programs end cleanly (a page that can't be read ends the
    process with a message), never the rest of the system.
-6. **Packs on the card are read-only to programs.** Their settings and data
+6. **Packs are stored compressed.** Files in a pack are LZ4-compressed
+   per page (the codec the kernel already has, ADR-0005 rule 4); the page
+   cache decompresses as it loads each page. The card is slow and the CPU
+   is fast, so fewer bytes read beats the decompression time (added
+   2026-10-12 from docs/design-brief.md).
+7. **Packs on the card are read-only to programs.** Their settings and data
    live in the user's storage, so a pack can be removed and reinstalled
    without losing anything.
 

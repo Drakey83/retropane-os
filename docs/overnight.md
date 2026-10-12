@@ -864,6 +864,30 @@ on the host or in the emulator first.
     results (host tests compare), then the kernel image switches over and
     its process table shrinks from ~8 KB of initialised data to ~1 KB.
 
+## Twelfth tier: the design brief (owner, 2026-10-12; docs/design-brief.md)
+
+49. **Pinned memory**: regions marked pinned are never aged, compressed or
+    evicted by reclaim, for the input path, the compositor's working set and
+    the scheduler's hot data; a per-process limit on pinned memory so a
+    program can't pin the device full.
+
+50. **Boot time as a budget**: each image measures and prints its own
+    time from reset to ready (`BENCH boot_*`), recorded in perf.md; drivers
+    and services start on first use; a budget the build checks.
+
+51. **Trace ring**: an always-on, fixed-size, low-overhead ring of events
+    (thread switches, faults, IPC calls, timers, clock changes) the loader
+    reads over USB (`cargo xtask trace`); overwrite-oldest, no locks.
+
+52. **Display fast paths**: fills, copies, alpha blending and colour
+    conversion in one module, iWMMXt where it pays, written for the
+    write-only framebuffer with dirty rectangles; benchmarks before/after.
+
+53. **Testing rules written down**: mutation testing for the memory
+    manager, scheduler and file-system crash paths (a list of mutants each
+    suite must kill, run by `cargo xtask mutants`), and fuzzing from the day
+    a parser lands, in docs/testing.md.
+
 Device items waiting for the Axim (Dell prompt: owner presses Mail).
 **First, one command:** `cargo xtask device-check` runs every read-only
 check below in one go (drive counters, the SD DMA self-test verdict, the
