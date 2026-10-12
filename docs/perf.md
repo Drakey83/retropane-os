@@ -97,6 +97,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | Kernel: entry to its own page tables and device map. Emulator real time | `boot_kernel_tables` | — | 2-3 ms |
 | 2026-10-12 | **Measured on the device**: SD DMA self-test passed on the real X51v (reads on, 120 transfers); drive 7,377 blocks read, 0 errors, 0 retries | SD DMA on device | pending | passed |
 | 2026-10-12 | **Measured on the device**, the owner's new 32 GB SDHC card (FAT32, 32 KiB clusters) against the old 4 GB card: the first SDHC card on the real X51v, 4-bit bus. Single-block commands much faster; through the file layer both cards are at ~1.4-1.9 MB/s, so our driver (no DMA writes yet, small commands) is the limit, not the card | `sd_read_block` / `sd_read_4_blocks` per block / put `haret.exe` 143 KB write, read back | 3.90 ms / 1.16 ms / 85 ms (once 811 ms), 83 ms | 0.89 ms / 0.42 ms / 100 ms (twice), 83 ms; `sd_read_64_blocks` 0.27 ms per block |
+| 2026-10-12 | Plane blending (item 60): the glass-over-wallpaper look mixed by the 2700G during scan-out instead of by the CPU. `rp-blend` test image budget 22 KiB (test image rule: measured + ~10%); its three 480 × 640 test scenes are generated on the device, not stored | `rp-blend` loaded size; CPU work per frame for the glass look | — | 19,624 B; 0 (the display does it); the wallpaper as 4:2:0 YUV is 450 KiB vs 600 KiB as RGB565 |
 
 ## Real hardware
 

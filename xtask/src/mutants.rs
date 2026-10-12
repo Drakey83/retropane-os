@@ -42,6 +42,20 @@ pub struct Mutant {
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "display: adopt keeps a left-over video plane over the screen",
+        file: "drivers/mbx-display/src/lib.rs",
+        from: "        if let Some(p) = kept {\n            layers::solo(&mut self.regs);\n",
+        to: "        if let Some(p) = kept {\n",
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "adopt_keeps_wm_plane"]),
+    },
+    Mutant {
+        name: "display reference: per-pixel alpha read inverted",
+        file: "drivers/mbx-display/src/scanout.rs",
+        from: "                    3 => s.a,",
+        to: "                    3 => 255 - s.a,",
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "every_stage_shows"]),
+    },
+    Mutant {
         name: "region list: a middle split skips its reservation",
         file: "kernel/mm/src/space.rs",
         from: "                // A hole in the middle: one more region, reserved first.\n                self.list.reserve(rp, 1)?;\n",

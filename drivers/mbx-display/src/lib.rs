@@ -1,16 +1,21 @@
-//! Intel 2700G display controller: panel timing and the graphics plane.
+//! Intel 2700G display controller: panel timing, the graphics plane, and
+//! (in [`layers`]) the video plane and how the planes are mixed.
 //!
-//! Written from `docs/hw/2700g.md` ("Display programming model"). Clock/PLL
-//! and local-memory power-up aren't specified yet; under Windows Mobile they're
-//! already configured when RetroPane starts from the SD card.
+//! Written from `docs/hw/2700g.md` ("Display programming model", "Plane
+//! composition"). Clock/PLL and local-memory power-up aren't specified yet;
+//! under Windows Mobile they're already configured when RetroPane starts
+//! from the SD card.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod blendtest;
 pub mod console;
 pub mod crash;
 pub mod font;
+pub mod layers;
 pub mod pattern;
+pub mod scanout;
 
 use rp_hal_api::{Field, RegisterBus};
 
@@ -51,9 +56,10 @@ pub mod reg {
 const HI12: Field = Field::new(16, 12);
 const LO12: Field = Field::new(0, 12);
 const GSCTRL_FMT: Field = Field::new(27, 4);
+const GSCTRL_GAMMA_EN: Field = Field::bit(26);
 const GSCTRL_WIDTH: Field = Field::new(11, 11);
 const GSCTRL_HEIGHT: Field = Field::new(0, 11);
-const GSCADR_STR_EN: Field = Field::bit(31);
+const GSCADR_STR_EN: Field = layers::SCADR_STR_EN;
 const GSCADR_BASE: Field = Field::new(0, 23);
 const GSADR_STRIDE: Field = Field::new(22, 10);
 const DSCTRL_SYNCGEN_EN: Field = Field::bit(31);
@@ -126,6 +132,8 @@ pub fn timing_registers(p: &PanelTiming) -> [(usize, u32); 9] {
 /// Graphics plane pixel formats.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PixelFormat {
+    /// 16-bit ARGB 4:4:4:4: 16 levels of alpha, for translucent interface.
+    Argb4444 = 4,
     /// 16-bit RGB 5:6:5.
     Rgb565 = 7,
     /// 32-bit ARGB 8:8:8:8.
@@ -137,7 +145,7 @@ impl PixelFormat {
     #[must_use]
     pub const fn bytes(self) -> usize {
         match self {
-            Self::Rgb565 => 2,
+            Self::Argb4444 | Self::Rgb565 => 2,
             Self::Argb8888 => 4,
         }
     }
@@ -212,6 +220,7 @@ impl Plane {
     #[must_use]
     pub fn decode(gsctrl: u32, gscadr: u32, gsadr: u32, vram_size: usize) -> Option<Self> {
         let format = match GSCTRL_FMT.extract(gsctrl) {
+            4 => PixelFormat::Argb4444,
             7 => PixelFormat::Rgb565,
             8 => PixelFormat::Argb8888,
             _ => return None,
@@ -268,13 +277,79 @@ impl<B: RegisterBus> Display<B> {
         Self { regs }
     }
 
-    /// Programs panel timing and the graphics plane, then enables scan-out.
+    /// Programs panel timing and the graphics plane, alone and opaque
+    /// (video plane and cursor off), then enables scan-out.
     pub fn enable(&mut self, panel: &PanelTiming, plane: &Plane) {
         self.regs.modify(reg::DSCTRL, DSCTRL_SYNCGEN_EN, 0);
         for (offset, value) in timing_registers(panel).into_iter().chain(plane.registers()) {
             self.regs.write32(offset, value);
         }
+        layers::solo(&mut self.regs);
         self.regs.modify(reg::DSCTRL, DSCTRL_SYNCGEN_EN, 1);
+    }
+
+    /// Takes the screen for drawing, the one way every image and the loader
+    /// do it: keeps a 480 × 640 RGB565 plane already scanning out (no
+    /// flicker; what Windows Mobile leaves) or sets one up, and in both
+    /// cases makes it the only layer, opaque. Without that, a video plane or
+    /// blend mode a previous program left on would cover the screen.
+    /// Also says whether the plane was kept (`true`) or set up anew.
+    pub fn adopt(&mut self, vram_size: usize) -> (Plane, bool) {
+        let kept = Plane::decode(
+            self.regs.read32(reg::GSCTRL),
+            self.regs.read32(reg::GSCADR),
+            self.regs.read32(reg::GSADR),
+            vram_size,
+        )
+        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
+        if let Some(p) = kept {
+            layers::solo(&mut self.regs);
+            (p, true)
+        } else {
+            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
+            self.enable(&X51V_VGA, &p);
+            (p, false)
+        }
+    }
+
+    /// Points the graphics plane at `plane`, in `layer`, without touching
+    /// the panel timing. `GSCTRL`'s gamma bit is kept.
+    pub fn set_graphics(&mut self, plane: &Plane, layer: layers::Layer) {
+        let gamma = self.regs.read32(reg::GSCTRL) & GSCTRL_GAMMA_EN.mask();
+        for (offset, value) in plane.registers() {
+            let value = match offset {
+                reg::GSCTRL => value | gamma,
+                reg::GSCADR => layer.scadr(value),
+                reg::GBBASE => layer.bbase(value),
+                _ => value,
+            };
+            self.regs.write32(offset, value);
+        }
+    }
+
+    /// Shows the video plane `video` in `layer`: its overlay clock on, then
+    /// its registers in [`VideoPlane::registers`](layers::VideoPlane::registers)'s
+    /// order. The gamma bit follows the graphics plane's.
+    pub fn show_video(&mut self, video: &layers::VideoPlane, layer: layers::Layer) {
+        let gamma = self.regs.read_field(reg::GSCTRL, GSCTRL_GAMMA_EN) != 0;
+        self.regs
+            .modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
+        layers::video_clock(&mut self.regs, true);
+        for (offset, value) in video.registers(layer, gamma) {
+            self.regs.write32(offset, value);
+        }
+    }
+
+    /// Hides the video plane and stops its overlay clock.
+    pub fn hide_video(&mut self) {
+        self.regs
+            .modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
+        layers::video_clock(&mut self.regs, false);
+    }
+
+    /// The register block, for reads and snapshots.
+    pub fn regs(&mut self) -> &mut B {
+        &mut self.regs
     }
 
     /// Stops scan-out.
@@ -510,6 +585,40 @@ mod tests {
         let mut buf = vec![0u8; 16 * 2];
         fill_rect_rgb565(&mut buf, 16, 0, 1, 8, 5, 0xFFFF);
         assert!(buf[16..].iter().all(|&b| b == 0xFF));
+    }
+
+    #[test]
+    fn adopt_keeps_wm_plane_but_switches_off_left_over_layers() {
+        // WM's plane, plus what a test image might leave: video on top,
+        // graphics in per-pixel-alpha mode.
+        let wm = Plane {
+            offset: 0,
+            ..Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)
+        };
+        let r = wm.registers();
+        let mut bus = MockBus::new();
+        bus.preset(reg::GSCTRL, r[0].1);
+        bus.preset(reg::GSCADR, r[3].1 | (3 << 27));
+        bus.preset(reg::GSADR, r[4].1);
+        bus.preset(layers::reg::VSCADR, 0x8100_0000 | 0x5_0000);
+        let mut d = Display::new(bus);
+        assert_eq!(d.adopt(16 << 20), (wm, true));
+        let bus = d.into_inner();
+        assert_eq!(bus.value(reg::GSCADR), r[3].1, "opaque, bottom slot");
+        assert_eq!(bus.value(layers::reg::VSCADR) >> 31, 0, "video off");
+        assert!(!bus.writes().contains(&(reg::DSCTRL, 0)), "no blanking");
+
+        // A plane it can't draw into (ARGB4444) is replaced, video off too.
+        let mut bus = MockBus::new();
+        bus.preset(reg::GSCTRL, 4 << 27 | r[0].1 & 0x07FF_FFFF);
+        bus.preset(reg::GSCADR, r[3].1);
+        bus.preset(reg::GSADR, r[4].1);
+        bus.preset(layers::reg::VSCADR, 0x8000_0000);
+        let mut d = Display::new(bus);
+        let (p, kept) = d.adopt(16 << 20);
+        assert!(!kept);
+        assert_eq!(p, Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565));
+        assert_eq!(d.into_inner().value(layers::reg::VSCADR) >> 31, 0);
     }
 
     #[test]

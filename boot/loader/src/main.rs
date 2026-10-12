@@ -34,7 +34,7 @@ mod image {
     use rp_drv_cpld::Cpld;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::crash;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_i2c::PxaI2c;
     use rp_drv_pxa_i2s::{PxaI2s, Rate, Tone, stream};
@@ -45,7 +45,7 @@ mod image {
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Volume};
-    use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
+    use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -1449,22 +1449,11 @@ mod image {
         };
         let dma = check_dma(&mut lun, msc_buf);
 
-        let Some((mut regs, vram)) = devices::take_mbx() else {
+        let Some((regs, vram)) = devices::take_mbx() else {
             halt()
         };
         step(3);
-        let plane = Plane::decode(
-            regs.read32(reg::GSCTRL),
-            regs.read32(reg::GSCADR),
-            regs.read32(reg::GSADR),
-            MBX_VRAM_SIZE as usize,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640)
-        .unwrap_or_else(|| {
-            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            Display::new(regs).enable(&X51V_VGA, &p);
-            p
-        });
+        let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
         // The previous program's run: if it crashed or hung, the crash

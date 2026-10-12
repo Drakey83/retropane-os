@@ -1025,6 +1025,54 @@ on the host or in the emulator first.
     limit. Next: DMA for writes (on the device), larger multi-block
     commands, the bus clock checked, measured before/after on the device.
 
+60. **Plane blending at scan-out** (owner said go, 2026-10-12; replaces
+    the "2D blitter fill" milestone, see docs/hw/2700g.md "2D drawing and
+    plane composition"). The wallpaper lives in the 2700G's **video plane**
+    (YUV), the interface in the **graphics plane** with per-pixel alpha,
+    and the display controller mixes them while it scans out: no CPU and
+    no extra memory traffic per frame for the glass look.
+    Register facts (from mbxfb, B): each plane has a blend mode (none,
+    inverse, global alpha, per-pixel alpha) and a layer slot (0 bottom,
+    1 middle, 2 top); WM leaves graphics in slot 0, video in slot 1. Video
+    needs `VOVRCLK` bit 0; planar chroma bases are in 8-byte units; write
+    the chroma bases before `VSCTRL` (mbxfb: the chip hangs otherwise).
+    Steps, each proven before the next:
+    1. **Emulator model** (fork, `intel-2700g.c`): video plane (packed 4:2:2
+       and planar 4:2:0, BT.601 colour), layer slots, the four blend modes,
+       `BGCOLOR` behind everything, ARGB4444. Tag, bump `QEMU_RELEASE`.
+    2. **Driver** (`mbx-display`): `VideoPlane`, `Layers` (slots + modes),
+       ARGB4444; and **one `Display::adopt`** that every image and the
+       loader use to take the screen, which also switches the video plane
+       and cursor off. Found while planning: the 7 copies of "keep WM's
+       plane" would leave a test's video plane covering the loader's
+       screen after it returns (fix the class, not the instance).
+    3. **`rp-blend` test image**: a generated wallpaper (bars, grey steps,
+       a smooth sky, sharp edges) under a translucent glass panel with
+       opaque text, in three labelled stages so a photo explains itself:
+       A 4:2:2 + ARGB4444, B 4:2:0 + ARGB4444, C 4:2:0 + ARGB8888 (to judge
+       ARGB4444's banding by eye). Writes the old register values and
+       `VOVRCLK` to the run log and puts every register back before it
+       returns. Uses 2700G memory above 1 MiB only (the loader's screen at
+       offset 0 is never touched).
+    4. **Emulator pixel check** (`cargo xtask emu`): each stage's screendump
+       against a Rust reference of the documented blend maths (exact), plus
+       sample points against the intended colours (catches both sides
+       agreeing on something wrong, e.g. U and V swapped).
+    5. **The Axim**: `cargo xtask load rp-blend`; the owner photographs the
+       three stages. Questions the photos answer: is alpha 15 opaque (or
+       is it the inverse)? limited or full-range YUV? does 4:2:0 show? is
+       ARGB4444 good enough for glass? Findings into 2700g.md, the model
+       corrected if the device disagrees.
+    - Three questions. *Clever or copying?* WM never used these planes for
+      its desktop (its GDI drew everything on the CPU); this moves the
+      whole wallpaper-under-glass cost into the display hardware.
+      *Size?* 4:2:0 wallpaper is 450 KiB vs 600 KiB as RGB565 (-25%), and
+      it is what a JPEG decodes to anyway, so photos skip the colour
+      conversion; ARGB4444 UI is 600 KiB, the same as today's plane; the
+      test scene is generated, not stored (the image stays small).
+      *Modern?* hardware composition with per-pixel alpha is how phone
+      compositors (Android's hardware composer, iOS) do it today.
+
 59. **No emulator-only image on the device**: **done (emulator).** Every
     image's budget now says what it does under the loader (`OnDevice`:
     returns, the loader, never returns), so a new image can't be added

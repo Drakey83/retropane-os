@@ -19,9 +19,8 @@ pub const SHOW_SECONDS: u32 = 20;
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
+    use rp_drv_mbx_display::Display;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
 
@@ -33,23 +32,11 @@ mod image {
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no display"))
         };
-        // Keep the plane already scanning out if it's the right shape (no
-        // flicker); otherwise set one up.
-        let kept = Plane::decode(
-            regs.read32(reg::GSCTRL),
-            regs.read32(reg::GSCADR),
-            regs.read32(reg::GSADR),
-            MBX_VRAM_SIZE as usize,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
-        let plane = kept.unwrap_or_else(|| {
-            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            Display::new(regs).enable(&X51V_VGA, &p);
-            p
-        });
+        // Keep the plane already scanning out (no flicker) or set one up.
+        let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         for (y, row) in PICTURE.as_chunks::<{ 480 * 2 }>().0.iter().enumerate() {
             let at = plane.offset + y * plane.stride;
             vram[at..at + row.len()].copy_from_slice(row);

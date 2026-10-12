@@ -53,7 +53,7 @@ mod image {
     use rp_bench_suite as suite;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, SAVED_REGS, X51V_VGA, reg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, SAVED_REGS, X51V_VGA};
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Button, Keypad, Pressed};
     use rp_drv_pxa_mmc::PxaMmc;
@@ -190,27 +190,12 @@ mod image {
             *v = regs.read32(*off);
         }
         step(4); // blue
-        let kept = Plane::decode(
-            regs.read32(reg::GSCTRL),
-            regs.read32(reg::GSCADR),
-            regs.read32(reg::GSADR),
-            MBX_VRAM_SIZE as usize,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640);
-        let plane = match kept {
-            Some(p) => {
-                display_note = "kept WM plane";
-                p
-            }
-            None => {
-                let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-                Display::new(regs).enable(&X51V_VGA, &p);
-                if display_note == "no 2700G" {
-                    display_note = "reprogrammed";
-                }
-                p
-            }
-        };
+        let (plane, kept) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
+        if kept {
+            display_note = "kept WM plane";
+        } else if display_note == "no 2700G" {
+            display_note = "reprogrammed";
+        }
         // Visible screen below `split`, an off-screen buffer for the fill
         // benchmarks above it.
         let screen_end = plane.offset + plane.stride * usize::from(plane.height);

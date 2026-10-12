@@ -847,6 +847,147 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The plane-blending image (rp-blend, overnight item 60): the loader
+/// starts it; each of its three stages must show exactly what the
+/// reference model (`rp_drv_mbx_display::scanout`) computes from the same
+/// drawing and register programming, which a host test already checks
+/// against the intended colours. Each screendump is matched against all
+/// three stages, so a slow host can't pass one stage off as another. Then
+/// it must be back at the loader with the wallpaper gone.
+pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::blendtest::{self, Stage};
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-blend.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-blend"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let want: Vec<Vec<u8>> = Stage::ALL.iter().map(|&s| blend_screen(s)).collect();
+    let wsl = matches!(emulator(root)?, Emulator::Wsl);
+    // Kept per stage (target/emulator/blend-A.ppm ...) for a look by eye.
+    let dump = |name: char| -> Result<Vec<u8>, String> {
+        let shot = root.join(format!("target/emulator/blend-{name}.ppm"));
+        let guest = if wsl {
+            to_wsl_path(&shot)
+        } else {
+            shot.display().to_string()
+        };
+        let _ = std::fs::remove_file(&shot);
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.screendump(&guest, &shot)?;
+        let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+        if (img.width as usize, img.height as usize) != (blendtest::W, blendtest::H) {
+            return Err(format!("blend: screen is {}x{}", img.width, img.height));
+        }
+        Ok(img.rgb)
+    };
+    let stage_time = Duration::from_secs(u64::from(RP_BLEND_STAGE_SECONDS));
+    let check = || -> Result<(), String> {
+        // Called as soon as stage A is up; the emulator redraws on a timer.
+        let shown = Instant::now();
+        for (i, stage) in Stage::ALL.iter().enumerate() {
+            let at = stage_time * i as u32 + Duration::from_millis(1500);
+            std::thread::sleep(at.saturating_sub(shown.elapsed()));
+            let got = dump(stage.letter())?;
+            let differ = |w: &[u8]| {
+                got.chunks(3)
+                    .zip(w.chunks(3))
+                    .filter(|(a, b)| a != b)
+                    .count()
+            };
+            let counts: Vec<usize> = want.iter().map(|w| differ(w)).collect();
+            if counts[i] != 0 {
+                return Err(format!(
+                    "blend: stage {} differs from the reference in {} of {} pixels (against A/B/C: {counts:?})",
+                    stage.letter(),
+                    counts[i],
+                    blendtest::W * blendtest::H
+                ));
+            }
+        }
+        // After the last stage, it puts everything back and returns; the
+        // loader takes the screen again: no trace of the wallpaper.
+        std::thread::sleep(
+            (stage_time * 3 + Duration::from_secs(4)).saturating_sub(shown.elapsed()),
+        );
+        let got = dump('R')?;
+        let bars = |s: &[u8]| s[(435 * blendtest::W + 90) * 3..][..3].to_vec();
+        if want.iter().any(|w| bars(w) == bars(&got)) {
+            return Err("blend: the wallpaper is still on screen after the return".into());
+        }
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-BLEND-A")),
+            during: Some(&check),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("blend: never came back to the loader")?;
+    for want in [
+        "RETROPANE-BLEND-A",
+        "RETROPANE-BLEND-B",
+        "RETROPANE-BLEND-C",
+        "restored:",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("blend: the run log has no `{want}`:{log}"));
+        }
+    }
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("blend: didn't return cleanly:{log}"));
+    }
+    eprintln!(
+        "    blend OK: 3 stages pixel-exact against the reference, registers put back, back at the loader"
+    );
+    Ok(())
+}
+
+/// How long rp-blend holds each stage (kept in step with the image).
+const RP_BLEND_STAGE_SECONDS: u32 = 8;
+
+/// What rp-blend's `stage` should put on screen: the image's own drawing
+/// and register programming (shared code), through the reference model.
+fn blend_screen(stage: rp_drv_mbx_display::blendtest::Stage) -> Vec<u8> {
+    use rp_drv_mbx_display::{Display, blendtest, scanout};
+    let mut vram = vec![0u8; 16 << 20];
+    let mut d = Display::new(RegFile::default());
+    let _ = d.adopt(vram.len());
+    blendtest::draw(stage, &mut vram);
+    blendtest::program(&mut d, stage);
+    let regs = d.into_inner();
+    let mut out = vec![0u8; blendtest::W * blendtest::H * 3];
+    scanout::compose(|o| regs.0.get(&o).copied().unwrap_or(0), &vram, &mut out);
+    out
+}
+
+/// Registers as plain storage: the emulator's 2700G from reset.
+#[derive(Default)]
+struct RegFile(std::collections::HashMap<usize, u32>);
+
+impl rp_hal_api::RegisterBus for RegFile {
+    fn read32(&mut self, offset: usize) -> u32 {
+        self.0.get(&offset).copied().unwrap_or(0)
+    }
+
+    fn write32(&mut self, offset: usize, value: u32) {
+        self.0.insert(offset, value);
+    }
+}
+
 /// How long rp-picture shows its picture (kept in step with the image).
 const fn rp_picture_seconds() -> u32 {
     20

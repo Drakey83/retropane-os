@@ -79,6 +79,8 @@ commands:
             in target/device-check.txt; --with-owner adds CF and a tone
   emu-picture  only the rp-picture check (a UI concept on screen, then
             back to the loader): run it before `load rp-picture`
+  emu-blend only the rp-blend check (plane blending, three stages
+            pixel-exact): run it before `load rp-blend`
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
             --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
@@ -92,7 +94,7 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -221,6 +223,7 @@ fn run_step(step: &str) -> Result {
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
+        "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -233,6 +236,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_hang(&workspace_root()))
             .and_then(|()| emu::boot_loader_run_limit(&workspace_root()))
             .and_then(|()| emu::boot_loader_picture(&workspace_root()))
+            .and_then(|()| emu::boot_loader_blend(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))

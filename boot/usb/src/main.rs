@@ -81,20 +81,10 @@ mod image {
         let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             halt()
         };
-        let gsctrl = regs.read32(reg::GSCTRL);
+        // The first register read: a hang here leaves the green colour up.
+        let _ = regs.read32(reg::GSCTRL);
         beacon(0x001F, 0x001F);
-        let plane = Plane::decode(
-            gsctrl,
-            regs.read32(reg::GSCADR),
-            regs.read32(reg::GSADR),
-            MBX_VRAM_SIZE as usize,
-        )
-        .filter(|p| p.format == PixelFormat::Rgb565 && p.width == 480 && p.height == 640)
-        .unwrap_or_else(|| {
-            let p = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
-            Display::new(regs).enable(&X51V_VGA, &p);
-            p
-        });
+        let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
         let mut log = Console::new(rest, plane.stride, (0, 0), (480, 640 - STATUS_H), 2, COLORS);
