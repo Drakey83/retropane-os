@@ -37,6 +37,11 @@
 //!    is inside: fresh memory, a new port generation (the old handle is
 //!    `Stale`), the manager's handle renewed; the client asks again and the
 //!    new instance answers.
+//! 9. Processes at run time: the manager starts a worker (`SYS_SPAWN`; the
+//!    manager only), which checks its memory starts zeroed and a handle it
+//!    was never given is refused, then exits (`SYS_EXIT`); everything it had
+//!    comes back (frames, handles, ports), and a second worker reuses its
+//!    slot and record without seeing the first one's memory.
 //!
 //! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
 //! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
@@ -55,7 +60,9 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
     use rp_hal_pxa27x::rt::{self, Global};
-    use rp_hal_pxa27x::testprog::{self, SYS_CALL, SYS_DONE, SYS_GRANT, SYS_RETURN};
+    use rp_hal_pxa27x::testprog::{
+        self, SYS_CALL, SYS_DONE, SYS_EXIT, SYS_GRANT, SYS_RETURN, SYS_SPAWN,
+    };
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
@@ -252,7 +259,7 @@ mod image {
     const CLIENTS: usize = 2;
     /// Kernel stacks taken off the top of the pool (4 KiB each): the idle
     /// thread's and the clients'; the boot thread keeps its own.
-    const KSTACKS: usize = 1 + CLIENTS;
+    const KSTACKS: usize = 1 + CLIENTS + SPAWN_STACKS;
     /// A short quantum (~150 us) so the clients are preempted many times,
     /// inside calls too.
     const QUANTUM: u32 = 500;
@@ -268,6 +275,13 @@ mod image {
     /// The supervised host (the server's code) and its supervisor.
     const HOST_SLOT: u32 = 7;
     const MANAGER_SLOT: u32 = 8;
+    /// Process records: reused as processes start and end (each ~1.6 KB),
+    /// so memory follows the processes running, not the 31 slots.
+    const MAX_PROCS: usize = 5;
+    /// Kernel stacks kept for processes started at run time.
+    const SPAWN_STACKS: usize = 2;
+    /// A system call only the service manager may make.
+    const ERR_DENIED: u32 = ERR | 0xFB;
     // The IPC tables hold one handle table per process slot of the layout.
     const _: () = assert!(
         rp_kernel_ipc::FIRST_SLOT as u32 == layout::FIRST_PROCESS_SLOT
@@ -316,6 +330,19 @@ mod image {
         restart_clean: bool,
         /// Roles handed to client threads as they start.
         next_role: u32,
+        /// The image's code length (spawn entries must lie inside it).
+        code_len: u32,
+        /// Workers' exit codes, in order.
+        exits: [u32; SPAWN_STACKS],
+        exited: usize,
+        /// Workers started, and the free frames before each.
+        spawned: usize,
+        frames_before: [u32; SPAWN_STACKS],
+        /// The service manager's port (a started process's one handle).
+        manager_port: Option<PortId>,
+        /// After each exit: frames free, and the slot's handles and ports
+        /// left (must be none).
+        after_exit: [(u32, usize, usize); SPAWN_STACKS],
     }
 
     static RUN: Global<Run> = Global::new(Run {
@@ -333,14 +360,29 @@ mod image {
         restarts: 0,
         restart_clean: false,
         next_role: 0,
+        code_len: 0,
+        exits: [0; SPAWN_STACKS],
+        exited: 0,
+        spawned: 0,
+        frames_before: [0; SPAWN_STACKS],
+        manager_port: None,
+        after_exit: [(0, 0, 0); SPAWN_STACKS],
     });
 
+    /// Kernel stacks for processes started at run time.
+    static SPARE_STACKS: Global<[Option<&'static mut [u32]>; SPAWN_STACKS]> =
+        Global::new([None, None]);
+
     /// Everything else the VM owns.
-    struct State {
+    /// A process record: its slot (0: free) and address space.
+    struct Proc {
+        slot: u32,
         space: AddressSpace,
-        server: AddressSpace,
-        host: AddressSpace,
-        manager: AddressSpace,
+    }
+
+    struct State {
+        /// Record 0 is always the clients' process (slot 5).
+        procs: [Proc; MAX_PROCS],
         /// The test image's view pages' protections (`None`: a guard).
         pe_prot: [Option<Protection>; PE_PAGES],
         domains: Domains,
@@ -353,13 +395,33 @@ mod image {
         error: Option<&'static str>,
     }
 
+    const FREE_PROC: Proc = Proc {
+        slot: 0,
+        space: AddressSpace::process(PROC_SLOT, domains::PARKED),
+    };
+
     static STATE: Global<State> = Global::new(State {
         domains: Domains::new(),
-        // Its real domain comes from `Domains::activate` before first use.
-        space: AddressSpace::process(PROC_SLOT, domains::PARKED),
-        server: AddressSpace::process(SERVER_SLOT, domains::PARKED),
-        host: AddressSpace::process(HOST_SLOT, domains::PARKED),
-        manager: AddressSpace::process(MANAGER_SLOT, domains::PARKED),
+        // Real domains come from `Domains::activate` before first use.
+        procs: [
+            Proc {
+                slot: PROC_SLOT,
+                space: AddressSpace::process(PROC_SLOT, domains::PARKED),
+            },
+            Proc {
+                slot: SERVER_SLOT,
+                space: AddressSpace::process(SERVER_SLOT, domains::PARKED),
+            },
+            Proc {
+                slot: HOST_SLOT,
+                space: AddressSpace::process(HOST_SLOT, domains::PARKED),
+            },
+            Proc {
+                slot: MANAGER_SLOT,
+                space: AddressSpace::process(MANAGER_SLOT, domains::PARKED),
+            },
+            FREE_PROC,
+        ],
         pe_prot: [None; PE_PAGES],
         file: RamFile {
             phys: 0,
@@ -426,7 +488,11 @@ mod image {
             // give the PC as the process saw it. Relocating is right for all
             // three: addresses already at or above 32 MiB pass through.
             let mva = layout::mva(a.addr, s.pid);
-            match vm.handle_fault(space_of(s, s.pid), mva, access) {
+            let r = space_of(s, s.pid)
+                .map_or(Err(rp_kernel_mm::space::FaultError::NoRegion), |sp| {
+                    vm.handle_fault(sp, mva, access)
+                });
+            match r {
                 Ok(o) => {
                     s.faults += 1;
                     s.last = Some(o);
@@ -563,7 +629,8 @@ mod image {
             cpu::clean_invalidate_range(phys, 4096);
             s.file.phys = phys;
             let slot = layout::slot_base(PROC_SLOT);
-            s.space
+            s.procs[0]
+                .space
                 .map(Region {
                     start: slot + ZERO_VA,
                     len: ZERO_PAGES * 4096,
@@ -571,7 +638,8 @@ mod image {
                     backing: Backing::Zero,
                 })
                 .map_err(|e| e.name())?;
-            s.space
+            s.procs[0]
+                .space
                 .map(Region {
                     start: slot + FILE_VA,
                     len: 4096,
@@ -594,7 +662,7 @@ mod image {
         // Give slot 5 its ARM domain and run it: PID and DACR, nothing else.
         let act5 = STATE.with(|s| {
             let a = s.domains.activate(PROC_SLOT);
-            s.space.set_domain(a.domain);
+            s.procs[0].space.set_domain(a.domain);
             a
         });
         cpu::set_dacr(act5.dacr);
@@ -620,7 +688,7 @@ mod image {
         // test did exactly that). Kernel writes to user memory therefore go
         // through prepare_user_write first (ADR-0008 rule 8), which copies.
         let prepared = with_vm(|vm, s| {
-            vm.prepare_user_write(&s.space, layout::mva(FILE_VA + 8, PROC_SLOT), 4)
+            vm.prepare_user_write(&s.procs[0].space, layout::mva(FILE_VA + 8, PROC_SLOT), 4)
         });
         cpu::poke((FILE_VA + 8) as usize, 0xDEAD_BEEF);
         let mine = rt::fault_probe((FILE_VA + 8) as usize);
@@ -678,7 +746,11 @@ mod image {
             // A plain loop: the iterator chain cost 2 KB of image.
             let mut n = 0;
             for p in 1..=32u32 {
-                if vm.compress(&s.space, layout::mva(ZERO_VA + p * 4096, PROC_SLOT)) == Ok(true) {
+                if vm.compress(
+                    &s.procs[0].space,
+                    layout::mva(ZERO_VA + p * 4096, PROC_SLOT),
+                ) == Ok(true)
+                {
                     n += 1;
                 }
             }
@@ -705,7 +777,8 @@ mod image {
         // an evicted page comes back intact.
         let region = layout::slot_base(PROC_SLOT) + RECLAIM_VA;
         let mapped = STATE.with(|s| {
-            s.space
+            s.procs[0]
+                .space
                 .map(Region {
                     start: region,
                     len: RECLAIM_PAGES * 4096,
@@ -720,7 +793,7 @@ mod image {
         let sweep = || {
             with_vm(|vm, s| {
                 let mut hand = region;
-                vm.reclaim(&s.space, &mut hand, RECLAIM_PAGES, u32::MAX)
+                vm.reclaim(&s.procs[0].space, &mut hand, RECLAIM_PAGES, u32::MAX)
             })
         };
         let first = sweep();
@@ -749,7 +822,7 @@ mod image {
         // Unmap everything: every frame and page-cache reference returns.
         let slot = layout::slot_base(PROC_SLOT);
         let (unmapped, refs) = with_vm(|vm, s| {
-            let r = vm.unmap(&mut s.space, slot, layout::SLOT_SIZE);
+            let r = vm.unmap(&mut s.procs[0].space, slot, layout::SLOT_SIZE);
             (r.is_ok(), vm.cache.refs)
         });
         // The file's own frame stays allocated (it's the "page cache").
@@ -783,7 +856,7 @@ mod image {
             let prot = s.pe_prot;
             for slot in [PROC_SLOT, SERVER_SLOT, HOST_SLOT, MANAGER_SLOT] {
                 let a = s.domains.activate(slot);
-                let space = space_mut(s, slot);
+                let space = space_mut(s, slot).ok_or("no process")?;
                 space.set_domain(a.domain);
                 map_process(space, slot, &prot)?;
             }
@@ -803,7 +876,10 @@ mod image {
             let manager = LOAD_BASE + TEXT_RVA + programs.manager;
             let (mport, _) = i.ipc.open(MANAGER_SLOT as u8, manager).ok()?;
             i.ipc.install(PROC_SLOT as u8, mport, Rights::CALL).ok()?;
-            RUN.with(|r| r.supervised = Some((host, MANAGER_SLOT as u8)));
+            RUN.with(|r| {
+                r.supervised = Some((host, MANAGER_SLOT as u8));
+                r.manager_port = Some(mport);
+            });
             Some(h)
         });
         // Threads: this code becomes the boot thread; an idle thread; the
@@ -823,13 +899,21 @@ mod image {
             Some(done)
         });
         let (Ok(()), Some(h), Some(done)) = (mapped, client_handle, threads) else {
-            let _ = uart.write_str("IPC setup FAIL\n");
+            let _ = uart.write_str("IPC setup FAIL: ");
+            let _ = uart.write_str(mapped.err().unwrap_or("handles or threads"));
+            let _ = uart.write_str("\n");
             halt()
         };
         RUN.with(|r| {
             r.done = done;
             r.entry = LOAD_BASE + TEXT_RVA + programs.client;
             r.handle = h.0;
+            r.code_len = programs.code.len() as u32 * 4;
+        });
+        SPARE_STACKS.with(|st| {
+            for slot in st.iter_mut() {
+                *slot = kstacks.next();
+            }
         });
         user::set_syscall_handler(on_syscall);
         user::set_user_fault_handler(on_user_fault);
@@ -858,22 +942,20 @@ mod image {
         user::enter_user_at(entry, stack_top(me, 0), arg)
     }
 
-    fn space_of(s: &State, slot: u32) -> &AddressSpace {
-        match slot {
-            SERVER_SLOT => &s.server,
-            HOST_SLOT => &s.host,
-            MANAGER_SLOT => &s.manager,
-            _ => &s.space,
-        }
+    /// The address space of the process in `slot`; `None` if no process
+    /// lives there (never another process's space by mistake).
+    fn space_of(s: &State, slot: u32) -> Option<&AddressSpace> {
+        s.procs
+            .iter()
+            .find(|p| p.slot == slot && slot != 0)
+            .map(|p| &p.space)
     }
 
-    fn space_mut(s: &mut State, slot: u32) -> &mut AddressSpace {
-        match slot {
-            SERVER_SLOT => &mut s.server,
-            HOST_SLOT => &mut s.host,
-            MANAGER_SLOT => &mut s.manager,
-            _ => &mut s.space,
-        }
+    fn space_mut(s: &mut State, slot: u32) -> Option<&mut AddressSpace> {
+        s.procs
+            .iter_mut()
+            .find(|p| p.slot == slot && slot != 0)
+            .map(|p| &mut p.space)
     }
 
     /// Maps a test process: the image (each view page as its section says;
@@ -929,6 +1011,99 @@ mod image {
         Ok(())
     }
 
+    /// Starts a process from the image at code offset `off`: a free slot
+    /// and record, the image mapped (code shared, everything else fresh), a
+    /// handle to the service manager only, and a first thread. Its slot, or
+    /// an error code.
+    fn spawn(off: u32) -> Result<u32, u32> {
+        let code_len = RUN.with(|r| r.code_len);
+        if !off.is_multiple_of(4) || off >= code_len {
+            return Err(ERR | IpcError::Range as u32);
+        }
+        let Some(stack) = SPARE_STACKS.with(|st| st.iter_mut().find_map(Option::take)) else {
+            return Err(ERR | IpcError::Full as u32);
+        };
+        // Free frames now: all must be back when this process has exited.
+        RUN.with(|r| {
+            if let Some(b) = r.frames_before.get_mut(r.spawned) {
+                *b = FRAMES.with(|f| f.free_frames() as u32);
+            }
+            r.spawned += 1;
+        });
+        let slot = STATE.with(|s| -> Option<u32> {
+            let slot = (MANAGER_SLOT + 1..=layout::LAST_PROCESS_SLOT)
+                .find(|&n| s.procs.iter().all(|p| p.slot != n))?;
+            let i = s.procs.iter().position(|p| p.slot == 0)?;
+            let a = s.domains.activate(slot);
+            let prot = s.pe_prot;
+            let p = &mut s.procs[i];
+            p.slot = slot;
+            p.space.reset_process(slot, a.domain);
+            map_process(&mut p.space, slot, &prot).ok()?;
+            Some(slot)
+        });
+        let Some(slot) = slot else {
+            return Err(ERR | IpcError::Full as u32);
+        };
+        // Its one handle: the manager's port (CALL).
+        let handle = IPC.with(|i| {
+            let manager = RUN.with(|r| r.manager_port)?;
+            i.ipc.install(slot as u8, manager, Rights::CALL).ok()
+        });
+        let t = SCHED.with(|s| s.create(slot as u8, 100).ok());
+        let (Some(h), Some(t)) = (handle, t) else {
+            return Err(ERR | IpcError::Full as u32);
+        };
+        RUN.with(|r| {
+            r.slots[t.index()] = slot as u8;
+        });
+        // A new process's table is empty, so its first handle is 0: the
+        // thread starts with it in r0.
+        if h.0 != 0 {
+            return Err(ERR | IpcError::Full as u32);
+        }
+        let entry = LOAD_BASE + TEXT_RVA + off;
+        thread::prepare(t.index(), stack, process_thread, entry as usize);
+        Ok(slot)
+    }
+
+    /// The first thread of a process started at run time, at `entry`.
+    extern "C" fn process_thread(entry: usize) -> ! {
+        let (me, slot) = RUN.with(|r| (r.current, r.slots[r.current.index()]));
+        switch_to(u32::from(slot));
+        user::enter_user_at(entry as u32, stack_top(me, 0), 0)
+    }
+
+    /// A process ends (its one thread called `SYS_EXIT`): its ports close,
+    /// its handles go, its whole address space is unmapped (every frame and
+    /// page-cache reference back), its domain and record are freed, and
+    /// the thread ends.
+    fn exit_process(me: Tid, code: u32) -> ! {
+        let slot = RUN.with(|r| r.slots[me.index()]);
+        let _ = IPC.with(|i| i.ipc.exit(slot));
+        with_vm(|vm, s| {
+            let base = layout::slot_base(u32::from(slot));
+            if let Some(p) = s.procs.iter_mut().find(|p| p.slot == u32::from(slot)) {
+                let _ = vm.unmap(&mut p.space, base, layout::SLOT_SIZE);
+                p.slot = 0;
+            }
+            s.domains.release(u32::from(slot));
+        });
+        let left = IPC.with(|i| (i.ipc.handle_count(slot), i.ipc.ports_of(slot)));
+        let free = FRAMES.with(|f| f.free_frames() as u32);
+        RUN.with(|r| {
+            r.slots[me.index()] = 0;
+            if let Some(e) = r.exits.get_mut(r.exited) {
+                *e = code;
+                r.after_exit[r.exited] = (free, left.0, left.1);
+            }
+            r.exited += 1;
+        });
+        let _ = SCHED.with(|s| s.exit(me));
+        reschedule();
+        unreachable!("an exited thread never runs again")
+    }
+
     /// Restarts the supervised server in `slot` (no thread is inside): its
     /// whole address space is dropped and mapped afresh (code and constants
     /// come back from the shared page cache, everything writable zeroed),
@@ -941,9 +1116,10 @@ mod image {
         let remapped = with_vm(|vm, s| {
             let prot = s.pe_prot;
             let base = layout::slot_base(u32::from(slot));
-            let space = space_mut(s, u32::from(slot));
-            vm.unmap(space, base, layout::SLOT_SIZE).is_ok()
-                && map_process(space, u32::from(slot), &prot).is_ok()
+            space_mut(s, u32::from(slot)).is_some_and(|space| {
+                vm.unmap(space, base, layout::SLOT_SIZE).is_ok()
+                    && map_process(space, u32::from(slot), &prot).is_ok()
+            })
         });
         let renewed = IPC.with(|i| i.ipc.restart(port, Some(supervisor))).is_ok();
         // Its data page reads zero again (a fresh demand-zero page).
@@ -1018,13 +1194,6 @@ mod image {
         }
     }
 
-    /// Whether the running thread's quantum (or a sleeper's time) is up.
-    fn deadline_passed() -> bool {
-        SCHED
-            .with(|s| s.next_deadline())
-            .is_some_and(|d| rt::ticks().wrapping_sub(d) as i32 >= 0)
-    }
-
     /// Runs slot `slot`: its domain in the DACR, its PID.
     fn switch_to(slot: u32) {
         let a = STATE.with(|s| {
@@ -1036,12 +1205,9 @@ mod image {
     }
 
     /// The test's system calls: a migrating call, its return, the report.
-    /// Each is a scheduling point: a thread whose quantum ran out while
-    /// in the kernel gives way here.
+    /// (A quantum that ran out while in the kernel is paid on the way back
+    /// to user mode: the HAL's owed preemption.)
     fn on_syscall(f: &mut Frame) {
-        if deadline_passed() {
-            reschedule();
-        }
         let me = RUN.with(|r| r.current);
         match f.number() {
             SYS_CALL => {
@@ -1102,9 +1268,27 @@ mod image {
                 let from = STATE.with(|s| s.pid) as u8;
                 let to = f.arg(1) as u8;
                 let rights = Rights::from_bits(f.arg(2));
-                let r = IPC.with(|i| i.ipc.grant(from, Handle(f.arg(0) as u8), to, rights));
+                let live = STATE.with(|s| space_of(s, u32::from(to)).is_some());
+                let r = if live {
+                    IPC.with(|i| i.ipc.grant(from, Handle(f.arg(0) as u8), to, rights))
+                } else {
+                    Err(IpcError::Range)
+                };
                 f.set_result(r.map_or_else(|e| ERR | e as u32, |h| u32::from(h.0)));
             }
+            SYS_SPAWN => {
+                // Only the service manager starts processes.
+                let from = STATE.with(|s| s.pid);
+                let r = if from == MANAGER_SLOT {
+                    spawn(f.arg(0))
+                } else {
+                    Err(ERR_DENIED)
+                };
+                f.set_result(r.unwrap_or_else(|e| e));
+                // The new process's thread is more urgent: it runs now.
+                reschedule();
+            }
+            SYS_EXIT => exit_process(me, f.arg(0)),
             SYS_DONE => done(me, f),
             _ => f.set_result(ERR | 0xFF),
         }
@@ -1135,7 +1319,7 @@ mod image {
             with_vm(|vm, s| {
                 load_pe_page(vm, addr);
                 let mva = layout::mva(addr, s.pid);
-                vm.handle_fault(space_of(s, s.pid), mva, access).is_ok()
+                space_of(s, s.pid).is_some_and(|sp| vm.handle_fault(sp, mva, access).is_ok())
             })
         });
         if resolved {
@@ -1157,7 +1341,7 @@ mod image {
     /// `.reloc` (fix-ups for that pointer and the code's one absolute
     /// literal), preferring `testprog::PREFERRED_BASE`.
     fn build_image(file: &mut [u8], p: &testprog::Programs) -> Result<(), rp_kernel_pe::Error> {
-        let mut code = [0u8; 512];
+        let mut code = [0u8; 1024];
         let code = code
             .get_mut(..p.code.len() * 4)
             .ok_or(rp_kernel_pe::Error::Truncated)?;
@@ -1330,6 +1514,25 @@ mod image {
             && restarts == 1
             && clean;
         ok &= report_ipc(uart, "supervised restart", restarted, d[3]);
+        // Processes at run time: two workers, one after the other, in the
+        // same slot; each saw fresh memory and was refused a handle it was
+        // never given; nothing of theirs stayed.
+        let spawned = [
+            rt::try_read(base + 20).unwrap_or(0),
+            rt::try_read(base + 24).unwrap_or(0),
+        ];
+        let (exits, exited, before, after) =
+            RUN.with(|r| (r.exits, r.exited, r.frames_before, r.after_exit));
+        let clean = after
+            .iter()
+            .zip(before)
+            .all(|(&(free, h, p), b)| free == b && h == 0 && p == 0);
+        let lifecycle = exited == 2
+            && exits == [testprog::WORKER_OK; 2]
+            && spawned[0] == spawned[1]
+            && spawned[0] > MANAGER_SLOT
+            && clean;
+        ok &= report_ipc(uart, "spawn and exit", lifecycle, exits[1]);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         ok
     }

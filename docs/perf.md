@@ -89,6 +89,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | PE images loaded into processes (ADR-0009) in `rp-kernel`: parser, per-page load + relocation, page-cache fill, W^X; plus the test's image writer. `rp-kernel-pe` built for size (-0.7 KB). **Kernel load budget 55 -> 65 KiB, owner's standing rule** (planned subsystem, measured + ~10%) | `rp-kernel` loaded size | 51,324 B | 60,328 B |
 | 2026-10-12 | Reclaim sweep in `rp-kernel`: 16 pages visited, 8 re-aged (write-back + entry change) and 8 compressed. Emulator real time | `vm_reclaim_sweep` (16 pages) | — | 1,042 ticks: ~20 µs per page (emulated) |
 | 2026-10-12 | Supervised hosts and the service manager (ADR-0016 step 3) in `rp-kernel`, with two more test processes (their static address-space records: 1.6 KB each; to be allocated per process, item 44). **Kernel load budget 65 -> 76 KiB, owner's standing rule** | `rp-kernel` loaded size | 63,504 B | 70,732 B |
+| 2026-10-12 | Processes at run time in `rp-kernel` (SYS_SPAWN/SYS_EXIT, a 5-record process table of 1.6 KB records in initialised data). **Kernel load budget 76 -> 84 KiB, owner's standing rule** | `rp-kernel` loaded size | 70,732 B | 78,432 B |
 
 ## Real hardware
 

@@ -366,6 +366,26 @@ impl Ipc {
         Ok(())
     }
 
+    /// Handles in `slot`'s table (0 for a slot out of range).
+    #[must_use]
+    pub fn handle_count(&self, slot: u8) -> usize {
+        Self::slot_ok(slot).map_or(0, |s| {
+            self.tables[s]
+                .iter()
+                .filter(|&&w| Entry::decode(w).is_some())
+                .count()
+        })
+    }
+
+    /// Open ports served by `slot`.
+    #[must_use]
+    pub fn ports_of(&self, slot: u8) -> usize {
+        self.ports
+            .iter()
+            .filter(|p| p.open == 1 && p.server == slot)
+            .count()
+    }
+
     /// A process exited: its ports close (callers get `Closed`) and its
     /// handle table empties.
     pub fn exit(&mut self, slot: u8) -> Result<(), Error> {

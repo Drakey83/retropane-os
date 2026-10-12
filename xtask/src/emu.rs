@@ -361,6 +361,7 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC PE pages loaded on demand OK",
     "IPC service manager OK",
     "IPC supervised restart OK",
+    "IPC spawn and exit OK",
 ];
 
 /// Boots the kernel image: the VM layer live on the CPU, with real page
@@ -406,6 +407,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER mode OK",
     "USER yield OK",
     "USER preempted OK",
+    "USER preempted after a system call OK",
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
     "USER KData OK",

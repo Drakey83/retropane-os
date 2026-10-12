@@ -85,7 +85,12 @@ pub const BUDGETS: &[Budget] = &[
         // spaces are 1.6 KB each of initialised data). Measured 69.1 KiB +
         // ~10%. Follow-up: address spaces allocated per process at start,
         // not static (queued).
-        max_load: 76 * 1024,
+        // Raised 76 -> 84 KiB on 2026-10-12 under the standing rule: processes
+        // started and ended at run time (SYS_SPAWN/SYS_EXIT, exit cleanup, a
+        // reusable process table: 5 records of 1.6 KB, initialised data).
+        // Measured 76.6 KiB + ~10%. Next: region storage from a shared pool
+        // instead of 64 per record (ADR queued, item 47).
+        max_load: 84 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame

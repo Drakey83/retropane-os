@@ -36,7 +36,13 @@
 //! (its role is `r0 >> 8` at start) then, before step 5: opens the host
 //! through the manager, calls it (7), makes it fault (the host restarts),
 //! calls through the old handle (`Stale`), opens it again and calls (7),
-//! keeping the five results at `RESTART_RESULTS`.
+//! keeping the five results at `RESTART_RESULTS`; then asks the manager
+//! to `SPAWN` a worker twice (keeping the two slots it got after them).
+//!
+//! The *worker* (a process the manager starts with `SYS_SPAWN`) reads its
+//! data word (a new process's memory must be zero), leaves a mark there
+//! for the next process in its slot not to see, checks that a handle it was
+//! never given is refused, and exits with [`WORKER_OK`] if both held.
 
 /// System calls the programs make (`r7`).
 pub const SYS_CALL: u32 = 1;
@@ -48,6 +54,15 @@ pub const SYS_DONE: u32 = 3;
 pub const SYS_GRANT: u32 = 4;
 /// The manager's operation: open the host service.
 pub const OPEN: u32 = 1;
+/// The manager's operation: start a worker process.
+pub const SPAWN: u32 = 2;
+/// End the calling process (`r0` exit code).
+pub const SYS_EXIT: u32 = 5;
+/// Start a process from the image (`r0` entry offset in its code; the
+/// service manager only).
+pub const SYS_SPAWN: u32 = 6;
+/// A worker's exit code when its checks held.
+pub const WORKER_OK: u32 = 0x600D;
 /// Where client 0 keeps its restart test's five results (its own slot).
 pub const RESTART_RESULTS: u32 = DATA + 16;
 /// Where each program keeps its word (in its own slot).
@@ -70,6 +85,7 @@ core::arch::global_asm!(
     .global rp_ipc_client
     .global rp_ipc_server
     .global rp_ipc_manager
+    .global rp_ipc_worker
 rp_user_page:
 rp_ipc_client:
     and     r4, r0, #0xFF           @ the handle
@@ -135,6 +151,16 @@ rp_ipc_client:
     mov     r7, #1
     swi     #0
     str     r0, [r5, #32]
+    mov     r0, #1                  @ the manager: start a worker
+    mov     r1, #2
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #36]
+    mov     r0, #1                  @ and another, once that one ended
+    mov     r1, #2
+    mov     r7, #1
+    swi     #0
+    str     r0, [r5, #40]
 8:  ldr     r6, [r5]                @ our word, untouched
     mov     r0, r4                  @ nested: 4 calls deep
     mov     r1, #20
@@ -190,9 +216,15 @@ rp_ipc_server:
 
 rp_ipc_manager:                     @ r0 = the caller's slot, r1 = operation
     cmp     r1, #1                  @ OPEN
+    beq     4f
+    cmp     r1, #2                  @ SPAWN
     mvnne   r0, #2                  @ else an error (0xFFFFFFFD)
     bne     5f
-    mov     r1, r0                  @ to the caller
+    ldr     r0, =(rp_ipc_worker - rp_user_page)
+    mov     r7, #6                  @ SYS_SPAWN: its slot comes back
+    swi     #0
+    b       5f
+4:  mov     r1, r0                  @ to the caller
     mov     r0, #0                  @ our handle to the host's port
     mov     r2, #1                  @ CALL only
     mov     r7, #4                  @ SYS_GRANT
@@ -200,6 +232,23 @@ rp_ipc_manager:                     @ r0 = the caller's slot, r1 = operation
 5:  mov     r7, #2                  @ SYS_RETURN
     swi     #0
 6:  b       6b
+
+rp_ipc_worker:                      @ r0 = a handle to the manager
+    ldr     r5, =0x00020000
+    ldr     r6, [r5]                @ a new process's memory reads zero
+    ldr     r1, =0x33333333
+    str     r1, [r5]                @ a mark the next process mustn't see
+    mov     r0, #5                  @ a handle we were never given
+    mov     r7, #1
+    swi     #0
+    cmn     r0, #256                @ carry set: refused, as it must be
+    ldr     r0, =0x600D
+    movcc   r0, #1
+    cmp     r6, #0
+    movne   r0, #2
+    mov     r7, #5                  @ SYS_EXIT
+    swi     #0
+7:  b       7b
     .ltorg
     .balign 4
     .global rp_user_page_end
