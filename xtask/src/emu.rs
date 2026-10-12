@@ -821,6 +821,75 @@ fn card_file(image: &Path, name: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// A `-drive` argument for `path` on `interface`, as the emulator in use
+/// sees paths (WSL or native).
+fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String> {
+    let p = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(path),
+        Emulator::Native(_) => path.display().to_string(),
+    };
+    Ok(format!("if={interface},format=raw,file={p}"))
+}
+
+/// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1,
+/// identified through the loader (`cf`): its capacity, its write cache
+/// turned off, its partition seen; and no SD card, so the CF path stands
+/// alone.
+pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    CF card: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024, // 16 MiB
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "on-cf.txt",
+            data: b"compact flash",
+        }],
+        blocked_clusters: &[],
+    });
+    let cf = root.join("target/emulator/cf.img");
+    std::fs::write(&cf, image).map_err(|e| format!("{}: {e}", cf.display()))?;
+    let mut args: Vec<String> = usb_args(2).into();
+    args.push("-drive".into());
+    args.push(drive_arg(root, "ide", &cf)?);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&rp_loadproto::control_frame("cf"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "model", 20)?;
+        let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, FAT32 partition";
+        if !reply.contains(want) {
+            return Err(format!("unexpected reply to cf: {reply:?}"));
+        }
+        // Asked again: the same card, not re-initialised.
+        s.write_all(&rp_loadproto::control_frame("cf"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, want, 20)?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    eprintln!("    CF card OK: identified in socket 1 (16 MB, write cache off, FAT32 seen)");
+    Ok(())
+}
+
 /// Writing files to an exFAT card (SDXC) through the loader: a file
 /// replaced and one created, a folder refused (exFAT folders aren't
 /// written yet), everything checked in the image afterwards, and the
@@ -978,6 +1047,11 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // No CF card in this machine: the slot reads empty and the socket
+        // is never touched.
+        s.write_all(&rp_loadproto::control_frame("cf"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR cf: no card (GPIO13 high)", 20)?;
         // SD DMA: reads on after the start-up self-test, writes only when
         // asked; the puts below then write by DMA and are checked in the
         // image afterwards.

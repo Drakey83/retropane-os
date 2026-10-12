@@ -70,6 +70,32 @@ for the driver's set-up.
   first attribute access; the pulse and wait times come from (CF) when the
   driver is written (not yet recorded here).
 
+## Driver (`drivers/cf`, `rp-drv-cf`; emulator-verified, device run pending)
+
+Memory mode, the one every CF storage card must support: configuration
+index 0 in the Configuration Option Register (after a soft reset through
+its bit 7), the ATA task file at common memory 0x0-0x7 (data at 0x0 as
+16-bit accesses, the other registers as bytes), device control at 0xE
+(nIEN set: the driver polls). The CIS walk (even bytes, bounded to the
+first 1 KiB) must find `CISTPL_FUNCID` = fixed disk and `CISTPL_CONFIG`
+with the configuration registers' base; anything else (a Wi-Fi or modem
+card) is left alone with nothing written to it. IDENTIFY DEVICE gives the
+LBA28 capacity (words 60-61, word 49 bit 9) and the model (words 27-46);
+SET FEATURES 0x82 turns the write cache off so a completed write is on the
+card (the crash-safe file system order needs that), refused by cards with
+no cache, which is fine. READ / WRITE SECTORS move up to 256 sectors a
+command, polled per sector (DRQ), every wait bounded.
+
+`devices::take_cf()` (board HAL) sets socket 1's timing registers to the
+values Windows Mobile used and `MECR` to two sockets / card inserted, then
+hands out the attribute and common windows. The loader's `cf` command
+(`cargo xtask` control frame `cf`) identifies the card read-only, and only
+when GPIO13 reads a card; nothing touches the socket at start-up.
+
+Not yet: card power (the CPLD bit is unknown; the loader relies on Windows
+Mobile having left the slot powered, as HaRET hands over), the card's
+ready/IRQ line, I/O-mode cards, hot swap, and the USB drive's LUN 1.
+
 ## Safety for experiments
 
 An access to a socket window with the card unpowered, or before its timing
