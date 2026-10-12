@@ -26,8 +26,8 @@ Facts that shape the design:
   attacker it is meant to stop.
 - **No hardware random number generator** is documented for the PXA27x; good
   entropy on the device is not yet available.
-- **The device has hardware buttons and a screen**, which the attacker at
-  the cable does not control.
+- **The device has a touch screen**, which the attacker at the cable does
+  not control.
 - `rp-crypto` now has SHA-256 and HMAC-SHA256 (item 32), checked against the
   published vectors on the host and on the target.
 
@@ -36,11 +36,13 @@ Facts that shape the design:
 1. **Pairing confirmed on the device, as Android's "Allow USB debugging?"**
    The first control frame from a PC is a pairing request carrying a
    256-bit key the PC generated (the PC has good randomness). The loader
-   shows a prompt naming the key's SHA-256 fingerprint (the PC prints the
-   same fingerprint) and waits for a hardware button (Calendar: accept;
-   anything else or 30 s: refuse). Only an accepted key is kept, **in RAM
+   shows an on-screen prompt, "Allow this computer?", with the key's short
+   fingerprint (the PC prints the same one) and Allow / Deny buttons on the
+   touch screen, as a modern phone asks "Trust this computer?"; no hardware
+   key is given a new job (the owner's rule: buttons behave as Windows
+   Mobile's do). Deny, or 30 s without an answer, refuses. Only an accepted key is kept, **in RAM
    only**: nothing at rest to steal; a reset forgets it (pair again, one
-   button press per boot).
+   tap per boot).
 2. **Every frame after pairing is authenticated**: an HMAC-SHA256 tag over
    the frame (with a sequence number, so a recorded frame can't be replayed),
    checked in constant time (`rp_crypto::ct_eq`). Unauthenticated frames get
@@ -61,7 +63,7 @@ Facts that shape the design:
 - **Modernize:** the pattern phones use for USB debugging, with a modern MAC
   and replay protection.
 - **Legacy support:** Windows Mobile had no such check at all.
-- **Better/faster:** one button press per boot; HMAC on a 70 KB frame is a
+- **Better/faster:** one tap per boot; HMAC on a 70 KB frame is a
   few milliseconds on the XScale (bench: ~62 instructions per byte).
 
 ## Alternatives considered
@@ -78,6 +80,6 @@ Facts that shape the design:
 ## Consequences
 
 - `cargo xtask` gains pairing (key generation, fingerprint display) and tags
-  every frame; the emulator tests press the button through the monitor.
-- The first command after each boot needs the owner at the device.
-- Open question for the owner: which button accepts (Calendar is proposed)?
+  every frame; the emulator tests tap Allow on the emulated touch screen.
+- The first command after each boot needs the owner at the device (one
+  tap).
