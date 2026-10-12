@@ -39,9 +39,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 27 -> 30 KiB on 2026-10-12 (test image): SD DMA (the DMA
     // channel driver and the controller's DMA path) and a 64-block read
     // row and its on-target check; 28.1 KiB measured, +~7%.
+    // Ratcheted 30 -> 34 KiB on 2026-10-12 (test image): SHA-256 and HMAC
+    // checked on the target and timed (opt-level 3: the hash is hot code
+    // for TLS later); 32.9 KiB measured, +~3%.
     Budget {
         image: "rp-bench",
-        max_load: 30 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table

@@ -149,6 +149,71 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     }
 }
 
+/// HMAC-SHA256 (RFC 2104): a keyed digest, for authenticating messages
+/// and, later, TLS's key schedule.
+#[derive(Clone)]
+pub struct HmacSha256 {
+    inner: Sha256,
+    outer: Sha256,
+}
+
+impl HmacSha256 {
+    /// A computation keyed with `key` (hashed first when longer than a
+    /// block, as the RFC says).
+    #[must_use]
+    pub fn new(key: &[u8]) -> Self {
+        let mut k = [0u8; 64];
+        if key.len() > 64 {
+            k[..32].copy_from_slice(&Sha256::digest(key));
+        } else {
+            k[..key.len()].copy_from_slice(key);
+        }
+        let mut ipad = [0x36u8; 64];
+        let mut opad = [0x5cu8; 64];
+        for i in 0..64 {
+            ipad[i] ^= k[i];
+            opad[i] ^= k[i];
+        }
+        let mut inner = Sha256::new();
+        inner.update(&ipad);
+        let mut outer = Sha256::new();
+        outer.update(&opad);
+        Self { inner, outer }
+    }
+
+    /// The tag of `data` under `key` in one call.
+    #[must_use]
+    pub fn mac(key: &[u8], data: &[u8]) -> [u8; 32] {
+        let mut h = Self::new(key);
+        h.update(data);
+        h.finish()
+    }
+
+    /// Adds `data`.
+    pub fn update(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
+
+    /// The tag.
+    #[must_use]
+    pub fn finish(self) -> [u8; 32] {
+        let mut outer = self.outer;
+        outer.update(&self.inner.finish());
+        outer.finish()
+    }
+}
+
+/// Compares two tags in time that doesn't depend on where they differ (so
+/// a forger can't find a tag byte by byte by timing the check).
+#[must_use]
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y));
+    core::hint::black_box(diff) == 0
+}
+
 /// `digest` as 64 lower-case hex digits.
 #[must_use]
 pub fn hex(digest: &[u8; 32]) -> [u8; 64] {
@@ -193,6 +258,65 @@ mod tests {
             h(&million),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+    }
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn mac(key: &[u8], data: &[u8]) -> String {
+        String::from_utf8(hex(&HmacSha256::mac(key, data)).to_vec()).unwrap()
+    }
+
+    /// RFC 4231 test cases 1-4, 6 and 7 (5 is a truncated tag).
+    #[test]
+    fn hmac_rfc_4231_vectors() {
+        assert_eq!(
+            mac(&[0x0b; 20], b"Hi There"),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            mac(b"Jefe", b"what do ya want for nothing?"),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            mac(&[0xaa; 20], &[0xdd; 50]),
+            "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"
+        );
+        assert_eq!(
+            mac(
+                &unhex("0102030405060708090a0b0c0d0e0f10111213141516171819"),
+                &[0xcd; 50]
+            ),
+            "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b"
+        );
+        assert_eq!(
+            mac(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            ),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+        assert_eq!(
+            mac(
+                &[0xaa; 131],
+                b"This is a test using a larger than block-size key and a larger than block-size data. The key needs to be hashed before being used by the HMAC algorithm."
+            ),
+            "9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2"
+        );
+    }
+
+    #[test]
+    fn tags_compare_whole() {
+        let a = HmacSha256::mac(b"k", b"m");
+        let mut b = a;
+        assert!(ct_eq(&a, &b));
+        b[31] ^= 1;
+        assert!(!ct_eq(&a, &b));
+        assert!(!ct_eq(&a, &b[..31]));
     }
 
     #[test]

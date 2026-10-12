@@ -2204,10 +2204,13 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
         return Err(format!("benchmarks didn't finish:\n{output}"));
     }
     eprintln!("    fault path OK: deliberate unmapped read reported as a data abort");
-    if !output.contains("CHECK mem OK") {
-        return Err(format!(
-            "memory routines failed their on-target check:\n{output}"
-        ));
+    // Checks that must have run (and passed), not merely not failed.
+    for check in ["mem", "crypto", "sd_multi_block_matches"] {
+        if !output.contains(&format!("CHECK {check} OK")) {
+            return Err(format!(
+                "on-target check `{check}` missing or failed:\n{output}"
+            ));
+        }
     }
     // Every on-target check must pass, not just the memory one.
     let failed: Vec<&str> = output

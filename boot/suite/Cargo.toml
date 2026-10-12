@@ -13,6 +13,7 @@ rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-kernel-mm = { path = "../../kernel/mm" }
 rp-lz4 = { path = "../../kernel/lz4" }
+rp-crypto = { path = "../../kernel/crypto" }
 
 [lints]
 workspace = true

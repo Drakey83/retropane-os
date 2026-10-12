@@ -555,13 +555,22 @@ on the host or in the emulator first.
 
 ## Ninth tier (added 2026-10-12, same rules)
 
-32. **HMAC-SHA256 and the loader's security, designed**: HMAC (RFC 2104)
-    in `rp-crypto`, checked against RFC 4231's test vectors (the next
-    building block for TLS's key schedule and for authenticated frames);
-    ADR-0017 (proposed): how the development loader stops running whatever
-    any USB host sends (the threat: someone at the cradle), given that the
-    card is visible to the PC as a drive, so a key file on it would be
-    readable by the very attacker it is meant to stop.
+32. **HMAC-SHA256 and the loader's security, designed**: **done; ADR-0017
+    proposed, waits for the owner.** `rp-crypto`: HMAC-SHA256 (RFC 2104,
+    all six full-tag RFC 4231 vectors) and `ct_eq`, a constant-time tag
+    compare. The bench now checks SHA-256 and HMAC on the target (and
+    fails if the check is missing, as for the memory and SD checks) and
+    times them: 4 KiB hashed in ~253k instructions, a 64-byte HMAC in ~21k.
+    `rp-bench` budget 30 -> 34 KiB. ADR-0017: pairing confirmed with a
+    hardware button on the device (as phones do for USB debugging), the
+    key kept in RAM only (nothing on the card to steal: the card is a
+    drive), every later frame HMAC-tagged with a sequence number, the drive
+    offered only after pairing.
+    - **Iterate:** the loader's open door gets a design that fits this
+      device's facts (no secure storage, no RNG, a card the attacker can
+      read).
+    - **Modernize:** RFC-checked crypto building blocks, timing-safe
+      comparison, checked on the real instruction set.
 33. **Deleting files**: `rm` on FAT32 and exFAT, crash-safe (the entry goes
     in one sector write, then the clusters are freed: a cut leaks space at
     worst), through the loader (`cargo xtask rm`), checked with `card
