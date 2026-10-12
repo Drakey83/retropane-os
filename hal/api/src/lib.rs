@@ -138,6 +138,24 @@ pub trait SpiBus {
     fn transfer(&mut self, byte: u8) -> u8;
 }
 
+/// An I2C bus master (7-bit addresses).
+pub trait I2cBus {
+    /// Writes `data` to the device at `addr` in one transaction (start,
+    /// address, data, stop). An empty `data` only checks the device answers.
+    fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError>;
+}
+
+/// Why an I2C transaction failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum I2cError {
+    /// No device acknowledged the address.
+    NoDevice,
+    /// The device refused a data byte.
+    Nak,
+    /// The bus never finished (held, or lost to another master).
+    Bus,
+}
+
 /// A contiguous bit field inside a 32-bit register.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Field {

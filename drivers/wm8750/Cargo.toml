@@ -1,0 +1,14 @@
+[package]
+name = "rp-drv-wm8750"
+description = "Wolfson WM8750 audio codec over I2C: playback set-up, volume in dB steps"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[lints]
+workspace = true

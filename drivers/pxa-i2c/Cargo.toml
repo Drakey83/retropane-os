@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-pxa-i2c"
+description = "PXA27x I2C controller as a polled bus master (writes, presence checks)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

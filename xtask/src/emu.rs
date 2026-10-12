@@ -961,6 +961,90 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S polled),
+/// recorded by the emulator to a wav file, and the recording's pitch
+/// measured from its zero crossings.
+pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    tone: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let wav = root.join("target/emulator/tone.wav");
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend([
+        "-audiodev".into(),
+        format!("wav,id=snd,path={wav_path}"),
+        "-machine".into(),
+        "audiodev=snd".into(),
+    ]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&rp_loadproto::control_frame("tone 440 500"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "\n", 20)?;
+        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames") {
+            return Err(format!("unexpected reply to tone: {reply:?}"));
+        }
+        eprintln!("    loader: {}", reply.trim());
+        s.write_all(&rp_loadproto::control_frame("tone 5 5"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL ERR usage", 10)?;
+        // Let the backend write out what it has.
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    let data = std::fs::read(&wav).map_err(|e| format!("{}: {e}", wav.display()))?;
+    if data.len() < 44 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return Err("tone: the emulator wrote no wav".into());
+    }
+    let rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    let channels = usize::from(u16::from_le_bytes([data[22], data[23]]));
+    let left: Vec<i16> = data[44..]
+        .chunks_exact(2 * channels)
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    // The tone: the stretch between the first and last loud samples.
+    let loud = |s: &i16| s.unsigned_abs() > 2000;
+    let (Some(start), Some(end)) = (left.iter().position(loud), left.iter().rposition(loud)) else {
+        return Err("tone: the recording is silent".into());
+    };
+    let tone = &left[start..=end];
+    let crossings = tone.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+    let seconds = tone.len() as f64 / f64::from(rate);
+    let hz = crossings as f64 / 2.0 / seconds;
+    if !(425.0..=455.0).contains(&hz) || !(0.4..=0.6).contains(&seconds) {
+        return Err(format!(
+            "tone: recorded {hz:.1} Hz for {seconds:.3} s (wanted 440 Hz, 0.5 s)"
+        ));
+    }
+    eprintln!(
+        "    tone OK: WM8750 found on I2C, 440 Hz through I2S, recorded at {hz:.1} Hz for {seconds:.3} s"
+    );
+    Ok(())
+}
+
 /// Writing files to an exFAT card (SDXC) through the loader: a file
 /// replaced, one created, one put into folders that didn't exist,
 /// everything checked in the image afterwards, and the volume left clean

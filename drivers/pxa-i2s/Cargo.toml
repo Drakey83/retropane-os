@@ -1,0 +1,17 @@
+[package]
+name = "rp-drv-pxa-i2s"
+description = "PXA27x I2S controller (playback, polled) and a fixed-point tone generator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

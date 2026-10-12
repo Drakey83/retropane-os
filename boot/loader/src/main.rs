@@ -35,11 +35,14 @@ mod image {
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, reg};
     use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_pxa_i2c::PxaI2c;
+    use rp_drv_pxa_i2s::{PxaI2s, Rate, Tone};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
+    use rp_drv_wm8750::Wm8750;
     use rp_fat::{AnyVolume, Volume};
     use rp_hal_api::{BlockDevice, BlockError, RegisterBus};
     use rp_hal_pxa27x::dma::Dma;
@@ -705,6 +708,87 @@ mod image {
         let _ = out.write_str("\r\n");
     }
 
+    /// Audio: set up on the first `tone`, so nothing touches the I2C bus or
+    /// the codec unasked.
+    enum Audio {
+        Untried,
+        Ready(Wm8750<PxaI2c<Mmio>>, PxaI2s<Mmio>),
+        Failed(&'static str),
+    }
+
+    /// `tone <hz> <ms>`: a sine (20-20,000 Hz, up to 5 s) through the
+    /// WM8750 at 48 kHz, polled into the I2S FIFO; the reply says how long
+    /// it really took (the codec's clock paces it). Headphones: the
+    /// speaker amplifier (GPIO82, CPLD 0x14) is left alone until a device
+    /// run with the owner there.
+    #[inline(never)]
+    fn tone_command(audio: &mut Audio, args: &[u8], feed: &mut dyn FnMut(), out: &mut Line) {
+        let mut it = args.split(|&b| b == b' ').filter(|a| !a.is_empty());
+        let (Some(hz), Some(ms)) = (
+            it.next()
+                .and_then(parse_number)
+                .filter(|h| (20..=20_000).contains(h)),
+            it.next()
+                .and_then(parse_number)
+                .filter(|m| (1..=5_000).contains(m)),
+        ) else {
+            let _ = write!(out, "RPL ERR usage: tone <20-20000 Hz> <1-5000 ms>\r\n");
+            return;
+        };
+        if let Audio::Untried = audio {
+            *audio = match (rt::take_i2c(), rt::take_i2s()) {
+                (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
+                    Ok(codec) => Audio::Ready(codec, PxaI2s::new(i2s)),
+                    Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
+                },
+                _ => Audio::Failed("I2C or I2S unavailable"),
+            };
+        }
+        let (codec, i2s) = match audio {
+            Audio::Ready(c, i) => (c, i),
+            Audio::Failed(why) => {
+                let _ = write!(out, "RPL ERR tone: {why}\r\n");
+                return;
+            }
+            Audio::Untried => return,
+        };
+        let rate = Rate::Khz48;
+        let frames = rate.hz() / 1000 * ms;
+        let t0 = rt::ticks();
+        i2s.start(rate);
+        let mut sent = 0u32;
+        let mut stalled = false;
+        // A tail of silence, so the FIFO drains a sample's worth of zeros.
+        let mut source = Tone::new(hz, rate.hz(), 12_000)
+            .take(frames as usize)
+            .chain(core::iter::repeat_n(0, 32));
+        'frames: for frame in &mut source {
+            let mut spins = 0u32;
+            while !i2s.try_write(frame) {
+                spins += 1;
+                if spins > 2_000_000 {
+                    stalled = true;
+                    break 'frames;
+                }
+            }
+            sent += 1;
+            if sent % 4800 == 0 {
+                feed();
+            }
+        }
+        i2s.stop();
+        let took = rt::ticks().wrapping_sub(t0) / (TICK_1S / 1000);
+        if stalled {
+            let _ = write!(out, "RPL ERR tone: I2S stalled after {sent} frames\r\n");
+        } else {
+            let _ = write!(
+                out,
+                "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {took} ms), codec at {:#04x}\r\n",
+                codec.address()
+            );
+        }
+    }
+
     /// `card dma` reports the DMA policy; `card dma writes` lets writes use
     /// DMA for this session (only when reads passed their self-test).
     #[inline(never)]
@@ -1148,6 +1232,7 @@ mod image {
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
+        let mut audio = Audio::Untried;
         let mut cf = CfLun {
             slot: CfSlot::Untried,
             inserted: false,
@@ -1280,6 +1365,19 @@ mod image {
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
                             backlight_command(backlight.as_mut(), &c[9..], &mut status);
+                            status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"tone") => {
+                            tone_command(
+                                &mut audio,
+                                &c[4..],
+                                &mut || {
+                                    if watchdog.armed() {
+                                        watchdog.feed(RUN_LIMIT);
+                                    }
+                                },
+                                &mut status,
+                            );
                             status.as_str()
                         }
                         Ok(b"cf") => {

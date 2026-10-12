@@ -331,6 +331,43 @@ pub fn take_gpio() -> Option<Mmio> {
     Some(unsafe { Mmio::new(base, 0x200) })
 }
 
+/// Single-use guards for the I2C and I2S controllers.
+static mut I2C_TAKEN: bool = false;
+static mut I2S_TAKEN: bool = false;
+/// CKEN bit for the I2C controller.
+pub const CKEN_I2C: u32 = 14;
+/// CKEN bit for the I2S controller.
+pub const CKEN_I2S: u32 = 8;
+
+/// Hands out the (standard) I2C controller once, with its clock enabled.
+pub fn take_i2c() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(I2C_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_I2C);
+    let base = NonNull::new(va(0x4030_1680) as *mut u32)?;
+    // SAFETY: the I2C controller's registers (PXA27x memory map: IBMR at
+    // 0x40301680, ISAR the last at +0x20), identity-mapped; the flag
+    // guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x24) })
+}
+
+/// Hands out the I2S controller once, with its clock enabled.
+pub fn take_i2s() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(I2S_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_I2S);
+    let base = NonNull::new(va(0x4040_0000) as *mut u32)?;
+    // SAFETY: the I2S controller's registers (PXA27x memory map, SADR the
+    // last at +0x80), identity-mapped; the flag guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x84) })
+}
+
 /// Hands out SSP1 once, with its clock enabled.
 pub fn take_ssp1() -> Option<Mmio> {
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
