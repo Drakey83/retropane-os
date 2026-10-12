@@ -51,7 +51,9 @@ commands:
             `drive off`/`drive on` withdraws/offers the card (an empty reader
             to the PC), `drive status` reports counters and the last card error
   card      card diagnostics through the loader: `card scan <lba> <count>`
-            reads blocks one by one, reports failures and the slowest read
+            reads blocks one by one, reports failures and the slowest read;
+            `card scrub <lba>` rewrites a weak first-FAT sector in place,
+            verified against its mirror in the second FAT
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 

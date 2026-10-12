@@ -380,6 +380,28 @@ fn power_loss_sweep(img: &[u8], old: &[u8], new: &[u8], scratch: usize) {
 }
 
 #[test]
+fn first_fat_sectors_have_a_mirror_in_the_second() {
+    let img = small_image(
+        &[Entry {
+            name: "a.bin",
+            data: b"x",
+        }],
+        &[],
+    );
+    let v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let first = PARTITION_START + 32;
+    assert_eq!(v.fat_mirror(first), Some(first + v.fat_sectors));
+    assert_eq!(
+        v.fat_mirror(first + v.fat_sectors - 1),
+        Some(first + 2 * v.fat_sectors - 1)
+    );
+    // The second FAT, the reserved area and the data have none.
+    assert_eq!(v.fat_mirror(first + v.fat_sectors), None);
+    assert_eq!(v.fat_mirror(PARTITION_START), None);
+    assert_eq!(v.fat_mirror(v.data_start + 5), None);
+}
+
+#[test]
 fn rejects_what_is_not_fat32() {
     let mut img = small_image(&[], &[]);
     let bs = PARTITION_START as usize * SECTOR;

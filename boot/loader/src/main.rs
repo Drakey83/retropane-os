@@ -281,6 +281,106 @@ mod image {
     /// areas without the PC's own retries in the way.
     #[inline(never)]
     fn card_scan(lun: &mut Lun, args: &[u8], out: &mut Line) {
+        card_scan_inner(lun, args, out);
+    }
+
+    /// `card scrub <lba>`: rewrites a weak block with its own contents, so
+    /// the card stores it in a fresh page (a slow block reads fast again).
+    /// Only a first-FAT sector, and only when two reads agree with each
+    /// other and with its mirror in the second FAT: the card's own backup,
+    /// so the data is verified before and recoverable after. Read back and
+    /// compared, with the read time before and after.
+    #[inline(never)]
+    fn card_scrub(lun: &mut Lun, args: &[u8], out: &mut Line) {
+        let lba = args
+            .iter()
+            .filter(|b| !b.is_ascii_whitespace())
+            .try_fold(0u32, |n, &d| {
+                d.is_ascii_digit()
+                    .then(|| n.checked_mul(10)?.checked_add(u32::from(d - b'0')))
+                    .flatten()
+            });
+        let (Some(lba), Some(sd)) = (lba, lun.card.as_mut()) else {
+            let _ = out.write_str(LoadError::BadCommand.reply());
+            return;
+        };
+        let mirror = match mount(sd) {
+            Ok(vol) => vol.fat_mirror(lba),
+            Err(why) => {
+                let _ = write!(out, "RPL ERR scrub: {why}\r\n");
+                return;
+            }
+        };
+        let Some(mirror) = mirror else {
+            let _ = out.write_str("RPL ERR scrub: only first-FAT sectors (they have a mirror)\r\n");
+            return;
+        };
+        let mut a = [0u8; rp_drv_sdcard::BLOCK];
+        let mut b = [0u8; rp_drv_sdcard::BLOCK];
+        let t = rt::ticks();
+        let first = sd.read(lba, &mut a);
+        let before = rt::ticks().wrapping_sub(t) / 3;
+        // One read: on the owner's card, reading a weak block again right
+        // away is what makes it fail; the mirror is the independent check.
+        if first.is_err() {
+            let _ = write!(
+                out,
+                "RPL ERR scrub: the block didn't read{}\r\n",
+                card_note(sd)
+            );
+            return;
+        }
+        if sd.read(mirror, &mut b).is_err() {
+            let _ = write!(
+                out,
+                "RPL ERR scrub: mirror {mirror} unreadable: not written\r\n"
+            );
+            return;
+        }
+        if a != b {
+            // How they differ: count, first and last offsets, and the words
+            // there (FAT entries are 32-bit), so the cause can be judged.
+            let diff: u32 = a.iter().zip(&b).map(|(x, y)| u32::from(x != y)).sum();
+            let first = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(0);
+            let last = a.iter().zip(&b).rposition(|(x, y)| x != y).unwrap_or(0);
+            let w = first & !3;
+            let word = |s: &[u8; rp_drv_sdcard::BLOCK]| {
+                u32::from_le_bytes([s[w], s[w + 1], s[w + 2], s[w + 3]])
+            };
+            let _ = write!(
+                out,
+                "RPL ERR scrub: differs from mirror {mirror} in {diff} bytes ({first}..{last}; at {w}: {:08x} vs {:08x}): not written\r\n",
+                word(&a),
+                word(&b)
+            );
+            return;
+        }
+        if sd.write(lba, &a).is_err() {
+            let _ = write!(
+                out,
+                "RPL ERR scrub: write failed{} (mirror {mirror} still holds the data)\r\n",
+                card_note(sd)
+            );
+            return;
+        }
+        let t = rt::ticks();
+        let ok = sd.read(lba, &mut b).is_ok() && a == b;
+        let after = rt::ticks().wrapping_sub(t) / 3;
+        if ok {
+            let _ = write!(
+                out,
+                "RPL OK scrub {lba}: rewritten and verified against mirror {mirror}; read {before} us before, {after} us after\r\n"
+            );
+        } else {
+            let _ = write!(
+                out,
+                "RPL ERR scrub: read-back differs (mirror {mirror} holds the data)\r\n"
+            );
+        }
+    }
+
+    #[inline(never)]
+    fn card_scan_inner(lun: &mut Lun, args: &[u8], out: &mut Line) {
         let mut nums = args
             .split(|&b| b == b' ')
             .filter(|w| !w.is_empty())
@@ -639,6 +739,18 @@ mod image {
                                 ),
                             );
                             status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"card scrub ") => {
+                            if watchdog.armed() {
+                                watchdog.feed(RUN_LIMIT);
+                            }
+                            if msc.host_writing(now_ms()) {
+                                "RPL ERR card busy: the PC is writing\r\n"
+                            } else {
+                                card_scrub(&mut lun, &c[11..], &mut status);
+                                msc.medium_changed(0);
+                                status.as_str()
+                            }
                         }
                         Ok(c) if c.starts_with(b"card scan ") => {
                             if watchdog.armed() {
