@@ -22,8 +22,24 @@
 
 /// Printed (serial and run log) with the stage letter once a stage is up.
 pub const MARKER: &str = "RETROPANE-BLEND-";
-/// How long each stage stays up.
+/// How long each stage stays up, unless the build sets `RP_BLEND_SECONDS`.
 pub const STAGE_SECONDS: u32 = 15;
+/// Which stages to show (letters), unless the build sets `RP_BLEND_STAGES`
+/// (e.g. `RP_BLEND_STAGES=CDE RP_BLEND_SECONDS=20 cargo xtask load
+/// rp-blend` to look at a few for longer).
+pub const STAGES: &str = match option_env!("RP_BLEND_STAGES") {
+    Some(s) => s,
+    None => "ABCDE",
+};
+
+/// The seconds per stage this build uses.
+#[must_use]
+pub fn stage_seconds() -> u32 {
+    option_env!("RP_BLEND_SECONDS")
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| (1..=60).contains(&n))
+        .unwrap_or(STAGE_SECONDS)
+}
 
 #[cfg(target_os = "none")]
 mod image {
@@ -79,7 +95,10 @@ mod image {
         for stage in Stage::ALL {
             blendtest::draw(stage, vram);
         }
-        for stage in Stage::ALL {
+        for stage in Stage::ALL
+            .into_iter()
+            .filter(|s| super::STAGES.contains(s.letter()))
+        {
             blendtest::program(&mut d, stage);
             record(d.regs(), stage.label()[0]);
             let c = stage.letter();
@@ -87,7 +106,7 @@ mod image {
                 let _ = writeln!(u, "{}{c}", super::MARKER);
             }
             let _ = writeln!(RunLog, "{}{c}", super::MARKER);
-            for _ in 0..super::STAGE_SECONDS * 10 {
+            for _ in 0..super::stage_seconds() * 10 {
                 rt::delay_us(100_000);
                 check_in();
             }

@@ -368,15 +368,21 @@ impl<B: RegisterBus> Watchdog<B> {
     }
 }
 
+/// Whether counter value `at` is still ahead of `now` (strictly; within
+/// half the counter's range, so it works across the wrap).
+const fn ahead(at: u32, now: u32) -> bool {
+    at.wrapping_sub(now).wrapping_sub(1) < u32::MAX / 2
+}
+
 /// The OS timer, used for the periodic tick on match register 1.
 pub struct OsTimer<B>(pub B);
 
 impl<B: RegisterBus> OsTimer<B> {
     /// Arms match 1 `period` ticks from now and enables its interrupt.
     pub fn start(&mut self, period: u32) {
-        let now = self.0.read32(ost_reg::OSCR0);
         self.0.write32(ost_reg::OSSR, 1 << 1);
-        self.0.write32(ost_reg::OSMR1, now.wrapping_add(period));
+        let now = self.0.read32(ost_reg::OSCR0);
+        self.arm1(now.wrapping_add(period), period);
         let oier = self.0.read32(ost_reg::OIER) | (1 << 1);
         self.0.write32(ost_reg::OIER, oier);
     }
@@ -392,7 +398,7 @@ impl<B: RegisterBus> OsTimer<B> {
         // Checked after arming: if the deadline is reached now, the match may
         // have been missed.
         let now = self.0.read32(ost_reg::OSCR0);
-        at.wrapping_sub(now).wrapping_sub(1) < u32::MAX / 2
+        ahead(at, now)
     }
 
     /// Disables the match-1 interrupt.
@@ -409,13 +415,37 @@ impl<B: RegisterBus> OsTimer<B> {
         self.0.write32(ost_reg::OSSR, 1 << 1);
         let next = self.0.read32(ost_reg::OSMR1).wrapping_add(period);
         let now = self.0.read32(ost_reg::OSCR0);
-        // `next` is in the past if it's more than half the counter range behind.
-        let next = if next.wrapping_sub(now) > u32::MAX / 2 {
-            now.wrapping_add(period)
-        } else {
+        let next = if ahead(next, now) {
             next
+        } else {
+            now.wrapping_add(period)
         };
-        self.0.write32(ost_reg::OSMR1, next);
+        self.arm1(next, period);
+    }
+
+    /// Writes match 1 = `at` and makes sure it was in time. The match is an
+    /// equality compare, so a deadline the counter passed between being read
+    /// and the match being written fires only when the counter comes round
+    /// again: 22 minutes (2^32 ticks at 3.25 MHz) with no tick, and a loop
+    /// sleeping on it frozen (item 56: the loader stopped after one USB
+    /// packet of a reply). Checked by reading the counter after the write,
+    /// as [`alarm`](Self::alarm) does; a missed deadline is moved `delay`
+    /// ahead of the counter, doubling each time, so this always ends.
+    fn arm1(&mut self, mut at: u32, delay: u32) {
+        let mut delay = delay.max(1);
+        loop {
+            self.0.write32(ost_reg::OSMR1, at);
+            let now = self.0.read32(ost_reg::OSCR0);
+            // Still ahead, or already matched (the interrupt is pending).
+            if ahead(at, now) || self.0.read32(ost_reg::OSSR) & 1 << 1 != 0 {
+                return;
+            }
+            if delay > u32::MAX / 4 {
+                return; // can't happen: the counter would have to outrun the CPU
+            }
+            delay *= 2;
+            at = now.wrapping_add(delay);
+        }
     }
 }
 
@@ -601,6 +631,94 @@ mod tests {
         t.rearm(1000);
         assert_eq!(t.0.value(ost_reg::OSMR1), 14_500); // resynchronised
         assert!(t.0.writes().contains(&(ost_reg::OSSR, 2)));
+    }
+
+    /// The OS timer as the hardware behaves, with a counter that moves
+    /// `step` ticks at every register access (the time between reading the
+    /// counter and writing a match: an FIQ, a slow bus, an emulator's host
+    /// thread paused). Match 1 is an equality compare: it fires (sets
+    /// `OSSR` bit 1) only if the counter reaches it after it's written.
+    struct MovingOst {
+        oscr: u32,
+        step: u32,
+        osmr1: u32,
+        ossr: u32,
+    }
+
+    impl MovingOst {
+        fn tick(&mut self) {
+            let before = self.oscr;
+            self.oscr = self.oscr.wrapping_add(self.step);
+            // Passed the match during this step (including landing on it).
+            if self.osmr1.wrapping_sub(before).wrapping_sub(1) < self.step {
+                self.ossr |= 1 << 1;
+            }
+        }
+
+        /// Whether a tick is still coming before the counter wraps: the
+        /// match is ahead, or it has fired and the interrupt is pending.
+        fn tick_coming(&self) -> bool {
+            self.ossr & 1 << 1 != 0 || ahead(self.osmr1, self.oscr)
+        }
+    }
+
+    impl RegisterBus for MovingOst {
+        fn read32(&mut self, offset: usize) -> u32 {
+            let v = match offset {
+                ost_reg::OSCR0 => self.oscr,
+                ost_reg::OSMR1 => self.osmr1,
+                ost_reg::OSSR => self.ossr,
+                _ => 0,
+            };
+            self.tick();
+            v
+        }
+
+        fn write32(&mut self, offset: usize, value: u32) {
+            match offset {
+                ost_reg::OSMR1 => self.osmr1 = value,
+                ost_reg::OSSR => self.ossr &= !value,
+                _ => {}
+            }
+            self.tick();
+        }
+    }
+
+    #[test]
+    fn a_late_tick_is_never_lost_to_the_counter_passing_its_match() {
+        // Item 56: the handler ran almost a whole period late, so the next
+        // deadline was a few ticks ahead when read and behind when written.
+        // Every lateness and access time around that edge, and the wrap.
+        for base in [10_000u32, u32::MAX - 1_500] {
+            for step in 1..=8 {
+                for late in 900..=1_000 {
+                    let mut t = OsTimer(MovingOst {
+                        oscr: base.wrapping_add(late),
+                        step,
+                        osmr1: base,
+                        ossr: 1 << 1,
+                    });
+                    t.rearm(1_000);
+                    assert!(
+                        t.0.tick_coming(),
+                        "rearm: base {base} late {late} step {step}: no tick for 22 minutes"
+                    );
+                }
+                for period in 1..=16 {
+                    let mut t = OsTimer(MovingOst {
+                        oscr: base,
+                        step,
+                        osmr1: 0,
+                        ossr: 0,
+                    });
+                    t.start(period);
+                    assert!(
+                        t.0.tick_coming(),
+                        "start: base {base} period {period} step {step}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
