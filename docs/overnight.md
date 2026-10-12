@@ -352,7 +352,7 @@ on the host or in the emulator first.
 
 ## Fourth tier (added 2026-10-12, same rules)
 
-19. **CompactFlash**: **step one done (emulator); LUN 1 next.**
+19. **CompactFlash**: **done in the emulator; device run pending.**
     `rp-drv-cf`: memory mode (every CF storage card has it), CIS checked
     (only fixed disks taken; I/O cards untouched), soft reset, IDENTIFY
     (LBA28 capacity, model), write cache off, READ / WRITE SECTORS (256 per
@@ -363,14 +363,19 @@ on the host or in the emulator first.
     Emulator rp-v0.9.7: QEMU's PC Card socket and CF card model wired into
     the x51v machine, detect on GPIO13; `boot_loader_cf` identifies a
     16 MB card, and the put test checks an empty slot is reported, not
-    touched.
+    touched. The card is the USB drive's second unit (LUN 1, "CF card"):
+    an empty reader until `cf` attaches it, read-only until `drive rw`,
+    empty again when it leaves the slot; the emulator test reads it as the
+    PC would, is refused a write while read-only, writes after `drive rw`
+    and finds the write in the card image.
     - **Iterate:** the write cache goes off, so the file systems' crash
       safety holds on CF too (Windows Mobile's driver leaves it on);
       non-storage cards are recognised from the CIS and left alone; the
       socket is never touched unless the detect line says a card is there.
     - **Modernize:** one `BlockDevice` for SD and CF, so the same file
-      systems, the USB drive and the tools work on both; CF cards past
-      WM's limits (LBA28: up to 128 GiB).
+      systems, the USB drive and the tools work on both; both cards show
+      on the PC as drives, as on any modern device with card slots; CF
+      cards past WM's limits (LBA28: up to 128 GiB).
 20. **exFAT folders**: paths on exFAT as on FAT32 (`mkdir`, `put` creating
     parents), so SDXC cards organise the same way.
 21. **Thumb for cold code**: measure building cold paths (loader commands,
