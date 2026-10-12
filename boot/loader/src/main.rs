@@ -181,6 +181,11 @@ mod image {
             }
             match outcome {
                 Some(Ok(len)) => {
+                    // Bring-up check: does the image survive the cache flush
+                    // the launch does? Flush, drop the cache, re-read from
+                    // memory and compare with the CRC the sender gave.
+                    rp_hal_pxa27x::cpu::clean_invalidate_all();
+                    let intact = rp_loadproto::crc32(&dest[..len]) == rx.expected_crc();
                     send(&mut uart, &mut udc, OK);
                     let _ = writeln!(log, "image OK, {len} bytes: starting");
                     // Let the reply leave over USB before disconnecting: on
@@ -193,6 +198,15 @@ mod image {
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
                     devices::log_start();
+                    // The verdict goes at the top of the image's run log, so
+                    // it reaches the PC whatever the image then does.
+                    devices::log_write(if intact {
+                        b"[loader: image intact after the cache flush]
+"
+                    } else {
+                        b"[loader: image CHANGED after the cache flush]
+"
+                    });
                     // A run limit: an image that hangs (never returns, never
                     // feeds the watchdog) resets the device, and the loader
                     // comes back (started again by Windows Mobile's StartUp

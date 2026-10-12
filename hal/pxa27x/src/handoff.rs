@@ -72,25 +72,35 @@ pub fn launch(entry: u32) -> ! {
     // off continues at the same addresses; the D-cache was just cleaned, so
     // invalidating it loses nothing; `entry` is an image's first instruction
     // (the caller's contract) and never returns.
-    unsafe {
-        core::arch::asm!(
-            "mrc p15, 0, r3, c1, c0, 0",
-            "bic r3, r3, #0x1000",      // I-cache off
-            "bic r3, r3, #0x0005",      // MMU and D-cache off
-            "mcr p15, 0, r3, c1, c0, 0",
-            "mrc p15, 0, r3, c2, c0, 0", // XScale CPWAIT
-            "mov r3, r3",
-            "sub pc, pc, #4",
-            "mov r3, #0",
-            "mcr p15, 0, r3, c7, c7, 0", // invalidate I/D caches and BTB
-            "mcr p15, 0, r3, c8, c7, 0", // invalidate TLBs
-            "mov r0, #0",
-            "bx r12",
-            in("r3") 0u32, // scratch: clobbering an input is fine, this never returns
-            in("r12") entry, // not r0-r3: those are set or used above
-            in("r1") MACH_AXIM_X50,
-            in("r2") BOOT_TAGS,
-            options(noreturn, nostack),
-        )
-    }
+    unsafe { rp_mmu_off_jump(entry, MACH_AXIM_X50, BOOT_TAGS) }
+}
+
+core::arch::global_asm!(
+    r#"
+    .section .text.rp_launch, "ax"
+    .arm
+    .global rp_mmu_off_jump
+    @ rp_mmu_off_jump(entry, mach, tags): caches and MMU off, then jump with
+    @ Linux boot registers. The control write, the CPWAIT and what follows
+    @ share one aligned 32-byte line (the hazard rt::rp_mmu_on describes).
+rp_mmu_off_jump:
+    mov     r12, r0
+    mov     r3, #0
+    mcr     p15, 0, r3, c7, c7, 0      @ invalidate I/D caches and BTB
+    mcr     p15, 0, r3, c8, c7, 0      @ invalidate TLBs
+    mrc     p15, 0, r3, c1, c0, 0
+    bic     r3, r3, #0x1000            @ I-cache off
+    bic     r3, r3, #0x0005            @ MMU and D-cache off
+    .balignl 32, 0xe1a00000            @ pad with `mov r0, r0`
+    mcr     p15, 0, r3, c1, c0, 0
+    mrc     p15, 0, r3, c2, c0, 0      @ CPWAIT
+    mov     r3, r3
+    sub     pc, pc, #4
+    mov     r0, #0
+    bx      r12
+    "#
+);
+
+unsafe extern "C" {
+    fn rp_mmu_off_jump(entry: u32, mach: u32, tags: u32) -> !;
 }
