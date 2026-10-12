@@ -42,7 +42,7 @@ wake, smooth motion. When in doubt, predictability over peak speed.
 | Optimistic UI (feedback first), touch prediction, vsync flips, adaptive quality (shed effects, never frames) | Window manager phase (ROADMAP Phase 5), in its design spec |
 | Pre-rendered chrome and glyph atlases, fixed-point animation, dark theme as a first-class theme | Phase 5 design spec |
 | Dynamic clocking (624 MHz when interacting), instant suspend/resume, batched radio wakeups, idle by default | ROADMAP Phases 2 and 9; the loader's 98% idle is the pattern |
-| Boot time budgeted and measured; drivers start on first use | Item 50 |
+| Boot time budgeted and measured; drivers start on first use | Done 2026-10-12 in the emulator: `BENCH boot_*` checked by `cargo xtask emu`; loader 742 -> 504 ms (item 50); device number next |
 | Always-on trace ring (frame times, input latency, faults, DMA, clocks) readable over USB | Item 51 |
 | Packs stored LZ4-compressed, decompressed as pages load | ADR-0018 (added) |
 | 2700G 2D blitter before 3D | ROADMAP Phase 7 order |

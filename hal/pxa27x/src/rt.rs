@@ -181,16 +181,35 @@ pub(crate) fn set_user_abort_entry(entry: u32) {
     unsafe { core::ptr::addr_of_mut!(USER_ABORT_ENTRY).write_volatile(entry) }
 }
 
-/// Defines the image's entry point. `$path` must be a `fn() -> !`.
+/// Defines the image's entry point. `$path` must be a `fn() -> !`. The
+/// moment it starts is recorded for [`since_start`] (boot-time budgets).
 #[macro_export]
 macro_rules! entry {
     ($path:path) => {
         #[unsafe(export_name = "rp_main")]
         extern "C" fn __rp_main() -> ! {
+            $crate::rt::mark_start();
             let f: fn() -> ! = $path;
             f()
         }
     };
+}
+
+/// The OS timer when the image's code started.
+static mut START: u32 = 0;
+
+/// Records now as the image's start (called by [`entry!`]).
+#[doc(hidden)]
+pub fn mark_start() {
+    // SAFETY: written once, before anything else runs.
+    unsafe { core::ptr::addr_of_mut!(START).write(ticks()) }
+}
+
+/// OS timer ticks (3.25 MHz) since the image's code started: boot time.
+#[must_use]
+pub fn since_start() -> u32 {
+    // SAFETY: written once at entry; read-only after.
+    ticks().wrapping_sub(unsafe { core::ptr::addr_of!(START).read() })
 }
 
 /// Single-use guard for the boot-time FFUART handle.

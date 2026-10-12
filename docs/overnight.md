@@ -881,9 +881,24 @@ on the host or in the emulator first.
       can't be used to starve the device; the input path stays
       deterministic while everything else compresses.
 
-50. **Boot time as a budget**: each image measures and prints its own
-    time from reset to ready (`BENCH boot_*`), recorded in perf.md; drivers
-    and services start on first use; a budget the build checks.
+50. **Boot time as a budget**: **done (emulator; device number next).**
+    The entry macro records when each image starts (`rt::since_start`); the
+    loader prints `BENCH boot_loader_ready` (entry to its waiting loop) and
+    the kernel `BENCH boot_kernel_tables` (entry to its own page tables);
+    `cargo xtask emu` fails if either is missing or over budget (loose
+    budgets: emulator time is real time). The first measurement found the
+    loader took **742 ms**: a bring-up beacon filled all 16 MiB of 2700G
+    memory at four steps (now only the first MiB, where a scanned-out plane
+    lies), and everything ran in turn after a 500 ms display-settle wait
+    kept as insurance against an unexplained device hang. Now the GPIO, card
+    set-up, DMA self-test and USB detach run inside that wait: **504 ms**,
+    of which 500 is the settle. Next on the device: the real number, and
+    whether the settle can go (find the hang's cause). Audio and CF already
+    start on first use.
+    - **Iterate:** boot time measured and enforced, not guessed; the first
+      measurement paid for itself.
+    - **Modernize:** start-up work overlapped instead of serialised; the
+      remaining wait is named, explained and on the device list.
 
 51. **Trace ring**: an always-on, fixed-size, low-overhead ring of events
     (thread switches, faults, IPC calls, timers, clock changes) the loader

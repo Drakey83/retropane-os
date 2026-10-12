@@ -28,8 +28,13 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     // HaRET's "Jumping to Kernel..." in some runs (rp-probe, rp-usb), while
     // those that first spent ~1 s writing its memory never did (rp-light,
     // rp-probe with start-up colours). Cause not yet known (docs/perf.md
-    // open question); half a second at boot is cheap insurance.
-    rp_hal_pxa27x::rt::delay_us(SETTLE_US);
+    // open question); half a second after the hand-off is cheap insurance.
+    // Counted from the image's start, so work done before this call (card
+    // set-up, the USB detach) overlaps it instead of adding to it.
+    let elapsed_us = rp_hal_pxa27x::rt::since_start() / 13 * 4;
+    if elapsed_us < SETTLE_US {
+        rp_hal_pxa27x::rt::delay_us(SETTLE_US - elapsed_us);
+    }
     let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
     let regs = NonNull::new((cs3 + MBX_REG_OFFSET) as *mut u32)?;
     // SAFETY: the register block is a device window on CS3 (docs/hw/2700g.md),
@@ -61,10 +66,18 @@ pub fn emergency_vram() -> Option<&'static mut [u8]> {
     Some(unsafe { core::slice::from_raw_parts_mut(cs3 as *mut u8, MBX_VRAM_SIZE as usize) })
 }
 
-/// Bring-up beacon: fills all of the 2700G's local memory with alternating
-/// 32 KiB bands of `a` and `b` (RGB565; equal for a solid colour). Whatever
-/// plane the display is scanning out shows it, without knowing that plane's
-/// layout, so it works before any display setup and with the MMU on or off.
+/// Where a plane the display scans out can start, as far as the beacon
+/// needs to know: offset 0 (what Windows Mobile leaves, confirmed on the
+/// owner's X51v) or the conventional `0x60000` (docs/hw/2700g.md). The
+/// first MiB covers a 480x640 RGB565 plane at either.
+const BEACON_BYTES: usize = 1 << 20;
+
+/// Bring-up beacon: fills the start of the 2700G's local memory (where a
+/// scanned-out plane lies, [`BEACON_BYTES`]) with alternating 32 KiB bands
+/// of `a` and `b` (RGB565; equal for a solid colour), so it shows without
+/// knowing the plane's layout, before any display setup and with the MMU on
+/// or off. It once filled all 16 MiB: 64 MiB of slow uncached writes over a
+/// loader's four steps, most of its boot time (530 of 742 ms, emulator).
 /// Diagnostic only: like [`emergency_vram`], it aliases the memory
 /// [`take_mbx`] hands out, so callers use it only where nothing else draws.
 pub fn beacon(a: u16, b: u16) {
@@ -73,7 +86,7 @@ pub fn beacon(a: u16, b: u16) {
     };
     let base = va(r.base as usize) as *mut u32;
     let (wa, wb) = (u32::from(a) * 0x1_0001, u32::from(b) * 0x1_0001);
-    for i in 0..MBX_VRAM_SIZE as usize / 4 {
+    for i in 0..BEACON_BYTES / 4 {
         let w = if (i >> 13) & 1 == 0 { wa } else { wb };
         // SAFETY: CS3 starts with the 2700G's 16 MiB local memory (mapped
         // identity with the MMU off, write-combining under the bring-up map);
