@@ -524,12 +524,21 @@ on the host or in the emulator first.
 
 ## Eighth tier (added 2026-10-12, same rules)
 
-30. **SHA-256 for what the loader receives**: a `rp-crypto` crate (SHA-256,
-    checked against the published test vectors, constant-memory streaming);
-    the loader reports the SHA-256 of each image it starts and file it
-    saves, and `cargo xtask load`/`put` compare it with their own: a real
-    fingerprint instead of a CRC (which only catches line noise), and the
-    groundwork for TLS (Phase 6) and signed images.
+30. **SHA-256 for what the loader receives**: **done (emulator).**
+    `rp-crypto` (`kernel/crypto`): SHA-256 from FIPS 180-4, no unsafe, no
+    allocation, a 16-word message schedule ring; the published vectors
+    (empty, "abc", both multi-block messages, a million "a") and any split
+    of the input give the same digest. The loader acknowledges an image
+    with `RPL OK sha256 <hex>` of what will run, and a file with the
+    SHA-256 of what it read back from the card; `cargo xtask load` and
+    `put` compare with their own (an older loader is accepted with a note).
+    Emulator: the USB load test and both put tests check the fingerprints;
+    an old loader fails them.
+    - **Iterate:** what the PC knows it sent is proven to be what runs and
+      what the card holds, not just "the CRC matched".
+    - **Modernize:** a cryptographic fingerprint in the dev loop, and the
+      first piece of the crypto the networked OS needs (TLS, signed
+      images).
 31. **The loader idles**: between polls it sleeps until the next timer tick
     or interrupt instead of spinning flat out (battery and heat on the
     device), and `drive status` reports how idle it was; emulator test

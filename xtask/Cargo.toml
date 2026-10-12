@@ -13,6 +13,7 @@ rp-drv-mbx-display = { path = "../drivers/mbx-display" }
 rp-loadproto = { path = "../boot/loadproto", features = ["std"] }
 rp-fat = { path = "../kernel/fat", features = ["std"] }
 rp-hal-api = { path = "../hal/api" }
+rp-crypto = { path = "../kernel/crypto" }
 
 [lints]
 workspace = true

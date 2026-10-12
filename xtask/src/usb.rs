@@ -429,6 +429,20 @@ pub fn load(root: &Path, what: &str) -> Result<(), String> {
             stderr_note(&out.stderr)
         ));
     };
+    // The loader's fingerprint of what it received must be ours.
+    if let Some(theirs) = reply
+        .as_deref()
+        .and_then(|r| r.strip_prefix("RPL OK sha256 "))
+    {
+        check_digest(theirs, &payload, what)?;
+    }
+    let reply = reply.map(|r| {
+        if r.starts_with("RPL OK") {
+            "RPL OK".to_string()
+        } else {
+            r
+        }
+    });
     match reply.as_deref() {
         Some("RPL OK") | None => {
             if reply.is_none() {
@@ -540,10 +554,34 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
             )
         })?;
     if let Some(detail) = reply.strip_prefix("RPL OK") {
+        match detail.rsplit_once("sha256 ") {
+            Some((_, theirs)) => check_digest(theirs.trim(), &contents, &name)?,
+            None => eprintln!(
+                "    (this loader reports no SHA-256: update it with `cargo xtask install`)"
+            ),
+        }
         eprintln!("    {name}: {} bytes on the card:{detail}", contents.len());
         Ok(())
     } else {
         Err(format!("the loader refused {name}: {reply}"))
+    }
+}
+
+/// Compares the loader's SHA-256 (hex) of what it holds with ours of what
+/// was sent.
+pub fn check_digest(theirs: &str, sent: &[u8], what: &str) -> Result<(), String> {
+    let ours = rp_crypto::hex(&rp_crypto::Sha256::digest(sent));
+    if theirs.as_bytes() == ours {
+        eprintln!(
+            "    {what}: SHA-256 matches ({})",
+            &theirs[..16.min(theirs.len())]
+        );
+        Ok(())
+    } else {
+        Err(format!(
+            "{what}: the loader holds something else (SHA-256 {theirs}, sent {})",
+            String::from_utf8_lossy(&ours)
+        ))
     }
 }
 
