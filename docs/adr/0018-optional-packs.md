@@ -1,7 +1,8 @@
 # ADR-0018: Optional packs: a complete base system in flash, extras on the card
 
-- **Status:** Proposed (the owner's idea, 2026-10-12; drafted for the
-  owner's vote)
+- **Status:** Accepted (2026-10-12, by the project owner; the owner's
+  idea). Built with the installer and the first big pack (the browser),
+  ROADMAP Phases 8-9.
 - **Date:** 2026-10-12
 
 ## Context
@@ -34,7 +35,7 @@ Constraints that shape the answer:
   about 1.2 ms per 512-byte block on the owner's X51v; flash is faster for
   the small scattered reads of starting programs.
 
-## Decision (proposed)
+## Decision
 
 1. **The base system is always complete in flash** and never needs the
    card: the kernel, drivers, shell, settings, PIM, Wi-Fi and networking,

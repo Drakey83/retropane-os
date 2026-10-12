@@ -134,6 +134,7 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] Flash install via Dell's bootloader mode (reset button). The Dell bootloader region is **never written** (enforced by tests); recovery means reflashing a stock or LennySh ROM. Full ROM backup first
 - [ ] Lock down the development loader before any public build (ADR-0017: pairing confirmed on screen, authenticated frames; or the loader left out of release images)
 - [ ] Installer; v1.0 public release with SD and flash images
+- [ ] Optional packs (ADR-0018, accepted): complete base system in flash; signed, verified packs (browser, codecs, fonts, language packs) on the card or in flash; clean card removal
 
 ---
 

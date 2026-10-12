@@ -1,6 +1,6 @@
 # ADR-0019: Where the kernel keeps per-process records
 
-- **Status:** Proposed (drafted for the owner's vote, 2026-10-12)
+- **Status:** Accepted (2026-10-12, by the project owner): option 1
 - **Date:** 2026-10-12
 
 ## Context
@@ -48,7 +48,7 @@ so no process can exhaust the kernel.
    - Minus: fragmentation over weeks of uptime on 64 MB, harder to bound
      per process, and more code to trust.
 
-## Decision (proposed)
+## Decision
 
 Option 1: small fixed process records; regions in per-process pages from
 the frame allocator, on demand, with a quota; encoded as words so the
