@@ -1160,6 +1160,57 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The loader's USB layout fallback: a host that refuses composite devices
+/// (the model's `accept-composite=off`) never configures the serial port
+/// plus drive; the loader must offer the serial-only layout by itself
+/// within its patience (25 s) and the PC then reaches it as before.
+pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
+    let help = match emulator(root) {
+        Ok(Emulator::Native(exe)) => Command::new(exe)
+            .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
+            .output(),
+        Ok(Emulator::Wsl) => {
+            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+        }
+        Err(e) => return Err(e),
+    };
+    if !help.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("accept-composite")) {
+        eprintln!(
+            "    USB layout fallback: skipped (this emulator's host can't refuse composites)"
+        );
+        return Ok(());
+    }
+    let loader = root.join("target/emu/rp-loader.bin");
+    let mut args: Vec<String> = usb_args(7).to_vec();
+    args.extend(["-global".into(), "pxa27x-udc.accept-composite=off".into()]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(7)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 60)?;
+        Ok(())
+    };
+    // A READY over USB from a host that refuses composites can only come
+    // through the serial-only layout: that is the switch.
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    eprintln!(
+        "    USB layout fallback OK: a host refusing composites reached the loader serial-only"
+    );
+    Ok(())
+}
+
 /// Must match `rp_usb::MARKER`.
 const USB_MARKER: &str = "RETROPANE-USB-READY";
 

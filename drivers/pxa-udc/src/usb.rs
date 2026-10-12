@@ -187,6 +187,41 @@ pub const CONFIG: [u8; CONFIG_LEN as usize] = [
     0,
 ];
 
+/// The serial-only layout, byte for byte what RetroPane presented before
+/// ADR-0014 (class CDC, `bcdDevice` 26.00): the fallback when a host won't
+/// configure the composite device, matching what Windows already knows.
+pub const DEVICE_SERIAL: [u8; 18] = {
+    let mut d = DEVICE;
+    d[4] = 0x02;
+    d[5] = 0x00;
+    d[6] = 0x00;
+    d[12] = 0x00;
+    d
+};
+
+/// Length of [`CONFIG_SERIAL`]: without the IAD and the storage interface.
+const SERIAL_CONFIG_LEN: usize = CONFIG_LEN as usize - 8 - 23;
+
+/// The serial-only configuration, derived from [`CONFIG`] at compile time
+/// (so the two can't drift): the header with two interfaces, then the CDC
+/// interfaces without the IAD in front of them.
+pub const CONFIG_SERIAL: [u8; SERIAL_CONFIG_LEN] = {
+    let mut c = [0u8; SERIAL_CONFIG_LEN];
+    let mut i = 0;
+    while i < 9 {
+        c[i] = CONFIG[i];
+        i += 1;
+    }
+    c[2] = SERIAL_CONFIG_LEN as u8;
+    c[3] = 0;
+    c[4] = 2;
+    while i < SERIAL_CONFIG_LEN {
+        c[i] = CONFIG[i + 8];
+        i += 1;
+    }
+    c
+};
+
 /// A string descriptor from ASCII text (UTF-16LE, no terminator).
 const fn string<const N: usize>(text: &str) -> [u8; N] {
     let b = text.as_bytes();
@@ -225,9 +260,16 @@ mod s3 {
     // requires ("RP260001" in hex): Windows keys the drive letter on it.
     string_descriptor!(SERIAL, "5250323630303031");
 }
+mod s4 {
+    use super::string;
+    // The serial-only layout's serial number, as before ADR-0014, so the
+    // fallback matches the device instance Windows already has.
+    string_descriptor!(SERIAL_LEGACY, "RP26-0001");
+}
 pub use s1::MANUFACTURER;
 pub use s2::PRODUCT;
 pub use s3::SERIAL;
+pub use s4::SERIAL_LEGACY;
 
 /// A SETUP packet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -307,6 +349,8 @@ pub struct Cdc {
     max_lun: u8,
     /// The host sent Bulk-Only Mass Storage Reset.
     msc_reset: bool,
+    /// Presenting the composite layout (else the serial-only fallback).
+    composite: bool,
 }
 
 impl Default for Cdc {
@@ -326,7 +370,20 @@ impl Cdc {
             pending_out: 0,
             max_lun: 0,
             msc_reset: false,
+            composite: true,
         }
+    }
+
+    /// Chooses the composite layout (serial port + drive) or the serial-only
+    /// fallback; takes effect at the next enumeration.
+    pub fn set_composite(&mut self, on: bool) {
+        self.composite = on;
+    }
+
+    /// Whether the composite layout is presented.
+    #[must_use]
+    pub fn composite(&self) -> bool {
+        self.composite
     }
 
     /// Sets Get Max LUN's answer (logical units - 1).
@@ -365,12 +422,15 @@ impl Cdc {
         match (s.request_type, s.request) {
             // GET_DESCRIPTOR
             (0x80, 6) => match ((s.value >> 8) as u8, s.value as u8) {
-                (1, _) => cut(&DEVICE),
-                (2, 0) => cut(&CONFIG),
+                (1, _) if self.composite => cut(&DEVICE),
+                (1, _) => cut(&DEVICE_SERIAL),
+                (2, 0) if self.composite => cut(&CONFIG),
+                (2, 0) => cut(&CONFIG_SERIAL),
                 (3, 0) => cut(&LANGUAGES),
                 (3, 1) => cut(&MANUFACTURER),
                 (3, 2) => cut(&PRODUCT),
-                (3, 3) => cut(&SERIAL),
+                (3, 3) if self.composite => cut(&SERIAL),
+                (3, 3) => cut(&SERIAL_LEGACY),
                 // Device qualifier and anything else: full speed only, STALL
                 // (what the USB 2.0 spec asks of a full-speed-only device).
                 _ => Reply::Stall,
@@ -407,11 +467,15 @@ impl Cdc {
                 Reply::Ack
             }
             (0x21, cdc::SEND_BREAK) => Reply::Ack,
-            (0xA1, msc::GET_MAX_LUN) if s.index == MSC_INTERFACE && s.value == 0 => {
+            (0xA1, msc::GET_MAX_LUN)
+                if self.composite && s.index == MSC_INTERFACE && s.value == 0 =>
+            {
                 self.buf[0] = self.max_lun;
                 Reply::In(&self.buf[..1.min(want)])
             }
-            (0x21, msc::RESET) if s.index == MSC_INTERFACE && s.value == 0 && want == 0 => {
+            (0x21, msc::RESET)
+                if self.composite && s.index == MSC_INTERFACE && s.value == 0 && want == 0 =>
+            {
                 self.msc_reset = true;
                 Reply::Ack
             }
