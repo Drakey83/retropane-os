@@ -69,6 +69,35 @@ instead of 1,490; what remains is the transfer itself (~0.75 MB of FAT,
 roughly 0.4 s at the measured rate). The device number is still to be
 measured (the loader's reply now counts the write's read commands).
 
+### Reads that fail (measured on the owner's card, 2026-10-12)
+
+The card as a USB drive (ADR-0014) reads far more of it than the loader
+ever did, and found one weak block:
+
+| Fact | Value | Confidence | Evidence |
+|---|---|---|---|
+| Block 10880 (inside the first FAT) takes 0.79 s to read alone; every other block measured takes ~4 ms | 794,241 / 794,457 us in two clean reads | confirmed | `cargo xtask card scan 10880 1` |
+| A multi-block read (CMD18) that reaches it always ends in a read timeout (`STAT` 0x2941: bit 0) | 14/14, then 36/36 failures of the same 64-block range | confirmed | `cargo xtask drive status` |
+| After such a timeout the card is still sending: the CMD12 that stops a timed-out read is unanswered (`STAT` 0x2142) and the card reports ILLEGAL_COMMAND (bit 22) in the next response | status 0x00400900 on good CMD17s | confirmed | `drive status` |
+| Once provoked, single reads of the block also time out (0x2141), at full clock, a quarter and the minimum clock; clean single reads succeed at ~0.79 s, which looks like the controller's longest read wait whatever `CLKRT` is | 2/3 clean scans succeed, none after failed CMD18s | likely | `card scan`, `drive status` |
+| The PXA27x's longest read timeout (`RDTO` = 0xFFFF) is about 0.8 s on this board | inferred from the two above | guess | to measure: time a read that the controller times out |
+
+What the driver does (rp-drv-sdcard): ILLEGAL_COMMAND and COM_CRC_ERROR in
+a response describe the *previous* command and no longer fail the current
+one; after any failed transfer it sends CMD12 and polls CMD13 back to the
+transfer state; CRC-type failures are retried, timeouts go straight to
+reading block by block, a single block that times out is retried at a
+quarter and at the minimum clock, and a range where a multi-block read
+failed is remembered and read block by block from then on. None of that
+rescues this block on this card; it does keep every other read working and
+the card responsive.
+
+**Open, for the owner:** the block can be *scrubbed*: read once while it
+reads (a clean single read does), then written back unchanged, so the card
+stores it in a fresh page and it reads fast again. That is a write to the
+first FAT, so it waits for the owner (a card backup first). Or replace the
+card: a block that slow is often the first sign of a wearing card.
+
 ### File system
 
 The card is FAT32 (partition type `0x0C`, 4 KiB clusters on the owner's

@@ -126,6 +126,10 @@ pub struct Stats {
     pub blocks_read: u32,
     /// Blocks written by the host.
     pub blocks_written: u32,
+    /// Block transfers the storage failed.
+    pub io_errors: u32,
+    /// First block and count of the last failed transfer.
+    pub last_error: (u32, u32),
 }
 
 /// The mass-storage function.
@@ -547,6 +551,8 @@ impl<'b> Msc<'b> {
                 .read_blocks(self.lba, &mut self.buf[..bytes])
                 .is_err()
             {
+                self.stats.io_errors += 1;
+                self.stats.last_error = (self.lba, n as u32);
                 // The host still waits for data: end its transfer short.
                 self.units[self.lun].sense = Sense::READ_ERROR;
                 self.failed = true;
@@ -595,6 +601,8 @@ impl<'b> Msc<'b> {
                     .write_blocks(self.lba, &self.buf[..chunk])
                     .is_err()
             {
+                self.stats.io_errors += 1;
+                self.stats.last_error = (self.lba, blocks);
                 // Keep taking the host's data; report the failure at the end.
                 self.units[self.lun].sense = Sense::WRITE_ERROR;
                 self.failed = true;

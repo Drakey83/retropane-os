@@ -47,7 +47,11 @@ commands:
   install   put the kit's loader, HaRET and scripts on the card the same way
             (replaces the files already there; run cargo xtask sdkit first)
   drive     the SD card as a drive on the PC (ADR-0014): `drive rw` lets the
-            PC write it, `drive ro` (the default at start) makes it read-only
+            PC write it, `drive ro` (the default at start) makes it read-only,
+            `drive off`/`drive on` withdraws/offers the card (an empty reader
+            to the PC), `drive status` reports counters and the last card error
+  card      card diagnostics through the loader: `card scan <lba> <count>`
+            reads blocks one by one, reports failures and the slowest read
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -98,9 +102,17 @@ fn main() -> ExitCode {
         "drive" => {
             eprintln!("==> drive {flag}");
             match flag.as_str() {
-                "rw" | "ro" => usb::command(&workspace_root(), &format!("drive {flag}")),
-                _ => Err("usage: cargo xtask drive rw|ro".into()),
+                "rw" | "ro" | "on" | "off" | "status" => {
+                    usb::command(&workspace_root(), &format!("drive {flag}"))
+                }
+                _ => Err("usage: cargo xtask drive rw|ro|on|off|status".into()),
             }
+        }
+        "card" => {
+            // Diagnostics: `cargo xtask card scan <lba> <count>`.
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            eprintln!("==> card {}", rest.join(" "));
+            usb::command(&workspace_root(), &format!("card {}", rest.join(" ")))
         }
         "install" => {
             eprintln!("==> install");

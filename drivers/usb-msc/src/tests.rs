@@ -421,6 +421,12 @@ fn a_card_error_mid_read_ends_the_transfer_with_sense() {
     assert!(d.is_empty());
     assert_eq!((csw.status, csw.residue), (1, 4 * 512));
     assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x11, 0x00));
+    assert_eq!(msc.stats().io_errors, 1);
+    assert_eq!(
+        msc.stats().last_error,
+        (0, 2),
+        "first chunk of the 2-block buffer"
+    );
 }
 
 #[test]

@@ -555,20 +555,30 @@ fn msc_args(n: u16) -> [String; 4] {
     ]
 }
 
-/// Whether the emulator's UDC model bridges a mass storage function
-/// (retropane-qemu after rp-v0.8.0).
-fn has_msc_model(root: &Path) -> bool {
+/// Whether the emulator's `device` model has the property `prop`.
+fn device_has(root: &Path, device: &str, prop: &str) -> bool {
     let out = match emulator(root) {
         Ok(Emulator::Native(exe)) => Command::new(exe)
-            .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
+            .args(["-M", "x51v", "-device", &format!("{device},help")])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{WSL_QEMU} -M x51v -device {device},help")).output()
         }
         Err(_) => return false,
     };
-    out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("msc="))
+    out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("{prop}=")))
 }
+
+/// Whether the emulator's UDC model bridges a mass storage function
+/// (retropane-qemu after rp-v0.8.0).
+fn has_msc_model(root: &Path) -> bool {
+    device_has(root, "pxa27x-udc", "msc")
+}
+
+/// The block the emulated card is too slow on for a multi-block read
+/// (like the owner's card at block 10880): inside the drive test's raw
+/// 1 MiB read, before the partition, so only that read meets it.
+const SLOW_BLOCK: u32 = 1000;
 
 /// Whether the emulator in use has the USB device controller model
 /// (retropane-qemu after rp-v0.6.0). Older releases skip the USB tests.
@@ -1045,6 +1055,14 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
     let put = rp_loadproto::file_frame("retropane.bin", &via_serial);
     let mut args: Vec<String> = usb_args(5).to_vec();
     args.extend(msc_args(6));
+    let slow = device_has(root, "pxa2xx-mmci", "slow-address");
+    if slow {
+        // The test image is a standard-capacity card: byte addresses.
+        args.extend([
+            "-global".into(),
+            format!("pxa2xx-mmci.slow-address={}", SLOW_BLOCK * 512),
+        ]);
+    }
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let check = || -> Result<(), String> {
         let mut bot = Bot::connect(6)?;
@@ -1144,10 +1162,18 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             return Err("drive: not ready after hostile input".into());
         }
         // Throughput (emulator wall clock; the device's number is the real one).
+        // It crosses the slow block: the card driver must fall back to
+        // single blocks and still return exactly the card's bytes.
         let t = Instant::now();
         let r = bot.command(&rw10(0x28, 0, 2048), 2048 * 512, true, &[])?;
         if r.status != 0 || r.data.len() != 2048 * 512 {
-            return Err("drive: 1 MiB read failed".into());
+            return Err(format!(
+                "drive: 1 MiB read across the slow block {SLOW_BLOCK} failed (status {})",
+                r.status
+            ));
+        }
+        if r.data != image[..2048 * 512] {
+            return Err("drive: the 1 MiB read doesn't match the card image".into());
         }
         eprintln!(
             "    drive: 1 MiB read in {} ms through the emulated drive",
