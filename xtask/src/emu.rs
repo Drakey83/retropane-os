@@ -372,6 +372,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER preempted OK",
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
+    "USER KData OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -402,7 +403,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
     );
     Ok(())
 }

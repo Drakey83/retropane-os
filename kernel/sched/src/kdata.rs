@@ -1,7 +1,13 @@
 //! The KData page (ADR-0010 rule 8, docs/research/kdata.md): the
 //! user-readable kernel page Windows Mobile programs read with inline SDK
 //! macros, at `0xFFFFC800` within the page at `0xFFFFC000`. The kernel
-//! rewrites the per-thread words on every switch.
+//! rewrites the per-thread words on every switch to another thread
+//! ([`switch_to`] with [`Scheduler::view`](crate::Scheduler::view)).
+//!
+//! Each user thread's TLS slot array sits at the top of its user stack, as
+//! in CE: [`TLS_BLOCK_WORDS`] words are kept there, the [`TLS_SLOTS`] slots
+//! on top and [`PRIVATE_WORDS`] below slot 0 for our `coredll`'s per-thread
+//! words; the stack proper starts below the block.
 
 /// User address of the page that holds KData.
 pub const PAGE: u32 = 0xFFFF_C000;
@@ -20,6 +26,20 @@ pub mod off {
 
 /// TLS slots per thread (`TlsGetValue` refuses index 64 and up).
 pub const TLS_SLOTS: usize = 64;
+/// Words kept below slot 0 for `coredll`'s own per-thread fields (CE's
+/// `coredll` uses three words there, at -0x14 to -0x0C; ours defines its
+/// own, so this only reserves the room).
+pub const PRIVATE_WORDS: usize = 8;
+/// Words reserved at the top of each user stack for the TLS block.
+pub const TLS_BLOCK_WORDS: usize = PRIVATE_WORDS + TLS_SLOTS;
+const _: () = assert!(PRIVATE_WORDS * 4 >= 0x14, "room for a -0x14 field");
+
+/// The TLS array's user address for a user stack whose top (one past its
+/// last byte) is `stack_top`.
+#[must_use]
+pub const fn tls_at(stack_top: u32) -> u32 {
+    stack_top - (TLS_SLOTS * 4) as u32
+}
 
 /// What a thread switch writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,5 +82,17 @@ mod tests {
         assert_eq!(at(0xFFFF_C808), 0x4E, "GetCurrentThreadId");
         assert_eq!(at(0xFFFF_C80C), 0x07, "GetCurrentProcessId");
         assert_eq!(page.iter().filter(|&&w| w != 0).count(), 3, "nothing else");
+    }
+
+    #[test]
+    fn the_tls_block_tops_the_user_stack() {
+        let top = 0x0002_0000;
+        let tls = tls_at(top);
+        // 64 slots up to the top; the private words just below slot 0.
+        assert_eq!(top - tls, 256);
+        assert_eq!(
+            tls - (PRIVATE_WORDS * 4) as u32,
+            top - 4 * TLS_BLOCK_WORDS as u32
+        );
     }
 }

@@ -236,6 +236,20 @@ pub fn user_read(addr: u32) -> u32 {
     v
 }
 
+/// Writes `value` to `addr` (user side: in user mode the MMU checks it, and
+/// a refused write raises an abort the kernel's user-fault handler gets).
+pub fn user_write(addr: u32, value: u32) {
+    // SAFETY: a plain store, checked by the MMU in user mode as above.
+    unsafe {
+        core::arch::asm!(
+            "str {v}, [{a}]",
+            v = in(reg) value,
+            a = in(reg) addr,
+            options(nostack)
+        );
+    }
+}
+
 /// Writes media register `wR0` (user side; with lazy switching, a thread's
 /// first media instruction traps once and then runs).
 pub fn wmmx_write(v: u64) {

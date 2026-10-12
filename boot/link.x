@@ -6,6 +6,8 @@
  * docs/hw/memory-map.md). HaRET leaves its boot tags at 0xA8000100. Reserved below and
  * above (rp-hal-pxa27x::mmu): the bring-up page table at 0xA8004000 (16 KiB)
  * and the exception vectors at 0xA80F0000; images must stay below 0xA80F0000.
+ * 0xA80F1000 (the KData page) and 0xA80F2000 (the top MiB's second-level
+ * table) are reserved for rt::take_kdata_page (ADR-0010 rule 8).
  * 0xA80F8000-0xA8100000 (32 KiB) is reserved for the whole-D-cache clean
  * (rp-hal-pxa27x::cpu::CLEAN_REGION) and never holds data.
  * 0xA8400000-0xA8500000 (1 MiB) is the resident loader's home
