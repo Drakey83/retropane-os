@@ -19,6 +19,8 @@ pub mod irq {
     pub const MMC: u32 = 23;
     /// SSP1.
     pub const SSP1: u32 = 24;
+    /// OS timer channels 4-11 (channel 4: the soft run limit).
+    pub const OST_4_11: u32 = 7;
     /// OS timer match 1 (the tick).
     pub const OST1: u32 = 27;
     /// OS timer match 2 (the spare channel, [`super::SpareTimer`]).
@@ -67,6 +69,12 @@ pub mod ost_reg {
     pub const OSSR: usize = 0x14;
     /// Interrupt enable.
     pub const OIER: usize = 0x1C;
+    /// Counter 4 (channel 4's own counter, at the resolution `OMCR4` sets).
+    pub const OSCR4: usize = 0x40;
+    /// Match 4.
+    pub const OSMR4: usize = 0x80;
+    /// Match control 4: bits 2-0 the resolution (2: 1 ms ticks).
+    pub const OMCR4: usize = 0xC0;
 }
 
 /// The interrupt controller.

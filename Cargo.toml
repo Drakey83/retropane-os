@@ -33,6 +33,7 @@ members = [
     "boot/hello",
     "boot/light",
     "boot/crash",
+    "boot/hang",
     "boot/usb",
     "boot/reconnect",
     "boot/loadproto",

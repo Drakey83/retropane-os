@@ -195,6 +195,13 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 8 * 1024,
         max_zero: 20 * 1024,
     },
+    // Test image: the soft run limit (runs forever on purpose); 7.8 KiB
+    // measured, +~10%.
+    Budget {
+        image: "rp-hang",
+        max_load: 9 * 1024,
+        max_zero: 20 * 1024,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

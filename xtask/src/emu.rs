@@ -657,18 +657,21 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Sends the loader an image that hangs (one `b .` instruction, MMU and
-/// IRQs off) and checks recovery: after the run limit the watchdog resets
-/// the machine, the loader starts again and reports that the run didn't
-/// return. The emulator restarts the loader itself; on the device Windows
-/// Mobile's StartUp folder does (docs: SD kit README, loader/).
+/// Sends the loader an image that hangs with interrupts off (one `b .`
+/// instruction, MMU and IRQs off), which the soft run limit can't reach,
+/// and checks the backstop: the hardware watchdog resets the machine, the
+/// loader starts again and reports that the run didn't return. The emulator
+/// restarts the loader itself; on the device Windows Mobile's StartUp
+/// folder does (docs: SD kit README, loader/). A 1 s limit keeps the
+/// backstop at 31 s.
 pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
     let loader = root.join("target/emu/rp-loader.bin");
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
         &loader,
     )?;
-    let hang = rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes());
+    let mut hang = rp_loadproto::control_frame("limit 1");
+    hang.extend(rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes()));
     let output = boot(
         root,
         &Boot {
@@ -687,6 +690,57 @@ pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
         return Err("watchdog: the hanging image was never started".into());
     }
     eprintln!("    watchdog OK: a hung image reset the device and the loader reported it");
+    Ok(())
+}
+
+/// The soft run limit (overnight item 55): an image that runs forever with
+/// interrupts on and never checks in must come back to the loader with a
+/// crash report saying so, with no reset (on the X51v a reset lands on
+/// Dell's factory-restore prompt). A 2 s limit keeps the test short.
+pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let hang = dir.join("rp-hang.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-hang"), &hang)?;
+    let payload = std::fs::read(&hang).map_err(|e| format!("{}: {e}", hang.display()))?;
+    let mut input = rp_loadproto::control_frame("limit 2");
+    input.extend(rp_loadproto::frame(&payload));
+    let started = Instant::now();
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&input, "RPL END")),
+            during: None,
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    let took = started.elapsed();
+    if !output.contains("RPL OK limit 2 s") {
+        return Err("run limit: the loader didn't take `limit 2`".into());
+    }
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("run limit: no run log after the image came back")?;
+    if !log.contains("RETROPANE-HANG-TEST") || !log.contains("FAULT RunLimit") {
+        return Err(format!("run limit: the run log doesn't report it:{log}"));
+    }
+    if log.contains("did not return") {
+        return Err("run limit: went through a reset instead of back to the loader".into());
+    }
+    eprintln!(
+        "    run limit OK: a program that never checked in came back to the loader after its 2 s limit, with a report and no reset ({} s in all)",
+        took.as_secs()
+    );
     Ok(())
 }
 
