@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod emu;
+mod mutants;
 mod policy;
 mod screen;
 mod sdkit;
@@ -78,6 +79,8 @@ commands:
             in target/device-check.txt; --with-owner adds CF and a tone
   emu-picture  only the rp-picture check (a UI concept on screen, then
             back to the loader): run it before `load rp-picture`
+  mutants   the deliberate bugs each test suite must catch (docs/testing.md);
+            --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -89,7 +92,7 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "qemu" => run_step(&cmd),
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -218,6 +221,7 @@ fn run_step(step: &str) -> Result {
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
+        "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
