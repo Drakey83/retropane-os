@@ -61,6 +61,9 @@ mod image {
     /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
     const TICK_1S: u32 = 3_250_000;
     const STATUS_H: usize = 6 * 16;
+    /// Quiet time (no input, no drive commands, nothing to send) before the
+    /// loader sleeps between polls: 50 ms.
+    const QUIET: u32 = TICK_1S / 20;
     /// The crash screen's height (docs: crash screen), when the previous
     /// program crashed or hung.
     const CRASH_H: usize = 320;
@@ -1450,6 +1453,13 @@ mod image {
 
         let mut rx = Receiver::new();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
+        // Idling: after QUIET of nothing happening the loop sleeps until the
+        // next 1 ms tick instead of spinning (battery and heat), so traffic
+        // runs at full speed and a waiting loader is mostly asleep.
+        rt::start_tick(1000);
+        let mut active = rt::ticks();
+        let mut msc_seen = 0u32;
+        let (mut asleep, mut idle_pct) = (0u32, 0u32);
         let mut buf = [0u8; 64];
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
@@ -1484,6 +1494,11 @@ mod image {
             // while waiting.
             if watchdog.armed() {
                 watchdog.feed(RUN_LIMIT);
+            }
+            if rt::ticks().wrapping_sub(active) > QUIET {
+                let t = rt::ticks();
+                rt::wait_tick();
+                asleep = asleep.wrapping_add(rt::ticks().wrapping_sub(t));
             }
             udc.poll();
             if udc.take_msc_reset() {
@@ -1527,18 +1542,31 @@ mod image {
                 }
             }
             let mut outcome = None;
+            let mut heard = false;
             while outcome.is_none() {
                 let Some(b) = uart.read_byte() else { break };
+                heard = true;
                 outcome = feed_slice(&mut rx, &[b], dest).1;
             }
             if outcome.is_none() {
                 let n = udc.read(&mut buf);
+                heard |= n > 0;
                 let mut used = 0;
                 while outcome.is_none() && used < n {
                     let (u, r) = feed_slice(&mut rx, &buf[used..n], dest);
                     used += u;
                     outcome = r;
                 }
+            }
+            let msc_now = msc.stats().commands;
+            if heard
+                || outcome.is_some()
+                || msc_now != msc_seen
+                || msc.busy()
+                || udc.tx_pending() > 0
+            {
+                active = rt::ticks();
+                msc_seen = msc_now;
             }
             match outcome {
                 Some(Ok(Frame {
@@ -1569,7 +1597,7 @@ mod image {
                             let s = msc.stats();
                             let _ = write!(
                                 status,
-                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}\r\n",
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, idle {}%\r\n",
                                 s.commands,
                                 s.failed,
                                 s.blocks_read,
@@ -1588,6 +1616,7 @@ mod image {
                                     },
                                     card_note
                                 ),
+                                idle_pct.min(100),
                             );
                             status.as_str()
                         }
@@ -1757,6 +1786,9 @@ mod image {
                     // comes back (started again by Windows Mobile's StartUp
                     // folder on the device; the emulator restarts it).
                     watchdog.feed(RUN_LIMIT);
+                    // Nothing of the loader's may fire under the image.
+                    rt::stop_tick();
+                    rt::irq_disable();
                     handoff::launch(IMAGE_BASE as u32);
                 }
                 Some(Err(e)) => {
@@ -1802,6 +1834,9 @@ mod image {
                 );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S {
+                // The share of the last second spent asleep.
+                idle_pct = asleep / (rt::ticks().wrapping_sub(last).max(1) / 100).max(1);
+                asleep = 0;
                 last = rt::ticks();
                 if rx.progress().is_none() {
                     // Over USB only once the previous run's log has gone,

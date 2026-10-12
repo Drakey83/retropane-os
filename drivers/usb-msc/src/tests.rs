@@ -494,3 +494,28 @@ fn random_commands_never_panic_or_reach_past_the_card() {
     }
     assert!(msc.stats().commands >= 5000);
 }
+
+/// Busy from the command's arrival until its status has gone: what tells a
+/// caller not to sleep mid-transfer (the loader napped between packets of a
+/// large read until it asked this).
+#[test]
+fn busy_from_command_to_status() {
+    let mut buf = vec![0u8; 4096];
+    let mut msc = Msc::new(&mut buf, b"0123456789AB", 1);
+    let mut disk = Disk::new(64);
+    assert!(!msc.busy());
+    let mut pipe = Pipe::default();
+    pipe.out
+        .push_back(cbw(1, 16 * 512, true, 0, &read10(0, 16)));
+    msc.poll(&mut pipe, &mut [&mut disk], 0);
+    assert!(msc.busy(), "mid-read");
+    for _ in 0..10_000 {
+        msc.poll(&mut pipe, &mut [&mut disk], 0);
+        if !msc.busy() {
+            break;
+        }
+    }
+    assert!(!msc.busy());
+    let csw = pipe.ins.last().unwrap();
+    assert_eq!(csw.len(), 13, "the status went before busy cleared");
+}

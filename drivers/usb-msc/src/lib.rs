@@ -226,6 +226,13 @@ impl<'b> Msc<'b> {
         }
     }
 
+    /// Whether a command is under way (data or status still to move): the
+    /// caller should keep polling rather than sleep.
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.phase != Phase::Command
+    }
+
     /// Whether the host wrote to any unit within [`HOST_WRITE_GRACE_MS`] of
     /// `now_ms`: the device must not write the card meanwhile.
     #[must_use]

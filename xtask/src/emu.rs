@@ -1754,6 +1754,13 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             "    drive: 1 MiB read in {} ms through the emulated drive",
             t.elapsed().as_millis()
         );
+        // About 3 s in the emulator; a loader napping mid-transfer took 17.
+        if t.elapsed() > Duration::from_secs(8) {
+            return Err(format!(
+                "drive: 1 MiB took {:?}, far slower than usual",
+                t.elapsed()
+            ));
+        }
         Ok(())
     };
     boot(
@@ -1905,6 +1912,26 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(9)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // An idle loader sleeps between polls, and still answers at once.
+        std::thread::sleep(Duration::from_secs(2));
+        let asked = Instant::now();
+        s.write_all(&rp_loadproto::control_frame("drive status"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, "%\r\n", 10)?;
+        let took = asked.elapsed();
+        let idle: u32 = reply
+            .rsplit("idle ")
+            .next()
+            .and_then(|t| t.split('%').next())
+            .and_then(|n| n.trim().parse().ok())
+            .ok_or_else(|| format!("no idle share in {reply:?}"))?;
+        if idle < 80 || took > Duration::from_millis(500) {
+            return Err(format!("idle loader: {idle}% asleep, answered in {took:?}"));
+        }
+        eprintln!(
+            "    idle OK: the waiting loader was {idle}% asleep and answered in {} ms",
+            took.as_millis()
+        );
         s.write_all(&rp_loadproto::control_frame("backlight 30"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK backlight 30% (duty 19/216)", 10)?;
