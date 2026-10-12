@@ -376,8 +376,24 @@ on the host or in the emulator first.
       systems, the USB drive and the tools work on both; both cards show
       on the PC as drives, as on any modern device with card slots; CF
       cards past WM's limits (LBA28: up to 128 GiB).
-20. **exFAT folders**: paths on exFAT as on FAT32 (`mkdir`, `put` creating
-    parents), so SDXC cards organise the same way.
+20. **exFAT folders**: **done (emulator).** Paths with `/` or `\` on
+    exFAT as on FAT32: `find`, `for_each_in`, `mkdir`, and `put` making
+    missing parents. Folders are made as Windows makes them (one cluster,
+    no FAT chain); `mkdir` zeroes and marks the cluster before the entry
+    that makes the folder exist. Every directory routine now takes the
+    directory it works in (one run, or a chain bounded by the volume), so
+    a folder pointing back at the root is an error, not a loop. 4 new
+    tests (paths, a full folder, a power cut at every write of a put
+    making two folders, a looping folder; the power-cut test fails with
+    the order reversed). Emulator: the exFAT put test now puts into new
+    folders and finds the file in the image. `rp-loader` budget 96 ->
+    104 KiB (with item 19).
+    - **Iterate:** one code path for the root and every folder; folder
+      creation crash-safe by order; corrupt folders bounded.
+    - **Modernize:** SDXC cards organise into folders like any other card
+      (`cargo xtask put Apps/Game.exe` works on both file systems).
+    A full folder answers "no room" (folders don't grow yet: 4 KiB+
+    clusters give 40+ files per folder, SDXC's usual 128 KiB, 1,300+).
 21. **Thumb for cold code**: measure building cold paths (loader commands,
     file systems, bring-up) as Thumb (`#[instruction_set(arm::t32)]` or a
     Thumb target for cold crates) against ARM; adopt where it saves size

@@ -962,9 +962,9 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
 }
 
 /// Writing files to an exFAT card (SDXC) through the loader: a file
-/// replaced and one created, a folder refused (exFAT folders aren't
-/// written yet), everything checked in the image afterwards, and the
-/// volume left clean (VolumeDirty clear).
+/// replaced, one created, one put into folders that didn't exist,
+/// everything checked in the image afterwards, and the volume left clean
+/// (VolumeDirty clear).
 pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    exFAT put: skipped (this emulator has no USB controller model)");
@@ -1014,9 +1014,10 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::file_frame("New File.dat", &created))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK 9000 bytes", 40)?;
-        s.write_all(&rp_loadproto::file_frame("Apps/x.txt", b"x"))
+        // Into folders that don't exist yet: made on the way.
+        s.write_all(&rp_loadproto::file_frame("Apps/Sub Folder/x.txt", b"x"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL ERR bad name", 20)?;
+        usb_read_until(&mut s, "RPL OK 1 bytes", 20)?;
         Ok(())
     };
     boot(
@@ -1042,13 +1043,16 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
     if card_file(&sd, "startup.txt")? != script {
         return Err("exFAT: startup.txt changed".into());
     }
+    if card_file(&sd, "apps/sub folder/X.TXT")? != b"x" {
+        return Err("exFAT: the file in new folders isn't on the card".into());
+    }
     let after = std::fs::read(&sd).map_err(|e| e.to_string())?;
     let flags = after[rp_fat::exfat::format::PARTITION_START as usize * 512 + 106];
     if flags & 0x02 != 0 {
         return Err("exFAT: the volume was left marked dirty".into());
     }
     eprintln!(
-        "    exFAT put OK: replaced and created through the loader, folder refused, volume clean"
+        "    exFAT put OK: replaced, created, and put into new folders through the loader; volume clean"
     );
     Ok(())
 }

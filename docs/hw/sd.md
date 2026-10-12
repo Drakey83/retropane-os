@@ -110,7 +110,8 @@ wear: keep a backup, and consider replacing it.
 ### File system
 
 SDXC cards (64 GB and up) come as exFAT: `rp-fat` reads and writes those
-too (root directory for now), through the allocation bitmap, storing a file
+too (folders included; folders don't grow past their first cluster yet),
+through the allocation bitmap, storing a file
 that fits one free run with no FAT chain; the loader's `put` and crash
 reports mount whichever the card has (`AnyVolume`). Same crash-safety
 order as below, plus exFAT's VolumeDirty flag for the duration.
