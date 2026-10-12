@@ -1,0 +1,248 @@
+//! `cargo xtask mutants [--emu]`: the mutants each test suite must kill
+//! (docs/testing.md).
+//!
+//! A mutant is one deliberate bug: a line of real code changed to what a
+//! plausible mistake would leave. Each names the tests that must catch it.
+//! The runner applies one at a time, runs those tests, expects them to fail
+//! (the mutant is *killed*), and puts the file back. A mutant that survives
+//! means a test that doesn't test what it claims: the run fails.
+//!
+//! Safety: a file is only mutated if git says it has no changes (so a crash
+//! mid-run can always be undone with `git checkout`), the original is put
+//! back by a guard even if a step errors, and each mutant's text must occur
+//! exactly once (a stale entry is reported, never guessed at).
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// How a mutant is checked.
+pub enum Check {
+    /// `cargo test` with these arguments must fail.
+    Host(&'static [&'static str]),
+    /// This emulator check (after a cross build) must fail. Slow: only with
+    /// `--emu`.
+    Emu(fn(&Path) -> Result<(), String>),
+}
+
+/// One deliberate bug.
+pub struct Mutant {
+    /// What it breaks, in a few words.
+    pub name: &'static str,
+    /// The file, from the workspace root.
+    pub file: &'static str,
+    /// The exact original text (must occur once).
+    pub from: &'static str,
+    /// What the mistake leaves instead.
+    pub to: &'static str,
+    /// The tests that must kill it.
+    pub check: Check,
+}
+
+/// The list. Every security or crash-safety rule with a test gets a mutant
+/// here, so the test is known to bite.
+pub const MUTANTS: &[Mutant] = &[
+    Mutant {
+        name: "region list: a middle split skips its reservation",
+        file: "kernel/mm/src/space.rs",
+        from: "                // A hole in the middle: one more region, reserved first.\n                self.list.reserve(rp, 1)?;\n",
+        to: "",
+        check: Check::Host(&["-p", "rp-kernel-mm", "region_operations"]),
+    },
+    Mutant {
+        name: "region list: protect skips its reservation",
+        file: "kernel/mm/src/space.rs",
+        from: "        self.list.reserve(rp, 2)?;\n        self.split_at(rp, start)?;",
+        to: "        self.split_at(rp, start)?;",
+        check: Check::Host(&["-p", "rp-kernel-mm", "region_operations"]),
+    },
+    Mutant {
+        name: "region list: freed pages not wiped",
+        file: "kernel/mm/src/space.rs",
+        from: "        self.mem.zero(page);\n        let f = self.mem.phys_frame(page);",
+        to: "        let f = self.mem.phys_frame(page);",
+        check: Check::Host(&["-p", "rp-kernel-mm", "region_pages_are_wiped"]),
+    },
+    Mutant {
+        name: "pin limit not checked on map",
+        file: "kernel/mm/src/space.rs",
+        from: "u64::from(r.len) > u64::from(self.pin_limit)",
+        to: "u64::from(r.len) > u64::MAX",
+        check: Check::Host(&["-p", "rp-kernel-mm", "pinning_is_limited"]),
+    },
+    Mutant {
+        name: "frame allocator accepts a double free",
+        file: "kernel/mm/src/frames.rs",
+        from: "        if t & USED == 0 {\n            return Err(Error::NotAllocated);",
+        to: "        if false {\n            return Err(Error::NotAllocated);",
+        check: Check::Host(&["-p", "rp-kernel-mm", "frames::"]),
+    },
+    Mutant {
+        name: "IPC grant can add rights the granter lacks",
+        file: "kernel/ipc/src/lib.rs",
+        from: "if !e.rights().contains(Rights::GRANT) || !e.rights().contains(rights) {",
+        to: "if !e.rights().contains(Rights::GRANT) {",
+        check: Check::Host(&["-p", "rp-kernel-ipc"]),
+    },
+    Mutant {
+        name: "LZ4 accepts a match reaching before the output",
+        file: "kernel/lz4/src/lib.rs",
+        from: "        if offset == 0 || offset > o {",
+        to: "        if offset == 0 {",
+        check: Check::Host(&["-p", "rp-lz4"]),
+    },
+    Mutant {
+        name: "constant-time compare ignores length",
+        file: "kernel/crypto/src/lib.rs",
+        from: "    if a.len() != b.len() {\n        return false;\n    }\n    let diff",
+        to: "    let diff",
+        check: Check::Host(&["-p", "rp-crypto", "tags_compare_whole"]),
+    },
+    Mutant {
+        name: "pixel blend weights the destination wrong",
+        file: "drivers/gfx/src/lib.rs",
+        from: "    unspread((spread(src) * a + spread(dst) * (32 - a)) >> 5)",
+        to: "    unspread((spread(src) * a + spread(dst) * (31 - a)) >> 5)",
+        check: Check::Host(&["-p", "rp-gfx", "the_one_multiply"]),
+    },
+    Mutant {
+        name: "dirty rectangles not widened to whole words",
+        file: "drivers/gfx/src/dirty.rs",
+        from: "    let x0 = r.x & !1;",
+        to: "    let x0 = r.x;",
+        check: Check::Host(&["-p", "rp-gfx", "dirty"]),
+    },
+    Mutant {
+        name: "soft run limit not routed to FIQ (IRQs-off hangs reset the device)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "    i.route_fiq(crate::soc::irq::OST_4_11, true);",
+        to: "    i.route_fiq(crate::soc::irq::OST_4_11, false);",
+        check: Check::Emu(crate::emu::boot_loader_run_limit),
+    },
+];
+
+/// Puts a file back when dropped.
+struct Restore {
+    path: PathBuf,
+    original: String,
+}
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::write(&self.path, &self.original) {
+            eprintln!(
+                "    !! could not restore {}: {e}; run `git checkout -- {}`",
+                self.path.display(),
+                self.path.display()
+            );
+        }
+    }
+}
+
+fn unchanged_in_git(root: &Path, file: &str) -> Result<(), String> {
+    let out = Command::new("git")
+        .current_dir(root)
+        .args(["status", "--porcelain", "--", file])
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if out.stdout.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{file} has uncommitted changes: commit or stash them first"
+        ))
+    }
+}
+
+/// Runs `cargo test <args>`: whether it passed, and how many tests ran.
+fn host_tests(root: &Path, args: &[&str]) -> Result<(bool, u32), String> {
+    let out = Command::new("cargo")
+        .current_dir(root)
+        .arg("test")
+        .args(args)
+        .output()
+        .map_err(|e| format!("cargo: {e}"))?;
+    let ran = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.strip_prefix("test result: "))
+        .filter_map(|l| l.split(". ").nth(1)?.split(' ').next()?.parse::<u32>().ok())
+        .sum();
+    Ok((out.status.success(), ran))
+}
+
+/// Runs every host mutant, and the emulator ones with `emu`.
+pub fn run(root: &Path, emu: bool) -> Result<(), String> {
+    let mut survived = Vec::new();
+    let mut ran = 0;
+    for m in MUTANTS {
+        if matches!(m.check, Check::Emu(_)) && !emu {
+            eprintln!("    skipped (needs --emu): {}", m.name);
+            continue;
+        }
+        unchanged_in_git(root, m.file)?;
+        let path = root.join(m.file);
+        // The check must pass on the real code and actually run tests, or a
+        // "kill" means nothing (a filter matching no test name, a suite
+        // already failing).
+        if let Check::Host(args) = m.check {
+            match host_tests(root, args)? {
+                (true, n) if n > 0 => {}
+                (true, _) => return Err(format!("`{}`: its check runs no tests", m.name)),
+                (false, _) => {
+                    return Err(format!("`{}`: its check fails without the mutant", m.name));
+                }
+            }
+        }
+        let original = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", m.file))?;
+        if original.matches(m.from).count() != 1 {
+            return Err(format!(
+                "stale mutant `{}`: its text isn't in {} exactly once",
+                m.name, m.file
+            ));
+        }
+        let guard = Restore {
+            path: path.clone(),
+            original: original.clone(),
+        };
+        std::fs::write(&path, original.replacen(m.from, m.to, 1))
+            .map_err(|e| format!("{}: {e}", m.file))?;
+        let killed = match m.check {
+            Check::Host(args) => !host_tests(root, args)?.0,
+            Check::Emu(f) => crate::cross().is_err() || f(root).is_err(),
+        };
+        drop(guard);
+        if matches!(m.check, Check::Emu(_)) {
+            // Never leave images built from a mutant in `target/`, where
+            // `cargo xtask load` could find them: rebuild from the real code.
+            crate::cross().map_err(|e| format!("rebuilding after `{}`: {e}", m.name))?;
+        }
+        ran += 1;
+        if killed {
+            eprintln!("    killed: {}", m.name);
+        } else {
+            eprintln!("    SURVIVED: {}", m.name);
+            survived.push(m.name);
+        }
+    }
+    if survived.is_empty() {
+        eprintln!("    all {ran} mutants killed");
+        Ok(())
+    } else {
+        Err(format!(
+            "{} mutant(s) survived: {}",
+            survived.len(),
+            survived.join("; ")
+        ))
+    }
+}
+
+#[test]
+fn every_mutant_still_matches_the_code_once() {
+    // A refactor that moves the text makes the mutant stale: caught here, in
+    // ordinary `cargo test`, not only when someone runs the mutants.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for m in MUTANTS {
+        let text = std::fs::read_to_string(root.join(m.file)).unwrap();
+        assert_eq!(text.matches(m.from).count(), 1, "stale mutant: {}", m.name);
+        assert_ne!(m.from, m.to, "{}", m.name);
+    }
+}

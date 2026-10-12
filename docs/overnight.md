@@ -998,10 +998,25 @@ on the host or in the emulator first.
       iWMMXt for the blend and tint where the device shows the CPU, not
       memory, is the limit.
 
-53. **Testing rules written down**: mutation testing for the memory
-    manager, scheduler and file-system crash paths (a list of mutants each
-    suite must kill, run by `cargo xtask mutants`), and fuzzing from the day
-    a parser lands, in docs/testing.md.
+53. **Testing rules written down**: **done.** docs/testing.md (every
+    change, fix the class, flakes are bugs, mutants, model tests, fuzzing
+    from the day a parser lands, benchmarks as tests, the emulator tracks
+    the device). `cargo xtask mutants [--emu]` (`xtask/src/mutants.rs`):
+    11 deliberate bugs on security and crash-safety rules (region-list
+    reservations and wiping, pin limit, double free, IPC rights, LZ4
+    bounds, constant-time compare, pixel blend, dirty-rectangle alignment,
+    and in the emulator the soft run limit's FIQ routing), all killed.
+    - 🔁 Iterate: the manual "break it and watch it fail" checks from items
+      48, 52 and 59 are now a list that runs on demand.
+    - ✨ Modernize / better: each check is first run on the real code and
+      must pass with at least one test (the first run found a mutant
+      "surviving" only because its filter matched no test name); files
+      with uncommitted changes are refused; every file is restored even on
+      error; images are rebuilt after an emulator mutant so nothing built
+      from a mutant can reach `cargo xtask load`; a unit test catches a
+      mutant whose text no longer matches the code.
+    - Still to add: file-system crash-path mutants (copy-then-swap) and the
+      scheduler's owed preemption.
 
 58. **SD throughput is ours to win** (measured 2026-10-12 on the owner's
     new 32 GB card): big transfers run at ~1.4-1.9 MB/s on both cards, a
