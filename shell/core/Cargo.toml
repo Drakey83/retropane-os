@@ -1,0 +1,19 @@
+[package]
+name = "rp-shell"
+description = "The shell (ADR-0021): Today screen, title bar, Start menu and softkeys; layout, focus, touch and D-pad handling, emitted as rp-draw frames, so it never assumes what draws them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-draw = { path = "../../drivers/draw" }
+
+[dev-dependencies]
+# Test-only: incremental redraws checked against full ones with the real
+# CPU renderer. The shell itself never draws.
+rp-gfx = { path = "../../drivers/gfx" }
+
+[lints]
+workspace = true

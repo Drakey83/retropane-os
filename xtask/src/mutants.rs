@@ -48,6 +48,25 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "shell: a notice shown without marking its area (never redrawn)",
+        file: "shell/core/src/lib.rs",
+        from: "        self.notice = Some((what, self.now.wrapping_add(NOTICE_MS)));
+        self.dirty(NOTICE);",
+        to: "        self.notice = Some((what, self.now.wrapping_add(NOTICE_MS)));",
+        check: Check::Host(&["-p", "rp-shell", "incremental_frames_match_full_redraws"]),
+    },
+    Mutant {
+        name: "renderer: commands drawn without clipping to the dirty rectangle",
+        file: "drivers/gfx/src/render.rs",
+        from: "            Cmd::Fill { r, color } => self.layer.fill(rect(r).intersect(&clip), color),",
+        to: "            Cmd::Fill { r, color } => self.layer.fill(rect(r), color),",
+        check: Check::Host(&[
+            "-p",
+            "rp-gfx",
+            "nothing_outside_the_dirty_rectangles_changes",
+        ]),
+    },
+    Mutant {
         name: "display: adopt keeps a left-over video plane over the screen",
         file: "drivers/mbx-display/src/lib.rs",
         from: "        if let Some(p) = self.scanned_out(vram_size) {\n            layers::solo(&mut self.regs);\n",

@@ -49,6 +49,7 @@ members = [
     "boot/kernel",
     "boot/threads",
     "services/display-host",
+    "shell/core",
     "tools/romdump",
     "tools/apiscan",
     "xtask",
