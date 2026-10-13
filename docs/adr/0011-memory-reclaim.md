@@ -31,6 +31,15 @@ What this system knows for free:
 
 ## Decision
 
+> **As built (note added 2026-10-13, item 79):** `kernel/mm` reclaims with
+> a **second-chance clock** over each space's pages (`Vm::reclaim`): the
+> first visit marks a page "aged" (unmapped, kept resident); a page still
+> untouched on the next visit is compressed or dropped. That is the
+> per-page sampling of tier 3 applied to every process, and it needs no
+> hardware accessed bit. The process tiers below are still the order the
+> reclaimer will visit spaces in once there are several apps; the tiers
+> themselves aren't built yet.
+
 Reclaim works on **processes**, in tiers, cheapest first, with no
 per-page access tracking and no reverse map.
 

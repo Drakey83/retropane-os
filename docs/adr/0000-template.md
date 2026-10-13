@@ -29,9 +29,11 @@ was it a software choice? A choice is open to replacement (docs/CONTRIBUTOR-BRIE
 
 ## Alternatives considered
 
-The better ways tried first (faster, more modern, cleverer, the device's
-parts working together), and why each was taken or rejected. If the
-decision imitates the original, this section is where that is justified.
+The 2-4 serious alternatives (faster, more modern, cleverer, the device's
+parts working together), measured where that is cheap, and why each was
+taken or rejected. Bounded to the size of the decision. If the decision
+imitates the original, this section is where that is justified, ideally
+with a measurement against the stock-WM baseline (docs/perf.md).
 
 ## Consequences
 

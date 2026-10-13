@@ -217,8 +217,10 @@ compatibility falls out naturally:
   not inside the kernel proper. A crashing driver can be restarted without a
   reboot. Drivers get MMIO mappings only for the regions the board description
   grants them.
-- Message-passing IPC for service calls, plus shared memory for bulk data
-  (framebuffers, audio buffers, network packets).
+- Message-passing IPC for service calls; bulk data (audio buffers,
+  network packets, file data) *moves* with the call as whole pages rather
+  than being shared (ADR-0016 decision 3).
+  Framebuffers live in the 2700G's memory.
 
 ### 5.2 Memory model — the creative core
 
@@ -432,7 +434,7 @@ own life (and maybe be useful to other X50v/X51v hackers).
 | Known limitation | 802.11b only. Many modern routers disable 802.11b rates by default (UniFi: "Minimum Data Rate Control"). Settings will explain this clearly. The built-in ACX100 is required to work. Supporting **CF 802.11g cards** is an optional extra on top, not a substitute. |
 | TCP/IP | `smoltcp` (Rust, BSD-0) or similar: IPv4/IPv6, DHCP, DNS, mDNS |
 | TLS | TLS 1.3 + 1.2 via mbedTLS or wolfSSL (decide in ADR). X25519 + ChaCha20-Poly1305 preferred (no FPU/AES hardware needed). Mozilla CA bundle with updates. |
-| Browser | **NetSurf** port (CSS, partial JS via Duktape) for direct browsing, plus a **"Bridge" mode**: an optional self-hostable companion service (on your PC or a server) that renders JavaScript-heavy sites with a headless browser and streams a simplified page or image tiles to the device (in the spirit of WRP/Browservice/Opera Mini). Both modes in one browser UI. |
+| Browser | **NetSurf** port (CSS, partial JS via a QuickJS-class engine, as §10.1) for direct browsing, plus a **"Bridge" mode**: an optional self-hostable companion service (on your PC or a server) that renders JavaScript-heavy sites with a headless browser and streams a simplified page or image tiles to the device (in the spirit of WRP/Browservice/Opera Mini). Both modes in one browser UI. |
 
 ### 10.1 Browser: on-device first (decided 2026-10-10)
 
@@ -525,14 +527,10 @@ A UART serial cable (3.3 V adapter on connector pins 10/11/12) stays supported
 as an **optional** developer tool for the deepest bring-up work. It's never
 required.
 
-| Consumer | Budget |
-|---|---|
-| Kernel + driver host | 4 MB |
-| Display: front/back buffers in 2700G memory (not system RAM) | 0 MB system RAM |
-| GWES + compositor + shell | 6 MB |
-| Services (net, TLS, audio, fs) | 4 MB |
-| File cache | 4–8 MB (elastic) |
-| **Available to apps** | **~40 MB** |
+The budget is [`memory-budget.md`](memory-budget.md) (it replaced this
+section's first estimate of a 4 MB kernel and ~40 MB for apps): the whole
+OS in **12 MiB**, apps get **at least 52 MiB**; display buffers live in
+the 2700G's own memory, not system RAM.
 
 Budgets are enforced by tests: integration tests boot the emulator, run a
 scripted session and fail if any component exceeds its budget.
@@ -541,7 +539,7 @@ scripted session and fail if any component exceeds its budget.
 
 | Area | Requirement |
 |---|---|
-| CPU clock | Kernel brings the PXA270 to **624 MHz turbo** at boot. Dynamic frequency scaling drops it when idle and returns to full speed within one scheduler tick under load |
+| CPU clock | Kernel brings the PXA270 to **624 MHz turbo** at boot. Dynamic frequency scaling drops it when idle and returns to full speed as soon as work arrives (the scheduler is tickless: the switch happens on the wake-up, not on a tick) |
 | Memory bus | SDRAM and bus timings tuned to the fastest stable values (measured per unit, with safe defaults) |
 | Caches | I/D caches, write buffer and branch target buffer on from the first instruction. The slot/FCSE model (§5.2) avoids cache flushes on context switch |
 | Graphics | Compositor and UI on MBX at **60 fps**. Scrolling and text through the 2D blitter. Fullscreen apps scan out directly from display planes with zero copies |

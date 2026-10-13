@@ -1439,8 +1439,10 @@ comes before the UI and GDI designs, which are written GPU-first.
     cheaper TLB misses measured; DMA pre-zeroing; large pages), and the
     CE5 layout limits re-examined with data (31 processes: CE's shared-file
     area, not FCSE's 64 PIDs; slot 1's XIP purpose doesn't apply here).
-79. **Fix the documents that disagree with the code** (list in the
-    audit).
+79. **Fix the documents that disagree with the code**: **done
+    2026-10-13** (moved ahead of 69's later steps on review): the ten in
+    the audit, plus docs/hw/2700g.md's "WM draws on the CPU" (measured
+    wrong by `rp-wmgpu`) and the brief's example.
 80. **CPU deep-dive:** the CP14 performance monitor first (to measure
     everything else), then cache locking for the IRQ path, scheduler and
     system calls, the mini-data cache for streaming data, SRAM for hot

@@ -15,8 +15,8 @@
 //! file or searching the FAT for free clusters borrows the caller's
 //! scratch, so a bigger scratch means fewer, longer device commands.
 //!
-//! Not here yet: subdirectories, deleting, timestamps (no clock yet: new
-//! entries carry none, which Windows shows as unknown).
+//! Not here yet: timestamps (no clock yet: new entries carry none, which
+//! Windows shows as unknown). Subdirectories and deleting are here.
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 #![forbid(unsafe_code)]

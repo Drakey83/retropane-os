@@ -28,7 +28,8 @@
 pub const SLOT_SIZE: u32 = 32 << 20;
 /// First slot used for processes.
 pub const FIRST_PROCESS_SLOT: u32 = 2;
-/// Last slot used for processes (CE5 allows 32 processes).
+/// Last slot used for processes: slots 2-32, so 31 processes (as
+/// `domains.rs` and ADR-0016 count them).
 pub const LAST_PROCESS_SLOT: u32 = 32;
 /// Base of the shared memory-mapped file area.
 pub const SHARED_BASE: u32 = 0x4200_0000;

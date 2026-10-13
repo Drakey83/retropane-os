@@ -101,6 +101,7 @@ FAT32 (partition type `0x0C`, measured), with the kit files in its root.
   switch is a single sector write, and nothing else on the card is
   written. The first device use is on the loader file, which a Bluetooth
   copy can always restore.
-- Not yet: creating new files or directories, timestamps (no clock yet),
-  freeing space when the card is full.
+- Not yet: timestamps (no clock yet), freeing space when the card is
+  full. (Creating files and folders and deleting them came later: the
+  loader's `put` and `rm`.)
 - The FAT writer becomes the seed of the OS's file system support.

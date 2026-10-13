@@ -125,6 +125,12 @@ possible on this CPU. That's true of *frosted* glass (a blur under every
 panel, every frame). The VClouds look is tinted glass with no blur, and
 it's mostly static, which changes the cost completely:
 
+- **Superseded by item 60 (2026-10-12): the display controller blends at
+  scan-out.** The wallpaper sits in the video plane, the interface in the
+  graphics plane (drawn in a full-colour ARGB8888 layer in RAM, 1.2 MB,
+  flushed dithered to ARGB4444), and the 2700G blends them every frame at
+  no CPU cost (docs/hw/2700g.md "Plane composition"). The rest of this
+  section was the earlier single-surface plan, kept for its reasoning:
 - **Cache the desktop, don't recompose it.** Wallpaper plus every glass
   panel is blended once, into one 480 × 640 RGB565 surface in RAM (600 KB,
   counted in the shell's allotment), when the wallpaper, the layout or the
@@ -189,7 +195,8 @@ basis, date checked) as its provenance note.
 
 ## The cached desktop is pinned
 
-The 600 KB composed desktop is what's on screen, so it must never be aged,
+(Written for the single-surface plan; with item 60's two planes, what is
+pinned is the 1.2 MB interface layer.) The 600 KB composed desktop is what's on screen, so it must never be aged,
 compressed or evicted: it lives in a **pinned** region (`Prot::pinned()`,
 loaded up front by `Vm::populate`). That's above the 64 KiB default pin
 limit, so the shell is one of the trusted services whose limit the kernel
