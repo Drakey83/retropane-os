@@ -1391,3 +1391,58 @@ power button on the device, thread-switch time investigation, SD DMA on the
 device (`cargo xtask card dma` after boot: the self-test verdict; then
 `card dma writes` and a `put`, which verifies by read-back), exFAT image
 check with `fsck.exfat` (needs exfatprogs in WSL: the owner installs it).
+
+## Thirteenth tier: the imitation audit (owner, 2026-10-13; docs/research/imitation-audit.md)
+
+The owner's hard rule (imitation is the last resort) applied to everything
+built so far. Ranked in the audit; the "know the silicon" track (69, 80)
+comes before the UI and GDI designs, which are written GPU-first.
+
+67. **Own the clocks and power states.** Set 624 MHz turbo at start
+    instead of inheriting WM's (seen at 208/520 and 624); drop to a low run
+    frequency when idle and back on work; deep idle with SDRAM
+    self-refresh; voltage scaling once the power IC is identified (RE of
+    `PowerStateManager.dll`, `battdrvr.dll`); cheap timestamps from the CP14
+    cycle counter. Find whether the clock explains the 12 us thread switch
+    (target 2 us). Device runs, each measured.
+68. **Memory and bus timings.** Measure and set the fastest stable SDRAM
+    (`MDCNFG`, `MDREFR`, the "alternate memory clock" bit) and
+    static-memory timings (`MSC1`: the 2700G's bus, framebuffer writes at
+    ~41 MB/s), with a watchdog-guarded step-and-verify test.
+69. **MBX core bring-up, GPU-first.** From Dell's 3D drivers, step by step
+    on the device: power the core, clear the screen with it, then a
+    triangle, a textured quad, blending; each measured against the CPU.
+    The emulator's model grows with each step. The compositor/UI ADR and
+    the GDI design wait for its findings.
+70. **Display without the CPU in the way.** Dirty-rectangle flushes by DMA
+    descriptor chains; tear-free double buffering inside the 2700G's 16 MB
+    with plane switches at vsync; hardware scrolling by moving the plane's
+    start address (the console stops reading 2700G memory); the cursor
+    plane as a free small overlay.
+71. **iWMMXt pixel paths:** blend, dither, tint, `memcpy`/`memset`.
+72. **Own the display set-up** (PLL, timings, plane) instead of adopting
+    WM's; find the cause of the 2700G's 500 ms "settle".
+73. **Interrupts and DMA in every OS driver** (DESIGN §11's own rule):
+    completion interrupts, the CPU asleep during transfers, memory-to-
+    memory DMA for page pre-zeroing; an emulator check that the CPU idles
+    during a transfer. The development loader may keep polling.
+74. **USB double-buffered endpoints and DMA**, so packets go back to back
+    (towards full speed's ~1.1 MB/s).
+75. **CF: timings from the card's own PIO mode** (IDENTIFY), READ/WRITE
+    MULTIPLE, the card's interrupt, DMA from the socket window.
+76. **Touch and light feel:** oversampled, filtered touch with pressure, a
+    calibration screen, SSP DMA; backlight low steps by temporal
+    dithering of the duty.
+77. **CPLD shadow from WM's** (its shadow copies in RAM from `0xA8001320`)
+    at hand-over, and the remaining slots mapped.
+78. **ADR-0006's measured wins** (page tables and hot data in SRAM: 5.2x
+    cheaper TLB misses measured; DMA pre-zeroing; large pages), and the
+    CE5 layout limits re-examined with data (31 processes: CE's shared-file
+    area, not FCSE's 64 PIDs; slot 1's XIP purpose doesn't apply here).
+79. **Fix the documents that disagree with the code** (list in the
+    audit).
+80. **CPU deep-dive:** the CP14 performance monitor first (to measure
+    everything else), then cache locking for the IRQ path, scheduler and
+    system calls, the mini-data cache for streaming data, SRAM for hot
+    code and GPU command buffers, `PLD` in copies, write-buffer settings
+    per region; each measured on the device before and after.
