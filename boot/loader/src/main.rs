@@ -179,10 +179,12 @@ mod image {
     const SD_DETECT: u8 = 12;
     /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
     const CF_DETECT: u8 = 13;
-    /// CompactFlash RESET (an output; Windows Mobile leaves it driven 0
-    /// with the card working, so 1 holds the card in reset) and READY
-    /// (high = ready), from AxDroid's board code (docs/hw/cf.md).
-    const CF_RESET: u8 = 36;
+    /// CompactFlash slot power / READY (docs/hw/cf.md): high while the
+    /// slot is powered and the card ready (AxDroid calls it READY, the
+    /// handhelds.org port "1 when CF card is on"; on the device it fell
+    /// as the card died). The card's RESET line is unknown: AxDroid's
+    /// GPIO36 is, per the handhelds.org port, a charger signal, and holding
+    /// it changed nothing on the device, so the loader leaves it alone.
     const CF_READY: u8 = 84;
     /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
     /// unconfirmed on the device, so changes are logged with the level).
@@ -873,13 +875,14 @@ mod image {
         Unavailable,
     }
 
-    /// The socket's RESET and READY lines on the X51v's GPIOs.
+    /// The socket's lines on the X51v: READY / slot power on GPIO84; no
+    /// RESET line known yet (the driver's reset is then only a wait for
+    /// READY, and the card's own soft reset through its configuration
+    /// register).
     struct CfSocketLines<'a>(&'a mut Gpio<Mmio>);
 
     impl rp_drv_cf::CfLines for CfSocketLines<'_> {
-        fn set_reset(&mut self, asserted: bool) {
-            self.0.make_output(CF_RESET, asserted);
-        }
+        fn set_reset(&mut self, _: bool) {}
         fn ready(&mut self) -> bool {
             self.0.read(CF_READY)
         }
@@ -1115,20 +1118,19 @@ mod image {
             out,
             "; was {was} (in {was_in}, detect changes {changes}); status {st:02x} error {err:02x}"
         );
-        // The hardware reset: READY low while held proves GPIO36/84 are
-        // the card's lines; `soft` shows none.
+        // GPIO84 (slot power / READY) before, and how long the driver
+        // waited for it; `soft` doesn't wait.
         match reset {
             Some(seen) if !soft => {
                 let _ = write!(
                     out,
-                    "; reset: GPIO84 {} before, {} in reset, ready after {} ms",
+                    "; GPIO84 {} before, high after {} ms",
                     u8::from(ready_before),
-                    if seen.busy_in_reset { "low" } else { "high" },
                     seen.ready_ms,
                 );
             }
             Some(_) => {
-                let _ = out.write_str("; no hardware reset (soft)");
+                let _ = out.write_str("; GPIO84 not waited for (soft)");
             }
             None => {}
         }
