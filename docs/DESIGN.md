@@ -434,7 +434,7 @@ own life (and maybe be useful to other X50v/X51v hackers).
 | Known limitation | 802.11b only. Many modern routers disable 802.11b rates by default (UniFi: "Minimum Data Rate Control"). Settings will explain this clearly. The built-in ACX100 is required to work. Supporting **CF 802.11g cards** is an optional extra on top, not a substitute. |
 | TCP/IP | `smoltcp` (Rust, BSD-0) or similar: IPv4/IPv6, DHCP, DNS, mDNS |
 | TLS | TLS 1.3 + 1.2 via mbedTLS or wolfSSL (decide in ADR). X25519 + ChaCha20-Poly1305 preferred (no FPU/AES hardware needed). Mozilla CA bundle with updates. |
-| Browser | **NetSurf** port (CSS, partial JS via a QuickJS-class engine, as §10.1) for direct browsing, plus a **"Bridge" mode**: an optional self-hostable companion service (on your PC or a server) that renders JavaScript-heavy sites with a headless browser and streams a simplified page or image tiles to the device (in the spirit of WRP/Browservice/Opera Mini). Both modes in one browser UI. |
+| Browser | **NetSurf** port (CSS; NetSurf ships Duktape, an ES5 engine, which §10.1 replaces with a modern QuickJS-class one) for direct browsing, plus a **"Bridge" mode**: an optional self-hostable companion service (on your PC or a server) that renders JavaScript-heavy sites with a headless browser and streams a simplified page or image tiles to the device (in the spirit of WRP/Browservice/Opera Mini). Both modes in one browser UI. |
 
 ### 10.1 Browser: on-device first (decided 2026-10-10)
 

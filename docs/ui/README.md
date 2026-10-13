@@ -195,8 +195,12 @@ basis, date checked) as its provenance note.
 
 ## The cached desktop is pinned
 
-(Written for the single-surface plan; with item 60's two planes, what is
-pinned is the 1.2 MB interface layer.) The 600 KB composed desktop is what's on screen, so it must never be aged,
+(Written for the single-surface plan. Not built: nothing is pinned yet,
+and neither this 600 KB nor item 60's 1.2 MB ARGB8888 interface layer is
+in docs/memory-budget.md. Under the two-plane design the wallpaper lives
+in the 2700G's own memory, outside system RAM, and the candidate to pin
+is the interface layer, read on every flush; to settle with the shell's
+budget, ADR-0021.) The 600 KB composed desktop is what's on screen, so it must never be aged,
 compressed or evicted: it lives in a **pinned** region (`Prot::pinned()`,
 loaded up front by `Vm::populate`). That's above the 64 KiB default pin
 limit, so the shell is one of the trusted services whose limit the kernel

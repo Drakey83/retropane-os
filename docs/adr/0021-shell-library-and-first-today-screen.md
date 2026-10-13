@@ -118,10 +118,12 @@ every rectangle is clipped by the renderer as `rp-gfx` already does.
 ## Budget
 
 `rp-today` is a test image: its budget is set from its first build and
-ratchets (owner's rule). `rp-shell` is OS code: its code size and RAM
-(the ARGB8888 layer is 1.2 MB, already counted for the shell in
-docs/memory-budget.md) are reported from the first build, and a budget is
-proposed to the owner before it ships in an OS image.
+ratchets (owner's rule). `rp-shell` is OS code: its code size and RAM are reported from the first
+build, and a budget is proposed to the owner before it ships in an OS
+image. That proposal must settle what the budget doesn't yet say: the
+1.2 MB ARGB8888 interface layer (item 60) is in no line of
+docs/memory-budget.md, and whether it is pinned (it is read on every
+flush; the pin rules are ADR-0019's) is undecided.
 
 ## Consequences
 
