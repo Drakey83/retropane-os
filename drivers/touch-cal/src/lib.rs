@@ -1,10 +1,14 @@
 //! Touch screen calibration (item 76): raw touch readings to screen pixels.
 //!
 //! An **affine map** (the method of tslib and Windows Mobile's own Align
-//! Screen): `screen_x = (a·rx + b·ry + c) / 65536`, `screen_y = (d·rx + e·ry
-//! + f) / 65536`. It takes in one go what a per-axis scale can't: axes
-//! swapped (the X51v's are), mirrored (its horizontal is), scaled, offset,
-//! and slightly rotated or skewed.
+//! Screen):
+//!
+//! - `screen_x = (a·rx + b·ry + c) / 65536`
+//! - `screen_y = (d·rx + e·ry + f) / 65536`
+//!
+//! It takes in one go what a per-axis scale can't: axes swapped (the
+//! X51v's are), mirrored (its horizontal is), scaled, offset, and slightly
+//! rotated or skewed.
 //!
 //! [`Calibration::fit`] finds the six coefficients by least squares from
 //! the align screen's points (raw reading, where the target was). Integer
