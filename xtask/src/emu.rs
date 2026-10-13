@@ -273,6 +273,7 @@ fn write_sd_test_image(path: &Path) -> Result<PathBuf, String> {
             data: &bin,
         }],
         blocked_clusters: &[],
+        ballast: 0,
     });
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -616,6 +617,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         sectors_per_cluster: 8,
         files: &[],
         blocked_clusters: &[],
+        ballast: 0,
     });
     let sd = root.join("target/emulator/sd-crash.img");
     std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
@@ -1381,6 +1383,175 @@ pub fn boot_loader_trace(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A card image as large as a real card, as a sparse file: only the
+/// formatter's non-zero parts are written (a few MB however large the
+/// card). On Windows the file is marked sparse before it is sized, so NTFS
+/// never fills in the zeros, even when the emulator writes near the end.
+fn sparse_card(path: &Path, img: &rp_fat::format::Image<'_>) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let err = |e: std::io::Error| format!("{}: {e}", path.display());
+    let _ = std::fs::remove_file(path);
+    std::fs::File::create(path).map_err(err)?;
+    #[cfg(windows)]
+    run(Command::new("fsutil")
+        .args(["sparse", "setflag"])
+        .arg(path)
+        .stdout(std::process::Stdio::null()))?;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(err)?;
+    f.set_len(u64::from(img.total_sectors) * 512).map_err(err)?;
+    let mut failed = None;
+    rp_fat::format::write_sparse(img, &mut |off, data| {
+        if failed.is_none()
+            && let Err(e) = f.seek(SeekFrom::Start(off)).and_then(|_| f.write_all(data))
+        {
+            failed = Some(e);
+        }
+    });
+    failed.map_or(Ok(()), |e| Err(err(e)))
+}
+
+/// Tests at the owner's card sizes (item 57): the loader with a 4 GB card
+/// (4 KiB clusters, a million of them) and a 32 GB card (16 KiB clusters,
+/// two million), each 90% full of ballast (allocated clusters, chained in
+/// the FAT) so the long commands do their full-size work: start-up (mount
+/// and boot-file guard), `card check` (every chain, both FATs), `put` (free
+/// space found past the ballast), the last blocks scanned, and the drive's
+/// capacity and last block. Each must finish, with the loader answering,
+/// inside the run limit: slow-at-full-size problems (the watchdog resets of
+/// 2026-10-11/12) show up here before the device.
+pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) || !has_msc_model(root) {
+        eprintln!("    full-size cards: skipped (no USB or mass storage model)");
+        return Ok(());
+    }
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let note: Vec<u8> = (0..20_000u32).map(|i| (i * 7 + 1) as u8).collect();
+    let put = rp_loadproto::file_frame("full-size.txt", &note);
+    for (label, gib, spc) in [("4 GB", 4u64, 8u32), ("32 GB", 32, 32)] {
+        let bytes = gib << 30;
+        let sectors = (bytes / 512) as u32;
+        let cluster = u64::from(spc) * 512;
+        let ballast = bytes * 9 / 10 / cluster * cluster;
+        let image = root.join(format!("target/emulator/full-{gib}g.img"));
+        sparse_card(
+            &image,
+            &rp_fat::format::Image {
+                total_sectors: sectors,
+                sectors_per_cluster: spc,
+                files: &[rp_fat::format::Entry {
+                    name: "hello.txt",
+                    data: b"a card as big as the owner's",
+                }],
+                blocked_clusters: &[],
+                ballast,
+            },
+        )?;
+        // FSInfo's free count and next-free hint as "unknown" (many cards
+        // carry them so), so `put` has to find the free space by scanning
+        // the FAT past the ballast: the slow path, at full size.
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let fsinfo = u64::from(rp_fat::format::PARTITION_START + 1) * 512;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&image)
+                .map_err(|e| format!("{}: {e}", image.display()))?;
+            f.seek(SeekFrom::Start(fsinfo + 488))
+                .and_then(|_| f.write_all(&[0xFF; 8]))
+                .map_err(|e| format!("{}: {e}", image.display()))?;
+        }
+        let mut args: Vec<String> = usb_args(12).into();
+        args.extend(msc_args(13));
+        let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+        let check = || -> Result<(), String> {
+            let started = Instant::now();
+            let mut s = usb_connect(12)?;
+            usb_read_until(&mut s, "RPLOAD1 READY", 120)?;
+            let ready = started.elapsed();
+            let mut step =
+                |cmd: &[u8], want: &str, what: &str| -> Result<(String, Duration), String> {
+                    let t = Instant::now();
+                    s.write_all(cmd).map_err(|e| e.to_string())?;
+                    // The reply line (the idle loader's READY lines don't
+                    // start with "RPL ").
+                    let fail = |e: String| format!("{label} card, {what}: {e}");
+                    let mut got = usb_read_until(&mut s, "RPL ", 300).map_err(fail)?;
+                    while !got.rsplit("RPL ").next().unwrap_or("").contains("\r\n") {
+                        got += &usb_read_until(&mut s, "\r\n", 30).map_err(fail)?;
+                    }
+                    let tail = got.rsplit("RPL ").next().unwrap_or("");
+                    let reply = format!("RPL {}", tail.split("\r\n").next().unwrap_or(""));
+                    if !reply.contains(want) {
+                        return Err(format!("{label} card, {what}: {reply:?}"));
+                    }
+                    Ok((reply, t.elapsed()))
+                };
+            let check_cmd = rp_loadproto::control_frame("card check");
+            let (_, check1) = step(&check_cmd, "RPL OK check clean", "card check")?;
+            let (_, put_t) = step(&put, "RPL OK 20000 bytes", "put past the ballast")?;
+            let (after, check2) = step(&check_cmd, "RPL OK check clean", "card check after put")?;
+            if !after.contains("unchecked 0)") {
+                return Err(format!("{label} card: clusters left unchecked: {after:?}"));
+            }
+            let last = sectors - 4096;
+            let scan = rp_loadproto::control_frame(&format!("card scan {last} 4096"));
+            let (_, scan_t) = step(&scan, "4096: 0 failed", "scan of the last blocks")?;
+            // The PC's view: the whole card, its last block readable.
+            let mut bot = Bot::connect(13)?;
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while bot.command(&[0; 6], 0, false, &[])?.status != 0 {
+                let _ = bot.sense()?;
+                if Instant::now() > deadline {
+                    return Err(format!("{label} card: the drive never became ready"));
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let r = bot.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+            if r.data.get(..4) != Some(&(sectors - 1).to_be_bytes()[..]) {
+                return Err(format!("{label} card: capacity {:?}", r.data));
+            }
+            let mut block = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(&mut bot, sectors - 1, &mut block)
+                .map_err(|_| format!("{label} card: last block unreadable over the drive"))?;
+            eprintln!(
+                "    {label} card OK: ready {:.1} s, check {:.1} s, put {:.1} s, check {:.1} s, end scan {:.1} s; drive capacity and last block",
+                ready.as_secs_f32(),
+                check1.as_secs_f32(),
+                put_t.as_secs_f32(),
+                check2.as_secs_f32(),
+                scan_t.as_secs_f32()
+            );
+            Ok(())
+        };
+        let result = boot(
+            root,
+            &Boot {
+                image: &loader,
+                marker: LOADER_MARKER,
+                screenshot: None,
+                sd_image: Some(&image),
+                steps: &[],
+                extra: &extra,
+                input: None,
+                during: Some(&check),
+                timeout: Duration::from_secs(900),
+            },
+        );
+        let _ = std::fs::remove_file(&image);
+        result?;
+    }
+    Ok(())
+}
+
 /// A disk image in memory, for checking the emulator's card afterwards.
 struct Disk(Vec<u8>);
 
@@ -1459,6 +1630,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             data: b"compact flash",
         }],
         blocked_clusters: &[],
+        ballast: 0,
     });
     let cf = root.join("target/emulator/cf.img");
     std::fs::write(&cf, image).map_err(|e| format!("{}: {e}", cf.display()))?;
@@ -1846,6 +2018,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
             },
         ],
         blocked_clusters: &taken,
+        ballast: 0,
     });
     let sd = root.join("target/emulator/sd-put.img");
     // A damaged first-FAT sector in a free region (sector 20: clusters
@@ -2300,6 +2473,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             },
         ],
         blocked_clusters: &[],
+        ballast: 0,
     });
     let blocks = (image.len() / 512) as u32;
     let sd = root.join("target/emulator/sd-drive.img");
@@ -2570,6 +2744,7 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
             data: b"old",
         }],
         blocked_clusters: &[],
+        ballast: 0,
     });
     let sd = root.join("target/emulator/sd-locked.img");
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;

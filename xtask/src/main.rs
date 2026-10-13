@@ -93,6 +93,8 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-fullsize the loader's card commands on 4 GB and 32 GB card images
+            (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
@@ -109,8 +111,8 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "mutants"
-        | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -268,6 +270,7 @@ fn run_step(step: &str) -> Result {
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
+        "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -293,6 +296,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_full_size(&workspace_root()))
             // The benchmark image's on-target checks (pixel paths, memory,
             // crypto, SD) and no regression past the baseline.
             .and_then(|()| emu::bench(&workspace_root(), false)),

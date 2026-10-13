@@ -1039,6 +1039,25 @@ on the host or in the emulator first.
     large as the owner's (4 GB and 32 GB, sparse files), for the loader's
     long card commands, so slow-at-full-size problems are caught before the
     device.
+    **Done (emulator), 2026-10-13.** `rp_fat::format::write_sparse` emits
+    only an image's non-zero parts, and `Image::ballast` fills a card with
+    allocated, chained clusters whose data is never written; xtask writes
+    them into a sparse file (on Windows marked sparse before it is sized,
+    so NTFS never fills in zeros: a 32 GB image takes a few MB).
+    `cargo xtask emu-fullsize` (also in `cargo xtask emu`): a 4 GB card
+    (4 KiB clusters, ~1 million) and a 32 GB card (16 KiB clusters, ~2
+    million), each 90% ballast, FSInfo's hints "unknown" so `put` must scan
+    the FAT. Emulator times (wall clock): ready 1.0 s, `card check` 9.1 /
+    18.2 s, `put` past the ballast 3.2 / 5.4 s, check again, the last 4096
+    blocks scanned, the drive's capacity and last block over USB. Mutant
+    (card check's cluster bitmap sized for small cards) killed: "no room"
+    at 4 GB, invisible on the 8-16 MB test cards. Formatter host test for
+    sparse output and ballast. **Not modellable:** the device's time for
+    these (the emulator's card has no per-block latency, docs/hw/emulator.md);
+    `card check` reads both FATs (8-16 MB at 32 GB), so on the device it
+    may take minutes and holds up the USB loop while it runs: worth a
+    device run with the 32 GB card, and a chunked check if it is too slow
+    (item 62 (c)'s rule).
 
 52. **Display fast paths**: **done (emulator), iWMMXt next.** `rp-gfx`
     (`drivers/gfx`): rectangles clipped with saturating arithmetic, fills

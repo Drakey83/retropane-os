@@ -77,6 +77,7 @@ fn card(blocked: &[u32], loader_len: usize) -> (Volume<Guarded>, Vec<u8>) {
             },
         ],
         blocked_clusters: blocked,
+        ballast: 0,
     });
     let dev = Guarded {
         data: img,
@@ -236,6 +237,7 @@ fn a_file_too_fragmented_to_record_gives_no_guard() {
             data: &loader,
         }],
         blocked_clusters: &blocked,
+        ballast: 0,
     });
     let mut v = Volume::mount(
         Guarded {
