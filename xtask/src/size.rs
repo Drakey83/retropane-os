@@ -300,6 +300,16 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0021): the shell's Today screen. Carries the 450 KiB
+    // 4:2:0 wallpaper and ~33 KiB of glyphs (the OS will load both from
+    // flash or the card instead). 538.5 KiB measured (450 KiB of it the
+    // wallpaper), + ~10%.
+    Budget {
+        image: "rp-today",
+        max_load: 592 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

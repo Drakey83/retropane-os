@@ -118,8 +118,10 @@ pub enum Target {
 // ---- Layout (480 x 640, portrait) --------------------------------------
 
 const TITLE: Rect = Rect::new(0, 0, W, 36);
-const START: Rect = Rect::new(0, 0, 96, 36);
-const CLOCK_PANEL: Rect = Rect::new(16, 56, 448, 150);
+/// Start, top left.
+pub const START: Rect = Rect::new(0, 0, 96, 36);
+/// The clock and date panel (its contents depend on the time).
+pub const CLOCK_PANEL: Rect = Rect::new(16, 56, 448, 150);
 const WEATHER_PANEL: Rect = Rect::new(16, 222, 448, 110);
 const CALENDAR_PANEL: Rect = Rect::new(16, 348, 448, 52);
 const SOFTKEYS: Rect = Rect::new(0, H - 40, W, 40);
@@ -127,7 +129,8 @@ const SOFT_LEFT: Rect = Rect::new(0, H - 40, 160, 40);
 const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
 /// Where the "Not yet" notice and the title clock sit.
 const NOTICE: Rect = Rect::new(160, H - 40, 160, 40);
-const TITLE_CLOCK: Rect = Rect::new(W - 140, 0, 140, 36);
+/// The title bar's clock and status (depends on the time).
+pub const TITLE_CLOCK: Rect = Rect::new(W - 140, 0, 140, 36);
 /// The big clock's baseline from the top of its panel.
 const BIG_CLOCK_BASELINE: u16 = 92;
 
@@ -266,7 +269,9 @@ impl Shell {
         )
     }
 
-    fn menu_entry(i: u8) -> Rect {
+    /// Where Start menu entry `i` is.
+    #[must_use]
+    pub fn menu_entry(i: u8) -> Rect {
         Rect::new(
             MENU_X + 4,
             MENU_Y + 4 + u16::from(i) * MENU_ROW,
