@@ -16,6 +16,7 @@ members = [
     "drivers/pxa-gpio",
     "drivers/pxa-ssp",
     "drivers/tsc2046",
+    "drivers/touch-cal",
     "drivers/sdcard",
     "drivers/pxa-mmc",
     "drivers/pxa-udc",

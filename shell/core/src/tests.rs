@@ -347,3 +347,101 @@ fn incremental_frames_match_full_redraws() {
         );
     }
 }
+
+/// A panel like the X51v's: raw X follows the vertical, raw Y the
+/// horizontal mirrored. `bend` pushes the centre's raw X (a non-linear
+/// panel).
+fn raw_at(x: u16, y: u16, bend: bool) -> (u16, u16) {
+    let mut rx = 99 + u32::from(y) * 4128 / 1000;
+    let ry = 3719 - u32::from(x) * 7083 / 1000;
+    if bend && (200..280).contains(&x) && (280..360).contains(&y) {
+        rx += 120;
+    }
+    (rx as u16, ry as u16)
+}
+
+/// Holds the pen on screen point `(x, y)` for `n` readings, then lifts.
+fn hold(s: &mut Shell, x: u16, y: u16, n: usize, bend: bool) -> Action {
+    let (rx, ry) = raw_at(x, y, bend);
+    for _ in 0..n {
+        s.input(Input::Raw { rx, ry });
+    }
+    s.input(Input::RawUp)
+}
+
+fn open_align(s: &mut Shell) {
+    tap(s, START);
+    let entries = Shell::menu_entries(true);
+    // "Align screen" is the second-to-last test-image entry.
+    tap(s, Shell::menu_entry(entries - 2));
+    assert!(s.aligning() && s.wants_raw());
+}
+
+#[test]
+fn the_align_screen_finds_the_panel() {
+    let mut s = shell(true);
+    open_align(&mut s);
+    for &(x, y) in &align::TARGETS {
+        assert_eq!(hold(&mut s, x, y, align::HOLD, false), Action::Redraw);
+    }
+    let Action::Calibrated(cal) = hold(&mut s, align::CHECK.0, align::CHECK.1, align::HOLD, false)
+    else {
+        panic!("not calibrated");
+    };
+    assert!(!s.aligning());
+    // Anywhere on screen now maps back within a pixel.
+    for (x, y) in [(10, 10), (470, 630), (240, 500), (100, 200)] {
+        let (rx, ry) = raw_at(x, y, false);
+        let (mx, my) = cal.to_screen(rx, ry, (W, H));
+        assert!(
+            mx.abs_diff(x) <= 1 && my.abs_diff(y) <= 1,
+            "{x},{y} -> {mx},{my}"
+        );
+    }
+    // The frames while it ran fit.
+    let f = drawn(&mut s);
+    assert!(!f.overflowed());
+}
+
+#[test]
+fn the_align_screen_wants_a_real_hold() {
+    let mut s = shell(true);
+    open_align(&mut s);
+    let (x, y) = align::TARGETS[0];
+    hold(&mut s, x, y, align::HOLD - 1, false);
+    assert!(s.aligning());
+    // Still on the first target, and it says why.
+    let mut f = Frame::new();
+    s.frame(&mut f);
+    assert!(f.cmds().count() > 0);
+    hold(&mut s, x, y, align::HOLD, false);
+    let (x, y) = align::TARGETS[1];
+    hold(&mut s, x, y, align::HOLD, false);
+}
+
+#[test]
+fn a_bent_panel_or_a_missed_check_starts_again() {
+    let mut s = shell(true);
+    open_align(&mut s);
+    for &(x, y) in &align::TARGETS {
+        hold(&mut s, x, y, align::HOLD, true);
+    }
+    // The corners' fit misses the bent centre: back to the first target.
+    assert!(s.aligning());
+    for &(x, y) in &align::TARGETS {
+        hold(&mut s, x, y, align::HOLD, false);
+    }
+    // The check tap far from the dot: once more.
+    assert_eq!(hold(&mut s, 50, 600, align::HOLD, false), Action::Redraw);
+    assert!(s.aligning());
+}
+
+#[test]
+fn home_leaves_the_align_screen_unchanged() {
+    let mut s = shell(true);
+    open_align(&mut s);
+    assert_eq!(s.input(Input::Key(Key::Home)), Action::Redraw);
+    assert!(!s.aligning());
+    // Raw readings outside it do nothing.
+    assert_eq!(s.input(Input::Raw { rx: 1, ry: 1 }), Action::Nothing);
+}

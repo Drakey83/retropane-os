@@ -451,6 +451,7 @@ version = "0.0.0"
 dependencies = [
  "rp-draw",
  "rp-gfx",
+ "rp-touch-cal",
 ]
 
 [[package]]
@@ -480,7 +481,12 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-shell",
+ "rp-touch-cal",
 ]
+
+[[package]]
+name = "rp-touch-cal"
+version = "0.0.0"
 
 [[package]]
 name = "rp-usb"

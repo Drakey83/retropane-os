@@ -1221,8 +1221,27 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         };
         tap(&mut qmp, sx, sy)?;
         until("menu", &want[2])?;
+        // The align screen (the test image's second-to-last entry): hold
+        // each target, then the check dot, as the owner would.
+        let entries = rp_shell::Shell::menu_entries(true);
+        let align = rp_shell::Shell::menu_entry(entries - 2);
+        tap(&mut qmp, align.x + align.w / 2, align.y + align.h / 2)?;
+        std::thread::sleep(Duration::from_millis(500));
+        for &(x, y) in rp_shell::align::TARGETS
+            .iter()
+            .chain([&rp_shell::align::CHECK])
+        {
+            touch(&mut qmp, &Action::TouchDown(x, y))?;
+            std::thread::sleep(Duration::from_millis(700));
+            touch(&mut qmp, &Action::TouchUp)?;
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        // Calibrated: Start must open the same menu, pixel for pixel (the
+        // taps land where they should through the new calibration).
+        tap(&mut qmp, sx, sy)?;
+        until("menu-aligned", &want[2])?;
         // The last menu entry is "Back to loader" (test images only).
-        let back = rp_shell::Shell::menu_entry(10);
+        let back = rp_shell::Shell::menu_entry(entries - 1);
         tap(&mut qmp, back.x + back.w / 2, back.y + back.h / 2)?;
         // Back at the loader: the wallpaper between the clock and weather
         // panels (rows 210-217, nothing drawn over it) is gone. Polled, so
@@ -1273,8 +1292,13 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     if answered < 2 {
         return Err(format!("today: the taps weren't answered: {line:?}"));
     }
+    let calibrated = log
+        .lines()
+        .find(|l| l.contains("calibrated:"))
+        .ok_or_else(|| format!("today: the align screen never finished:{log}"))?;
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, Back to loader returned; {}",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, Back to loader returned; {}",
+        calibrated.trim(),
         line.trim()
     );
     Ok(())
