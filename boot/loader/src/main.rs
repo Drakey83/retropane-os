@@ -115,6 +115,10 @@ mod image {
         /// The slot's last reading, for debouncing: acted on only when two
         /// readings a second apart agree.
         seen: (bool, bool),
+        /// The volume's dirty flag as the loader found the card (at start
+        /// or when inserted), before the PC touched it: tells a flag left
+        /// by Windows Mobile or a reset from one Windows set while mounted.
+        dirty_found: Option<bool>,
     }
 
     /// The power button (GPIO0, docs/hw/README.md).
@@ -249,7 +253,26 @@ mod image {
             self.inserted = inserted;
             self.locked = locked;
             self.refresh_guard();
+            self.dirty_found = self.dirty_flag();
             true
+        }
+
+        /// The volume's "not cleanly unmounted" flag as it is on the card:
+        /// FAT32's boot sector byte 0x41 bit 0 (set by Windows while it
+        /// writes; its "problem with this drive" notice when found set),
+        /// exFAT's VolumeDirty. `None` with no card or another layout.
+        fn dirty_flag(&mut self) -> Option<bool> {
+            let sd = self.card.as_mut()?;
+            let start = partition_start(sd).ok()?;
+            let mut b = [0u8; 512];
+            sd.read_blocks(start, &mut b).ok()?;
+            if &b[82..90] == b"FAT32   " {
+                Some(b[0x41] & 1 != 0)
+            } else if &b[3..11] == b"EXFAT   " {
+                Some(b[106] & 2 != 0)
+            } else {
+                None
+            }
         }
 
         /// Rebuilds the guard from the card as it is now (after start-up, a
@@ -1761,9 +1784,11 @@ mod image {
             inserted,
             locked,
             seen: (inserted, locked),
+            dirty_found: None,
         };
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();
+        lun.dirty_found = lun.dirty_flag();
 
         let Some((regs, vram)) = devices::take_mbx() else {
             halt()
@@ -2037,9 +2062,15 @@ mod image {
                     let reply = match f.command(dest) {
                         Ok(b"drive status") => {
                             let s = msc.stats();
+                            let flag = |f: Option<bool>| match f {
+                                Some(true) => "set",
+                                Some(false) => "clear",
+                                None => "-",
+                            };
+                            let dirty = (flag(lun.dirty_found), flag(lun.dirty_flag()));
                             let _ = write!(
                                 status,
-                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, read ahead {}, kept alive {}, idle {}%\r\n",
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, read ahead {}, kept alive {}, dirty flag found {} now {}, idle {}%\r\n",
                                 s.commands,
                                 s.failed,
                                 s.blocks_read,
@@ -2060,6 +2091,8 @@ mod image {
                                 ),
                                 s.read_ahead_hits,
                                 KEPT_ALIVE.with(|k| *k),
+                                dirty.0,
+                                dirty.1,
                                 idle_pct.min(100),
                             );
                             status.as_str()
