@@ -220,11 +220,17 @@ fn main() -> ExitCode {
                     emu::wsl_run(&format!(
                         "cd '{}' && ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
-                         -o target/wmbench/rp-wmbench.exe tools/wmbench/rp-wmbench.c",
+                         -o target/wmbench/rp-wmbench.exe tools/wmbench/rp-wmbench.c && \
+                         ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
+                         -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
+                         -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c",
                         emu::to_wsl_path(&workspace_root())
                     ))
                 })
-                .map(|()| eprintln!("    target/wmbench/rp-wmbench.exe: put it in the SD root (cargo xtask put target/wmbench/rp-wmbench.exe rp-wmbench.exe), run it under Windows Mobile, then fetch rp-wm-baseline.txt"))
+                .map(|()| {
+                    eprintln!("    target/wmbench/rp-wmbench.exe: put it in the SD root (cargo xtask put target/wmbench/rp-wmbench.exe rp-wmbench.exe), run it under Windows Mobile, then fetch rp-wm-baseline.txt");
+                    eprintln!("    target/wmbench/rp-wmgpu.exe (item 69, what draws WM's screen): the same way; its log is rp-wm-gpu.txt");
+                })
         }
         "reboot-wm" => {
             eprintln!("==> reboot wm");
