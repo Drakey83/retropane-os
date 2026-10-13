@@ -203,6 +203,9 @@ pub const TRANSFER_HZ: u32 = 25_000_000;
 pub struct SdCard<H> {
     host: H,
     rca: u16,
+    /// The card takes ACMD23 (pre-erase before a multi-block write); off
+    /// for good the first time it refuses.
+    pre_erase: bool,
     high_capacity: bool,
     wide: bool,
     /// Capacity in 512-byte blocks, from the CSD register.
@@ -237,6 +240,7 @@ impl<H: SdHost> SdCard<H> {
             Ok((rca, high_capacity, wide, blocks)) => Ok(Self {
                 host,
                 rca,
+                pre_erase: true,
                 high_capacity,
                 wide,
                 blocks,
@@ -587,6 +591,7 @@ impl<H: SdHost> SdCard<H> {
     pub fn write_many(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         if buf.len() > BLOCK && self.host.can_write_multiple() {
+            self.announce_write((buf.len() / BLOCK) as u32);
             let addr = self.address(lba);
             let status = self
                 .host
@@ -600,6 +605,38 @@ impl<H: SdHost> SdCard<H> {
             self.write(lba + i as u32, block)?;
         }
         Ok(())
+    }
+
+    /// Tells the card how many blocks the next multi-block write brings
+    /// (ACMD23, SET_WR_BLK_ERASE_COUNT), so it can erase them ahead: SD
+    /// cards write faster that way (item 58). Every SD memory card should
+    /// take it; one that refuses (no answer, "illegal command" in its next
+    /// status) has its status read, which clears that, and isn't asked
+    /// again. If the write is then cut off, only blocks inside the range
+    /// being written can be left erased.
+    fn announce_write(&mut self, blocks: u32) {
+        if !self.pre_erase {
+            return;
+        }
+        let rca = u32::from(self.rca) << 16;
+        let taken = self
+            .host
+            .command(Command::new(55, rca, Response::R1))
+            .is_ok()
+            && self
+                .host
+                .command(Command::new(23, blocks & 0x7F_FFFF, Response::R1))
+                .is_ok_and(|r| check(r[0]).is_ok());
+        if !taken {
+            self.pre_erase = false;
+            let _ = self.host.command(Command::new(13, rca, Response::R1));
+        }
+    }
+
+    /// Whether the card takes ACMD23 (pre-erase), as far as known.
+    #[must_use]
+    pub fn pre_erases(&self) -> bool {
+        self.pre_erase
     }
 
     /// The host controller, for its diagnostics.
@@ -747,6 +784,8 @@ mod tests {
         still_sending: bool,
         /// CMD13 polls still reporting "programming" after a write.
         busy_polls: u32,
+        /// Refuses ACMD23 (no answer, illegal command reported next).
+        no_acmd23: bool,
     }
 
     impl FakeCard {
@@ -774,6 +813,7 @@ mod tests {
                 illegal_pending: false,
                 still_sending: false,
                 busy_polls: 0,
+                no_acmd23: false,
             }
         }
 
@@ -844,6 +884,11 @@ mod tests {
                     }
                 }
                 (6, true) if c.arg == 2 => 0x0920,
+                (23, true) if !self.no_acmd23 => 0x0920,
+                (23, true) => {
+                    self.illegal_pending = true;
+                    return Err(HostError::Timeout);
+                }
                 (12, _) => 0x0B00,
                 _ => return Err(HostError::Timeout),
             };
@@ -963,10 +1008,36 @@ mod tests {
         let host = card.into_inner();
         // Every write is followed by CMD13 polls until the card is ready
         // (the fake stays "programming" for 2 polls after CMD24, 3 after
-        // CMD25 + CMD12).
-        let cmds: Vec<u8> = host.log.iter().map(|&(i, _)| i).collect();
-        let tail = &cmds[cmds.len() - 12..];
-        assert_eq!(tail, [24, 13, 13, 13, 25, 12, 13, 13, 13, 13, 18, 12]);
+        // CMD25 + CMD12); a multi-block write is announced first (CMD55 +
+        // ACMD23 with its block count: the card pre-erases them).
+        let cmds: Vec<(u8, u32)> = host.log[host.log.len() - 14..].to_vec();
+        let idx: Vec<u8> = cmds.iter().map(|&(i, _)| i).collect();
+        assert_eq!(
+            idx,
+            [24, 13, 13, 13, 55, 23, 25, 12, 13, 13, 13, 13, 18, 12]
+        );
+        assert_eq!(cmds[5].1, 3, "ACMD23 carries the block count");
+    }
+
+    /// A card that refuses ACMD23 (item 58): its status is read (clearing
+    /// the illegal-command report), the write goes ahead and succeeds, and
+    /// the card isn't asked again.
+    #[test]
+    fn a_card_refusing_pre_erase_still_writes_and_isnt_asked_again() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        fake.no_acmd23 = true;
+        let mut card = SdCard::init(fake).unwrap();
+        let three = vec![0x5Au8; 3 * BLOCK];
+        card.write_many(2, &three).unwrap();
+        assert!(!card.pre_erases());
+        card.write_many(5, &three[..2 * BLOCK]).unwrap();
+        let mut back = vec![0u8; 5 * BLOCK];
+        card.read_many(2, &mut back).unwrap();
+        assert!(back.iter().all(|&b| b == 0x5A));
+        let host = card.into_inner();
+        let acmd23s = host.log.iter().filter(|&&(i, _)| i == 23).count();
+        assert_eq!(acmd23s, 1, "asked once, then never again");
     }
 
     #[test]
