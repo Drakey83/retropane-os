@@ -1448,3 +1448,15 @@ comes before the UI and GDI designs, which are written GPU-first.
     system calls, the mini-data cache for streaming data, SRAM for hot
     code and GPU command buffers, `PLD` in copies, write-buffer settings
     per region; each measured on the device before and after.
+
+## Fourteenth tier: the shell (ADR-0021, owner 2026-10-13)
+
+81. **Themes, a modern equivalent of Windows Mobile's** (owner, 2026-10-13;
+    after the Today screen and the wallpaper picker). A RetroPane theme is
+    a wallpaper, an accent colour, glass darkness and light/dark, bundled;
+    the ten-wallpaper pack can ship as themes. Import of WM `.tsk` themes
+    (a cabinet: the Today background becomes the wallpaper, the highlight
+    colour the accent), so the owner's 65 old themes work; a cabinet parser
+    is outside input, so hostile-file tests and bounded lengths (security
+    first). Old WM apps get their system colours from the theme once GWES
+    exists. Imported art stays the user's: never shipped.
