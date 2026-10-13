@@ -125,6 +125,14 @@ as the video plane's raw 4:2:0, roughly 80-150 KB as a JPEG, so the pack
 is about 1-1.5 MB on the card. The one in use is copied (converted) into
 flash when picked, as below, so the screen never depends on the card.
 
+**Fonts the same way (owner, 2026-10-13).** The base system carries one
+font, Didact Gothic (SIL OFL) at the sizes the shell uses (~33 KB of
+glyphs today). More font choices ship as a font pack on a card; the SD
+card or the CF card can hold packs, wallpapers' included. Without a card
+there is the one font; a font the user picks from a pack is copied into
+flash, so text never depends on the card either. Every pack follows
+ADR-0018 (optional packs) and its licences are recorded.
+
 The concepts keep the glass light enough that the photo shows through. A "glass darkness" setting covers busy photos where small grey text gets hard to read.
 
 **Seeing a concept on the real Axim.** Render the board at 480 × 640, convert it to RGB565 (dithered) at `local/concept/picture.rgb565`, then run `cargo xtask emu-picture` (pixel-exact on the emulated screen, clean return) and `cargo xtask load rp-picture`. The Axim shows it for 20 s, then goes back to the loader. `local/` is never committed, so concept art with third-party pieces never reaches the repository. Without the file, the image shows a test gradient.
