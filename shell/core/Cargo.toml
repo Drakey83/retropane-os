@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rp-draw = { path = "../../drivers/draw" }
+rp-touch-cal = { path = "../../drivers/touch-cal" }
 
 [dev-dependencies]
 # Test-only: incremental redraws checked against full ones with the real

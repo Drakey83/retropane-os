@@ -1,0 +1,11 @@
+[package]
+name = "rp-touch-cal"
+description = "Touch screen calibration (item 76): an affine map from raw readings to screen pixels, fitted by least squares to the align screen's five points, in integer arithmetic (no FPU)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -19,7 +19,10 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod align;
+
 use rp_draw::{Argb, Cmd, Font, Frame, Rect};
+pub use rp_touch_cal::Calibration;
 
 /// Screen width.
 pub const W: u16 = 480;
@@ -72,6 +75,16 @@ pub enum Input {
     },
     /// A key went down.
     Key(Key),
+    /// A raw touch reading while the pen is down: sent instead of
+    /// `PenDown`/`PenUp` while [`Shell::wants_raw`] (the align screen).
+    Raw {
+        /// Raw X channel.
+        rx: u16,
+        /// Raw Y channel.
+        ry: u16,
+    },
+    /// The pen lifted, while [`Shell::wants_raw`].
+    RawUp,
 }
 
 /// What the caller should do after an input.
@@ -83,6 +96,8 @@ pub enum Action {
     Redraw,
     /// The test image's "Back to loader" entry was chosen.
     BackToLoader,
+    /// The align screen finished: map touches with this from now on.
+    Calibrated(Calibration),
 }
 
 /// Wall-clock time as the shell shows it.
@@ -157,6 +172,10 @@ const MENU: [&str; 10] = [
     "Settings",
 ];
 const BACK_TO_LOADER: &str = "Back to loader";
+/// The test image's way to the align screen (the OS's is Settings).
+const ALIGN_SCREEN: &str = "Align screen";
+/// The test image's extra Start menu entries, after the OS's.
+const DEV_MENU: [&str; 2] = [ALIGN_SCREEN, BACK_TO_LOADER];
 const MENU_X: u16 = 0;
 const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
@@ -175,6 +194,10 @@ const TEXT: Argb = 0xFFF0_F2F4;
 const DIM: Argb = 0xFFA8_B0B8;
 const FOCUS: Argb = 0xFF7F_D0FF;
 const PRESSED: Argb = 0x40FF_FFFF;
+/// The align screen's background (opaque: the wallpaper would distract).
+const ALIGN_BACK: Argb = 0xFF0C_1014;
+/// A target held long enough.
+const HELD: Argb = 0xFF5C_E07A;
 
 /// How long a notice stays (milliseconds).
 const NOTICE_MS: u32 = 2000;
@@ -195,6 +218,8 @@ pub struct Shell {
     now: u32,
     damage: [Rect; MAX_DAMAGE],
     damaged: usize,
+    /// The align screen, while it runs (over everything).
+    align: Option<align::Align>,
 }
 
 impl Shell {
@@ -212,6 +237,7 @@ impl Shell {
             now: 0,
             damage: [Rect::default(); MAX_DAMAGE],
             damaged: 0,
+            align: None,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -257,7 +283,13 @@ impl Shell {
     }
 
     fn menu_len(&self) -> u8 {
-        MENU.len() as u8 + u8::from(self.dev_exit)
+        Self::menu_entries(self.dev_exit)
+    }
+
+    /// How many entries the Start menu has (`dev`: a test image's).
+    #[must_use]
+    pub const fn menu_entries(dev: bool) -> u8 {
+        MENU.len() as u8 + if dev { DEV_MENU.len() as u8 } else { 0 }
     }
 
     fn menu_rect(&self) -> Rect {
@@ -281,7 +313,11 @@ impl Shell {
     }
 
     fn menu_label(&self, i: u8) -> &'static str {
-        MENU.get(usize::from(i)).copied().unwrap_or(BACK_TO_LOADER)
+        let i = usize::from(i);
+        MENU.get(i)
+            .or_else(|| DEV_MENU.get(i - MENU.len()))
+            .copied()
+            .unwrap_or(BACK_TO_LOADER)
     }
 
     /// Where a target is on screen.
@@ -422,6 +458,10 @@ impl Shell {
                 if label == BACK_TO_LOADER {
                     return Action::BackToLoader;
                 }
+                if label == ALIGN_SCREEN {
+                    self.start_align();
+                    return Action::Redraw;
+                }
                 self.set_menu(false);
                 if label != "Today" {
                     self.show_notice(not_yet(label));
@@ -431,8 +471,62 @@ impl Shell {
         Action::Redraw
     }
 
+    /// Starts the align screen (over everything until it finishes or Home).
+    pub fn start_align(&mut self) {
+        self.menu_open = false;
+        self.pressed = None;
+        self.focus = None;
+        self.align = Some(align::Align::new());
+        self.dirty(Rect::new(0, 0, W, H));
+    }
+
+    /// Whether the align screen is up.
+    #[must_use]
+    pub fn aligning(&self) -> bool {
+        self.align.is_some()
+    }
+
+    /// Whether the shell wants raw touch readings ([`Input::Raw`]) rather
+    /// than screen points: while the align screen is up.
+    #[must_use]
+    pub fn wants_raw(&self) -> bool {
+        self.aligning()
+    }
+
+    fn align_input(&mut self, e: Input) -> Action {
+        let Some(a) = self.align.as_mut() else {
+            return Action::Nothing;
+        };
+        let step = match e {
+            Input::Raw { rx, ry } => a.reading(rx, ry),
+            Input::RawUp => a.lift(),
+            Input::Key(Key::Home) => {
+                // Leaves with the calibration it had.
+                self.align = None;
+                self.dirty(Rect::new(0, 0, W, H));
+                return Action::Redraw;
+            }
+            _ => align::Step::Same,
+        };
+        match step {
+            align::Step::Same => Action::Nothing,
+            align::Step::Changed => {
+                self.dirty(Rect::new(0, 0, W, H));
+                Action::Redraw
+            }
+            align::Step::Done(cal) => {
+                self.align = None;
+                self.dirty(Rect::new(0, 0, W, H));
+                Action::Calibrated(cal)
+            }
+        }
+    }
+
     /// Handles one input event.
     pub fn input(&mut self, e: Input) -> Action {
+        if self.align.is_some() {
+            return self.align_input(e);
+        }
         let before = self.damaged;
         let act = match e {
             Input::PenDown { x, y } => {
@@ -457,6 +551,8 @@ impl Shell {
                 self.set_focus(None);
                 Action::Nothing
             }
+            // Raw readings matter only to the align screen.
+            Input::Raw { .. } | Input::RawUp => Action::Nothing,
             Input::Key(Key::Enter) => match self.focus {
                 Some(t) => self.activate(t),
                 None => {
@@ -563,7 +659,67 @@ impl Shell {
         }
     }
 
+    fn align_scene(&self, f: &mut Frame, a: &align::Align) {
+        let (ui, label) = (self.fonts.ui, self.fonts.label);
+        let all = Rect::new(0, 0, W, H);
+        f.push(Cmd::Fill {
+            r: all,
+            color: ALIGN_BACK,
+        });
+        self.centred(f, all, 150, label, TEXT, b"ALIGN SCREEN");
+        let (line1, line2): (&[u8], &[u8]) = match a.stage() {
+            align::Stage::Target(_) => (
+                b"Touch the centre of the target",
+                b"and hold until it turns green.",
+            ),
+            align::Stage::Check(_) => (b"Now touch the dot to check.", b""),
+        };
+        self.centred(f, all, 200, ui, TEXT, line1);
+        self.centred(f, all, 226, ui, TEXT, line2);
+        let mut buf = [0u8; 32];
+        if let align::Stage::Target(i) = a.stage() {
+            let n = b'1' + i;
+            let s = b"Point 0 of 5";
+            buf[..s.len()].copy_from_slice(s);
+            buf[6] = n;
+            self.centred(f, all, 262, ui, DIM, &buf[..s.len()]);
+        }
+        if let Some(note) = a.note() {
+            self.centred(f, all, 400, ui, FOCUS, note.as_bytes());
+        }
+        self.centred(f, all, 610, ui, DIM, b"Home: leave without changing");
+        let (x, y) = a.target();
+        let color = if a.held() { HELD } else { TEXT };
+        match a.stage() {
+            align::Stage::Target(_) => {
+                // A crosshair: the centre is the point.
+                f.push(Cmd::Fill {
+                    r: Rect::new(x - 14, y - 1, 29, 3),
+                    color,
+                });
+                f.push(Cmd::Fill {
+                    r: Rect::new(x - 1, y - 14, 3, 29),
+                    color,
+                });
+                f.push(Cmd::Outline {
+                    r: Rect::new(x - 8, y - 8, 17, 17),
+                    color,
+                });
+            }
+            align::Stage::Check(_) => {
+                f.push(Cmd::Fill {
+                    r: Rect::new(x - 4, y - 4, 9, 9),
+                    color,
+                });
+            }
+        }
+    }
+
     fn scene(&self, f: &mut Frame) {
+        if let Some(a) = &self.align {
+            self.align_scene(f, a);
+            return;
+        }
         let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);
         let mut buf = [0u8; 32];
 

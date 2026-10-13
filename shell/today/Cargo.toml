@@ -15,6 +15,7 @@ rp-shell = { path = "../core" }
 rp-hal-api = { path = "../../hal/api" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-gfx = { path = "../../drivers/gfx" }
+rp-touch-cal = { path = "../../drivers/touch-cal" }
 
 [target.'cfg(target_os = "none")'.dependencies]
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }

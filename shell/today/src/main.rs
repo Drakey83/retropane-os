@@ -17,7 +17,7 @@ mod image {
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_tsc2046::{Calibration, Tsc2046};
+    use rp_drv_tsc2046::Tsc2046;
     use rp_gfx::layer::{Layer, PlaneFormat};
     use rp_gfx::render::CpuRenderer;
     use rp_hal_pxa27x::rt;
@@ -25,6 +25,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_shell::{Action, Input, Key, Shell, Time};
+    use rp_touch_cal::Calibration;
 
     use rp_today::{H, Latency, W, clock};
 
@@ -118,6 +119,9 @@ mod image {
             "touch: GPIO24 function {cs_found} as found, now a plain GPIO (chip select)"
         );
         let mut raw_logged = 0u8;
+        // Until the align screen runs: the rough default from the owner's
+        // first taps (no settings store yet to keep a better one).
+        let mut cal = Calibration::X51V_DEFAULT;
 
         // Time: the OS timer (3.25 MHz, wraps every 22 minutes) summed into
         // milliseconds since start.
@@ -178,11 +182,11 @@ mod image {
                 None
             };
             let raw = traced.map(|(s, _)| s);
-            let now = raw.map(|s| Calibration::X51V.to_screen(s));
-            // The first touches' raw readings, for the calibration (never
-            // checked on the device before this image).
+            let now = raw.map(|s| cal.to_screen(s.x, s.y, (W as u16, H as u16)));
+            // The first touches' raw readings (diagnostics).
             if let (None, Some((s, t)), Some((x, y))) = (pen, traced, now)
                 && raw_logged < 12
+                && !shell.wants_raw()
             {
                 raw_logged += 1;
                 let _ = writeln!(
@@ -191,20 +195,35 @@ mod image {
                     s.x, t.x.first, t.x.reads, s.y, t.y.first, t.y.reads, s.z1, s.z2, x, y
                 );
             }
-            match (pen, now) {
-                (None, Some((x, y))) => {
-                    if shell.input(Input::PenDown { x, y }) != Action::Nothing {
-                        pending.get_or_insert(read_at);
-                    }
+            // The align screen takes raw readings; everything else, points.
+            let act = if shell.wants_raw() {
+                match (raw, pen) {
+                    (Some(s), _) => shell.input(Input::Raw { rx: s.x, ry: s.y }),
+                    (None, Some(_)) => shell.input(Input::RawUp),
+                    (None, None) => Action::Nothing,
                 }
-                (Some((x, y)), None) => match shell.input(Input::PenUp { x, y }) {
-                    Action::BackToLoader => back = true,
-                    Action::Nothing => {}
-                    Action::Redraw => {
-                        pending.get_or_insert(read_at);
-                    }
-                },
-                _ => {}
+            } else {
+                match (pen, now) {
+                    (None, Some((x, y))) => shell.input(Input::PenDown { x, y }),
+                    (Some((x, y)), None) => shell.input(Input::PenUp { x, y }),
+                    _ => Action::Nothing,
+                }
+            };
+            match act {
+                Action::BackToLoader => back = true,
+                Action::Calibrated(c) => {
+                    cal = c;
+                    let _ = writeln!(
+                        RunLog,
+                        "calibrated: a {} b {} c {} d {} e {} f {} (screen = (a rx + b ry + c) / 65536, (d rx + e ry + f) / 65536)",
+                        c.a, c.b, c.c, c.d, c.e, c.f
+                    );
+                    pending.get_or_insert(read_at);
+                }
+                Action::Redraw => {
+                    pending.get_or_insert(read_at);
+                }
+                Action::Nothing => {}
             }
             if now.is_some() {
                 pen = now;
