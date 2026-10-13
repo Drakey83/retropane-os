@@ -1,12 +1,20 @@
 # X51v CompactFlash slot (PXA27x PC Card socket 1)
 
-> Spec v0.1, 2026-10-12. Facts only, per [`../CLEANROOM.md`](../CLEANROOM.md).
+> Spec v0.2, 2026-10-12. Facts only, per [`../CLEANROOM.md`](../CLEANROOM.md).
 > **Sources:** (M) Intel PXA27x Developer's Manual, memory controller and
 > PC Card chapters; (C) AxDroid board code (`pxa2xx_aximx50.c`, via
 > `docs/research/hardware-inventory.md`); (CF) CompactFlash Association
 > specification (attribute memory, CIS, True IDE / memory / I/O modes);
 > (P) RetroPane's probe on the owner's X51v; (W) the handhelds.org Axim
-> X50/X51 Linux port's wiki (archived 2009), volunteers' observations.
+> X50/X51 Linux port's wiki (archived 2009), volunteers' observations;
+> (D) Dell's Windows Mobile 6.1 PC Card socket driver (`pcc_socket.dll`,
+> ROM A08, owner's device), analysed locally for its hardware accesses and
+> their order (no code from it is in this repository).
+>
+> **Status:** the CF slot works on the X51v: RetroPane powers it from off,
+> resets the card and reads it as a disk (2026-10-12). As far as we know no
+> system besides Windows Mobile ever has: the slot's power switch (two
+> CPLD bits) and reset (a third) were unpublished.
 
 The X51v's PXA27x drives two PC Card sockets: **socket 0** is the built-in
 ACX100 Wi-Fi (docs/research/hardware-inventory.md), **socket 1** is the
@@ -21,9 +29,36 @@ with no USB work.
 |---|---|---|---|
 | Socket | PXA27x PC Card socket 1 | confirmed (code) | (C) |
 | Card detect | GPIO13, **active low: 0 = card present** | confirmed | (C); reads 0 with the owner's CF card in the slot (P, owner, 2026-10-12); WM arms only the rising edge (removal) |
-| Card ready / IRQ | GPIO84 | confirmed (code) | (C); reads 1 (P); handhelds.org: "1 when CF Card is on" (slot power) (W); fell to 0 as the card died (P) |
-| Card reset | AxDroid: GPIO36, an output; **disputed**: the handhelds.org port calls GPIO36 a charger/cradle signal, and holding it changed nothing on GPIO84 (P) | doubtful | (C) vs (W); WM leaves it an output, driven 0 (P). The loader no longer drives it |
-| Card power | a CPLD bit (docs/hw/cpld.md: "CF power") | likely; which bit unknown | (C), Dell OAL to analyse |
+| Card present (second source) | CPLD `0x04` bit 1, **clear = card in** | likely | (D); (P) `0x00a0` with the card in |
+| Slot powered / ready | GPIO84, high while the slot is powered | confirmed | (D) read with the presence bit as the socket's status; (W) "1 when CF Card is on"; (P) 0 with the slot off, 1 after the power-up below, stayed high while RESET was held |
+| **Slot power** | CPLD `0x16` bit 1 (stage 1) and CPLD `0x10` bit 12 (stage 2) | confirmed | (D); (P) the slot comes up from off and stays up |
+| **Card reset** | CPLD `0x18` bit 1, set = held in reset | likely | (D); (P) attach works through it |
+| Not the reset | GPIO36: AxDroid called it CF reset; (W) calls it a charger/cradle signal; Dell's socket driver never touches it; holding it changed nothing (P) | confirmed not CF | (C), (W), (D), (P). Windows Mobile leaves it an output driven 0; RetroPane leaves it alone |
+| Wi-Fi socket (0), for contrast | status from GPIO107 and a Windows Mobile Wi-Fi state flag; power via GPIO89 and four CPLD bits (`cpld.md`) | likely | (D) |
+
+## Slot power and reset (D; confirmed on the device, P)
+
+What Windows Mobile does when a card is in the slot (CPLD `0x04` bit 1
+clear), and what RetroPane's loader now does before it touches the card:
+
+| Step | Action | Then wait |
+|---|---|---|
+| 1 | Power off: clear CPLD `0x10` bit 12, ~10 ms, clear CPLD `0x16` bit 1 | 308 ms |
+| 2 | Power on: set CPLD `0x16` bit 1, ~10 ms, set CPLD `0x10` bit 12 | 100 ms |
+| 3 | Hold RESET: set CPLD `0x18` bit 1 | 100 ms |
+| 4 | Release RESET: clear CPLD `0x18` bit 1 | until GPIO84 is high |
+
+Power-down is step 1 alone. The CPLD's registers are shared with other
+devices (SD power, Wi-Fi, the **backlight enable in `0x18` bit 2**) and
+don't read back, so each step must change only its own bit, keeping
+everyone else's from a shadow copy (`cpld.md`).
+
+**Why it failed before (P, explained):** Windows Mobile leaves the slot
+unpowered or powering down when HaRET hands over; the card then ran on
+what was left for a moment (it worked, then everything read 0 and GPIO84
+fell, 120 ms after the driver's commands), and a re-inserted card got no
+power at all (GPIO13 then read "no card"). Nothing RetroPane did to the
+card itself could revive it; switching the slot on does.
 
 ## PXA27x side (M)
 
@@ -71,7 +106,7 @@ for the driver's set-up.
   first attribute access; the pulse and wait times come from (CF) when the
   driver is written (not yet recorded here).
 
-## Driver (`drivers/cf`, `rp-drv-cf`; emulator-verified, device run pending)
+## Driver (`drivers/cf`, `rp-drv-cf`; emulator-verified, works on the device)
 
 Memory mode, the one every CF storage card must support: configuration
 index 0 in the Configuration Option Register (after a soft reset through
@@ -98,21 +133,20 @@ card reader until `cf` attaches it, read-only until `drive rw` (unlike the SD
 card), and back to empty when GPIO13 says the card left (attach it again
 with `cf`). Windows shows it as a second removable drive.
 
-Taking the card (2026-10-12, item 62): `CfCard::init` first holds the
-board's RESET line (none on the X51v until it is known: GPIO36 was
-dropped as doubtful) for 1 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
+Taking the card (2026-10-12, item 62): the loader power-cycles the slot
+(steps 1-2 above), then `CfCard::init` holds RESET (CPLD `0x18` bit 1)
+for 100 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
 without touching either window (a card in reset or busy may hold the
 bus), then reads the CIS. A card that runs out a wait during a transfer is
 **dead**: every later transfer fails at once without touching it, and the
 loader lets it go (an empty reader for the PC, so Windows stops
 retrying); `cf` takes it again from a reset. So a stuck card costs one
-timeout, never a stalled USB loop. `cf soft` takes it without the reset
-(diagnostics); `cf log` reports READY's changes and the attach and drop
-times since start-up.
+timeout, never a stalled USB loop. `cf soft` takes it the old way, with no
+power cycle or reset (diagnostics); `cf log` reports GPIO84's changes and
+the attach and drop times since start-up.
 
-Not yet: card power (the CPLD bit is unknown; the loader relies on Windows
-Mobile having left the slot powered, as HaRET hands over), the card's
-ready/IRQ line, I/O-mode cards.
+Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
+CF cards), powering the slot down when the card is removed or unused.
 
 ## Safety for experiments
 
@@ -123,7 +157,20 @@ So the probe only reads the memory controller and GPIO registers (always
 safe); attribute memory is read only once power-on and detect are
 understood, with the owner present.
 
-## Measured on the owner's X51v (2026-10-12, first device runs)
+## Measured on the owner's X51v (2026-10-12)
+
+**Result (third session, power sequence above):** the slot, dead from an
+earlier run (GPIO84 0), came up; the card identified ("ULTIMATE CF CARD
+8GB", FAT32), Windows mounted it as a drive and read 73 MB (three files)
+in 120 s, about 0.6 MB/s through the polled driver and USB full speed,
+with no errors and GPIO84 high throughout. The first attempt turned the
+backlight off (the reset write cleared `0x18` bit 2, `cpld.md` "Lesson");
+fixed the same evening, the second attach kept it on.
+
+The history below is how it was found; its readings were superseded by
+the power sequence.
+
+### First device runs
 
 Card: "ULTIMATE CF CARD 8GB", 16,250,976 sectors, MBR with one FAT32
 partition; reads and writes fine under Windows Mobile in the same slot.
@@ -168,29 +215,19 @@ public port ever powered the slot, so the power switch itself is
 unpublished. Read with GPIO84 = power, the timing above says the slot's
 **power turns off** about 120 ms after the driver's commands.
 
-**Reading:** the card works when first taken, then goes quiet within
-seconds: everything reads 0 (status, the end of a sector, READY). Together
-with the re-insert finding (GPIO13 high after a re-insert), this looks like
-the **slot losing power** shortly after RetroPane starts using it, and only
-Windows Mobile turning it back on, rather than a card left in a bad state.
-Not yet known what turns it off. Next: log GPIO84 with timestamps from the
-loader's start, to see exactly when it drops and what happened just
-before.
-
-**So (first session's reading, now in doubt):** the socket works when RetroPane is its first owner after Windows
-Mobile and breaks when a loader inherits it from an earlier RetroPane run.
-The driver assumes a fresh socket; the fix is to put the card into a known
-state whenever a loader takes the socket (a card reset), not to trust what
-the previous owner left. Second finding (a bug class, not CF only): while
-the card was stuck, image transfers over USB stalled part-way (the
-loader's loop waited on the card's long timeouts), so a dead card could
-lock the PC out of the loader. Waits on a device must never hold up the
-USB loop.
+**Reading at the time:** the slot losing power shortly after RetroPane
+started using it, which Dell's socket driver then confirmed (the power
+sequence above). A finding that stays (a bug class, not CF only): while the
+card was stuck, image transfers over USB stalled part-way (the loader's
+loop waited on the card's long timeouts), so a dead card could lock the PC
+out of the loader. Waits on a device must never hold up the USB loop; a
+card that times out is now dropped after one timeout.
 
 ## Open
 
 | Question | How to settle |
 |---|---|
 | GPIO13 polarity (present = 0 or 1?) | probe with and without a card (owner: one swap). Hint (P): WM arms only GPIO13's *rising* edge (`GRER0` bit 13 set, `GFER0` bit 13 clear); if that is the insertion event, present = 1 and the 0 read on 2026-10-12 means an empty slot |
-| Which CPLD bit powers the slot | Dell OAL analysis (nk.exe), or a careful CPLD experiment with the owner present |
+| ~~Which CPLD bit powers the slot~~ | settled: `0x16` bit 1 + `0x10` bit 12 (D, P) |
+| Power the slot down when the card leaves | Windows Mobile powers it off on removal; RetroPane leaves it on until the next `cf` |
 | Whether WM's `CIT` reflects socket 1 | probe with and without a card |

@@ -20,7 +20,7 @@
 | Keys | PXA matrix keypad 7×3; power button GPIO0 | confirmed (code) | PXA keypad controller | PXA manual | Keymap in AxDroid |
 | Backlight | PWM0 on GPIO17 | confirmed (code) | PXA PWM | PXA manual | generic |
 | SD | PXA MMC; CD GPIO12, WP GPIO27, power via CPLD | confirmed (code) | PXA native | PXA manual | `pxamci` |
-| CompactFlash | PXA PC Card socket 1; detect GPIO13, ready / slot power GPIO84 (reset GPIO36 per AxDroid: disputed, docs/hw/cf.md) | confirmed (code) | PXA native | PXA manual | `pxa2xx_aximx50.c` |
+| CompactFlash | PXA PC Card socket 1; detect GPIO13, slot power status GPIO84, power and reset through CPLD bits (docs/hw/cf.md; GPIO36 is not the reset) | confirmed (code) | PXA native | PXA manual | `pxa2xx_aximx50.c` |
 | USB client | PXA UDC; cable detect GPIO14, pull-up GPIO2 | confirmed (code) | — | PXA manual | mainline (old) |
 | IrDA | PXA STUART | confirmed (code) | — | PXA manual | — |
 | CPLD | Unknown part; 16 × 16-bit regs at CS4; power rails and LCD ID (spec: `docs/hw/cpld.md`) | confirmed (code) | Static memory bus | **None** | Partial map in AxDroid (buggy clear logic) |
