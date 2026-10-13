@@ -58,3 +58,36 @@ booted through HaRET. Details in the per-block files.
 | RAM start | `0xA8000000` | HaRET must be told (`ramaddr`); nothing at `0xA0000000` | confirmed | `memory-map.md` |
 | Framebuffer | `0x0C000000`, RGB565 480 × 640 | WM's plane, reused as-is | confirmed | `2700g.md` |
 | **MMU/cache enable hazard** | the instructions after the CPWAIT that follows `mcr c1` must sit in the **same 32-byte line** | a probe build whose CPWAIT branch was the last word of a line took an undefined-instruction fault on the first word of the next line (memory verified intact); a build where the sequence stayed inside one line ran. Same hazard as Linux's aligned `__turn_mmu_on`. RetroPane does both transitions in 32-byte-aligned assembly (`rt::init_mmu`, `handoff::launch`) | confirmed | real X51v (2026-10-11), two builds |
+
+## Software reset (2026-10-13, item 64)
+
+> **Source:** (D) the Windows Mobile 6.1 kernel's OAL (`nk.exe`, ROM A08,
+> owner's device), its `IOCTL_HAL_REBOOT` handler, analysed locally for
+> its hardware accesses and their order (no code from it is here). Not yet
+> tried on the device.
+
+Today only the stylus reset (a hardware reset) brings Windows Mobile back;
+a watchdog reset stops at Dell's factory prompt, which is in Dell's
+bootloader (flash boot block), not in the `.nb0` images. Windows Mobile's
+own software reboot uses neither:
+
+| Step | What | Confidence | Evidence |
+|---|---|---|---|
+| 1 | GPIO99 made a plain output (function 0) | likely | D |
+| 2 | `PCFR` bit 4 (GPR_EN, the PXA27x GPIO reset) set; GPIO15 driven low as an output | likely | D; probe: `PCFR` = `0x00005031` under WM, bit 4 already set |
+| 3 | CPLD `0x08` bit 1 set (through the shared shadow) | likely | D (`cpld.md`) |
+| 4 | **GPIO99 driven high**: the board resets | likely (the reset itself unconfirmed) | D; probe: GPIO99 an input reading low under WM (`GPDR3` bit 3 clear, `GPLR3` bit 3 clear) |
+
+Also in the handler, not reproduced: the display blanked first; two
+words in RAM (`0xA8001300` = 0, `0xA8001314` = `0x1A2B3C4D`, the kernel's
+own boot notes, also written by its start-up table; after RetroPane runs
+that RAM is overwritten anyway, as before a stylus reset); two byte
+writes near physical address 0 (flash; purpose unknown). The handler does
+nothing while a "reboot disabled" flag in the same RAM block is set.
+
+RetroPane: `cargo xtask reboot-wm` (loader `reboot wm`) does steps 1-4 and
+reports `RPL ERR reboot wm: no reset after 1 s` if the board is still
+running. **Device test (owner present):** expected Windows Mobile booting
+as after the stylus reset, with no factory prompt; if the prompt appears,
+the reset type is what Dell's bootloader keys on and item 64 ends as a
+dead end.

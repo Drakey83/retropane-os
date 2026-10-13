@@ -28,6 +28,15 @@ const CBW_LEN: usize = 31;
 /// How long after the host's last write a device-side write is refused.
 pub const HOST_WRITE_GRACE_MS: u32 = 2000;
 
+/// A changed medium stays away at least this long...
+pub const AWAY_MIN_MS: u32 = 2000;
+/// ...and until the host has been told "no medium" this many times (its
+/// polling noticed: Windows drops its cached view only then; a unit
+/// attention alone left it showing the old files, docs/overnight.md 65)...
+pub const AWAY_SEEN: u8 = 2;
+/// ...or at most this long, for a host that isn't looking.
+pub const AWAY_MAX_MS: u32 = 10_000;
+
 /// The USB controller's bulk endpoint pair for this interface.
 pub trait BulkPipe {
     /// Takes the next OUT packet (at most [`PACKET`] bytes) if one arrived.
@@ -95,6 +104,11 @@ struct Unit {
     attention: bool,
     /// The host ejected the medium: not present until offered again.
     ejected: bool,
+    /// The device changed the medium and it is away (not present) until
+    /// the host has noticed; when it went (set by the first poll after).
+    away: Option<Option<u32>>,
+    /// "No medium" answers the host has had while away.
+    away_seen: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,13 +230,42 @@ impl<'b> Msc<'b> {
         self.phase = Phase::Command;
     }
 
-    /// The device changed unit `lun`'s medium (a file written on the card):
-    /// the host is told on its next command and re-reads the volume. Also
-    /// offers an ejected medium again.
+    /// The device changed unit `lun`'s medium (a file written on the card,
+    /// a card in or out, its protection): the medium goes away until the
+    /// host has noticed ([`AWAY_SEEN`] "no medium" answers and
+    /// [`AWAY_MIN_MS`], or [`AWAY_MAX_MS`] with no host looking), then
+    /// comes back with a unit attention, so the host drops everything it
+    /// cached and re-reads the volume. A unit attention alone isn't enough
+    /// for Windows. Also offers an ejected medium again.
     pub fn medium_changed(&mut self, lun: usize) {
         if let Some(u) = self.units.get_mut(lun) {
-            u.attention = true;
+            u.attention = false;
             u.ejected = false;
+            u.away = Some(None);
+            u.away_seen = 0;
+        }
+    }
+
+    /// Whether unit `lun`'s changed medium is still away from the host.
+    #[must_use]
+    pub fn away(&self, lun: usize) -> bool {
+        self.units.get(lun).is_some_and(|u| u.away.is_some())
+    }
+
+    /// Brings changed media back once the host has noticed them gone.
+    fn settle_away(&mut self, now_ms: u32) {
+        for u in &mut self.units {
+            match u.away {
+                Some(None) => u.away = Some(Some(now_ms)),
+                Some(Some(since)) => {
+                    let gone = now_ms.wrapping_sub(since);
+                    if (u.away_seen >= AWAY_SEEN && gone >= AWAY_MIN_MS) || gone >= AWAY_MAX_MS {
+                        u.away = None;
+                        u.attention = true;
+                    }
+                }
+                None => {}
+            }
         }
     }
 
@@ -258,6 +301,7 @@ impl<'b> Msc<'b> {
     /// Moves as much as the pipe takes right now; call from the main loop.
     /// `now_ms` is any millisecond clock (wrapping).
     pub fn poll(&mut self, pipe: &mut dyn BulkPipe, luns: &mut [&mut dyn Storage], now_ms: u32) {
+        self.settle_away(now_ms);
         // Bounded, so the caller's loop keeps servicing everything else.
         for _ in 0..64 {
             let progressed = match self.phase {
@@ -302,6 +346,10 @@ impl<'b> Msc<'b> {
     fn fail(&mut self, sense: Sense) {
         if let Some(u) = self.units.get_mut(self.lun) {
             u.sense = sense;
+            // A changed medium's absence, seen by the host.
+            if sense == Sense::NOT_PRESENT && u.away.is_some() {
+                u.away_seen = u.away_seen.saturating_add(1);
+            }
         }
         self.failed = true;
         self.stats.failed += 1;
@@ -351,7 +399,7 @@ impl<'b> Msc<'b> {
             self.fail(Sense::MEDIUM_CHANGED);
             return;
         }
-        let present = !unit.ejected && luns[self.lun].present();
+        let present = !unit.ejected && unit.away.is_none() && luns[self.lun].present();
         let blocks = luns[self.lun].blocks();
         let read_only = luns[self.lun].read_only();
         match op {

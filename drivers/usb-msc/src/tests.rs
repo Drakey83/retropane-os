@@ -145,13 +145,34 @@ fn run_lun(
     cb: &[u8],
     data_out: &[u8],
 ) -> (Vec<u8>, Csw) {
+    run_at(msc, disk, 1000, lun, len, dir_in, cb, data_out)
+}
+
+/// TEST UNIT READY at `now_ms`: its status and the sense that follows.
+fn tur_at(msc: &mut Msc<'_>, disk: &mut Disk, now_ms: u32) -> (u8, (u8, u8, u8)) {
+    let (_, csw) = run_at(msc, disk, now_ms, 0, 0, false, &[0; 6], &[]);
+    let (d, _) = run_at(msc, disk, now_ms, 0, 18, true, &[0x03, 0, 0, 0, 18, 0], &[]);
+    (csw.status, (d[2] & 0x0F, d[12], d[13]))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_at(
+    msc: &mut Msc<'_>,
+    disk: &mut Disk,
+    now_ms: u32,
+    lun: u8,
+    len: u32,
+    dir_in: bool,
+    cb: &[u8],
+    data_out: &[u8],
+) -> (Vec<u8>, Csw) {
     let mut pipe = Pipe::default();
     pipe.out.push_back(cbw(0xC0FFEE, len, dir_in, lun, cb));
     for p in data_out.chunks(PACKET) {
         pipe.out.push_back(p.to_vec());
     }
     for _ in 0..100_000 {
-        msc.poll(&mut pipe, &mut [disk], 1000);
+        msc.poll(&mut pipe, &mut [disk], now_ms);
         if let Some(last) = pipe.ins.last()
             && last.len() == 13
             && last[..4] == 0x5342_5355u32.to_le_bytes()
@@ -412,19 +433,26 @@ fn a_refused_block_is_reported_as_write_protected() {
 }
 
 #[test]
-fn a_device_side_change_is_reported_once_and_eject_hands_the_card_back() {
+fn a_device_side_change_takes_the_medium_away_until_the_host_notices() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
     msc.medium_changed(0);
-    // INQUIRY doesn't consume the attention; the next other command does.
+    assert!(msc.away(0));
+    // INQUIRY works whatever the state.
     let (_, csw) = run(&mut msc, &mut disk, 36, true, &[0x12, 0, 0, 0, 36, 0], &[]);
     assert_eq!(csw.status, 0);
-    let (_, csw) = run(&mut msc, &mut disk, 0, false, &[0; 6], &[]);
-    assert_eq!(csw.status, 1);
-    assert_eq!(sense(&mut msc, &mut disk), (0x06, 0x28, 0x00));
-    let (_, csw) = run(&mut msc, &mut disk, 0, false, &[0; 6], &[]);
-    assert_eq!(csw.status, 0);
+    // Away: "no medium", however soon the host asks again...
+    assert_eq!(tur_at(&mut msc, &mut disk, 1000), (1, (0x02, 0x3A, 0x00)));
+    assert_eq!(tur_at(&mut msc, &mut disk, 1500), (1, (0x02, 0x3A, 0x00)));
+    // ...until it has seen that twice and AWAY_MIN_MS has passed: then
+    // back, with the change reported once.
+    assert_eq!(
+        tur_at(&mut msc, &mut disk, 1000 + AWAY_MIN_MS),
+        (1, (0x06, 0x28, 0x00))
+    );
+    assert!(!msc.away(0));
+    assert_eq!(tur_at(&mut msc, &mut disk, 1000 + AWAY_MIN_MS).0, 0);
     // Eject: not present until the device offers it again.
     run(
         &mut msc,
@@ -440,10 +468,41 @@ fn a_device_side_change_is_reported_once_and_eject_hands_the_card_back() {
     assert_eq!(sense(&mut msc, &mut disk), (0x02, 0x3A, 0x00));
     msc.medium_changed(0);
     assert!(!msc.ejected(0));
-    let (_, csw) = run(&mut msc, &mut disk, 0, false, &[0; 6], &[]);
-    assert_eq!(csw.status, 1, "unit attention first");
-    let (_, csw) = run(&mut msc, &mut disk, 0, false, &[0; 6], &[]);
-    assert_eq!(csw.status, 0);
+    assert_eq!(tur_at(&mut msc, &mut disk, 5000).0, 1, "away first");
+    assert_eq!(tur_at(&mut msc, &mut disk, 5100).0, 1);
+    assert_eq!(
+        tur_at(&mut msc, &mut disk, 5000 + AWAY_MIN_MS),
+        (1, (0x06, 0x28, 0x00)),
+        "then unit attention"
+    );
+    assert_eq!(tur_at(&mut msc, &mut disk, 5000 + AWAY_MIN_MS).0, 0);
+}
+
+/// A host that isn't polling still gets the medium back, after
+/// AWAY_MAX_MS; time alone (AWAY_MIN_MS) isn't enough while it hasn't
+/// looked, and neither is looking without the time.
+#[test]
+fn a_changed_medium_comes_back_only_once_the_host_noticed_or_after_the_ceiling() {
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(16);
+    msc.medium_changed(0);
+    // The away time starts at the first poll after the change.
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 1);
+    assert_eq!(tur_at(&mut msc, &mut disk, AWAY_MIN_MS - 1).0, 1);
+    assert!(msc.away(0), "seen twice, but too soon");
+    msc.medium_changed(0);
+    assert_eq!(tur_at(&mut msc, &mut disk, 100_000).0, 1);
+    // Unseen, well past the minimum: still away.
+    let mut pipe = Pipe::default();
+    msc.poll(&mut pipe, &mut [&mut disk], 100_000 + AWAY_MAX_MS - 1);
+    assert!(msc.away(0), "seen once only");
+    msc.poll(&mut pipe, &mut [&mut disk], 100_000 + AWAY_MAX_MS);
+    assert!(!msc.away(0), "the ceiling");
+    assert_eq!(
+        tur_at(&mut msc, &mut disk, 100_000 + AWAY_MAX_MS),
+        (1, (0x06, 0x28, 0x00))
+    );
 }
 
 #[test]

@@ -44,7 +44,7 @@ from its users.
 |---|---|---|---|---|---|
 | `0x02` | `0x0040` | Wi-Fi power sequence step 1 (AxDroid writes it at `0x00`) | `pcc_socket`, `tiacxwln` | likely | D; C (offset `0x00`) |
 | `0x04` (read) | `0x0002` | **CompactFlash card present when clear** | `pcc_socket` | likely | D; P (`0x00a0`, bit clear, with the owner's card in) |
-| `0x08` | — | written through the shared helper (no driver seen using it) | — | — | D |
+| `0x08` | `0x0002` | set by the kernel's reboot just before its board reset (GPIO99); purpose unknown | `nk.exe` (OAL) | likely | D (README.md "Software reset") |
 | `0x10` | `0x0004` | Bluetooth/serial power (guess) | `serial32`, `BTuartDMA` | guess | D |
 | `0x10` | `0x0008` | Wi-Fi power sequence step 5 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x10` | `0x1000` | **CompactFlash slot power, stage 2** | `pcc_socket` | confirmed | D; P (the slot powers up and stays up) |
@@ -93,10 +93,11 @@ between steps.
 ## Open questions
 
 - What Windows Mobile leaves on at hand-over, register by register: the
-  registers don't read back, and Windows Mobile's shared shadow copies sit
-  in its RAM at an address not yet resolved to physical. Knowing it would
-  let RetroPane start its shadow from Windows Mobile's exact state instead
-  of the bits it knows it needs.
+  registers don't read back. Windows Mobile's shared shadow copies are 32-bit
+  slots in RAM from physical `0xA8001320` (the kernel's slot at `0xA8001344`
+  is CPLD `0x08`'s; the other slots' registers not yet mapped, D). Reading
+  them at hand-over would let RetroPane start its shadow from Windows
+  Mobile's exact state, if HaRET and the loader leave that page alone.
 - The guessed rows (Bluetooth, audio, display, battery, notification):
   each needs a device experiment before a driver relies on it.
-- `0x08`: reachable through Windows Mobile's helper, no user found.
+- `0x08` bit 1: set by the kernel's reboot before its board reset; what it does.

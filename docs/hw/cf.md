@@ -145,8 +145,22 @@ timeout, never a stalled USB loop. `cf soft` takes it the old way, with no
 power cycle or reset (diagnostics); `cf log` reports GPIO84's changes and
 the attach and drop times since start-up.
 
+The slot is powered only while the loader holds a card, as Windows Mobile
+does: once the card is removed (GPIO13), dropped as dead, or fails to
+attach, the loader switches off the power it switched on (step 1 above;
+checked every loop pass, so every way of letting go is covered). Power
+Windows Mobile left on is left alone: nothing touches the socket unasked.
+`cf log` shows it as `power off`.
+
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
-CF cards), powering the slot down when the card is removed or unused.
+CF cards).
+
+The emulator (rp-v0.11.0) models the slot as the device has it: unpowered
+at start, answering only after the CPLD power sequence, reset through
+`0x18` bit 1, GPIO84 high while powered; `cargo xtask emu-cf` checks
+that `cf soft` fails, `cf` works, the backlight stays on, and a card
+pulled out leaves the slot off until `cf` takes it again (rp-v0.11.1)
+([`emulator.md`](emulator.md)).
 
 ## Safety for experiments
 
@@ -229,5 +243,5 @@ card that times out is now dropped after one timeout.
 |---|---|
 | GPIO13 polarity (present = 0 or 1?) | probe with and without a card (owner: one swap). Hint (P): WM arms only GPIO13's *rising* edge (`GRER0` bit 13 set, `GFER0` bit 13 clear); if that is the insertion event, present = 1 and the 0 read on 2026-10-12 means an empty slot |
 | ~~Which CPLD bit powers the slot~~ | settled: `0x16` bit 1 + `0x10` bit 12 (D, P) |
-| Power the slot down when the card leaves | Windows Mobile powers it off on removal; RetroPane leaves it on until the next `cf` |
+| ~~Power the slot down when the card leaves~~ | done (2026-10-13, emulator-tested): the loader switches it off whenever no card is attached. Not yet seen on the device |
 | Whether WM's `CIT` reflects socket 1 | probe with and without a card |

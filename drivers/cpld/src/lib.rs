@@ -16,6 +16,9 @@ pub mod reg {
     pub const PWR0: usize = 0x00;
     /// Status (read): bit 1 clear while a CompactFlash card is in.
     pub const STATUS04: usize = 0x04;
+    /// Bit 1 set by Windows Mobile's reboot just before its board reset
+    /// (purpose unknown; docs/hw/cpld.md).
+    pub const CTL08: usize = 0x08;
     /// Wi-Fi power (bits 3, 13), CompactFlash power stage 2 (bit 12).
     pub const PWR10: usize = 0x10;
     /// Audio amplifier (bit 3, guess).

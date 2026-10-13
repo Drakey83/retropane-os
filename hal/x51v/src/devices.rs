@@ -157,6 +157,33 @@ pub fn take_cf() -> Option<(Mmio, Mmio)> {
     Some(unsafe { (Mmio::new(attr, 0x1000), Mmio::new(common, 0x1000)) })
 }
 
+/// Power manager `PCFR` and its GPIO reset enable (docs/hw/README.md
+/// "Software reset").
+const PCFR: usize = 0x00F0_001C;
+const PCFR_GPR_EN: u32 = 1 << 4;
+/// `GAFR3_L` (GPIO96-111 functions): GPIO99's field is bits 7:6.
+const GAFR3_L: usize = 0x00E0_006C;
+const GAFR3_L_GPIO99: u32 = 3 << 6;
+
+/// Readies the board's software reset as Windows Mobile's reboot does
+/// (docs/hw/README.md "Software reset"): the PXA27x GPIO reset enabled
+/// (`PCFR` GPR_EN) and GPIO99 a plain GPIO. The caller then drives GPIO15
+/// low and GPIO99 high (outputs), with CPLD `0x08` bit 1 set first.
+pub fn arm_board_reset() -> Option<()> {
+    let p = va(region("peripherals")?.base as usize) as *mut u32;
+    // SAFETY: power manager and GPIO registers (PXA27x memory map,
+    // identity-mapped device memory); read-modify-write of two registers
+    // on a single core with nothing else changing them meanwhile, right
+    // before the board is reset.
+    unsafe {
+        let pcfr = p.byte_add(PCFR);
+        pcfr.write_volatile(pcfr.read_volatile() | PCFR_GPR_EN);
+        let gafr = p.byte_add(GAFR3_L);
+        gafr.write_volatile(gafr.read_volatile() & !GAFR3_L_GPIO99);
+    }
+    Some(())
+}
+
 /// Where every image is loaded and started (HaRET's `ramaddr` + 32 KiB).
 pub const IMAGE_BASE: usize = 0xA800_8000;
 /// The most an image may occupy: up to the reserved vector page (boot/link.x).
