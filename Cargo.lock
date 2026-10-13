@@ -446,6 +446,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-shell"
+version = "0.0.0"
+dependencies = [
+ "rp-draw",
+ "rp-gfx",
+]
+
+[[package]]
 name = "rp-threads"
 version = "0.0.0"
 dependencies = [
