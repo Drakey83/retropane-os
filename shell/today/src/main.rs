@@ -36,6 +36,8 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// OS timer ticks per millisecond.
     const TICKS_MS: u32 = 3250;
+    /// Samples the recorder keeps (~22 bytes each, in the 64 KiB run log).
+    const RECORD: u32 = 2500;
 
     static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
 
@@ -118,7 +120,8 @@ mod image {
             RunLog,
             "touch: GPIO24 function {cs_found} as found, now a plain GPIO (chip select)"
         );
-        let mut raw_logged = 0u8;
+        // Samples recorded into the run log so far (see RECORD).
+        let mut recorded = 0u32;
         // Until the align screen runs: the rough default from the owner's
         // first taps (no settings store yet to keep a better one).
         let mut cal = Calibration::X51V_DEFAULT;
@@ -193,36 +196,28 @@ mod image {
             }
             let ev = filter.sample(raw.map(|s| (s.x, s.y)), (now_ms & 0xFFFF_FFFF) as u32);
             let map = |x: u16, y: u16| cal.to_screen(x, y, (W as u16, H as u16));
-            // The first touches' samples (diagnostics): each tap's first
-            // sample after its landing, with the settling curves.
-            if let (Pen::Down(..), Some((s, t))) = (ev, traced)
-                && raw_logged < 12
-                && !shell.wants_raw()
-            {
-                raw_logged += 1;
-                let (x, y) = map(s.x, s.y);
-                let _ = writeln!(
-                    RunLog,
-                    "touch {raw_logged}: x {} (curve {} {} {} {} {} {}) y {} (curve {} {} {} {} {} {}) z1 {} z2 {} -> screen {} {}",
-                    s.x,
-                    t.x.curve[0],
-                    t.x.curve[1],
-                    t.x.curve[2],
-                    t.x.curve[3],
-                    t.x.curve[4],
-                    t.x.curve[5],
-                    s.y,
-                    t.y.curve[0],
-                    t.y.curve[1],
-                    t.y.curve[2],
-                    t.y.curve[3],
-                    t.y.curve[4],
-                    t.y.curve[5],
-                    s.z1,
-                    s.z2,
-                    x,
-                    y
-                );
+            // The recorder (2026-10-13): every sample while the pen is down,
+            // with the filter's verdict, into the run log, so the filter is
+            // tuned on the PC against the owner's real taps instead of on
+            // the device by guesswork. Up to RECORD samples (~25 s).
+            if (raw.is_some() || ev != Pen::Nothing) && recorded < RECORD {
+                recorded += 1;
+                let what = match ev {
+                    Pen::Nothing => 'n',
+                    Pen::Down(..) => 'D',
+                    Pen::Move(..) => 'M',
+                    Pen::Hold(..) => 'H',
+                    Pen::Up(..) => 'U',
+                };
+                let ms = (now_ms & 0xFFFF_FFFF) as u32;
+                match raw {
+                    Some(s) => {
+                        let _ = writeln!(RunLog, "R {ms} {} {} {} {} {what}", s.x, s.y, s.z1, s.z2);
+                    }
+                    None => {
+                        let _ = writeln!(RunLog, "R {ms} - - - - {what}");
+                    }
+                }
             }
             // The align screen takes stable raw samples; everything else,
             // points.
@@ -311,17 +306,14 @@ mod image {
             // Never a loop without a pause (2026-10-13: sampling back to
             // back while the pen-detect line read "down" hung touch on the
             // device; sampling holds that line low, so it never recovered).
-            // While a touch is in progress: every 1 ms (the filter needs
-            // three agreeing samples; 5 ms pauses made the first answer
-            // take a median of 54 ms). The line saying "down" with no touch
-            // in progress: one look after 2 ms, and pressure decides.
+            // While a touch is in progress, or the line says so: every 5 ms
+            // (the build the owner called "much better"; 1 ms was much
+            // worse). Pressure decides whether a touch is in progress.
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if filter.down() {
-                1
-            } else if touch.pen_down() {
-                2
+            let wait_ms: u32 = if filter.down() || touch.pen_down() {
+                5
             } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20
             } else if shell.notice().is_some() {

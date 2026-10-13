@@ -53,14 +53,14 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
 /// settling time, then an average, doesn't depend on the curve's shape.
 pub const SETTLE_CONVERSIONS: u16 = 128;
 
-/// Settling per channel, from the measured curves (2026-10-13): once the
-/// stylus has landed (the touch filter waits for that), both channels hold
-/// their value after 16 conversions; X gets 64, Y 32, for margin. (While
-/// it lands X creeps for tens of ms: no settling time fixes that.)
+/// Settling per channel (2026-10-13): Y holds its value after 16
+/// conversions; X gets 256, the setting of the build the owner called
+/// "much better" (64 with faster sampling was much worse; recordings of
+/// real taps will settle the question rather than more guesses).
 #[must_use]
 pub const fn settle_for(ch: u8) -> u16 {
     match ch {
-        channel::X => SETTLE_CONVERSIONS / 2,
+        channel::X => 2 * SETTLE_CONVERSIONS,
         channel::Y => SETTLE_CONVERSIONS / 4,
         _ => SETTLE_CONVERSIONS / 8,
     }
@@ -328,9 +328,7 @@ mod tests {
         let s = ts.settle(channel::X);
         assert_eq!(s.value, 2000);
         assert_eq!(s.curve[0], 195);
-        assert!(s.curve[1] < s.curve[2] && s.curve[3] < s.curve[4]);
-        // Past its settling time the curve isn't recorded.
-        assert_eq!(s.curve[5], 0);
+        assert!(s.curve[1] < s.curve[2] && s.curve[4] < s.curve[5]);
     }
 
     #[test]
