@@ -34,7 +34,7 @@ mod image {
     use rp_drv_tsc2046::Tsc2046;
     use rp_hal_pxa27x::rt;
     use rp_hal_pxa27x::soc::irq;
-    use rp_touch_cal::{Calibration, Filter, Pen};
+    use rp_touch_cal::{Calibration, Filter, Pen, Sample};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -276,7 +276,11 @@ mod image {
                     // stays disarmed while we poll.
                     let pen_event = pen_irq.take();
                     let raw = if pen_event || filter.down() || touch.pen_down() {
-                        touch.sample().map(|t| (t.x, t.y))
+                        touch.sample().map(|t| Sample {
+                            x: t.x,
+                            y: t.y,
+                            z1: t.z1,
+                        })
                     } else {
                         None
                     };

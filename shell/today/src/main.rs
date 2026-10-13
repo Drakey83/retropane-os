@@ -25,7 +25,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_shell::{Action, Input, Key, Shell, Time};
-    use rp_touch_cal::{Calibration, Filter, Pen};
+    use rp_touch_cal::{Calibration, Filter, Pen, Sample};
 
     use rp_today::{H, Latency, W, clock};
 
@@ -144,6 +144,8 @@ mod image {
         // Times the pen-detect line said "down" with no pressure behind it
         // (diagnostics: the line recovering slowly after a sample).
         let mut phantom = 0u32;
+        // Touches found by the pen interrupt, and by the idle check.
+        let (mut found_by_irq, mut found_by_poll) = (0u32, 0u32);
         let mut pending: Option<u32> = None; // when the input being answered was read
 
         loop {
@@ -193,8 +195,23 @@ mod image {
             let raw = traced.map(|(s, _)| s);
             if raw.is_some() && !filter.down() {
                 landed_ticks = Some(read_at);
+                // Which found this touch: the pen interrupt, or the idle
+                // check of the line (diagnostics: touch went dead after a
+                // hold on the device, as if the interrupt were missed).
+                if pen_event {
+                    found_by_irq += 1;
+                } else {
+                    found_by_poll += 1;
+                }
             }
-            let ev = filter.sample(raw.map(|s| (s.x, s.y)), (now_ms & 0xFFFF_FFFF) as u32);
+            let ev = filter.sample(
+                raw.map(|s| Sample {
+                    x: s.x,
+                    y: s.y,
+                    z1: s.z1,
+                }),
+                (now_ms & 0xFFFF_FFFF) as u32,
+            );
             let map = |x: u16, y: u16| cal.to_screen(x, y, (W as u16, H as u16));
             // The recorder (2026-10-13): every sample while the pen is down,
             // with the filter's verdict, into the run log, so the filter is
@@ -274,7 +291,8 @@ mod image {
                 let _ = writeln!(
                     RunLog,
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
-                     (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times"
+                     (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times; \
+                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}"
                 );
                 before.restore(d.regs());
                 rp_hal_x51v::devices::return_to_loader();
@@ -319,8 +337,11 @@ mod image {
             } else if shell.notice().is_some() {
                 100
             } else {
-                // The next minute.
-                (60_000 - (now_ms % 60_000) as u32).max(1)
+                // The next minute, but look at the pen line every 50 ms
+                // too: a touch must never depend on one interrupt alone
+                // (on the device touch went dead after a hold, as if one
+                // were missed; the counts in the run log will say).
+                (60_000 - (now_ms % 60_000) as u32).clamp(1, 50)
             };
             if !filter.down() {
                 // Re-arm pen-down, then re-check the level: an edge while it
