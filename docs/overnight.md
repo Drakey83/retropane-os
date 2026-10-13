@@ -1175,6 +1175,19 @@ on the host or in the emulator first.
     **Left:** (a) the emulator model (docs/hw/emulator.md rows), then a
     fork release; power the slot down on removal. CF icon done (owner
     renamed both cards "X51V SD" and "X51V CF" from Windows; icons show).
+    **(a) done (2026-10-12, rp-v0.11.0):** the fork's CPLD is write-only
+    latches with outputs (CF power, CF reset, backlight), reads give the
+    measured status values; the CF slot starts unpowered and answers only
+    through the power sequence; `0x18` bit 2 clear blanks the screen. The
+    CF check (`cargo xtask emu-cf`) needs `cf soft` to fail and the
+    backlight to stay on; two new emulator mutants (power-on removed,
+    backlight enable removed) are killed. **Power-down done (2026-10-13,
+    rp-v0.11.1):** the loader switches the slot off whenever no card is
+    attached (removed, dead, failed attach); the fork's `cfslot` switch
+    pulls the card out in tests, and the CF check needs GPIO84 to stay low
+    on re-insert, then `cf` to take it again (mutant killed). Also fixed:
+    `cf log`'s reply ended in a bare LF (a shell heredoc had turned its
+    `\r\n` into a real newline). Left: try power-down on the device.
 
 63. **Drive icons for the cards**: owner wants the "Memory cards" icons
     from puntodepartida.com (no licence stated: all rights reserved). For
@@ -1201,6 +1214,16 @@ on the host or in the emulator first.
     something does: `cargo xtask reboot-wm`, tested on the device. If
     nothing does: write that up as a dead end and stop. Clean-room rules
     apply (facts only into docs/hw).
+    **Lead found (2026-10-13), device test next:** the factory prompt isn't
+    in the `.nb0` images (it's Dell's bootloader in the flash boot block),
+    but Windows Mobile's own reboot (`IOCTL_HAL_REBOOT` in the kernel's OAL)
+    resets the board through GPIO99, not the watchdog: GPIO99 output,
+    `PCFR` GPR_EN, GPIO15 low, CPLD `0x08` bit 1, GPIO99 high
+    (docs/hw/README.md "Software reset"). `cargo xtask reboot-wm` does the
+    same; emulator check covers the "no reset" path. **Owner at the Axim:**
+    run it; Windows Mobile without the prompt = done (then model GPIO99 in
+    the fork); prompt = dead end, written up. Also found: WM's CPLD shadow
+    slots live in RAM from `0xA8001320` (cpld.md).
 
 65. **Windows keeps a stale view after the loader writes the card**
     (found 2026-10-12): after `cargo xtask put`, Explorer and `dir` still
@@ -1210,6 +1233,16 @@ on the host or in the emulator first.
     write (`put`, `rm`, `install`), take the medium away long enough for
     Windows to notice, then give it back, with an emulator check that the
     PC's view matches the card afterwards.
+    **Done in the emulator (2026-10-13), not yet seen on the device:** the
+    fix is in `rp-usb-msc` itself, so every caller gets it: `medium_changed`
+    now takes the medium away ("no medium") until the host has been told so
+    twice and 2 s have passed (10 s ceiling with no host asking), then
+    reports "medium changed" once. Unit tests for both paths; the drive
+    check polls like Windows and needs away, changed, ready after `drive
+    ro`, `drive rw` and the device's `put`, then the new file. **Device
+    check:** `cargo xtask put` with Explorer open on the card: the drive
+    should blink away for ~2 s and come back showing the new file. If
+    Windows still shows the old root, raise `AWAY_MIN_MS` / `AWAY_SEEN`.
 
 59. **No emulator-only image on the device**: **done (emulator).** Every
     image's budget now says what it does under the loader (`OnDevice`:

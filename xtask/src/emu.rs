@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.10.1";
+pub const QEMU_RELEASE: &str = "rp-v0.11.1";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -1322,10 +1322,24 @@ fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String
     Ok(format!("if={interface},format=raw,file={p}"))
 }
 
+/// `cargo xtask emu-cf`: the CompactFlash check on its own.
+pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &dir.join("rp-loader.bin"),
+    )?;
+    boot_loader_cf(root)
+}
+
 /// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1,
 /// identified through the loader (`cf`): its capacity, its write cache
 /// turned off, its partition seen; and no SD card, so the CF path stands
-/// alone.
+/// alone. The emulated slot starts unpowered, as Windows Mobile hands it
+/// over: `cf soft` (no power sequence) must fail, `cf` must power it
+/// through the CPLD, and the CPLD writes must leave the backlight on (its
+/// registers don't read back, docs/hw/cpld.md).
 pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    CF card: skipped (this emulator has no USB controller model)");
@@ -1368,6 +1382,14 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 r.status
             ));
         }
+        // The slot as Windows Mobile leaves it: unpowered. Taking the card
+        // without the power sequence reads nothing (as on the device).
+        s.write_all(&rp_loadproto::control_frame("cf soft"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, " now)", 20)?;
+        if !reply.contains("RPL ERR cf:") || !reply.contains("GPIO84 0 before, 0 now") {
+            return Err(format!("cf soft on an unpowered slot: {reply:?}"));
+        }
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "model", 20)?;
@@ -1379,6 +1401,16 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, want, 20)?;
+        // The power sequence and the card's reset went through the CPLD,
+        // whose registers don't read back: the backlight enable sharing
+        // register 0x18 with RESET must still be on.
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        if device_has_runtime(&mut mon, "/machine/peripheral/mbx2700g", "backlight") {
+            let lit = mon.query("qom-get /machine/peripheral/mbx2700g backlight")?;
+            if lit != "true" {
+                return Err(format!("CF: the backlight went off ({lit})"));
+            }
+        }
         // Now the PC sees it: medium changed once, then ready.
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -1426,6 +1458,27 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         if back != via_drive {
             return Err("CF unit: read-back differs".into());
         }
+        // Pulled out: the loader lets the card go and switches the slot
+        // off, so the card pushed back in stays unpowered (GPIO84 low)
+        // until `cf` takes it again.
+        if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
+            mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
+            std::thread::sleep(Duration::from_secs(3));
+            mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
+            std::thread::sleep(Duration::from_secs(1));
+            s.write_all(&rp_loadproto::control_frame("cf log"))
+                .map_err(|e| e.to_string())?;
+            // The reply ends its event list with ",\r\n" (the idle loader's
+            // READY lines don't).
+            let log = usb_read_until(&mut s, ",\r\n", 10)?;
+            let after_off = log.rsplit("power off").next().unwrap_or_default();
+            if !log.contains("power off") || after_off.contains("ready 1") {
+                return Err(format!("CF removed: slot not powered off: {log:?}"));
+            }
+            s.write_all(&rp_loadproto::control_frame("cf"))
+                .map_err(|e| e.to_string())?;
+            usb_read_until(&mut s, want, 20).map_err(|e| format!("CF re-inserted: {e}"))?;
+        }
         Ok(())
     };
     boot(
@@ -1447,7 +1500,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: identified in socket 1 (16 MB, write cache off), then the PC's second drive: read, refused while read-only, written after drive rw, checked in the image"
+        "    CF card OK: unpowered slot refused without the power sequence; powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off), then the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, taken again after re-insert"
     );
     Ok(())
 }
@@ -2066,6 +2119,39 @@ impl rp_hal_api::BlockDevice for Bot {
     }
 }
 
+/// After the device changed the medium: polls like Windows (TEST UNIT
+/// READY every 250 ms) and needs the medium to go away ("no medium" at
+/// least once: Windows drops its cached view only then, item 65), then come
+/// back with "medium changed" exactly once, then be ready.
+fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut seq = Vec::new();
+    loop {
+        let r = bot.command(&[0; 6], 0, false, &[])?;
+        let s = if r.status == 0 {
+            (0, 0, 0)
+        } else {
+            bot.sense()?
+        };
+        if seq.last() != Some(&s) {
+            seq.push(s);
+        }
+        if r.status == 0 {
+            break;
+        }
+        if Instant::now() > deadline {
+            return Err(format!("drive after {after}: never ready again ({seq:x?})"));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    if seq != [(0x02, 0x3A, 0x00), (0x06, 0x28, 0x00), (0, 0, 0)] {
+        return Err(format!(
+            "drive after {after}: wanted away, medium changed, ready; got {seq:x?}"
+        ));
+    }
+    Ok(())
+}
+
 /// Reads `name` from the card through the drive.
 fn drive_file(bot: &mut Bot, name: &str) -> Result<Vec<u8>, String> {
     let mut vol = rp_fat::Volume::mount(&mut *bot, rp_fat::format::PARTITION_START)
@@ -2197,10 +2283,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
                 .write_all(&rp_loadproto::control_frame(cmd))
                 .map_err(|e| e.to_string())?;
             usb_read_until(&mut serial, reply, 10)?;
-            let r = bot.command(&[0; 6], 0, false, &[])?;
-            if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
-                return Err(format!("drive: no 'medium changed' after {cmd}"));
-            }
+            expect_away_then_back(&mut bot, cmd)?;
             if write_protected(&mut bot)? != wp {
                 return Err(format!("drive: protection wrong after {cmd}"));
             }
@@ -2232,11 +2315,9 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         serial.write_all(&put).map_err(|e| e.to_string())?;
         let r = usb_read_until(&mut serial, "RPL OK", 30)?;
         let _ = r;
-        // The drive reports the change once, then works.
-        let r = bot.command(&[0; 6], 0, false, &[])?;
-        if r.status != 1 || bot.sense()? != (0x06, 0x28, 0x00) {
-            return Err("drive: no 'medium changed' after the device wrote".into());
-        }
+        // The medium goes away until the PC has noticed, then comes back
+        // changed: the PC's view then matches the card.
+        expect_away_then_back(&mut bot, "the device's put")?;
         if drive_file(&mut bot, "retropane.bin")? != via_serial {
             return Err("drive: doesn't show the file the device wrote".into());
         }
@@ -2504,6 +2585,16 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             }
             eprintln!("    power button OK: press turned the screen off, the next back on at 60%");
         }
+        // `reboot wm`: the emulator doesn't model GPIO99 as a reset (not yet
+        // confirmed on the device), so the loader must say so and carry on.
+        s.write_all(&rp_loadproto::control_frame("reboot wm"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK reboot wm", 10)?;
+        usb_read_until(&mut s, "RPL ERR reboot wm: no reset after 1 s", 10)?;
+        s.write_all(&rp_loadproto::control_frame("backlight 100"))
+            .map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK backlight 100%", 10)?;
+        eprintln!("    reboot wm OK: GPIO99 driven, no reset modelled, the loader carried on");
         Ok(())
     };
     boot(

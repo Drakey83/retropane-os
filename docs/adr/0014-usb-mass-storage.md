@@ -56,10 +56,15 @@ model with a built-in host that enumerates like Windows.
    - **eject** in Windows (START STOP UNIT) hands the card back to the
      device: the LUN reports "medium not present" until the device has
      changed the card and offers it again;
-   - after the loader writes a file itself (`cargo xtask put`), the LUN
-     reports **UNIT ATTENTION, medium may have changed** on the next command,
-     so Windows drops its cache and re-reads the volume, as when a card is
-     swapped in a reader;
+   - after the device changes the medium (the loader writes a file itself,
+     `cargo xtask put`, `rm`, card repair; a card in or out; `drive rw/ro`)
+     the medium goes **away**: "medium not present" until the host has been
+     told so twice and 2 s have passed (at most 10 s if it isn't asking),
+     then **UNIT ATTENTION, medium may have changed** once, as when a card
+     is pulled from a reader and pushed back. Windows drops its cached view
+     only once it has seen the medium gone: a unit attention alone left
+     Explorer showing the old root (item 65, 2026-10-12; amended
+     2026-10-13);
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.

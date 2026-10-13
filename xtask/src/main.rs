@@ -75,6 +75,8 @@ commands:
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
+  reboot-wm reset the X51v back into Windows Mobile the way its own
+            reboot does (GPIO99; item 64, not yet tried on the device)
   tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
             reply names the output and the CPU's busy share)
   device-check  the read-only checks waiting for the device, in one run
@@ -86,6 +88,8 @@ commands:
             pixel-exact): run it before `load rp-blend`
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
+  emu-cf    only the CompactFlash check (slot power through the CPLD,
+            the card as the PC's second drive)
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
             --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
@@ -99,7 +103,7 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-crash" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-crash" | "emu-cf" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -191,6 +195,10 @@ fn main() -> ExitCode {
             eprintln!("==> cpld");
             usb::command(&workspace_root(), "cpld")
         }
+        "reboot-wm" => {
+            eprintln!("==> reboot wm");
+            usb::command(&workspace_root(), "reboot wm")
+        }
         "tone" => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             eprintln!("==> tone {}", rest.join(" "));
@@ -246,6 +254,7 @@ fn run_step(step: &str) -> Result {
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
+        "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))

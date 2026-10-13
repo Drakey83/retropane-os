@@ -180,12 +180,13 @@ mod image {
     /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
     const CF_DETECT: u8 = 13;
     /// CompactFlash slot power / READY (docs/hw/cf.md): high while the
-    /// slot is powered and the card ready (AxDroid calls it READY, the
-    /// handhelds.org port "1 when CF card is on"; on the device it fell
-    /// as the card died). The card's RESET line is unknown: AxDroid's
-    /// GPIO36 is, per the handhelds.org port, a charger signal, and holding
-    /// it changed nothing on the device, so the loader leaves it alone.
+    /// slot is powered (CPLD `0x16` bit 1 + `0x10` bit 12). The card's
+    /// RESET is CPLD `0x18` bit 1; AxDroid's GPIO36 isn't CF at all.
     const CF_READY: u8 = 84;
+    /// Board reset (docs/hw/README.md "Software reset"): driven high by
+    /// Windows Mobile's own reboot, after GPIO15 is driven low.
+    const BOARD_RESET: u8 = 99;
+    const BOARD_RESET_PREP: u8 = 15;
     /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
     /// unconfirmed on the device, so changes are logged with the level).
     const HP_DETECT: u8 = 83;
@@ -916,6 +917,23 @@ mod image {
         }
     }
 
+    /// Resets the board the way Windows Mobile's own reboot does
+    /// (docs/hw/README.md "Software reset"): CPLD `0x08` bit 1, the GPIO
+    /// reset enabled, GPIO15 low, then GPIO99 high. Unlike the watchdog's
+    /// reset this should bring Windows Mobile back without Dell's factory
+    /// prompt (item 64; not yet tried on the device). Returns only if
+    /// nothing reset within 1 s, with GPIO99 back low.
+    fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut Cpld<Mmio>>) {
+        if let Some(cpld) = cpld {
+            cpld.set(rp_drv_cpld::reg::CTL08, 0x0002);
+        }
+        let _ = devices::arm_board_reset();
+        gpio.make_output(BOARD_RESET_PREP, false);
+        gpio.make_output(BOARD_RESET, true);
+        rt::delay_us(1_000_000);
+        gpio.write(BOARD_RESET, false);
+    }
+
     /// Powers the CF slot from off, as Windows Mobile's socket driver does
     /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
     /// is then reset by `CfCard::init` through the RESET line.
@@ -942,6 +960,10 @@ mod image {
         /// level as last polled, and the first events with their time.
         ready: bool,
         events: CfEvents,
+        /// The loader switched the slot's power on (`cf`) and hasn't
+        /// switched it off yet. Power left on by Windows Mobile isn't ours
+        /// to switch off unasked: nothing touches the socket at start-up.
+        powered: bool,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -965,6 +987,7 @@ mod image {
                     b'0' => "ready 0",
                     b'1' => "ready 1",
                     b'A' => "attached",
+                    b'O' => "power off",
                     _ => "dead",
                 };
                 let _ = write!(out, " {ms}ms {what},");
@@ -1010,6 +1033,24 @@ mod image {
                 self.release("stopped answering");
                 true
             }
+        }
+
+        /// The slot is powered only while it holds a card, as Windows Mobile
+        /// does: once the card is removed, dropped as dead, or fails to
+        /// attach, the power we switched on goes off (CPLD `0x10` bit 12,
+        /// 10 ms, `0x16` bit 1). Checked every loop pass, so every way of
+        /// letting the card go is covered; `true` when it switched off now.
+        fn power_down_if_unused(&mut self, cpld: Option<&mut Cpld<Mmio>>) -> bool {
+            if !self.powered || matches!(self.slot, CfSlot::Card(_)) {
+                return false;
+            }
+            let Some(cpld) = cpld else {
+                return false;
+            };
+            cpld.set_cf_power(false, &mut BusyWait);
+            self.powered = false;
+            self.events.push(b'O');
+            true
         }
 
         /// Lets the card go, keeping the socket's windows for the next `cf`.
@@ -1105,6 +1146,7 @@ mod image {
             let taken = match cpld {
                 Some(cpld) if !soft => {
                     cf_power_cycle(cpld);
+                    lun.powered = true;
                     CfCard::init(attr, common, &mut CfSocketLines { gpio, cpld }, &mut delay)
                 }
                 _ => CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay),
@@ -1777,6 +1819,7 @@ mod image {
                 at: [(0, 0); 12],
                 len: 0,
             },
+            powered: false,
         };
         cf.events.push(if cf.ready { b'1' } else { b'0' });
         let mut power = PowerButton::new(&mut gpio);
@@ -1788,6 +1831,8 @@ mod image {
         let mut layout_resets = udc.stats().resets;
         // The SD guard needs rebuilding (something may have written the card).
         let mut guard_due = false;
+        // `reboot wm`: when to reset (after the reply has reached the PC).
+        let mut reboot_at: Option<u32> = None;
         let _ = writeln!(
             log,
             "SD card: {} (a drive on the PC)",
@@ -1853,6 +1898,21 @@ mod image {
             if cf.drop_if_dead() {
                 msc.medium_changed(1);
                 let _ = writeln!(log, "CF card stopped answering: let go (cf takes it again)");
+            }
+            if reboot_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
+                reboot_at = None;
+                let _ = writeln!(log, "reboot wm: GPIO99 high");
+                board_reset(&mut gpio, cpld.as_mut());
+                // Still here: the line did nothing (or isn't the reset).
+                let _ = writeln!(log, "reboot wm: no reset after 1 s");
+                send(
+                    &mut uart,
+                    &mut udc,
+                    "RPL ERR reboot wm: no reset after 1 s (GPIO99 put back low)\r\n",
+                );
+            }
+            if cf.power_down_if_unused(cpld.as_mut()) {
+                let _ = writeln!(log, "CF slot powered off (no card attached)");
             }
             if udc.host_open() {
                 if let Some(run) = pending.take() {
@@ -1998,13 +2058,14 @@ mod image {
                             let _ = status.write_str("\r\n");
                             status.as_str()
                         }
+                        Ok(b"reboot wm") => {
+                            reboot_at = Some(now_ms().wrapping_add(300));
+                            "RPL OK reboot wm: resetting into Windows Mobile in 0.3 s\r\n"
+                        }
                         Ok(b"cf log") => {
                             let _ = status.write_str("RPL OK cf:");
                             cf.events.write(&mut status);
-                            let _ = status.write_str(
-                                "
-",
-                            );
+                            let _ = status.write_str("\r\n");
                             status.as_str()
                         }
                         Ok(c @ (b"cf" | b"cf soft")) => {

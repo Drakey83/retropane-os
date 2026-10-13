@@ -159,6 +159,38 @@ pub const MUTANTS: &[Mutant] = &[
         to: "    i.route_fiq(crate::soc::irq::OST_4_11, false);",
         check: Check::Emu(crate::emu::boot_loader_run_limit),
     },
+    Mutant {
+        name: "CF slot never powered on (the card reads nothing, as on the device)",
+        file: "boot/loader/src/main.rs",
+        from: "        cpld.set_cf_power(true, &mut BusyWait);",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "backlight enable not set before the CPLD's 0x18 is written (CF reset darkens the screen)",
+        file: "boot/loader/src/main.rs",
+        from: "        cpld.set_backlight_enable(true);",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "medium change reported as a unit attention only (Windows keeps its stale view)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "            u.away = Some(None);",
+        to: "            u.attention = true;",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_device_side_change_takes_the_medium_away",
+        ]),
+    },
+    Mutant {
+        name: "CF slot left powered after the card is removed",
+        file: "boot/loader/src/main.rs",
+        from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",
+        to: "            self.powered = false;",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
 ];
 
 /// Puts a file back when dropped.
