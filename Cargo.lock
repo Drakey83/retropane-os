@@ -247,6 +247,7 @@ dependencies = [
 name = "rp-gfx"
 version = "0.0.0"
 dependencies = [
+ "rp-draw",
  "rp-hal-mem",
 ]
 

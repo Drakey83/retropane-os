@@ -26,6 +26,7 @@
 
 pub mod dirty;
 pub mod layer;
+pub mod render;
 
 /// A 16-bit RGB565 pixel.
 pub type Px = u16;
