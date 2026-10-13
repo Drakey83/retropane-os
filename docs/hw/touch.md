@@ -60,6 +60,27 @@ refine it per device.
 **Latency (P):** touch to flush, worst 35 ms over 5 answered taps
 (the promise: 50 ms).
 
+**The landing (P, later runs the same day).** Even 128 settling
+conversions (~1.3 ms) left the X channel creeping (2535, 2627, 2716,
+2864 at 16, 32, 64, 128 conversions) for the first tens of milliseconds
+of a touch, by a different amount each tap: the contact firming up as the
+stylus lands, not a capacitor charging. And a sample taken as the stylus
+lifted read X = 0 (the top of the screen). Taps drifted upward at random.
+After the landing, both channels hold their value within 16 conversions
+(X 2314, 2326, 2327, 2325). So: `rp_touch_cal::Filter` ignores the first
+15 ms of a touch, reports a position only when three consecutive samples
+agree (within 14 raw), and lifts at the last stable position; the driver
+settles X for 64 conversions and Y for 32, then averages 8; samples are
+taken back to back while the pen is down (with 5 ms sleeps between them
+the first answer took a median of 54 ms). The owner: "much better".
+
+**Calibration (P):** the align screen (affine fit, `rp-touch-cal`), four
+alignments in a row agreeing within 0.3% in scale and ~9 px in vertical
+offset. The result is `Calibration::X51V_DEFAULT`: the X channel runs
+from ~195 at the top to ~3207 at the bottom (the earlier 99..2741 came
+from corner taps that weren't at the edges), the Y channel ~3696 at the
+left to ~330 at the right, with a slight skew.
+
 ## TSC2046 protocol (D)
 
 SPI mode 0. A conversion takes 24 clocks; with 8-bit frames that's three transfers:

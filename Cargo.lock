@@ -313,6 +313,7 @@ dependencies = [
  "rp-drv-tsc2046",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-touch-cal",
 ]
 
 [[package]]

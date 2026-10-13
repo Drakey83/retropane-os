@@ -18,6 +18,7 @@ rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
 rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
 

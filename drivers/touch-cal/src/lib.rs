@@ -58,13 +58,18 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    /// The X51v before anyone aligns it: the owner's five taps of
-    /// 2026-10-13 as a per-axis map (vertical from the X channel, 99 at the
-    /// top to 2741 at the bottom; horizontal from Y, mirrored, 3719 at the
-    /// left to 319 at the right). Rough (taps landed ~30-50 px low on the
-    /// quick buttons): the align screen replaces it.
-    pub const X51V_DEFAULT: Calibration =
-        Calibration::from_axes((Axis::Y, 3719, 319), (Axis::X, 99, 2741), (480, 640));
+    /// The X51v before anyone aligns it: the owner's device, aligned on
+    /// 2026-10-13 with the align screen and the touch filter (four
+    /// alignments agreed within 0.3% in scale, ~9 px in vertical offset).
+    /// Other X51v panels differ a little: the align screen refines it.
+    pub const X51V_DEFAULT: Calibration = Calibration {
+        a: -43,
+        b: -9345,
+        c: 34_538_826,
+        d: 13925,
+        e: -54,
+        f: -2_709_680,
+    };
 
     /// A per-axis map: the screen's horizontal from `h.0`'s channel, raw
     /// `h.1` at the left edge to `h.2` at the right (either order), and the

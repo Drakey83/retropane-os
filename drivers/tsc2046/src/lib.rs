@@ -53,14 +53,14 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
 /// settling time, then an average, doesn't depend on the curve's shape.
 pub const SETTLE_CONVERSIONS: u16 = 128;
 
-/// Settling per channel, from the measured curves (2026-10-13): the Y
-/// channel holds its value after 16 conversions; the X channel was still
-/// creeping at 128 while the stylus landed (the touch filter, not more
-/// settling, deals with the landing; this is for the rest).
+/// Settling per channel, from the measured curves (2026-10-13): once the
+/// stylus has landed (the touch filter waits for that), both channels hold
+/// their value after 16 conversions; X gets 64, Y 32, for margin. (While
+/// it lands X creeps for tens of ms: no settling time fixes that.)
 #[must_use]
 pub const fn settle_for(ch: u8) -> u16 {
     match ch {
-        channel::X => 2 * SETTLE_CONVERSIONS,
+        channel::X => SETTLE_CONVERSIONS / 2,
         channel::Y => SETTLE_CONVERSIONS / 4,
         _ => SETTLE_CONVERSIONS / 8,
     }
@@ -109,52 +109,6 @@ pub struct RawTouch {
     pub z1: u16,
     /// Pressure Z2, 12-bit.
     pub z2: u16,
-}
-
-/// Maps raw samples to screen pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Calibration {
-    /// Raw value at the left/top edge of each axis (after any swap).
-    pub raw_min: (u16, u16),
-    /// Raw value at the right/bottom edge of each axis (after any swap).
-    pub raw_max: (u16, u16),
-    /// Screen size in pixels.
-    pub screen: (u16, u16),
-    /// The X channel follows the screen's vertical axis (and Y horizontal).
-    pub swap_xy: bool,
-}
-
-impl Calibration {
-    /// The owner's X51v, measured 2026-10-13 (five taps: the corners and
-    /// the centre, docs/hw/touch.md): the X channel follows the screen's
-    /// vertical axis (99 at the top, 2741 at the bottom), the Y channel the
-    /// horizontal one, mirrored (3719 at the left, 319 at the right); the
-    /// centre tap fell where a straight line puts it. A user calibration
-    /// screen (item 76) will refine it per device.
-    pub const X51V: Calibration = Calibration {
-        raw_min: (3719, 99),
-        raw_max: (319, 2741),
-        screen: (480, 640),
-        swap_xy: true,
-    };
-
-    /// Screen coordinates for a raw sample, clamped to the screen.
-    #[must_use]
-    pub fn to_screen(&self, t: RawTouch) -> (u16, u16) {
-        let (h, v) = if self.swap_xy { (t.y, t.x) } else { (t.x, t.y) };
-        let map = |raw: u16, min: u16, max: u16, size: u16| -> u16 {
-            let span = i32::from(max) - i32::from(min);
-            if span == 0 || size == 0 {
-                return 0;
-            }
-            let pos = (i32::from(raw) - i32::from(min)) * i32::from(size) / span;
-            pos.clamp(0, i32::from(size) - 1) as u16
-        };
-        (
-            map(h, self.raw_min.0, self.raw_max.0, self.screen.0),
-            map(v, self.raw_min.1, self.raw_max.1, self.screen.1),
-        )
-    }
 }
 
 /// The controller.
@@ -374,7 +328,9 @@ mod tests {
         let s = ts.settle(channel::X);
         assert_eq!(s.value, 2000);
         assert_eq!(s.curve[0], 195);
-        assert!(s.curve[1] < s.curve[2] && s.curve[4] < s.curve[5]);
+        assert!(s.curve[1] < s.curve[2] && s.curve[3] < s.curve[4]);
+        // Past its settling time the curve isn't recorded.
+        assert_eq!(s.curve[5], 0);
     }
 
     #[test]
@@ -397,23 +353,5 @@ mod tests {
         let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(true));
         assert!(ts.sample().is_none());
         assert!(c.borrow().log.is_empty());
-    }
-
-    #[test]
-    fn calibration_swaps_and_scales() {
-        let cal = Calibration::X51V;
-        let at = |x, y| cal.to_screen(RawTouch { x, y, z1: 0, z2: 0 });
-        // Swapped and mirrored: horizontal from Y (high at the left),
-        // vertical from X (low at the top).
-        assert_eq!(at(99, 3719), (0, 0));
-        assert_eq!(at(2741, 319), (479, 639));
-        // The owner's taps (2026-10-13): the centre, and Start.
-        let (cx, cy) = at(1423, 2017);
-        assert!(cx.abs_diff(240) < 12 && cy.abs_diff(320) < 12, "{cx} {cy}");
-        let (sx, sy) = at(209, 3508);
-        assert!(sx < 96 && sy < 36, "Start at {sx} {sy}");
-        // Off the panel's range: clamped to the screen.
-        assert_eq!(at(0, 4095), (0, 0));
-        assert_eq!(at(4095, 0), (479, 639));
     }
 }
