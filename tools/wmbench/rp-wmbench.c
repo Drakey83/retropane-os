@@ -26,7 +26,7 @@
  */
 
 #ifndef _WIN32_WCE
-#define _WIN32_WCE 0x0501 /* Windows Mobile 5 (CE 5.01): pm.h needs it */
+#define _WIN32_WCE 0x0501 /* CE 5.01 and later (the X51v's WM 6.1 is CE 5.2): pm.h needs it */
 #endif
 #include <windows.h>
 #include <pm.h>
