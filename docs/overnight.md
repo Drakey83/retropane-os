@@ -1460,3 +1460,17 @@ comes before the UI and GDI designs, which are written GPU-first.
     is outside input, so hostile-file tests and bounded lengths (security
     first). Old WM apps get their system colours from the theme once GWES
     exists. Imported art stays the user's: never shipped.
+
+82. **No "USB device not recognized", ever** (owner, 2026-10-13: "it
+    looks sloppy if users end up seeing this"). The X51v's D+ pull-up is a
+    fixed resistor (docs/hw/udc.md): whenever nothing answers USB while
+    the cable is in (a test image under the loader today; in the product,
+    early boot, suspend, a crash), Windows reports a malfunctioning
+    device. First the untested lead: force SE0 through `UP2OCR`'s output
+    override so the PC sees a clean unplug, and release it to replug
+    (a short device experiment, `rp-reconnect` style). If it works: the
+    loader unplugs before handing over and replugs on return, and the OS
+    unplugs before any quiet period. If it can't: the OS answers USB from
+    early boot and through suspend. Done when no reachable state shows the
+    pop-up, checked on the device in each. Meanwhile, debugging never
+    queries the device while a test image runs.
