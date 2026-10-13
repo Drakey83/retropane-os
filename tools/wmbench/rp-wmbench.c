@@ -20,6 +20,9 @@
  * card reads come after a second file pushes the first out of the cache;
  * the backlight is held on and the idle timer reset, so the screen stays
  * lit (and the device awake) until 'Done'.
+ *
+ * v3: the drawing rows wait for the 2700G's 2D engine to finish (a pixel
+ * read back), with per-operation rows and a coloured fill beside them.
  */
 
 #ifndef _WIN32_WCE
@@ -308,12 +311,37 @@ static void screen(void)
     int w = scr_w, hgt = scr_h;
     out("INFO screen %dx%d %d bpp", w, hgt, GetDeviceCaps(dc, BITSPIXEL));
 
-    /* Windows Mobile's own drawing (GDI on the CPU). */
+    /* Windows Mobile's own drawing. v2 timed ~0.1 ms for a full-screen
+     * fill: far beyond what the CPU writes (~19 ms), so the 2700G's 2D
+     * engine does it, possibly queued and unfinished when the call returns.
+     * Reading a pixel back waits for the engine: the throughput rows read
+     * one after the loop, the _each rows after every operation. */
     t0 = now_ticks();
     for (i = 0; i < n; i++)
         PatBlt(dc, 0, 0, w, hgt, (i & 1) ? BLACKNESS : WHITENESS);
+    sink += GetPixel(dc, w - 1, hgt - 1);
     t1 = now_ticks();
     out("BENCH gdi_fill_screen %lu ns", ns_per(t0, t1, n));
+    t0 = now_ticks();
+    for (i = 0; i < n; i++) {
+        PatBlt(dc, 0, 0, w, hgt, (i & 1) ? BLACKNESS : WHITENESS);
+        sink += GetPixel(dc, w - 1, hgt - 1);
+    }
+    t1 = now_ticks();
+    out("BENCH gdi_fill_screen_each %lu ns", ns_per(t0, t1, n));
+    {
+        /* A coloured brush: not a special case the driver might shortcut. */
+        HBRUSH b = CreateSolidBrush(RGB(0x33, 0x99, 0xCC));
+        HGDIOBJ ob = SelectObject(dc, b);
+        t0 = now_ticks();
+        for (i = 0; i < n; i++)
+            PatBlt(dc, 0, 0, w, hgt, PATCOPY);
+        sink += GetPixel(dc, w - 1, hgt - 1);
+        t1 = now_ticks();
+        out("BENCH gdi_fill_colour_screen %lu ns", ns_per(t0, t1, n));
+        SelectObject(dc, ob);
+        DeleteObject(b);
+    }
     {
         HDC mem = CreateCompatibleDC(dc);
         HBITMAP bm = CreateCompatibleBitmap(dc, w, hgt);
@@ -322,8 +350,16 @@ static void screen(void)
         t0 = now_ticks();
         for (i = 0; i < n; i++)
             BitBlt(dc, 0, 0, w, hgt, mem, 0, 0, SRCCOPY);
+        sink += GetPixel(dc, w - 1, hgt - 1);
         t1 = now_ticks();
         out("BENCH gdi_bitblt_screen %lu ns", ns_per(t0, t1, n));
+        t0 = now_ticks();
+        for (i = 0; i < n; i++) {
+            BitBlt(dc, 0, 0, w, hgt, mem, 0, 0, SRCCOPY);
+            sink += GetPixel(dc, w - 1, hgt - 1);
+        }
+        t1 = now_ticks();
+        out("BENCH gdi_bitblt_screen_each %lu ns", ns_per(t0, t1, n));
         SelectObject(mem, old);
         DeleteObject(bm);
         DeleteDC(mem);
@@ -335,6 +371,7 @@ static void screen(void)
         t0 = now_ticks();
         for (i = 0; i < m; i++)
             ExtTextOutW(dc, 4, 4, ETO_OPAQUE, &r, text, (UINT)wcslen(text), NULL);
+        sink += GetPixel(dc, w - 1, 39);
         t1 = now_ticks();
         out("BENCH gdi_text_line %lu ns", ns_per(t0, t1, m));
     }

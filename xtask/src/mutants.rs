@@ -238,6 +238,13 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "CF card not attached on insertion (the PC sees an empty reader until `cf`)",
+        file: "boot/loader/src/main.rs",
+        from: "                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

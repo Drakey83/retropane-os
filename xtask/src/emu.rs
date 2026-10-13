@@ -1645,13 +1645,14 @@ pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     boot_loader_cf(root)
 }
 
-/// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1,
-/// identified through the loader (`cf`): its capacity, its write cache
-/// turned off, its partition seen; and no SD card, so the CF path stands
-/// alone. The emulated slot starts unpowered, as Windows Mobile hands it
-/// over: `cf soft` (no power sequence) must fail, `cf` must power it
-/// through the CPLD, and the CPLD writes must leave the backlight on (its
-/// registers don't read back, docs/hw/cpld.md).
+/// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1 and
+/// no SD card, so the CF path stands alone. The emulated slot starts
+/// unpowered, as Windows Mobile hands it over; the loader attaches the
+/// card on its own (powered through the CPLD, reset, identified) and the
+/// PC sees it as the second drive; `cf` reports it (capacity, write cache
+/// off, partition) without taking it again; the CPLD writes leave the
+/// backlight on (its registers don't read back, docs/hw/cpld.md); pulled
+/// out, the slot is switched off, and pushed back in, attached again.
 pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    CF card: skipped (this emulator has no USB controller model)");
@@ -1681,39 +1682,31 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         let mut bot = Bot::connect(3)?;
         bot.lun = 1;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
-        // Before the owner attaches it: an empty card reader (after, at
-        // most, one "medium changed" for the detect line settling).
-        let mut r = bot.command(&[0; 6], 0, false, &[])?;
-        let mut sense = bot.sense()?;
-        if sense.1 == 0x28 {
-            r = bot.command(&[0; 6], 0, false, &[])?;
-            sense = bot.sense()?;
-        }
-        if r.status == 0 || sense.1 != 0x3A {
-            return Err(format!(
-                "CF unit before 'cf': status {}, sense {sense:x?}",
-                r.status
-            ));
-        }
-        // The slot as Windows Mobile leaves it: unpowered. Taking the card
-        // without the power sequence reads nothing (as on the device).
-        s.write_all(&rp_loadproto::control_frame("cf soft"))
-            .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, " now)", 20)?;
-        if !reply.contains("RPL ERR cf:") || !reply.contains("GPIO84 0 before, 0 now") {
-            return Err(format!("cf soft on an unpowered slot: {reply:?}"));
-        }
+        // Nothing asked: the loader attaches the card in the slot itself,
+        // and the PC's second drive becomes ready (after "medium changed").
+        let ready = |bot: &mut Bot, what: &str| -> Result<(), String> {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let r = bot.command(&[0; 6], 0, false, &[])?;
+                if r.status == 0 {
+                    return Ok(());
+                }
+                let _ = bot.sense()?;
+                if Instant::now() > deadline {
+                    return Err(format!("CF unit never became ready ({what})"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        };
+        ready(&mut bot, "card in at start-up, not attached on its own")?;
+        // `cf` reports the card the loader attached, without taking it again.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "model", 20)?;
         let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, FAT32 partition";
-        if !reply.contains(want) {
+        if !reply.contains(want) || !reply.contains("was card") {
             return Err(format!("unexpected reply to cf: {reply:?}"));
         }
-        // Asked again: the same card, not re-initialised.
-        s.write_all(&rp_loadproto::control_frame("cf"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, want, 20)?;
         // The power sequence and the card's reset went through the CPLD,
         // whose registers don't read back: the backlight enable sharing
         // register 0x18 with RESET must still be on.
@@ -1722,18 +1715,6 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             let lit = mon.query("qom-get /machine/peripheral/mbx2700g backlight")?;
             if lit != "true" {
                 return Err(format!("CF: the backlight went off ({lit})"));
-            }
-        }
-        // Now the PC sees it: medium changed once, then ready.
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let r = bot.command(&[0; 6], 0, false, &[])?;
-            if r.status == 0 {
-                break;
-            }
-            let _ = bot.sense()?;
-            if Instant::now() > deadline {
-                return Err("CF unit never became ready".into());
             }
         }
         let r = bot.command(&[0x12, 0, 0, 0, 36, 0], 36, true, &[])?;
@@ -1772,8 +1753,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             return Err("CF unit: read-back differs".into());
         }
         // Pulled out: the loader lets the card go and switches the slot
-        // off, so the card pushed back in stays unpowered (GPIO84 low)
-        // until `cf` takes it again.
+        // off; pushed back in, it is attached again from a power cycle.
         if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
             mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
             // The reply ends its event list with ",\r\n" (the idle loader's
@@ -1783,27 +1763,42 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                     .map_err(|e| e.to_string())?;
                 usb_read_until(&mut s, ",\r\n", 10)
             };
-            // The loader notices the removal on its detect poll (debounced,
-            // in emulated seconds, slower than ours on a busy PC): poll for
-            // the power-off rather than sleep a guess.
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while !cf_log()?.contains("power off") {
-                if Instant::now() > deadline {
-                    return Err("CF removed: the slot was never powered off".into());
+            // The loader notices on its detect poll (debounced, in emulated
+            // seconds, slower than ours on a busy PC): poll, never a guess.
+            let mut poll = |what: &str, done: &dyn Fn(&str) -> bool| -> Result<String, String> {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let log = cf_log()?;
+                    if done(&log) {
+                        return Ok(log);
+                    }
+                    if Instant::now() > deadline {
+                        return Err(format!("CF {what}: {log:?}"));
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
                 }
-                std::thread::sleep(Duration::from_millis(500));
-            }
+            };
+            poll("removed: the slot was never powered off", &|l| {
+                l.contains("power off")
+            })?;
             mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
-            // A slot left powered shows READY within a few loader passes.
-            std::thread::sleep(Duration::from_secs(1));
-            let log = cf_log()?;
+            let log = poll("re-inserted: never attached again", &|l| {
+                l.rsplit("power off")
+                    .next()
+                    .is_some_and(|a| a.contains("attached"))
+            })?;
+            // Ordered events, no timing: a slot left powered would show
+            // READY as soon as the card went back in, before the loader's
+            // debounced attach (which powers it from off itself).
             let after_off = log.rsplit("power off").next().unwrap_or_default();
-            if !log.contains("power off") || after_off.contains("ready 1") {
+            let before_attach = after_off.split("attached").next().unwrap_or_default();
+            if before_attach.contains("ready 1") {
                 return Err(format!("CF removed: slot not powered off: {log:?}"));
             }
-            s.write_all(&rp_loadproto::control_frame("cf"))
-                .map_err(|e| e.to_string())?;
-            usb_read_until(&mut s, want, 20).map_err(|e| format!("CF re-inserted: {e}"))?;
+            ready(&mut bot, "re-inserted card")?;
+            let mut mbr = [0u8; 512];
+            rp_hal_api::BlockDevice::read_blocks(&mut bot, 0, &mut mbr)
+                .map_err(|_| "CF re-inserted: sector 0 unreadable".to_string())?;
         }
         Ok(())
     };
@@ -1826,7 +1821,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: unpowered slot refused without the power sequence; powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off), then the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, taken again after re-insert"
+        "    CF card OK: attached on its own from an unpowered slot, powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }
