@@ -1150,7 +1150,8 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
 }
 
 /// The shell's Today screen (ADR-0021) under the loader: pixel-exact
-/// against the reference (clocks masked), a stylus tap on Start opens the
+/// against the reference (clocks masked), still there after 40 s untouched
+/// (past the run limit: idle sleeps must check in), a stylus tap on Start opens the
 /// menu (pixel-exact again), and the menu's "Back to loader" returns with
 /// the touch-to-flush latencies in the run log.
 pub fn boot_loader_today(root: &Path) -> Result<(), String> {
@@ -1206,6 +1207,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     };
     let check = || -> Result<(), String> {
         until("first", &want[0])?;
+        // Left alone past the loader's 30 s run limit: an idle image must
+        // keep checking in (it slept through it once and the watchdog reset
+        // the device). Then it must still be there, unchanged.
+        std::thread::sleep(Duration::from_secs(40));
+        until("idle", &want[0])?;
         let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
         let tap = |qmp: &mut crate::screen::Qmp, x: u16, y: u16| -> Result<(), String> {
             touch(qmp, &Action::TouchDown(x, y))?;
@@ -1268,7 +1274,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         return Err(format!("today: the taps weren't answered: {line:?}"));
     }
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked), Start opened the menu pixel-exact, Back to loader returned; {}",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, Back to loader returned; {}",
         line.trim()
     );
     Ok(())

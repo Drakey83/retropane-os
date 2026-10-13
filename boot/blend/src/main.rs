@@ -120,7 +120,7 @@ mod image {
             let _ = writeln!(RunLog, "{}{c}", super::MARKER);
             for _ in 0..super::stage_seconds() * 10 {
                 rt::delay_us(100_000);
-                check_in();
+                rt::check_in();
             }
         }
         before.restore(d.regs());
@@ -128,19 +128,6 @@ mod image {
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
-        }
-    }
-
-    /// Checks in with the soft run limit and, when the loader armed it, the
-    /// hardware watchdog (its deadline is fixed at launch, and all the
-    /// stages together run longer than that).
-    fn check_in() {
-        /// OS timer ticks per second.
-        const TICK_1S: u32 = 3_250_000;
-        rt::keep_alive();
-        let mut wd = rt::watchdog();
-        if wd.armed() {
-            wd.feed(30 * TICK_1S);
         }
     }
 

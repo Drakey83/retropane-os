@@ -208,13 +208,10 @@ mod image {
     /// by it mid-way, into Dell's factory-restore prompt).
     fn settle(rig: &mut Rig, ticks: u32) -> rp_drv_pxa_udc::Stats {
         let t = rt::ticks();
-        let mut watchdog = rt::watchdog();
         while rt::ticks().wrapping_sub(t) < ticks {
-            if watchdog.armed() {
-                watchdog.feed(30 * TICK_1S);
-            }
-            // The soft run limit too (the loader's first line of defence).
-            rt::keep_alive();
+            // Both deadlines, the soft run limit first (the loader's first
+            // line of defence).
+            rt::check_in();
             rig.udc.poll();
         }
         rig.udc.stats()
