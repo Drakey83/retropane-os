@@ -126,12 +126,18 @@ command, polled per sector (DRQ), every wait bounded.
 values Windows Mobile used and `MECR` to two sockets / card inserted, then
 hands out the attribute and common windows. The loader's `cf` command
 (`cargo xtask` control frame `cf`) identifies the card read-only, and only
-when GPIO13 reads a card; nothing touches the socket at start-up.
+when GPIO13 reads a card. Since 2026-10-13 the loader also attaches a card
+on its own when GPIO13 settles to "in" (at start-up or on insertion); an
+empty socket is never touched.
 
-The USB drive's second unit (LUN 1, "CF card") is the CF card: an empty
-card reader until `cf` attaches it, read-only until `drive rw` (unlike the SD
-card), and back to empty when GPIO13 says the card left (attach it again
-with `cf`). Windows shows it as a second removable drive.
+The USB drive's second unit (LUN 1, "CF card") is the CF card: attached
+when it goes in (or was in at start-up), as the SD card is, read-only until
+`drive rw` (as the SD card), and back to empty when GPIO13 says the card
+left. Windows shows it as a second removable drive. `cf` reports an
+attached card without taking it again (and without a medium change, which
+would make Windows remount it). A card that fails to attach or stops
+answering stays idle until it is re-inserted or `cf` is sent: never an
+automatic retry loop, which would power-cycle a broken card forever.
 
 Taking the card (2026-10-12, item 62): the loader power-cycles the slot
 (steps 1-2 above), then `CfCard::init` holds RESET (CPLD `0x18` bit 1)
@@ -140,7 +146,7 @@ without touching either window (a card in reset or busy may hold the
 bus), then reads the CIS. A card that runs out a wait during a transfer is
 **dead**: every later transfer fails at once without touching it, and the
 loader lets it go (an empty reader for the PC, so Windows stops
-retrying); `cf` takes it again from a reset. So a stuck card costs one
+retrying); re-inserting it or `cf` takes it again from a reset. So a stuck card costs one
 timeout, never a stalled USB loop. `cf soft` takes it the old way, with no
 power cycle or reset (diagnostics); `cf log` reports GPIO84's changes and
 the attach and drop times since start-up.
@@ -149,7 +155,7 @@ The slot is powered only while the loader holds a card, as Windows Mobile
 does: once the card is removed (GPIO13), dropped as dead, or fails to
 attach, the loader switches off the power it switched on (step 1 above;
 checked every loop pass, so every way of letting go is covered). Power
-Windows Mobile left on is left alone: nothing touches the socket unasked.
+Windows Mobile left on in an empty socket is left alone.
 `cf log` shows it as `power off`.
 
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
@@ -158,8 +164,10 @@ CF cards).
 The emulator (rp-v0.11.0) models the slot as the device has it: unpowered
 at start, answering only after the CPLD power sequence, reset through
 `0x18` bit 1, GPIO84 high while powered; `cargo xtask emu-cf` checks
-that `cf soft` fails, `cf` works, the backlight stays on, and a card
-pulled out leaves the slot off until `cf` takes it again (rp-v0.11.1)
+that the card in the slot at start-up is attached on its own (so the power
+sequence works), `cf` reports it without a remount, the backlight stays
+on, and a card pulled out switches the slot off, with no READY before the
+loader attaches it again on re-insertion (rp-v0.11.1)
 ([`emulator.md`](emulator.md)).
 
 ## Safety for experiments

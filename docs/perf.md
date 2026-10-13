@@ -191,6 +191,47 @@ contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
 | `irq_to_thread_max` (interrupt to the waiting thread running) | 26 ticks | ~8 µs |
 | `sleep_lateness_max` | 56 ticks | ~17 µs |
 
+### Windows Mobile baseline (2026-10-13, `rp-wmbench` v2, ROADMAP Phase 0)
+
+The same rows measured under the stock Windows Mobile 5 (CE 5.2 build
+20273) on the owner's X51v, by `tools/wmbench` (`cargo xtask wmbench`; run
+by hand, log `rp-wm-baseline.txt` next to it). Every result feeds a sink
+the compiler can't drop; the clock is measured after a 2 s warm-up (WM
+idles at ~135 MHz and raised it to **624 MHz turbo** under load); card
+reads come after a second 4 MB file evicts the first from WM's cache. v1's
+memcpy, memset and SHA rows were optimised away and are discarded.
+
+RetroPane's rows are the earlier device runs above, at **520 MHz** (WM's
+choice at that boot), so CPU-bound rows favour WM by up to 1.2x; a rerun
+at the same clock is due (item 67 sets 624 MHz ourselves).
+
+| Row | Windows Mobile | RetroPane | Reading |
+|---|---|---|---|
+| `timer_read` | 1,769 ns (`QueryPerformanceCounter`) | 846 ns (OS timer) | RP 2.1x: no kernel call |
+| `memcpy_64k` | 606,503 ns (~108 MB/s) | 687,430 ns (~95 MB/s) | level; memory-bound, try iWMMXt and `pld` tuning (item 71) |
+| `memset_64k` | 179,200 ns | 173,953 ns | level |
+| `chase_sdram_256k` (per hop) | 291 ns | ~506 ns | **WM 1.7x**: SDRAM timings, memory clock or TLB misses (RP's 4 KiB pages); items 68, 78 |
+| `sha256_4k` | 441,573 ns (~9.3 MB/s) | not yet on the device | - |
+| `thread_switch` | 9.0 us (event ping-pong, per switch) | ~12.2 us | **WM 1.4x**: ADR-0010's target is < 2 us; items 67, 80 |
+| `sleep_lateness_max` | 1,100 us (1 ms tick) | ~17 us (tickless) | RP 65x |
+| `fb_solid_fill_vga` (CPU writes) | 18,981,615 ns (plain word loop) | 14,473,743 ns (`stm` bursts) | RP 1.3x; both bound by the 2700G's bus (~32-41 MB/s) |
+| `gdi_fill_screen` | 103,353 ns | - | **~140x the CPU fill**: WM's driver uses the 2700G's 2D engine (v3 checks it isn't just queued) |
+| `gdi_bitblt_screen` | 110,507 ns | - | full-screen copy from an off-screen bitmap: also the 2D engine |
+| `gdi_text_line` | 2,532,896 ns | - | 54 characters, opaque: font rendering on the CPU |
+| SD write / read, 4 MB | 840 / 2,987 KB/s | write ~1.4-1.7 MB/s (`put`) | RP's writes 2x already; reads not yet measured the same way |
+| CF write / read, 4 MB | 192-240 / 1,921 KB/s | not yet | WM's CF writes are slow: item 75 |
+
+What it says:
+
+- **The 2700G's 2D engine is real and ~140x faster than CPU writes for
+  fills and copies.** WM uses it; RetroPane doesn't yet. This is the
+  strongest argument for the GPU-first track (items 69, 70) and for the
+  GDI design to be written around it.
+- **WM beats RetroPane where RetroPane hasn't been tuned yet:** SDRAM
+  latency (1.7x) and thread switches (1.4x). Both are now targets with a
+  number to beat, not guesses.
+- **RetroPane already wins where the design differs:** tickless timers
+  (65x lower sleep lateness), direct timer reads, SD writes.
 ## Interface layer flush (2026-10-12, emulator)
 
 `rp_gfx::layer::flush` converting a 480 x 640 ARGB8888 layer to the

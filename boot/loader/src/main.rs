@@ -897,14 +897,14 @@ mod image {
         }
     }
 
-    /// The CompactFlash slot: not looked at until the owner asks (`cf`), so
-    /// nothing touches the socket unasked; then the card, or why not.
+    /// The CompactFlash slot: attached when a card is in (at start-up or
+    /// on insertion) or on `cf`; then the card, or why not.
     enum CfSlot {
         Untried,
         Card(CfCard<Mmio, Mmio>),
         /// No card in use (taken out, failed to attach, or stopped
         /// answering: the reason): the socket's windows, kept so the next
-        /// `cf` tries again, from a hardware reset.
+        /// insertion or `cf` tries again, from a hardware reset.
         Idle(Mmio, Mmio, &'static str),
         /// The board has no socket windows.
         Unavailable,
@@ -987,9 +987,9 @@ mod image {
         rt::delay_us(100_000);
     }
 
-    /// The CompactFlash card as the drive's second unit (LUN 1): an empty
-    /// card reader until the owner attaches the card (`cf`), read-only
-    /// until `drive rw`, as the SD card is.
+    /// The CompactFlash card as the drive's second unit (LUN 1): attached
+    /// when inserted (or by `cf`), read-only until `drive rw`, as the SD
+    /// card is.
     struct CfLun {
         slot: CfSlot,
         /// GPIO13 says a card is in (debounced over two polls).
@@ -1003,9 +1003,9 @@ mod image {
         /// level as last polled, and the first events with their time.
         ready: bool,
         events: CfEvents,
-        /// The loader switched the slot's power on (`cf`) and hasn't
-        /// switched it off yet. Power left on by Windows Mobile isn't ours
-        /// to switch off unasked: nothing touches the socket at start-up.
+        /// The loader switched the slot's power on and hasn't switched it
+        /// off yet. Power Windows Mobile left on with no card in isn't
+        /// switched off: the socket is touched only when a card is in.
         powered: bool,
     }
 
@@ -1050,8 +1050,7 @@ mod image {
         }
 
         /// Follows the detect line; `true` when the card came or went (the
-        /// PC is told the medium changed). A removed card must be attached
-        /// again with `cf`: nothing touches the socket unasked.
+        /// caller attaches a card that came, and tells the PC).
         fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
             let now = !gpio.read(CF_DETECT);
             let stable = now == self.seen;
@@ -1069,7 +1068,7 @@ mod image {
 
         /// A card that stopped answering is let go (the PC sees an empty
         /// reader, so it stops retrying); `true` when that happened now.
-        /// `cf` takes it again, from a hardware reset.
+        /// Re-inserting it or `cf` takes it again, from a hardware reset.
         fn drop_if_dead(&mut self) -> bool {
             matches!(&self.slot, CfSlot::Card(c) if c.is_dead()) && {
                 self.events.push(b'D');
@@ -1144,6 +1143,51 @@ mod image {
         }
     }
 
+    /// Attaches the card in the slot unless it is attached already: slot
+    /// power cycled and the card reset (whatever an earlier owner left is
+    /// not trusted), then identified. `soft` skips both (diagnostics). How
+    /// the reset went when it ran; a failure leaves the slot `Idle` with
+    /// the reason, for `cf` or the next insertion to try again (never a
+    /// retry loop: a broken card would be power-cycled forever).
+    #[inline(never)]
+    fn cf_attach(
+        lun: &mut CfLun,
+        gpio: &mut Gpio<Mmio>,
+        cpld: Option<&mut Cpld<Mmio>>,
+        soft: bool,
+    ) -> Option<rp_drv_cf::ResetSeen> {
+        let slot = &mut lun.slot;
+        let (attr, common) = match core::mem::replace(slot, CfSlot::Unavailable) {
+            CfSlot::Untried => devices::take_cf()?,
+            CfSlot::Idle(attr, common, _) => (attr, common),
+            card @ CfSlot::Card(_) => {
+                *slot = card;
+                return None;
+            }
+            CfSlot::Unavailable => return None,
+        };
+        let mut delay = |ms| rt::delay_us(ms * 1000);
+        let taken = match cpld {
+            Some(cpld) if !soft => {
+                cf_power_cycle(cpld);
+                lun.powered = true;
+                CfCard::init(attr, common, &mut CfSocketLines { gpio, cpld }, &mut delay)
+            }
+            _ => CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay),
+        };
+        match taken {
+            Ok((card, seen)) => {
+                lun.events.push(b'A');
+                *slot = CfSlot::Card(card);
+                Some(seen)
+            }
+            Err((e, attr, common)) => {
+                *slot = CfSlot::Idle(attr, common, e.name());
+                None
+            }
+        }
+    }
+
     /// `cf`: attaches the CompactFlash card (hardware reset first: whatever
     /// an earlier owner left is not trusted) and identifies it, read-only:
     /// model, capacity, whether its write cache is off, and its first
@@ -1173,37 +1217,8 @@ mod image {
         let ready_before = gpio.read(CF_READY);
         lun.inserted = true;
         lun.seen = true;
-        let slot = &mut lun.slot;
-        let windows = match core::mem::replace(slot, CfSlot::Unavailable) {
-            CfSlot::Untried => devices::take_cf(),
-            CfSlot::Idle(attr, common, _) => Some((attr, common)),
-            card @ CfSlot::Card(_) => {
-                *slot = card;
-                None
-            }
-            CfSlot::Unavailable => None,
-        };
-        let mut reset = None;
-        if let Some((attr, common)) = windows {
-            let mut delay = |ms| rt::delay_us(ms * 1000);
-            let taken = match cpld {
-                Some(cpld) if !soft => {
-                    cf_power_cycle(cpld);
-                    lun.powered = true;
-                    CfCard::init(attr, common, &mut CfSocketLines { gpio, cpld }, &mut delay)
-                }
-                _ => CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay),
-            };
-            *slot = match taken {
-                Ok((card, seen)) => {
-                    reset = Some(seen);
-                    lun.events.push(b'A');
-                    CfSlot::Card(card)
-                }
-                Err((e, attr, common)) => CfSlot::Idle(attr, common, e.name()),
-            };
-        }
-        let card = match slot {
+        let reset = cf_attach(lun, gpio, cpld, soft);
+        let card = match &mut lun.slot {
             CfSlot::Card(c) => c,
             CfSlot::Idle(_, _, why) => {
                 let _ = write!(
@@ -1943,7 +1958,7 @@ mod image {
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
                 msc.medium_changed(1);
-                let _ = writeln!(log, "CF card stopped answering: let go (cf takes it again)");
+                let _ = writeln!(log, "CF card stopped answering: let go (re-insert or cf)");
             }
             if reboot_at.is_some_and(|t| now_ms().wrapping_sub(t) < 1 << 31) {
                 reboot_at = None;
@@ -2124,6 +2139,7 @@ mod image {
                             status.as_str()
                         }
                         Ok(c @ (b"cf" | b"cf soft")) => {
+                            let had = matches!(cf.slot, CfSlot::Card(_));
                             cf_command(
                                 &mut cf,
                                 &mut gpio,
@@ -2131,8 +2147,12 @@ mod image {
                                 c == b"cf soft",
                                 &mut status,
                             );
-                            // Attached (or not): the PC looks at LUN 1 again.
-                            msc.medium_changed(1);
+                            // Attached now: the PC looks at LUN 1 again. A card
+                            // already attached is only reported (a medium
+                            // change would make Windows remount the drive).
+                            if had != matches!(cf.slot, CfSlot::Card(_)) {
+                                msc.medium_changed(1);
+                            }
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"rm ") => {
@@ -2336,8 +2356,22 @@ mod image {
                 );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {
+                // A card that goes in (or was in at start-up) is attached
+                // at once, as the SD card is, so it shows up next to it.
+                if cf.inserted {
+                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+                }
                 msc.medium_changed(1);
-                let _ = writeln!(log, "CF card {}", if cf.inserted { "in" } else { "out" });
+                let _ = writeln!(
+                    log,
+                    "CF card {}",
+                    match (&cf.slot, cf.inserted) {
+                        (_, false) => "out",
+                        (CfSlot::Card(_), true) => "in: attached",
+                        (CfSlot::Idle(_, _, why), true) => why,
+                        _ => "in: socket unavailable",
+                    }
+                );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && lun.poll_slot(&mut gpio) {
                 msc.medium_changed(0);
