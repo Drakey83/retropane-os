@@ -1,0 +1,19 @@
+[package]
+name = "rp-hal-user"
+description = "The user-mode runtime: a process's entry, its system calls, and the device windows the kernel granted it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../api" }
+
+[features]
+# The process entry and panic handler (programs only; the kernel uses the
+# ABI constants).
+runtime = []
+
+[lints]
+workspace = true

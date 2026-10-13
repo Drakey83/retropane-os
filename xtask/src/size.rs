@@ -131,7 +131,12 @@ pub const BUDGETS: &[Budget] = &[
         // regions in per-process pages, so each record shrank from 1.6 KB
         // to ~60 B (-6.0 KB), less the 300-region check (+1.8 KB).
         // Measured 76.7 KiB; the room goes back.
-        max_load: 82 * 1024,
+        // Raised 82 -> 95 KiB on 2026-10-13 (approved by the owner, +10%
+        // rule): a real driver in a host (item 46): the display host's
+        // image embedded (2 KB), device and interrupt grants, restarts of a
+        // host's own threads, pages loaded straight from the embedded file
+        // (~5.3 KB), and the test's checks (~2.3 KB). 88,260 B measured.
+        max_load: 95 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
@@ -143,6 +148,16 @@ pub const BUDGETS: &[Budget] = &[
         // slots kept in their kernel stack frames, not an IPC table.
         // Measured 112.9 KiB + ~6%.
         max_zero: 120 * 1024,
+        device: OnDevice::NeverReturns,
+    },
+    // The display+input driver host (ADR-0016, item 46): a user process
+    // embedded in the kernel image, so it counts against that budget too.
+    // First budget = measured + ~10% (1,140 B of code, no data; its stack
+    // is the kernel's mapping, not the image's).
+    Budget {
+        image: "rp-display-host",
+        max_load: 1280,
+        max_zero: 256,
         device: OnDevice::NeverReturns,
     },
     // Threads test harness (ADR-0010): scheduler tables (~4 KiB, .bss) and

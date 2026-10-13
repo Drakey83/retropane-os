@@ -1,0 +1,20 @@
+[package]
+name = "rp-display-host"
+description = "The display+input driver host (ADR-0016): the backlight driver in its own supervised process, its device window and interrupt granted by the kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+# The driver and the process runtime (entry, panic) only in the device
+# build; the host build is the press logic's tests.
+[target.'cfg(target_os = "none")'.dependencies]
+rp-drv-pxa-pwm = { path = "../../drivers/pxa-pwm" }
+rp-hal-user = { path = "../../hal/user", features = ["runtime"] }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+rp-hal-user = { path = "../../hal/user" }
+
+[lints]
+workspace = true

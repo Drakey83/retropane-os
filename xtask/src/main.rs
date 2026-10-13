@@ -11,6 +11,7 @@ mod sdkit;
 mod serve;
 mod size;
 mod usb;
+mod userimg;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -88,6 +89,7 @@ commands:
             pixel-exact): run it before `load rp-blend`
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
+  emu-kernel only the kernel image's check (VM, IPC, the driver host)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
@@ -103,7 +105,9 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-crash" | "emu-cf" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "mutants" | "qemu" => {
+            run_step(&cmd)
+        }
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -255,6 +259,7 @@ fn run_step(step: &str) -> Result {
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
+        "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -446,6 +451,21 @@ fn lint() -> Result {
 
 fn cross() -> Result {
     let crates = workspace_crates()?;
+    // User process images first: the kernel image embeds them (its build
+    // script reads `<name>.pe` next to them).
+    let mut user = vec![
+        "build",
+        "--release",
+        "--target",
+        TARGET_SPEC,
+        "-Zbuild-std=core,compiler_builtins",
+        "-Zjson-target-spec",
+    ];
+    for name in userimg::IMAGES {
+        user.extend(["-p", name]);
+    }
+    cargo(&user)?;
+    userimg::package_all(&workspace_root().join("target/armv5te-x51v-none-eabi/release"))?;
     let mut args = vec![
         "build".to_string(),
         "--release".into(),
@@ -457,6 +477,9 @@ fn cross() -> Result {
     for c in crates
         .iter()
         .filter(|c| matches!(c.place, Placement::Os(_)) && c.name != policy::MOCK_CRATE)
+        // Built on their own above: a build's features are unified, and a
+        // program's runtime (its panic handler) mustn't reach the kernel.
+        .filter(|c| !userimg::IMAGES.contains(&c.name.as_str()))
     {
         args.push("-p".into());
         args.push(c.name.clone());

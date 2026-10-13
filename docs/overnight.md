@@ -857,6 +857,33 @@ on the host or in the emulator first.
     the backlight (PWM) driver through a granted MMIO window and its
     interrupt as an event, called by a client through a port; a crash in
     the host restarts it without touching the kernel or other hosts.
+    **Done (emulator), 2026-10-13; kernel budget waiting for the owner.**
+    Owner's choices: compiled Rust (not assembly); sizes shown before any
+    budget raise. `services/display-host` (rp-display-host) runs the real
+    `rp-drv-pxa-pwm` driver in a user process: 1.2 KB of code, a 2 KB PE
+    file built by `cargo xtask` (`userimg.rs`, ELF to PE) and embedded in
+    the test kernel. PWM0's page is mapped into it uncached by the board's
+    grant; the power button's interrupt (GPIO0, not the spare timer: the
+    timer's block is the scheduler's) is granted to it alone
+    (`SYS_IRQ_WAIT`). The test client sets 30 %, makes the host fault in a
+    call, gets a new handle from the manager and reads 30 % back; a test
+    thread makes the host's own code fault: two restarts, the host's
+    blocked thread re-entering each time, the level kept in the hardware
+    throughout. Then the emulator presses the power button twice: light
+    off, light back on. Checks `IPC driver host served`, `IPC driver host
+    restarted`, the button steps; three emulator mutants; host tests for
+    the packer and the press logic. Found on the way: a press and release
+    faster than the host could read the pin was lost (both edges arrive
+    while the line is masked): the host now treats "up after up" as a tap
+    (`button_press`). `cargo xtask emu-kernel` runs the kernel's check
+    alone. Kernel image 78,572 -> 88,260 B (2 KB host image, ~5.3 KB
+    mechanism, ~2.3 KB the test's checks), over the 82 KiB budget: **owner
+    to approve**.
+    - **Iterate:** CE's driver model (a driver in a host process, its
+      interrupt as an event, `InterruptDone`), with one host per class.
+    - **Modernize:** grants instead of `MmMapIoSpace` for anyone; a host
+      restart that doesn't touch the kernel, other hosts or clients' other
+      work; driver state kept in the device, so a restart is invisible.
 
 48. **Process records per ADR-0019**: **done (emulator).** `AddressSpace`
     regions now live in `RegionList` (`kernel/mm/src/regions.rs`): 20-byte
