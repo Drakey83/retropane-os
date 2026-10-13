@@ -53,6 +53,19 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
 /// settling time, then an average, doesn't depend on the curve's shape.
 pub const SETTLE_CONVERSIONS: u16 = 128;
 
+/// Settling per channel, from the measured curves (2026-10-13): the Y
+/// channel holds its value after 16 conversions; the X channel was still
+/// creeping at 128 while the stylus landed (the touch filter, not more
+/// settling, deals with the landing; this is for the rest).
+#[must_use]
+pub const fn settle_for(ch: u8) -> u16 {
+    match ch {
+        channel::X => 2 * SETTLE_CONVERSIONS,
+        channel::Y => SETTLE_CONVERSIONS / 4,
+        _ => SETTLE_CONVERSIONS / 8,
+    }
+}
+
 /// Conversions averaged once settled.
 pub const AVERAGE: u16 = 8;
 
@@ -163,12 +176,12 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         !self.pen.is_high()
     }
 
-    /// Converts `ch` with the converter on for [`SETTLE_CONVERSIONS`], then
+    /// Converts `ch` with the converter on for [`settle_for`] it, then
     /// averages [`AVERAGE`] more.
     pub fn settle(&mut self, ch: u8) -> Settle {
         let mut curve = [0; 6];
         let mut at = 0;
-        for n in 1..=SETTLE_CONVERSIONS {
+        for n in 1..=settle_for(ch) {
             let v = self.read_pd(ch, pd::ADC_ON);
             if CURVE_AT.get(at) == Some(&n) {
                 curve[at] = v;
@@ -331,16 +344,17 @@ mod tests {
         );
         assert!(!c.borrow().selected);
         // X, Y and Z1 settled and averaged, then Z2: three bytes each.
-        let per = usize::from(SETTLE_CONVERSIONS + AVERAGE);
+        let per = |ch| usize::from(settle_for(ch) + AVERAGE);
+        let (x, y, z1) = (per(channel::X), per(channel::Y), per(channel::Z1));
         let log = &c.borrow().log;
-        assert_eq!(log.len(), (3 * per + 1) * 3);
+        assert_eq!(log.len(), (x + y + z1 + 1) * 3);
         // The converter stays on until the last conversion, which powers
         // down so the pen interrupt re-arms.
         let commands: Vec<&String> = log.iter().step_by(3).collect();
         assert_eq!(commands[0], "tx d1");
-        assert_eq!(commands[per], "tx 91");
-        assert_eq!(commands[2 * per], "tx b1");
-        assert_eq!(commands[3 * per], "tx c0");
+        assert_eq!(commands[x], "tx 91");
+        assert_eq!(commands[x + y], "tx b1");
+        assert_eq!(commands[x + y + z1], "tx c0");
     }
 
     #[test]
@@ -350,7 +364,7 @@ mod tests {
         let c = chip([0; 8]);
         let mut ramp: Vec<u16> = Vec::new();
         let mut v = 100.0f64;
-        for _ in 0..SETTLE_CONVERSIONS {
+        for _ in 0..settle_for(channel::X) {
             v += (2000.0 - v) * 0.05;
             ramp.push(v as u16);
         }

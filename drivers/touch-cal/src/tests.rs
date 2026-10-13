@@ -125,3 +125,43 @@ fn rounding_divides_both_signs() {
     // Too big to scale up: the divisor goes down instead.
     assert_eq!(scaled_div(i64::MAX / 2, i64::MAX / 4), Some(131_072));
 }
+
+#[test]
+fn the_landing_is_ignored_and_positions_need_agreement() {
+    let mut f = Filter::new();
+    // Landing: creeping readings in the first 15 ms say nothing.
+    assert_eq!(f.sample(Some((1200, 800)), 0), Pen::Nothing);
+    assert_eq!(f.sample(Some((2400, 800)), 5), Pen::Nothing);
+    assert_eq!(f.sample(Some((2700, 810)), 10), Pen::Nothing);
+    // Settled: three agreeing samples report their average.
+    assert_eq!(f.sample(Some((2860, 816)), 15), Pen::Nothing);
+    assert_eq!(f.sample(Some((2866, 817)), 20), Pen::Nothing);
+    assert_eq!(f.sample(Some((2870, 815)), 25), Pen::Down(2865, 816));
+    // One wild sample (a lift starting) changes nothing.
+    assert_eq!(f.sample(Some((0, 816)), 30), Pen::Nothing);
+    // Lifted: at the last stable position, not the wild one.
+    assert_eq!(f.sample(None, 35), Pen::Up(2865, 816));
+    assert!(!f.down());
+}
+
+#[test]
+fn a_drag_moves_and_a_tap_too_short_to_settle_is_dropped() {
+    let mut f = Filter::new();
+    for (t, x) in [(0, 1000), (15, 1000), (20, 1002), (25, 1001)] {
+        f.sample(Some((x, 2000)), t);
+    }
+    assert_eq!(f.sample(Some((1001, 2000)), 30), Pen::Hold(1001, 2000));
+    // Moving: reported once samples agree on the new place.
+    f.sample(Some((1100, 2000)), 35);
+    f.sample(Some((1102, 2000)), 40);
+    assert_eq!(f.sample(Some((1101, 2000)), 45), Pen::Move(1101, 2000));
+    assert_eq!(f.sample(None, 50), Pen::Up(1101, 2000));
+    // A touch that never settled: nothing at all, not a tap somewhere odd.
+    let mut f = Filter::new();
+    f.sample(Some((100, 100)), 0);
+    f.sample(Some((900, 100)), 20);
+    assert_eq!(f.sample(None, 25), Pen::Nothing);
+    // Its landing time is known while down (for latency).
+    f.sample(Some((5, 5)), 100);
+    assert_eq!(f.landed_at(), Some(100));
+}

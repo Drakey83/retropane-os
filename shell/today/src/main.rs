@@ -25,7 +25,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_shell::{Action, Input, Key, Shell, Time};
-    use rp_touch_cal::Calibration;
+    use rp_touch_cal::{Calibration, Filter, Pen};
 
     use rp_today::{H, Latency, W, clock};
 
@@ -134,7 +134,10 @@ mod image {
         let mut latency = Latency::new();
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
-        let mut pen: Option<(u16, u16)> = None;
+        // Samples to what the person meant (rp_touch_cal::Filter).
+        let mut filter = Filter::new();
+        // When the pen landed (OS timer): latency counts from the touch.
+        let mut landed_ticks: Option<u32> = None;
         let mut pending: Option<u32> = None; // when the input being answered was read
 
         loop {
@@ -176,19 +179,25 @@ mod image {
             // The pen: down and up are what the shell acts on.
             let pen_event = pen_irq.take();
             let read_at = rt::ticks();
-            let traced = if pen_event || pen.is_some() || touch.pen_down() {
+            let traced = if pen_event || filter.down() || touch.pen_down() {
                 touch.sample_traced()
             } else {
                 None
             };
             let raw = traced.map(|(s, _)| s);
-            let now = raw.map(|s| cal.to_screen(s.x, s.y, (W as u16, H as u16)));
-            // The first touches' raw readings (diagnostics).
-            if let (None, Some((s, t)), Some((x, y))) = (pen, traced, now)
+            if raw.is_some() && !filter.down() {
+                landed_ticks = Some(read_at);
+            }
+            let ev = filter.sample(raw.map(|s| (s.x, s.y)), (now_ms & 0xFFFF_FFFF) as u32);
+            let map = |x: u16, y: u16| cal.to_screen(x, y, (W as u16, H as u16));
+            // The first touches' samples (diagnostics): each tap's first
+            // sample after its landing, with the settling curves.
+            if let (Pen::Down(..), Some((s, t))) = (ev, traced)
                 && raw_logged < 12
                 && !shell.wants_raw()
             {
                 raw_logged += 1;
+                let (x, y) = map(s.x, s.y);
                 let _ = writeln!(
                     RunLog,
                     "touch {raw_logged}: x {} (curve {} {} {} {} {} {}) y {} (curve {} {} {} {} {} {}) z1 {} z2 {} -> screen {} {}",
@@ -212,20 +221,39 @@ mod image {
                     y
                 );
             }
-            // The align screen takes raw readings; everything else, points.
+            // The align screen takes stable raw samples; everything else,
+            // points.
             let act = if shell.wants_raw() {
-                match (raw, pen) {
-                    (Some(s), _) => shell.input(Input::Raw { rx: s.x, ry: s.y }),
-                    (None, Some(_)) => shell.input(Input::RawUp),
-                    (None, None) => Action::Nothing,
+                match ev {
+                    Pen::Down(rx, ry) | Pen::Move(rx, ry) | Pen::Hold(rx, ry) => {
+                        shell.input(Input::Raw { rx, ry })
+                    }
+                    Pen::Up(..) => shell.input(Input::RawUp),
+                    Pen::Nothing => Action::Nothing,
                 }
             } else {
-                match (pen, now) {
-                    (None, Some((x, y))) => shell.input(Input::PenDown { x, y }),
-                    (Some((x, y)), None) => shell.input(Input::PenUp { x, y }),
+                match ev {
+                    Pen::Down(rx, ry) => {
+                        let (x, y) = map(rx, ry);
+                        shell.input(Input::PenDown { x, y })
+                    }
+                    Pen::Up(rx, ry) => {
+                        let (x, y) = map(rx, ry);
+                        shell.input(Input::PenUp { x, y })
+                    }
                     _ => Action::Nothing,
                 }
             };
+            // Latency: the first answer to a touch counts from the touch
+            // itself (the landing and the filter included); anything later
+            // in the same touch (a hold, a move, the lift) from its sample.
+            let since = match ev {
+                Pen::Down(..) => landed_ticks.unwrap_or(read_at),
+                _ => read_at,
+            };
+            if matches!(ev, Pen::Up(..)) || raw.is_none() {
+                landed_ticks = None;
+            }
             match act {
                 Action::BackToLoader => back = true,
                 Action::Calibrated(c) => {
@@ -235,17 +263,12 @@ mod image {
                         "calibrated: a {} b {} c {} d {} e {} f {} (screen = (a rx + b ry + c) / 65536, (d rx + e ry + f) / 65536)",
                         c.a, c.b, c.c, c.d, c.e, c.f
                     );
-                    pending.get_or_insert(read_at);
+                    pending.get_or_insert(since);
                 }
                 Action::Redraw => {
-                    pending.get_or_insert(read_at);
+                    pending.get_or_insert(since);
                 }
                 Action::Nothing => {}
-            }
-            if now.is_some() {
-                pen = now;
-            } else if pen.is_some() {
-                pen = None;
             }
 
             if back {
@@ -282,7 +305,7 @@ mod image {
             }
 
             // Sleep until the next reason to wake.
-            let wait_ms: u32 = if pen.is_some() || touch.pen_down() {
+            let wait_ms: u32 = if filter.down() || touch.pen_down() {
                 5
             } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20
@@ -292,12 +315,12 @@ mod image {
                 // The next minute.
                 (60_000 - (now_ms % 60_000) as u32).max(1)
             };
-            if pen.is_none() {
+            if !filter.down() {
                 // Re-arm pen-down, then re-check the level: an edge while it
                 // was disarmed isn't remembered.
                 pen_irq.done();
             }
-            if pen.is_none() && touch.pen_down() {
+            if !filter.down() && touch.pen_down() {
                 continue;
             }
             // Never past the next check-in: sleeping through the loader's
