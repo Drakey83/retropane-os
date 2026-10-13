@@ -138,6 +138,9 @@ mod image {
         let mut filter = Filter::new();
         // When the pen landed (OS timer): latency counts from the touch.
         let mut landed_ticks: Option<u32> = None;
+        // Times the pen-detect line said "down" with no pressure behind it
+        // (diagnostics: the line recovering slowly after a sample).
+        let mut phantom = 0u32;
         let mut pending: Option<u32> = None; // when the input being answered was read
 
         loop {
@@ -276,7 +279,7 @@ mod image {
                 let _ = writeln!(
                     RunLog,
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
-                     (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us"
+                     (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times"
                 );
                 before.restore(d.regs());
                 rp_hal_x51v::devices::return_to_loader();
@@ -305,13 +308,21 @@ mod image {
             }
 
             // Sleep until the next reason to wake.
-            // While the pen is down, sample again at once: the filter needs
-            // three agreeing samples, and every sleep between them was
-            // latency (median 54 ms on the device with 5 ms sleeps).
-            if filter.down() || touch.pen_down() {
-                continue;
+            // Never a loop without a pause (2026-10-13: sampling back to
+            // back while the pen-detect line read "down" hung touch on the
+            // device; sampling holds that line low, so it never recovered).
+            // While a touch is in progress: every 1 ms (the filter needs
+            // three agreeing samples; 5 ms pauses made the first answer
+            // take a median of 54 ms). The line saying "down" with no touch
+            // in progress: one look after 2 ms, and pressure decides.
+            if !filter.down() && raw.is_none() && touch.pen_down() {
+                phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if pressed != rp_drv_pxa_keypad::Pressed::NONE {
+            let wait_ms: u32 = if filter.down() {
+                1
+            } else if touch.pen_down() {
+                2
+            } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20
             } else if shell.notice().is_some() {
                 100
@@ -323,9 +334,6 @@ mod image {
                 // Re-arm pen-down, then re-check the level: an edge while it
                 // was disarmed isn't remembered.
                 pen_irq.done();
-            }
-            if !filter.down() && touch.pen_down() {
-                continue;
             }
             // Never past the next check-in: sleeping through the loader's
             // run limit returns us to it (or worse, the watchdog resets).
