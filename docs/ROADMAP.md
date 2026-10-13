@@ -136,6 +136,9 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 - [ ] Installer; v1.0 public release with SD and flash images
 - [ ] Optional packs (ADR-0018, accepted): complete base system in flash; signed, verified packs (browser, codecs, fonts, language packs) on the card or in flash; clean card removal
 
+## After everything else: the Field Kit pack
+**Idea recorded, specifics later** (ADR-0020, owner's initial ideas, 2026-10-13). The last thing built, after the browser and the rest of the roadmap: a pack of client-only network and utility tools (terminal, hex editor, password manager, encryption and hashes, serial console, crash log viewer; then SSH, IRC, network diagnostics, Wi-Fi scanner), each a separate program run one at a time from the card.
+
 ---
 
 ## Tracking
