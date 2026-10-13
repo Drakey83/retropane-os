@@ -12,14 +12,43 @@
  * built with cegcc (arm-mingw32ce). No Microsoft code.
  *
  * Rows: "BENCH <name> <value> <unit>". Times are per operation.
+ *
+ * v2 (2026-10-13): every measured result feeds a sink (v1's memcpy, memset
+ * and SHA-256 rows were optimised away); the CPU clock is measured after a
+ * 2 s warm-up (Windows Mobile raises it only under load); drawing goes to
+ * the program's own full-screen window (v1's desktop drawing was clipped);
+ * card reads come after a second file pushes the first out of the cache;
+ * the backlight is held on and the idle timer reset, so the screen stays
+ * lit (and the device awake) until 'Done'.
  */
 
+#ifndef _WIN32_WCE
+#define _WIN32_WCE 0x0501 /* Windows Mobile 5 (CE 5.01): pm.h needs it */
+#endif
 #include <windows.h>
+#include <pm.h>
 #include <string.h>
 #include <stdio.h>
 
 static LARGE_INTEGER freq;
 static HANDLE logf_ = INVALID_HANDLE_VALUE;
+static HWND win;
+static HDC win_dc;
+static int scr_w, scr_h;
+/* Every measured loop's result goes here, so the compiler can't drop the
+ * work (v1's memcpy/memset/SHA rows measured nothing). */
+volatile unsigned long sink;
+
+/* Shows what is being measured, on the program's own full-screen window. */
+static void status(const WCHAR *what)
+{
+    RECT r = {0, 0, scr_w, scr_h};
+    if (!win_dc)
+        return;
+    FillRect(win_dc, &r, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    ExtTextOutW(win_dc, 20, 40, 0, NULL, L"RetroPane baseline: please wait", 31, NULL);
+    ExtTextOutW(win_dc, 20, 80, 0, NULL, what, (UINT)wcslen(what), NULL);
+}
 
 static unsigned long long now_ticks(void)
 {
@@ -54,21 +83,36 @@ static void out(const char *fmt, ...)
 /* 100 dependent adds per pass: one cycle each on the XScale, plus a few
  * for the loop, so cycles / time estimates the clock Windows Mobile runs
  * the core at. */
-static void cpu_clock(void)
+static unsigned long clock_once(void)
 {
     unsigned long passes = 200000, x = 0, i;
-    unsigned long long t0 = now_ticks(), t1;
+    unsigned long long t0 = now_ticks(), t1, ns;
     for (i = 0; i < passes; i++) {
 #define A10 "add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n" \
             "add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n add %0, %0, #1\n"
         __asm__ volatile(A10 A10 A10 A10 A10 A10 A10 A10 A10 A10 : "+r"(x));
     }
     t1 = now_ticks();
-    {
-        unsigned long long ns = (t1 - t0) * 1000000000ULL / (unsigned long long)freq.QuadPart;
-        unsigned long long cycles = (unsigned long long)passes * 103ULL;
-        out("BENCH cpu_mhz_estimate %lu MHz", (unsigned long)(cycles * 1000ULL / (ns ? ns : 1)));
+    sink += x;
+    ns = (t1 - t0) * 1000000000ULL / (unsigned long long)freq.QuadPart;
+    return (unsigned long)((unsigned long long)passes * 103ULL * 1000ULL / (ns ? ns : 1));
+}
+
+/* Windows Mobile lowers the clock when idle and raises it only after load
+ * persists: busy for 2 s first, then the best and worst of 8 runs. */
+static void cpu_clock(void)
+{
+    unsigned long best = 0, worst = 0xFFFFFFFF, i, first = clock_once();
+    DWORD until = GetTickCount() + 2000;
+    while ((LONG)(GetTickCount() - until) < 0)
+        (void)clock_once();
+    for (i = 0; i < 8; i++) {
+        unsigned long m = clock_once();
+        best = m > best ? m : best;
+        worst = m < worst ? m : worst;
     }
+    out("BENCH cpu_mhz_estimate %lu MHz", best);
+    out("INFO cpu_mhz_idle_start %lu, after warm-up %lu..%lu", first, worst, best);
 }
 
 static void memory(void)
@@ -82,13 +126,18 @@ static void memory(void)
     }
     memset(a, 1, 65536);
     t0 = now_ticks();
-    for (i = 0; i < rounds; i++)
+    for (i = 0; i < rounds; i++) {
+        a[i & 0xFFFF] = (unsigned char)i;
         memcpy(b, a, 65536);
+        sink += b[(i * 7) & 0xFFFF];
+    }
     t1 = now_ticks();
     out("BENCH memcpy_64k %lu ns", ns_per(t0, t1, rounds));
     t0 = now_ticks();
-    for (i = 0; i < rounds; i++)
+    for (i = 0; i < rounds; i++) {
         memset(b, (int)i, 65536);
+        sink += b[(i * 13) & 0xFFFF];
+    }
     t1 = now_ticks();
     out("BENCH memset_64k %lu ns", ns_per(t0, t1, rounds));
     free(a);
@@ -116,8 +165,7 @@ static void chase(void)
         p = (void **)*p;
     t1 = now_ticks();
     out("BENCH chase_sdram_256k %lu ns", ns_per(t0, t1, hops));
-    if (p == NULL)
-        out("#");
+    sink += (unsigned long)p;
     free(buf);
 }
 
@@ -126,7 +174,7 @@ static void timer_read(void)
     unsigned long i, n = 20000;
     unsigned long long t0 = now_ticks(), t1;
     for (i = 0; i < n; i++)
-        (void)now_ticks();
+        sink += (unsigned long)now_ticks();
     t1 = now_ticks();
     out("BENCH timer_read %lu ns", ns_per(t0, t1, n));
     out("INFO performance_counter_hz %lu", (unsigned long)freq.QuadPart);
@@ -233,8 +281,10 @@ static void sha(void)
     for (j = 0; j < n; j++) {
         h[0] = 0x6a09e667; h[1] = 0xbb67ae85; h[2] = 0x3c6ef372; h[3] = 0xa54ff53a;
         h[4] = 0x510e527f; h[5] = 0x9b05688c; h[6] = 0x1f83d9ab; h[7] = 0x5be0cd19;
+        data[j & 4095] ^= (unsigned char)j;
         for (i = 0; i < sizeof data; i += 64)
             sha_block(h, data + i);
+        sink += h[0];
     }
     t1 = now_ticks();
     out("BENCH sha256_4k %lu ns", ns_per(t0, t1, n));
@@ -251,11 +301,11 @@ typedef struct {
 
 static void screen(void)
 {
-    HDC dc = GetDC(NULL);
+    HDC dc = win_dc;
     RawFrameBufferInfo fb;
     unsigned long i, n = 20;
     unsigned long long t0, t1;
-    int w = GetDeviceCaps(dc, HORZRES), hgt = GetDeviceCaps(dc, VERTRES);
+    int w = scr_w, hgt = scr_h;
     out("INFO screen %dx%d %d bpp", w, hgt, GetDeviceCaps(dc, BITSPIXEL));
 
     /* Windows Mobile's own drawing (GDI on the CPU). */
@@ -294,51 +344,80 @@ static void screen(void)
         fb.pFramePointer && fb.wBPP == 16) {
         out("INFO raw_framebuffer %dx%d stride %d/%d", fb.cxPixels, fb.cyPixels, fb.cxStride,
             fb.cyStride);
-        t0 = now_ticks();
-        for (i = 0; i < n; i++) {
-            int y, x;
-            for (y = 0; y < fb.cyPixels; y++) {
-                unsigned short *row = (unsigned short *)((char *)fb.pFramePointer + y * fb.cyStride);
-                for (x = 0; x < fb.cxPixels; x++)
-                    row[x * (fb.cxStride / 2)] = (unsigned short)(i & 1 ? 0x001F : 0xF800);
+        /* Word stores along each row (as RetroPane's own fill), only when
+         * pixels are contiguous; the bus to the 2700G as WM set it up. */
+        if (fb.cxStride == 2) {
+            t0 = now_ticks();
+            for (i = 0; i < n; i++) {
+                unsigned long v = (i & 1) ? 0x001F001FUL : 0xF800F800UL;
+                int y, x;
+                for (y = 0; y < fb.cyPixels; y++) {
+                    unsigned long *row =
+                        (unsigned long *)((char *)fb.pFramePointer + y * fb.cyStride);
+                    for (x = 0; x < fb.cxPixels / 2; x++)
+                        row[x] = v;
+                }
             }
+            t1 = now_ticks();
+            out("BENCH fb_solid_fill_vga %lu ns", ns_per(t0, t1, n));
+        } else {
+            out("# raw framebuffer pixels not contiguous (stride %d): fill skipped", fb.cxStride);
         }
-        t1 = now_ticks();
-        out("BENCH fb_solid_fill_vga %lu ns", ns_per(t0, t1, n));
     } else {
         out("# no raw framebuffer access (GETRAWFRAMEBUFFER)");
     }
-    ReleaseDC(NULL, dc);
-    InvalidateRect(NULL, NULL, TRUE);
 }
 
 /* ---- Cards ---------------------------------------------------------- */
 
+static unsigned long kbps(unsigned long bytes, unsigned long long t0, unsigned long long t1)
+{
+    return (unsigned long)((unsigned long long)bytes * (unsigned long long)freq.QuadPart /
+                           1024ULL / (t1 - t0 ? t1 - t0 : 1));
+}
+
+static int write_file(const WCHAR *path, unsigned long total, unsigned char *chunk,
+                      unsigned long size, unsigned long *speed)
+{
+    unsigned long long t0, t1;
+    unsigned long done;
+    DWORD n;
+    HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH,
+                           NULL);
+    if (f == INVALID_HANDLE_VALUE)
+        return 0;
+    t0 = now_ticks();
+    for (done = 0; done < total; done += size) {
+        chunk[0] = (unsigned char)done;
+        WriteFile(f, chunk, size, &n, NULL);
+    }
+    FlushFileBuffers(f);
+    t1 = now_ticks();
+    CloseHandle(f);
+    *speed = kbps(total, t0, t1);
+    return 1;
+}
+
 static void card(const WCHAR *dir, const char *name)
 {
-    WCHAR path[MAX_PATH];
+    WCHAR path[MAX_PATH], other[MAX_PATH];
     static unsigned char chunk[65536];
-    unsigned long total = 4UL << 20, done, i;
+    unsigned long total = 4UL << 20, done, i, speed, speed2;
     unsigned long long t0, t1;
     DWORD n;
     HANDLE f;
     for (i = 0; i < sizeof chunk; i++)
         chunk[i] = (unsigned char)(i * 7);
-    wsprintfW(path, L"%s\\rp-wmbench.tmp", dir);
-    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_WRITE_THROUGH, NULL);
-    if (f == INVALID_HANDLE_VALUE) {
+    wsprintfW(path, L"%s\\rp-wmbench-a.tmp", dir);
+    wsprintfW(other, L"%s\\rp-wmbench-b.tmp", dir);
+    if (!write_file(path, total, chunk, sizeof chunk, &speed)) {
         out("# %s: can't create a test file", name);
         return;
     }
-    t0 = now_ticks();
-    for (done = 0; done < total; done += sizeof chunk)
-        WriteFile(f, chunk, sizeof chunk, &n, NULL);
-    FlushFileBuffers(f);
-    t1 = now_ticks();
-    CloseHandle(f);
-    out("BENCH %s_write_4m %lu KB/s", name,
-        (unsigned long)((unsigned long long)total * (unsigned long long)freq.QuadPart / 1024ULL /
-                        (t1 - t0 ? t1 - t0 : 1)));
+    out("BENCH %s_write_4m %lu KB/s", name, speed);
+    /* A second 4 MB file pushes the first out of Windows Mobile's cache. */
+    if (write_file(other, total, chunk, sizeof chunk, &speed2))
+        out("INFO %s_write_4m_again %lu KB/s", name, speed2);
     f = CreateFileW(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING, NULL);
     if (f != INVALID_HANDLE_VALUE) {
         t0 = now_ticks();
@@ -346,11 +425,28 @@ static void card(const WCHAR *dir, const char *name)
             ReadFile(f, chunk, sizeof chunk, &n, NULL);
         t1 = now_ticks();
         CloseHandle(f);
-        out("BENCH %s_read_4m %lu KB/s", name,
-            (unsigned long)((unsigned long long)total * (unsigned long long)freq.QuadPart /
-                            1024ULL / (t1 - t0 ? t1 - t0 : 1)));
+        out("BENCH %s_read_4m %lu KB/s", name, kbps(total, t0, t1));
     }
     DeleteFileW(path);
+    DeleteFileW(other);
+}
+
+/* ---- Staying awake --------------------------------------------------- */
+
+/* Windows Mobile turns the backlight off (and on battery, suspends) when
+ * nobody touches the screen; v1's run went dark before its 'Done' box.
+ * A sleeping helper thread resets the idle timer every 5 s: it wakes 24
+ * times in two minutes, which is noise against every row. */
+static volatile int awake_run = 1;
+
+static DWORD WINAPI keep_awake(LPVOID arg)
+{
+    (void)arg;
+    while (awake_run) {
+        SystemIdleTimerReset();
+        Sleep(5000);
+    }
+    return 0;
 }
 
 /* ---- The run -------------------------------------------------------- */
@@ -362,7 +458,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     MEMORYSTATUS ms;
     OSVERSIONINFO ver;
     WIN32_FIND_DATAW fd;
-    HANDLE find;
+    HANDLE find, light, awake;
     (void)prev; (void)cmd; (void)show;
 
     QueryPerformanceFrequency(&freq);
@@ -392,17 +488,39 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     out("INFO uptime_ms %lu", (unsigned long)GetTickCount());
 
     MessageBoxW(NULL,
-                L"RetroPane baseline: about a minute. The screen will flash; don't touch "
-                L"the device until the 'done' message.",
+                L"RetroPane baseline: about two minutes. The screen will flash; don't touch "
+                L"the device until the 'Done' message.",
                 L"rp-wmbench", MB_OK);
 
+    /* Backlight held fully on for the run (as video players do); the idle
+     * timer reset covers devices whose backlight driver has another name. */
+    light = SetPowerRequirement(L"BKL1:", D0, POWER_NAME, NULL, 0);
+    awake = CreateThread(NULL, 0, keep_awake, NULL, 0, NULL);
+    out("INFO backlight_held %s", light ? "yes" : "no (idle timer only)");
+
+    scr_w = GetSystemMetrics(SM_CXSCREEN);
+    scr_h = GetSystemMetrics(SM_CYSCREEN);
+    win = CreateWindowExW(WS_EX_TOPMOST, L"STATIC", L"rp-wmbench", WS_POPUP | WS_VISIBLE, 0, 0,
+                          scr_w, scr_h, NULL, NULL, inst, NULL);
+    if (win) {
+        SetForegroundWindow(win);
+        UpdateWindow(win);
+        win_dc = GetDC(win);
+    }
+    status(L"CPU clock");
     cpu_clock();
+    status(L"Timer, memory, hashing");
     timer_read();
     memory();
     chase();
     sha();
+    status(L"Threads");
     threads();
-    screen();
+    if (win_dc)
+        screen();
+    else
+        out("# no window: drawing rows skipped");
+    status(L"This card (writes 8 MB, then removes it)");
     card(dir, "card_here");
     /* Other storage cards (the CF card): root folders marked temporary. */
     find = FindFirstFileW(L"\\*", &fd);
@@ -414,6 +532,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
                 char label[64];
                 int k;
                 wsprintfW(other, L"\\%s", fd.cFileName);
+                status(L"The other card (writes 8 MB, then removes it)");
                 if (_wcsicmp(other, dir) == 0)
                     continue;
                 for (k = 0; fd.cFileName[k] && k < 40; k++)
@@ -424,8 +543,22 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         } while (FindNextFileW(find, &fd));
         FindClose(find);
     }
+    out("INFO sink %lu", (unsigned long)sink);
     out("# done");
     CloseHandle(logf_);
-    MessageBoxW(NULL, L"Done: rp-wm-baseline.txt is next to the program.", L"rp-wmbench", MB_OK);
+    status(L"Done");
+    MessageBoxW(win, L"Done: rp-wm-baseline.txt is next to the program.", L"rp-wmbench",
+                MB_OK | MB_TOPMOST);
+    if (win) {
+        ReleaseDC(win, win_dc);
+        DestroyWindow(win);
+    }
+    awake_run = 0;
+    if (awake) {
+        WaitForSingleObject(awake, 6000);
+        CloseHandle(awake);
+    }
+    if (light)
+        ReleasePowerRequirement(light);
     return 0;
 }
