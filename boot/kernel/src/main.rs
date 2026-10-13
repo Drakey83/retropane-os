@@ -78,6 +78,7 @@ mod image {
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
     use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
+    use rp_hal_x51v::devices::take_trace_area;
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
     use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
@@ -93,7 +94,7 @@ mod image {
     use rp_kernel_pe::build::{self, Header, SectionSpec};
     use rp_kernel_pe::{Dir, Image, Protection, Relocations, dir, scn};
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
-    use rp_kernel_trace::{Kind, Ring};
+    use rp_kernel_trace::{Kind, Persistent};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -353,11 +354,16 @@ mod image {
     static SCHED: Global<Scheduler> = Global::new(Scheduler::new());
 
     /// The trace ring (docs/design-brief.md): the newest kernel events,
-    /// always on (2 KiB, `.bss`).
-    static TRACE: Global<Ring<128>> = Global::new(Ring::new());
+    /// always on, in the trace region (item 54) so it outlives the image:
+    /// carried on from the loader if it started this run.
+    static TRACE: Global<Option<Persistent<'static>>> = Global::new(None);
 
     fn trace(kind: Kind, a: u32, b: u32) {
-        TRACE.with(|t| t.record(rt::ticks(), kind, a, b));
+        TRACE.with(|t| {
+            if let Some(t) = t {
+                t.record(rt::ticks(), kind, a, b);
+            }
+        });
     }
 
     /// Who runs, and where.
@@ -641,6 +647,7 @@ mod image {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = writeln!(early, "\nRetroPane 26 kernel: VM bring-up");
+        TRACE.with(|t| *t = take_trace_area().and_then(Persistent::resume));
         let mut ok = true;
 
         // 1-2. Frames, then the kernel's own page tables.
@@ -2061,7 +2068,10 @@ mod image {
     /// The trace ring after the run: it wrapped many times and kept the
     /// newest 128 events intact and in order; and a record costs little.
     fn check_trace(uart: &mut PxaUart<Mmio>) -> bool {
-        let (total, intact, ordered) = TRACE.with(|t| {
+        let (total, intact, ordered, cap) = TRACE.with(|t| {
+            let Some(t) = t else {
+                return (0, 0, false, 0);
+            };
             let mut prev: Option<(u32, u32)> = None;
             let (mut n, mut ordered) = (0u32, true);
             for e in t.events() {
@@ -2071,7 +2081,7 @@ mod image {
                 prev = Some((e.seq, e.time));
                 n += 1;
             }
-            (t.total(), n, ordered)
+            (t.total(), n, ordered, t.capacity() as u32)
         });
         // The cost of one record, over 1000.
         let start = rt::ticks();
@@ -2079,15 +2089,15 @@ mod image {
             trace(Kind::Mark, i, i);
         }
         let ticks = rt::ticks().wrapping_sub(start);
-        let pass = total > 4 * 128 && intact == 128 && ordered;
+        let pass = cap > 0 && total > 4 * cap && intact == cap && ordered;
         let _ = writeln!(uart, "BENCH trace_event {ticks} 1000");
-        report_as_trace(uart, pass, total)
+        report_as_trace(uart, pass, total, cap)
     }
 
-    fn report_as_trace(uart: &mut PxaUart<Mmio>, pass: bool, total: u32) -> bool {
+    fn report_as_trace(uart: &mut PxaUart<Mmio>, pass: bool, total: u32, cap: u32) -> bool {
         let _ = uart.write_str("TRACE ring");
         if pass {
-            let _ = writeln!(uart, " OK ({total} events, newest 128 kept)");
+            let _ = writeln!(uart, " OK ({total} events, newest {cap} kept)");
         } else {
             let _ = writeln!(uart, " FAIL (got {total})");
         }

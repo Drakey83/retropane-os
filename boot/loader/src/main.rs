@@ -934,6 +934,31 @@ mod image {
         gpio.write(BOARD_RESET, false);
     }
 
+    /// `trace`: the last program's trace ring (item 54) as it lies, one
+    /// `RPD` line per four words (the header first), for `cargo xtask
+    /// trace` to decode; the reply says how many events it holds.
+    fn trace_command(area: Option<&[u32]>, out: &mut dyn FnMut(&[u8]), reply: &mut Line) {
+        let Some(area) = area else {
+            let _ = reply.write_str("RPL ERR trace: no trace region\r\n");
+            return;
+        };
+        let Some((total, events)) = rp_kernel_trace::decode_words(area) else {
+            let _ = reply.write_str("RPL ERR trace: no trace yet (run a program first)\r\n");
+            return;
+        };
+        let kept = events.count();
+        for words in area.as_chunks::<4>().0 {
+            let mut l = Line::new();
+            let _ = write!(
+                l,
+                "RPD {:08x} {:08x} {:08x} {:08x}\r\n",
+                words[0], words[1], words[2], words[3]
+            );
+            out(l.as_str().as_bytes());
+        }
+        let _ = write!(reply, "RPL OK trace {total} events, {kept} kept\r\n");
+    }
+
     /// Powers the CF slot from off, as Windows Mobile's socket driver does
     /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
     /// is then reset by `CfCard::init` through the RESET line.
@@ -1683,6 +1708,9 @@ mod image {
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
         let (card, spare, cpld_found, mut cpld) = open_card();
+        // The trace region: started afresh with each program, sent to the
+        // PC on `trace` (the last program's, even after a hang and reset).
+        let mut trace_area = devices::take_trace_area();
         let Some(scratch) = devices::take_scratch() else {
             halt()
         };
@@ -2062,6 +2090,14 @@ mod image {
                             reboot_at = Some(now_ms().wrapping_add(300));
                             "RPL OK reboot wm: resetting into Windows Mobile in 0.3 s\r\n"
                         }
+                        Ok(b"trace") => {
+                            trace_command(
+                                trace_area.as_deref(),
+                                &mut |b| usb_bytes(&mut udc, b),
+                                &mut status,
+                            );
+                            status.as_str()
+                        }
                         Ok(b"cf log") => {
                             let _ = status.write_str("RPL OK cf:");
                             cf.events.write(&mut status);
@@ -2224,6 +2260,9 @@ mod image {
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
                     devices::log_start();
+                    if let Some(area) = trace_area.as_deref_mut() {
+                        let _ = rp_kernel_trace::Persistent::start(area);
+                    }
                     // The verdict goes at the top of the image's run log, so
                     // it reaches the PC whatever the image then does.
                     devices::log_write(if intact {

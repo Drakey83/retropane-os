@@ -33,6 +33,7 @@ mod image {
     use rp_hal_pxa27x::{iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid, kdata};
+    use rp_kernel_trace::{Kind, Persistent};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -45,6 +46,19 @@ mod image {
     static SCHED: Global<Scheduler> = Global::new(Scheduler::new());
     /// The thread on the CPU.
     static CURRENT: Global<Tid> = Global::new(Tid(0));
+    /// The trace ring (item 54): in the trace region, carried on from the
+    /// loader (or started here when the image runs on its own), so the
+    /// switches can be read on the PC afterwards (`cargo xtask trace`).
+    static TRACE: Global<Option<Persistent<'static>>> = Global::new(None);
+
+    fn trace(kind: Kind, a: u32, b: u32) {
+        TRACE.with(|t| {
+            if let Some(t) = t {
+                t.record(rt::ticks(), kind, a, b);
+            }
+        });
+    }
+
     /// The KData page, written on every switch to another thread.
     static KDATA: Global<Option<&'static mut [u32; 1024]>> = Global::new(None);
     static DEMO: Global<Demo> = Global::new(Demo {
@@ -152,6 +166,11 @@ mod image {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = uart.write_str("\nRetroPane 26 threads test\n");
+        TRACE.with(|t| {
+            // The loader's ring if it started this run, else a new one.
+            *t = rp_hal_x51v::devices::take_trace_area().and_then(Persistent::resume);
+        });
+        trace(Kind::Mark, 1, 0);
 
         // Thread stacks: 4 KiB each from the RAM pool.
         let Some(pool) = take_ram_pool() else { halt() };
@@ -375,6 +394,7 @@ mod image {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
         }
+        trace(Kind::Mark, 2, u32::from(ok));
         // Back to the resident loader, if it started this run.
         rp_hal_x51v::devices::return_to_loader();
         halt()
@@ -446,6 +466,7 @@ mod image {
                     }
                 });
             }
+            trace(Kind::Switch, u32::from(cur.0), u32::from(next.0));
             thread::switch(cur.index(), next.index());
         }
     }
