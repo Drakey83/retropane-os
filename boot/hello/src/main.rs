@@ -207,7 +207,11 @@ mod image {
                 keypad.enable();
 
                 let gpio = RefCell::new(Gpio::new(gpio));
+                // Windows Mobile leaves GPIO24 as SSP1's frame signal
+                // (docs/hw/touch.md): a plain GPIO, or chip select does
+                // nothing and every reading is 0.
                 gpio.borrow_mut().make_output(TS_CS, true);
+                gpio.borrow_mut().set_function(TS_CS, 0);
                 gpio.borrow_mut().make_input(TS_PENIRQ);
                 let mut ssp = Ssp::new(ssp);
                 ssp.configure_spi(2_600_000);

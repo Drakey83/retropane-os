@@ -16,6 +16,18 @@
 
 AxDroid's settings: internal reference with 100 µs settle, 150 µs input settle.
 
+**As Windows Mobile leaves the pins (P, probe 2026-10-11, `GAFR0U =
+0x001A851A`; consequence seen 2026-10-13):** GPIO23 function 2 (SSP1
+clock), **GPIO24 function 2 (SSP1's frame signal)**, GPIO25 function 2
+(transmit), GPIO26 function 1 (receive); SSP1's clock is on (`CKEN` bit
+23). So WM drives chip select with the SSP's own frame. RetroPane drives
+it as a GPIO across the three bytes of a conversion and must first make
+GPIO24 a plain GPIO (`Gpio::set_function(24, 0)`, after setting it high
+as an output): without that, every reading came back 0 and every tap
+landed at the top left (`rp-today`, the first device test of touch).
+The raw ranges and axis orientation below are still to be confirmed by
+`rp-today`'s logged readings.
+
 ## TSC2046 protocol (D)
 
 SPI mode 0. A conversion takes 24 clocks; with 8-bit frames that's three transfers:

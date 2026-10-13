@@ -91,7 +91,13 @@ mod image {
         let mut keypad = Keypad::new(kp);
         keypad.enable();
         let gpio = RefCell::new(Gpio::new(gpio));
+        // Windows Mobile leaves GPIO24 as SSP1's frame signal (function 2,
+        // docs/hw/touch.md): then our chip-select writes do nothing and the
+        // frame pulses per byte, so every reading is 0 (all taps at the top
+        // left). Level and direction first, then a plain GPIO.
+        let cs_found = gpio.borrow_mut().function(TS_CS);
         gpio.borrow_mut().make_output(TS_CS, true);
+        gpio.borrow_mut().set_function(TS_CS, 0);
         gpio.borrow_mut().make_input(TS_PENIRQ);
         let mut ssp = Ssp::new(ssp);
         ssp.configure_spi(2_600_000);
@@ -107,6 +113,11 @@ mod image {
             crash(format_args!("no IRQs"))
         };
         let mut key_events = Keys::new(Timing::DEFAULT);
+        let _ = writeln!(
+            RunLog,
+            "touch: GPIO24 function {cs_found} as found, now a plain GPIO (chip select)"
+        );
+        let mut raw_logged = 0u8;
 
         // Time: the OS timer (3.25 MHz, wraps every 22 minutes) summed into
         // milliseconds since start.
@@ -161,11 +172,24 @@ mod image {
             // The pen: down and up are what the shell acts on.
             let pen_event = pen_irq.take();
             let read_at = rt::ticks();
-            let now = if pen_event || pen.is_some() || touch.pen_down() {
-                touch.sample().map(|s| Calibration::X51V.to_screen(s))
+            let raw = if pen_event || pen.is_some() || touch.pen_down() {
+                touch.sample()
             } else {
                 None
             };
+            let now = raw.map(|s| Calibration::X51V.to_screen(s));
+            // The first touches' raw readings, for the calibration (never
+            // checked on the device before this image).
+            if let (None, Some(s), Some((x, y))) = (pen, raw, now)
+                && raw_logged < 8
+            {
+                raw_logged += 1;
+                let _ = writeln!(
+                    RunLog,
+                    "touch raw x {} y {} z1 {} z2 {} -> screen {} {}",
+                    s.x, s.y, s.z1, s.z2, x, y
+                );
+            }
             match (pen, now) {
                 (None, Some((x, y))) => {
                     if shell.input(Input::PenDown { x, y }) != Action::Nothing {

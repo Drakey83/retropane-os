@@ -35,6 +35,12 @@ fn reg(kind: Kind, pin: u8) -> (usize, u32) {
     (off, 1 << (pin % 32))
 }
 
+/// Offset of the function register covering `pin`, and its field's shift.
+fn function_field(pin: u8) -> (usize, u32) {
+    assert!(pin <= MAX_PIN, "GPIO {pin} doesn't exist");
+    (0x54 + 4 * usize::from(pin / 16), u32::from(pin % 16) * 2)
+}
+
 /// The GPIO controller.
 #[derive(Debug)]
 pub struct Gpio<B> {
@@ -73,6 +79,26 @@ impl<B: RegisterBus> Gpio<B> {
     pub fn read(&mut self, pin: u8) -> bool {
         let (off, bit) = reg(Kind::Level, pin);
         self.regs.read32(off) & bit != 0
+    }
+
+    /// Sets `pin`'s function: 0 a plain GPIO, 1-3 the peripheral functions
+    /// the PXA27x manual lists for it. `GAFRn_L/U` at `0x54 + 4 * (pin / 16)`,
+    /// two bits a pin. Set the level and direction first (`make_output`) when
+    /// taking a pin back as an output, so it never glitches.
+    ///
+    /// # Panics
+    /// If the pin doesn't exist or `function` is over 3.
+    pub fn set_function(&mut self, pin: u8, function: u8) {
+        assert!(function <= 3, "GPIO function {function} doesn't exist");
+        let (off, shift) = function_field(pin);
+        let v = self.regs.read32(off) & !(3 << shift) | u32::from(function) << shift;
+        self.regs.write32(off, v);
+    }
+
+    /// `pin`'s function as set now (0 a plain GPIO).
+    pub fn function(&mut self, pin: u8) -> u8 {
+        let (off, shift) = function_field(pin);
+        (self.regs.read32(off) >> shift & 3) as u8
     }
 
     /// Gives the register block back.
@@ -124,6 +150,23 @@ mod tests {
         assert_eq!(reg(Kind::Clear, 63), (0x28, 1 << 31));
         assert_eq!(reg(Kind::Level, 96), (0x100, 1));
         assert_eq!(reg(Kind::Direction, 120), (0x10C, 1 << 24));
+    }
+
+    #[test]
+    fn function_fields_match_the_manual() {
+        // GPIO24: GAFR0_U bits 17:16; GPIO99: GAFR3_L bits 7:6 (as the
+        // board's reset code uses it); GPIO120: GAFR3_U bits 17:16.
+        assert_eq!(function_field(24), (0x58, 16));
+        assert_eq!(function_field(99), (0x6C, 6));
+        assert_eq!(function_field(120), (0x70, 16));
+        // Windows Mobile's GAFR0_U (probe 2026-10-11): GPIO24 is SSP1's frame.
+        let mut g = Gpio::new(MockBus::new());
+        g.regs.preset(0x58, 0x001A_851A);
+        assert_eq!(g.function(24), 2);
+        g.set_function(24, 0);
+        assert_eq!(g.function(24), 0);
+        // Only GPIO24's two bits changed.
+        assert_eq!(g.into_inner().value(0x58), 0x0018_851A);
     }
 
     #[test]
