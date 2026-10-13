@@ -13,6 +13,17 @@ RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC �
 
 ---
 
+## Now: know the silicon first (owner, 2026-10-13)
+The OS is designed around what the PXA270 and the 2700G do best, not
+built for the CPU and retrofitted. Before the UI (Phase 5) and the CE
+Personality's drawing (Phase 4) are designed:
+
+- [ ] **RE:** the MBX core's command interface, step by step on the device (clear, triangle, textured quad, blend), pulled forward from Phase 7 (`docs/research/imitation-audit.md`, item 69)
+- [ ] The CPU's unused features measured (performance monitor, cache locking, mini-data cache, SRAM, clocks and power states, memory timings: items 67, 68, 80)
+- [ ] The compositor/UI and GDI designs written GPU-first, with the CPU as fallback
+
+---
+
 ## Phase 0 — Foundations
 **Goal:** a project anyone can clone, build and test, before any OS code exists.
 
