@@ -187,21 +187,8 @@ mod image {
                 raw_logged += 1;
                 let _ = writeln!(
                     RunLog,
-                    "touch {raw_logged}: x {} ({} {} {} {}) y {} ({} {} {} {}) z1 {} z2 {} -> screen {} {}",
-                    s.x,
-                    t.x[0],
-                    t.x[1],
-                    t.x[2],
-                    t.x[3],
-                    s.y,
-                    t.y[0],
-                    t.y[1],
-                    t.y[2],
-                    t.y[3],
-                    s.z1,
-                    s.z2,
-                    x,
-                    y
+                    "touch {raw_logged}: x {} (first {}, {} reads) y {} (first {}, {} reads) z1 {} z2 {} -> screen {} {}",
+                    s.x, t.x.first, t.x.reads, s.y, t.y.first, t.y.reads, s.z1, s.z2, x, y
                 );
             }
             match (pen, now) {
