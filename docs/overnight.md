@@ -3,7 +3,7 @@
 Worked top to bottom, one item at a time, while the owner sleeps. Each item
 is committed and pushed when `cargo xtask ci` and `cargo xtask emu` are
 green, then ticked here with what was done to **iterate** and to
-**modernize** it. The standard (docs/AI-CONTRIBUTING.md): every way the part
+**modernize** it. The standard (docs/CONTRIBUTOR-BRIEF.md): every way the part
 can beat the original, not one token improvement.
 
 **Device rules overnight:** only images that passed the emulator go to the

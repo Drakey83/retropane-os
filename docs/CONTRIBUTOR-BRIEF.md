@@ -1,8 +1,4 @@
-# RetroPane OS — AI Contributor Prompt
-
-Paste this into your AI coding assistant when working on the RetroPane OS
-codebase. It carries the project's identity, the four decision lenses, the
-hardware reality, the architecture law, and the code-review concerns to honor.
+# RetroPane OS — Contributor Brief
 
 ---
 
