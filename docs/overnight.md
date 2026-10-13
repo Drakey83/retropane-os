@@ -1111,6 +1111,24 @@ on the host or in the emulator first.
     commands are 4.4x faster than the old card's; so the driver is the
     limit. Next: DMA for writes (on the device), larger multi-block
     commands, the bus clock checked, measured before/after on the device.
+    **Progress (2026-10-13), emulator-verified, device run next.** Bus clock
+    checked: right (19.5 MHz, the controller's maximum); ~80% of each block
+    is overhead (docs/hw/sd.md "Speed"). A `card speed` loader command was
+    built, then moved out (owner: iterate, not imitate): the probe measures
+    it instead, at no cost to the loader (`sd_read_256_blocks` and the DMA
+    rows `*_dma`, checked by `sd_dma_matches`). The drive now overlaps card
+    and USB (two half-buffers; the SD DMA's wait loop sends the previous
+    half: `Storage::read_blocks_while`, `SdCard::read_many_while`, the
+    controller's `dma_wait` hook) and reads ahead after a bulk read
+    (`drive status`: `read ahead`), dropped on any write, medium change or
+    reset. Host tests: streams exactly, read-ahead hit, write and medium
+    change drop it (two mutants), failure behind the front reported after
+    the good blocks; emulator: sequential reads hit, the 1 MiB read across
+    the slow block still exact. Loader 101 -> 112 KiB (owner-approved;
+    104,476 B). **Owner at the Axim:** `cargo xtask load rp-probe` (speed
+    rows FIFO vs DMA, 64 vs 256 blocks), copy a big file off the drive
+    before/after; then DMA writes (`cargo xtask card dma writes`) and
+    ACMD23 pre-erase, measured the same way.
 
 60. **Plane blending at scan-out**: **done, proven on the device**
     (2026-10-12, findings in docs/hw/2700g.md "Measured on the owner's

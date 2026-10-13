@@ -220,6 +220,24 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_full_size),
     },
     Mutant {
+        name: "a medium change keeps the blocks read ahead (stale data served)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "    pub fn medium_changed(&mut self, lun: usize) {\n        self.ahead = None;",
+        to: "    pub fn medium_changed(&mut self, lun: usize) {",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
+    },
+    Mutant {
+        name: "a write uses the blocks read ahead instead of dropping them",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !write\n            && let Some((unit, first, n)) = ahead",
+        to: "        if let Some((unit, first, n)) = ahead",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "read_ahead_serves_the_next_read_and_a_write_drops_it",
+        ]),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

@@ -251,9 +251,13 @@ pub const BUDGETS: &[Budget] = &[
     // cold code, proposed) would give ~20 KiB of the loader back.
     // Lowered 128 -> 101 KiB on 2026-10-12: built as Thumb (ADR-0015,
     // accepted), 124.7 -> 92.0 KiB; measured + ~10%.
+    // Raised 101 -> 112 KiB on 2026-10-13 (approved by the owner, +10%
+    // rule): the drive's overlapped reads and read-ahead (item 58: the
+    // card's DMA waits send the previous chunk to the PC); 104,476 B
+    // measured. Room for DMA writes and ACMD23 next.
     Budget {
         image: "rp-loader",
-        max_load: 101 * 1024,
+        max_load: 112 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Loader,
     },

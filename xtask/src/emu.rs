@@ -2651,6 +2651,35 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
                 t.elapsed()
             ));
         }
+        // Item 58: sequential reads, as a PC copying a file makes them: the
+        // second starts where the first ended, so its first chunk was read
+        // ahead (by DMA, while the first one's last chunk went out). Both
+        // must still be exactly the card's bytes.
+        for at in [4096u32, 4096 + 128] {
+            let r = bot.command(&rw10(0x28, at, 128), 128 * 512, true, &[])?;
+            let want = &image[at as usize * 512..(at as usize + 128) * 512];
+            if r.status != 0 || r.data != want {
+                return Err(format!(
+                    "drive: sequential read at {at} doesn't match the card"
+                ));
+            }
+        }
+        serial
+            .write_all(&rp_loadproto::control_frame("drive status"))
+            .map_err(|e| e.to_string())?;
+        let status = usb_read_until(&mut serial, "%\r\n", 10)?;
+        let ahead: u32 = status
+            .split("read ahead ")
+            .nth(1)
+            .and_then(|t| t.split(',').next())
+            .and_then(|n| n.trim().parse().ok())
+            .ok_or_else(|| format!("no read-ahead count in {status:?}"))?;
+        if ahead == 0 {
+            return Err(format!(
+                "drive: sequential reads found nothing read ahead: {status:?}"
+            ));
+        }
+        eprintln!("    drive read-ahead OK: {ahead} reads found their first chunk already read");
         Ok(())
     };
     boot(

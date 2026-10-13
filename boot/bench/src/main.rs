@@ -61,11 +61,11 @@ mod image {
             suite::memory(&mut r, scratch);
             suite::lz4(&mut r, &mut scratch[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut scratch[..256 * 1024]);
-            // The first MiB less 32 KiB for the pixel paths, those 32 KiB
-            // for SD (the suites above stay below them), the rest for the
-            // interface layer.
-            let (work, tail) = scratch.split_at_mut(1024 * 1024 - 32 * 1024);
-            let (sd, rest) = tail.split_at_mut(32 * 1024);
+            // The first MiB less 128 KiB for the pixel paths, those 128
+            // KiB for SD (256-block reads; the suites above stay below
+            // them), the rest for the interface layer.
+            let (work, tail) = scratch.split_at_mut(1024 * 1024 - 128 * 1024);
+            let (sd, rest) = tail.split_at_mut(128 * 1024);
             gfx_work = work;
             sd_buf = sd;
             layer_work = rest;

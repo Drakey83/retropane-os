@@ -425,10 +425,8 @@ mod target {
     struct Lines<const N: usize>([u8; N]);
 
     /// SD reads: one block per command, four per command (CMD18), where
-    /// the card's per-command start-up cost is paid once, and 64 (32 KiB,
-    /// a cluster's worth, into `big`: 32 KiB, cache-line aligned, off the
-    /// stack), where moving the data dominates and DMA, if the host has it,
-    /// shows.
+    /// the card's per-command start-up cost is paid once, then the bulk
+    /// rows ([`sd_bulk`]) into `big` (cache-line aligned, off the stack).
     pub fn sd<H: SdHost>(r: &mut Runner, card: &mut SdCard<H>, big: &mut [u8]) {
         let mut block = [0u8; BLOCK];
         let mut lba = 0;
@@ -442,17 +440,42 @@ mod target {
             let _ = card.read_many(lba, &mut four.0);
             lba = (lba + 4) % 64;
         });
+        sd_bulk(
+            r,
+            card,
+            big,
+            ["sd_read_64_blocks", "sd_read_256_blocks"],
+            "sd_multi_block_matches",
+        );
+    }
+
+    /// SD bulk reads (item 58): 64 blocks per command (32 KiB, a cluster's
+    /// worth) and 256 (128 KiB, the DMA engine's longest chain), where
+    /// moving the data dominates; named `names` so a caller can run them
+    /// once per transfer mode (the probe: the FIFO, then DMA). Then `check`:
+    /// the multi-block path must read what single-block reads (programmed
+    /// I/O) do. Rows that don't fit in `big` are skipped.
+    pub fn sd_bulk<H: SdHost>(
+        r: &mut Runner,
+        card: &mut SdCard<H>,
+        big: &mut [u8],
+        names: [&'static str; 2],
+        check: &'static str,
+    ) {
+        let mut block = [0u8; BLOCK];
+        for (name, blocks, rounds) in [(names[0], 64, 4), (names[1], 256, 2)] {
+            if let Some(many) = big.get_mut(..blocks * BLOCK) {
+                r.run(name, rounds, &mut || {
+                    let _ = card.read_many(0, many);
+                });
+            }
+        }
         if let Some(many) = big.get_mut(..64 * BLOCK) {
-            r.run("sd_read_64_blocks", 4, &mut || {
-                let _ = card.read_many(0, many);
-            });
-            // The multi-block path (DMA, if the host has it) must read what
-            // single-block reads (programmed I/O) do.
             let same = card.read_many(0, many).is_ok()
                 && many.chunks_exact(BLOCK).enumerate().all(|(lba, want)| {
                     card.read(lba as u32, &mut block).is_ok() && block[..] == *want
                 });
-            r.check("sd_multi_block_matches", same, "");
+            r.check(check, same, "");
         }
     }
 

@@ -299,6 +299,21 @@ mod image {
         fn product(&self) -> &[u8; 16] {
             b"SD card         "
         }
+        // Item 58: with DMA reads on, the card's waits send the previous
+        // chunk to the PC, so the drive overlaps and reads ahead.
+        fn overlaps(&self) -> bool {
+            self.card.as_ref().is_some_and(|c| c.host().dma_allowed().0)
+        }
+        fn read_blocks_while(
+            &mut self,
+            lba: u32,
+            buf: &mut [u8],
+            wait: &mut dyn FnMut(),
+        ) -> Result<(), BlockError> {
+            let card = self.card.as_mut().ok_or(BlockError::Device)?;
+            card.read_many_while(lba, buf, wait)
+                .map_err(|_| BlockError::Device)
+        }
     }
 
     /// The UDC's mass storage endpoints as the drive's bulk pipe.
@@ -313,6 +328,9 @@ mod image {
         }
         fn write_packet(&mut self, data: &[u8]) {
             self.0.msc_write(data);
+        }
+        fn service(&mut self) {
+            self.0.poll();
         }
     }
 
@@ -2006,7 +2024,7 @@ mod image {
                             let s = msc.stats();
                             let _ = write!(
                                 status,
-                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, kept alive {}, idle {}%\r\n",
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, read ahead {}, kept alive {}, idle {}%\r\n",
                                 s.commands,
                                 s.failed,
                                 s.blocks_read,
@@ -2025,6 +2043,7 @@ mod image {
                                     },
                                     card_note
                                 ),
+                                s.read_ahead_hits,
                                 KEPT_ALIVE.with(|k| *k),
                                 idle_pct.min(100),
                             );

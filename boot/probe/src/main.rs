@@ -239,10 +239,16 @@ mod image {
 
             let _ = writeln!(log, "SD...");
             let mut card = None;
-            if let (Some(c), Some(mmc)) = (cpld.as_mut(), rt::take_mmc()) {
+            if let (Some(c), Some(mmc), Some(dma)) =
+                (cpld.as_mut(), rt::take_mmc(), rt::take_dma(0))
+            {
                 c.set_sd_power(true);
                 rt::delay_us(10_000);
-                match SdCard::init(PxaMmc::new(mmc)) {
+                // DMA-capable, but off: every row is first measured through
+                // the FIFO (the baseline), then the bulk rows again by DMA.
+                let mut host = PxaMmc::with_dma(mmc, dma);
+                host.set_dma(false, false);
+                match SdCard::init(host) {
                     Ok(mut k) => {
                         let kind = if k.is_high_capacity() { "SDHC" } else { "SD" };
                         fmt_into(
@@ -361,8 +367,19 @@ mod image {
                 suite::gfx(&mut r, bench_ram, None);
             }
             if let Some(k) = card.as_mut() {
-                // Programmed I/O here: the device baseline DMA is judged against.
-                suite::sd(&mut r, k, &mut bench_ram[..32 * 1024]);
+                // Programmed I/O first: the device baseline DMA is judged
+                // against. Then the bulk rows by DMA (item 58: where the
+                // card's read time goes), checked against single reads.
+                suite::sd(&mut r, k, &mut bench_ram[..128 * 1024]);
+                k.host_mut().set_dma(true, false);
+                suite::sd_bulk(
+                    &mut r,
+                    k,
+                    &mut bench_ram[..128 * 1024],
+                    ["sd_read_64_blocks_dma", "sd_read_256_blocks_dma"],
+                    "sd_dma_matches",
+                );
+                k.host_mut().set_dma(false, false);
             }
             let _ = writeln!(log, "done");
         }
