@@ -75,8 +75,9 @@ const WRITE_SPIN_LIMIT: u32 = 20_000_000;
 /// specification allows rotating Microdrives far longer than flash).
 const READY_MS: u32 = 3000;
 
-/// RESET held for (the specification asks 10 µs).
-const RESET_HOLD_MS: u32 = 1;
+/// RESET held for (the specification asks 10 µs; Windows Mobile's driver
+/// on the X51v holds it 100 ms, and so does this one).
+const RESET_HOLD_MS: u32 = 100;
 /// After RESET is released, before the card's lines mean anything (PC Card
 /// reset set-up time).
 const RESET_SETUP_MS: u32 = 20;

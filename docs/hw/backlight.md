@@ -10,7 +10,7 @@
 | Item | Value | Confidence | Evidence |
 |---|---|---|---|
 | Backlight brightness | PWM0, output on GPIO17 | confirmed (code) | (C) |
-| Backlight enable | a CPLD bit (docs/hw/cpld.md) | likely; which bit unknown | (C) |
+| Backlight enable | CPLD `0x18` bit 2 (`0x0004`), set = on; Windows Mobile leaves it on | confirmed | Dell's `Backlight.dll` and display drivers set it (cpld.md (D)); clearing it darkened the panel on the owner's X51v, setting it lit it again (2026-10-12) |
 | PWM1 | running (duty 0x46 of 0xD7) as WM leaves it; purpose unknown (LCD contrast? keypad light?) | open | (P) |
 
 ## PXA27x PWM (M)

@@ -348,22 +348,38 @@ mod image {
 
     /// Powers the card and identifies it.
     #[inline(never)]
-    fn open_card() -> (Option<Sd>, Option<PxaMmc<Mmio, Dma>>, [u16; 16]) {
-        let (Some(mut cpld), Some(mmc), Some(dma)) =
-            (devices::take_cpld(), rt::take_mmc(), rt::take_dma(0))
-        else {
-            return (None, None, [0; 16]);
+    #[allow(clippy::type_complexity)]
+    fn open_card() -> (
+        Option<Sd>,
+        Option<PxaMmc<Mmio, Dma>>,
+        [u16; 16],
+        Option<Cpld<Mmio>>,
+    ) {
+        let Some(mut cpld) = devices::take_cpld() else {
+            return (None, None, [0; 16], None);
+        };
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
+            return (None, None, [0; 16], Some(Cpld::new(cpld)));
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
         // Mobile left them, read before our first write. Reads only; whether
         // they read back at all is one of the questions (docs/hw/cpld.md).
         let found: [u16; 16] =
             core::array::from_fn(|k| rp_hal_api::RegisterBus16::read16(&mut cpld, k * 2));
-        Cpld::new(cpld).set_sd_power(true);
+        // One CPLD for the loader's whole life: its shadow is what keeps
+        // the SD card's, the CF slot's and the Wi-Fi's bits in shared
+        // registers from undoing each other.
+        let mut cpld = Cpld::new(cpld);
+        // The CPLD doesn't read back: bits Windows Mobile left on in a
+        // register we write must be set here first. The backlight's enable
+        // shares 0x18 with the CF reset (a CF attach once turned the
+        // backlight off); setting it also brings it back after that.
+        cpld.set_backlight_enable(true);
+        cpld.set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None, found),
-            Err((_, host)) => (None, Some(host), found),
+            Ok(card) => (Some(card), None, found, Some(cpld)),
+            Err((_, host)) => (None, Some(host), found, Some(cpld)),
         }
     }
 
@@ -875,17 +891,39 @@ mod image {
         Unavailable,
     }
 
-    /// The socket's lines on the X51v: READY / slot power on GPIO84; no
-    /// RESET line known yet (the driver's reset is then only a wait for
-    /// READY, and the card's own soft reset through its configuration
-    /// register).
-    struct CfSocketLines<'a>(&'a mut Gpio<Mmio>);
+    /// The socket's lines on the X51v (docs/hw/cf.md "Slot power and
+    /// reset"): RESET is CPLD `0x18` bit 1, READY / slot power GPIO84.
+    struct CfSocketLines<'a> {
+        gpio: &'a mut Gpio<Mmio>,
+        cpld: &'a mut Cpld<Mmio>,
+    }
 
     impl rp_drv_cf::CfLines for CfSocketLines<'_> {
-        fn set_reset(&mut self, _: bool) {}
-        fn ready(&mut self) -> bool {
-            self.0.read(CF_READY)
+        fn set_reset(&mut self, held: bool) {
+            self.cpld.set_cf_reset(held);
         }
+        fn ready(&mut self) -> bool {
+            self.gpio.read(CF_READY)
+        }
+    }
+
+    /// Delays for the CPLD's power sequences.
+    struct BusyWait;
+
+    impl rp_drv_cpld::Delay for BusyWait {
+        fn delay_us(&mut self, us: u32) {
+            rt::delay_us(us);
+        }
+    }
+
+    /// Powers the CF slot from off, as Windows Mobile's socket driver does
+    /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
+    /// is then reset by `CfCard::init` through the RESET line.
+    fn cf_power_cycle(cpld: &mut Cpld<Mmio>) {
+        cpld.set_cf_power(false, &mut BusyWait);
+        rt::delay_us(308_000);
+        cpld.set_cf_power(true, &mut BusyWait);
+        rt::delay_us(100_000);
     }
 
     /// The CompactFlash card as the drive's second unit (LUN 1): an empty
@@ -1029,7 +1067,13 @@ mod image {
     /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
     /// for docs/hw/cf.md) skips the hardware reset.
     #[inline(never)]
-    fn cf_command(lun: &mut CfLun, gpio: &mut Gpio<Mmio>, soft: bool, out: &mut Line) {
+    fn cf_command(
+        lun: &mut CfLun,
+        gpio: &mut Gpio<Mmio>,
+        cpld: Option<&mut Cpld<Mmio>>,
+        soft: bool,
+        out: &mut Line,
+    ) {
         if gpio.read(CF_DETECT) {
             let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
             return;
@@ -1058,10 +1102,12 @@ mod image {
         let mut reset = None;
         if let Some((attr, common)) = windows {
             let mut delay = |ms| rt::delay_us(ms * 1000);
-            let taken = if soft {
-                CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay)
-            } else {
-                CfCard::init(attr, common, &mut CfSocketLines(gpio), &mut delay)
+            let taken = match cpld {
+                Some(cpld) if !soft => {
+                    cf_power_cycle(cpld);
+                    CfCard::init(attr, common, &mut CfSocketLines { gpio, cpld }, &mut delay)
+                }
+                _ => CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay),
             };
             *slot = match taken {
                 Ok((card, seen)) => {
@@ -1118,19 +1164,21 @@ mod image {
             out,
             "; was {was} (in {was_in}, detect changes {changes}); status {st:02x} error {err:02x}"
         );
-        // GPIO84 (slot power / READY) before, and how long the driver
-        // waited for it; `soft` doesn't wait.
+        // GPIO84 (slot power / READY) before, while RESET was held (low
+        // proves CPLD 0x18 bit 1 is the card's reset), and how long the
+        // driver waited for it; `soft` (the old way) does none of it.
         match reset {
             Some(seen) if !soft => {
                 let _ = write!(
                     out,
-                    "; GPIO84 {} before, high after {} ms",
+                    "; slot power-cycled; GPIO84 {} before, {} in reset, high after {} ms",
                     u8::from(ready_before),
+                    if seen.busy_in_reset { "low" } else { "high" },
                     seen.ready_ms,
                 );
             }
             Some(_) => {
-                let _ = out.write_str("; GPIO84 not waited for (soft)");
+                let _ = out.write_str("; soft: no power cycle or reset");
             }
             None => {}
         }
@@ -1592,7 +1640,7 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare, cpld_found) = open_card();
+        let (card, spare, cpld_found, mut cpld) = open_card();
         let Some(scratch) = devices::take_scratch() else {
             halt()
         };
@@ -1960,7 +2008,13 @@ mod image {
                             status.as_str()
                         }
                         Ok(c @ (b"cf" | b"cf soft")) => {
-                            cf_command(&mut cf, &mut gpio, c == b"cf soft", &mut status);
+                            cf_command(
+                                &mut cf,
+                                &mut gpio,
+                                cpld.as_mut(),
+                                c == b"cf soft",
+                                &mut status,
+                            );
                             // Attached (or not): the PC looks at LUN 1 again.
                             msc.medium_changed(1);
                             status.as_str()

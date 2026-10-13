@@ -1163,6 +1163,18 @@ on the host or in the emulator first.
     fresh boot (owner at the Axim), `cf log` before and after `cf` to time
     READY's drop; then find what powers the slot. (a) waits until the
     mechanism is known, so the emulator models the real fault.
+    **Solved (2026-10-12 night):** Dell's socket driver (analysed locally,
+    facts in docs/hw/cf.md and cpld.md) powers the slot with CPLD `0x16`
+    bit 1 + `0x10` bit 12 and resets the card with CPLD `0x18` bit 1;
+    GPIO84 = slot powered; GPIO36 isn't CF at all. The loader now
+    power-cycles the slot before `cf`: on the device the dead slot came
+    back, Windows mounted the card and read 73 MB with no errors. First
+    try turned the backlight off (CPLD `0x18` bit 2, cleared by our
+    whole-register write: the CPLD doesn't read back); the loader now sets
+    the backlight enable before its first write. Installed on the SD card.
+    **Left:** (a) the emulator model (docs/hw/emulator.md rows), then a
+    fork release; power the slot down on removal. CF icon done (owner
+    renamed both cards "X51V SD" and "X51V CF" from Windows; icons show).
 
 63. **Drive icons for the cards**: owner wants the "Memory cards" icons
     from puntodepartida.com (no licence stated: all rights reserved). For
