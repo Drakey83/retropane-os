@@ -172,22 +172,36 @@ mod image {
             // The pen: down and up are what the shell acts on.
             let pen_event = pen_irq.take();
             let read_at = rt::ticks();
-            let raw = if pen_event || pen.is_some() || touch.pen_down() {
-                touch.sample()
+            let traced = if pen_event || pen.is_some() || touch.pen_down() {
+                touch.sample_traced()
             } else {
                 None
             };
+            let raw = traced.map(|(s, _)| s);
             let now = raw.map(|s| Calibration::X51V.to_screen(s));
             // The first touches' raw readings, for the calibration (never
             // checked on the device before this image).
-            if let (None, Some(s), Some((x, y))) = (pen, raw, now)
-                && raw_logged < 8
+            if let (None, Some((s, t)), Some((x, y))) = (pen, traced, now)
+                && raw_logged < 12
             {
                 raw_logged += 1;
                 let _ = writeln!(
                     RunLog,
-                    "touch raw x {} y {} z1 {} z2 {} -> screen {} {}",
-                    s.x, s.y, s.z1, s.z2, x, y
+                    "touch {raw_logged}: x {} ({} {} {} {}) y {} ({} {} {} {}) z1 {} z2 {} -> screen {} {}",
+                    s.x,
+                    t.x[0],
+                    t.x[1],
+                    t.x[2],
+                    t.x[3],
+                    s.y,
+                    t.y[0],
+                    t.y[1],
+                    t.y[2],
+                    t.y[3],
+                    s.z1,
+                    s.z2,
+                    x,
+                    y
                 );
             }
             match (pen, now) {
