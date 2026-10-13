@@ -118,6 +118,12 @@ The owner picked VClouds' Rainmeter work (deviantart.com/vclouds: "Glasses", "VC
 above are approved; six more are to be found under the same rule (our own,
 CC0 or public domain, recorded with their Commons file and licence here),
 suited to glass (dark areas where the panels sit), and put to the owner.
+**Where they live (owner, 2026-10-13):** the ten ship as a wallpaper pack
+on the SD card (ADR-0018); the base system carries just one default, so
+the OS stays small. Sizes for scale: one 480 x 640 wallpaper is 450 KB
+as the video plane's raw 4:2:0, roughly 80-150 KB as a JPEG, so the pack
+is about 1-1.5 MB on the card. The one in use is copied (converted) into
+flash when picked, as below, so the screen never depends on the card.
 
 The concepts keep the glass light enough that the photo shows through. A "glass darkness" setting covers busy photos where small grey text gets hard to read.
 
