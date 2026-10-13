@@ -12,7 +12,7 @@ hardware, or compatibility reports.
 2. Read [`docs/CLEANROOM.md`](docs/CLEANROOM.md). It isn't optional: it's what
    keeps the project legal and safe to distribute.
 3. Using an AI coding assistant? Give it
-   [`docs/AI-CONTRIBUTING.md`](docs/AI-CONTRIBUTING.md) first: the project's
+   [`docs/CONTRIBUTOR-BRIEF.md`](docs/CONTRIBUTOR-BRIEF.md) first: the project's
    identity, hardware constraints, architecture law, review concerns and
    definition of done in one brief. Human contributors will find it a useful
    summary too.
