@@ -334,11 +334,23 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
     }
 
     fn read_blocks(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+        self.read_blocks_while(cmd, buf, &mut || {})
+    }
+
+    /// While the DMA moves the blocks, `wait` runs in the waiting loop
+    /// (useful work instead of spinning: the USB drive sends the previous
+    /// chunk). Through the FIFO there is no waiting to use.
+    fn read_blocks_while(
+        &mut self,
+        cmd: Command,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<u32, HostError> {
         let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
         self.dma_on = blocks > 1 && self.dma_reads && self.dma.arm_from_device(RX_PORT, buf);
         let status = self.issue(cmd, blocks)?[0];
         if self.dma_on {
-            self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, SPIN_LIMIT)?;
+            self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, SPIN_LIMIT, wait)?;
             self.receive(&mut [])?;
         } else {
             self.receive(buf)?;
@@ -365,7 +377,7 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
         self.dma_on = blocks > 1 && self.dma_writes && self.dma.arm_to_device(TX_PORT, buf);
         let status = self.issue_data(cmd, blocks, true)?[0];
         if self.dma_on {
-            self.dma_wait(0, WRITE_SPIN_LIMIT)?;
+            self.dma_wait(0, WRITE_SPIN_LIMIT, &mut || {})?;
             self.transmit(&[])?;
         } else {
             self.transmit(buf)?;
@@ -377,9 +389,17 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
 impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
     /// Waits for the armed DMA transfer, watching the controller's `errors`
     /// status bits so a failing card ends it at once (the DMA would wait
-    /// for FIFO requests that never come).
-    fn dma_wait(&mut self, errors: u32, limit: u32) -> Result<(), HostError> {
+    /// for FIFO requests that never come). `wait` runs on every pass: it
+    /// must be short (the limit counts passes, so a slow `wait` stretches
+    /// the timeout).
+    fn dma_wait(
+        &mut self,
+        errors: u32,
+        limit: u32,
+        wait: &mut dyn FnMut(),
+    ) -> Result<(), HostError> {
         for _ in 0..limit {
+            wait();
             match self.dma.done() {
                 Some(true) => {
                     self.dma_on = false;

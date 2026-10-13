@@ -163,6 +163,28 @@ card's per-command start-up dominates. RetroPane therefore switches every
 card to the 4-bit bus (ACMD6, argument 2, then `CMDAT[8]` on data commands)
 and reads runs of blocks with one CMD18, stopped by CMD12.
 
+On the owner's 32 GB card (2026-10-12) 64-block reads ran at 0.27 ms per
+block (~1.9 MB/s) where the data itself needs ~52 us at 19.5 MHz on four
+lines: about 80% of each block is overhead, not the bus. The clock is
+right (`CLKRT` 0, the controller's 19.5 MHz maximum). Prime suspect: the
+receive FIFO is read a byte per bus access (the controller's FIFO is byte
+wide; Linux reads it the same way). `rp-probe` now measures the parts
+separately (item 58): `sd_read_block` (per-command cost),
+`sd_read_64_blocks` / `sd_read_256_blocks` through the FIFO, and the same by
+DMA (`sd_read_64_blocks_dma`, `sd_read_256_blocks_dma`, checked against
+single-block reads by `sd_dma_matches`).
+
+**The drive overlaps the card and USB** (item 58, emulator-verified): reads
+use the buffer as two halves; while one goes to the PC, the next chunk is
+read into the other by DMA, and the DMA's waiting loop sends the first
+half's packets (`read_blocks_while`: useful work instead of spinning; the
+card driver's retries and fallbacks run without it, unchanged). After a
+bulk read the next chunk is read ahead and served if the PC reads on
+(`drive status`: `read ahead N`); any write, medium change or reset drops
+it. Only with DMA reads on (otherwise reading ahead would only add
+waiting). Expected: the drive at the slower of card and USB instead of
+their sum; to measure on the device.
+
 ## Emulator
 
 QEMU's `pxa2xx_mmci` model with an `sd-card` on `-drive if=sd`. Its response FIFO

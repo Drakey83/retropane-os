@@ -46,6 +46,9 @@ pub trait BulkPipe {
     /// Queues one IN packet; shorter than [`PACKET`] (even empty) ends the
     /// transfer.
     fn write_packet(&mut self, data: &[u8]);
+    /// Lets the controller move what is queued (called while the storage
+    /// is busy reading, so packets keep flowing). Nothing by default.
+    fn service(&mut self) {}
 }
 
 /// The storage behind one logical unit.
@@ -63,6 +66,25 @@ pub trait Storage: BlockDevice {
     /// The product name in INQUIRY (16 ASCII bytes, space-padded).
     fn product(&self) -> &[u8; 16] {
         b"Storage card    "
+    }
+    /// Whether [`read_blocks_while`](Self::read_blocks_while) really runs
+    /// `wait` while it reads (DMA): only then does the drive read ahead
+    /// and overlap reads with sending, which otherwise would only add
+    /// waiting. False by default.
+    fn overlaps(&self) -> bool {
+        false
+    }
+    /// Reads blocks, running `wait` while the storage waits for them (a
+    /// card read by DMA: the drive sends the previous chunk meanwhile). By
+    /// default it just reads.
+    fn read_blocks_while(
+        &mut self,
+        lba: u32,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<(), BlockError> {
+        let _ = wait;
+        self.read_blocks(lba, buf)
     }
 }
 
@@ -144,6 +166,8 @@ pub struct Stats {
     pub io_errors: u32,
     /// First block and count of the last failed transfer.
     pub last_error: (u32, u32),
+    /// Reads that found their first chunk already read ahead.
+    pub read_ahead_hits: u32,
 }
 
 /// The mass-storage function.
@@ -164,11 +188,22 @@ pub struct Msc<'b> {
     resp: [u8; PACKET],
     resp_len: usize,
     resp_pos: usize,
-    // Block transfer state.
+    // Block transfer state. Reads use the buffer as two halves: one goes
+    // to the host (the front: `buf_len` bytes, `buf_pos` sent) while the
+    // next chunk is read into the other (`back_len` bytes ready), so the
+    // card and the USB link work at the same time.
     lba: u32,
     blocks_left: u32,
     buf_len: usize,
     buf_pos: usize,
+    front: usize,
+    back_len: usize,
+    /// The back half holds blocks read ahead, past the last read: (unit,
+    /// first block, blocks). Dropped on any write, medium change or reset.
+    ahead: Option<(usize, u32, u32)>,
+    /// The chunk read behind the front failed (reported once the front
+    /// has gone).
+    back_failed: bool,
     pkt: [u8; PACKET],
     last_host_write: Option<u32>,
     stats: Stats,
@@ -212,6 +247,10 @@ impl<'b> Msc<'b> {
             blocks_left: 0,
             buf_len: 0,
             buf_pos: 0,
+            front: 0,
+            back_len: 0,
+            ahead: None,
+            back_failed: false,
             pkt: [0; PACKET],
             last_host_write: None,
             stats: Stats::default(),
@@ -228,6 +267,7 @@ impl<'b> Msc<'b> {
     /// abandon the command in progress and wait for the next.
     pub fn reset(&mut self) {
         self.phase = Phase::Command;
+        self.ahead = None;
     }
 
     /// The device changed unit `lun`'s medium (a file written on the card,
@@ -238,6 +278,7 @@ impl<'b> Msc<'b> {
     /// cached and re-reads the volume. A unit attention alone isn't enough
     /// for Windows. Also offers an ejected medium again.
     pub fn medium_changed(&mut self, lun: usize) {
+        self.ahead = None;
         if let Some(u) = self.units.get_mut(lun) {
             u.attention = false;
             u.ejected = false;
@@ -568,6 +609,23 @@ impl<'b> Msc<'b> {
         self.blocks_left = count;
         self.buf_len = 0;
         self.buf_pos = 0;
+        self.back_len = 0;
+        self.back_failed = false;
+        // Blocks read ahead count only for a read starting exactly where
+        // they do, on the same unit; anything else drops them (a write may
+        // be about to change them).
+        let ahead = self.ahead.take();
+        if !write
+            && let Some((unit, first, n)) = ahead
+            && unit == self.lun
+            && first == lba
+        {
+            let take = n.min(count);
+            self.back_len = take as usize * BLOCK;
+            self.lba += take;
+            self.blocks_left -= take;
+            self.stats.read_ahead_hits += 1;
+        }
         self.phase = if count == 0 {
             Phase::Status
         } else if write {
@@ -594,42 +652,161 @@ impl<'b> Msc<'b> {
         true
     }
 
+    /// Bytes per half of the buffer (whole blocks; the whole buffer if it
+    /// holds fewer than two blocks, which leaves no room to overlap).
+    fn half(&self) -> usize {
+        let h = self.buf.len() / 2 / BLOCK * BLOCK;
+        if h == 0 {
+            self.buf.len() / BLOCK * BLOCK
+        } else {
+            h
+        }
+    }
+
+    /// Reads `n` blocks from `lba` into half `back`, sending the front half
+    /// meanwhile (if `pump`).
+    fn read_into(
+        &mut self,
+        back: usize,
+        lba: u32,
+        n: usize,
+        pump: bool,
+        pipe: &mut dyn BulkPipe,
+        lun: &mut dyn Storage,
+    ) -> Result<(), BlockError> {
+        if !pump && back == self.front && self.buf.len() / 2 < n * BLOCK {
+            // No overlap: the whole buffer is one chunk, as before.
+            return lun.read_blocks(lba, &mut self.buf[..n * BLOCK]);
+        }
+        let half = self.half();
+        let Msc {
+            buf,
+            buf_pos,
+            buf_len,
+            done,
+            front,
+            ..
+        } = self;
+        let (lo, hi) = buf.split_at_mut(half);
+        let (into, from): (&mut [u8], &[u8]) = if back == 0 { (lo, hi) } else { (hi, lo) };
+        let from = &from[..(*buf_len).min(from.len())];
+        let into = &mut into[..n * BLOCK];
+        if !pump || back == *front {
+            return lun.read_blocks(lba, into);
+        }
+        lun.read_blocks_while(lba, into, &mut || {
+            while *buf_pos < from.len() && pipe.can_write() {
+                pipe.write_packet(&from[*buf_pos..*buf_pos + PACKET]);
+                *buf_pos += PACKET;
+                *done += PACKET as u32;
+            }
+            pipe.service();
+        })
+    }
+
+    /// Reads the command's next chunk (at most `max` bytes) into half
+    /// `into`, sending the front meanwhile if `pump`: its block count, or
+    /// `None` if it didn't read (recorded as the last error).
+    fn next_chunk(
+        &mut self,
+        into: usize,
+        max: usize,
+        pump: bool,
+        pipe: &mut dyn BulkPipe,
+        lun: &mut dyn Storage,
+    ) -> Option<usize> {
+        let n = (max / BLOCK).min(self.blocks_left as usize);
+        if self.read_into(into, self.lba, n, pump, pipe, lun).is_err() {
+            self.stats.last_error = (self.lba, n as u32);
+            return None;
+        }
+        self.lba += n as u32;
+        self.blocks_left -= n as u32;
+        self.stats.blocks_read += n as u32;
+        Some(n)
+    }
+
     fn read_step(&mut self, pipe: &mut dyn BulkPipe, luns: &mut [&mut dyn Storage]) -> bool {
+        let half = self.half();
+        let lun = &mut *luns[self.lun];
+        let overlap = half < self.buf.len() && lun.overlaps();
         if self.buf_pos >= self.buf_len {
-            if self.blocks_left == 0 {
+            if self.back_failed {
+                // The chunk read behind failed: reported now, when the host
+                // has had everything before it.
+                self.back_failed = false;
+                return self.read_failed();
+            }
+            if self.back_len == 0 && self.blocks_left > 0 {
+                // Nothing read behind (a command's start): read the front
+                // (half the buffer if the other half follows, else all of
+                // it), as if it had been read behind.
+                let max = if overlap { half } else { self.buf.len() };
+                let Some(n) = self.next_chunk(self.front, max, false, pipe, lun) else {
+                    return self.read_failed();
+                };
+                self.back_len = n * BLOCK;
+                self.front ^= usize::from(overlap);
+            }
+            if self.back_len == 0 {
                 self.phase = Phase::Status;
                 return true;
             }
-            let n = (self.buf.len() / BLOCK).min(self.blocks_left as usize);
-            let bytes = n * BLOCK;
-            if luns[self.lun]
-                .read_blocks(self.lba, &mut self.buf[..bytes])
-                .is_err()
-            {
-                self.stats.io_errors += 1;
-                self.stats.last_error = (self.lba, n as u32);
-                // The host still waits for data: end its transfer short.
-                self.units[self.lun].sense = Sense::READ_ERROR;
-                self.failed = true;
-                self.stats.failed += 1;
-                self.resp_len = 0;
-                self.resp_pos = 0;
-                self.phase = Phase::SendResp;
-                return true;
-            }
-            self.lba += n as u32;
-            self.blocks_left -= n as u32;
-            self.stats.blocks_read += n as u32;
-            self.buf_len = bytes;
+            // The next chunk is ready: it becomes the front.
+            self.front ^= usize::from(overlap);
+            self.buf_len = core::mem::take(&mut self.back_len);
             self.buf_pos = 0;
+        }
+        // While the front goes out, read the next chunk into the back: the
+        // rest of this command, or else (a bulk read just ended) the blocks
+        // after it, kept in case the host reads on.
+        if overlap && self.back_len == 0 && self.buf_pos == 0 {
+            let back = self.front ^ 1;
+            if self.blocks_left > 0 {
+                match self.next_chunk(back, half, true, pipe, lun) {
+                    Some(n) => self.back_len = n * BLOCK,
+                    None => {
+                        self.blocks_left = 0;
+                        self.back_failed = true;
+                    }
+                }
+            } else if self.buf_len == half && self.ahead.is_none() {
+                let n = (half / BLOCK) as u32;
+                if self
+                    .lba
+                    .checked_add(n)
+                    .is_some_and(|end| end <= lun.blocks())
+                    && self
+                        .read_into(back, self.lba, n as usize, true, pipe, lun)
+                        .is_ok()
+                {
+                    self.ahead = Some((self.lun, self.lba, n));
+                }
+            }
+        }
+        if self.buf_pos >= self.buf_len {
+            return true;
         }
         if !pipe.can_write() {
             return false;
         }
-        let end = self.buf_pos + PACKET;
-        pipe.write_packet(&self.buf[self.buf_pos..end]);
-        self.buf_pos = end;
+        let start = self.front * half * usize::from(overlap) + self.buf_pos;
+        pipe.write_packet(&self.buf[start..start + PACKET]);
+        self.buf_pos += PACKET;
         self.done += PACKET as u32;
+        true
+    }
+
+    /// A chunk didn't read: the host still waits for data, so its transfer
+    /// is ended short and the command fails with a read error.
+    fn read_failed(&mut self) -> bool {
+        self.stats.io_errors += 1;
+        self.units[self.lun].sense = Sense::READ_ERROR;
+        self.failed = true;
+        self.stats.failed += 1;
+        self.resp_len = 0;
+        self.resp_pos = 0;
+        self.phase = Phase::SendResp;
         true
     }
 

@@ -41,6 +41,11 @@ struct Disk {
     guarded: Option<u32>,
     fail_writes: bool,
     present: bool,
+    /// Reads like a DMA card: `wait` runs while it reads (item 58).
+    overlap: bool,
+    waits: usize,
+    /// Reads of any range that reaches this block fail.
+    fail_from: Option<u32>,
 }
 
 impl Disk {
@@ -57,6 +62,9 @@ impl Disk {
             guarded: None,
             fail_writes: false,
             present: true,
+            overlap: false,
+            waits: 0,
+            fail_from: None,
         }
     }
 }
@@ -66,7 +74,8 @@ impl BlockDevice for Disk {
         let o = lba as usize * BLOCK;
         assert!(o + buf.len() <= self.data.len(), "read past the end");
         self.reads += 1;
-        if self.fail_reads {
+        let n = (buf.len() / BLOCK) as u32;
+        if self.fail_reads || self.fail_from.is_some_and(|f| lba + n > f) {
             return Err(BlockError::Device);
         }
         buf.copy_from_slice(&self.data[o..o + buf.len()]);
@@ -100,6 +109,22 @@ impl Storage for Disk {
     }
     fn product(&self) -> &[u8; 16] {
         b"SD card         "
+    }
+    fn overlaps(&self) -> bool {
+        self.overlap
+    }
+    fn read_blocks_while(
+        &mut self,
+        lba: u32,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<(), BlockError> {
+        // A DMA read: the hook runs a few times before the data is in.
+        for _ in 0..3 {
+            wait();
+            self.waits += 1;
+        }
+        self.read_blocks(lba, buf)
     }
 }
 
@@ -612,4 +637,89 @@ fn busy_from_command_to_status() {
     assert!(!msc.busy());
     let csw = pipe.ins.last().unwrap();
     assert_eq!(csw.len(), 13, "the status went before busy cleared");
+}
+
+/// Item 58: with a card that overlaps (DMA), a long read streams exactly
+/// the card's bytes while the next chunk is read behind the one going out.
+#[test]
+fn long_reads_overlap_and_stream_the_card_exactly() {
+    let mut buf = vec![0u8; 4 * BLOCK]; // halves of 2 blocks
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let want = disk.data.clone();
+    let (d, csw) = run(&mut msc, &mut disk, 64 * 512, true, &read10(0, 64), &[]);
+    assert_eq!((csw.status, csw.residue), (0, 0));
+    assert!(d == want, "the stream differs from the card");
+    assert_eq!(disk.reads, 32, "two blocks per read, nothing read twice");
+    assert!(disk.waits > 0, "reads ran the hook");
+}
+
+/// The blocks after a bulk read are read ahead and used by the next read
+/// that starts there; a write drops them, so a read after it sees the card.
+#[test]
+fn read_ahead_serves_the_next_read_and_a_write_drops_it() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let want = disk.data.clone();
+    let (d, _) = run(&mut msc, &mut disk, 8 * 512, true, &read10(0, 8), &[]);
+    assert!(d == want[..8 * 512]);
+    let (d, csw) = run(&mut msc, &mut disk, 8 * 512, true, &read10(8, 8), &[]);
+    assert_eq!(csw.status, 0);
+    assert!(d == want[8 * 512..16 * 512]);
+    assert_eq!(msc.stats().read_ahead_hits, 1);
+    // Blocks 16-17 were read ahead; the host writes block 16.
+    let new = vec![0xA5u8; 512];
+    let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(16, 1), &new);
+    assert_eq!(csw.status, 0);
+    let (d, _) = run(&mut msc, &mut disk, 2 * 512, true, &read10(16, 2), &[]);
+    assert!(d[..512] == new[..], "served stale read-ahead after a write");
+    assert_eq!(msc.stats().read_ahead_hits, 1);
+}
+
+/// The device changes the card itself (a `put`), then says so: blocks read
+/// ahead before the change are never served.
+#[test]
+fn a_medium_change_drops_the_read_ahead() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let _ = run(&mut msc, &mut disk, 4 * 512, true, &read10(0, 4), &[]);
+    disk.data[4 * 512..5 * 512].fill(0x5A);
+    msc.medium_changed(0);
+    // The host notices the change (away, then back).
+    let mut t = 1000;
+    while tur_at(&mut msc, &mut disk, t).0 != 0 {
+        t += 1000;
+    }
+    let (d, csw) = run_at(&mut msc, &mut disk, t, 0, 512, true, &read10(4, 1), &[]);
+    assert_eq!(csw.status, 0);
+    assert!(
+        d.iter().all(|&b| b == 0x5A),
+        "served blocks read before the change"
+    );
+    assert_eq!(msc.stats().read_ahead_hits, 0);
+}
+
+/// A chunk read behind the front that fails: the host gets every block
+/// before it, then the transfer ends short with a read error.
+#[test]
+fn a_failure_behind_the_front_is_reported_after_the_good_blocks() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    disk.fail_from = Some(4);
+    let want = disk.data.clone();
+    let (d, csw) = run(&mut msc, &mut disk, 8 * 512, true, &read10(0, 8), &[]);
+    assert_eq!(csw.status, 1);
+    assert!(
+        d == want[..4 * 512],
+        "blocks before the failure, and only those"
+    );
+    assert_eq!(csw.residue, 4 * 512);
+    assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x11, 0x00));
 }

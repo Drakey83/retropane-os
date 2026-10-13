@@ -95,6 +95,18 @@ pub trait SdHost {
         let _ = (cmd, buf);
         Err(HostError::Data)
     }
+    /// [`read_blocks`](Self::read_blocks), running `wait` while the host
+    /// waits for the data (a host that moves it by DMA); by default it
+    /// just reads.
+    fn read_blocks_while(
+        &mut self,
+        cmd: Command,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<u32, HostError> {
+        let _ = wait;
+        self.read_blocks(cmd, buf)
+    }
     /// Sends a single-block write command (CMD24), the block, and waits for
     /// the card to finish programming it.
     fn write_block(&mut self, cmd: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
@@ -392,13 +404,26 @@ impl<H: SdHost> SdCard<H> {
     // One copy, however many callers (ADR-0005 rule 8: size).
     #[inline(never)]
     pub fn read_many(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        self.read_many_while(lba, buf, &mut || {})
+    }
+
+    /// [`read_many`](Self::read_many), running `wait` while the host waits
+    /// for the data of the first attempt (by DMA: useful work instead of
+    /// spinning). Retries and the block-by-block fallback run without it,
+    /// exactly as `read_many`'s do.
+    pub fn read_many_while(
+        &mut self,
+        lba: u32,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<(), Error> {
         let blocks = (buf.len() / BLOCK) as u32;
         if blocks > 1 && self.touches_weak(lba, blocks) {
             // A range a multi-block read failed on before: block by block,
             // so the weak block only ever sees gentle single reads.
             return self.read_singly(lba, buf);
         }
-        let mut result = self.read_many_once(lba, buf);
+        let mut result = self.read_many_once_while(lba, buf, wait);
         // A transfer error (CRC, a stalled block) may pass on a retry; a read
         // timeout won't: the card is slow on some block in the range, and
         // the multi-block command's timeout is shorter than a single
@@ -496,13 +521,24 @@ impl<H: SdHost> SdCard<H> {
     }
 
     fn read_many_once(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), Error> {
+        self.read_many_once_while(lba, buf, &mut || {})
+    }
+
+    // Out of line: `write_many`'s read-back would otherwise carry a copy.
+    #[inline(never)]
+    fn read_many_once_while(
+        &mut self,
+        lba: u32,
+        buf: &mut [u8],
+        wait: &mut dyn FnMut(),
+    ) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
         if buf.len() > BLOCK && self.host.can_read_multiple() {
             self.reads = self.reads.wrapping_add(1);
             let addr = self.address(lba);
-            let status = self
-                .host
-                .read_blocks(Command::new(18, addr, Response::R1), buf);
+            let status =
+                self.host
+                    .read_blocks_while(Command::new(18, addr, Response::R1), buf, wait);
             // Stop the card whatever happened, so it accepts commands again.
             let stop = self.host.command(Command::new(12, 0, Response::R1b));
             check(status?)?;
