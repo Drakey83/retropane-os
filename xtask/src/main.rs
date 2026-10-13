@@ -202,7 +202,11 @@ fn main() -> ExitCode {
         }
         "install" => {
             eprintln!("==> install");
-            usb::install(&workspace_root())
+            // Always from a fresh kit: an old target/sdkit once put a stale
+            // loader on the card while reporting "up to date".
+            cross()
+                .and_then(|()| sdkit::build(&workspace_root()))
+                .and_then(|()| usb::install(&workspace_root()))
         }
         "bench" => {
             eprintln!("==> bench");

@@ -145,6 +145,14 @@ Second session (2026-10-12 evening, loader with the hardware reset):
 | Seconds later, Windows' first read of the CF unit | Failed: the card stopped answering; the loader let it go and **stayed responsive** (the stall fix works) |
 | `cf` again | `timeout`: GPIO84 now reads **0** (was 1), and stays 0 for 3 s after the reset pulse |
 
+Timed with `cf log` (fresh boot, new loader, 2026-10-12): READY 1 at
+start; `cf` attached the card at 135,887 ms (reset, IDENTIFY, write cache
+off, sector 0 read whole, status `50`); **READY fell to 0 at 136,007 ms,
+120 ms later, before the PC touched the card**; Windows' first read then
+timed out and the card was dropped at 138,353 ms (the loader stayed
+responsive). So the card dies on its own right after the driver's burst
+of commands, not because of the PC's traffic.
+
 **Reading:** the card works when first taken, then goes quiet within
 seconds: everything reads 0 (status, the end of a sector, READY). Together
 with the re-insert finding (GPIO13 high after a re-insert), this looks like
