@@ -192,7 +192,6 @@ fn main() -> ExitCode {
             }
         }
         "cf" => {
-            // `cf soft`: without the hardware reset (diagnostics only).
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
             let cmd = match std::env::args().nth(2).as_deref() {
