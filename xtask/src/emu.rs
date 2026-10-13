@@ -3444,8 +3444,26 @@ fn connect_serial(child: &mut std::process::Child) -> Result<std::net::TcpStream
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", serial_port())) {
-            s.set_nodelay(true).map_err(|e| e.to_string())?;
-            return Ok(s);
+            // WSL's localhost relay accepts at once, even before QEMU
+            // listens inside WSL, then drops the connection: a socket that
+            // is already closed (a peek reads end-of-stream) is that, so
+            // try again. Silence (a timeout) is a live QEMU holding the
+            // guest for us.
+            s.set_read_timeout(Some(Duration::from_millis(300)))
+                .map_err(|e| e.to_string())?;
+            let mut probe = [0u8; 1];
+            let live = match s.peek(&mut probe) {
+                Ok(n) => n > 0,
+                Err(e) => matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+            };
+            if live {
+                s.set_read_timeout(None).map_err(|e| e.to_string())?;
+                s.set_nodelay(true).map_err(|e| e.to_string())?;
+                return Ok(s);
+            }
         }
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
