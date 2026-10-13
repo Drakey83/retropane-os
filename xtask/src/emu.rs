@@ -31,7 +31,14 @@ const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 /// Where `cargo xtask qemu` builds inside WSL.
 const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
 
-const EMU_ARGS: &str = "-M x51v -display none -serial stdio";
+const EMU_ARGS: &str = "-M x51v -display none";
+
+/// The guest's serial port, on a local TCP socket for every platform (item
+/// 61: Windows QEMU never read a stdin pipe). QEMU waits for the harness to
+/// connect before the guest starts (`wait=on`), so no early output is lost.
+fn serial_port() -> u16 {
+    monitor_port() - 1
+}
 
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
 fn monitor_port() -> u16 {
@@ -103,6 +110,11 @@ fn wsl_build_exists() -> bool {
 fn emulator(root: &Path) -> Result<Emulator, String> {
     match std::env::var("RETROPANE_QEMU") {
         Ok(v) if v.eq_ignore_ascii_case("wsl") => return Ok(Emulator::Wsl),
+        // The published release for this platform (the release check: the
+        // build contributors download, not the local one).
+        Ok(v) if v.eq_ignore_ascii_case("release") => {
+            return download_release(root).map(Emulator::Native);
+        }
         Ok(v) => return Ok(Emulator::Native(PathBuf::from(v))),
         Err(_) => {}
     }
@@ -1265,6 +1277,17 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
 
 /// The loader over USB: first light sent through the emulated USB serial
 /// port, its run log back the same way.
+/// `cargo xtask emu-usb`: the loader-over-USB check on its own.
+pub fn boot_loader_usb_alone(root: &Path) -> Result<(), String> {
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    for image in ["rp-loader", "rp-light"] {
+        crate::sdkit::raw_binary(&release.join(image), &dir.join(format!("{image}.bin")))?;
+    }
+    boot_loader_usb(root)
+}
+
 pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    loader over USB: skipped (this emulator has no USB controller model)");
@@ -3325,6 +3348,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     } = *cfg;
     let port = monitor_port();
     let monitor = format!("tcp:127.0.0.1:{port},server,nowait");
+    let serial_arg = format!("tcp:127.0.0.1:{},server=on,wait=on", serial_port());
     let qmp = format!("tcp:127.0.0.1:{},server,nowait", port + 1);
     let emu = emulator(root)?;
     let wsl = matches!(emu, Emulator::Wsl);
@@ -3333,7 +3357,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
             eprintln!("    emulator: {}", exe.display());
             let mut c = Command::new(exe);
             c.args(EMU_ARGS.split(' '))
-                .args(["-monitor", &monitor, "-qmp", &qmp])
+                .args(["-serial", &serial_arg, "-monitor", &monitor, "-qmp", &qmp])
                 .args(extra)
                 .arg("-kernel")
                 .arg(image);
@@ -3351,7 +3375,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
                 .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
                 .unwrap_or_default();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 timeout.as_secs() + 10,
                 extra.join(" "),
                 to_wsl_path(image)
@@ -3359,22 +3383,29 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         }
     };
     let mut child = cmd
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
+        .stdin(Stdio::null())
+        .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("failed to start emulator: {e}"))?;
 
-    // Stream stdout through a channel so we can enforce a timeout.
-    let mut stdout = child.stdout.take().expect("piped");
+    // The serial socket: QEMU listens and holds the guest until we connect.
+    let link = connect_serial(&mut child);
+    let link = match link {
+        Ok(l) => l,
+        Err(e) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+    };
+    // Stream the guest's output through a channel so we can enforce a
+    // timeout; the same socket carries what we send.
+    let mut reader = link.try_clone().map_err(|e| e.to_string())?;
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buf = [0u8; 256];
-        while let Ok(n) = stdout.read(&mut buf) {
+        while let Ok(n) = reader.read(&mut buf) {
             if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
                 break;
             }
@@ -3386,9 +3417,8 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         output: String::new(),
         deadline: Instant::now() + timeout,
     };
-    let stdin = child.stdin.take();
     let result = run_session(&mut serial, marker, port, wsl, screenshot, steps)
-        .and_then(|()| send_input(&mut serial, stdin, input))
+        .and_then(|()| send_input(&mut serial, &link, input))
         .and_then(|()| during.map_or(Ok(()), |f| f()));
     let _ = child.kill();
     let _ = child.wait();
@@ -3408,20 +3438,40 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     }
 }
 
+/// Connects to the guest's serial socket once QEMU listens (it holds the
+/// guest until then); fails if QEMU exits first or never listens.
+fn connect_serial(child: &mut std::process::Child) -> Result<std::net::TcpStream, String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(s) = std::net::TcpStream::connect(("127.0.0.1", serial_port())) {
+            s.set_nodelay(true).map_err(|e| e.to_string())?;
+            return Ok(s);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "the emulator exited before its serial port opened ({status})"
+            ));
+        }
+        if Instant::now() > deadline {
+            return Err("the emulator's serial port never opened".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Sends `input`'s bytes to the guest's serial port and waits for its text.
 fn send_input(
     serial: &mut Serial,
-    stdin: Option<std::process::ChildStdin>,
+    link: &std::net::TcpStream,
     input: Option<(&[u8], &str)>,
 ) -> Result<(), String> {
     let Some((bytes, expect)) = input else {
         return Ok(());
     };
-    let mut stdin = stdin.ok_or("serial input not connected")?;
+    let mut link = link;
     let from = serial.output.len();
-    stdin
-        .write_all(bytes)
-        .and_then(|()| stdin.flush())
+    link.write_all(bytes)
+        .and_then(|()| link.flush())
         .map_err(|e| format!("writing to the serial port: {e}"))?;
     if serial.wait_for(expect, from) {
         Ok(())

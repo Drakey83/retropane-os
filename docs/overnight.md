@@ -1219,6 +1219,31 @@ on the host or in the emulator first.
     (Linux) are fine. Likely QEMU's Windows stdio chardev not reading a
     pipe; try `-serial pipe:` or a TCP serial in `xtask/src/emu.rs` for
     native Windows, then make the release check use it again.
+    **Done (2026-10-13).** Not a Windows workaround: the harness's serial is
+    a local TCP socket on every platform (`-serial tcp:...,server=on,
+    wait=on`: QEMU holds the guest until the harness connects, so no early
+    output is lost), one path for input and output, tested on Linux, WSL
+    and native Windows. `RETROPANE_QEMU=release` runs any check on the
+    published build for this platform; the release steps in
+    docs/hw/emulator.md now require a full run with it. On the downloaded
+    Windows build every serial check now passes (loader, watchdog, run
+    limit, picture, blend, crash path), and the CF, kernel and full-size
+    card checks too (native QEMU runs about twice as fast as the WSL
+    build). That run found the next Windows-only fault, item 66. New
+    shortcut `cargo xtask emu-usb`.
+
+66. **Windows build of the emulator: no USB after an image returns**
+    (found 2026-10-13 by item 61's release check). With the downloaded
+    native Windows QEMU, an image loaded over USB runs and returns, the
+    loader prints its run log on serial and `RPLOAD1 READY` again, but
+    nothing more arrives on the USB socket, not even READY; reconnecting
+    the socket doesn't help. So the emulated PC never re-enumerates the
+    loader after it re-enables its UDC (`hw/misc/pxa27x-udc.c`: `H_ATTACH`
+    on the UDE edge, then the script and the open requests). The first
+    enumeration works; WSL and Linux CI are fine. Affects `emu-usb` and
+    `emu-trace` (and the full suite stops there on Windows). Next: a
+    Windows build of the fork with tracing around `UDCCR` writes, the
+    attach timer and the open steps, compared with Linux.
 
 62. **CF on the device: works first, breaks after a hand-over** (found
     2026-10-12, docs/hw/cf.md "Measured on the owner's X51v"). Fix the

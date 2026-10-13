@@ -93,6 +93,7 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-usb   only the loader-over-USB check (image in, run log out)
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
@@ -112,7 +113,7 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -271,6 +272,7 @@ fn run_step(step: &str) -> Result {
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
+        "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))

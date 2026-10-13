@@ -41,5 +41,8 @@ names the finding, where it is written up, and the emulator's state.
    boot in `xtask/src/emu.rs` that fails without the change, tag a release
    (`rp-vX.Y.0`), bump `QEMU_RELEASE` in `xtask/src/emu.rs`, re-record the
    bench baseline (`cargo xtask bench --update`: baselines are tied to the
-   emulator version).
+   emulator version), and run the suite on the **released** build for this
+   platform too (`RETROPANE_QEMU=release cargo xtask emu`: on Windows that
+   is the native build contributors download, which the local WSL build and
+   Linux CI don't cover; item 61 hid there for two releases).
 3. Add the row here either way.
