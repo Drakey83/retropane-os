@@ -658,6 +658,43 @@ pub fn run_limit_armed() -> bool {
     ost_block().read32(crate::soc::ost_reg::OIER) & 1 << 4 != 0
 }
 
+/// The armed run limit's length in milliseconds, if one is armed.
+#[must_use]
+pub fn run_limit_ms() -> Option<u32> {
+    run_limit_armed().then(|| ost_block().read32(crate::soc::ost_reg::OSMR4))
+}
+
+/// How far past the soft run limit the hardware watchdog is fed by
+/// [`check_in`]: the soft limit must always fire first (it returns to the
+/// loader with a report; the watchdog's reset lands the X51v on Dell's
+/// factory prompt), so the watchdog is only the backstop for a program
+/// hung with interrupts off. As the loader arms them at launch.
+pub const WATCHDOG_MARGIN_MS: u32 = 30_000;
+
+/// The longest a program under a starter's deadlines may go without
+/// [`check_in`]: half the run limit (or of the watchdog's margin when no
+/// run limit is armed). Programs that sleep cap their sleeps to it.
+#[must_use]
+pub fn check_in_every_ms() -> u32 {
+    run_limit_ms().unwrap_or(WATCHDOG_MARGIN_MS) / 2
+}
+
+/// Checks in with both of the starter's deadlines: the soft run limit starts
+/// again, and the hardware watchdog (if armed) is fed for the run limit
+/// plus [`WATCHDOG_MARGIN_MS`], keeping the soft limit first. The one way
+/// images check in (2026-10-13: images feeding the watchdog only as long as
+/// the run limit let it win the race, and an idle image reset the device).
+pub fn check_in() {
+    keep_alive();
+    let mut wd = watchdog();
+    if wd.armed() {
+        let ms = run_limit_ms()
+            .unwrap_or(0)
+            .saturating_add(WATCHDOG_MARGIN_MS);
+        wd.feed(ms.saturating_mul(TICK_HZ / 1000));
+    }
+}
+
 /// Checks in with the soft watchdog: the run limit starts again from now
 /// (nothing happens if none is armed). Long-running programs call it as
 /// they make progress, as they feed the hardware watchdog.

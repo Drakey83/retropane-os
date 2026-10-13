@@ -48,6 +48,13 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "today: an idle sleep past the run limit (the watchdog reset the device)",
+        file: "shell/today/src/main.rs",
+        from: "            let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);",
+        to: "            let wait_ms = wait_ms.max(1);",
+        check: Check::Emu(crate::emu::boot_loader_today),
+    },
+    Mutant {
         name: "shell: a notice shown without marking its area (never redrawn)",
         file: "shell/core/src/lib.rs",
         from: "        self.notice = Some((what, self.now.wrapping_add(NOTICE_MS)));

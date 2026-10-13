@@ -123,7 +123,7 @@ mod image {
         let mut pending: Option<u32> = None; // when the input being answered was read
 
         loop {
-            check_in();
+            rt::check_in();
             let t = rt::ticks();
             sub_ms += t.wrapping_sub(last_ticks);
             last_ticks = t;
@@ -239,21 +239,12 @@ mod image {
             if pen.is_none() && touch.pen_down() {
                 continue;
             }
+            // Never past the next check-in: sleeping through the loader's
+            // run limit returns us to it (or worse, the watchdog resets).
+            let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);
             if rt::set_alarm(rt::ticks().wrapping_add(wait_ms * TICKS_MS)) {
                 rt::wait_any_signal();
             }
-        }
-    }
-
-    /// Checks in with the soft run limit and, when the loader armed it, the
-    /// hardware watchdog.
-    fn check_in() {
-        /// OS timer ticks per second.
-        const TICK_1S: u32 = 3_250_000;
-        rt::keep_alive();
-        let mut wd = rt::watchdog();
-        if wd.armed() {
-            wd.feed(30 * TICK_1S);
         }
     }
 
