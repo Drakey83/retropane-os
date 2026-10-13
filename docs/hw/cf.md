@@ -5,7 +5,8 @@
 > PC Card chapters; (C) AxDroid board code (`pxa2xx_aximx50.c`, via
 > `docs/research/hardware-inventory.md`); (CF) CompactFlash Association
 > specification (attribute memory, CIS, True IDE / memory / I/O modes);
-> (P) RetroPane's probe on the owner's X51v.
+> (P) RetroPane's probe on the owner's X51v; (W) the handhelds.org Axim
+> X50/X51 Linux port's wiki (archived 2009), volunteers' observations.
 
 The X51v's PXA27x drives two PC Card sockets: **socket 0** is the built-in
 ACX100 Wi-Fi (docs/research/hardware-inventory.md), **socket 1** is the
@@ -20,8 +21,8 @@ with no USB work.
 |---|---|---|---|
 | Socket | PXA27x PC Card socket 1 | confirmed (code) | (C) |
 | Card detect | GPIO13, **active low: 0 = card present** | confirmed | (C); reads 0 with the owner's CF card in the slot (P, owner, 2026-10-12); WM arms only the rising edge (removal) |
-| Card ready / IRQ | GPIO84 | confirmed (code) | (C); reads 1 (P) |
-| Card reset | GPIO36, an output | confirmed (code) | (C); WM leaves it an output, driven 0 (P) |
+| Card ready / IRQ | GPIO84 | confirmed (code) | (C); reads 1 (P); handhelds.org: "1 when CF Card is on" (slot power) (W); fell to 0 as the card died (P) |
+| Card reset | AxDroid: GPIO36, an output; **disputed**: the handhelds.org port calls GPIO36 a charger/cradle signal, and holding it changed nothing on GPIO84 (P) | doubtful | (C) vs (W); WM leaves it an output, driven 0 (P). The loader no longer drives it |
 | Card power | a CPLD bit (docs/hw/cpld.md: "CF power") | likely; which bit unknown | (C), Dell OAL to analyse |
 
 ## PXA27x side (M)
@@ -66,7 +67,7 @@ for the driver's set-up.
 - A storage card is set to True IDE or memory mode through its
   Configuration Option Register; then it speaks ATA (IDENTIFY DEVICE, READ /
   WRITE SECTORS, with LBA28 addressing up to 128 GiB), 512-byte sectors.
-- Reset: pulse RESET (GPIO36), then wait for READY (GPIO84) before the
+- Reset: pulse RESET (line unknown on the X51v, see Board), then wait for READY (GPIO84) before the
   first attribute access; the pulse and wait times come from (CF) when the
   driver is written (not yet recorded here).
 
@@ -97,8 +98,9 @@ card reader until `cf` attaches it, read-only until `drive rw` (unlike the SD
 card), and back to empty when GPIO13 says the card left (attach it again
 with `cf`). Windows shows it as a second removable drive.
 
-Taking the card (2026-10-12, item 62): `CfCard::init` first holds RESET
-(GPIO36) for 1 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
+Taking the card (2026-10-12, item 62): `CfCard::init` first holds the
+board's RESET line (none on the X51v until it is known: GPIO36 was
+dropped as doubtful) for 1 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
 without touching either window (a card in reset or busy may hold the
 bus), then reads the CIS. A card that runs out a wait during a transfer is
 **dead**: every later transfer fails at once without touching it, and the
@@ -152,6 +154,19 @@ off, sector 0 read whole, status `50`); **READY fell to 0 at 136,007 ms,
 timed out and the card was dropped at 138,353 ms (the loader stayed
 responsive). So the card dies on its own right after the driver's burst
 of commands, not because of the PC's traffic.
+
+**Public record (W):** the handhelds.org Axim X50/X51 Linux wiki
+(archived 2009, `DellAximX50Hardware`, observations by the port's
+volunteers) lists **GPIO84 "= 1 when CF Card is on"**, i.e. the slot's
+power status, not (only) the card's READY; and **GPIO36** as an OS-driven
+output "set to 1 when charger/cradle power is connected", not CF reset
+(contradicting AxDroid; our device run, where holding GPIO36 changed
+nothing on GPIO84, fits the wiki better). The same page has SD detect
+the wrong way round against our measurement (GPIO12), so it is a lead,
+not proof. Its status table lists PCMCIA/CF as working on no model: no
+public port ever powered the slot, so the power switch itself is
+unpublished. Read with GPIO84 = power, the timing above says the slot's
+**power turns off** about 120 ms after the driver's commands.
 
 **Reading:** the card works when first taken, then goes quiet within
 seconds: everything reads 0 (status, the end of a sector, READY). Together
