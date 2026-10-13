@@ -2718,6 +2718,11 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             .and_then(|t| t.split(',').next())
             .and_then(|n| n.trim().parse().ok())
             .ok_or_else(|| format!("no read-ahead count in {status:?}"))?;
+        // A freshly formatted card: Windows' dirty flag clear as found and
+        // after the drive work (the emulated PC isn't Windows).
+        if !status.contains("dirty flag found clear now clear") {
+            return Err(format!("drive: dirty flag not read as clear: {status:?}"));
+        }
         if ahead == 0 {
             return Err(format!(
                 "drive: sequential reads found nothing read ahead: {status:?}"
