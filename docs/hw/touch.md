@@ -25,8 +25,40 @@ it as a GPIO across the three bytes of a conversion and must first make
 GPIO24 a plain GPIO (`Gpio::set_function(24, 0)`, after setting it high
 as an output): without that, every reading came back 0 and every tap
 landed at the top left (`rp-today`, the first device test of touch).
-The raw ranges and axis orientation below are still to be confirmed by
-`rp-today`'s logged readings.
+
+## Measured on the owner's X51v (2026-10-13, `rp-today`'s run logs)
+
+**Settling (P).** With the panel powered down between conversions (PD =
+00), the X plate read 104-265 wherever the pen was: every tap at the top
+edge. With the converter kept on (PD = 01), four back-to-back conversions
+still climbed steadily (X 66, 412, 589, 669; Y 3804, 2475, 1761, 1357).
+Read until two conversions in a row agree within 8, a channel took 2 to
+20 conversions (~10 us each at 2.6 MHz): the lines settle over 20-200 us,
+starting near 0 (X) or near 4095 (Y). The approach is geometric (about
+30% of the gap a conversion), so "within 8" still stopped several pixels
+short; the driver now waits for two conversions within 2 (or 64 at most)
+and powers down only on the last conversion of a sample.
+
+**Orientation and range (P),** from taps at the four corners and the
+centre:
+
+| Tap | Raw X | Raw Y |
+|---|---|---|
+| top left | 150 | 3645 |
+| top right | 135 | 417 |
+| bottom left | 2622 | 3650 |
+| bottom right | 2793 | 364 |
+| centre | 1423 | 2017 |
+
+The X channel follows the screen's vertical axis, the Y channel the
+horizontal one **mirrored** (high at the left). Linear: the centre falls
+where a straight line puts it. `Calibration::X51V` takes the edges as
+X 99..2741 (top to bottom), Y 3719..319 (left to right), assuming the
+corner taps landed ~10 px inside. A calibration screen (item 76) will
+refine it per device.
+
+**Latency (P):** touch to flush, worst 35 ms over 5 answered taps
+(the promise: 50 ms).
 
 ## TSC2046 protocol (D)
 

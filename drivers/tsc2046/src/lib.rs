@@ -53,8 +53,12 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
 /// channel is read until two conversions in a row agree, not a fixed count.
 pub const MAX_READS: u16 = 64;
 
-/// Two conversions this close (of 4096) count as settled.
-pub const SETTLED_WITHIN: u16 = 8;
+/// Two conversions this close (of 4096) count as settled. Tight: the
+/// lines approach their value geometrically (about 30% of the gap a
+/// conversion), so a step of `d` still leaves about `2.3 d` to go; at 8
+/// that was several pixels off (caught by the emulator's settling model).
+/// A noisier panel just reads up to [`MAX_READS`], settled by then.
+pub const SETTLED_WITHIN: u16 = 2;
 
 /// One channel's settling, for diagnostics and calibration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,11 +113,15 @@ pub struct Calibration {
 }
 
 impl Calibration {
-    /// Default for the X51v's 480 × 640 panel: axes swapped, typical raw range.
-    /// A user calibration screen will refine this later.
+    /// The owner's X51v, measured 2026-10-13 (five taps: the corners and
+    /// the centre, docs/hw/touch.md): the X channel follows the screen's
+    /// vertical axis (99 at the top, 2741 at the bottom), the Y channel the
+    /// horizontal one, mirrored (3719 at the left, 319 at the right); the
+    /// centre tap fell where a straight line puts it. A user calibration
+    /// screen (item 76) will refine it per device.
     pub const X51V: Calibration = Calibration {
-        raw_min: (200, 200),
-        raw_max: (3900, 3900),
+        raw_min: (3719, 99),
+        raw_max: (319, 2741),
         screen: (480, 640),
         swap_xy: true,
     };
@@ -349,8 +357,8 @@ mod tests {
             s,
             Settle {
                 first: 66,
-                value: 708,
-                reads: 6
+                value: 709,
+                reads: 7
             }
         );
         // Never settling: gives up at the bound with the last value.
@@ -385,27 +393,18 @@ mod tests {
     #[test]
     fn calibration_swaps_and_scales() {
         let cal = Calibration::X51V;
-        // Swapped: horizontal comes from Y, vertical from X.
-        let t = RawTouch {
-            x: 3900,
-            y: 200,
-            z1: 0,
-            z2: 0,
-        };
-        assert_eq!(cal.to_screen(t), (0, 639));
-        let mid = RawTouch {
-            x: 2050,
-            y: 2050,
-            z1: 0,
-            z2: 0,
-        };
-        assert_eq!(cal.to_screen(mid), (240, 320));
-        let out = RawTouch {
-            x: 0,
-            y: 4095,
-            z1: 0,
-            z2: 0,
-        };
-        assert_eq!(cal.to_screen(out), (479, 0));
+        let at = |x, y| cal.to_screen(RawTouch { x, y, z1: 0, z2: 0 });
+        // Swapped and mirrored: horizontal from Y (high at the left),
+        // vertical from X (low at the top).
+        assert_eq!(at(99, 3719), (0, 0));
+        assert_eq!(at(2741, 319), (479, 639));
+        // The owner's taps (2026-10-13): the centre, and Start.
+        let (cx, cy) = at(1423, 2017);
+        assert!(cx.abs_diff(240) < 12 && cy.abs_diff(320) < 12, "{cx} {cy}");
+        let (sx, sy) = at(209, 3508);
+        assert!(sx < 96 && sy < 36, "Start at {sx} {sy}");
+        // Off the panel's range: clamped to the screen.
+        assert_eq!(at(0, 4095), (0, 0));
+        assert_eq!(at(4095, 0), (479, 639));
     }
 }
