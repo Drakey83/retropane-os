@@ -1,0 +1,11 @@
+[package]
+name = "rp-draw"
+description = "The drawing contract between the shell and whatever draws (ADR-0021): a frame's dirty rectangles and command list, fonts and images as static data, and the Renderer trait the CPU and (later) MBX renderers implement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
