@@ -79,6 +79,8 @@ commands:
             (read-only diagnostics)
   trace     the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)
+  wmbench   build the stock Windows Mobile baseline program (tools/wmbench:
+            run by hand under WM; it writes rp-wm-baseline.txt next to itself)
   reboot-wm reset the X51v back into Windows Mobile the way its own
             reboot does (GPIO99; item 64, not yet tried on the device)
   tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
@@ -208,6 +210,22 @@ fn main() -> ExitCode {
         "trace" => {
             eprintln!("==> trace");
             trace::run(&workspace_root())
+        }
+        "wmbench" => {
+            // The stock Windows Mobile baseline program (tools/wmbench),
+            // built with cegcc in WSL; run by hand under Windows Mobile.
+            eprintln!("==> wmbench");
+            std::fs::create_dir_all(workspace_root().join("target/wmbench"))
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    emu::wsl_run(&format!(
+                        "cd '{}' && ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
+                         -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
+                         -o target/wmbench/rp-wmbench.exe tools/wmbench/rp-wmbench.c",
+                        emu::to_wsl_path(&workspace_root())
+                    ))
+                })
+                .map(|()| eprintln!("    target/wmbench/rp-wmbench.exe: put it in the SD root (cargo xtask put target/wmbench/rp-wmbench.exe rp-wmbench.exe), run it under Windows Mobile, then fetch rp-wm-baseline.txt"))
         }
         "reboot-wm" => {
             eprintln!("==> reboot wm");
