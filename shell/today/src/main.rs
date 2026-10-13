@@ -191,8 +191,25 @@ mod image {
                 raw_logged += 1;
                 let _ = writeln!(
                     RunLog,
-                    "touch {raw_logged}: x {} (first {}, {} reads) y {} (first {}, {} reads) z1 {} z2 {} -> screen {} {}",
-                    s.x, t.x.first, t.x.reads, s.y, t.y.first, t.y.reads, s.z1, s.z2, x, y
+                    "touch {raw_logged}: x {} (curve {} {} {} {} {} {}) y {} (curve {} {} {} {} {} {}) z1 {} z2 {} -> screen {} {}",
+                    s.x,
+                    t.x.curve[0],
+                    t.x.curve[1],
+                    t.x.curve[2],
+                    t.x.curve[3],
+                    t.x.curve[4],
+                    t.x.curve[5],
+                    s.y,
+                    t.y.curve[0],
+                    t.y.curve[1],
+                    t.y.curve[2],
+                    t.y.curve[3],
+                    t.y.curve[4],
+                    t.y.curve[5],
+                    s.z1,
+                    s.z2,
+                    x,
+                    y
                 );
             }
             // The align screen takes raw readings; everything else, points.
