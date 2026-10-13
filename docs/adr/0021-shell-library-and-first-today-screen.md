@@ -1,6 +1,6 @@
 # ADR-0021: The shell library and the first Today screen
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-10-13, by the project owner)
 - **Date:** 2026-10-13
 
 ## Context

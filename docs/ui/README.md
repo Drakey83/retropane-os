@@ -114,6 +114,11 @@ The owner picked VClouds' Rainmeter work (deviantart.com/vclouds: "Glasses", "VC
 | City at night | `File:Long Exposure Photography of City Buildings.jpg` | CC0 |
 | Aurora | `File:Night landscape northern lights scenic aurora borealis.jpg` | Public domain |
 
+**Goal (owner, 2026-10-13): at least 10 approved wallpapers ship.** The four
+above are approved; six more are to be found under the same rule (our own,
+CC0 or public domain, recorded with their Commons file and licence here),
+suited to glass (dark areas where the panels sit), and put to the owner.
+
 The concepts keep the glass light enough that the photo shows through. A "glass darkness" setting covers busy photos where small grey text gets hard to read.
 
 **Seeing a concept on the real Axim.** Render the board at 480 × 640, convert it to RGB565 (dithered) at `local/concept/picture.rgb565`, then run `cargo xtask emu-picture` (pixel-exact on the emulated screen, clean return) and `cargo xtask load rp-picture`. The Axim shows it for 20 s, then goes back to the loader. `local/` is never committed, so concept art with third-party pieces never reaches the repository. Without the file, the image shows a test gradient.
