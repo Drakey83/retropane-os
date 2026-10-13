@@ -44,29 +44,36 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
     0x80 | ((ch & 7) << 4) | (pd & 3)
 }
 
-/// Conversions per channel in a sample. Measured on the X51v (2026-10-13):
-/// single conversions with the panel powered down between them read the X
-/// plate near 0 (104-265 wherever the pen was); the drivers need time to
-/// settle, as AxDroid's 100-150 us settle times said. Repeating with the
-/// converter on and keeping the median of the later readings gives them
-/// that time.
-pub const SETTLE_READS: usize = 4;
+/// The most conversions spent waiting for a channel to settle (~10 us
+/// each at 2.6 MHz). Measured on the X51v (2026-10-13): with the panel
+/// powered down between conversions the X plate read near 0 wherever the
+/// pen was; with the converter kept on, four conversions still climbed
+/// steadily (66, 412, 589, 669): the lines settle over hundreds of
+/// microseconds (filter capacitors, as AxDroid's 100-150 us hinted). So a
+/// channel is read until two conversions in a row agree, not a fixed count.
+pub const MAX_READS: u16 = 64;
 
-/// The median of the last three of `reads` (the first is the unsettled one).
-#[must_use]
-pub fn settled(reads: [u16; SETTLE_READS]) -> u16 {
-    let mut last = [reads[1], reads[2], reads[3]];
-    last.sort_unstable();
-    last[1]
+/// Two conversions this close (of 4096) count as settled.
+pub const SETTLED_WITHIN: u16 = 8;
+
+/// One channel's settling, for diagnostics and calibration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Settle {
+    /// The first conversion (unsettled).
+    pub first: u16,
+    /// The value kept.
+    pub value: u16,
+    /// Conversions it took ([`MAX_READS`] if it never settled).
+    pub reads: u16,
 }
 
-/// Every conversion of the last sample, for diagnostics and calibration.
+/// Both position channels' settling in the last sample.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Trace {
-    /// The X channel's readings, in order.
-    pub x: [u16; SETTLE_READS],
-    /// The Y channel's readings, in order.
-    pub y: [u16; SETTLE_READS],
+    /// The X channel.
+    pub x: Settle,
+    /// The Y channel.
+    pub y: Settle,
 }
 
 /// Decodes the two result bytes of a 12-bit conversion.
@@ -149,6 +156,29 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         !self.pen.is_high()
     }
 
+    /// Converts `ch` with the converter on until two conversions in a row
+    /// agree (or [`MAX_READS`]), keeping the later one.
+    pub fn settle(&mut self, ch: u8) -> Settle {
+        let first = self.read_pd(ch, pd::ADC_ON);
+        let mut prev = first;
+        for reads in 2..=MAX_READS {
+            let v = self.read_pd(ch, pd::ADC_ON);
+            if v.abs_diff(prev) <= SETTLED_WITHIN {
+                return Settle {
+                    first,
+                    value: v,
+                    reads,
+                };
+            }
+            prev = v;
+        }
+        Settle {
+            first,
+            value: prev,
+            reads: MAX_READS,
+        }
+    }
+
     /// One 12-bit conversion on `ch`, powered down after it.
     pub fn read(&mut self, ch: u8) -> u16 {
         self.read_pd(ch, pd::IDLE)
@@ -171,25 +201,22 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         self.sample_traced().map(|(t, _)| t)
     }
 
-    /// As [`Self::sample`], with every position conversion it made: each
-    /// channel [`SETTLE_READS`] times with the converter on, the median of
-    /// the later ones kept; the last conversion powers down, re-arming the
-    /// pen interrupt.
+    /// As [`Self::sample`], with how the position channels settled: each
+    /// channel is converted with the converter on until two conversions in
+    /// a row agree within [`SETTLED_WITHIN`] (at most [`MAX_READS`]); the
+    /// last conversion powers down, re-arming the pen interrupt.
     pub fn sample_traced(&mut self) -> Option<(RawTouch, Trace)> {
         if !self.pen_down() {
             return None;
         }
-        let mut trace = Trace::default();
-        for r in &mut trace.x {
-            *r = self.read_pd(channel::X, pd::ADC_ON);
-        }
-        for r in &mut trace.y {
-            *r = self.read_pd(channel::Y, pd::ADC_ON);
-        }
-        let z1 = self.read_pd(channel::Z1, pd::ADC_ON);
+        let trace = Trace {
+            x: self.settle(channel::X),
+            y: self.settle(channel::Y),
+        };
+        let z1 = self.settle(channel::Z1).value;
         let t = RawTouch {
-            x: settled(trace.x),
-            y: settled(trace.y),
+            x: trace.x.value,
+            y: trace.y.value,
             z1,
             z2: self.read_pd(channel::Z2, pd::IDLE),
         };
@@ -224,6 +251,8 @@ mod tests {
     #[derive(Default)]
     struct Chip {
         values: [u16; 8],
+        /// Served in order instead of `values` while any remain.
+        ramp: Vec<u16>,
         selected: bool,
         phase: u8,
         result: u16,
@@ -238,7 +267,12 @@ mod tests {
             c.log.push(format!("tx {b:02x}"));
             match c.phase {
                 0 => {
-                    c.result = c.values[usize::from((b >> 4) & 7)] << 3;
+                    let v = if c.ramp.is_empty() {
+                        c.values[usize::from((b >> 4) & 7)]
+                    } else {
+                        c.ramp.remove(0)
+                    };
+                    c.result = v << 3;
                     c.phase = 1;
                     0
                 }
@@ -291,25 +325,39 @@ mod tests {
             }
         );
         assert!(!c.borrow().selected);
-        // Four X, four Y, Z1, Z2: ten conversions of three bytes.
+        // A steady chip: X, Y and Z1 settle in two conversions each, then
+        // Z2: seven conversions of three bytes.
         let log = &c.borrow().log;
-        assert_eq!(log.len(), 30);
+        assert_eq!(log.len(), 21);
         // The converter stays on until the last conversion, which powers
         // down so the pen interrupt re-arms.
         let commands: Vec<&String> = log.iter().step_by(3).collect();
         assert_eq!(commands[0], "tx d1");
-        assert_eq!(commands[4], "tx 91");
-        assert_eq!(commands[8], "tx b1");
-        assert_eq!(commands[9], "tx c0");
+        assert_eq!(commands[2], "tx 91");
+        assert_eq!(commands[4], "tx b1");
+        assert_eq!(commands[6], "tx c0");
     }
 
     #[test]
-    fn the_settled_value_ignores_the_first_reading() {
-        // The X51v's X plate, unsettled then settled (2026-10-13 style).
-        assert_eq!(settled([150, 1800, 1840, 1820]), 1820);
-        assert_eq!(settled([4012, 2000, 2004, 1990]), 2000);
-        // One glitch among the later ones is outvoted.
-        assert_eq!(settled([0, 2000, 4095, 2010]), 2010);
+    fn a_channel_is_read_until_it_settles() {
+        // The X51v's X plate climbing as measured, then steady.
+        let c = chip([0; 8]);
+        c.borrow_mut().ramp = vec![66, 412, 589, 669, 702, 708, 709];
+        let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
+        let s = ts.settle(channel::X);
+        assert_eq!(
+            s,
+            Settle {
+                first: 66,
+                value: 708,
+                reads: 6
+            }
+        );
+        // Never settling: gives up at the bound with the last value.
+        let c = chip([0; 8]);
+        c.borrow_mut().ramp = (0..200u16).map(|i| (i * 40) % 4096).collect();
+        let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
+        assert_eq!(ts.settle(channel::X).reads, MAX_READS);
     }
 
     #[test]
