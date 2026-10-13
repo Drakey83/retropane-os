@@ -264,45 +264,68 @@ pub fn median(v: &mut [u16]) -> u16 {
     v.get(v.len() / 2).copied().unwrap_or(0)
 }
 
-/// How long after the pen lands its samples are ignored (milliseconds).
-/// Measured on the X51v (2026-10-13): while the stylus lands, the vertical
-/// channel creeps for tens of milliseconds as the contact firms up.
-pub const LAND_MS: u32 = 15;
-/// Consecutive samples that must agree before a position is reported.
-pub const STABLE: usize = 3;
-/// How close (raw units, either channel) agreeing samples must be: ~3 px
-/// on the X51v's vertical, ~2 on its horizontal.
-pub const STABLE_WITHIN: u16 = 14;
+/// One raw sample: both positions and the first pressure reading (Z1;
+/// it rises with pressure on the X51v's panel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sample {
+    /// Raw X channel.
+    pub x: u16,
+    /// Raw Y channel.
+    pub y: u16,
+    /// Raw Z1.
+    pub z1: u16,
+}
+
+/// Below this Z1 there is no real contact (a lifting stylus read 5).
+pub const Z_MIN: u16 = 150;
+/// A sample's position counts only once pressure has steadied: Z1 within
+/// this many 1/256ths of the previous sample's. Recorded on the X51v
+/// (2026-10-13): Z1 climbs ~5% a sample while the stylus lands (1501,
+/// 1578, 1598, 1619) and the positions creep with it.
+pub const Z_STEADY: u32 = 16;
+/// A sample's position counts only while Z1 is at least this many
+/// 1/256ths of the touch's peak: as the stylus lifts, Z1 falls over 3-4
+/// samples (1603, 1589, 1546, 1424) and the positions slide 7-15 px.
+pub const Z_HELD: u32 = 243;
+/// Two consecutive counted samples this close (raw, either channel) give
+/// a position: ~3 px on the X51v's vertical, ~2 on its horizontal.
+pub const STABLE_WITHIN: u16 = 12;
 
 /// What the pen did, from [`Filter::sample`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pen {
     /// Nothing to report.
     Nothing,
-    /// First stable position after landing (raw).
+    /// First stable position of a touch (raw).
     Down(u16, u16),
     /// A new stable position while down (raw).
     Move(u16, u16),
     /// A stable sample at the same position (raw): the align screen
     /// counts these while a target is held.
     Hold(u16, u16),
-    /// Lifted; the last stable position (raw). Never a sample taken while
-    /// it lifted.
+    /// Lifted; the last stable position (raw), never one taken as the
+    /// stylus left.
     Up(u16, u16),
 }
 
-/// Turns raw samples into pen events a person meant: ignores the landing,
-/// reports only positions that consecutive samples agree on, and lifts at
-/// the last of those (a sample taken as the stylus leaves can read
-/// anything; one read 0 on the X51v and mapped to the top of the screen).
+/// Turns raw samples into pen events a person meant, by pressure: a
+/// position counts only once pressure has steadied after the landing and
+/// while it stays near the touch's peak (so not as the stylus lifts), and
+/// is reported when two such samples agree. Tuned and tested against the
+/// owner's recorded taps (`tests/replay.rs`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Filter {
     /// When the pen landed, while it is down.
     landed: Option<u32>,
-    recent: [(u16, u16); STABLE],
-    n: usize,
+    /// The previous sample's Z1 (for steadiness) and the touch's peak.
+    last_z: u16,
+    peak_z: u16,
+    /// The previous counted sample, if the last sample counted.
+    prev: Option<(u16, u16)>,
     /// The last stable position reported, while down.
     at: Option<(u16, u16)>,
+    /// Pressure has fallen from its peak: the stylus is leaving.
+    lifting: bool,
 }
 
 impl Filter {
@@ -311,13 +334,15 @@ impl Filter {
     pub const fn new() -> Self {
         Self {
             landed: None,
-            recent: [(0, 0); STABLE],
-            n: 0,
+            last_z: 0,
+            peak_z: 0,
+            prev: None,
             at: None,
+            lifting: false,
         }
     }
 
-    /// Whether the pen is down (landed, reported or not).
+    /// Whether a touch is in progress (landed, reported or not).
     #[must_use]
     pub const fn down(&self) -> bool {
         self.landed.is_some()
@@ -330,42 +355,36 @@ impl Filter {
         self.landed
     }
 
-    /// One raw sample (`None`: no pen) at `now_ms`.
-    pub fn sample(&mut self, raw: Option<(u16, u16)>, now_ms: u32) -> Pen {
-        let Some((x, y)) = raw else {
+    /// One sample (`None`: no pressure, or no pen) at `now_ms`.
+    pub fn sample(&mut self, raw: Option<Sample>, now_ms: u32) -> Pen {
+        let Some(s) = raw.filter(|s| s.z1 >= Z_MIN) else {
             let up = self.at.map_or(Pen::Nothing, |(x, y)| Pen::Up(x, y));
             *self = Self::new();
             return up;
         };
-        let landed = *self.landed.get_or_insert(now_ms);
-        if now_ms.wrapping_sub(landed) < LAND_MS {
+        self.landed.get_or_insert(now_ms);
+        let steady =
+            u32::from(s.z1.abs_diff(self.last_z)) * 256 <= Z_STEADY * u32::from(self.last_z.max(1));
+        self.last_z = s.z1;
+        self.peak_z = self.peak_z.max(s.z1);
+        if u32::from(s.z1) * 256 < Z_HELD * u32::from(self.peak_z) {
+            // Once leaving, never back: the rest of the touch is the lift.
+            self.lifting = true;
+        }
+        if !steady || self.lifting {
+            self.prev = None;
             return Pen::Nothing;
         }
-        self.recent[self.n % STABLE] = (x, y);
-        self.n += 1;
-        if self.n < STABLE {
+        let Some((px, py)) = self.prev.replace((s.x, s.y)) else {
             return Pen::Nothing;
-        }
-        let near = |a: u16, b: u16| a.abs_diff(b) <= STABLE_WITHIN;
-        let agree = self
-            .recent
-            .iter()
-            .all(|&(px, py)| near(px, x) && near(py, y))
-            && self.recent.iter().all(|&(px, py)| {
-                self.recent
-                    .iter()
-                    .all(|&(qx, qy)| near(px, qx) && near(py, qy))
-            });
-        if !agree {
-            return Pen::Nothing;
-        }
-        let n = STABLE as u32;
-        let avg = |f: fn(&(u16, u16)) -> u16| {
-            ((self.recent.iter().map(|p| u32::from(f(p))).sum::<u32>() + n / 2) / n) as u16
         };
-        let pos = (avg(|p| p.0), avg(|p| p.1));
-        let was = self.at.replace(pos);
-        match was {
+        let near = |a: u16, b: u16| a.abs_diff(b) <= STABLE_WITHIN;
+        if !(near(px, s.x) && near(py, s.y)) {
+            return Pen::Nothing;
+        }
+        let avg = |a: u16, b: u16| (u32::from(a) + u32::from(b)).div_ceil(2) as u16;
+        let pos = (avg(px, s.x), avg(py, s.y));
+        match self.at.replace(pos) {
             None => Pen::Down(pos.0, pos.1),
             Some(old) if old != pos => Pen::Move(pos.0, pos.1),
             Some(_) => Pen::Hold(pos.0, pos.1),

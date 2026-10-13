@@ -139,42 +139,33 @@ fn rounding_divides_both_signs() {
     assert_eq!(scaled_div(i64::MAX / 2, i64::MAX / 4), Some(131_072));
 }
 
-#[test]
-fn the_landing_is_ignored_and_positions_need_agreement() {
-    let mut f = Filter::new();
-    // Landing: creeping readings in the first 15 ms say nothing.
-    assert_eq!(f.sample(Some((1200, 800)), 0), Pen::Nothing);
-    assert_eq!(f.sample(Some((2400, 800)), 5), Pen::Nothing);
-    assert_eq!(f.sample(Some((2700, 810)), 10), Pen::Nothing);
-    // Settled: three agreeing samples report their average.
-    assert_eq!(f.sample(Some((2860, 816)), 15), Pen::Nothing);
-    assert_eq!(f.sample(Some((2866, 817)), 20), Pen::Nothing);
-    assert_eq!(f.sample(Some((2870, 815)), 25), Pen::Down(2865, 816));
-    // One wild sample (a lift starting) changes nothing.
-    assert_eq!(f.sample(Some((0, 816)), 30), Pen::Nothing);
-    // Lifted: at the last stable position, not the wild one.
-    assert_eq!(f.sample(None, 35), Pen::Up(2865, 816));
-    assert!(!f.down());
+fn at(x: u16, y: u16, z1: u16) -> Option<Sample> {
+    Some(Sample { x, y, z1 })
 }
 
 #[test]
-fn a_drag_moves_and_a_tap_too_short_to_settle_is_dropped() {
+fn pressure_decides_when_a_position_counts() {
     let mut f = Filter::new();
-    for (t, x) in [(0, 1000), (15, 1000), (20, 1002), (25, 1001)] {
-        f.sample(Some((x, 2000)), t);
-    }
-    assert_eq!(f.sample(Some((1001, 2000)), 30), Pen::Hold(1001, 2000));
-    // Moving: reported once samples agree on the new place.
-    f.sample(Some((1100, 2000)), 35);
-    f.sample(Some((1102, 2000)), 40);
-    assert_eq!(f.sample(Some((1101, 2000)), 45), Pen::Move(1101, 2000));
-    assert_eq!(f.sample(None, 50), Pen::Up(1101, 2000));
-    // A touch that never settled: nothing at all, not a tap somewhere odd.
+    // Landing: the first sample has nothing to agree with yet.
+    assert_eq!(f.sample(at(2286, 3282, 1501), 0), Pen::Nothing);
+    assert_eq!(f.sample(at(2318, 3285, 1578), 11), Pen::Nothing);
+    // Pressure steady (within ~6%): two agreeing samples give the touch,
+    // at the third sample (22 ms, where the old rules took 44).
+    assert_eq!(f.sample(at(2313, 3288, 1598), 22), Pen::Down(2316, 3287));
+    assert_eq!(f.sample(at(2318, 3287, 1619), 33), Pen::Move(2316, 3288));
+    assert_eq!(f.sample(at(2320, 3289, 1629), 44), Pen::Move(2319, 3288));
+    // Lifting: pressure falls from its peak; the sliding positions don't
+    // count, and the lift sample with almost no pressure ends nothing early.
+    assert_eq!(f.sample(at(2283, 3277, 1546), 55), Pen::Nothing);
+    assert_eq!(f.sample(at(2252, 3269, 1424), 66), Pen::Nothing);
+    assert_eq!(f.sample(at(0, 3512, 5), 77), Pen::Up(2319, 3288));
+    assert!(!f.down());
+    // A touch that never steadied: no tap anywhere.
     let mut f = Filter::new();
-    f.sample(Some((100, 100)), 0);
-    f.sample(Some((900, 100)), 20);
-    assert_eq!(f.sample(None, 25), Pen::Nothing);
+    f.sample(at(100, 100, 400), 0);
+    f.sample(at(900, 100, 800), 11);
+    assert_eq!(f.sample(None, 22), Pen::Nothing);
     // Its landing time is known while down (for latency).
-    f.sample(Some((5, 5)), 100);
+    f.sample(at(5, 5, 900), 100);
     assert_eq!(f.landed_at(), Some(100));
 }
