@@ -20,7 +20,18 @@ What we will do.
 | 🗄️ Legacy support | |
 | ⚡ Better / faster | |
 
+## Hardware limit or choice?
+
+For every behaviour inherited from Windows Mobile, Dell or the 2005 design
+that this decision keeps: is the silicon forcing it (with the evidence), or
+was it a software choice? A choice is open to replacement (docs/CONTRIBUTOR-BRIEF.md,
+"imitation is the last resort").
+
 ## Alternatives considered
+
+The better ways tried first (faster, more modern, cleverer, the device's
+parts working together), and why each was taken or rejected. If the
+decision imitates the original, this section is where that is justified.
 
 ## Consequences
 
