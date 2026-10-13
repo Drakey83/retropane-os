@@ -1,6 +1,12 @@
 //! A small FAT32 formatter (host only): builds a whole disk image, MBR and
 //! one partition, with files in the root directory. For the crate's tests
 //! and the emulator's card image; not a general tool.
+//!
+//! [`write_sparse`] emits only the non-zero parts (MBR, boot sectors, the
+//! FATs' used sectors, the root directory, file data), so a card image as
+//! large as a real card (4 or 32 GB) can be a sparse file of a few MB, and
+//! [`Image::ballast`] fills most of it with allocated clusters whose data is
+//! never written: the FAT is as full as on a well-used card.
 
 use crate::{SECTOR, short_checksum};
 
@@ -29,6 +35,11 @@ pub struct Image<'a> {
     /// Clusters to mark as in use by nobody (a bad-cluster mark), so tests
     /// can make the free space fragmented.
     pub blocked_clusters: &'a [u32],
+    /// Bytes of ballast after the files: `BALLAST0.BIN`, `BALLAST1.BIN`...
+    /// (each under 4 GiB, FAT32's file limit), their clusters allocated
+    /// and chained, their contents zero and never written by
+    /// [`write_sparse`]. 0 for none.
+    pub ballast: u64,
 }
 
 fn put16(b: &mut [u8], o: usize, v: u16) {
@@ -88,6 +99,20 @@ fn short_name(name: &str, n: usize) -> [u8; 11] {
 /// If the files don't fit, or a name is too long for one directory cluster.
 #[must_use]
 pub fn build(img: &Image<'_>) -> Vec<u8> {
+    let mut disk = vec![0u8; img.total_sectors as usize * SECTOR];
+    write_sparse(img, &mut |off, data| {
+        let o = off as usize;
+        disk[o..o + data.len()].copy_from_slice(data);
+    });
+    disk
+}
+
+/// Emits the image's non-zero parts as `(byte offset, bytes)`, in no
+/// particular order; everything not emitted is zero.
+///
+/// # Panics
+/// As [`build`].
+pub fn write_sparse(img: &Image<'_>, out: &mut dyn FnMut(u64, &[u8])) {
     let spc = img.sectors_per_cluster;
     let part_sectors = img.total_sectors - PARTITION_START;
     // FAT size for a volume of this many data sectors (approximate: a FAT
@@ -97,20 +122,21 @@ pub fn build(img: &Image<'_>) -> Vec<u8> {
     let data_start = PARTITION_START + RESERVED + FATS * fat_sectors;
     let clusters = (img.total_sectors - data_start) / spc;
     let cluster_bytes = (spc * SECTOR as u32) as usize;
-
-    let mut disk = vec![0u8; img.total_sectors as usize * SECTOR];
+    let sector_at = |sector: u32| u64::from(sector) * SECTOR as u64;
 
     // MBR.
+    let mut mbr = [0u8; SECTOR];
     let e = 446;
-    disk[e + 4] = 0x0C;
-    put32(&mut disk, e + 8, PARTITION_START);
-    put32(&mut disk, e + 12, part_sectors);
-    disk[510] = 0x55;
-    disk[511] = 0xAA;
+    mbr[e + 4] = 0x0C;
+    put32(&mut mbr, e + 8, PARTITION_START);
+    put32(&mut mbr, e + 12, part_sectors);
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+    out(0, &mbr);
 
     // Boot sector.
-    let bs = PARTITION_START as usize * SECTOR;
-    let b = &mut disk[bs..bs + SECTOR];
+    let mut boot = [0u8; SECTOR];
+    let b = &mut boot;
     b[0..3].copy_from_slice(&[0xEB, 0x58, 0x90]);
     b[3..11].copy_from_slice(b"MSWIN4.1");
     put16(b, 11, SECTOR as u16);
@@ -132,9 +158,8 @@ pub fn build(img: &Image<'_>) -> Vec<u8> {
     b[82..90].copy_from_slice(b"FAT32   ");
     b[510] = 0x55;
     b[511] = 0xAA;
-    let boot: Vec<u8> = b.to_vec();
-    let backup = bs + 6 * SECTOR;
-    disk[backup..backup + SECTOR].copy_from_slice(&boot);
+    out(sector_at(PARTITION_START), &boot);
+    out(sector_at(PARTITION_START + 6), &boot);
 
     // FAT: cluster 0/1 marks, root directory at cluster 2, files after it.
     let mut fat = vec![0u32; (fat_sectors as usize * SECTOR) / 4];
@@ -203,9 +228,8 @@ pub fn build(img: &Image<'_>) -> Vec<u8> {
         let n_clusters = f.data.len().div_ceil(cluster_bytes);
         let chain = alloc(n_clusters, &mut fat);
         for (i, &c) in chain.iter().enumerate() {
-            let off = (data_start + (c - 2) * spc) as usize * SECTOR;
             let piece = &f.data[i * cluster_bytes..((i + 1) * cluster_bytes).min(f.data.len())];
-            disk[off..off + piece.len()].copy_from_slice(piece);
+            out(sector_at(data_start + (c - 2) * spc), piece);
         }
         used += n_clusters as u32;
         let first = chain.first().copied().unwrap_or(0);
@@ -217,19 +241,49 @@ pub fn build(img: &Image<'_>) -> Vec<u8> {
         put32(&mut e, 28, f.data.len() as u32);
         put_entry(&mut dir, e);
     }
-    let root_off = data_start as usize * SECTOR;
-    disk[root_off..root_off + cluster_bytes].copy_from_slice(&dir);
+    // Ballast: files whose clusters are allocated and chained but whose
+    // contents (zero) are never written.
+    let max_file = 0xFFFF_FFFF / cluster_bytes as u64 * cluster_bytes as u64;
+    let mut left = img.ballast;
+    let mut k = 0;
+    while left > 0 {
+        let size = left.min(max_file);
+        left -= size;
+        let n_clusters = size.div_ceil(cluster_bytes as u64) as usize;
+        let first = alloc(n_clusters, &mut fat).first().copied().unwrap_or(0);
+        used += n_clusters as u32;
+        let mut e = [0u8; 32];
+        e[..11].copy_from_slice(format!("BALLAST{k}BIN").as_bytes());
+        e[11] = 0x20;
+        put16(&mut e, 20, (first >> 16) as u16);
+        put16(&mut e, 26, first as u16);
+        put32(&mut e, 28, size as u32);
+        put_entry(&mut dir, e);
+        k += 1;
+    }
+    out(sector_at(data_start), &dir);
 
-    for copy in 0..FATS {
-        let off = (PARTITION_START + RESERVED + copy * fat_sectors) as usize * SECTOR;
-        for (i, v) in fat.iter().enumerate() {
-            put32(&mut disk, off + i * 4, *v);
+    // The FATs: only the sectors that aren't all zero.
+    let mut sector = [0u8; SECTOR];
+    for (i, entries) in fat.chunks(SECTOR / 4).enumerate() {
+        if entries.iter().all(|&v| v == 0) {
+            continue;
+        }
+        sector.fill(0);
+        for (j, v) in entries.iter().enumerate() {
+            put32(&mut sector, j * 4, *v);
+        }
+        for copy in 0..FATS {
+            out(
+                sector_at(PARTITION_START + RESERVED + copy * fat_sectors + i as u32),
+                &sector,
+            );
         }
     }
 
     // FSInfo.
-    let fs = bs + SECTOR;
-    let f = &mut disk[fs..fs + SECTOR];
+    let mut fsinfo = [0u8; SECTOR];
+    let f = &mut fsinfo;
     put32(f, 0, 0x4161_5252);
     put32(f, 484, 0x6141_7272);
     put32(
@@ -240,5 +294,5 @@ pub fn build(img: &Image<'_>) -> Vec<u8> {
     put32(f, 492, next_free);
     f[510] = 0x55;
     f[511] = 0xAA;
-    disk
+    out(sector_at(PARTITION_START + 1), &fsinfo);
 }

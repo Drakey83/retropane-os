@@ -213,6 +213,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_trace),
     },
     Mutant {
+        name: "card check's cluster bitmap too small for a full-size card (fine on test cards)",
+        file: "boot/loader/src/main.rs",
+        from: "card_check(&mut lun, seen, scratch, &mut status);",
+        to: "card_check(&mut lun, &mut seen[..64 * 1024], scratch, &mut status);",
+        check: Check::Emu(crate::emu::boot_loader_full_size),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

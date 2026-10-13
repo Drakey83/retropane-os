@@ -2496,6 +2496,7 @@ mod tests {
             sectors_per_cluster: 2,
             files: &[],
             blocked_clusters: &[],
+            ballast: 0,
         });
         assert_eq!(
             ExVolume::mount(Mem(fat32), PARTITION_START).err(),

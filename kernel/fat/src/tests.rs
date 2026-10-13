@@ -60,6 +60,7 @@ fn small_image(files: &[Entry<'_>], blocked: &[u32]) -> Vec<u8> {
         sectors_per_cluster: 2,     // 1 KiB clusters
         files,
         blocked_clusters: blocked,
+        ballast: 0,
     })
 }
 
@@ -272,6 +273,7 @@ fn a_long_free_cluster_search_reads_the_fat_in_runs() {
             data: b"old",
         }],
         blocked_clusters: &taken,
+        ballast: 0,
     });
     let mut reads = Vec::new();
     for scratch in [0, 64 * 1024] {
@@ -1179,4 +1181,43 @@ fn power_cuts_while_removing_lose_nothing_but_space() {
         assert!(damage.clean(), "write {fail_at}: {h:?}");
         assert_eq!(read_all(&mut v, "keep.txt", 512), b"keep");
     }
+}
+
+/// Full-size card images (item 57) are written sparse: only the non-zero
+/// parts. With ballast filling most of the card, the volume is clean, the
+/// ballast's clusters are in use, the bytes written are a tiny fraction of
+/// the image, and a new file still goes into the free space past it.
+#[test]
+fn sparse_images_with_ballast_are_clean_full_volumes() {
+    let total_sectors = 2048 + 128 * 1024; // 64 MiB partition
+    let ballast = 48 * 1024 * 1024u64;
+    let img = Image {
+        total_sectors,
+        sectors_per_cluster: 8, // 4 KiB clusters
+        files: &[Entry {
+            name: "hello.txt",
+            data: b"hello",
+        }],
+        blocked_clusters: &[],
+        ballast,
+    };
+    let mut written = 0usize;
+    format::write_sparse(&img, &mut |_, data| written += data.len());
+    let full = format::build(&img);
+    assert!(
+        written < full.len() / 50,
+        "{written} bytes of {}",
+        full.len()
+    );
+    let mut v = Volume::mount(MemDisk::new(full), PARTITION_START).unwrap();
+    let mut seen = vec![0u8; 8192];
+    let mut scratch = vec![0u8; 4096];
+    let h = v.check(&mut seen, &mut scratch).unwrap();
+    assert!(h.clean());
+    assert_eq!(h.files, 2);
+    assert_eq!(u64::from(h.used) * 4096, ballast + 4096 + 4096);
+    let mut scratch = vec![0u8; 16 * 1024];
+    v.put("after.txt", b"past the ballast", &mut scratch)
+        .unwrap();
+    assert_eq!(read_all(&mut v, "after.txt", 4096), b"past the ballast");
 }
