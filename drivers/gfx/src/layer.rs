@@ -299,17 +299,40 @@ impl<'a> Layer<'a> {
         }
     }
 
+    /// Sets every pixel of `r` (clipped) to `c` over what's there: an
+    /// outline or tint on glass, where [`Self::fill`] would replace it.
+    #[inline(never)]
+    pub fn fill_over(&mut self, r: Rect, c: Argb) {
+        let r = r.intersect(&self.bounds());
+        for y in r.y..r.bottom() {
+            for p in self.span(r.x, y, r.w) {
+                *p = over(c, *p);
+            }
+        }
+    }
+
     /// Draws `img` over what's there at `(dx, dy)` (clipped).
     pub fn draw_over(&mut self, img: &ArgbImage<'_>, dx: u32, dy: u32) {
+        let (Ok(x), Ok(y)) = (i32::try_from(dx), i32::try_from(dy)) else {
+            return;
+        };
+        self.draw_over_in(img, x, y, self.bounds());
+    }
+
+    /// Draws `img` over what's there at `(dx, dy)`, which may be off the
+    /// layer's top or left, only inside `clip` (and the layer).
+    pub fn draw_over_in(&mut self, img: &ArgbImage<'_>, dx: i32, dy: i32, clip: Rect) {
         let n = (img.w as usize).saturating_mul(img.h as usize);
         if img.px.len() < n {
             return;
         }
-        let to = Rect::new(dx, dy, img.w, img.h).intersect(&self.bounds());
-        for y in to.y..to.bottom() {
-            let at = (y - dy) as usize * img.w as usize + (to.x - dx) as usize;
+        let Some((to, sx, sy)) = self.place(img.w, img.h, dx, dy, clip) else {
+            return;
+        };
+        for row in 0..to.h {
+            let at = (sy + row) as usize * img.w as usize + sx as usize;
             let src = &img.px[at..at + to.w as usize];
-            for (p, &s) in self.span(to.x, y, to.w).iter_mut().zip(src) {
+            for (p, &s) in self.span(to.x, to.y + row, to.w).iter_mut().zip(src) {
                 *p = over(s, *p);
             }
         }
@@ -318,21 +341,55 @@ impl<'a> Layer<'a> {
     /// Draws `color` through `mask` at `(dx, dy)` (clipped): each pixel's
     /// coverage scales the colour's alpha, then it goes over what's there.
     pub fn draw_mask(&mut self, mask: &Mask<'_>, color: Argb, dx: u32, dy: u32) {
+        let (Ok(x), Ok(y)) = (i32::try_from(dx), i32::try_from(dy)) else {
+            return;
+        };
+        self.draw_mask_in(mask, color, x, y, self.bounds());
+    }
+
+    /// As [`Self::draw_mask`], at a position that may be off the layer's
+    /// top or left (a glyph overhanging the edge), only inside `clip`.
+    pub fn draw_mask_in(&mut self, mask: &Mask<'_>, color: Argb, dx: i32, dy: i32, clip: Rect) {
         let n = (mask.w as usize).saturating_mul(mask.h as usize);
         if mask.cover.len() < n {
             return;
         }
-        let to = Rect::new(dx, dy, mask.w, mask.h).intersect(&self.bounds());
+        let Some((to, sx, sy)) = self.place(mask.w, mask.h, dx, dy, clip) else {
+            return;
+        };
         let (rgb, a) = (color & 0x00FF_FFFF, color >> 24);
-        for y in to.y..to.bottom() {
-            let at = (y - dy) as usize * mask.w as usize + (to.x - dx) as usize;
+        for row in 0..to.h {
+            let at = (sy + row) as usize * mask.w as usize + sx as usize;
             let cover = &mask.cover[at..at + to.w as usize];
-            for (p, &c) in self.span(to.x, y, to.w).iter_mut().zip(cover) {
+            for (p, &c) in self.span(to.x, to.y + row, to.w).iter_mut().zip(cover) {
                 if c != 0 {
                     *p = over(div255(a * u32::from(c)) << 24 | rgb, *p);
                 }
             }
         }
+    }
+
+    /// Where a `w` x `h` source placed at `(dx, dy)` lands inside `clip`
+    /// and the layer, and the source pixel its top left corner shows;
+    /// `None` if nothing of it does.
+    fn place(&self, w: u32, h: u32, dx: i32, dy: i32, clip: Rect) -> Option<(Rect, u32, u32)> {
+        let x0 = i64::from(dx).max(0);
+        let y0 = i64::from(dy).max(0);
+        let x1 = (i64::from(dx) + i64::from(w)).max(0);
+        let y1 = (i64::from(dy) + i64::from(h)).max(0);
+        let on = Rect::new(
+            u32::try_from(x0).ok()?,
+            u32::try_from(y0).ok()?,
+            u32::try_from(x1 - x0).ok()?,
+            u32::try_from(y1 - y0).ok()?,
+        );
+        let to = on.intersect(&clip).intersect(&self.bounds());
+        if to.is_empty() {
+            return None;
+        }
+        let sx = u32::try_from(i64::from(to.x) - i64::from(dx)).ok()?;
+        let sy = u32::try_from(i64::from(to.y) - i64::from(dy)).ok()?;
+        Some((to, sx, sy))
     }
 }
 
