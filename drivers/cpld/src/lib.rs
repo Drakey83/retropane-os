@@ -1,9 +1,9 @@
 //! Dell Axim X51v board CPLD: power rails and board identification.
 //!
 //! Written from `docs/hw/cpld.md`. The registers are 16 bits wide on a 2-byte
-//! stride. Whether they read back isn't known yet, so the driver keeps a
-//! shadow copy of everything it writes and never relies on reading power bits,
-//! the same approach the 2010 AxDroid port used.
+//! stride. They don't read back (measured, docs/hw/cpld.md: the latches are
+//! write-only), so the driver keeps a shadow copy of everything it writes
+//! and never relies on reading power bits.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

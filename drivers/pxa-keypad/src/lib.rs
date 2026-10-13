@@ -1,8 +1,8 @@
 //! PXA27x keypad controller and the Dell Axim X51v button matrix.
 //!
 //! Written from `docs/hw/keypad.md`. Uses automatic scan-on-activity and reads
-//! the scan result bitmaps, so it works by polling now and with interrupts
-//! later (MIE is already enabled for that).
+//! the scan result bitmaps; works polled or from the matrix interrupt (MIE;
+//! acknowledged by reading KPC, see `acknowledge`).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

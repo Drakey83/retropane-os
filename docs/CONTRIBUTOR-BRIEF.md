@@ -47,17 +47,27 @@ or knowledge. For every part, and every decision inside it:
 1. **Hardware limit or choice?** Ask it of every inherited behaviour. If
    the silicon itself forces it, say so with the evidence. If it was a
    software choice, it is open to replacement.
-2. **Exhaust the better ways first:** faster, more modern, cleverer, more
-   efficient, and how the device's parts can work *together* (CPU, the
-   2700G's 3D core and display controller, DMA, the buses, power), not
-   one part at a time.
-3. **Only then accept imitation**, and write down the alternatives that
-   were rejected and why ("Hardware limit or choice?" and "Better ways
-   considered" in every ADR, plan and hardware write-up).
+2. **Survey the better ways, bounded** (owner, 2026-10-13): name the 2-4
+   serious alternatives (faster, more modern, cleverer, more efficient,
+   and how the device's parts can work *together*: CPU, the 2700G's 3D
+   core and display controller, DMA, the buses, power), measure where
+   measuring is cheap, and time-box the exploration to the size of the
+   decision. Stop when the silicon rules the others out, or a measurement
+   or clear argument shows which is best. A survey that keeps generating
+   alternatives has lost its bound.
+3. **Then decide, imitation included**, and write down the alternatives
+   rejected and why ("Hardware limit or choice?" and "Alternatives
+   considered" in every ADR, plan and hardware write-up). The 2005
+   engineers had the datasheets, schematics and Intel's engineers; their
+   way is sometimes simply right. It has to be *beaten by a measurement*,
+   not presumed worse: the stock-WM baseline (docs/perf.md) is the bar.
 
-Example: Windows Mobile draws its screen on the CPU. That was Dell's
-software choice, not a hardware limit (the 2700G's MBX core can draw 2D
-as textured quads), so it is something to beat, not to copy.
+Example: Windows Mobile hands its screen fills to the 2700G (measured,
+2026-10-13: the CPU stays free while fills finish at ~190 MB/s, where the
+CPU's own writes reach ~41 MB/s). Dell's driver got that right, and
+RetroPane, which fills on the CPU, is the one behind. Meanwhile
+RetroPane's tickless timers beat WM's 1 ms tick ~60x: the inherited
+choice lost there.
 
 **Security is a design input, not a later pass.** RetroPane will be on the
 internet. Read [`security.md`](security.md): every ADR gets a Security

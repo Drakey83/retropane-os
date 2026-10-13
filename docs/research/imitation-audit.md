@@ -351,7 +351,10 @@ with the performance monitor built first to measure everything else).
 - `drivers/pxa-keypad` "polling now, interrupts later" (interrupts exist).
 - DESIGN.md "Duktape" vs §10.1 "QuickJS-class".
 
-Queued as **item 79** (one pass; small).
+Queued as **item 79** (one pass; small). **Done 2026-10-13**, moved up the
+queue on review (the docs are how the owner sees the project), with two
+more found the same day: docs/hw/2700g.md's "WM draws 2D on the CPU"
+(measured wrong) and the brief's example built on it.
 
 ## Ranked: what to do next
 
