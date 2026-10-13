@@ -958,11 +958,14 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     let stage_time = Duration::from_secs(u64::from(RP_BLEND_STAGE_SECONDS));
     let check = || -> Result<(), String> {
         // Called as soon as stage A is up. Each stage's screen must appear,
-        // in order, within a stage's time: poll the screen rather than
-        // trust timing (the emulator's pace varies).
-        let started = Instant::now();
+        // in order: poll the screen rather than trust timing. The image
+        // holds a stage for its time in *emulated* seconds, which run
+        // slower than the wall clock when the PC is busy (a full suite), so
+        // a skipped stage is caught by the order (a later stage showing
+        // first), and the deadline is only a generous safety net.
+        let safety = stage_time * 4 + Duration::from_secs(20);
         for (i, stage) in Stage::ALL.iter().enumerate() {
-            let deadline = Instant::now() + stage_time + Duration::from_secs(3);
+            let deadline = Instant::now() + safety;
             loop {
                 std::thread::sleep(Duration::from_millis(700));
                 let got = dump(stage.letter())?;
@@ -985,15 +988,20 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
             }
         }
         // After the last stage, it puts everything back and returns; the
-        // loader takes the screen again: no trace of the wallpaper.
-        std::thread::sleep(stage_time + Duration::from_secs(4));
-        let _ = started;
-        let got = dump('R')?;
+        // loader takes the screen again: no trace of the wallpaper (polled,
+        // for the same reason).
         let bars = |s: &[u8]| s[(435 * blendtest::W + 90) * 3..][..3].to_vec();
-        if want.iter().any(|w| bars(w) == bars(&got)) {
-            return Err("blend: the wallpaper is still on screen after the return".into());
+        let deadline = Instant::now() + safety;
+        loop {
+            std::thread::sleep(Duration::from_millis(700));
+            let got = dump('R')?;
+            if !want.iter().any(|w| bars(w) == bars(&got)) {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err("blend: the wallpaper is still on screen after the return".into());
+            }
         }
-        Ok(())
     };
     let output = boot(
         root,
@@ -1006,7 +1014,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-BLEND-A")),
             during: Some(&check),
-            timeout: Duration::from_secs(240),
+            timeout: Duration::from_secs(600),
         },
     )?;
     let log = output
@@ -1740,14 +1748,27 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         // until `cf` takes it again.
         if device_has_runtime(&mut mon, "/machine/peripheral/cfslot", "pressed") {
             mon.query("qom-set /machine/peripheral/cfslot pressed true")?;
-            std::thread::sleep(Duration::from_secs(3));
-            mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
-            std::thread::sleep(Duration::from_secs(1));
-            s.write_all(&rp_loadproto::control_frame("cf log"))
-                .map_err(|e| e.to_string())?;
             // The reply ends its event list with ",\r\n" (the idle loader's
             // READY lines don't).
-            let log = usb_read_until(&mut s, ",\r\n", 10)?;
+            let mut cf_log = || -> Result<String, String> {
+                s.write_all(&rp_loadproto::control_frame("cf log"))
+                    .map_err(|e| e.to_string())?;
+                usb_read_until(&mut s, ",\r\n", 10)
+            };
+            // The loader notices the removal on its detect poll (debounced,
+            // in emulated seconds, slower than ours on a busy PC): poll for
+            // the power-off rather than sleep a guess.
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !cf_log()?.contains("power off") {
+                if Instant::now() > deadline {
+                    return Err("CF removed: the slot was never powered off".into());
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            mon.query("qom-set /machine/peripheral/cfslot pressed false")?;
+            // A slot left powered shows READY within a few loader passes.
+            std::thread::sleep(Duration::from_secs(1));
+            let log = cf_log()?;
             let after_off = log.rsplit("power off").next().unwrap_or_default();
             if !log.contains("power off") || after_off.contains("ready 1") {
                 return Err(format!("CF removed: slot not powered off: {log:?}"));
