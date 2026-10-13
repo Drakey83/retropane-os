@@ -92,6 +92,11 @@ pub(crate) fn to_wsl_path(p: &Path) -> String {
     }
 }
 
+/// Runs a script in WSL, failing if it fails.
+pub(crate) fn wsl_run(script: &str) -> Result<(), String> {
+    run(&mut wsl_bash(script))
+}
+
 fn wsl_bash(script: &str) -> Command {
     let mut c = Command::new("wsl");
     c.args(["-d", &wsl_distro(), "--", "bash", "-lc", script]);
