@@ -39,6 +39,26 @@ testability) and do as many as make sense; one token improvement doesn't
 meet it. When a part is finished, report what was done to iterate and to
 modernize it.
 
+**Hard rule: imitation is the last resort** (the owner, 2026-10-13). How
+Windows Mobile, Dell's drivers or the 2005 design did something is a
+*finding*, never a *decision*. They didn't have today's tools, languages
+or knowledge. For every part, and every decision inside it:
+
+1. **Hardware limit or choice?** Ask it of every inherited behaviour. If
+   the silicon itself forces it, say so with the evidence. If it was a
+   software choice, it is open to replacement.
+2. **Exhaust the better ways first:** faster, more modern, cleverer, more
+   efficient, and how the device's parts can work *together* (CPU, the
+   2700G's 3D core and display controller, DMA, the buses, power), not
+   one part at a time.
+3. **Only then accept imitation**, and write down the alternatives that
+   were rejected and why ("Hardware limit or choice?" and "Better ways
+   considered" in every ADR, plan and hardware write-up).
+
+Example: Windows Mobile draws its screen on the CPU. That was Dell's
+software choice, not a hardware limit (the 2700G's MBX core can draw 2D
+as textured quads), so it is something to beat, not to copy.
+
 **Security is a design input, not a later pass.** RetroPane will be on the
 internet. Read [`security.md`](security.md): every ADR gets a Security
 section, every parser of outside input (USB, network, files, images) checks
