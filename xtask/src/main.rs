@@ -10,6 +10,7 @@ mod screen;
 mod sdkit;
 mod serve;
 mod size;
+mod trace;
 mod usb;
 mod userimg;
 
@@ -76,6 +77,8 @@ commands:
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
+  trace     the last program's trace ring (thread switches, faults,
+            calls...) from the loader, as a timeline (item 54)
   reboot-wm reset the X51v back into Windows Mobile the way its own
             reboot does (GPIO99; item 64, not yet tried on the device)
   tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
@@ -90,6 +93,7 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
@@ -105,9 +109,8 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "mutants" | "qemu" => {
-            run_step(&cmd)
-        }
+        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "mutants"
+        | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -199,6 +202,10 @@ fn main() -> ExitCode {
             eprintln!("==> cpld");
             usb::command(&workspace_root(), "cpld")
         }
+        "trace" => {
+            eprintln!("==> trace");
+            trace::run(&workspace_root())
+        }
         "reboot-wm" => {
             eprintln!("==> reboot wm");
             usb::command(&workspace_root(), "reboot wm")
@@ -260,6 +267,7 @@ fn run_step(step: &str) -> Result {
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
+        "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -276,6 +284,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
+            .and_then(|()| emu::boot_loader_trace(&workspace_root()))
             .and_then(|()| emu::boot_loader_put(&workspace_root()))
             .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))

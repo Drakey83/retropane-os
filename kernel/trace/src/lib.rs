@@ -161,13 +161,20 @@ pub fn decode<const N: usize>(
     words: &[[u32; RECORD_WORDS]; N],
     total: u32,
 ) -> impl Iterator<Item = Event> + '_ {
-    let first = if N == 0 {
+    decode_slots(words, total)
+}
+
+/// [`decode`] for records of any count (a ring copied out, or one in a
+/// reserved region).
+pub fn decode_slots(words: &[[u32; RECORD_WORDS]], total: u32) -> impl Iterator<Item = Event> + '_ {
+    let n = words.len();
+    let first = if n == 0 {
         total.wrapping_add(1)
     } else {
-        total.saturating_sub(N as u32 - 1).max(1)
+        total.saturating_sub(n as u32 - 1).max(1)
     };
     (first..=total).filter_map(move |seq| {
-        let w = words[(seq - 1) as usize % N];
+        let w = words[(seq - 1) as usize % n];
         if w[0] != seq {
             return None;
         }
@@ -181,6 +188,104 @@ pub fn decode<const N: usize>(
     })
 }
 
+/// Words in a [`Persistent`] ring's header: a magic number, the records
+/// written so far, the magic's complement, and the ring's record count.
+pub const HEADER_WORDS: usize = 4;
+const MAGIC: u32 = u32::from_le_bytes(*b"RPTR");
+
+/// The same ring kept in memory the caller hands over: a reserved region
+/// that outlives the program, so the resident loader can send it to the PC
+/// after the program returned, crashed or hung (`cargo xtask trace`). The
+/// loader starts it when it starts a program; the program carries it on.
+pub struct Persistent<'a> {
+    header: &'a mut [u32; HEADER_WORDS],
+    records: &'a mut [[u32; RECORD_WORDS]],
+}
+
+impl<'a> Persistent<'a> {
+    /// Starts an empty ring in `area`: the header, then as many records as
+    /// fit. `None` if not even one does.
+    pub fn start(area: &'a mut [u32]) -> Option<Self> {
+        let (header, rest) = area.split_first_chunk_mut::<HEADER_WORDS>()?;
+        let records = rest.as_chunks_mut::<RECORD_WORDS>().0;
+        if records.is_empty() {
+            return None;
+        }
+        records.fill([0; RECORD_WORDS]);
+        *header = [MAGIC, 0, !MAGIC, records.len() as u32];
+        Some(Self { header, records })
+    }
+
+    /// Carries on the ring already in `area` (the loader started it), if
+    /// its header is intact and matches the area; else `None`.
+    pub fn attach(area: &'a mut [u32]) -> Option<Self> {
+        let (header, rest) = area.split_first_chunk_mut::<HEADER_WORDS>()?;
+        let records = rest.as_chunks_mut::<RECORD_WORDS>().0;
+        let n = records.len();
+        (header[0] == MAGIC && header[2] == !MAGIC && header[3] as usize == n && n > 0)
+            .then_some(Self { header, records })
+    }
+
+    /// Carries on the ring in `area` if there is one (the loader started
+    /// it), else starts one: a program that runs with or without the loader.
+    pub fn resume(area: &'a mut [u32]) -> Option<Self> {
+        let n = area.len().saturating_sub(HEADER_WORDS) / RECORD_WORDS;
+        let ring = area.len() >= HEADER_WORDS
+            && area[0] == MAGIC
+            && area[2] == !MAGIC
+            && area[3] as usize == n;
+        if ring {
+            Self::attach(area)
+        } else {
+            Self::start(area)
+        }
+    }
+
+    /// Records an event (as [`Ring::record`]).
+    pub fn record(&mut self, time: u32, kind: Kind, a: u32, b: u32) {
+        let seq = self.header[1].wrapping_add(1).max(1);
+        let n = self.records.len();
+        let slot = &mut self.records[(seq - 1) as usize % n];
+        slot[0] = 0;
+        slot[1] = time;
+        slot[2] = u32::from(kind as u8) | (a & 0x00FF_FFFF) << 8;
+        slot[3] = b;
+        slot[0] = seq;
+        self.header[1] = seq;
+    }
+
+    /// Records written so far.
+    #[must_use]
+    pub fn total(&self) -> u32 {
+        self.header[1]
+    }
+
+    /// Records the ring holds.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.records.len()
+    }
+
+    /// The events still in the ring, oldest first.
+    pub fn events(&self) -> impl Iterator<Item = Event> + '_ {
+        decode_slots(self.records, self.header[1])
+    }
+}
+
+/// A [`Persistent`] ring's words as copied out (header, then records):
+/// its total and its intact events, oldest first; `None` if the header
+/// isn't a ring's. Bounded by `words`: a garbled count can't read past it.
+#[must_use]
+pub fn decode_words(words: &[u32]) -> Option<(u32, impl Iterator<Item = Event> + '_)> {
+    let (header, rest) = words.split_first_chunk::<HEADER_WORDS>()?;
+    let records = rest.as_chunks::<RECORD_WORDS>().0;
+    let n = (header[3] as usize).min(records.len());
+    if header[0] != MAGIC || header[2] != !MAGIC || n == 0 {
+        return None;
+    }
+    Some((header[1], decode_slots(&records[..n], header[1])))
+}
+
 /// Records no longer in a ring of `n` whose newest is number `total`.
 #[must_use]
 pub fn lost(n: usize, total: u32) -> u32 {
@@ -190,6 +295,59 @@ pub fn lost(n: usize, total: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_persistent_ring_survives_being_handed_over() {
+        let mut area = [0xAAAA_AAAAu32; HEADER_WORDS + 3 * RECORD_WORDS + 2];
+        // Not a ring yet: nothing to carry on.
+        assert!(Persistent::attach(&mut area).is_none());
+        {
+            let mut r = Persistent::start(&mut area).unwrap();
+            assert_eq!((r.capacity(), r.total()), (3, 0));
+            r.record(10, Kind::Mark, 1, 2);
+        }
+        // The program carries on the ring the loader started.
+        {
+            let mut r = Persistent::resume(&mut area).unwrap();
+            assert_eq!(r.total(), 1, "carried on, not restarted");
+            for i in 0..4u32 {
+                r.record(20 + i, Kind::Switch, i, 0);
+            }
+            assert_eq!(r.total(), 5);
+        }
+        // The PC decodes the words as copied out: the newest three.
+        let (total, events) = decode_words(&area).unwrap();
+        let e: Vec<Event> = events.collect();
+        assert_eq!(total, 5);
+        assert_eq!(e.iter().map(|e| e.seq).collect::<Vec<_>>(), [3, 4, 5]);
+        assert_eq!((e[2].time, e[2].kind, e[2].a), (23, Kind::Switch, 3));
+    }
+
+    #[test]
+    fn garbled_dumps_are_refused_or_bounded() {
+        let mut area = [0u32; HEADER_WORDS + 4 * RECORD_WORDS];
+        Persistent::start(&mut area)
+            .unwrap()
+            .record(1, Kind::Mark, 0, 0);
+        // A count larger than the words: bounded to what's there.
+        let mut big = area;
+        big[3] = 1_000_000;
+        assert_eq!(decode_words(&big).unwrap().1.count(), 1);
+        // A broken magic, a short dump, a torn record.
+        let mut bad = area;
+        bad[2] = 0;
+        assert!(decode_words(&bad).is_none());
+        assert!(decode_words(&area[..3]).is_none());
+        let mut torn = area;
+        torn[HEADER_WORDS] = 0;
+        assert_eq!(decode_words(&torn).unwrap().1.count(), 0);
+        // Every truncation decodes without panicking.
+        for n in 0..area.len() {
+            if let Some((_, e)) = decode_words(&area[..n]) {
+                let _ = e.count();
+            }
+        }
+    }
 
     #[test]
     fn keeps_the_newest_in_order() {

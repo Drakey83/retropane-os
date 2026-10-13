@@ -12,6 +12,7 @@ rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-kernel-sched = { path = "../../kernel/sched" }
+rp-kernel-trace = { path = "../../kernel/trace" }
 
 [lints]
 workspace = true

@@ -1271,11 +1271,7 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         let ok = usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
-        let ok = usb_read_until(
-            &mut s, "
-", 10,
-        )
-        .map(|t| ok + &t)?;
+        let ok = usb_read_until(&mut s, "\n", 10).map(|t| ok + &t)?;
         let theirs = ok.rsplit("RPL OK sha256 ").next().unwrap_or("").trim();
         crate::usb::check_digest(theirs, &payload, "image over USB")?;
         // The loader disconnects to run the image and reconnects when it
@@ -1302,6 +1298,86 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         },
     )?;
     eprintln!("    loader over USB OK: image in, run log out, through the emulated USB port");
+    Ok(())
+}
+
+/// The trace over USB (item 54): the loader runs rp-threads (which carries
+/// on the ring the loader started), and after it returned, `trace` hands
+/// the ring over: the image's start and end marks and its thread switches
+/// must decode, in order, none torn.
+pub fn boot_loader_trace(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    trace: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &dir.join("rp-loader.bin"))?;
+    let threads = dir.join("rp-threads.bin");
+    crate::sdkit::raw_binary(&release.join("rp-threads"), &threads)?;
+    let payload = std::fs::read(&threads).map_err(|e| format!("{}: {e}", threads.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let loader = dir.join("rp-loader.bin");
+    let args = usb_args(11);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(11)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        let log = usb_read_until(&mut s, "RPL END", 60)?;
+        if !log.contains(THREADS_MARKER) {
+            return Err(format!("rp-threads didn't pass under the loader: {log:?}"));
+        }
+        s.write_all(&rp_loadproto::control_frame("trace"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(&mut s, " kept\r\n", 20)?;
+        let lines: Vec<String> = reply
+            .lines()
+            .filter_map(|l| l.trim_end().strip_prefix("RPD "))
+            .map(str::to_string)
+            .collect();
+        let words = crate::trace::parse(&lines)?;
+        let (total, events) =
+            rp_kernel_trace::decode_words(&words).ok_or("trace: no ring in the reply")?;
+        let events: Vec<rp_kernel_trace::Event> = events.collect();
+        use rp_kernel_trace::Kind;
+        let marks: Vec<(u32, u32)> = events
+            .iter()
+            .filter(|e| e.kind == Kind::Mark)
+            .map(|e| (e.a, e.b))
+            .collect();
+        let switches = events.iter().filter(|e| e.kind == Kind::Switch).count();
+        let in_order = events.windows(2).all(|w| w[1].seq == w[0].seq + 1);
+        // Marks: the image's start (1) and its end with every check passed
+        // (2, 1); if the ring wrapped, the start may be gone.
+        let ended = marks.last() == Some(&(2, 1));
+        let started = marks.first() == Some(&(1, 0)) || u64::from(total) > events.len() as u64;
+        if !(ended && started && switches > 10 && in_order) {
+            return Err(format!(
+                "trace: total {total}, {} kept, marks {marks:?}, {switches} switches, in order {in_order}",
+                events.len()
+            ));
+        }
+        eprintln!(
+            "    trace OK: {total} events from rp-threads under the loader ({switches} switches kept), decoded on the PC"
+        );
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
     Ok(())
 }
 

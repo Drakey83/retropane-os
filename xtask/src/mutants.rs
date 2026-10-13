@@ -206,6 +206,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_kernel),
     },
     Mutant {
+        name: "rp-threads records no thread switches (the trace over USB shows none)",
+        file: "boot/threads/src/main.rs",
+        from: "            trace(Kind::Switch, u32::from(cur.0), u32::from(next.0));",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_trace),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

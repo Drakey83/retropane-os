@@ -27,6 +27,7 @@ rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
 rp-drv-wm8750 = { path = "../../drivers/wm8750" }
 rp-loadproto = { path = "../loadproto" }
 rp-crypto = { path = "../../kernel/crypto" }
+rp-kernel-trace = { path = "../../kernel/trace" }
 
 [lints]
 workspace = true

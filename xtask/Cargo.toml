@@ -15,6 +15,7 @@ rp-fat = { path = "../kernel/fat", features = ["std"] }
 rp-hal-api = { path = "../hal/api" }
 rp-crypto = { path = "../kernel/crypto" }
 rp-kernel-pe = { path = "../kernel/pe" }
+rp-kernel-trace = { path = "../kernel/trace" }
 
 [lints]
 workspace = true

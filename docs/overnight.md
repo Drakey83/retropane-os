@@ -965,6 +965,28 @@ on the host or in the emulator first.
 54. **Trace over USB**: the ring placed where it survives the return to the
     loader (as the run log does), and `cargo xtask trace` fetching and
     printing it as a timeline.
+    **Done (emulator), 2026-10-13.** `rp-kernel-trace::Persistent`: the
+    same self-checking records in memory the caller hands over (a header,
+    then as many records as fit). The trace region is 4 KiB right after the
+    run log (`0xA8510000`, 255 records); the loader starts a fresh ring with
+    each program and answers `trace` with the ring as it lies (one `RPD`
+    line per four words); the program carries the ring on
+    (`Persistent::resume`: the loader's if it started the run, else a new
+    one). `cargo xtask trace` decodes it with the kernel's own decoder (torn
+    records dropped, never misread) and prints a timeline in microseconds.
+    `rp-threads` records its switches and start/end marks; `rp-kernel` moved
+    to the same ring (128 -> 255 events kept, 2 KiB less zeroed RAM).
+    Emulator check `trace` (`cargo xtask emu-trace`): rp-threads under the
+    loader, then `trace`: 2,082 events, 254 switches kept, both marks, in
+    order; mutant (no switches recorded) killed; host tests for the ring
+    handed over, garbled dumps and the timeline. Not yet on the device: the
+    ring after a hang and watchdog reset (SDRAM is kept through the reset,
+    as the run log is), which is what makes it a post-mortem tool.
+    - **Iterate:** CE's CeLog idea (always-on kernel events, read after the
+      fact) at a fixed, tiny cost, without a separate collector.
+    - **Modernize:** records that check themselves, so a crash mid-write
+      can't produce a wrong timeline; one decoder for the device and the
+      PC.
 
 55. **Soft watchdog** (owner's device kept landing on Dell's restore
     prompt): **done (emulator); card-size tests split out as item 57.** The

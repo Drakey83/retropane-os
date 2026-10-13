@@ -355,6 +355,29 @@ pub fn crash_to_loader(msg: core::fmt::Arguments) {
     }
 }
 
+/// The trace region (item 54): the kernel's trace ring (`rp-kernel-trace`
+/// `Persistent`), right after the run log, so it outlives the program like
+/// the log: the loader starts it with each program and sends it to the PC
+/// afterwards (`cargo xtask trace`), even after a hang and reset.
+pub const TRACE_BASE: usize = 0xA851_0000;
+/// Size of the trace region (header and 255 records).
+pub const TRACE_SIZE: usize = 4096;
+
+static mut TRACE_TAKEN: bool = false;
+
+/// Hands out the trace region once.
+pub fn take_trace_area() -> Option<&'static mut [u32]> {
+    // SAFETY: single core; called during setup.
+    let taken = unsafe { core::ptr::addr_of_mut!(TRACE_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: TRACE_BASE..+TRACE_SIZE is SDRAM reserved for the trace ring
+    // (boot/link.x), identity-mapped, word-aligned; the flag makes this the
+    // only slice in this program.
+    Some(unsafe { core::slice::from_raw_parts_mut(TRACE_BASE as *mut u32, TRACE_SIZE / 4) })
+}
+
 /// Start of the SDRAM scratch region handed out by [`take_scratch`]: 8 MiB into
 /// SDRAM, far above bare-metal images (linked at `0xA8008000`, a few tens of KiB).
 pub const SCRATCH_BASE: usize = 0xA880_0000;
