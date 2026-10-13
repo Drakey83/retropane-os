@@ -17,6 +17,7 @@ rp-kernel-sched = { path = "../../kernel/sched" }
 rp-kernel-pe = { path = "../../kernel/pe" }
 rp-kernel-trace = { path = "../../kernel/trace" }
 rp-hal-mem = { path = "../../hal/mem" }
+rp-hal-user = { path = "../../hal/user" }
 
 [lints]
 workspace = true

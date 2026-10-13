@@ -56,6 +56,9 @@ pub const SYS_GRANT: u32 = 4;
 pub const OPEN: u32 = 1;
 /// The manager's operation: start a worker process.
 pub const SPAWN: u32 = 2;
+/// The manager's operation: open the display host (its handle 2; handle 1
+/// is its own port).
+pub const OPEN_DISPLAY: u32 = 3;
 /// End the calling process (`r0` exit code).
 pub const SYS_EXIT: u32 = 5;
 /// Start a process from the image (`r0` entry offset in its code; the
@@ -215,7 +218,11 @@ rp_ipc_server:
 3:  b       3b
 
 rp_ipc_manager:                     @ r0 = the caller's slot, r1 = operation
-    cmp     r1, #1                  @ OPEN
+    cmp     r1, #1                  @ OPEN: our handle 0 (the host)
+    moveq   r2, #0
+    beq     4f
+    cmp     r1, #3                  @ OPEN_DISPLAY: our handle 2 (1 is
+    moveq   r2, #2                  @ our own port)
     beq     4f
     cmp     r1, #2                  @ SPAWN
     mvnne   r0, #2                  @ else an error (0xFFFFFFFD)
@@ -225,7 +232,7 @@ rp_ipc_manager:                     @ r0 = the caller's slot, r1 = operation
     swi     #0
     b       5f
 4:  mov     r1, r0                  @ to the caller
-    mov     r0, #0                  @ our handle to the host's port
+    mov     r0, r2                  @ the handle asked for
     mov     r2, #1                  @ CALL only
     mov     r7, #4                  @ SYS_GRANT
     swi     #0

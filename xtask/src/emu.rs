@@ -364,7 +364,33 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    // A real driver in a host (item 46): the compiled display host runs the
+    // backlight on its granted PWM window, restarts after a fault in a
+    // call and in its own thread, and keeps the level the hardware shows.
+    "IPC driver host served OK",
+    "IPC driver host restarted OK",
     "TRACE ring OK",
+];
+
+/// After the kernel's marker: the emulator presses the power button and the
+/// display host (its granted interrupt) turns the light off and on again.
+const KERNEL_STEPS: &[Step] = &[
+    Step {
+        action: Action::Hmp("qom-set /machine/peripheral/power pressed true"),
+        expect: &[],
+    },
+    Step {
+        action: Action::Hmp("qom-set /machine/peripheral/power pressed false"),
+        expect: &[Expect::Text("DISPLAY button: light off")],
+    },
+    Step {
+        action: Action::Hmp("qom-set /machine/peripheral/power pressed true"),
+        expect: &[],
+    },
+    Step {
+        action: Action::Hmp("qom-set /machine/peripheral/power pressed false"),
+        expect: &[Expect::Text("DISPLAY button: light back on")],
+    },
 ];
 
 /// Boots the kernel image: the VM layer live on the CPU, with real page
@@ -378,7 +404,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
             marker: KERNEL_MARKER,
             screenshot: None,
             sd_image: None,
-            steps: &[],
+            steps: KERNEL_STEPS,
             extra: &[],
             input: None,
             during: None,
@@ -397,6 +423,9 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
     check_boot(&output, &["boot_kernel_tables"])?;
     eprintln!("    kernel VM OK: page tables, demand paging, copy-on-write, FCSE, unmap");
     eprintln!("    kernel IPC OK: migrating calls between processes, fault unwind, handles");
+    eprintln!(
+        "    kernel driver host OK: backlight driver in a compiled user process, granted PWM window and power-button interrupt, restarted twice"
+    );
     Ok(())
 }
 

@@ -6,6 +6,7 @@ members = [
     "hal/pxa27x",
     "hal/x51v",
     "hal/mem",
+    "hal/user",
     "drivers/pxa-uart",
     "drivers/mbx-display",
     "drivers/cpld",
@@ -46,6 +47,7 @@ members = [
     "boot/probe",
     "boot/kernel",
     "boot/threads",
+    "services/display-host",
     "tools/romdump",
     "tools/apiscan",
     "xtask",
@@ -90,6 +92,9 @@ opt-level = "s"
 [profile.release.package.rp-drv-cpld]
 opt-level = "s"
 [profile.release.package.rp-probe]
+opt-level = "s"
+# Driver hosts are cold code: calls and button presses (ADR-0005 rule 8).
+[profile.release.package.rp-display-host]
 opt-level = "s"
 # The loader is cold code too (it waits on the PC); the generic drivers and
 # file systems it links are compiled here, in its crate, so this is what

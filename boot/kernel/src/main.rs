@@ -42,6 +42,16 @@
 //!    was never given is refused, then exits (`SYS_EXIT`); everything it had
 //!    comes back (frames, handles, ports), and a second worker reuses its
 //!    slot and record without seeing the first one's memory.
+//! 10. A real driver in a host (item 46, ADR-0016 decision 5): the
+//!     display+input host, a compiled Rust process (`services/display-host`,
+//!     its own PE file embedded at build time), runs the backlight driver on
+//!     PWM0's registers, mapped into it uncached by the board's grant, and
+//!     waits for the power button's interrupt, granted to it alone. A client
+//!     in another process sets a level through its port and makes it fault
+//!     in a call; a test thread makes its own thread fault. Each time the
+//!     host restarts with fresh memory (its blocked thread re-enters at its
+//!     entry) and carries on from the level the hardware shows. Then the
+//!     power button (pressed by the emulator) turns the light off and on.
 //!
 //! Each step prints `VM <step> OK` / `IPC <step> OK` on serial (or `FAIL`
 //! with details), then [`MARKER`] if all passed; `cargo xtask emu` checks
@@ -59,12 +69,15 @@ mod image {
 
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::mmu::{Memory, X51V_BRINGUP};
+    use rp_hal_pxa27x::rt::IrqLine;
     use rp_hal_pxa27x::rt::{self, Global};
+    use rp_hal_pxa27x::soc::{self, Edge};
     use rp_hal_pxa27x::testprog::{
         self, SYS_CALL, SYS_DONE, SYS_EXIT, SYS_GRANT, SYS_RETURN, SYS_SPAWN,
     };
     use rp_hal_pxa27x::user::{self, Frame};
     use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
+    use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
     use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
@@ -124,6 +137,9 @@ mod image {
         pe_refs: u32,
         /// Pages loaded so far (each once, however many processes map it).
         pe_loads: u32,
+        /// The display host's view pages (its image is in the kernel's own
+        /// read-only data: nothing to copy).
+        host: [u32; PE_PAGES],
     }
 
     impl PageCache for RamFile {
@@ -133,6 +149,11 @@ mod image {
                 Ok(self.phys)
             } else if object == PE_OBJECT
                 && let Some(&phys) = self.pe.get(page as usize).filter(|&&p| p != 0)
+            {
+                self.pe_refs += 1;
+                Ok(phys)
+            } else if object == HOST_OBJECT
+                && let Some(&phys) = self.host.get(page as usize).filter(|&&p| p != 0)
             {
                 self.pe_refs += 1;
                 Ok(phys)
@@ -267,7 +288,9 @@ mod image {
     const CLIENTS: usize = 2;
     /// Kernel stacks taken off the top of the pool (4 KiB each): the idle
     /// thread's and the clients'; the boot thread keeps its own.
-    const KSTACKS: usize = 1 + CLIENTS + SPAWN_STACKS;
+    const KSTACKS: usize = 1 + CLIENTS + SPAWN_STACKS + DISPLAY_THREADS;
+    /// The display host's thread, its client, the fault-test thread.
+    const DISPLAY_THREADS: usize = 3;
     /// A short quantum (~150 us) so the clients are preempted many times,
     /// inside calls too.
     const QUANTUM: u32 = 500;
@@ -285,11 +308,29 @@ mod image {
     const MANAGER_SLOT: u32 = 8;
     /// Process records: reused as processes start and end (each ~1.6 KB),
     /// so memory follows the processes running, not the 31 slots.
-    const MAX_PROCS: usize = 5;
+    const MAX_PROCS: usize = 7;
     /// Kernel stacks kept for processes started at run time.
     const SPAWN_STACKS: usize = 2;
     /// A system call only the service manager may make.
     const ERR_DENIED: u32 = ERR | 0xFB;
+    /// The display+input host (item 46) and the test's client of it: both
+    /// run the host's image, a compiled program packaged by `cargo xtask`
+    /// and embedded here.
+    const DISPLAY_SLOT: u32 = 9;
+    const DISPLAY_CLIENT_SLOT: u32 = 10;
+    static DISPLAY_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rp-display-host.pe"));
+    const HOST_OBJECT: u32 = 3;
+    /// The board's grants to the display host (ADR-0016 decision 5): PWM0's
+    /// registers, one uncached page at `rp_hal_user::Device::Pwm0`'s
+    /// address, and the power button's interrupt (GPIO0) as its line 0.
+    const PWM0_PHYS: u32 = 0x40B0_0000;
+    const POWER_BUTTON_GPIO: u8 = 0;
+    /// The host's thread roles (`services/display-host`).
+    const ROLE_HOST: u32 = 0;
+    const ROLE_TEST_CLIENT: u32 = 1;
+    const ROLE_TEST_FAULT: u32 = 2;
+    /// The level the display client sets.
+    const DISPLAY_LEVEL: u32 = 30;
     // The IPC tables hold one handle table per process slot of the layout.
     const _: () = assert!(
         rp_kernel_ipc::FIRST_SLOT as u32 == layout::FIRST_PROCESS_SLOT
@@ -339,8 +380,8 @@ mod image {
         inside: [u8; 33],
         /// Bit `slot`: that server faulted and restarts when it empties.
         restarting: u64,
-        /// The supervised port (the host's) and its supervisor's slot.
-        supervised: Option<(PortId, u8)>,
+        /// Supervised ports: (port, server slot, supervisor slot).
+        supervised: [Option<(PortId, u8, u8)>; 2],
         restarts: u32,
         /// The restarted host's memory came back fresh.
         restart_clean: bool,
@@ -359,6 +400,26 @@ mod image {
         /// After each exit: frames free, and the slot's handles and ports
         /// left (must be none).
         after_exit: [(u32, usize, usize); SPAWN_STACKS],
+        /// The display host's entry and its own thread.
+        display_entry: u32,
+        display_thread: Option<Tid>,
+        /// Threads that must re-enter their process at its entry (their
+        /// process restarted under them), by thread index.
+        reentry: u64,
+        /// Times the display host's thread started (first start and each
+        /// re-entry), and the display host's restarts.
+        display_starts: u32,
+        display_restarts: u32,
+        /// The display client's report, and its and the fault-test
+        /// thread's kernel stacks.
+        display_report: Option<[u32; 4]>,
+        fault_stack: Option<&'static mut [u32]>,
+        client_stack: Option<&'static mut [u32]>,
+        /// The power button's event.
+        button: Eid,
+        /// A display host restart didn't come back fresh (false: all
+        /// zero, so this record stays in zeroed memory, not the image).
+        display_dirty: bool,
     }
 
     static RUN: Global<Run> = Global::new(Run {
@@ -372,7 +433,7 @@ mod image {
         in_call_switches: 0,
         inside: [0; 33],
         restarting: 0,
-        supervised: None,
+        supervised: [None, None],
         restarts: 0,
         restart_clean: false,
         next_role: 0,
@@ -383,7 +444,20 @@ mod image {
         frames_before: [0; SPAWN_STACKS],
         manager_port: None,
         after_exit: [(0, 0, 0); SPAWN_STACKS],
+        display_entry: 0,
+        display_thread: None,
+        reentry: 0,
+        display_starts: 0,
+        display_restarts: 0,
+        display_report: None,
+        fault_stack: None,
+        client_stack: None,
+        button: Eid(0),
+        display_dirty: false,
     });
+
+    /// The power button's interrupt line (granted to the display host).
+    static BUTTON: Global<Option<IrqLine>> = Global::new(None);
 
     /// Kernel stacks for processes started at run time.
     static SPARE_STACKS: Global<[Option<&'static mut [u32]>; SPAWN_STACKS]> =
@@ -401,6 +475,8 @@ mod image {
         procs: [Proc; MAX_PROCS],
         /// The test image's view pages' protections (`None`: a guard).
         pe_prot: [Option<Protection>; PE_PAGES],
+        /// The display host image's.
+        host_prot: [Option<Protection>; PE_PAGES],
         domains: Domains,
         file: RamFile,
         pool: Option<&'static mut [u32]>,
@@ -436,9 +512,18 @@ mod image {
                 slot: MANAGER_SLOT,
                 space: AddressSpace::process(MANAGER_SLOT, domains::PARKED),
             },
+            Proc {
+                slot: DISPLAY_SLOT,
+                space: AddressSpace::process(DISPLAY_SLOT, domains::PARKED),
+            },
+            Proc {
+                slot: DISPLAY_CLIENT_SLOT,
+                space: AddressSpace::process(DISPLAY_CLIENT_SLOT, domains::PARKED),
+            },
             FREE_PROC,
         ],
         pe_prot: [None; PE_PAGES],
+        host_prot: [None; PE_PAGES],
         file: RamFile {
             phys: 0,
             refs: 0,
@@ -446,6 +531,7 @@ mod image {
             pe: [0; PE_PAGES],
             pe_refs: 0,
             pe_loads: 0,
+            host: [0; PE_PAGES],
         },
         pool: None,
         l1: 0,
@@ -960,12 +1046,29 @@ mod image {
             };
             // The VM's copy of the file: written back when `with_vm` ends.
             vm.cache.pe_file = file_phys;
-            let prot = s.pe_prot;
-            for slot in [PROC_SLOT, SERVER_SLOT, HOST_SLOT, MANAGER_SLOT] {
+            // The display host's image: built by `cargo xtask`, refused as
+            // any image would be (W^X, size).
+            let host = Image::parse(DISPLAY_IMAGE).map_err(|_| "no display host image")?;
+            if host.writable_code() || host.pages() as usize > PE_PAGES {
+                return Err("display host image refused");
+            }
+            for page in 0..host.pages() {
+                s.host_prot[page as usize] = host.page_protection(page);
+            }
+            RUN.with(|r| r.display_entry = LOAD_BASE + host.entry);
+            for slot in [
+                PROC_SLOT,
+                SERVER_SLOT,
+                HOST_SLOT,
+                MANAGER_SLOT,
+                DISPLAY_SLOT,
+                DISPLAY_CLIENT_SLOT,
+            ] {
                 let a = s.domains.activate(slot);
+                let (object, prot, grant) = image_of(s, slot);
                 let space = space_mut(s, slot).ok_or("no process")?;
                 space.set_domain(a.domain);
-                map_process(&mut vm.region_pages(), space, slot, &prot)?;
+                map_process(&mut vm.region_pages(), space, slot, object, &prot, grant)?;
             }
             Ok(pages)
         });
@@ -983,8 +1086,25 @@ mod image {
             let manager = LOAD_BASE + TEXT_RVA + programs.manager;
             let (mport, _) = i.ipc.open(MANAGER_SLOT as u8, manager).ok()?;
             i.ipc.install(PROC_SLOT as u8, mport, Rights::CALL).ok()?;
+            // The display host's port: the manager's handle 2 (every right;
+            // its handle 1 is its own port), the display client's handle 0;
+            // the manager's port is the client's handle 1.
+            let entry = RUN.with(|r| r.display_entry);
+            let (display, _) = i.ipc.open(DISPLAY_SLOT as u8, entry).ok()?;
+            i.ipc
+                .install(MANAGER_SLOT as u8, display, Rights::ALL)
+                .ok()?;
+            i.ipc
+                .install(DISPLAY_CLIENT_SLOT as u8, display, Rights::CALL)
+                .ok()?;
+            i.ipc
+                .install(DISPLAY_CLIENT_SLOT as u8, mport, Rights::CALL)
+                .ok()?;
             RUN.with(|r| {
-                r.supervised = Some((host, MANAGER_SLOT as u8));
+                r.supervised = [
+                    Some((host, HOST_SLOT as u8, MANAGER_SLOT as u8)),
+                    Some((display, DISPLAY_SLOT as u8, MANAGER_SLOT as u8)),
+                ];
                 r.manager_port = Some(mport);
             });
             Some(h)
@@ -1002,6 +1122,23 @@ mod image {
                 let t = s.create(PROC_SLOT as u8, 200).ok()?;
                 thread::prepare(t.index(), kstacks.next()?, client_thread, 0);
             }
+            // The display host's own thread (a driver's: urgent). Its
+            // client starts once the clients above are done (`start_display_client`).
+            let button = s.create_event(false, false).ok()?;
+            let host = s.create(DISPLAY_SLOT as u8, 120).ok()?;
+            RUN.with(|r| {
+                r.slots[host.index()] = DISPLAY_SLOT as u8;
+                r.display_thread = Some(host);
+                r.button = button;
+                r.fault_stack = kstacks.next();
+                r.client_stack = kstacks.next();
+            });
+            thread::prepare(
+                host.index(),
+                kstacks.next()?,
+                user_thread,
+                ROLE_HOST as usize,
+            );
             RUN.with(|r| r.current = boot);
             Some(done)
         });
@@ -1022,6 +1159,12 @@ mod image {
                 *slot = kstacks.next();
             }
         });
+        // The display host's grants: PWM0's clock on (a user process can't
+        // reach the clock unit) and the power button's interrupt, signalled
+        // to its event.
+        let _ = rt::take_pwm0();
+        rt::set_signal_hook(on_signal);
+        BUTTON.with(|b| *b = rt::take_gpio_irq(POWER_BUTTON_GPIO, Edge::Both));
         user::set_syscall_handler(on_syscall);
         user::set_user_fault_handler(on_user_fault);
         rt::set_preempt_hook(reschedule);
@@ -1029,12 +1172,113 @@ mod image {
         while RUN.with(|r| r.finished) < CLIENTS {
             wait(done);
         }
+        // The display test after the others, so their frame accounting
+        // (spawn and exit) sees nothing else allocate.
+        start_display_client();
+        while RUN.with(|r| r.display_restarts) < 2 {
+            wait(done);
+        }
         ok &= report_clients(&mut uart, pe_pages);
+        ok &= report_display(&mut uart);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
+            power_button(&mut uart);
         }
         halt()
+    }
+
+    /// Starts the display client (a thread of the host's image in its own
+    /// process).
+    fn start_display_client() {
+        let Some(stack) = RUN.with(|r| r.client_stack.take()) else {
+            return;
+        };
+        let _ = SCHED.with(|s| {
+            let t = s.create(DISPLAY_CLIENT_SLOT as u8, 200)?;
+            RUN.with(|r| r.slots[t.index()] = DISPLAY_CLIENT_SLOT as u8);
+            thread::prepare(t.index(), stack, user_thread, ROLE_TEST_CLIENT as usize);
+            Ok::<(), rp_kernel_sched::Error>(())
+        });
+    }
+
+    /// A thread of the display host's image (its role in `r1`), in the
+    /// slot it was created for.
+    extern "C" fn user_thread(role: usize) -> ! {
+        let (me, slot, entry) =
+            RUN.with(|r| (r.current, r.slots[r.current.index()], r.display_entry));
+        if role == ROLE_HOST as usize {
+            RUN.with(|r| r.display_starts += 1);
+        }
+        switch_to(u32::from(slot));
+        user::enter_user_with(entry, stack_top(me, 0), 0, role as u32)
+    }
+
+    /// Interrupts the kernel signals: the power button wakes its waiter.
+    fn on_signal(line: u32) {
+        if line == soc::gpio_line(POWER_BUTTON_GPIO) {
+            let e = RUN.with(|r| r.button);
+            let _ = SCHED.with(|s| s.set_event(e));
+        }
+    }
+
+    /// PWM0's duty register, as the hardware has it (the host's work).
+    fn pwm_duty() -> u32 {
+        rt::try_read(devmap::va(PWM0_PHYS as usize + 4)).unwrap_or(0)
+    }
+
+    /// The power button's level now (GPIO0 in `GPLR0`).
+    fn button_level() -> u32 {
+        rt::try_read(devmap::va(0x40E0_0000)).map_or(0, |v| v & 1)
+    }
+
+    /// The display host's interrupt wait (`SYS_IRQ_WAIT`, its line 0 only):
+    /// re-arms the line, blocks until it fires, answers the pin's level. A
+    /// restart while it waits re-enters the thread at its entry instead.
+    fn irq_wait(me: Tid, f: &mut Frame) {
+        let from = STATE.with(|s| s.pid);
+        if from != DISPLAY_SLOT || f.arg(0) != 0 || IPC.with(|i| i.ipc.depth(me.0)) > 0 {
+            f.set_result(ERR_DENIED);
+            return;
+        }
+        let e = RUN.with(|r| r.button);
+        BUTTON.with(|b| b.as_mut().map(IrqLine::done));
+        loop {
+            if take_reentry(me) {
+                reenter(f, me, ROLE_HOST);
+                return;
+            }
+            if BUTTON.with(|b| b.as_mut().is_some_and(IrqLine::take)) {
+                f.set_result(button_level());
+                return;
+            }
+            wait(e);
+        }
+    }
+
+    /// The display client's report (`SYS_REPORT`): kept, then its thread
+    /// ends, and a thread that makes the host's own code fault starts.
+    fn display_report(me: Tid, f: &mut Frame) -> ! {
+        let from = STATE.with(|s| s.pid);
+        let stack = RUN.with(|r| {
+            if from == DISPLAY_CLIENT_SLOT && r.display_report.is_none() {
+                r.display_report = Some([f.r[0], f.r[1], f.r[2], f.r[3]]);
+                r.fault_stack.take()
+            } else {
+                None
+            }
+        });
+        let _ = SCHED.with(|s| {
+            if let Some(stack) = stack
+                && let Ok(t) = s.create(DISPLAY_SLOT as u8, 150)
+            {
+                RUN.with(|r| r.slots[t.index()] = DISPLAY_SLOT as u8);
+                thread::prepare(t.index(), stack, user_thread, ROLE_TEST_FAULT as usize);
+            }
+            s.exit(me)
+        });
+        reschedule();
+        unreachable!("an exited thread never runs again")
     }
 
     /// A client: enters the client program in its process, for good.
@@ -1072,7 +1316,9 @@ mod image {
         rp: &mut impl RegionPages,
         space: &mut AddressSpace,
         slot: u32,
+        object: u32,
         pe: &[Option<Protection>; PE_PAGES],
+        grant: bool,
     ) -> Result<(), &'static str> {
         let base = layout::slot_base(slot);
         for (page, q) in (0u32..).zip(pe) {
@@ -1094,7 +1340,7 @@ mod image {
                         len: 4096,
                         prot,
                         backing: Backing::File {
-                            object: PE_OBJECT,
+                            object,
                             offset: page * 4096,
                             shared: q.shared,
                         },
@@ -1119,7 +1365,35 @@ mod image {
         ] {
             space.map(rp, region).map_err(|e| e.name())?;
         }
+        if grant {
+            // The board's grant: PWM0's registers, uncached, read + write,
+            // never executable or cacheable (`protect` keeps the policy).
+            space
+                .map(
+                    rp,
+                    Region {
+                        start: base + rp_hal_user::Device::Pwm0.va() as u32,
+                        len: 4096,
+                        prot: Prot::RW,
+                        backing: Backing::Phys {
+                            base: PWM0_PHYS,
+                            cache: Cache::Device,
+                        },
+                    },
+                )
+                .map_err(|e| e.name())?;
+        }
         Ok(())
+    }
+
+    /// Which image a slot maps, its pages' rights, and whether it gets the
+    /// display host's grant.
+    fn image_of(s: &State, slot: u32) -> (u32, [Option<Protection>; PE_PAGES], bool) {
+        if slot == DISPLAY_SLOT || slot == DISPLAY_CLIENT_SLOT {
+            (HOST_OBJECT, s.host_prot, slot == DISPLAY_SLOT)
+        } else {
+            (PE_OBJECT, s.pe_prot, false)
+        }
     }
 
     /// Starts a process from the image at code offset `off`: a free slot
@@ -1151,7 +1425,7 @@ mod image {
             p.slot = slot;
             let mut rp = vm.region_pages();
             p.space.reset_process(&mut rp, slot, a.domain);
-            map_process(&mut rp, &mut p.space, slot, &prot).ok()?;
+            map_process(&mut rp, &mut p.space, slot, PE_OBJECT, &prot, false).ok()?;
             Some(slot)
         });
         let Some(slot) = slot else {
@@ -1228,15 +1502,23 @@ mod image {
     /// and its supervisor's is stale.
     fn restart_server(slot: u8) {
         trace(Kind::Restart, u32::from(slot), 0);
-        let Some((port, supervisor)) = RUN.with(|r| r.supervised) else {
+        let Some((port, _, supervisor)) = supervised(slot) else {
             return;
         };
         let remapped = with_vm(|vm, s| {
-            let prot = s.pe_prot;
+            let (object, prot, grant) = image_of(s, u32::from(slot));
             let base = layout::slot_base(u32::from(slot));
             space_mut(s, u32::from(slot)).is_some_and(|space| {
                 vm.unmap(space, base, layout::SLOT_SIZE).is_ok()
-                    && map_process(&mut vm.region_pages(), space, u32::from(slot), &prot).is_ok()
+                    && map_process(
+                        &mut vm.region_pages(),
+                        space,
+                        u32::from(slot),
+                        object,
+                        &prot,
+                        grant,
+                    )
+                    .is_ok()
             })
         });
         let renewed = IPC.with(|i| i.ipc.restart(port, Some(supervisor))).is_ok();
@@ -1245,11 +1527,59 @@ mod image {
         switch_to(u32::from(slot));
         let word = rt::try_read((layout::slot_base(u32::from(slot)) + testprog::DATA) as usize);
         switch_to(back);
-        RUN.with(|r| {
+        let clean = remapped && renewed && word == Some(0);
+        let host_thread = RUN.with(|r| {
             r.restarting &= !(1 << slot);
-            r.restarts += 1;
-            r.restart_clean = remapped && renewed && word == Some(0);
+            if u32::from(slot) == DISPLAY_SLOT {
+                r.display_restarts += 1;
+                r.display_dirty |= !clean;
+                // Its own thread starts again at the entry, wherever it is
+                // blocked: woken now, it re-enters instead of resuming.
+                if let Some(t) = r.display_thread {
+                    r.reentry |= 1 << t.0;
+                }
+                Some(r.button)
+            } else {
+                r.restarts += 1;
+                r.restart_clean = clean;
+                None
+            }
         });
+        if let Some(e) = host_thread {
+            let done = RUN.with(|r| r.done);
+            let _ = SCHED.with(|s| {
+                let _ = s.set_event(done);
+                s.set_event(e)
+            });
+        }
+    }
+
+    /// The supervision of the server in `slot`, if it has one.
+    fn supervised(slot: u8) -> Option<(PortId, u8, u8)> {
+        RUN.with(|r| r.supervised.iter().flatten().copied().find(|e| e.1 == slot))
+    }
+
+    /// Whether thread `t` must re-enter its process (and clears it).
+    fn take_reentry(t: Tid) -> bool {
+        RUN.with(|r| {
+            let due = r.reentry & 1 << t.0 != 0;
+            r.reentry &= !(1 << t.0);
+            due
+        })
+    }
+
+    /// The thread returns to user mode at its process's entry, as when it
+    /// started: a fresh stack, every register cleared but its role.
+    fn reenter(f: &mut Frame, t: Tid, role: u32) {
+        let entry = RUN.with(|r| {
+            r.display_starts += 1;
+            r.display_entry
+        });
+        f.r = [0; 13];
+        f.r[1] = role;
+        f.sp = stack_top(t, 0);
+        f.lr = 0;
+        f.pc = entry;
     }
 
     /// Whether the server in `slot` is waiting to be restarted.
@@ -1411,6 +1741,8 @@ mod image {
             }
             SYS_EXIT => exit_process(me, f.arg(0)),
             SYS_DONE => done(me, f),
+            SYS_IRQ_WAIT => irq_wait(me, f),
+            SYS_REPORT => display_report(me, f),
             _ => f.set_result(ERR | 0xFF),
         }
     }
@@ -1433,12 +1765,12 @@ mod image {
 
     /// Faults in user mode: demand paging first; a server faulting inside a
     /// call unwinds to its caller with an error; anything else stops.
-    fn on_user_fault(_: &mut Frame, kind: rt::Fault, addr: u32) {
+    fn on_user_fault(f: &mut Frame, kind: rt::Fault, addr: u32) {
         let prefetch = matches!(kind, rt::Fault::PrefetchAbort);
         let (fsr, _) = cpu::fault_registers();
         let resolved = access_for(arm::classify(fsr), prefetch).is_some_and(|access| {
             with_vm(|vm, s| {
-                load_pe_page(vm, addr);
+                load_page(vm, s.pid, addr);
                 let mva = layout::mva(addr, s.pid);
                 space_of(s, s.pid).is_some_and(|sp| vm.handle_fault(sp, mva, access).is_ok())
             })
@@ -1446,15 +1778,49 @@ mod image {
         if resolved {
             return;
         }
-        // A server faulting inside a call: the caller gets an error, and a
-        // supervised server restarts once every thread has left it.
+        // A supervised server faulting: it restarts once every thread has
+        // left it. Inside a call, the caller gets an error.
         let me = RUN.with(|r| r.current);
         let slot = RUN.with(|r| r.slots[me.index()]);
-        if IPC.with(|i| i.ipc.depth(me.0)) > 0 && slot == HOST_SLOT as u8 {
+        let depth = IPC.with(|i| i.ipc.depth(me.0));
+        let supervised = supervised(slot).is_some();
+        if supervised {
             RUN.with(|r| r.restarting |= 1 << slot);
         }
-        finish_call(me, ERR_FAULT);
+        if depth > 0 {
+            finish_call(me, ERR_FAULT);
+        } else if supervised {
+            own_thread_fault(f, me, slot);
+            return;
+        }
         on_fault(kind, addr)
+    }
+
+    /// A supervised host's own thread faulted (in no call): the host
+    /// restarts now if no call is inside it (else the last caller out
+    /// restarts it). Its main thread then re-enters at the entry; any other
+    /// thread of it ends.
+    fn own_thread_fault(f: &mut Frame, me: Tid, slot: u8) {
+        trace(Kind::Mark, u32::from(slot), f.pc);
+        if RUN.with(|r| r.inside[usize::from(slot)]) == 0 {
+            restart_server(slot);
+        }
+        if RUN.with(|r| r.display_thread) == Some(me) {
+            let e = RUN.with(|r| r.button);
+            while !take_reentry(me) {
+                wait(e);
+            }
+            reenter(f, me, ROLE_HOST);
+            return;
+        }
+        RUN.with(|r| r.slots[me.index()] = 0);
+        let done = RUN.with(|r| r.done);
+        let _ = SCHED.with(|s| {
+            let _ = s.set_event(done);
+            s.exit(me)
+        });
+        reschedule();
+        unreachable!("an exited thread never runs again")
     }
 
     /// Packages the test programs as a PE file in `file`: `.text` (the
@@ -1522,7 +1888,7 @@ mod image {
     /// its view page isn't loaded, loads it into a new frame (filled from
     /// the file and relocated, then written back from the cache so user
     /// mode reads and fetches it).
-    fn load_pe_page(vm: &mut KernelVm<'_>, addr: u32) {
+    fn load_page(vm: &mut KernelVm<'_>, slot: u32, addr: u32) {
         let Some(page) = addr
             .checked_sub(LOAD_BASE)
             .map(|o| o / 4096)
@@ -1530,17 +1896,36 @@ mod image {
         else {
             return;
         };
-        if vm.cache.pe[page as usize] != 0 || vm.cache.pe_file == 0 {
+        let host = slot == DISPLAY_SLOT || slot == DISPLAY_CLIENT_SLOT;
+        let loaded = if host {
+            vm.cache.host[page as usize]
+        } else {
+            vm.cache.pe[page as usize]
+        };
+        if loaded != 0 || (!host && vm.cache.pe_file == 0) {
             return;
         }
         let Some(f) = FrameAlloc::alloc(vm.frames, 0) else {
             return;
         };
         let phys = BASE + f as u32 * 4096;
-        if load_view_page(vm.mem.pool, vm.cache.pe_file, phys, page).is_some() {
+        let ok = if host {
+            let i = word(phys);
+            let out = rp_hal_mem::words_as_bytes_mut(&mut vm.mem.pool[i..i + 1024]);
+            out.try_into()
+                .ok()
+                .and_then(|out| load_from(DISPLAY_IMAGE, out, page))
+        } else {
+            load_view_page(vm.mem.pool, vm.cache.pe_file, phys, page)
+        };
+        if ok.is_some() {
             cpu::clean_invalidate_range(phys, 4096);
-            vm.cache.pe[page as usize] = phys;
-            vm.cache.pe_loads += 1;
+            if host {
+                vm.cache.host[page as usize] = phys;
+            } else {
+                vm.cache.pe[page as usize] = phys;
+                vm.cache.pe_loads += 1;
+            }
         } else {
             FrameAlloc::free(vm.frames, f);
         }
@@ -1559,16 +1944,30 @@ mod image {
         };
         let file: &[u8] = rp_hal_mem::words_as_bytes_mut(file);
         let out: &mut [u8; 4096] = rp_hal_mem::words_as_bytes_mut(out).try_into().ok()?;
+        load_from(file, out, page)
+    }
+
+    /// Loads view page `page` of the PE file `file` into `out`, relocated
+    /// to `LOAD_BASE`. Its relocations are read in place from the file
+    /// (bounded to the section holding them): no copy, no size limit.
+    fn load_from(file: &[u8], out: &mut [u8; 4096], page: u32) -> Option<()> {
         let read = |off: u32, buf: &mut [u8]| -> Result<(), ()> {
-            let src = file.get(off as usize..off as usize + buf.len()).ok_or(())?;
-            buf.copy_from_slice(src);
+            let end = (off as usize).checked_add(buf.len()).ok_or(())?;
+            buf.copy_from_slice(file.get(off as usize..end).ok_or(())?);
             Ok(())
         };
         let image = Image::parse(file).ok()?;
         let d = image.dirs[dir::BASERELOC];
-        let mut rel = [0u8; 64];
-        let rel = rel.get_mut(..d.size as usize)?;
-        image.read_view(d.rva, rel, read).ok()?;
+        let rel = if d.size == 0 {
+            &[][..]
+        } else {
+            let s = image
+                .sections()
+                .find(|s| d.rva >= s.rva && d.rva - s.rva < s.raw_size)?;
+            let at = s.raw_offset.checked_add(d.rva - s.rva)? as usize;
+            let len = (d.size as usize).min((s.raw_size - (d.rva - s.rva)) as usize);
+            file.get(at..at.checked_add(len)?)?
+        };
         let relocs = Relocations::new(rel).ok()?;
         let delta = LOAD_BASE.wrapping_sub(image.image_base);
         image.load_page(page, out, &relocs, delta, read).ok()
@@ -1693,6 +2092,58 @@ mod image {
             let _ = writeln!(uart, " FAIL (got {total})");
         }
         pass
+    }
+
+    /// The display host's checks (item 46): its client's report, both
+    /// restarts, and the level in the hardware.
+    fn report_display(uart: &mut PxaUart<Mmio>) -> bool {
+        let (report, restarts, starts, clean) = RUN.with(|r| {
+            (
+                r.display_report.unwrap_or([0; 4]),
+                r.display_restarts,
+                r.display_starts,
+                !r.display_dirty,
+            )
+        });
+        let duty = pwm_duty();
+        let [set, fault, handle, after] = report;
+        let served = set == DISPLAY_LEVEL && duty != 0;
+        let mut ok = report_ipc(uart, "driver host served", served, set);
+        let restarted = fault == ERR_FAULT
+            && handle < 32
+            && after == DISPLAY_LEVEL
+            && restarts == 2
+            && starts == 3
+            && clean;
+        ok &= report_ipc(uart, "driver host restarted", restarted, after);
+        ok
+    }
+
+    /// After the marker: the power button, pressed by the emulator, turns
+    /// the light off through the host, and on again at the level it had.
+    fn power_button(uart: &mut PxaUart<Mmio>) {
+        let duty = pwm_duty;
+        let on = duty();
+        let _ = writeln!(uart, "DISPLAY waiting for the power button (duty {on})");
+        let wait_for = |want: &dyn Fn(u32) -> bool| {
+            // Up to ~60 s, checked every ~50 ms.
+            for _ in 0..1200 {
+                if want(duty()) {
+                    return true;
+                }
+                let at = rt::ticks().wrapping_add(162_500);
+                if SCHED.with(|s| s.sleep_until(at)).is_ok() {
+                    reschedule();
+                }
+            }
+            false
+        };
+        if wait_for(&|d| d == 0) {
+            let _ = writeln!(uart, "DISPLAY button: light off");
+        }
+        if wait_for(&|d| d == on) {
+            let _ = writeln!(uart, "DISPLAY button: light back on");
+        }
     }
 
     fn report_ipc(uart: &mut PxaUart<Mmio>, what: &str, pass: bool, got: u32) -> bool {

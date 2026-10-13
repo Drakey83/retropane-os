@@ -154,7 +154,8 @@ rp_resume_call:
     mov     r0, r1
     pop     {{r4-r11, pc}}
 
-    @ rp_enter_user(pc, user_sp, arg): first entry to user mode, never returns.
+    @ rp_enter_user(pc, user_sp, r0, r1): first entry to user mode, never
+    @ returns.
     .global rp_enter_user
 rp_enter_user:
     msr     cpsr_c, #0x9F               @ SYS mode (user registers), IRQs off
@@ -165,7 +166,7 @@ rp_enter_user:
     mov     r0, #0x10                   @ user mode, IRQs and FIQ on
     msr     spsr_cxsf, r0
     mov     r0, r2
-    mov     r1, #0
+    mov     r1, r3
     mov     r2, #0
     mov     r3, #0
     mov     r4, #0
@@ -332,7 +333,7 @@ pub fn wmmx_read() -> u64 {
 }
 
 unsafe extern "C" {
-    fn rp_enter_user(pc: u32, sp: u32, arg: u32) -> !;
+    fn rp_enter_user(pc: u32, sp: u32, r0: u32, r1: u32) -> !;
 }
 
 /// Leaves the kernel for good: continues in user mode at address `pc` with
@@ -341,7 +342,13 @@ unsafe extern "C" {
 pub fn enter_user_at(pc: u32, sp: u32, arg: u32) -> ! {
     // SAFETY: user mode can only reach what the page tables let it; the SVC
     // stack pointer stays at this thread's kernel stack for later SWIs.
-    unsafe { rp_enter_user(pc, sp & !7, arg) }
+    unsafe { rp_enter_user(pc, sp & !7, arg, 0) }
+}
+
+/// [`enter_user_at`] with a second argument in `r1`.
+pub fn enter_user_with(pc: u32, sp: u32, r0: u32, r1: u32) -> ! {
+    // SAFETY: as `enter_user_at`.
+    unsafe { rp_enter_user(pc, sp & !7, r0, r1) }
 }
 
 /// Leaves the kernel for good: continues in user mode at `entry(arg)` on
@@ -352,7 +359,7 @@ pub fn enter_user(entry: extern "C" fn(usize) -> !, stack: &'static mut [u32], a
     // SAFETY: the user stack is handed over for good; entry is code the user
     // may execute (the caller maps it so); the SVC stack pointer stays at
     // this thread's kernel stack for later SWIs.
-    unsafe { rp_enter_user(entry as usize as u32, top as u32, arg as u32) }
+    unsafe { rp_enter_user(entry as usize as u32, top as u32, arg as u32, 0) }
 }
 
 unsafe extern "C" {

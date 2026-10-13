@@ -185,6 +185,27 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "driver host's device window mapped a page off (the PWM unreachable)",
+        file: "boot/kernel/src/main.rs",
+        from: "                        start: base + rp_hal_user::Device::Pwm0.va() as u32,",
+        to: "                        start: base + rp_hal_user::Device::Pwm0.va() as u32 + 0x1000,",
+        check: Check::Emu(crate::emu::boot_kernel),
+    },
+    Mutant {
+        name: "a restarted host's blocked thread resumes its old context",
+        file: "boot/kernel/src/main.rs",
+        from: "            if take_reentry(me) {",
+        to: "            if false && take_reentry(me) {",
+        check: Check::Emu(crate::emu::boot_kernel),
+    },
+    Mutant {
+        name: "any process may wait for the driver host's interrupt",
+        file: "boot/kernel/src/main.rs",
+        from: "        if from != DISPLAY_SLOT || f.arg(0) != 0 || IPC",
+        to: "        if f.arg(0) != 0 || IPC",
+        check: Check::Emu(crate::emu::boot_kernel),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

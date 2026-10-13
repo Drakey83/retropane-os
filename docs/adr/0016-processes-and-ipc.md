@@ -151,3 +151,33 @@ How decisions 2, 5 and 6 are carried out, within the decision above:
   handles. Clients ask the manager again for a fresh handle. A port with
   no supervisor keeps the earlier behaviour: the faulting call fails, the
   server stays.
+
+## Implementation notes (a real driver in a host, item 46, 2026-10-13)
+
+- **Compiled user programs.** A program links `rp-hal-user` (the process
+  entry, the system calls, device windows) and `hal/user/user.x`;
+  `cargo xtask` turns the ELF into a PE file (`xtask/src/userimg.rs`:
+  absolute words become `HIGHLOW` fix-ups, unknown relocation types are an
+  error) before the kernel image is built, and the test kernel embeds it.
+  The kernel loads its pages on demand straight from that read-only copy.
+  The display host is 1.2 KB of code and needs no fix-ups at all.
+- **Entry convention.** One entry per image: a thread starts there with
+  `r0 = 0` and its role in `r1`; a call enters with the caller's slot in
+  `r0` (2-32) and its arguments in `r1`-`r3`.
+- **Device grants.** The board grants a host whole register pages: mapped
+  uncached at a fixed address per device (`rp_hal_user::Device`), so the
+  HAL can hand out windows safely by device, never by address. The kernel
+  switches the device's clock on first (the clock unit is never granted).
+- **Interrupts.** `SYS_IRQ_WAIT(line)`: only the process the line is
+  granted to, never inside a call; it re-arms the line, waits, and
+  returns the pin's level. The kernel masks and signals; the host does the
+  rest (ADR-0007).
+- **Restart covers a host's own threads.** A supervised host that faults
+  in its own thread restarts like one that faults in a call. A thread of
+  it blocked in the kernel when it restarts re-enters at the entry on
+  fresh memory, by rewriting the saved user context its system call
+  returns to (no kernel stack is abandoned); its other threads end.
+- **Driver state in the hardware.** The backlight driver keeps no state of
+  its own: the level is the PWM's duty register, read back. A restarted
+  host carries on with no flicker and nothing to save. Prefer this for
+  any device whose registers read back.
