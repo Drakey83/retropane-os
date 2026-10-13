@@ -92,6 +92,8 @@ commands:
             back to the loader): run it before `load rp-picture`
   emu-blend only the rp-blend check (plane blending, three stages
             pixel-exact): run it before `load rp-blend`
+  emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
+            Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
@@ -114,8 +116,8 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace"
+        | "emu-fullsize" | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -290,6 +292,7 @@ fn run_step(step: &str) -> Result {
         "cross" => cross(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
+        "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
@@ -309,6 +312,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_run_limit(&workspace_root()))
             .and_then(|()| emu::boot_loader_picture(&workspace_root()))
             .and_then(|()| emu::boot_loader_blend(&workspace_root()))
+            .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))

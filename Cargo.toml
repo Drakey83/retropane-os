@@ -50,6 +50,7 @@ members = [
     "boot/threads",
     "services/display-host",
     "shell/core",
+    "shell/today",
     "tools/romdump",
     "tools/apiscan",
     "xtask",

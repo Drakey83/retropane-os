@@ -1,0 +1,29 @@
+[package]
+name = "rp-today"
+description = "Test image (ADR-0021): the shell's Today screen on the X51v under the loader: the wallpaper in the video plane, rp-shell drawn by the CPU renderer into the graphics plane, touch and buttons, and the touch-to-screen latency in the run log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-draw = { path = "../../drivers/draw" }
+rp-shell = { path = "../core" }
+# Also on the host: the emulator check builds its reference screen with
+# the same set-up code (`show`).
+rp-hal-api = { path = "../../hal/api" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-gfx = { path = "../../drivers/gfx" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+
+[lints]
+workspace = true

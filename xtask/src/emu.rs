@@ -1063,6 +1063,217 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
 /// How long rp-blend holds each stage (kept in step with the image).
 const RP_BLEND_STAGE_SECONDS: u32 = 15;
 
+/// The wallpaper rp-today was built with: its build script's output, the
+/// newest `wallpaper.yuv` under the release build folder in an `rp-today`
+/// folder (Cargo's layout is `build/rp-today-<hash>/out` or, newer,
+/// `build/rp-today/<hash>/out`: both are searched).
+fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
+    fn find(dir: &Path, depth: u32, in_today: bool, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.filter_map(Result::ok) {
+            let p = e.path();
+            let today = in_today || e.file_name().to_string_lossy().starts_with("rp-today");
+            if p.is_dir() && depth > 0 {
+                find(&p, depth - 1, today, out);
+            } else if today && e.file_name() == "wallpaper.yuv" {
+                out.push(p);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    find(&release.join("build"), 4, false, &mut found);
+    let newest = found
+        .into_iter()
+        .max_by_key(|p| p.metadata().and_then(|m| m.modified()).ok())
+        .ok_or("today: no wallpaper.yuv from rp-today's build")?;
+    std::fs::read(&newest).map_err(|e| format!("{}: {e}", newest.display()))
+}
+
+/// What rp-today should show: the same set-up (`rp_today::show`), shell and
+/// CPU renderer as the image, frame after frame, composed by the reference
+/// scan-out. `steps` are applied between screens; the first screen is
+/// before any. The clock's time is arbitrary: the check masks it.
+fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
+    use rp_draw::{Frame, Renderer};
+    use rp_drv_mbx_display::{Display, scanout};
+    use rp_gfx::layer::{Layer, PlaneFormat};
+    use rp_gfx::render::CpuRenderer;
+
+    let (w, h) = (rp_today::W, rp_today::H);
+    let mut vram = vec![0u8; 16 << 20];
+    let mut d = Display::new(RegFile::default());
+    let _ = d.adopt(vram.len());
+    let gfx = rp_today::show(&mut d, &mut vram, wall);
+    let regs = d.into_inner();
+    let mut px = vec![0u32; w * h];
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), true);
+    shell.set_time(rp_shell::Time {
+        hour: 12,
+        minute: 0,
+        weekday: 0,
+        day: 1,
+        month: 1,
+    });
+    let mut frame = Frame::new();
+    let mut screens = Vec::new();
+    for step in std::iter::once(None).chain(steps.iter().map(Some)) {
+        if let Some(&e) = step {
+            shell.input(e);
+        }
+        shell.frame(&mut frame);
+        {
+            let plane = &mut vram[gfx.offset..gfx.offset + gfx.stride * h];
+            let layer = Layer::new(&mut px, w as u32, h as u32, w).expect("sized above");
+            CpuRenderer::new(layer, plane, gfx.stride, PlaneFormat::Argb4444Dithered).draw(&frame);
+        }
+        let mut out = vec![0u8; w * h * 3];
+        scanout::compose(|o| regs.0.get(&o).copied().unwrap_or(0), &vram, &mut out);
+        screens.push(out);
+    }
+    screens
+}
+
+/// Pixels that differ outside the clock's areas (their text depends on
+/// when the check runs).
+fn today_differ(got: &[u8], want: &[u8]) -> usize {
+    let masked = [rp_shell::CLOCK_PANEL, rp_shell::TITLE_CLOCK];
+    got.chunks(3)
+        .zip(want.chunks(3))
+        .enumerate()
+        .filter(|(i, (a, b))| {
+            let (x, y) = ((i % rp_today::W) as u16, (i / rp_today::W) as u16);
+            a != b && !masked.iter().any(|r| r.contains_point(x, y))
+        })
+        .count()
+}
+
+/// The shell's Today screen (ADR-0021) under the loader: pixel-exact
+/// against the reference (clocks masked), a stylus tap on Start opens the
+/// menu (pixel-exact again), and the menu's "Back to loader" returns with
+/// the touch-to-flush latencies in the run log.
+pub fn boot_loader_today(root: &Path) -> Result<(), String> {
+    use rp_shell::Input;
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-today.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-today"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let wall = today_wallpaper(&release)?;
+    let start = rp_shell::START;
+    let (sx, sy) = (start.x + start.w / 2, start.y + start.h / 2);
+    let want = today_screens(
+        &wall,
+        &[
+            Input::PenDown { x: sx, y: sy },
+            Input::PenUp { x: sx, y: sy },
+        ],
+    );
+    let wsl = matches!(emulator(root)?, Emulator::Wsl);
+    let dump = |name: &str| -> Result<Vec<u8>, String> {
+        let shot = root.join(format!("target/emulator/today-{name}.ppm"));
+        let guest = if wsl {
+            to_wsl_path(&shot)
+        } else {
+            shot.display().to_string()
+        };
+        let _ = std::fs::remove_file(&shot);
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.screendump(&guest, &shot)?;
+        let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+        Ok(img.rgb)
+    };
+    // Polls the screen until it matches (emulated time runs slower than
+    // the wall clock on a busy PC: never a fixed sleep).
+    let until = |name: &str, want: &[u8]| -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            let n = today_differ(&dump(name)?, want);
+            if n == 0 {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "today: the {name} screen differs from the reference in {n} pixels (target/emulator/today-{name}.ppm)"
+                ));
+            }
+        }
+    };
+    let check = || -> Result<(), String> {
+        until("first", &want[0])?;
+        let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
+        let tap = |qmp: &mut crate::screen::Qmp, x: u16, y: u16| -> Result<(), String> {
+            touch(qmp, &Action::TouchDown(x, y))?;
+            std::thread::sleep(Duration::from_millis(300));
+            touch(qmp, &Action::TouchUp)?;
+            Ok(())
+        };
+        tap(&mut qmp, sx, sy)?;
+        until("menu", &want[2])?;
+        // The last menu entry is "Back to loader" (test images only).
+        let back = rp_shell::Shell::menu_entry(10);
+        tap(&mut qmp, back.x + back.w / 2, back.y + back.h / 2)?;
+        // Back at the loader: the wallpaper between the clock and weather
+        // panels (rows 210-217, nothing drawn over it) is gone. Polled, so
+        // the run log has been sent when the emulator stops.
+        let strip = |s: &[u8]| s[210 * rp_today::W * 3..218 * rp_today::W * 3].to_vec();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            std::thread::sleep(Duration::from_millis(500));
+            if strip(&dump("after")?) != strip(&want[2]) {
+                return Ok(());
+            }
+            if Instant::now() > deadline {
+                return Err("today: still showing after Back to loader".into());
+            }
+        }
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
+            during: Some(&check),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("today: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("today: didn't return cleanly:{log}"));
+    }
+    let line = log
+        .lines()
+        .find(|l| l.contains("touch to flush:"))
+        .ok_or_else(|| format!("today: no latency line in the run log:{log}"))?;
+    let answered: u32 = line
+        .split("flush: ")
+        .nth(1)
+        .and_then(|t| t.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or_else(|| format!("today: unreadable latency line {line:?}"))?;
+    if answered < 2 {
+        return Err(format!("today: the taps weren't answered: {line:?}"));
+    }
+    eprintln!(
+        "    today OK: Today screen pixel-exact (clocks masked), Start opened the menu pixel-exact, Back to loader returned; {}",
+        line.trim()
+    );
+    Ok(())
+}
+
 /// What rp-blend's `stage` should put on screen: the image's own drawing
 /// and register programming (shared code), through the reference model.
 fn blend_screen(stage: rp_drv_mbx_display::blendtest::Stage) -> Vec<u8> {
