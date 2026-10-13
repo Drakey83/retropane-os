@@ -106,7 +106,9 @@ fn nothing_outside_the_dirty_rectangles_changes() {
     let mut r = renderer(&mut px, &mut plane);
     let mut f = Frame::new();
     scene(&mut f, 3);
-    let d = rp_draw::Rect::new(20, 4, 6, 6);
+    // Cuts through the gradient (rows 20-21) and the fill (rows 25):
+    // both are clipped, not skipped.
+    let d = rp_draw::Rect::new(32, 20, 6, 6);
     f.damage(d);
     r.draw(&f);
     for y in 0..H {
