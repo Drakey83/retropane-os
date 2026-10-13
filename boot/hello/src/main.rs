@@ -31,9 +31,10 @@ mod image {
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_drv_tsc2046::{Calibration, Tsc2046};
+    use rp_drv_tsc2046::Tsc2046;
     use rp_hal_pxa27x::rt;
     use rp_hal_pxa27x::soc::irq;
+    use rp_touch_cal::{Calibration, Filter, Pen};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -231,7 +232,8 @@ mod image {
                     halt()
                 };
                 let mut key_events = Keys::new(Timing::DEFAULT);
-                let mut last_touch = None;
+                // Samples to what the person meant (as rp-today).
+                let mut filter = Filter::new();
                 let mut last_unclaimed = 0;
                 let mut ticking = false;
                 loop {
@@ -273,25 +275,25 @@ mod image {
                     // Touch: pen-down interrupt starts sampling; the pen line
                     // stays disarmed while we poll.
                     let pen_event = pen_irq.take();
-                    let now = if pen_event || last_touch.is_some() || touch.pen_down() {
-                        touch.sample().map(|t| Calibration::X51V.to_screen(t))
+                    let raw = if pen_event || filter.down() || touch.pen_down() {
+                        touch.sample().map(|t| (t.x, t.y))
                     } else {
                         None
                     };
-                    if now != last_touch {
-                        match now {
-                            Some((x, y)) => {
-                                // As u32: one integer formatter for the whole image.
-                                let _ = writeln!(out, "TOUCH {} {}", u32::from(x), u32::from(y));
-                            }
-                            None => {
-                                let _ = writeln!(out, "TOUCH up");
-                            }
+                    let map = |x, y| Calibration::X51V_DEFAULT.to_screen(x, y, (480, 640));
+                    match filter.sample(raw, rt::ticks() / 3250) {
+                        Pen::Down(rx, ry) | Pen::Move(rx, ry) => {
+                            let (x, y) = map(rx, ry);
+                            // As u32: one integer formatter for the whole image.
+                            let _ = writeln!(out, "TOUCH {} {}", u32::from(x), u32::from(y));
                         }
-                        last_touch = now;
+                        Pen::Up(..) => {
+                            let _ = writeln!(out, "TOUCH up");
+                        }
+                        Pen::Hold(..) | Pen::Nothing => {}
                     }
 
-                    let active = last_touch.is_some() || keys != Pressed::NONE || touch.pen_down();
+                    let active = filter.down() || keys != Pressed::NONE || touch.pen_down();
                     if active {
                         if !ticking {
                             rt::start_tick(TICK_HZ);

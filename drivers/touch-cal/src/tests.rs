@@ -80,16 +80,29 @@ fn degenerate_points_give_no_fit() {
 }
 
 #[test]
-fn per_axis_maps_match_the_old_calibration() {
-    let cal = Calibration::X51V_DEFAULT;
+fn per_axis_maps_scale_and_mirror() {
+    let cal = Calibration::from_axes((Axis::Y, 3719, 319), (Axis::X, 99, 2741), (480, 640));
     assert_eq!(cal.to_screen(99, 3719, (480, 640)), (0, 0));
     assert_eq!(cal.to_screen(2741, 319, (480, 640)), (479, 639));
-    // The owner's centre tap.
-    let (x, y) = cal.to_screen(1423, 2017, (480, 640));
-    assert!(x.abs_diff(240) < 12 && y.abs_diff(320) < 12, "{x} {y}");
     // Off the panel: clamped.
     assert_eq!(cal.to_screen(0, 4095, (480, 640)), (0, 0));
     assert_eq!(cal.to_screen(4095, 0, (480, 640)), (479, 639));
+}
+
+#[test]
+fn the_default_is_the_owners_alignment() {
+    // Taps from the owner's run after aligning (2026-10-13): Start (top
+    // left), a quick button, a softkey (bottom).
+    let at = |rx, ry| Calibration::X51V_DEFAULT.to_screen(rx, ry, (480, 640));
+    let (x, y) = at(310, 3395);
+    assert!(x < 96 && y < 36, "Start at {x} {y}");
+    let (x, y) = at(2339, 3257);
+    assert!(
+        (16..98).contains(&x) && (416..498).contains(&y),
+        "Note at {x} {y}"
+    );
+    let (_, y) = at(3180, 722);
+    assert!(y >= 600, "softkey row at {y}");
 }
 
 #[test]

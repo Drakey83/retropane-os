@@ -305,9 +305,13 @@ mod image {
             }
 
             // Sleep until the next reason to wake.
-            let wait_ms: u32 = if filter.down() || touch.pen_down() {
-                5
-            } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
+            // While the pen is down, sample again at once: the filter needs
+            // three agreeing samples, and every sleep between them was
+            // latency (median 54 ms on the device with 5 ms sleeps).
+            if filter.down() || touch.pen_down() {
+                continue;
+            }
+            let wait_ms: u32 = if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20
             } else if shell.notice().is_some() {
                 100
