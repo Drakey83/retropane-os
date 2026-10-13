@@ -20,11 +20,53 @@ pub mod channel {
     pub const X: u8 = 5;
 }
 
+/// Power-down bits (PD1..PD0) of a control byte (TSC2046 datasheet).
+pub mod pd {
+    /// Powered down between conversions, pen interrupt enabled: the last
+    /// conversion of a sample, so the next touch interrupts again.
+    pub const IDLE: u8 = 0b00;
+    /// Converter on, pen interrupt disabled: the panel's drivers stay
+    /// powered between back-to-back conversions, so the plates settle.
+    pub const ADC_ON: u8 = 0b01;
+}
+
 /// Control byte for a 12-bit differential conversion on `ch`, powering down
 /// between conversions so the pen interrupt stays armed (PD = 00).
 #[must_use]
 pub const fn command(ch: u8) -> u8 {
-    0x80 | ((ch & 7) << 4)
+    command_pd(ch, pd::IDLE)
+}
+
+/// Control byte for a 12-bit differential conversion on `ch` with
+/// power-down bits `pd`.
+#[must_use]
+pub const fn command_pd(ch: u8, pd: u8) -> u8 {
+    0x80 | ((ch & 7) << 4) | (pd & 3)
+}
+
+/// Conversions per channel in a sample. Measured on the X51v (2026-10-13):
+/// single conversions with the panel powered down between them read the X
+/// plate near 0 (104-265 wherever the pen was); the drivers need time to
+/// settle, as AxDroid's 100-150 us settle times said. Repeating with the
+/// converter on and keeping the median of the later readings gives them
+/// that time.
+pub const SETTLE_READS: usize = 4;
+
+/// The median of the last three of `reads` (the first is the unsettled one).
+#[must_use]
+pub fn settled(reads: [u16; SETTLE_READS]) -> u16 {
+    let mut last = [reads[1], reads[2], reads[3]];
+    last.sort_unstable();
+    last[1]
+}
+
+/// Every conversion of the last sample, for diagnostics and calibration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Trace {
+    /// The X channel's readings, in order.
+    pub x: [u16; SETTLE_READS],
+    /// The Y channel's readings, in order.
+    pub y: [u16; SETTLE_READS],
 }
 
 /// Decodes the two result bytes of a 12-bit conversion.
@@ -107,10 +149,15 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         !self.pen.is_high()
     }
 
-    /// One 12-bit conversion on `ch`.
+    /// One 12-bit conversion on `ch`, powered down after it.
     pub fn read(&mut self, ch: u8) -> u16 {
+        self.read_pd(ch, pd::IDLE)
+    }
+
+    /// One 12-bit conversion on `ch` with power-down bits `pd`.
+    pub fn read_pd(&mut self, ch: u8, pd: u8) -> u16 {
         self.cs.set_low();
-        self.spi.transfer(command(ch));
+        self.spi.transfer(command_pd(ch, pd));
         let hi = self.spi.transfer(0);
         let lo = self.spi.transfer(0);
         self.cs.set_high();
@@ -121,16 +168,32 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
     /// pressure (Z1 = 0) are discarded: the pen interrupt can briefly
     /// disagree with the panel while the stylus lands or lifts.
     pub fn sample(&mut self) -> Option<RawTouch> {
+        self.sample_traced().map(|(t, _)| t)
+    }
+
+    /// As [`Self::sample`], with every position conversion it made: each
+    /// channel [`SETTLE_READS`] times with the converter on, the median of
+    /// the later ones kept; the last conversion powers down, re-arming the
+    /// pen interrupt.
+    pub fn sample_traced(&mut self) -> Option<(RawTouch, Trace)> {
         if !self.pen_down() {
             return None;
         }
+        let mut trace = Trace::default();
+        for r in &mut trace.x {
+            *r = self.read_pd(channel::X, pd::ADC_ON);
+        }
+        for r in &mut trace.y {
+            *r = self.read_pd(channel::Y, pd::ADC_ON);
+        }
+        let z1 = self.read_pd(channel::Z1, pd::ADC_ON);
         let t = RawTouch {
-            x: self.read(channel::X),
-            y: self.read(channel::Y),
-            z1: self.read(channel::Z1),
-            z2: self.read(channel::Z2),
+            x: settled(trace.x),
+            y: settled(trace.y),
+            z1,
+            z2: self.read_pd(channel::Z2, pd::IDLE),
         };
-        (t.z1 != 0).then_some(t)
+        (t.z1 != 0).then_some((t, trace))
     }
 }
 
@@ -228,7 +291,32 @@ mod tests {
             }
         );
         assert!(!c.borrow().selected);
-        assert_eq!(c.borrow().log.len(), 12);
+        // Four X, four Y, Z1, Z2: ten conversions of three bytes.
+        let log = &c.borrow().log;
+        assert_eq!(log.len(), 30);
+        // The converter stays on until the last conversion, which powers
+        // down so the pen interrupt re-arms.
+        let commands: Vec<&String> = log.iter().step_by(3).collect();
+        assert_eq!(commands[0], "tx d1");
+        assert_eq!(commands[4], "tx 91");
+        assert_eq!(commands[8], "tx b1");
+        assert_eq!(commands[9], "tx c0");
+    }
+
+    #[test]
+    fn the_settled_value_ignores_the_first_reading() {
+        // The X51v's X plate, unsettled then settled (2026-10-13 style).
+        assert_eq!(settled([150, 1800, 1840, 1820]), 1820);
+        assert_eq!(settled([4012, 2000, 2004, 1990]), 2000);
+        // One glitch among the later ones is outvoted.
+        assert_eq!(settled([0, 2000, 4095, 2010]), 2010);
+    }
+
+    #[test]
+    fn command_bytes_with_power_down_bits() {
+        assert_eq!(command_pd(channel::X, pd::ADC_ON), 0xD1);
+        assert_eq!(command_pd(channel::Z2, pd::IDLE), 0xC0);
+        assert_eq!(command_pd(channel::Y, 7), 0x93); // masked to two bits
     }
 
     #[test]
