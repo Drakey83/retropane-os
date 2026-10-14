@@ -207,18 +207,21 @@ static void dma(void)
 #define REGS_PHYS 0x0FFE0000UL
 #define REGS_SIZE 0x3000UL
 static const struct { unsigned long off; const char *name; } SAFE[] = {
+    /* Named by Linux (mbxfb) and used by RetroPane or the display: first. */
     {0x0000, "SYSCFG"}, {0x002c, "SYSCLKSRC"}, {0x0040, "PLLSTAT"},
     {0x0044, "VOVRCLK"}, {0x0048, "PIXCLK"}, {0x0050, "M24CLK"},
-    {0x0054, "MBXCLK"}, {0x0060, "LCD_CONFIG"}, {0x012c, "?012c"},
-    {0x0204, "PWMCFG"}, {0x0210, "PWM0DIV"}, {0x0214, "PWM0DUTY"},
-    {0x0218, "PWM0PER"}, {0x0220, "PWM1DIV"}, {0x0224, "PWM1DUTY"},
-    {0x0228, "PWM1PER"}, {0x0300, "?0300"}, {0x0304, "?0304"},
+    {0x0054, "MBXCLK"}, {0x0060, "LCD_CONFIG"}, {0x0204, "PWMCFG"},
+    {0x0210, "PWM0DIV"}, {0x0214, "PWM0DUTY"}, {0x0218, "PWM0PER"},
+    {0x0220, "PWM1DIV"}, {0x0224, "PWM1DUTY"}, {0x0228, "PWM1PER"},
+    {0x0ff0, "ID"}, {0x100c, "LMPWRSTAT"}, {0x2154, "DSCTRL"},
+    {0x216c, "DVT03"}, {0x2308, "DVLNUM"}, {0x2060, "?2060"},
+    {0x2064, "?2064"}, {0x2100, "?2100"},
+    /* No public name: last, one at a time. */
+    {0x012c, "?012c"}, {0x0300, "?0300"}, {0x0304, "?0304"},
     {0x030c, "?030c"}, {0x085c, "?085c"}, {0x0f00, "?0f00"},
     {0x0f10, "?0f10"}, {0x0fe0, "?0fe0"}, {0x0fe4, "?0fe4"},
-    {0x0fec, "?0fec"}, {0x0ff0, "ID"}, {0x0ff4, "?0ff4"},
-    {0x0ff8, "?0ff8"}, {0x0ffc, "?0ffc"}, {0x100c, "LMPWRSTAT"},
-    {0x2060, "?2060"}, {0x2064, "?2064"}, {0x2100, "?2100"},
-    {0x2154, "DSCTRL"}, {0x216c, "DVT03"}, {0x2308, "DVLNUM"},
+    {0x0fec, "?0fec"}, {0x0ff4, "?0ff4"}, {0x0ff8, "?0ff8"},
+    {0x0ffc, "?0ffc"},
 };
 #define NSAFE (sizeof SAFE / sizeof SAFE[0])
 
@@ -232,11 +235,15 @@ static void mbx_regs(void)
         out("# regs: no mapping");
         return;
     }
-    for (k = 0; k < NSAFE; k++)
+    /* One at a time, the name saved before each read: v2 froze reading
+     * them in a loop, so a freeze now names the register. */
+    for (k = 0; k < NSAFE; k++) {
+        out("# reading %04lx %s", SAFE[k].off, SAFE[k].name);
+        flush();
         idle[k] = regs[SAFE[k].off / 4];
-    for (k = 0; k < NSAFE; k++)
         out("BENCH reg_idle %04lx %-10s %08lx", SAFE[k].off, SAFE[k].name, idle[k]);
-    flush();
+        flush();
+    }
     /* While 20 fills drain: how often each register changes, and to what. */
     for (k = 0; k < NSAFE; k++) {
         first[k] = last[k] = idle[k];
