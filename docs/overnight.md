@@ -1313,6 +1313,14 @@ on the host or in the emulator first.
     owner's SD card; owner: "looks great". Files in `local/icons/` (also
     `autorun-cf.inf` + `card-compact-flash.ico` for the CF card, once item
     62 lets it attach).
+    **Done (2026-10-14): permission granted.** The author (Juanje) replied
+    "feel free to use them", with credit; selling isn't mentioned (the
+    owner won't ask again). The owner put them in the base system, an
+    exception to the packs-only rule. Icons and their record in
+    `assets/cards/` (README.md: permission, credit, the gap, the Crystal
+    fallback); `cargo xtask sdkit` builds `cards/sd` and `cards/cf`
+    (icon + autorun.inf), `cargo xtask install` puts the SD pair on the
+    card. File Explorer uses them once it exists.
 
 64. **Remote reset back to Windows Mobile** (owner, 2026-10-12: wanted for
     more than the CF card). Today only the stylus reset (a hardware reset)

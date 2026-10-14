@@ -146,8 +146,11 @@ $sp.DiscardInBuffer()
 $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
 $deadline = (Get-Date).AddSeconds({PUT_WAIT_SECS})
+$pushed = $false
 while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch [System.TimeoutException] {{ continue }} catch {{ break }}
+    if ($l -eq 'RPL LOG') {{ $pushed = $true; continue }}
+    if ($pushed) {{ if ($l -eq 'RPL END') {{ $pushed = $false }}; continue }}
     if ($l -like 'RPL *') {{ "REPLY " + $l; break }}
 }}
 try {{ $sp.Close() }} catch {{ }}
@@ -172,8 +175,7 @@ pub fn query(root: &Path, command: &str) -> Result<(Vec<String>, String), String
     let frame = out.join("query.frame");
     std::fs::write(&frame, rp_loadproto::control_frame(command))
         .map_err(|e| format!("{}: {e}", frame.display()))?;
-    let out = powershell(&query_script(&frame))?;
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let text = run_refinding(&query_script(&frame))?;
     if text.contains("NOPORT") {
         return Err(format!("no RetroPane USB port ({VID_PID}) found"));
     }
@@ -551,14 +553,7 @@ pub fn put(root: &Path, file: &str, name: Option<&str>) -> Result<(), String> {
     let frame = out.join("put.frame");
     std::fs::write(&frame, rp_loadproto::file_frame(&name, &contents))
         .map_err(|e| format!("{}: {e}", frame.display()))?;
-    let mut text = run_put(&frame)?;
-    if text.contains("NOPORT") {
-        eprintln!("    no port yet: asking Windows to re-find the Axim");
-        let _ = powershell(&format!(
-            "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
-        ));
-        text = run_put(&frame)?;
-    }
+    let text = run_put(&frame)?;
     if text.contains("NOPORT") {
         return Err(format!(
             "no RetroPane USB port ({VID_PID}) found. Is the loader running with the cable plugged in?"
@@ -706,17 +701,37 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
 }
 
 fn run_put(frame: &Path) -> Result<String, String> {
-    let out = powershell(&put_script(frame))?;
+    run_refinding(&put_script(frame))
+}
+
+/// Runs a script that talks to the loader; when Windows has no port for the
+/// Axim (it lost the device when an image handed back to the loader), runs
+/// the restart task and tries once more. Every command goes through here,
+/// so none of them needs a cable replug after a run.
+fn run_refinding(script: &str) -> Result<String, String> {
+    let out = powershell(script)?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    if !text.contains("NOPORT") {
+        return Ok(text);
+    }
+    eprintln!("    no port yet: asking Windows to re-find the Axim");
+    let _ = powershell(&format!(
+        "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
+    ));
+    let out = powershell(script)?;
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// What `cargo xtask install` puts on the card: (file in the kit, name on
-/// the card). The loader is what HaRET starts (the kit's loader folder).
-const KIT_FILES: [(&str, &str); 4] = [
+/// the card). The loader is what HaRET starts (the kit's loader folder);
+/// the icon pair is the card's drive icon on the PC.
+const KIT_FILES: [(&str, &str); 6] = [
     ("loader/retropane.bin", "retropane.bin"),
     ("loader/startup.txt", "startup.txt"),
     ("default.txt", "default.txt"),
     ("haret.exe", "haret.exe"),
+    ("cards/sd/card-sd.ico", "card-sd.ico"),
+    ("cards/sd/autorun.inf", "autorun.inf"),
 ];
 
 /// Puts the kit's files on the card through the loader: each replaced,
@@ -821,6 +836,19 @@ mod tests {
         assert!(s.contains("ReadAllBytes('p.frame')"));
         assert!(s.contains("-like 'RPL *'"));
         assert!(!s.contains("schtasks"), "no reconnect dance for a put");
+    }
+
+    #[test]
+    fn a_pushed_run_log_is_not_a_reply() {
+        // The loader sends the last run's log (RPL LOG .. RPL END) by itself
+        // when the port opens; its end marker once passed for `log`'s reply.
+        for s in [
+            put_script(Path::new("p.frame")),
+            query_script(Path::new("q.frame")),
+        ] {
+            let skip = s.find("if ($pushed)").expect("pushed log skipped");
+            assert!(skip < s.find("-like 'RPL *'").unwrap());
+        }
     }
 
     #[test]

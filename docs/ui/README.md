@@ -197,6 +197,12 @@ the scope: distributing the icons in a free pack alongside the OS, and
 converting them for the device (resizing, cropping, colour conversion).
 The CC0 / public-domain wallpapers need no permission.
 
+**Exception (owner, 2026-10-14): the SD and CF card icons** by Juanje
+(puntodepartida.com) are in the base system, not a pack: the author gave
+written permission for RetroPane with credit, and they are two small
+images. Their record (the permission, what it doesn't cover, the credit,
+the fallback set) is `assets/cards/README.md`.
+
 ## Wallpaper provenance (checked 2026-10-12)
 
 Each file's source, checked through Wikimedia Commons' own records, not
@@ -211,6 +217,12 @@ the label alone. Nothing ships until its row says **ship**.
 
 Each pack carries this table for its files (author, source link, licence
 basis, date checked) as its provenance note.
+
+Other third-party art in the base system:
+
+| Art | Author and source | Basis | Status |
+|---|---|---|---|
+| SD and CF card icons (`assets/cards/`) | Juanje, puntodepartida.com ("Memory cards") | The author's written permission, 2026-10-14: use in RetroPane with credit; selling not covered | **ship** (credit him) |
 
 ## The cached desktop is pinned
 
