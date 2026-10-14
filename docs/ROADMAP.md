@@ -150,6 +150,14 @@ Personality's drawing (Phase 4) are designed:
 ## After everything else: the Field Kit pack
 **Idea recorded, specifics later** (ADR-0020, owner's initial ideas, 2026-10-13). The last thing built, after the browser and the rest of the roadmap: a pack of client-only network and utility tools (terminal, hex editor, password manager, encryption and hashes, serial console, crash log viewer; then SSH, IRC, network diagnostics, Wi-Fi scanner), each a separate program run one at a time from the card.
 
+## At the end: a faster Quake 3 port
+**Owner's request, 2026-10-14.** The Quake 3 port on the owner's card (Q3CE,
+2008) "takes forever to start". A fresh port of the GPL engine (id's 2005
+release or ioquake3; GPL-2.0, compatible with RetroPane) for the X51v,
+drawn through RetroPane's 3D core work, with start-up time as a goal from
+day one: Q3CE's start under Windows Mobile measured first as the baseline.
+After the OS work; likely its own repository. Game data stays the owner's.
+
 ---
 
 ## Tracking
