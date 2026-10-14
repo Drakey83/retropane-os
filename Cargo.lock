@@ -439,6 +439,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-mbx-render"
+version = "0.0.0"
+dependencies = [
+ "rp-draw",
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-gfx",
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-picture"
 version = "0.0.0"
 dependencies = [

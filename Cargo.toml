@@ -10,6 +10,7 @@ members = [
     "drivers/pxa-uart",
     "drivers/mbx-display",
     "drivers/blit2d",
+    "drivers/mbx-render",
     "drivers/cpld",
     "drivers/gfx",
     "drivers/draw",
