@@ -1,7 +1,9 @@
 # ADR-0002: Emulator = fork of QEMU 9.1 with an `x51v` machine
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-10-10, by the project owner; written up with
+  the Phase 0 foundations, commit 34e8cd2)
 - **Date:** 2026-10-10
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -10,6 +12,16 @@ machines in 9.2 (deprecated in 9.0); 9.1 is the last release with PXA270
 (`mainstone`) support.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** the fork is the separate repo
+> `Drakey83/retropane-qemu` (based on QEMU 9.1.3) but is **not** a
+> submodule: GitHub Actions builds tagged `rp-v*` releases, and `cargo
+> xtask emu` downloads the pinned one (`QEMU_RELEASE` in
+> `xtask/src/emu.rs`, `rp-v0.11.3` at this commit); `cargo xtask qemu`
+> builds a sibling checkout locally in WSL. `emulator/README.md` still
+> describes the submodule. Touch uses a new `tsc2046` model
+> (`hw/input/tsc2046.c` in the fork), not QEMU's `ads7846`; `wm8750` is
+> reused as planned (`hw/arm/x51v.c`).
 
 Fork QEMU 9.1 into a separate repo (`retropane-qemu`), included here as a
 submodule under `emulator/` (Phase 1). Add an `x51v` machine reusing the

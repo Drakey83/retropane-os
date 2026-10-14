@@ -4,6 +4,7 @@
   kernel image 2026-10-12: demand page loads (fill + relocate per page, once,
   shared between processes), per-section protections, W^X refusal.
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -26,6 +27,17 @@ way: every page resident and private from the start), or to require
 position-independent code (Linux's way, unavailable for existing binaries).
 
 ## Decision
+
+> **As built (note added 2026-10-13):** what runs (`boot/kernel`, commit
+> 3675e47) is a test-image form of rules 1-4. View pages are loaded by the
+> image's own `load_page` into fixed per-image arrays (`PE_PAGES` = 8),
+> not by a general page-cache filler object. Any page both writable and
+> executable refuses the whole image (`Image::writable_code`); there is
+> no legacy opt-in path in the loader yet. `IMAGE_SCN_MEM_SHARED` pages
+> map with `shared: true` in the process slot, which `AddressSpace::map`
+> refuses outside the shared area; no shared-area placement exists yet.
+> Rule 5 (imports into IAT pages) is not built: `for_each_import` has no
+> caller outside `kernel/pe`.
 
 1. **An image view in the page cache.** Loading an image creates a page-cache
    object that is the image *as laid out in memory* (headers, then each
@@ -86,5 +98,10 @@ copy-on-write.
   per page (including boundary-straddling values), lists imports and
   resolves exports (by ordinal; by name via the hint, then binary search;
   forwarders), tested against synthetic images and 12 real WM6 DLLs.
+> **Correction (note added 2026-10-13):** the loader that turns an image
+> into regions exists since 2026-10-12 in test-image form (`boot/kernel`
+> `map_process`, see the as-built note); the filler object and IAT
+> resolution are still to come.
+
 - Next: the page-cache filler object, the loader that turns an image into
   address-space regions, and IAT resolution.

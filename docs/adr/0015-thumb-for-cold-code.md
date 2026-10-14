@@ -7,6 +7,7 @@
   emulator test passing). Reverting is emptying `THUMB_IMAGES` in
   `xtask/src/main.rs`.
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -51,6 +52,16 @@ Ways to get there, tried or examined:
    (Thumb-1 can't encode `mcr`), so mistakes can't reach the device.
 
 ## Decision (proposed)
+
+> **As built (note added 2026-10-13):** steps 1 and 2 are done:
+> `THUMB_IMAGES` in `xtask/src/main.rs` is `["rp-loader"]`, built for
+> `targets/thumbv5te-x51v-none-eabi.json` by `cargo xtask cross`. There is
+> no separate Thumb build of the HAL; CI checks the HAL's `arm::a32`
+> annotations by building the Thumb loader, which links it. Step 3 is not
+> done: Thumb for the kernel's `main` was tried and grew `rp-kernel`
+> 51.5 -> 53.4 KB (helpers outlined), so it was reverted (docs/perf.md,
+> 2026-10-12 scheduler row; `xtask/src/size.rs`, the 46 -> 55 KiB note);
+> the probe and the kernel's cold crates are still ARM.
 
 Option 3, in steps, each measured in the emulator's benchmarks (which
 count instructions, so a slowdown shows) and only then on the device:

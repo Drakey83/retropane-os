@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 

@@ -1,10 +1,11 @@
 # ADR-0020: Field Kit, a network and utility toolkit pack
 
-- **Status:** Idea recorded (2026-10-13, the owner's initial ideas;
+- **Status:** Proposed (idea recorded 2026-10-13, the owner's initial ideas;
   specifics later). **The last thing built**, after the browser (the first
   pack, ADR-0018) and the rest of the roadmap. Not for a vote yet: the
   decisions below are the starting point when the work begins.
 - **Date:** 2026-10-13
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -35,6 +36,11 @@ Constraints that shape it:
   networks, so it is where these rules are tested hardest.
 - **64 MB of RAM, no execute-in-place** (ADR-0005): every tool runs from
   RAM; a tool's RAM matters, its flash size much less.
+> **Correction (note added 2026-10-13):** the ACX100's firmware is not
+> being reverse-engineered yet: there is no docs/hw/acx100.md, ROADMAP
+> Phase 6's ACX100 RE item is unchecked, and only its power-up sequence is
+> known (docs/hw/cpld.md, "Wi-Fi (ACX100) power-up").
+
 - **The X51v's ports**: USB is device-only as far as we know (the PXA270
   has a USB host controller, but no host port is known on the X51v's
   connector); the FFUART exists (docs/hw/README.md: "no connector pins
@@ -53,6 +59,11 @@ Constraints that shape it:
    default" holds with the pack installed; the pack's manifest declares the
    capabilities it needs (below), and the system refuses any it doesn't
    declare.
+> **Correction (note added 2026-10-13):** neither ADR-0016 nor
+> docs/security.md principle 2 defines per-app storage; ADR-0016 gives
+> process isolation (own slot and domain, handles, a service manager
+> handing out ports). Per-app storage is not designed yet.
+
 3. **Each tool is an unprivileged, sandboxed process** with its own storage
    (ADR-0016, docs/security.md principle 2). Tools reach the network,
    files, the serial port and the Wi-Fi scanner only through system
@@ -62,6 +73,11 @@ Constraints that shape it:
 4. **Every protocol parser is memory-safe Rust**, bounded and tested with
    hostile input (truncated, oversized, malformed), never panicking on bad
    input. Anything adapted from elsewhere meets the same bar (decision 7).
+> **Correction (note added 2026-10-13):** docs/security.md principle 4 is
+> "Modern cryptography only"; it doesn't call for a single library. The
+> system's crypto library today is `rp-crypto` (kernel/crypto), with
+> SHA-256 and HMAC-SHA256 only.
+
 5. **Shared building blocks, once.** One terminal emulator (VT100/xterm
    subset, monospaced font, scrollback in a fixed buffer) serves the local
    terminal, the serial console and the SSH client. One hex view serves the
@@ -236,6 +252,10 @@ Writing one ourselves would repeat those bugs. Options:
    forum API, Matrix rooms)?
 7. **Subnet calculator** to Phase 1 (it needs no network)? Recommended.
 8. **Name:** Field Kit, or another?
+> **Correction (note added 2026-10-13):** ADR-0018 (Consequences, added
+> 2026-10-12) lets a pack carry its own licence for third-party content;
+> it says nothing about the project's own code under another licence.
+
 9. **Licence:** the pack's own code under the project's GPL-2.0-or-later,
    or a separate licence as ADR-0018 allows (for example to let others
    build on the tools)?

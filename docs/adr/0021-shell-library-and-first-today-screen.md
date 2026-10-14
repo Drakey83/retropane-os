@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-13, by the project owner)
 - **Date:** 2026-10-13
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -14,11 +15,23 @@ review the owner accepted: the library must not bake CPU drawing in, because
 the "know the silicon" track pulled the MBX ahead of the UI design for
 exactly that reason.
 
+> **Correction (note added 2026-10-13):** touch did not yet work on the
+> device when this was written: `rp-drv-tsc2046` was emulator-tested only,
+> and its first device run (rp-today, commit 592dece) put every tap at the
+> top left. It works since, after the settling, alignment and pressure
+> filter fixes in docs/hw/touch.md (`rp_touch_cal::Filter`).
+
 What exists and works on the device: the two-plane composition at scan-out
 (wallpaper in the video plane, interface in the graphics plane, blended by
 the 2700G: item 60), the full-colour interface layer and its dithered
 flush (`rp_gfx::layer`), glass gradients, glyph masks, touch (`rp-drv-
 tsc2046`), the keypad, backlight, and the loader's run log for numbers.
+
+> **Correction (note added 2026-10-13):** the ~1.7 ms is WM's GDI path
+> (`gdi_fill_screen_each` in docs/perf.md: "call and read-back overhead"
+> per operation), not the engine's own wait: under the loader, rp-mbx's
+> fence was written at once (under 1 us) and a full-screen fill takes
+> 3.1 ms (docs/hw/2700g.md, "The MBX 2D engine").
 
 What was measured today and shapes this (docs/perf.md, docs/hw/2700g.md):
 the 2700G draws WM's fills off the CPU at ~4.5x the CPU's speed, but
@@ -29,6 +42,23 @@ The design brief's promise: **touch answered within 50 ms**. Nothing
 measures it yet.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** `Frame`, `Cmd` and the `Renderer`
+> trait live in their own crate, `rp-draw` (drivers/draw); `rp-shell`
+> depends only on it and `rp-touch-cal`. The commands are `Fill`,
+> `HGradient`, `Outline`, `Image` and `Text`: a glass panel is a gradient
+> plus an outline, and there is no clip command (the renderer clips to
+> each dirty rectangle). A frame holds 160 commands, 1024 text bytes and
+> 8 dirty rectangles (more merge). `CpuRenderer`
+> (drivers/gfx/src/render.rs) flushes to the plane as ARGB4444, dithered.
+> `rp-today` is in shell/today, not boot/today. There is no RTC driver: the clock starts
+> from the build machine's time (shell/today/src/clock.rs). Only
+> touch-to-flush is logged; touch-to-vsync is not (the vsync wait isn't
+> known yet, shell/today/src/lib.rs); first number: worst 35 ms over 5
+> taps (docs/hw/touch.md). Added: an align screen (item 76) with an
+> "Align screen" Start entry in the test image, and the pressure filter.
+> The calendar line reads "No appointments today"; the battery is drawn
+> as an outline, not read.
 
 1. **`rp-shell` (in `shell/`), `no_std`, no `unsafe`, host-tested:** owns
    the Today screen, title bar (Start at top left, clock, battery), Start
@@ -46,6 +76,15 @@ measures it yet.
      one command buffer, one submission and one fence per frame (the
      ~1.7 ms per-wait cost measured under WM is paid once, not per
      panel). The shell does not change.
+
+   > **Correction (note added 2026-10-13):** the MBX 2D engine found
+   > since (docs/hw/2700g.md, "Copies, keys and the rest of the command
+   > set") does solid fills, copies (colour key, format conversion) and a
+   > solid colour through 4 bpp coverage (anti-aliased text) only: no
+   > per-pixel ARGB blending onto the destination, no gradients, and it
+   > reads only the 2700G's own memory. Gradients and alpha would need the
+   > MBX 3D core, not brought up yet.
+
    The primitives are the ones a GPU does well (rectangles, gradients,
    textured quads, alpha masks), so nothing in the list is CPU-only.
 3. **Text and art are prepared on the PC, at build time:** the font
@@ -105,6 +144,10 @@ measures it yet.
    library is the same code either way.
 
 ## Security
+
+> **Correction (note added 2026-10-13):** docs/security.md has no row yet
+> for rp-today's "Back to loader" (or its "Align screen") entry, though
+> the code has landed (shell/core/src/lib.rs, `DEV_MENU`).
 
 No outside input is parsed on the device in this ADR: fonts, icons and the
 wallpaper are built in at compile time. Touch coordinates and key codes are

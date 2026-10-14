@@ -3,6 +3,7 @@
 - **Status:** Accepted (2026-10-12, by the project owner): option 1.
   Implemented the same day (overnight item 48): `kernel/mm/src/regions.rs`
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -25,6 +26,11 @@ ADR-0005 (memory first) asks for memory that follows real use, with bounds
 so no process can exhaust the kernel.
 
 ## Options
+
+> **Correction (note added 2026-10-13):** as built a record is ~60 B
+> (`xtask/src/size.rs`, the 84 -> 82 KiB note), so 31 would be ~1.9 KB,
+> not ~1 KB. A page holds 204 regions and the quota is 8 pages, 1,632
+> regions (`kernel/mm/src/regions.rs`: `PER_PAGE`, `MAX_PAGES`).
 
 1. **Regions in the process's own kernel pages** (recommended). A process
    record shrinks to a few dozen bytes (31 of them: about 1 KB, fixed).
@@ -69,6 +75,12 @@ treat region pages like any other kernel memory of the process.
 
 - `AddressSpace` changes inside `kernel/mm`; its API stays (find, map,
   carve, protect), so callers barely change.
+
+> **Correction (note added 2026-10-13):** measured, the records shrank
+> 1.6 KB -> ~60 B (-6.0 KB of `rp-kernel`), less a 300-region emulator
+> check (+1.8 KB); the load budget came down 84 -> 82 KiB, 2 of item 44's
+> 8 KiB raise (`xtask/src/size.rs`; docs/perf.md, ADR-0019 row).
+
 - The kernel image's process table drops from 8 KB of initialised data to
   about 1 KB, which gives back most of item 44's budget raise.
 

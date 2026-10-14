@@ -4,6 +4,12 @@
   implemented and live in `boot/threads` (2026-10-11, see Implementation
   status), moving into the kernel image next
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
+
+> **Correction (note added 2026-10-13):** not every rule is implemented
+> (see the as-built note under Decision), and the scheduler has since
+> moved into the kernel image (`boot/kernel`, step 6: `rp_kernel_sched`,
+> `user::set_syscall_handler`, `rt::set_preempt_hook`).
 
 ## Context
 
@@ -30,6 +36,22 @@ Constraints and facts that shape the design:
   thread must be able to sleep inside the kernel.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** rules 1-3, 5 and 8 are built as
+> written (`kernel/sched`, `rp_hal_pxa27x::{thread,user,iwmmxt}`). The
+> rest differ so far. Rule 4: kernel stacks are 4 KiB chunks taken
+> back to back off the RAM pool (`boot/threads` and `boot/kernel`
+> `kstacks`), with no unmapped guard page. Rule 6: no system call takes a
+> pointer yet (`boot/kernel` `on_syscall`: `SYS_CALL`..`SYS_REPORT`), so
+> no region check exists. Rule 7: `kernel/sched` has events, mutexes and
+> single-object waits (`Scheduler::wait` on one `Eid`); no semaphores,
+> critical sections or multi-object waits, and the per-process handle
+> tables built are ADR-0016's port handles (`kernel/ipc`, 32 per
+> process). Rule 9: user stacks are fixed 4 KiB buffers in
+> `boot/threads`; in `boot/kernel` one zero-fill page per thread and call
+> depth in a 256 KiB region (`stack_top`, `STACK_REGION`), with no guard
+> pages. The kernel image runs the scheduler but maps no KData page and
+> doesn't enable lazy iWMMXt (neither appears in `boot/kernel`).
 
 1. **O(1) scheduling with `CLZ`.** 256 priority levels (CE numbering: 0 is
    highest; apps default to 251). A 256-bit ready bitmap with an 8-bit summary
@@ -174,6 +196,10 @@ Constraints and facts that shape the design:
   (`PageTables`); it maps the same two pages (`mmu::high_pages`' layout)
   when the scheduler moves into it. Not yet checked on the device: the
   first coarse table a test image installs.
+
+> **Correction (note added 2026-10-13):** since checked: all 13
+> `rp-threads` tests, KData included, pass on the device (docs/perf.md,
+> "Threads on the real X51v", 2026-10-12).
 
 ## Open questions
 

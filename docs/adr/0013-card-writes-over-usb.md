@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-11, by the project owner: "go")
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -13,6 +14,13 @@ SD write path yet: `rp-drv-sdcard` reads blocks (CMD17/18) and
 FAT32 (partition type `0x0C`, measured), with the kit files in its root.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** the read-back still checks the
+> frame's CRC-32, but the `RPL OK` reply now also ends with
+> `, sha256 <hex>` of what the card holds (commit 0ac580c, 2026-10-12;
+> `boot/loader/src/main.rs`, the file-frame reply), which `cargo xtask
+> put` compares. `put` also writes exFAT cards (`mount_any`,
+> `kernel/fat/src/exfat.rs`), beyond the FAT32 writer decided here.
 
 1. **SD writes in the drivers:** CMD24 (one block) and CMD25 + CMD12
    (several) in `rp-drv-sdcard`; the PXA27x MMC controller's transmit FIFO,

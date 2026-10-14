@@ -1,7 +1,9 @@
 # ADR-0003: CE5-style 32 MB slot memory model with FCSE
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-10-10, by the project owner; written up with
+  the Phase 0 foundations, commit 34e8cd2)
 - **Date:** 2026-10-10
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -30,6 +32,10 @@ slab plus per-process heap allocator.
 | ⚡ Better / faster | No cache flush on context switch: the most efficient option on ARMv5 VIVT |
 
 ## Alternatives considered
+
+> **Flag (2026-10-13 truth pass):** the alternatives here are thin: one
+> alternative, rejected in one line with no numbers (e.g. the cost of a
+> full cache flush per switch); to be filled in by the owner's review.
 
 A Linux-style model with cache flushing: simpler, but much slower and less compatible.
 

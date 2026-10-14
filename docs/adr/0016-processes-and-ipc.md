@@ -9,6 +9,12 @@
   continuation, no table of saved registers); step 3 (service manager,
   driver hosts) next.
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
+
+> **Correction (note added 2026-10-13):** step 3 is no longer "next": the
+> service manager and supervised hosts landed 2026-10-12 (commit cb2a468)
+> and a real driver host on 2026-10-13 (item 46; see the implementation
+> notes below).
 
 ## Context
 
@@ -41,6 +47,18 @@ Facts that shape the design:
   memory it wasn't given.
 
 ## Decision (proposed)
+
+> **As built (note added 2026-10-13):** a call carries 3 words (`r1`-`r3`,
+> the handle in `r0`) and returns 1 word in `r0`, not 6 each way
+> (`hal/user/src/lib.rs`: `call`, `SYS_CALL`, `SYS_RETURN`). There is no
+> call timeout and no page-move system call yet (`kernel/ipc`,
+> `hal/user`). Processes get their own ARM domain only while among the 13
+> most recently run: ARMv5 has 16 domains, so the rest are *parked*
+> (domain 15, never enabled) and retagged when they next run
+> (`kernel/mm/src/domains.rs`). Drivers: only the display and input host
+> exists (`services/display-host`, the backlight). The call round trip
+> was measured in `rp-kernel` in the emulator (~12-17 us, docs/perf.md),
+> not yet in `rp-bench` or on the device.
 
 1. **A process is a slot plus a handle table.** Up to 31 processes (slots
    2-32 of CE5's layout, 32 MB each: FCSE has PIDs up to 63, but above
