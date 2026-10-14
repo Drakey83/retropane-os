@@ -1,0 +1,26 @@
+[package]
+name = "rp-mbx-render"
+description = "The MBX 2D renderer (ADR-0023): draws rp-draw frames on the 2700G's 2D engine into an opaque XRGB8888 picture, double-buffered"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+# A model of the 2D engine (the arithmetic measured on the X51v), for tests
+# here and in the shell's images: needs std.
+model = []
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-draw = { path = "../draw" }
+rp-gfx = { path = "../gfx" }
+rp-drv-blit2d = { path = "../blit2d" }
+rp-drv-mbx-display = { path = "../mbx-display" }
+
+[dev-dependencies]
+rp-drv-mbx-display = { path = "../mbx-display" }
+
+[lints]
+workspace = true

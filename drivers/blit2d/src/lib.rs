@@ -331,13 +331,23 @@ impl<R: RegisterBus> Engine<R> {
     /// it into `vram`: everything queued before it is done. Returns the
     /// wait in microseconds.
     pub fn finish(&mut self, vram: &[u8], limit_us: u32) -> Result<u32, Stuck> {
+        self.finish_with(limit_us, |at| load32_volatile(vram, at))
+    }
+
+    /// [`Self::finish`], reading the fence word through `read` (local
+    /// memory held by something else, e.g. a model of the engine in tests).
+    pub fn finish_with(
+        &mut self,
+        limit_us: u32,
+        mut read: impl FnMut(usize) -> Option<u32>,
+    ) -> Result<u32, Stuck> {
         self.fence = self.fence.wrapping_add(1);
         let n = self.fence;
         self.submit(&fence(self.fence_at, n))?;
         let t0 = (self.now)();
         loop {
             let waited = self.us_since(t0);
-            if load32_volatile(vram, self.fence_at) == Some(n) {
+            if read(self.fence_at) == Some(n) {
                 return Ok(waited);
             }
             if waited > limit_us {
