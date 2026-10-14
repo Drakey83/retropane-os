@@ -14,9 +14,9 @@
  *    not the CPU. Near 0%: a CPU thread draws later.
  * 2. DMA: the PXA270's 32 channels sampled while fills drain, against an
  *    idle sample: channels running and their source, target and command.
- * 3. The 2700G's 128 KB register block (0x0FFE0000), read idle and while
- *    fills drain: the words that differ. Last, because reading unknown
- *    registers could disturb the chip (a soft reset recovers).
+ * 3. The 2700G registers Dell's driver itself reads (v2; v1 read the
+ *    whole 128 KB block and froze WM): idle, then how often each changes
+ *    while fills drain, then while nothing is drawn.
  *
  * Built by `cargo xtask wmbench` (cegcc in WSL).
  */
@@ -189,6 +189,8 @@ static void dma(void)
     volatile unsigned long *regs = map_phys(DMA_PHYS, 0x1000);
     if (!regs)
         return;
+    out("INFO dma raw DCSR0-3 %08lx %08lx %08lx %08lx, DINT %08lx", regs[0], regs[1], regs[2],
+        regs[3], regs[0xF0 / 4]);
     dma_sample(regs, "idle", 0);
     dma_sample(regs, "fills", 1);
     dma_sample(regs, "idle_again", 0);
@@ -196,56 +198,89 @@ static void dma(void)
 
 /* ---- 3. The 2700G's registers, idle and while drawing ----------------- */
 
-#define MBX_REGS_PHYS 0x0FFE0000UL
-#define MBX_REGS_SIZE 0x20000UL
+/*
+ * Only registers Dell's driver itself reads (static analysis, 2026-10-13:
+ * the offsets passed to its register-read helper, on the register block
+ * at 0x0FFE0000), so reading them is safe: v1 read the whole 128 KB block
+ * and froze WM. Names where Linux's mbxfb has one.
+ */
+#define REGS_PHYS 0x0FFE0000UL
+#define REGS_SIZE 0x3000UL
+static const struct { unsigned long off; const char *name; } SAFE[] = {
+    {0x0000, "SYSCFG"}, {0x002c, "SYSCLKSRC"}, {0x0040, "PLLSTAT"},
+    {0x0044, "VOVRCLK"}, {0x0048, "PIXCLK"}, {0x0050, "M24CLK"},
+    {0x0054, "MBXCLK"}, {0x0060, "LCD_CONFIG"}, {0x012c, "?012c"},
+    {0x0204, "PWMCFG"}, {0x0210, "PWM0DIV"}, {0x0214, "PWM0DUTY"},
+    {0x0218, "PWM0PER"}, {0x0220, "PWM1DIV"}, {0x0224, "PWM1DUTY"},
+    {0x0228, "PWM1PER"}, {0x0300, "?0300"}, {0x0304, "?0304"},
+    {0x030c, "?030c"}, {0x085c, "?085c"}, {0x0f00, "?0f00"},
+    {0x0f10, "?0f10"}, {0x0fe0, "?0fe0"}, {0x0fe4, "?0fe4"},
+    {0x0fec, "?0fec"}, {0x0ff0, "ID"}, {0x0ff4, "?0ff4"},
+    {0x0ff8, "?0ff8"}, {0x0ffc, "?0ffc"}, {0x100c, "LMPWRSTAT"},
+    {0x2060, "?2060"}, {0x2064, "?2064"}, {0x2100, "?2100"},
+    {0x2154, "DSCTRL"}, {0x216c, "DVT03"}, {0x2308, "DVLNUM"},
+};
+#define NSAFE (sizeof SAFE / sizeof SAFE[0])
 
 static void mbx_regs(void)
 {
-    volatile unsigned long *regs = map_phys(MBX_REGS_PHYS, MBX_REGS_SIZE);
-    unsigned long words = MBX_REGS_SIZE / 4, i, differ = 0, nonzero = 0;
-    unsigned long *idle = (unsigned long *)malloc(MBX_REGS_SIZE);
-    unsigned long *busy = (unsigned long *)malloc(MBX_REGS_SIZE);
-    unsigned long *idle2 = (unsigned long *)malloc(MBX_REGS_SIZE);
-    if (!regs || !idle || !busy || !idle2) {
-        out("# mbx_regs: no mapping or memory");
+    volatile unsigned long *regs = map_phys(REGS_PHYS, REGS_SIZE);
+    unsigned long idle[NSAFE], first[NSAFE], changes[NSAFE], last[NSAFE];
+    unsigned long i, k, rounds = 0;
+    unsigned long long end;
+    if (!regs) {
+        out("# regs: no mapping");
         return;
     }
-    for (i = 0; i < words; i++)
-        idle[i] = regs[i];
-    issue_fills();
-    Sleep(5); /* the queue is draining now */
-    for (i = 0; i < words; i++)
-        busy[i] = regs[i];
-    (void)GetPixel(dc, w - 1, h - 1);
-    Sleep(50);
-    for (i = 0; i < words; i++)
-        idle2[i] = regs[i];
-    for (i = 0; i < words; i++) {
-        if (idle[i])
-            nonzero++;
-        /* Changed while drawing and back (or steady) once idle: drawing state. */
-        if (busy[i] != idle[i] || busy[i] != idle2[i]) {
-            differ++;
-            if (differ <= 200)
-                out("BENCH mbx_reg %05lx idle %08lx drawing %08lx idle_after %08lx", i * 4,
-                    idle[i], busy[i], idle2[i]);
-        }
+    for (k = 0; k < NSAFE; k++)
+        idle[k] = regs[SAFE[k].off / 4];
+    for (k = 0; k < NSAFE; k++)
+        out("BENCH reg_idle %04lx %-10s %08lx", SAFE[k].off, SAFE[k].name, idle[k]);
+    flush();
+    /* While 20 fills drain: how often each register changes, and to what. */
+    for (k = 0; k < NSAFE; k++) {
+        first[k] = last[k] = idle[k];
+        changes[k] = 0;
     }
-    out("INFO mbx_regs: %lu non-zero words idle, %lu differ (first 200 listed)", nonzero, differ);
-    /* The non-zero idle words in short form: where registers live at all. */
-    {
-        unsigned long run_start = 0, in_run = 0;
-        for (i = 0; i <= words; i++) {
-            int nz = i < words && idle[i] != 0;
-            if (nz && !in_run) {
-                run_start = i;
-                in_run = 1;
-            } else if (!nz && in_run) {
-                out("INFO mbx_nonzero %05lx-%05lx", run_start * 4, i * 4 - 4);
-                in_run = 0;
+    issue_fills();
+    end = now_ticks() + (unsigned long long)freq.QuadPart / 10; /* 100 ms */
+    while (now_ticks() < end) {
+        for (k = 0; k < NSAFE; k++) {
+            unsigned long v = regs[SAFE[k].off / 4];
+            if (v != last[k]) {
+                if (changes[k] == 0)
+                    first[k] = v;
+                changes[k]++;
+                last[k] = v;
             }
         }
+        rounds++;
     }
+    (void)GetPixel(dc, w - 1, h - 1);
+    out("INFO regs while drawing: %lu rounds in 100 ms", rounds);
+    for (k = 0; k < NSAFE; k++)
+        if (changes[k])
+            out("BENCH reg_drawing %04lx %-10s changed %lu times, first to %08lx, last %08lx",
+                SAFE[k].off, SAFE[k].name, changes[k], first[k], last[k]);
+    /* The same 100 ms with nothing drawn, to tell drawing from background. */
+    for (k = 0; k < NSAFE; k++) {
+        last[k] = regs[SAFE[k].off / 4];
+        changes[k] = 0;
+    }
+    end = now_ticks() + (unsigned long long)freq.QuadPart / 10;
+    while (now_ticks() < end)
+        for (k = 0; k < NSAFE; k++) {
+            unsigned long v = regs[SAFE[k].off / 4];
+            if (v != last[k]) {
+                changes[k]++;
+                last[k] = v;
+            }
+        }
+    for (k = 0; k < NSAFE; k++)
+        if (changes[k])
+            out("BENCH reg_idle_changes %04lx %-10s changed %lu times", SAFE[k].off,
+                SAFE[k].name, changes[k]);
+    (void)i;
 }
 
 /* ---- The run -------------------------------------------------------- */
@@ -274,8 +309,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
 
     MessageBoxW(NULL,
                 L"RetroPane GPU probe: about 15 seconds. The screen will flash. "
-                L"The last step reads the graphics chip's registers; if Windows Mobile "
-                L"freezes, soft-reset (the results so far are saved).",
+                L"The last step reads a few of the graphics chip's registers (only ones "
+                L"Dell's driver reads itself). If Windows Mobile freezes, soft-reset; "
+                L"the results so far are saved.",
                 L"rp-wmgpu", MB_OK);
 
     w = GetSystemMetrics(SM_CXSCREEN);
