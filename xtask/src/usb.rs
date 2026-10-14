@@ -142,15 +142,18 @@ $sp.ReadTimeout = 5000
 $sp.WriteTimeout = 30000
 $sp.NewLine = "`r`n"
 $sp.Open()
-$sp.DiscardInBuffer()
+# A loader holding a run log sends it by itself when the port opens: pass
+# it on (EARLY/PUSHED lines, kept by the PC side), never discard it.
+Start-Sleep -Milliseconds 300
+foreach ($e in ($sp.ReadExisting() -split "`r`n")) {{ if ($e) {{ "EARLY " + $e }} }}
 $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
 $deadline = (Get-Date).AddSeconds({PUT_WAIT_SECS})
 $pushed = $false
 while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch [System.TimeoutException] {{ continue }} catch {{ break }}
-    if ($l -eq 'RPL LOG') {{ $pushed = $true; continue }}
-    if ($pushed) {{ if ($l -eq 'RPL END') {{ $pushed = $false }}; continue }}
+    if ($l -eq 'RPL LOG') {{ $pushed = $true; "PUSHED RPL LOG"; continue }}
+    if ($pushed) {{ "PUSHED " + $l; if ($l -eq 'RPL END') {{ $pushed = $false }}; continue }}
     if ($l -match '^RPL (OK|ERR)') {{ "REPLY " + $l; break }}
 }}
 try {{ $sp.Close() }} catch {{ }}
@@ -179,7 +182,65 @@ pub fn query(root: &Path, command: &str) -> Result<(Vec<String>, String), String
     if text.contains("NOPORT") {
         return Err(format!("no RetroPane USB port ({VID_PID}) found"));
     }
+    keep_unsent_log(root, &text);
     parse_query(&text, command)
+}
+
+/// A run log the loader pushed while a command ran (it sends the last
+/// run's log once, when the PC next opens the port: after an image ran with
+/// the Axim out of its cradle, or after `load` stopped waiting). Saved to
+/// `target/load/pushed-log-<seconds>.txt` and named on the console; before
+/// 2026-10-14 such logs were thrown away (rp-today's first GPU run).
+fn keep_unsent_log(root: &Path, text: &str) {
+    let Some(body) = pushed_log(text) else {
+        return;
+    };
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let path = root.join(format!("target/load/pushed-log-{secs}.txt"));
+    if std::fs::write(&path, body.join("\n") + "\n").is_ok() {
+        eprintln!(
+            "    the loader sent a waiting run log ({} lines): saved to {}",
+            body.len(),
+            path.display()
+        );
+    }
+}
+
+/// The lines of a run log pushed into a command's output (`EARLY`/`PUSHED`
+/// lines from `RPL LOG` up to `RPL END`).
+pub fn pushed_log(text: &str) -> Option<Vec<&str>> {
+    let lines: Vec<&str> = text
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim_end();
+            l.strip_prefix("EARLY ")
+                .or_else(|| l.strip_prefix("PUSHED "))
+        })
+        .collect();
+    let start = lines.iter().position(|l| *l == "RPL LOG")?;
+    Some(
+        lines[start + 1..]
+            .iter()
+            .take_while(|l| **l != "RPL END")
+            .copied()
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod pushed_tests {
+    #[test]
+    fn a_pushed_log_is_kept_and_the_reply_still_found() {
+        let text = "EARLY RPL LOG\nEARLY touch to flush: 3 answered\nSENT 20\nPUSHED stack: deepest 1 of 2\nPUSHED RPL END\nREPLY RPL ERR bad command\n";
+        assert_eq!(
+            super::pushed_log(text),
+            Some(vec!["touch to flush: 3 answered", "stack: deepest 1 of 2"])
+        );
+        assert!(super::parse_query(text, "log").is_err_and(|e| e.contains("bad command")));
+        assert_eq!(super::pushed_log("REPLY RPL OK cpld"), None);
+    }
 }
 
 /// The data lines and the OK reply in a query's output.
