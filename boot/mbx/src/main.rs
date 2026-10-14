@@ -161,6 +161,7 @@ mod image {
 
     use rp_drv_mbx_display::{Display, fill_rect_rgb565};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
+    use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{Mmio, cpu, rt};
@@ -368,14 +369,19 @@ mod image {
         if let Err(why) = e.finish(vram, 50_000) {
             fail(format_args!("{why}"));
         }
-        log!(
-            "{MARKER}: {} - the picture stays until a button is pressed",
-            if ok {
-                "PASS"
-            } else {
-                "edges differ, see pixels"
-            }
-        );
+        let verdict = if ok {
+            "PASS"
+        } else {
+            "edges differ, see pixels"
+        };
+        log!("{MARKER}: {verdict} - the picture stays until a button is pressed");
+        // The emulator's test waits for this on the serial port (the X51v
+        // has none wired: harmless there).
+        if let Some(bus) = rt::take_ffuart() {
+            let mut uart = PxaUart::new(bus);
+            uart.init(115_200);
+            let _ = writeln!(uart, "{MARKER}: {verdict}");
+        }
         hold_until_button();
         rp_hal_x51v::devices::return_to_loader();
         loop {
@@ -393,15 +399,20 @@ mod image {
         };
         let mut keypad = Keypad::new(kp);
         keypad.enable();
+        // Activity left over from before (the loader's own keys) doesn't count.
+        keypad.acknowledge();
         let t0 = rt::ticks();
         let mut seen = false;
         while us_since(t0) < 300_000_000 {
             rt::check_in();
-            let down = keypad.pressed() != Pressed::NONE;
-            if seen && !down {
+            // The controller latches activity until it's read, so a press
+            // and release that both fall between two polls still count;
+            // polling only the buttons held now missed them in the emulator
+            // (a 100 ms press while the host stalled the guest).
+            seen |= keypad.acknowledge();
+            if seen && keypad.pressed() == Pressed::NONE {
                 return;
             }
-            seen |= down;
             rt::delay_us(20_000);
         }
         log!("no button in 5 minutes: returning");
