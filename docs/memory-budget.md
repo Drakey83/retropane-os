@@ -52,3 +52,10 @@ During bring-up the kernel runs under the resident loader, which keeps the
 low 16 MiB, so the kernel image manages the top 48 MiB (12,281 frames free
 after its own setup). Once RetroPane boots on its own, the whole 64 MiB is
 its. The kernel image takes about 176 KiB of its 1 MiB share.
+
+**The shell's interface layer (noted 2026-10-13, ADR truth pass):**
+`rp-today` composes in a 480 x 640 ARGB8888 layer in SDRAM, 1.2 MiB
+(ADR-0021), not yet counted in the shell's 3 MiB share above. ADR-0022
+(proposed) would move GPU-drawn surfaces into the 2700G's own 16 MiB,
+which takes this out of SDRAM; until it is decided the layer counts
+against the window manager's share.
