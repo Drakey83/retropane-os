@@ -1189,6 +1189,9 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
             || l.starts_with("probe:")
             || l.starts_with("down ")
             || l.starts_with("time ")
+            || l.starts_with("completion:")
+            || l.contains(" us: ")
+            || l.starts_with("  after clearing")
             || l.starts_with("  [")
             || l.contains("full-screen")
     }) {

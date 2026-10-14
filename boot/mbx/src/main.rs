@@ -460,6 +460,9 @@ mod image {
         // 4d. Every way to copy down over itself, checked and timed (the
         // owner: the most efficient that works, not the easiest).
         let ok = ways_down(&mut e, vram, (a, s)) && ok;
+        // 4e. Does the engine say it's done, and does that reach the CPU
+        // (ADR-0022 open question 5)? Informational.
+        completion(&mut e, vram, (a, s));
 
         // 5. A picture for the photo: black, three bars, a white frame.
         let scene: [((u16, u16, u16, u16), u32); 8] = [
@@ -1004,6 +1007,87 @@ mod image {
             }
         }
         ok
+    }
+
+    /// `0x12c`'s bits that aren't the FIFO level (16-23 and 30).
+    const STATUS_BITS: u32 = !(0x00FF_0000 | 1 << 30);
+    /// GPLR0-3: every GPIO's level.
+    const GPLR: [usize; 4] = [0x000, 0x004, 0x008, 0x100];
+
+    /// Stage 4e: with the MBX interrupt enables (`0x130`) off, as Windows
+    /// Mobile sets them (`0x87F5`), and bit 10 alone, queues ~60 ms of fills
+    /// and a fence, and samples `0x12c` and every GPIO level as fast as it
+    /// can until 5 ms after the fence lands, logging each change with its
+    /// time from the queueing. A status bit rising at the fence says the
+    /// engine reports completion; a GPIO following it says the 2700G's
+    /// interrupt reaches the PXA (and on which pin). The 2700G's own
+    /// system-level interrupt registers are left as Windows Mobile set them
+    /// and never read (their layout is unknown; a wrong read hangs the bus).
+    fn completion(e: &mut Engine, vram: &mut [u8], (a, s): (usize, usize)) {
+        let Some(mut gpio) = rt::take_gpio() else {
+            log!("completion: no GPIO controller");
+            return;
+        };
+        let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
+        for enables in [0u32, 0x87F5, 0x0400] {
+            e.regs.write32(MBX + reg::ENABLE, enables);
+            e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
+            let st0 = e.status() & STATUS_BITS;
+            let g0 = levels(&mut gpio);
+            log!("completion: 0x130 = 0x{enables:04x}, status 0x{st0:08x} before");
+            let t0 = rt::ticks();
+            for i in 0..20 {
+                let w = cmd::fill(cmd::Format::Rgb565, a, s, (0, 0, 480, 640), 0x0841 * i);
+                if e.submit(&w).is_err() {
+                    log!("  FIFO full at fill {i}: stopping");
+                    return;
+                }
+            }
+            e.fence += 1;
+            let n = e.fence;
+            if e.submit(&cmd::fence(FENCE, n)).is_err() {
+                log!("  FIFO full at the fence: stopping");
+                return;
+            }
+            let (mut st, mut g) = (st0, g0);
+            let mut landed: Option<u32> = None;
+            let mut changes = 0;
+            loop {
+                let now = us_since(t0);
+                let st1 = e.status() & STATUS_BITS;
+                let g1 = levels(&mut gpio);
+                if landed.is_none() && load32_volatile(vram, FENCE) == Some(n) {
+                    landed = Some(now);
+                    log!("  {now} us: fence landed");
+                }
+                if (st1 != st || g1 != g) && changes < 12 {
+                    changes += 1;
+                    let flip: [u32; 4] = core::array::from_fn(|k| g1[k] ^ g[k]);
+                    log!(
+                        "  {now} us: status 0x{st1:08x}, GPIO bits flipped {flip:08x?} (now {g1:08x?})"
+                    );
+                }
+                (st, g) = (st1, g1);
+                match landed {
+                    Some(t) if now > t + 5_000 => break,
+                    None if now > 500_000 => {
+                        log!("  fence never landed: stopping");
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+            e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
+            let st2 = e.status() & STATUS_BITS;
+            let g2 = levels(&mut gpio);
+            let flip: [u32; 4] = core::array::from_fn(|k| g2[k] ^ g0[k]);
+            log!(
+                "  after clearing: status 0x{st2:08x}, GPIO bits differing from before {flip:08x?}"
+            );
+        }
+        // As the image found them: masked.
+        e.regs.write32(MBX + reg::ENABLE, 0);
+        e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
     }
 
     /// Keeps the picture up until a button is pressed and released (the
