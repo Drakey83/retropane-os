@@ -326,6 +326,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (renderer step 1, ADR-0022): the blend-state and display-
+    // event probe (2026-10-14): 37.4 KiB measured, + ~10%.
+    Budget {
+        image: "rp-mbx-blend",
+        max_load: 42 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

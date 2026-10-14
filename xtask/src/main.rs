@@ -96,6 +96,8 @@ commands:
             pixel-exact): run it before `load rp-blend`
   emu-mbx   only the GPU check (rp-mbx: fills by the emulated MBX 2D
             engine, edges exact): run it before `load rp-mbx`
+  emu-mbx-blend  only the blend and display-event probe (rp-mbx-blend:
+            every stage runs, state put back): run it before `load rp-mbx-blend`
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
@@ -120,8 +122,10 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-mbx" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-today" | "emu-crash" | "emu-cf"
+        | "emu-kernel" | "emu-trace" | "emu-fullsize" | "emu-usb" | "mutants" | "qemu" => {
+            run_step(&cmd)
+        }
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -301,6 +305,7 @@ fn run_step(step: &str) -> Result {
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),
         "emu-blend" => cross().and_then(|()| emu::boot_loader_blend(&workspace_root())),
         "emu-mbx" => cross().and_then(|()| emu::boot_loader_mbx(&workspace_root())),
+        "emu-mbx-blend" => cross().and_then(|()| emu::boot_loader_mbx_blend(&workspace_root())),
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
@@ -322,6 +327,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_picture(&workspace_root()))
             .and_then(|()| emu::boot_loader_blend(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx(&workspace_root()))
+            .and_then(|()| emu::boot_loader_mbx_blend(&workspace_root()))
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))

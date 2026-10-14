@@ -118,6 +118,15 @@ name = "rp-draw"
 version = "0.0.0"
 
 [[package]]
+name = "rp-drv-blit2d"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-mock",
+]
+
+[[package]]
 name = "rp-drv-cf"
 version = "0.0.0"
 dependencies = [
@@ -405,6 +414,21 @@ version = "0.0.0"
 name = "rp-mbx"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-uart",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-mbx-blend"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
  "rp-drv-mbx-display",
  "rp-drv-pxa-keypad",
  "rp-drv-pxa-uart",
