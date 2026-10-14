@@ -1,6 +1,6 @@
 # ADR-0024: Bringing up the MBX 3D core
 
-- **Status:** Proposed (2026-10-14)
+- **Status:** Accepted (2026-10-14, by the project owner; open: the time box, and the owner starting DoomGLES for M3)
 - **Date:** 2026-10-14
 
 ## In plain words
