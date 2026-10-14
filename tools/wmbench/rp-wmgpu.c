@@ -220,7 +220,9 @@ static const struct { unsigned long off; const char *name; } SAFE[] = {
     /* 0x012c left out: reading it froze WM (v3, 2026-10-13): most likely an
      * interrupt status cleared by reading, stolen from WM's driver. */
     {0x0300, "?0300"}, {0x0304, "?0304"},
-    {0x030c, "?030c"}, {0x085c, "?085c"}, {0x0f00, "?0f00"},
+    /* 0x030c left out too: it froze WM (v4), read then written back by
+     * the driver: an interrupt status. */
+    {0x085c, "?085c"}, {0x0f00, "?0f00"},
     {0x0f10, "?0f10"}, {0x0fe0, "?0fe0"}, {0x0fe4, "?0fe4"},
     {0x0fec, "?0fec"}, {0x0ff4, "?0ff4"}, {0x0ff8, "?0ff8"},
     {0x0ffc, "?0ffc"},
