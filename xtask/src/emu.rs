@@ -1335,7 +1335,9 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(90),
+            // -icount makes the run deterministic and slow: 71 s on the
+            // owner's PC, past 90 s on CI's runners (2026-10-14).
+            timeout: Duration::from_secs(300),
         },
     )?;
     let log = output
