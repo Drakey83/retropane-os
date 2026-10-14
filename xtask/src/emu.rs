@@ -1063,6 +1063,122 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
 /// How long rp-blend holds each stage (kept in step with the image).
 const RP_BLEND_STAGE_SECONDS: u32 = 15;
 
+/// The GPU test image (rp-mbx, item 69): the loader starts it; its fills
+/// go through the emulated MBX 2D engine (retropane-qemu rp-v0.12.0 on),
+/// so its own read-back checks must pass, and the picture it leaves up
+/// must have the GPU-drawn bars and frame with exact edges (ends
+/// exclusive). Then Enter returns it to the loader. Skipped, with a note,
+/// on an emulator without the model.
+pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    mbx: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-mbx.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-mbx"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let shot = root.join("target/emulator/mbx-screen.ppm");
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    let check = || -> Result<(), String> {
+        // Give the emulator's screen timer a frame to show the picture.
+        std::thread::sleep(Duration::from_millis(1500));
+        let _ = std::fs::remove_file(&shot);
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.screendump(&guest, &shot)?;
+        let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+        if (img.width, img.height) != (480, 640) {
+            return Err(format!("mbx: screen is {}x{}", img.width, img.height));
+        }
+        // Inside each part of the scene, and one pixel past each end.
+        let (black, red, green, blue, white) = (
+            [0, 0, 0],
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 255],
+        );
+        let want: [((usize, usize), [u8; 3]); 12] = [
+            ((60, 100), red),
+            ((159, 539), red),
+            ((160, 300), black),
+            ((110, 540), black),
+            ((240, 300), green),
+            ((370, 300), blue),
+            ((419, 300), blue),
+            ((420, 300), black),
+            ((22, 300), white),
+            ((300, 22), white),
+            ((459, 619), white),
+            ((40, 60), black),
+        ];
+        let mut wrong = Vec::new();
+        for ((x, y), rgb) in want {
+            let i = (y * 480 + x) * 3;
+            // The screendump widens RGB565 to 8 bits: compare the top bits.
+            let got = [img.rgb[i], img.rgb[i + 1], img.rgb[i + 2]];
+            if got.iter().zip(rgb).any(|(g, w)| g >> 3 != w >> 3) {
+                wrong.push(format!("({x},{y}) {got:?} not {rgb:?}"));
+            }
+        }
+        if !wrong.is_empty() {
+            return Err(format!("mbx: the GPU-drawn picture is wrong at {wrong:?}"));
+        }
+        // A button press returns it to the loader.
+        mon.command("sendkey ret")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-2D")),
+            during: Some(&check),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or_else(|| {
+            let tail: String = output
+                .chars()
+                .rev()
+                .take(600)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            format!(
+                "mbx: never came back to the loader after the button press; serial ends:
+{tail}"
+            )
+        })?;
+    if !log.contains("RETROPANE-MBX-2D: PASS") {
+        return Err(format!("mbx: the image's own checks failed:{log}"));
+    }
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("mbx: didn't return cleanly:{log}"));
+    }
+    eprintln!(
+        "    mbx OK: fence, rectangle edges and the GPU-drawn picture exact; back at the loader on a button press"
+    );
+    Ok(())
+}
+
 /// The wallpaper rp-today was built with: its build script's output, the
 /// newest `wallpaper.yuv` under the release build folder in an `rp-today`
 /// folder (Cargo's layout is `build/rp-today-<hash>/out` or, newer,
