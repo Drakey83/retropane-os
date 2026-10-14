@@ -1427,23 +1427,26 @@ fn today_wallpaper(release: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(&newest).map_err(|e| format!("{}: {e}", newest.display()))
 }
 
-/// What rp-today should show: the same set-up (`rp_today::show`), shell and
-/// CPU renderer as the image, frame after frame, composed by the reference
-/// scan-out. `steps` are applied between screens; the first screen is
-/// before any. The clock's time is arbitrary: the check masks it.
+/// What rp-today should show: the same set-up (`rp_today::show_gpu`),
+/// shell and GPU renderer (ADR-0023) as the image, on the Rust model of
+/// the 2D engine, frame after frame; the emulator's own model of the
+/// engine must draw the same pictures. `steps` are applied between
+/// screens; the first screen is before any. The clock's time is
+/// arbitrary: the check masks it.
 fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
     use rp_draw::{Frame, Renderer};
-    use rp_drv_mbx_display::{Display, scanout};
-    use rp_gfx::layer::{Layer, PlaneFormat};
-    use rp_gfx::render::CpuRenderer;
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
 
-    let (w, h) = (rp_today::W, rp_today::H);
-    let mut vram = vec![0u8; 16 << 20];
-    let mut d = Display::new(RegFile::default());
-    let _ = d.adopt(vram.len());
-    let gfx = rp_today::show(&mut d, &mut vram, wall);
-    let regs = d.into_inner();
-    let mut px = vec![0u32; w * h];
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    rp_today::show_gpu(&mut gpu, wall, |_| {});
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), true);
     shell.set_time(rp_shell::Time {
         hour: 12,
@@ -1459,13 +1462,16 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
             shell.input(e);
         }
         shell.frame(&mut frame);
-        {
-            let plane = &mut vram[gfx.offset..gfx.offset + gfx.stride * h];
-            let layer = Layer::new(&mut px, w as u32, h as u32, w).expect("sized above");
-            CpuRenderer::new(layer, plane, gfx.stride, PlaneFormat::Argb4444Dithered).draw(&frame);
-        }
-        let mut out = vec![0u8; w * h * 3];
-        scanout::compose(|o| regs.0.get(&o).copied().unwrap_or(0), &vram, &mut out);
+        gpu.draw(&frame);
+        let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+        let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+        let m = mem.borrow();
+        let out = m[base..base + SCREEN_BYTES]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect();
         screens.push(out);
     }
     screens
@@ -1535,8 +1541,23 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
                 return Ok(());
             }
             if Instant::now() > deadline {
+                // The expected picture beside the screendump, to compare.
+                let mut ppm = format!(
+                    "P6
+{} {}
+255
+",
+                    rp_today::W,
+                    rp_today::H
+                )
+                .into_bytes();
+                ppm.extend_from_slice(want);
+                let _ = std::fs::write(
+                    root.join(format!("target/emulator/today-{name}-want.ppm")),
+                    ppm,
+                );
                 return Err(format!(
-                    "today: the {name} screen differs from the reference in {n} pixels (target/emulator/today-{name}.ppm)"
+                    "today: the {name} screen differs from the reference in {n} pixels (target/emulator/today-{name}.ppm, expected today-{name}-want.ppm)"
                 ));
             }
         }

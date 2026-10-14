@@ -129,12 +129,17 @@ fn place(w: u16, h: u16, dx: i32, dy: i32, clip: Rect) -> Option<(Rect, u16, u16
     Some((to, sx, sy))
 }
 
-/// One (font, colour)'s glyphs uploaded: their offsets (0 = none).
+/// Words the CPU stages at a time (rows and glyphs stream through it:
+/// the stack is 16 KiB, and a 2.5 KiB row buffer per call overflowed it).
+const CHUNK: usize = 32;
+
+/// One (font, colour)'s glyphs uploaded: each one's offset in the glyph
+/// region in 16-byte units, plus 1 (0 = none).
 #[derive(Clone, Copy)]
 struct Atlas {
     font: usize,
     color: Argb,
-    at: [u32; GLYPHS],
+    at: [u16; GLYPHS],
 }
 
 /// Draws frames on the 2D engine. `R` is the 2700G register window, `M`
@@ -275,16 +280,24 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.submit(&w);
     }
 
-    /// One row of colours, `r.w` long, drawn down `r` (blended if `blend`).
-    fn row(&mut self, dst: usize, r: Rect, cols: &[Argb], blend: bool) {
+    /// One row of colours, column `k` of `r` being `col(k)`, drawn down `r`
+    /// (blended if `blend`).
+    fn row(&mut self, dst: usize, r: Rect, col: impl Fn(u32) -> Argb, blend: bool) {
         if self.row == ROWS {
             self.wait();
             self.row = 0;
         }
         let at = self.l.rows + self.row * ROW_BYTES;
         self.row += 1;
-        self.mem
-            .store(at, &cols[..usize::from(r.w).min(cols.len())]);
+        let w = usize::from(r.w).min(ROW_BYTES / 4);
+        let mut buf = [0u32; CHUNK];
+        for k0 in (0..w).step_by(CHUNK) {
+            let n = CHUNK.min(w - k0);
+            for (i, p) in buf[..n].iter_mut().enumerate() {
+                *p = col((k0 + i) as u32);
+            }
+            self.mem.store(at + 4 * k0, &buf[..n]);
+        }
         self.mem.sync();
         let (w, n) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
@@ -304,10 +317,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             _ if r.is_empty() => {}
             0 => {}
             255 => self.fill(dst, r, c),
-            _ => {
-                let cols = [c; 640];
-                self.row(dst, r, &cols, true);
-            }
+            _ => self.row(dst, r, |_| c, true),
         }
     }
 
@@ -399,29 +409,31 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             }
         };
         let (rgb, a) = (color & 0x00FF_FFFF, color >> 24);
-        let mut atlas = Atlas {
+        // Built in place: no copy of the table on the stack.
+        self.atlases[slot] = Some(Atlas {
             font: key,
             color,
             at: [0; GLYPHS],
-        };
-        let mut line = [0u32; 256];
+        });
+        let mut buf = [0u32; CHUNK];
         for (k, g) in font.glyphs.iter().enumerate() {
             let (w, h) = (usize::from(g.w), usize::from(g.h));
-            if w == 0 || h == 0 || g.cover.len() < w * h || w > line.len() {
+            if w == 0 || h == 0 || g.cover.len() < w * h {
                 continue;
             }
             let at = self.l.glyphs.0 + self.glyphs_top;
-            for y in 0..h {
-                for (p, &c) in line.iter_mut().zip(&g.cover[y * w..y * w + w]) {
+            for (i0, cover) in g.cover[..w * h].chunks(CHUNK).enumerate() {
+                for (p, &c) in buf.iter_mut().zip(cover) {
                     *p = div255(a * u32::from(c)) << 24 | rgb;
                 }
-                self.mem.store(at + y * w * 4, &line[..w]);
+                self.mem.store(at + 4 * CHUNK * i0, &buf[..cover.len()]);
             }
-            atlas.at[k] = at as u32;
+            if let Some(atlas) = self.atlases[slot].as_mut() {
+                atlas.at[k] = (self.glyphs_top / 16 + 1) as u16;
+            }
             self.glyphs_top += (w * h * 4).next_multiple_of(16);
         }
         self.mem.sync();
-        self.atlases[slot] = Some(atlas);
         Some(slot)
     }
 
@@ -442,17 +454,15 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 if t.is_empty() {
                     return;
                 }
-                let mut cols = [0u32; 640];
                 let first = u32::from(t.x - r.x);
-                for (k, p) in cols.iter_mut().take(usize::from(t.w)).enumerate() {
-                    *p = rp_gfx::render::gradient_at(left, right, first + k as u32, u32::from(r.w));
-                }
-                let cols = &cols[..usize::from(t.w)];
-                let opaque = cols.iter().all(|p| p >> 24 == 255);
+                // Alpha runs linearly from one end's to the other's.
+                let opaque = left >> 24 == 255 && right >> 24 == 255;
                 if !opaque {
                     self.wallpaper(dst, t);
                 }
-                self.row(dst, t, cols, !opaque);
+                let span = u32::from(r.w);
+                let col = |k| rp_gfx::render::gradient_at(left, right, first + k, span);
+                self.row(dst, t, col, !opaque);
             }
             Cmd::Outline { r, color } => {
                 if r.is_empty() {
@@ -499,10 +509,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     let gy = i32::from(baseline) - i32::from(g.top);
                     pen += i32::from(g.advance);
                     let idx = usize::from(ch - font.first);
-                    let at = self.atlases[k].map_or(0, |a| a.at[idx]) as usize;
-                    if at == 0 {
+                    let unit = self.atlases[k].as_ref().map_or(0, |a| a.at[idx]);
+                    if unit == 0 {
                         continue;
                     }
+                    let at = self.l.glyphs.0 + (usize::from(unit) - 1) * 16;
                     let (w, h) = (u16::from(g.w), u16::from(g.h));
                     if let Some((to, sx, sy)) = place(w, h, gx, gy, clip) {
                         self.blend_from(dst, to, (at, usize::from(w) * 4), sx, sy);

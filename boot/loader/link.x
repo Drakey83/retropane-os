@@ -38,6 +38,7 @@ SECTIONS
     } > SDRAM
 
     .stack (NOLOAD) : ALIGN(8) {
+        __stack_bottom = .;
         . += 16K;
         __stack_top = .;
         . += 1536;

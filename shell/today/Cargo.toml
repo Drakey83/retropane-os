@@ -1,6 +1,6 @@
 [package]
 name = "rp-today"
-description = "Test image (ADR-0021): the shell's Today screen on the X51v under the loader: the wallpaper in the video plane, rp-shell drawn by the CPU renderer into the graphics plane, touch and buttons, and the touch-to-screen latency in the run log"
+description = "Test image (ADR-0021, ADR-0023): the shell's Today screen on the X51v under the loader: rp-shell drawn by the MBX 2D renderer over the wallpaper into an opaque 32 bpp picture, touch and buttons, and the touch-to-screen latency in the run log"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,11 +16,16 @@ rp-hal-api = { path = "../../hal/api" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-gfx = { path = "../../drivers/gfx" }
 rp-touch-cal = { path = "../../drivers/touch-cal" }
+rp-mbx-render = { path = "../../drivers/mbx-render" }
+
+[dev-dependencies]
+rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }

@@ -18,18 +18,37 @@ mod image {
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_tsc2046::Tsc2046;
-    use rp_gfx::layer::{Layer, PlaneFormat};
-    use rp_gfx::render::CpuRenderer;
-    use rp_hal_pxa27x::rt;
+    use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::soc::irq;
+    use rp_hal_pxa27x::{cpu, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
+    use rp_mbx_render::{Layout, LocalMem, Mbx2dRenderer};
     use rp_shell::{Action, Input, Key, Shell, Time};
     use rp_touch_cal::{Calibration, Filter, Pen, Sample};
 
     use rp_today::{H, Latency, W, clock};
 
     rp_hal_pxa27x::entry!(main);
+
+    /// 2700G local memory through the CPU's window onto it.
+    struct Vram(&'static mut [u8]);
+
+    impl LocalMem for Vram {
+        fn store(&mut self, at: usize, words: &[u32]) {
+            for (k, &w) in words.iter().enumerate() {
+                let _ = store32_volatile(self.0, at + 4 * k, w);
+            }
+        }
+
+        fn load(&self, at: usize) -> Option<u32> {
+            load32_volatile(self.0, at)
+        }
+
+        fn sync(&mut self) {
+            cpu::drain_write_buffer();
+        }
+    }
 
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
@@ -71,17 +90,21 @@ mod image {
         let _ = d.adopt(MBX_VRAM_SIZE as usize);
         let before = Snapshot::take(d.regs());
 
-        let gfx = rp_today::show(&mut d, vram, WALLPAPER);
-
-        let Some(work) = rp_hal_x51v::devices::take_scratch() else {
-            crash(format_args!("no scratch RAM"))
-        };
-        let Some(layer) = Layer::in_bytes(work, W as u32, H as u32) else {
-            crash(format_args!("scratch too small for the layer"))
-        };
-        let plane = &mut vram[gfx.offset..gfx.offset + gfx.stride * H];
-        let mut renderer =
-            CpuRenderer::new(layer, plane, gfx.stride, PlaneFormat::Argb4444Dithered);
+        // ADR-0023: the 2D engine draws; no CPU layer in SDRAM.
+        let mut renderer = Mbx2dRenderer::new(
+            d.into_inner(),
+            Vram(vram),
+            Layout::X51V,
+            rt::ticks,
+            TICKS_MS,
+        );
+        let t0 = rt::ticks();
+        rp_today::show_gpu(&mut renderer, WALLPAPER, rt::delay_us);
+        let _ = writeln!(
+            RunLog,
+            "gpu: wallpaper converted to 32 bpp and shown in {} us",
+            rt::ticks().wrapping_sub(t0) / 13 * 4
+        );
         let mut shell = Shell::new(rp_today::shell_fonts(), true);
         let mut frame = Frame::new();
 
@@ -292,9 +315,10 @@ mod image {
                     RunLog,
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
                      (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times; \
-                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}"
+                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}",
+                    renderer.stalls
                 );
-                before.restore(d.regs());
+                before.restore(&mut renderer.parts().0.regs);
                 rp_hal_x51v::devices::return_to_loader();
                 loop {
                     core::hint::spin_loop();
@@ -313,7 +337,12 @@ mod image {
                 if frames == 1 {
                     let _ = writeln!(RunLog, "{} first frame {us} us", rp_today::MARKER);
                     // The emulator check waits for this on the serial port.
-                    let _ = writeln!(PxaUart::new(rt::emergency_uart()), "{}", rp_today::MARKER);
+                    let _ = writeln!(
+                        PxaUart::new(rt::emergency_uart()),
+                        "{} (engine stalls {})",
+                        rp_today::MARKER,
+                        renderer.stalls
+                    );
                 }
                 if let Some(at) = pending.take() {
                     latency.add(t1.wrapping_sub(at) / 13 * 4);

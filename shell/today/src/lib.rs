@@ -1,11 +1,14 @@
 //! Test image (ADR-0021): the shell's Today screen on the X51v.
 //!
-//! The wallpaper goes in the 2700G's video plane (4:2:0, opaque, at the
-//! bottom), `rp-shell` is drawn by the CPU renderer into the graphics plane
-//! (ARGB4444, dithered, per-pixel alpha) and the display mixes the two as
-//! it scans out: the plane set-up `rp-blend` proved as stage F. Touch and
-//! the D-pad drive the shell; Home goes to Today; the Start menu's "Back
-//! to loader" returns.
+//! Drawn by the 2700G's 2D engine (ADR-0023, option B: `rp-mbx-render`):
+//! the wallpaper, converted once to XRGB8888 in 2700G memory, is copied
+//! under each changed rectangle and `rp-shell`'s frame drawn over it into
+//! one of two opaque 32 bpp pictures, then the screen flips to it. The CPU
+//! only describes frames. ([`show`], the earlier set-up: wallpaper in the
+//! video plane under the CPU renderer's ARGB4444 layer, stays as the
+//! reference the GPU path is tested against.) Touch and the D-pad drive
+//! the shell; Home goes to Today; the Start menu's "Back to loader"
+//! returns.
 //!
 //! Tickless: between events the CPU sleeps until the pen or a button
 //! interrupts, or an alarm (the pen sampled every 5 ms while it is down, a
@@ -90,6 +93,34 @@ pub fn show<B: rp_hal_api::RegisterBus>(
     gfx
 }
 
+/// ADR-0023's set-up: `wallpaper` (planar 4:2:0) converted to XRGB8888
+/// into the renderer's wallpaper, the engine reset and the first picture
+/// shown as an opaque 32 bpp plane. Shared by the image and the emulator
+/// check's reference.
+pub fn show_gpu<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    wallpaper: &[u8],
+    delay_us: fn(u32),
+) {
+    use rp_drv_mbx_display::scanout::yuv_to_rgb;
+    let (luma, chroma) = wallpaper.split_at((W * H).min(wallpaper.len()));
+    let (u, v) = chroma.split_at((W * H / 4).min(chroma.len()));
+    let mut row = [0u32; W];
+    for y in 0..H {
+        for (x, p) in row.iter_mut().enumerate() {
+            let c = (y / 2) * (W / 2) + x / 2;
+            let (r, g, b) = yuv_to_rgb(
+                luma.get(y * W + x).copied().unwrap_or(16),
+                u.get(c).copied().unwrap_or(128),
+                v.get(c).copied().unwrap_or(128),
+            );
+            *p = 0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
+        }
+        r.wallpaper_row(y as u16, &row);
+    }
+    r.show(delay_us);
+}
+
 /// Latencies kept for the median (the rest only count towards the worst).
 pub const KEPT: usize = 256;
 
@@ -156,6 +187,99 @@ mod tests {
         }
         let (n, _, worst) = l.summary();
         assert_eq!((n, worst), (3 + 2 * KEPT as u32, 30_000));
+    }
+
+    /// The Today screen through the GPU renderer (on the engine model)
+    /// against the CPU renderer's layer over the same wallpaper, frame
+    /// after frame through a tap on Start, the menu and back: within 3
+    /// per channel (the engine weighs alpha out of 256 and truncates each
+    /// blend; the CPU rounds out of 255 and mixes once).
+    #[test]
+    fn gpu_today_matches_the_cpu_renderer() {
+        use rp_draw::{Frame, Renderer};
+        use rp_drv_mbx_display::scanout::{mix, yuv_to_rgb};
+        use rp_gfx::layer::{Layer, PlaneFormat};
+        use rp_gfx::render::CpuRenderer;
+        use rp_mbx_render::model::{self, Bus, Mem};
+        use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES, STRIDE};
+        use rp_shell::{Input, Shell};
+
+        // A wallpaper with every channel moving: luma, then U and V.
+        let mut wall = vec![0u8; W * H * 3 / 2];
+        for (i, b) in wall.iter_mut().enumerate() {
+            *b = (16 + (i * 7 + i / W * 3) % 220) as u8;
+        }
+        let rgb = |x: usize, y: usize| {
+            let c = W * H + (y / 2) * (W / 2) + x / 2;
+            yuv_to_rgb(wall[y * W + x], wall[c], wall[c + W * H / 4])
+        };
+        let mem = model::memory();
+        let mut gpu = Mbx2dRenderer::new(
+            Bus::new(mem.clone()),
+            Mem(mem.clone()),
+            Layout::X51V,
+            || 0,
+            1,
+        );
+        show_gpu(&mut gpu, &wall, |_| {});
+        let mut work = vec![0u8; SCREEN_BYTES];
+        let mut plane = vec![0u8; SCREEN_BYTES];
+        let mut shell = Shell::new(shell_fonts(), true);
+        // The emulator's run showed this; frames differ by their text.
+        shell.set_time(rp_shell::Time {
+            hour: 12,
+            minute: 43,
+            weekday: 2,
+            day: 13,
+            month: 10,
+        });
+        let mut f = Frame::new();
+        let s = rp_shell::START;
+        let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);
+        let steps = [
+            None,
+            Some(Input::PenDown { x: sx, y: sy }),
+            Some(Input::PenUp { x: sx, y: sy }),
+            Some(Input::Key(rp_shell::Key::Down)),
+            Some(Input::Key(rp_shell::Key::Home)),
+        ];
+        for (k, step) in steps.into_iter().enumerate() {
+            if let Some(e) = step {
+                shell.input(e);
+            }
+            shell.frame(&mut f);
+            gpu.draw(&f);
+            let layer = Layer::in_bytes(&mut work, W as u32, H as u32).unwrap();
+            CpuRenderer::new(layer, &mut plane, STRIDE, PlaneFormat::Argb8888).draw(&f);
+            let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+            let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+            let m = mem.borrow();
+            let (mut worst, mut over2) = (0u8, 0usize);
+            for y in 0..H {
+                for x in 0..W {
+                    let at = (y * W + x) * 4;
+                    let l = u32::from_le_bytes(plane[at..at + 4].try_into().unwrap());
+                    let g = u32::from_le_bytes(m[base + at..base + at + 4].try_into().unwrap());
+                    let (wr, wg, wb) = rgb(x, y);
+                    let a = (l >> 24) as u8;
+                    for (sh, w) in [(16, wr), (8, wg), (0, wb)] {
+                        let want = mix((l >> sh) as u8, w, a);
+                        let got = (g >> sh) as u8;
+                        let d = got.abs_diff(want);
+                        worst = worst.max(d);
+                        over2 += usize::from(d > 2);
+                    }
+                }
+            }
+            // Measured: 3 at worst, in about a dozen of 921,600 channel
+            // values a frame, where glass is stacked on glass (each engine
+            // blend truncates; the CPU composes the layer once).
+            assert!(
+                worst <= 3 && over2 < 100,
+                "step {k}: worst {worst}, {over2} channels off by more than 2"
+            );
+        }
+        assert_eq!(gpu.stalls, 0);
     }
 
     #[test]

@@ -272,10 +272,12 @@ pub const BUDGETS: &[Budget] = &[
         device: OnDevice::Returns,
     },
     // Test image: the soft run limit (runs forever on purpose); 7.8 KiB
-    // measured, +~10%.
+    // measured, +~10%; then 9 -> 10 KiB (2026-10-14): every image now
+    // reports its deepest stack on the way back to the loader (formatting
+    // linked in), 9.1 KiB measured.
     Budget {
         image: "rp-hang",
-        max_load: 9 * 1024,
+        max_load: 10 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
