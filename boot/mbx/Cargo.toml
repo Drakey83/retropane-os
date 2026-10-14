@@ -13,6 +13,7 @@ rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-hal-mem = { path = "../../hal/mem" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 
 [lints]
 workspace = true

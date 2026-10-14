@@ -406,6 +406,7 @@ name = "rp-mbx"
 version = "0.0.0"
 dependencies = [
  "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",

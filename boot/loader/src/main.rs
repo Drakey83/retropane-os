@@ -1800,6 +1800,10 @@ mod image {
         // The previous program's run: if it crashed or hung, the crash
         // screen goes above the log.
         let mut pending = devices::log_take();
+        // Kept for `log`: a log sent while Windows was re-finding the
+        // device can be lost on the way; its bytes stay in RAM until the
+        // next image starts.
+        let last_run = pending;
         let trouble = pending.as_ref().is_some_and(|r| r.crashed || !r.returned);
         let panel_h = if trouble { CRASH_H } else { 0 };
         let (panel, rest) = rest.split_at_mut(plane.stride * panel_h);
@@ -2143,6 +2147,13 @@ mod image {
                                 status.as_str()
                             }
                         }
+                        Ok(b"log") => match &last_run {
+                            Some(run) => {
+                                send_log_lines(&mut |b| usb_bytes(&mut udc, b), run);
+                                "RPL OK log: the last run's log, again\r\n"
+                            }
+                            None => "RPL ERR log: no image has run since the loader started\r\n",
+                        },
                         Ok(b"cpld") => {
                             // The CPLD as found at start-up (read-only
                             // diagnostics; offsets 0x00..0x1E).
@@ -2499,6 +2510,34 @@ mod image {
             out(b"\r\n[the image did not return: it hung and the device was reset]");
         }
         out(b"\r\nRPL END\r\n");
+    }
+
+    /// The run log again, for `log`: each line as an `RPD` data line, the
+    /// notes `send_log` adds included.
+    fn send_log_lines(out: &mut dyn FnMut(&[u8]), run: &devices::PreviousRun) {
+        for line in run.log.split(|&b| b == b'\n') {
+            out(b"RPD ");
+            out(line.strip_suffix(b"\r").unwrap_or(line));
+            out(b"\r\n");
+        }
+        for (on, note) in [
+            (
+                run.overflow,
+                &b"RPD [run log full: later output dropped]\r\n"[..],
+            ),
+            (
+                run.crashed,
+                b"RPD [the image crashed: report kept on the card as crashlog.txt]\r\n",
+            ),
+            (
+                !run.returned,
+                b"RPD [the image did not return: it hung and the device was reset]\r\n",
+            ),
+        ] {
+            if on {
+                out(note);
+            }
+        }
     }
 
     fn uart_bytes(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, data: &[u8]) {

@@ -16,7 +16,8 @@
 //!    exclusive, is the colour the low 16 bits);
 //! 4. 20 full-screen fills by the GPU, then 5 by the CPU, both timed (the
 //!    CPU's 14.5 ms is in docs/perf.md);
-//! 5. three bars and a frame, all GPU-drawn, held 10 s for a photo.
+//! 5. three bars and a frame, all GPU-drawn, kept on screen until a button
+//!    is pressed (for a photo).
 //!
 //! Every wait has a timeout; on a failure the image logs it and returns.
 
@@ -159,6 +160,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::{Display, fill_rect_rgb565};
+    use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{Mmio, cpu, rt};
@@ -367,18 +369,42 @@ mod image {
             fail(format_args!("{why}"));
         }
         log!(
-            "{MARKER}: {} - photo now: red, green, blue bars in a white frame (10 s)",
+            "{MARKER}: {} - the picture stays until a button is pressed",
             if ok {
                 "PASS"
             } else {
                 "edges differ, see pixels"
             }
         );
-        rt::delay_us(10_000_000);
+        hold_until_button();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Keeps the picture up until a button is pressed and released (the
+    /// release too, so the press doesn't reach the loader), checking in with
+    /// the loader's watchdog; gives up after 5 minutes.
+    fn hold_until_button() {
+        let Some(kp) = rt::take_keypad() else {
+            log!("no keypad: returning");
+            return;
+        };
+        let mut keypad = Keypad::new(kp);
+        keypad.enable();
+        let t0 = rt::ticks();
+        let mut seen = false;
+        while us_since(t0) < 300_000_000 {
+            rt::check_in();
+            let down = keypad.pressed() != Pressed::NONE;
+            if seen && !down {
+                return;
+            }
+            seen |= down;
+            rt::delay_us(20_000);
+        }
+        log!("no button in 5 minutes: returning");
     }
 
     /// Logs a failed step and returns to the loader.

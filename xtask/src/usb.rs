@@ -511,10 +511,20 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                     }
                 }
             } else {
-                eprintln!(
-                    "    no run log within {LOG_WAIT_SECS} s: the image is still running (or hung), \
-                     or doesn't return to the loader"
-                );
+                if log.is_empty() {
+                    eprintln!("    no run log within {LOG_WAIT_SECS} s; asking the loader for it");
+                } else {
+                    eprintln!(
+                        "    the run log arrived cut short ({} lines); asking for it again",
+                        log.len()
+                    );
+                }
+                if last_log(root).is_err() {
+                    eprintln!(
+                        "    the loader isn't answering: the image is still running (or hung), \
+                         or doesn't return to the loader. Once it's back: cargo xtask log"
+                    );
+                }
             }
             Ok(())
         }
@@ -600,6 +610,17 @@ pub fn check_digest(theirs: &str, sent: &[u8], what: &str) -> Result<(), String>
 pub fn command(root: &Path, command: &str) -> Result<(), String> {
     let detail = command_reply(root, command)?;
     eprintln!("    {detail}");
+    Ok(())
+}
+
+/// Prints the last run's log again (the loader's `log` command): for a log
+/// lost on the way while Windows re-found the device.
+pub fn last_log(root: &Path) -> Result<(), String> {
+    let (lines, _) = query(root, "log")?;
+    eprintln!("    the last run's log, from the loader:");
+    for l in lines {
+        println!("{l}");
+    }
     Ok(())
 }
 

@@ -288,6 +288,7 @@ impl core::fmt::Write for RunLog {
 }
 
 /// The previous run, as the loader finds it on start.
+#[derive(Clone, Copy)]
 pub struct PreviousRun {
     /// What the image printed.
     pub log: &'static [u8],
