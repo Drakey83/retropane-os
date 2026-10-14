@@ -1,7 +1,9 @@
 # ADR-0023: The MBX 2D renderer
 
-- **Status:** Proposed (2026-10-14). Part 1 (where the screen is composed)
-  is for the owner's vote; the rest follows from it.
+- **Status:** Accepted (2026-10-14, by the project owner: option B, one
+  opaque full-colour picture composed by the engine, double-buffered).
+  Stride 0 and 32 bpp scan-out are measured by `rp-mbx-blend` B6 before
+  the renderer runs on the device.
 - **Date:** 2026-10-14
 
 ## In plain words
@@ -77,7 +79,8 @@ on the engine, not the CPU, and only where something changed.
 
 ## Decision
 
-1. **Composition: B** (for the owner's vote; A is described above). The
+1. **Composition: B** (the owner's choice, 2026-10-14; A is described
+   above and rejected: banding without dithering, inexact edges). The
    graphics plane is XRGB8888, opaque, double-buffered in 2700G memory;
    the wallpaper is an XRGB8888 copy in 2700G memory, made once from the
    decoded JPEG (the video plane is left off and free).
@@ -168,6 +171,6 @@ on the engine, not the CPU, and only where something changed.
 
 ## Open questions
 
-1. Owner: A or B (recommended B)?
+1. ~~Owner: A or B?~~ B (2026-10-14).
 2. Stride 0 (B6 measures it).
 3. 32 bpp scan-out bandwidth with the engine busy (B6).
