@@ -149,16 +149,20 @@ fn pressure_decides_when_a_position_counts() {
     // Landing: the first sample has nothing to agree with yet.
     assert_eq!(f.sample(at(2286, 3282, 1501), 0), Pen::Nothing);
     assert_eq!(f.sample(at(2318, 3285, 1578), 11), Pen::Nothing);
-    // Pressure steady (within ~6%): two agreeing samples give the touch,
-    // at the third sample (22 ms, where the old rules took 44).
-    assert_eq!(f.sample(at(2313, 3288, 1598), 22), Pen::Down(2316, 3287));
-    assert_eq!(f.sample(at(2318, 3287, 1619), 33), Pen::Move(2316, 3288));
+    // Pressure steady on two samples in a row: pressed at the newer one,
+    // at the third sample (22 ms, where the first rules took 44).
+    assert_eq!(f.sample(at(2313, 3288, 1598), 22), Pen::Down(2313, 3288));
+    // Agreeing samples refine it; jitter of a unit or two is a hold.
+    assert_eq!(f.sample(at(2318, 3287, 1619), 33), Pen::Hold(2313, 3288));
     assert_eq!(f.sample(at(2320, 3289, 1629), 44), Pen::Move(2319, 3288));
+    assert_eq!(f.sample(at(2321, 3289, 1630), 50), Pen::Hold(2319, 3288));
+    // A real move.
+    assert_eq!(f.sample(at(2332, 3291, 1640), 55), Pen::Move(2327, 3290));
     // Lifting: pressure falls from its peak; the sliding positions don't
     // count, and the lift sample with almost no pressure ends nothing early.
     assert_eq!(f.sample(at(2283, 3277, 1546), 55), Pen::Nothing);
     assert_eq!(f.sample(at(2252, 3269, 1424), 66), Pen::Nothing);
-    assert_eq!(f.sample(at(0, 3512, 5), 77), Pen::Up(2319, 3288));
+    assert_eq!(f.sample(at(0, 3512, 5), 77), Pen::Up(2327, 3290));
     assert!(!f.down());
     // A touch that never steadied: no tap anywhere.
     let mut f = Filter::new();
@@ -168,4 +172,17 @@ fn pressure_decides_when_a_position_counts() {
     // Its landing time is known while down (for latency).
     f.sample(at(5, 5, 900), 100);
     assert_eq!(f.landed_at(), Some(100));
+}
+
+#[test]
+fn a_bounce_while_landing_is_not_a_lift() {
+    // The owner's slowest touch (736 ms): pressure dipped on the second
+    // sample, then held steady.
+    let mut f = Filter::new();
+    f.sample(at(3057, 902, 1508), 0);
+    f.sample(at(2850, 903, 1195), 11);
+    f.sample(at(3064, 900, 1538), 22);
+    f.sample(at(3126, 901, 1601), 33);
+    // Pressure steady on two samples in a row (1601, 1638): pressed.
+    assert_eq!(f.sample(at(3150, 902, 1638), 44), Pen::Down(3150, 902));
 }

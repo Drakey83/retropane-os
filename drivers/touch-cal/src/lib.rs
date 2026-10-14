@@ -279,17 +279,27 @@ pub struct Sample {
 /// Below this Z1 there is no real contact (a lifting stylus read 5).
 pub const Z_MIN: u16 = 150;
 /// A sample's position counts only once pressure has steadied: Z1 within
-/// this many 1/256ths of the previous sample's. Recorded on the X51v
+/// this many 1/256ths (12.5%) of the previous sample's (a light touch,
+/// Z1 ~350, still rises ~10% a sample after it has landed). Recorded on the X51v
 /// (2026-10-13): Z1 climbs ~5% a sample while the stylus lands (1501,
 /// 1578, 1598, 1619) and the positions creep with it.
-pub const Z_STEADY: u32 = 16;
+pub const Z_STEADY: u32 = 32;
 /// A sample's position counts only while Z1 is at least this many
 /// 1/256ths of the touch's peak: as the stylus lifts, Z1 falls over 3-4
 /// samples (1603, 1589, 1546, 1424) and the positions slide 7-15 px.
 pub const Z_HELD: u32 = 243;
 /// Two consecutive counted samples this close (raw, either channel) give
-/// a position: ~3 px on the X51v's vertical, ~2 on its horizontal.
-pub const STABLE_WITHIN: u16 = 12;
+/// a position: ~4.5 px on the X51v's vertical, ~3 on its horizontal. 12
+/// delayed touches whose X still crept ~17 a sample while pressure rose
+/// (the owner's free tapping, 2026-10-13).
+pub const STABLE_WITHIN: u16 = 20;
+/// A stable position this far (raw) from the last one reported is a
+/// [`Pen::Move`]; closer is a [`Pen::Hold`] (the owner's taps reported a
+/// Move almost every sample for 1-unit jitter).
+pub const MOVE_BEYOND: u16 = 4;
+/// Pressure back at this many 1/256ths of the peak: the stylus pressed
+/// again, not lifting after all.
+pub const Z_BACK: u32 = 250;
 
 /// What the pen did, from [`Filter::sample`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -367,9 +377,15 @@ impl Filter {
             u32::from(s.z1.abs_diff(self.last_z)) * 256 <= Z_STEADY * u32::from(self.last_z.max(1));
         self.last_z = s.z1;
         self.peak_z = self.peak_z.max(s.z1);
-        if u32::from(s.z1) * 256 < Z_HELD * u32::from(self.peak_z) {
-            // Once leaving, never back: the rest of the touch is the lift.
+        // Lifting only once a touch has been reported: before that a dip
+        // is the stylus bouncing as it lands (one dipped 1508 to 1195 on
+        // its second sample, and treating it as a lift threw away 60 ms of
+        // steady samples). Pressing firmly again undoes it.
+        let z = u32::from(s.z1) * 256;
+        if self.at.is_some() && z < Z_HELD * u32::from(self.peak_z) {
             self.lifting = true;
+        } else if z >= Z_BACK * u32::from(self.peak_z) {
+            self.lifting = false;
         }
         if !steady || self.lifting {
             self.prev = None;
@@ -378,16 +394,30 @@ impl Filter {
         let Some((px, py)) = self.prev.replace((s.x, s.y)) else {
             return Pen::Nothing;
         };
+        // Landed (two samples in a row with steady pressure): the press is
+        // reported at once, at the newer position. The owner's free
+        // tapping: X can still creep ~24 a sample just after the landing,
+        // and waiting for positions to agree cost a sample; later samples
+        // refine the position (moves), and agreement governs those.
+        if self.at.is_none() {
+            self.at = Some((s.x, s.y));
+            return Pen::Down(s.x, s.y);
+        }
         let near = |a: u16, b: u16| a.abs_diff(b) <= STABLE_WITHIN;
         if !(near(px, s.x) && near(py, s.y)) {
             return Pen::Nothing;
         }
         let avg = |a: u16, b: u16| (u32::from(a) + u32::from(b)).div_ceil(2) as u16;
         let pos = (avg(px, s.x), avg(py, s.y));
-        match self.at.replace(pos) {
-            None => Pen::Down(pos.0, pos.1),
-            Some(old) if old != pos => Pen::Move(pos.0, pos.1),
-            Some(_) => Pen::Hold(pos.0, pos.1),
+        match self.at {
+            None => Pen::Nothing,
+            Some(old)
+                if old.0.abs_diff(pos.0) > MOVE_BEYOND || old.1.abs_diff(pos.1) > MOVE_BEYOND =>
+            {
+                self.at = Some(pos);
+                Pen::Move(pos.0, pos.1)
+            }
+            Some(old) => Pen::Hold(old.0, old.1),
         }
     }
 }
