@@ -405,7 +405,9 @@ version = "0.0.0"
 name = "rp-mbx"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-mbx-display",
  "rp-hal-api",
+ "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
 ]

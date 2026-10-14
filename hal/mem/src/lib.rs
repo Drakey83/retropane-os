@@ -216,6 +216,31 @@ pub fn fill32(buf: &mut [u8], word: u32) {
     }
 }
 
+/// Reads the little-endian word at `buf[offset..offset + 4]` with one
+/// volatile load, so polling memory another bus master writes (a GPU fence)
+/// re-reads it every time. `None` if out of bounds or not word-aligned.
+#[must_use]
+pub fn load32_volatile(buf: &[u8], offset: usize) -> Option<u32> {
+    let word = buf.get(offset..offset.checked_add(4)?)?;
+    if !(word.as_ptr() as usize).is_multiple_of(4) {
+        return None;
+    }
+    // SAFETY: four in-bounds bytes at a word-aligned address, borrowed.
+    Some(unsafe { word.as_ptr().cast::<u32>().read_volatile() })
+}
+
+/// Writes `value` to the word at `buf[offset..offset + 4]` with one volatile
+/// store. `None` if out of bounds or not word-aligned.
+pub fn store32_volatile(buf: &mut [u8], offset: usize, value: u32) -> Option<()> {
+    let word = buf.get_mut(offset..offset.checked_add(4)?)?;
+    if !(word.as_ptr() as usize).is_multiple_of(4) {
+        return None;
+    }
+    // SAFETY: four in-bounds bytes at a word-aligned address, borrowed mutably.
+    unsafe { word.as_mut_ptr().cast::<u32>().write_volatile(value) };
+    Some(())
+}
+
 /// Stores `word` over `bytes` (a multiple of 4) at word-aligned `dst`.
 #[inline(always)]
 unsafe fn set_words(dst: *mut u32, word: u32, bytes: usize) {
@@ -437,6 +462,19 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volatile_word_access_checks_bounds_and_alignment() {
+        let mut words = [0u32; 2];
+        let buf = words_as_bytes_mut(&mut words);
+        assert_eq!(store32_volatile(buf, 4, 0x1234_5678), Some(()));
+        assert_eq!(load32_volatile(buf, 4), Some(0x1234_5678));
+        assert_eq!(buf[4], 0x78, "little-endian");
+        assert_eq!(load32_volatile(buf, 2), None, "unaligned");
+        assert_eq!(load32_volatile(buf, 8), None, "past the end");
+        assert_eq!(store32_volatile(buf, 6, 0), None);
+        assert_eq!(load32_volatile(buf, usize::MAX - 1), None, "overflow");
+    }
 
     #[test]
     fn pixels_view_as_bytes_and_back() {
