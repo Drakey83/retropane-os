@@ -1194,7 +1194,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
             || l.starts_with("  after clearing")
             || l.starts_with("  every status")
             || l.starts_with("irq:")
-            || l.contains(" frame events in ")
+            || l.contains(" in 40 ms: ")
             || l.starts_with("  [")
             || l.contains("full-screen")
     }) {

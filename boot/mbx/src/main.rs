@@ -1121,63 +1121,98 @@ mod image {
     }
 
     /// The display's interrupt status and enable (`DINTRS`, `DINTRE`: read
-    /// and written by Dell's display ISR, so present), and the 2700G's
-    /// interrupt enable (`MINTENABLE`, system block: write-only for us,
-    /// never read; bit 15 the master enable, bits 0-3 the sources, as WM
-    /// writes `0x800F`).
+    /// and written by Dell's display ISR, so present; status bits clear by
+    /// writing 1), and the 2700G's interrupt enable (`MINTENABLE`, system
+    /// block: write-only for us, never read; bit 15 the master enable, bits
+    /// 0-3 the sources, as WM writes `0x800F`).
     const DINTRS: usize = 0x2178;
     const DINTRE: usize = 0x217C;
     const MINTENABLE: usize = 0x018;
-    /// The display's frame event in `DINTRS`/`DINTRE` (Dell's display ISR).
-    const FRAME: u32 = 1 << 2;
+    /// The display's three status bits. Device, 2026-10-14: bit 0 was set
+    /// and cleared by writing 1; bit 2 read set at every one of 26,237 polls
+    /// in 100 ms, even right after writing 1 (a level: "the last address
+    /// change was taken", as Dell enables it only while a flip is pending).
+    const DISPLAY_BITS: u32 = 0b111;
 
-    /// Stage 4f: the 2700G's interrupt line. Turns on the display's frame
-    /// event and the chip's master enable, then for 100 ms logs each frame
-    /// event (clearing it at once) and every GPIO that changes outside the
-    /// pins busy on their own: the pin that follows the frame events is the
-    /// 2700G's interrupt to the PXA (SYSINTR 27 under WM; candidates 11,
-    /// 12, 83-87, 94, 96). Puts `DINTRE` back after. Informational.
+    /// Stage 4f: the 2700G's interrupt line and the display's events.
+    /// GPIO levels are taken before anything is enabled. With `DINTRE` at
+    /// 0, then each display bit alone (`MINTENABLE` `0x800F`), for 40 ms
+    /// each: every display event logged with its time (first 3 per bit),
+    /// held 0.5 ms (so a level line shows) and then cleared; every GPIO
+    /// outside the busy pins that differs from before or changes is logged.
+    /// The pin that follows an enabled event is the 2700G's interrupt
+    /// (SYSINTR 27 under WM; candidates 11, 12, 83-87, 94, 96). `DINTRE` is
+    /// put back after. Informational.
     fn interrupt_line(e: &mut Engine, (mut gpio, noisy): (Mmio, [u32; 4])) {
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
+        let quiet = |a: [u32; 4], b: [u32; 4]| -> [u32; 4] {
+            core::array::from_fn(|k| (a[k] ^ b[k]) & !noisy[k])
+        };
+        let g_before = levels(&mut gpio);
         let re0 = e.regs.read32(DINTRE);
         let rs0 = e.regs.read32(DINTRS);
-        log!("irq: DINTRE 0x{re0:08x}, DINTRS 0x{rs0:08x}; MINTENABLE = 0x800F, frame event on");
-        e.regs.write32(DINTRS, rs0);
+        log!("irq: DINTRE 0x{re0:08x}, DINTRS 0x{rs0:08x} as found");
+        e.regs.write32(DINTRE, 0);
+        e.regs.write32(DINTRS, DISPLAY_BITS);
         e.regs.write32(MINTENABLE, 0x800F);
-        e.regs.write32(DINTRE, re0 | FRAME);
-        let mut g = levels(&mut gpio);
-        let (mut frames, mut pin_changes) = (0u32, 0);
-        let mut flipped = [0u32; 4];
-        let t0 = rt::ticks();
-        while us_since(t0) < 100_000 {
-            let now = us_since(t0);
-            let st = e.regs.read32(DINTRS);
-            let g1 = levels(&mut gpio);
-            let flip: [u32; 4] = core::array::from_fn(|k| (g1[k] ^ g[k]) & !noisy[k]);
-            if flip != [0; 4] {
-                for k in 0..4 {
-                    flipped[k] |= flip[k];
-                }
-                if pin_changes < 16 {
+        for enable in [0u32, 1, 2, 4] {
+            e.regs.write32(DINTRS, DISPLAY_BITS);
+            e.regs.write32(DINTRE, enable);
+            let g0 = levels(&mut gpio);
+            log!(
+                "irq: DINTRE = {enable}: status 0x{:08x}, GPIO differing from before {:08x?}",
+                e.regs.read32(DINTRS),
+                quiet(g0, g_before)
+            );
+            let mut g = g0;
+            let mut events = [0u32; 3];
+            let mut held: Option<(u32, u32)> = None;
+            let mut pin_changes = 0;
+            let t0 = rt::ticks();
+            while us_since(t0) < 40_000 {
+                let now = us_since(t0);
+                let st = e.regs.read32(DINTRS) & DISPLAY_BITS;
+                let g1 = levels(&mut gpio);
+                let flip = quiet(g1, g);
+                if flip != [0; 4] && pin_changes < 12 {
                     pin_changes += 1;
-                    log!("  {now} us: GPIO bits flipped {flip:08x?} (now {g1:08x?})");
+                    log!("  {now} us: GPIO bits flipped {flip:08x?} (status 0x{st:x})");
+                }
+                g = g1;
+                match held {
+                    None if st & 0b011 != 0 => {
+                        for b in 0..2 {
+                            if st & 1 << b != 0 {
+                                events[b] += 1;
+                                if events[b] <= 3 {
+                                    log!("  {now} us: display bit {b} set");
+                                }
+                            }
+                        }
+                        held = Some((now, st & 0b011));
+                    }
+                    Some((t, bits)) if now > t + 500 => {
+                        e.regs.write32(DINTRS, bits);
+                        held = None;
+                    }
+                    _ => {}
+                }
+                if st & 0b100 != 0 {
+                    events[2] += 1;
                 }
             }
-            g = g1;
-            if st & FRAME != 0 {
-                frames += 1;
-                if frames <= 4 {
-                    log!("  {now} us: frame event (DINTRS 0x{st:08x})");
-                }
-                e.regs.write32(DINTRS, FRAME);
-            }
+            e.regs.write32(DINTRE, 0);
+            e.regs.write32(DINTRS, DISPLAY_BITS);
+            let g2 = levels(&mut gpio);
+            log!(
+                "  in 40 ms: bit 0 set {} times, bit 1 {}, bit 2 read set {} times; GPIO after disabling differs from before {:08x?}",
+                events[0],
+                events[1],
+                events[2],
+                quiet(g2, g_before)
+            );
         }
         e.regs.write32(DINTRE, re0);
-        e.regs.write32(DINTRS, FRAME);
-        let g2 = levels(&mut gpio);
-        log!(
-            "  {frames} frame events in 100 ms; GPIO bits that changed {flipped:08x?}; DINTRE back to 0x{re0:08x}, GPIO now {g2:08x?}"
-        );
     }
 
     /// Keeps the picture up until a button is pressed and released (the
