@@ -17,6 +17,35 @@ Base `0x41500000`; clock enable `CKEN` bit 19 (clock manager `0x41300004`).
 | `KPASMKP0..3` | 0x28, 0x30, 0x38, 0x40 | pressed-key bitmaps: register *n* covers columns 2*n* (rows in `[7:0]`) and 2*n*+1 (rows in `[23:16]`) |
 | `KPKDI` | 0x48 | debounce interval |
 
+### What the controller remembers (M)
+
+The scan bitmaps (`KPASMKP*`) and `KPAS` describe only the **latest**
+automatic scan: what is held now. With nothing held, `KPAS` reads MUKP 0
+and row and column 0xF. The one thing that outlives a key's release is
+`KPC` MI, set by every press and every release and cleared by reading
+`KPC`. So a press and release that both fall between two reads leave
+"something moved" behind, **but not which button**: no register can tell
+afterwards. Found 2026-10-13 when `rp-mbx` missed 2 of 5 presses in the
+emulator; the emulator's keypad behaves the same way (`emulator.md`).
+
+Consequences for software:
+
+- Read with `Keypad::scan` (`rp_drv_pxa_keypad`): it acknowledges `KPC`
+  first, then reads the bitmaps, then reads the latch again (re-reading if
+  keys moved meanwhile), and returns the held set with the activity flag.
+  Reading the bitmaps first could lose a press that lands between the two
+  reads.
+- `Keys` (below) counts "activity, held set unchanged" as a tap it
+  couldn't see (`Keys::missed`); rp-today's report, rp-hello's serial log
+  and rp-probe's footer show the count. That keeps a lost tap visible; it
+  doesn't bring it back.
+- Only a read **while the key is down** can name the button. In the OS,
+  that is the keypad driver's thread, woken by the interrupt at high
+  priority while the shell (user mode) is preempted: ADR-0007 rules 2-3
+  and ADR-0010. The bare-metal test images have one loop that both draws
+  and reads input, so a tap shorter than a redraw (rp-today: up to ~71 ms
+  measured on the device) can still be lost there.
+
 ## X51v button matrix (C)
 
 7 rows × 3 columns, plus one direct key (power).

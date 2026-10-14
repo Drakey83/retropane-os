@@ -300,13 +300,14 @@ mod image {
             shell.tick(now_ms as u32);
 
             // Buttons, as Windows Mobile programs see them.
+            // The scan acknowledges the controller and takes its activity
+            // latch with the held set, so a tap between two looks is
+            // counted (key_events.missed), not lost.
             let key_event = keys_irq.take();
-            if key_event {
-                keypad.acknowledge();
-            }
-            let pressed = keypad.pressed();
+            let scan = keypad.scan();
+            let pressed = scan.held;
             let mut back = false;
-            key_events.update(rt::ticks() / TICKS_MS, pressed, &mut |e| {
+            key_events.update(rt::ticks() / TICKS_MS, scan, &mut |e| {
                 if matches!(e.kind, Kind::Down | Kind::Repeat)
                     && let Some(k) = key_of(e.vk)
                     && shell.input(Input::Key(k)) == Action::BackToLoader
@@ -474,8 +475,9 @@ mod image {
                     RunLog,
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
                      (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times; \
-                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}",
-                    gfx.two_d().stalls
+                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}; button taps missed between scans {}",
+                    gfx.two_d().stalls,
+                    key_events.missed()
                 );
                 let _ = writeln!(
                     RunLog,

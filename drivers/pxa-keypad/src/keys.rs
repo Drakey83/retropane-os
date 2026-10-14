@@ -3,7 +3,7 @@
 //! hold" on the program buttons. No button gets a job Windows Mobile didn't
 //! give it (the owner's rule).
 
-use crate::{Button, Pressed};
+use crate::{Button, Pressed, Scan};
 
 /// CE virtual-key codes (public SDK `winuser.h` values).
 pub mod vk {
@@ -118,6 +118,7 @@ pub struct Keys {
     since: [u32; Button::ALL.len()],
     next: [u32; Button::ALL.len()],
     held: [bool; Button::ALL.len()],
+    missed: u32,
 }
 
 impl Keys {
@@ -130,12 +131,29 @@ impl Keys {
             since: [0; Button::ALL.len()],
             next: [0; Button::ALL.len()],
             held: [false; Button::ALL.len()],
+            missed: 0,
         }
     }
 
-    /// Feeds the buttons pressed at `now_ms` (any rate; call at least every
+    /// Key moves that happened entirely between two scans, so their events
+    /// were never delivered: the controller latched activity but the held
+    /// set came back unchanged (a tap, or a release and press again). A
+    /// lower bound: a tap hidden behind another key's change isn't seen.
+    /// Which button it was can't be known afterwards (see [`Scan`]); only
+    /// a scan while the key is down can say, so this must stay 0 wherever
+    /// input is serviced fast enough, and run logs report it.
+    #[must_use]
+    pub const fn missed(&self) -> u32 {
+        self.missed
+    }
+
+    /// Feeds a keypad scan taken at `now_ms` (any rate; call at least every
     /// repeat interval while a key is held), calling `out` for each event.
-    pub fn update(&mut self, now_ms: u32, pressed: Pressed, out: &mut dyn FnMut(Event)) {
+    pub fn update(&mut self, now_ms: u32, scan: Scan, out: &mut dyn FnMut(Event)) {
+        let pressed = scan.held;
+        if scan.activity && pressed == self.last {
+            self.missed = self.missed.saturating_add(1);
+        }
         for (i, b) in Button::ALL.into_iter().enumerate() {
             let was = self.last.contains(b);
             let is = pressed.contains(b);
@@ -191,8 +209,43 @@ mod tests {
             p = p.with(b);
         }
         let mut out = Vec::new();
-        keys.update(now, p, &mut |e| out.push((e.button, e.kind)));
+        let scan = Scan {
+            held: p,
+            activity: p != keys.last,
+        };
+        keys.update(now, scan, &mut |e| out.push((e.button, e.kind)));
         out
+    }
+
+    #[test]
+    fn a_tap_between_two_scans_is_counted_never_silent() {
+        let mut k = Keys::new(Timing::DEFAULT);
+        let tap = |k: &mut Keys, now, held| {
+            let mut n = 0;
+            k.update(
+                now,
+                Scan {
+                    held,
+                    activity: true,
+                },
+                &mut |_| n += 1,
+            );
+            n
+        };
+        // Enter pressed and released between two scans (a redraw stall):
+        // nothing held either time, but the latch saw it.
+        assert_eq!(tap(&mut k, 10, Pressed::NONE), 0, "no button to report");
+        assert_eq!(k.missed(), 1);
+        // Up held throughout while Enter is tapped: still counted.
+        run(&mut k, 20, &[Button::Up]);
+        assert_eq!(tap(&mut k, 90, Pressed::NONE.with(Button::Up)), 0);
+        assert_eq!(k.missed(), 2);
+        // Ordinary presses and releases, latched or not, aren't misses.
+        run(&mut k, 100, &[]);
+        run(&mut k, 200, &[Button::Enter]);
+        run(&mut k, 300, &[]);
+        k.update(400, Scan::default(), &mut |_| {});
+        assert_eq!(k.missed(), 2);
     }
 
     #[test]

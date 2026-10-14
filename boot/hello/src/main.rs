@@ -250,15 +250,16 @@ mod image {
                         last_unclaimed = unclaimed;
                     }
 
-                    // Buttons: acknowledge the controller before unmasking.
+                    // Buttons: the scan acknowledges the controller before
+                    // unmasking, and takes its activity latch with the held
+                    // set, so a tap between two looks is counted, not lost.
                     let key_event = keys_irq.take();
-                    if key_event {
-                        keypad.acknowledge();
-                    }
                     // As Windows Mobile programs see them: virtual keys,
                     // D-pad repeat, press and hold on the program buttons.
-                    let keys = keypad.pressed();
-                    key_events.update(rt::ticks() / 3250, keys, &mut |e| {
+                    let scan = keypad.scan();
+                    let keys = scan.held;
+                    let missed = key_events.missed();
+                    key_events.update(rt::ticks() / 3250, scan, &mut |e| {
                         let what = match e.kind {
                             Kind::Down => "down",
                             Kind::Repeat => "repeat",
@@ -268,6 +269,9 @@ mod image {
                         };
                         let _ = writeln!(out, "KEY {} {what} vk {:x}", e.button.name(), e.vk);
                     });
+                    if key_events.missed() != missed {
+                        let _ = writeln!(out, "KEY missed: a tap between two scans");
+                    }
                     if key_event {
                         keys_irq.done();
                     }

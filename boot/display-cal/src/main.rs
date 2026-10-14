@@ -282,9 +282,9 @@ mod image {
             }
             // This round's input: a dial step, a step change, compare, done.
             let (mut by, mut go, mut flip, mut done) = (0i32, 0i32, false, false);
-            keypad.acknowledge();
-            let pressed = keypad.pressed();
-            keys.update(now / ms, pressed, &mut |e| {
+            let scan = keypad.scan();
+            let pressed = scan.held;
+            keys.update(now / ms, scan, &mut |e| {
                 let press = matches!(e.kind, Kind::Down);
                 let step = press || matches!(e.kind, Kind::Repeat);
                 match e.button {

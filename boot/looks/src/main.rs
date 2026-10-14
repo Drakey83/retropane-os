@@ -509,8 +509,7 @@ mod image {
             }
             let (mut by, mut go, mut flip, mut toggle, mut done) =
                 (0i32, 0i32, false, false, false);
-            keypad.acknowledge();
-            keys.update(now as u32, keypad.pressed(), &mut |e| {
+            keys.update(now as u32, keypad.scan(), &mut |e| {
                 if matches!(e.kind, Kind::Down) {
                     match e.button {
                         Button::Right => by += 1,

@@ -2,7 +2,10 @@
 //!
 //! Written from `docs/hw/keypad.md`. Uses automatic scan-on-activity and reads
 //! the scan result bitmaps; works polled or from the matrix interrupt (MIE;
-//! acknowledged by reading KPC, see `acknowledge`).
+//! acknowledged by reading KPC, see `acknowledge`). Read it with
+//! [`Keypad::scan`]: the bitmaps only say what is held *now*, so a press and
+//! release that both fall between two looks leave nothing behind but the
+//! controller's activity latch, which `scan` reports with them.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -150,6 +153,23 @@ pub fn bitmap_has(bitmaps: [u32; 4], row: u8, col: u8) -> bool {
     bitmaps[usize::from(col / 2)] & (1 << shift) != 0
 }
 
+/// One look at the keypad ([`Keypad::scan`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Scan {
+    /// Buttons held now.
+    pub held: Pressed,
+    /// Keys moved (a press or a release) since the previous scan: the
+    /// controller's latch (KPC MI), so it is never missed, unlike a press
+    /// and release that both happen between two scans, which `held` can't
+    /// show. Which button that was is gone by then: KPAS describes only the
+    /// latest scan, and with nothing held it reads row and column 0xF.
+    pub activity: bool,
+}
+
+/// Times [`Keypad::scan`] re-reads the bitmaps while keys keep moving under
+/// it (the controller debounces, so one re-read is the most expected).
+const SCAN_TRIES: usize = 4;
+
 /// The keypad controller, configured for the X51v (7 rows × 3 columns).
 #[derive(Debug)]
 pub struct Keypad<B> {
@@ -176,6 +196,8 @@ impl<B: RegisterBus> Keypad<B> {
         let kpc = KPC_ME.insert(kpc, 1);
         let kpc = KPC_MIE.insert(kpc, 1);
         self.regs.write32(reg::KPC, kpc);
+        // Activity from before (the loader's own keys) doesn't count.
+        self.acknowledge();
     }
 
     /// Acknowledges the matrix interrupt (reading KPC clears it) and says
@@ -185,7 +207,27 @@ impl<B: RegisterBus> Keypad<B> {
         KPC_MI.extract(self.regs.read32(reg::KPC)) != 0
     }
 
-    /// Reads which buttons are currently pressed.
+    /// Reads the held buttons and the activity latch. Acknowledges first,
+    /// then reads the bitmaps, then checks the latch again: a key that moved
+    /// during the read is read again, and one that moves after it stays
+    /// latched for the next scan. (Bitmaps first would lose a press that
+    /// lands between the two reads.) Use this, not [`pressed`](Self::pressed)
+    /// alone, wherever a tap must not be lost.
+    pub fn scan(&mut self) -> Scan {
+        let mut activity = self.acknowledge();
+        let mut held = self.pressed();
+        for _ in 0..SCAN_TRIES {
+            if !self.acknowledge() {
+                break;
+            }
+            activity = true;
+            held = self.pressed();
+        }
+        Scan { held, activity }
+    }
+
+    /// Reads which buttons are currently pressed (the bitmaps only: see
+    /// [`scan`](Self::scan)).
     pub fn pressed(&mut self) -> Pressed {
         let mut bitmaps = [0u32; 4];
         for (b, &r) in bitmaps.iter_mut().zip(&reg::KPASMKP) {
@@ -210,7 +252,13 @@ impl<B: RegisterBus> Keypad<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rp_hal_mock::MockBus;
+    use rp_hal_mock::{Access, MockBus};
+
+    fn first_read(bus: &MockBus, reg: usize) -> Option<usize> {
+        bus.log()
+            .iter()
+            .position(|a| matches!(*a, Access::Read { offset, .. } if offset == reg))
+    }
 
     #[test]
     fn acknowledge_reads_kpc_once() {
@@ -223,6 +271,66 @@ mod tests {
             k.into_inner().writes().is_empty(),
             "acknowledging writes nothing"
         );
+    }
+
+    #[test]
+    fn enable_clears_activity_left_from_before() {
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::KPC, &[1 << 22]);
+        let mut k = Keypad::new(bus);
+        k.enable();
+        assert!(!k.scan().activity, "the loader's keys don't count");
+    }
+
+    #[test]
+    fn scan_acknowledges_before_reading_the_bitmaps() {
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::KPC, &[1 << 22]);
+        bus.preset(reg::KPASMKP[1], 1); // Up
+        let mut k = Keypad::new(bus);
+        assert_eq!(
+            k.scan(),
+            Scan {
+                held: Pressed::NONE.with(Button::Up),
+                activity: true
+            }
+        );
+        let bus = k.into_inner();
+        assert!(
+            first_read(&bus, reg::KPC) < first_read(&bus, reg::KPASMKP[0]),
+            "the latch first"
+        );
+    }
+
+    #[test]
+    fn scan_rereads_when_keys_move_under_it() {
+        let mut bus = MockBus::new();
+        // No activity, then Up lands during the bitmap read.
+        bus.script_reads(reg::KPC, &[0, 1 << 22]);
+        bus.script_reads(reg::KPASMKP[1], &[0, 1]);
+        let mut k = Keypad::new(bus);
+        let s = k.scan();
+        assert!(s.activity);
+        assert!(s.held.contains(Button::Up), "read again after the move");
+        assert!(!k.scan().activity, "nothing left latched");
+    }
+
+    #[test]
+    fn a_tap_between_two_scans_still_shows_as_activity() {
+        let mut bus = MockBus::new();
+        // Up pressed and released between two scans: the bitmaps are empty
+        // again; only the latch remembers.
+        bus.script_reads(reg::KPC, &[0, 0, 1 << 22, 0]);
+        let mut k = Keypad::new(bus);
+        assert_eq!(k.scan(), Scan::default());
+        assert_eq!(
+            k.scan(),
+            Scan {
+                held: Pressed::NONE,
+                activity: true
+            }
+        );
+        assert_eq!(k.scan(), Scan::default());
     }
 
     #[test]

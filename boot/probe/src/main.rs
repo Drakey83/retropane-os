@@ -512,7 +512,7 @@ mod image {
         // 4. Show pages; buttons and taps turn them.
         let mut page = 0;
         let unclaimed = rt::unclaimed_irqs();
-        show(&rep, page, fb, plane.stride, unclaimed);
+        show(&rep, page, fb, plane.stride, unclaimed, 0);
         let (Some(kp), Some(gpio), Some(ssp)) =
             (rt::take_keypad(), rt::take_gpio(), rt::take_ssp1())
         else {
@@ -534,8 +534,16 @@ mod image {
         let mut last_keys = Pressed::default();
         let mut was_touched = false;
         let mut shown_irqs = unclaimed;
+        // Taps that fell entirely between two looks (a page draw): the
+        // controller's latch says one happened, not which button, so the
+        // page can't turn; the footer counts them instead of hiding them.
+        let (mut missed, mut shown_missed) = (0u32, 0u32);
         loop {
-            let keys = keypad.pressed();
+            let scan = keypad.scan();
+            let keys = scan.held;
+            if scan.activity && keys == last_keys {
+                missed = missed.saturating_add(1);
+            }
             let mut step: i32 = 0;
             for (b, down) in last_keys.changes(keys) {
                 if down {
@@ -553,17 +561,19 @@ mod image {
             }
             was_touched = touched;
             let irqs = rt::unclaimed_irqs();
-            if step != 0 || irqs != shown_irqs {
+            if step != 0 || irqs != shown_irqs || missed != shown_missed {
                 page = (page as i32 + step).rem_euclid(PAGES as i32) as usize;
                 shown_irqs = irqs;
-                show(&rep, page, fb, plane.stride, irqs);
+                shown_missed = missed;
+                show(&rep, page, fb, plane.stride, irqs, missed);
             }
             rt::wait_tick();
         }
     }
 
-    /// Draws page `p` and a footer.
-    fn show(rep: &Report, p: usize, fb: &mut [u8], stride: usize, irqs: u64) {
+    /// Draws page `p` and a footer (with the count of taps missed between
+    /// two looks, when there are any).
+    fn show(rep: &Report, p: usize, fb: &mut [u8], stride: usize, irqs: u64, missed: u32) {
         let mut c = Console::new(fb, stride, (0, 0), (480, 640), SCALE, COLORS);
         for l in rep.page_lines(p) {
             let _ = write!(c, "{}\n", Ascii(l));
@@ -572,13 +582,14 @@ mod image {
         for _ in rep.page_lines(p).count()..rows - 1 {
             let _ = c.write_str("\n");
         }
-        let _ = write!(
-            c,
-            "pg {}/{PAGES} <> tap  IRQ {:X}:{:08X}",
-            p + 1,
-            (irqs >> 32) as u32,
-            irqs as u32
-        );
+        // 30 columns: the misses take the place of the "<> tap" hint.
+        let _ = write!(c, "pg {}/{PAGES} ", p + 1);
+        if missed == 0 {
+            let _ = c.write_str("<> tap  ");
+        } else {
+            let _ = write!(c, "miss {} ", missed.min(99));
+        }
+        let _ = write!(c, "IRQ {:X}:{:08X}", (irqs >> 32) as u32, irqs as u32);
     }
 
     /// Shows ASCII bytes as text without UTF-8 validation (report text is
