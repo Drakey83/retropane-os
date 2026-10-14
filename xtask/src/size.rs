@@ -305,11 +305,13 @@ pub const BUDGETS: &[Budget] = &[
     // Test image (ADR-0021): the shell's Today screen. Carries the 450 KiB
     // 4:2:0 wallpaper and ~33 KiB of glyphs (the OS will load both from
     // flash or the card instead). 538.5 KiB measured (450 KiB of it the
-    // wallpaper), + ~10%.
+    // wallpaper), + ~10%. Zeroed RAM 20 -> 30 KiB (2026-10-14): its stack
+    // is 24 KiB, not 16 (the shell's frame and the GPU renderer's tables
+    // on it; 12.6 of 16 KiB used on the device), 26.1 KiB measured.
     Budget {
         image: "rp-today",
         max_load: 592 * 1024,
-        max_zero: 20 * 1024,
+        max_zero: 30 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

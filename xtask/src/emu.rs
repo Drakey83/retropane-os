@@ -1465,6 +1465,7 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
         }
         shell.frame(&mut frame);
         gpu.draw(&frame);
+        while !gpu.poll() {}
         let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
         let base = ((scadr & 0x7F_FFFF) * 16) as usize;
         let m = mem.borrow();

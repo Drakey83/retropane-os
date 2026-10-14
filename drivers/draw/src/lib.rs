@@ -392,8 +392,17 @@ pub struct Drawn {
 /// waits for its one fence).
 pub trait Renderer {
     /// Draws `frame`: inside each dirty rectangle, clear, then every
-    /// command that meets it in order, then out to the screen.
+    /// command that meets it in order, then out to the screen. A renderer
+    /// may return before the frame is on the screen ([`Self::poll`]).
     fn draw(&mut self, frame: &Frame) -> Drawn;
+
+    /// Puts a frame `draw` left drawing in the background on the screen
+    /// once it is done. True when nothing is left pending (the last frame
+    /// drawn is on the screen); call it until then, without blocking on it.
+    /// The CPU renderer is done when `draw` returns.
+    fn poll(&mut self) -> bool {
+        true
+    }
 }
 
 #[cfg(test)]

@@ -48,7 +48,10 @@ SECTIONS
 
     .stack (NOLOAD) : ALIGN(8) {
         __stack_bottom = .;
-        . += 16K;
+        /* The SVC stack: 16 KiB unless the image sizes it
+         * (--defsym=__stack_size=..., rp-today: 24 KiB). Every image
+         * reports its deepest use on returning to the loader. */
+        . += DEFINED(__stack_size) ? __stack_size : 16K;
         __stack_top = .;
         . += 1536;
         __irq_stack_top = .;

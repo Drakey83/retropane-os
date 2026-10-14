@@ -179,7 +179,7 @@ impl Bus {
         let (x1, y1) = (i64::from((xy1 >> 16) & 0x1FFF), i64::from(xy1 & 0x1FFF));
         let (ds, da) = (stride(self.dest.0), i64::from(self.dest.1));
         let rop = self.op & 0xFFFF;
-        let blend = self.op & (1 << 17) != 0;
+        let blended = self.op & (1 << 17) != 0;
         let mut m = self.mem.borrow_mut();
         let rd = |m: &Vec<u8>, at: i64| -> u32 {
             let at = usize::try_from(at).expect("model: address below 0");
@@ -192,7 +192,7 @@ impl Bus {
         for y in y0..y1 {
             for x in x0..x1 {
                 let d_at = da + y * ds + x * 4;
-                let v = match (rop, blend) {
+                let v = match (rop, blended) {
                     (0xF0F0, false) => self.colour,
                     (0xCCCC, b) => {
                         assert_eq!(fmt(self.src.0), 0xC, "model: 32 bpp sources only");
@@ -201,8 +201,7 @@ impl Bus {
                             + (sx + x - x0) * 4;
                         let s = rd(&m, s_at);
                         if b {
-                            assert_eq!(self.blend, 0x0910_0000, "model: 'over' only");
-                            over(s, rd(&m, d_at))
+                            blend(self.blend, s, rd(&m, d_at))
                         } else {
                             s
                         }
@@ -219,9 +218,30 @@ impl Bus {
 /// The engine's "over" (blend word `0x09100000`) on 8-bit channels.
 #[must_use]
 pub fn over(s: u32, d: u32) -> u32 {
-    let a = s >> 24;
+    blend(0x0910_0000, s, d)
+}
+
+/// A blend factor code (blend word bits 23-20 for the source, 27-24 for the
+/// destination) as measured: 0 one, 1 and 3 A, 2 and 4-8 zero, 9 and 11
+/// 1 - A, 10 and 12-15 one; A weighed `a + (a >> 7)` of 256.
+fn factor(code: u32, a: u32) -> u32 {
     let k = a + (a >> 7);
-    let ch = |sh: u32| (((s >> sh) & 0xFF) * k + ((d >> sh) & 0xFF) * (256 - k)) >> 8;
+    match code & 0xF {
+        0 | 10 | 12..=15 => 256,
+        1 | 3 => k,
+        9 | 11 => 256 - k,
+        _ => 0,
+    }
+}
+
+/// The engine's blend of `s` onto `d` under blend word `word`, 8-bit
+/// channels, saturating; the result's alpha byte is left opaque (the chip
+/// blends it too: not needed for an opaque picture).
+#[must_use]
+pub fn blend(word: u32, s: u32, d: u32) -> u32 {
+    let a = s >> 24;
+    let (fs, fd) = (factor(word >> 20, a), factor(word >> 24, a));
+    let ch = |sh: u32| ((((s >> sh) & 0xFF) * fs + ((d >> sh) & 0xFF) * fd) >> 8).min(255);
     0xFF00_0000 | ch(16) << 16 | ch(8) << 8 | ch(0)
 }
 
@@ -229,6 +249,10 @@ impl RegisterBus for Bus {
     fn read32(&mut self, offset: usize) -> u32 {
         if offset == MBX + reg::STATUS {
             return 0;
+        }
+        if offset == rp_drv_mbx_display::reg::DINTRS {
+            // The end of a frame's active lines has always just passed.
+            return self.reg(offset) | rp_drv_mbx_display::event::VEVENT0;
         }
         self.reg(offset)
     }

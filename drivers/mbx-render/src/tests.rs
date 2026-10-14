@@ -45,6 +45,7 @@ fn gpu() -> (Mbx2dRenderer<Bus, Mem>, model::Shared) {
         r.wallpaper_row(y, &row);
     }
     r.show(|_| {});
+    r.dither = false;
     (r, mem)
 }
 
@@ -201,6 +202,7 @@ fn every_command_matches_the_reference() {
     scene(&mut f, 0);
     f.damage(Rect::new(0, 0, W, H));
     r.draw(&f);
+    assert!(r.poll());
     same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
     assert_eq!(r.stalls, 0);
 }
@@ -220,6 +222,7 @@ fn small_changes_redraw_both_pictures_right() {
             f.damage(Rect::new(0, 50, 300, 140));
         }
         r.draw(&f);
+        assert!(r.poll());
         same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap_or_else(|e| panic!("frame {k}: {e}"));
     }
 }
@@ -237,6 +240,7 @@ fn many_translucent_fills_wrap_the_row_ring() {
     }
     f.damage(Rect::new(0, 0, W, H));
     r.draw(&f);
+    assert!(r.poll());
     same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
 }
 
@@ -247,11 +251,14 @@ fn nothing_changed_draws_nothing() {
     scene(&mut f, 0);
     f.damage(Rect::new(0, 0, W, H));
     r.draw(&f);
+    assert!(r.poll());
     r.draw(&f);
+    assert!(r.poll());
     // No damage: the back picture still lacks the last frame's, once.
     f.clear();
     scene(&mut f, 0);
     assert_ne!(r.draw(&f), Drawn::default());
+    assert!(r.poll());
     let before = shown(&mut r, &mem);
     let ops = r.parts().0.regs.ops;
     assert_eq!(r.draw(&f), Drawn::default());
@@ -271,4 +278,52 @@ fn place_clips_like_the_cpu_renderer() {
         Some((Rect::new(0, 12, 2, 4), 2, 0))
     );
     assert_eq!(place(4, 4, 40, 40, clip), None);
+}
+
+#[test]
+fn dither_adds_the_pattern_below_one_step() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    let plain = shown(&mut r, &mem);
+    r.dither = true;
+    r.draw(&f);
+    assert!(r.poll());
+    let dithered = shown(&mut r, &mem);
+    let _ = cpu.draw(&f);
+    for (i, (p, d)) in plain.iter().zip(&dithered).enumerate() {
+        let want = dither_at(i % 480, i / 480);
+        for sh in [0, 8, 16] {
+            let (p, d, t) = ((p >> sh) & 0xFF, (d >> sh) & 0xFF, (want >> sh) & 0xFF);
+            assert_eq!(d, (p + t).min(255), "pixel {i}, shift {sh}");
+        }
+    }
+}
+
+#[test]
+fn glass_goes_in_the_background_once() {
+    let (mut r, _mem) = gpu();
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    assert!(r.last.background, "first frame builds it");
+    // Same glass, new text: no rebuild.
+    scene(&mut f, 0);
+    f.text(300, 400, &FONT, 0xFFFF_FFFF, b"AB");
+    f.damage(Rect::new(290, 390, 40, 20));
+    r.draw(&f);
+    assert!(r.poll());
+    assert!(!r.last.background);
+    // The glass moves: rebuilt.
+    scene(&mut f, 9);
+    f.damage(Rect::new(0, 50, 300, 140));
+    r.draw(&f);
+    assert!(r.poll());
+    assert!(r.last.background);
 }
