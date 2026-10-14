@@ -333,6 +333,20 @@ pub fn loader_present() -> bool {
 /// sends the run log to the PC); otherwise returns, and the caller halts.
 #[inline(never)]
 pub fn return_to_loader() {
+    // Every image reports its deepest stack (the class of silent overflows:
+    // nothing guards the 16 KiB SVC stack).
+    {
+        use core::fmt::Write;
+        let (used, size) = rp_hal_pxa27x::rt::stack_used();
+        let warn = if used >= size {
+            " - OVERFLOWED: .bss below it is corrupt"
+        } else if used * 4 > size * 3 {
+            " - over 75%"
+        } else {
+            ""
+        };
+        let _ = writeln!(RunLog, "stack: deepest {used} of {size} bytes{warn}");
+    }
     if loader_present() {
         // SAFETY: the run log's flags word (valid: checked just above).
         unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 2) };

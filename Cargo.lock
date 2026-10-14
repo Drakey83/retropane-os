@@ -527,8 +527,10 @@ dependencies = [
  "rp-drv-tsc2046",
  "rp-gfx",
  "rp-hal-api",
+ "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-mbx-render",
  "rp-shell",
  "rp-touch-cal",
 ]
@@ -629,6 +631,7 @@ dependencies = [
  "rp-kernel-pe",
  "rp-kernel-trace",
  "rp-loadproto",
+ "rp-mbx-render",
  "rp-shell",
  "rp-today",
  "serde_json",

@@ -67,6 +67,15 @@ _start:
     strlo   r2, [r0], #4
     blo     1b
 
+    @ Paint the SVC stack below us, so `stack_used` can find how deep it
+    @ went (a silent overflow into .bss lost a glyph atlas, 2026-10-14).
+    ldr     r0, =__stack_bottom
+    ldr     r1, =0x5741434B
+    sub     r3, sp, #16
+3:  cmp     r0, r3
+    strlo   r1, [r0], #4
+    blo     3b
+
     bl      rp_main
 2:  b       2b
 
@@ -766,6 +775,32 @@ extern "C" fn rp_abort(kind: u32, pc: u32) -> u32 {
     }
     // Not resolvable: a try_read/try_write resumes at its fixup.
     fixup_for(pc).unwrap_or(0)
+}
+
+/// What `_start` paints the SVC stack with.
+const STACK_PAINT: u32 = 0x5741_434B;
+
+/// The SVC stack: (bytes the deepest call reached, bytes it has), from the
+/// paint `_start` laid down. Deepest = the lowest word no longer painted;
+/// all of it used means it probably overflowed into `.bss` below.
+#[must_use]
+pub fn stack_used() -> (usize, usize) {
+    unsafe extern "C" {
+        static __stack_bottom: [u32; 0];
+        static __stack_top: [u32; 0];
+    }
+    // SAFETY: the linker script reserves the SVC stack between these two
+    // symbols (boot/link.x); words below the current frame are only read.
+    unsafe {
+        let bottom = core::ptr::addr_of!(__stack_bottom).cast::<u32>();
+        let top = core::ptr::addr_of!(__stack_top).cast::<u32>();
+        let size = top as usize - bottom as usize;
+        let mut p = bottom;
+        while p < top && p.read_volatile() == STACK_PAINT {
+            p = p.add(1);
+        }
+        (top as usize - p as usize, size)
+    }
 }
 
 /// The fixup address registered for a faulting instruction at `pc`.

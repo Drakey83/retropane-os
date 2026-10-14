@@ -59,3 +59,23 @@ its. The kernel image takes about 176 KiB of its 1 MiB share.
 (proposed) would move GPU-drawn surfaces into the 2700G's own 16 MiB,
 which takes this out of SDRAM; until it is decided the layer counts
 against the window manager's share.
+
+**Since 2026-10-14 (ADR-0023, option B):** `rp-today` draws with the 2D
+engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
+16 MiB, as `rp_mbx_render::Layout::X51V` lays it out:
+
+| 2700G local memory | Offset | Size |
+|---|---|---|
+| Loader's / Windows Mobile's plane (left alone) | below 1 MiB | ~600 KiB |
+| Picture 0 (XRGB8888, 480 x 640) | 0x200000 | 1.17 MiB |
+| Picture 1 | 0x340000 | 1.17 MiB |
+| Wallpaper (XRGB8888, converted once) | 0x480000 | 1.17 MiB |
+| Row ring (64 rows x 2.5 KiB, stride-0 fills and gradients) | 0x5C0000 | 160 KiB |
+| Image cache | 0x600000 | 256 KiB |
+| Glyph atlases (per font and colour; the shell's take 35, 24 and 75 KiB each) | 0x640000 | 512 KiB |
+| Fence word | 0xFFF000 | 4 bytes |
+| Free for program surfaces (ADR-0022 decision 2) | 0x6C0000 up | ~9.2 MiB |
+
+The SVC stack is 16 KiB in every image; each now reports its deepest use
+when it returns to the loader (`stack: deepest N of 16384 bytes` in the
+run log), since a silent overflow lost a glyph atlas on 2026-10-14.
