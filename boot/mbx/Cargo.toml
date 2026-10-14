@@ -1,0 +1,16 @@
+[package]
+name = "rp-mbx"
+description = "Test image (item 69): reads the MBX 3D core's identification registers at 0x0FFE4000 (the base the static analysis found), each name logged before its read, then returns"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+
+[lints]
+workspace = true
