@@ -131,7 +131,8 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
 
 | Behaviour | Limit or choice | Evidence |
 |---|---|---|
-| The 2D engine reads only 2700G memory | **Likely hardware**: the chip is a bus slave on CS3 with its own memory; Dell's driver masks every address to it and pays for CPU staging plus a fence per band, which nobody writes if a direct read existed. Not proven | (A) docs/hw/2700g.md; open question 1 tests it |
+| The 2D engine reads only 2700G memory | **Hardware (measured 2026-10-14)**: the engine decodes 32 MiB, its 16 MiB mirrored and a constant between; no address reaches system RAM. Dell's driver masks every address to it and pays for CPU staging plus a fence per band | (A) + (P) docs/hw/2700g.md |
+| A copy down over itself can't run bottom-up | **Hardware, as far as measured**: bit 23 smears; Dell's driver sends every such overlap to the CPU. Strips (bottom first) work around it on the engine | (A) + (P) docs/hw/2700g.md |
 | The CPU reads 2700G memory slowly | Hardware (measured: 61 vs 14.5 ms) | docs/perf.md |
 | No ARGB blending or gradients in the 2D engine | Likely hardware for the 2D engine (Dell's driver has `AlphaBlend`-shaped code only for 4 bpp text coverage); the 3D core can blend (its objects carry blend words), so not a limit of the chip | (A) |
 | WM has no compositor: programs draw on the screen | Choice (2005 RAM and CPU budget) | WM's design; replaced here |
@@ -188,6 +189,17 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
    the direction bits, colour key and format codes behave as found? Is
    there a 16-bit format code that copies ARGB4444 unchanged (or is a
    16 bpp copy raw)?
+   **Measured 2026-10-14 (`rp-mbx` on the device, docs/hw/2700g.md):**
+   (1) **No.** The engine decodes 32 MiB, local memory mirrored at 32 MiB
+   and a constant (`0x1000008C`) at 16-31 MiB; system RAM is out of
+   reach: decision 2 stands as written, now on measurement. (2) DMA
+   writes 30 MB/s against the CPU's 33 MB/s, the CPU keeping 84% of its
+   pace: no faster, but nearly free, so CPU-drawn tiles reach 2700G memory
+   by DMA (alternative 4 joins decision 4 as the copier, not a separate
+   path). (3) Plain, right-to-left and colour-keyed copies behave as
+   found; full-screen copies 4.8 ms; **bottom-up does not** (bit 23 alone
+   smears), being looked up in Dell's driver. The ARGB4444 format code is
+   still untested.
 4. **The interface plane's format:** ARGB4444 dithered (the owner's
    choice for SDRAM composition) assumes CPU dithering on flush; with
    GPU-drawn surfaces, is ARGB4444 still right, or RGB565 windows under

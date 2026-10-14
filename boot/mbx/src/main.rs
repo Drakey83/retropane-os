@@ -96,8 +96,9 @@ pub mod cmd {
     pub const OP_NO_COLOUR: u32 = 1 << 16;
     /// The colour key applies (with [`OP_NO_COLOUR`], as the driver sends it).
     pub const OP_KEY: u32 = 1 << 20;
-    /// Copy bottom row first (for a destination below an overlapping source).
-    pub const OP_BOTTOM_UP: u32 = 1 << 23;
+    // Bit 23, the driver's "y not positive", is deliberately absent: it
+    // doesn't make the chip copy bottom-up (measured 2026-10-14). A copy
+    // down over itself goes in strips (see `copies`).
     /// Copy right to left (for a destination right of an overlapping source).
     pub const OP_RIGHT_LEFT: u32 = 1 << 24;
     /// No scaling: the driver sends it once at start-up.
@@ -113,7 +114,7 @@ pub mod cmd {
 
     /// A copy of the `[x0, x1) × [y0, y1)` destination rectangle from the
     /// source surface at `src` (`src_stride`), starting at `(sx, sy)` there.
-    /// `flags`: [`OP_BOTTOM_UP`] / [`OP_RIGHT_LEFT`] for overlaps, or
+    /// `flags`: [`OP_RIGHT_LEFT`] for a rightward overlap, or
     /// [`OP_KEY`]. Ten words (nine keyed: no colour word).
     #[must_use]
     pub fn copy(
@@ -518,7 +519,7 @@ mod image {
         (a, s): (usize, usize),
         px: &dyn Fn(&[u8], usize, usize) -> Option<u16>,
     ) -> bool {
-        use cmd::{Format::Rgb565, OP_BOTTOM_UP, OP_KEY, OP_RIGHT_LEFT};
+        use cmd::{Format::Rgb565, OP_KEY, OP_RIGHT_LEFT};
         for y in 0..64 {
             for x in 0..64 {
                 let at = y * TILE_STRIDE + x * 2;
@@ -584,18 +585,29 @@ mod image {
             &w[..n],
             &checks(48, 360),
         );
-        let (w, n) = cmd::copy(
-            Rgb565,
-            (a, s),
-            (a, s),
-            (48, 360),
-            (48, 368, 112, 432),
-            OP_BOTTOM_UP,
-        );
+        // Down over itself: bit 23 doesn't walk bottom-up on the chip (an
+        // exact top-down smear, 2026-10-14) and Dell's driver never asks it
+        // to. Strips no taller than the shift, the bottom one first, each a
+        // plain copy that doesn't overlap its own source.
+        const DY: u16 = 8;
+        let mut words = [0u32; 10 * 8];
+        let mut len = 0;
+        for k in (0..64 / DY).rev() {
+            let (w, n) = cmd::copy(
+                Rgb565,
+                (a, s),
+                (a, s),
+                (48, 360 + k * DY),
+                (48, 368 + k * DY, 112, 368 + (k + 1) * DY),
+                0,
+            );
+            words[len..len + n].copy_from_slice(&w[..n]);
+            len += n;
+        }
         run(
             e,
-            "copy: 8 px down over itself (bottom up)",
-            &w[..n],
+            "copy: 8 px down over itself (8 px strips, bottom first)",
+            &words[..len],
             &checks(48, 368),
         );
         let green = cmd::fill(Rgb565, a, s, (200, 360, 264, 424), 0x07E0);
