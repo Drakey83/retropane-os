@@ -314,10 +314,12 @@ pub const BUDGETS: &[Budget] = &[
     // with the display driver to adopt the screen and the CPU fill to time
     // against. 16.7 KiB measured (2026-10-13), + ~10%; then 19 -> 27 KiB
     // for the copy checks (step 2: off-screen, overlapping, colour-keyed,
-    // timed), 23.7 KiB measured, + ~10%.
+    // timed), 23.7 KiB measured, + ~10%; then 27 -> 38 KiB for the DMA
+    // timing and the past-16-MiB probe (ADR-0022 open questions 1-2), 34.0
+    // KiB measured, + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 27 * 1024,
+        max_load: 38 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

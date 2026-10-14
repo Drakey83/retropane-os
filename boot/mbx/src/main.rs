@@ -259,7 +259,7 @@ mod image {
     use rp_drv_mbx_display::{Display, fill_rect_rgb565};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
-    use rp_hal_api::RegisterBus;
+    use rp_hal_api::{DmaEngine, RegisterBus};
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
@@ -449,6 +449,12 @@ mod image {
             "5 CPU full-screen fills: {cpu_us} us ({} us each)",
             cpu_us / 5
         );
+
+        // 4b. DMA from SDRAM into 2700G memory, against the CPU (ADR-0022
+        // open question 2); then 4c: can the engine read past its own
+        // 16 MiB (open question 1)? Last, as it may hang the engine.
+        let ok = dma_vs_cpu(vram) && ok;
+        probe_beyond_local_memory(&mut e, vram);
 
         // 5. A picture for the photo: black, three bars, a white frame.
         let scene: [((u16, u16, u16, u16), u32); 8] = [
@@ -649,6 +655,157 @@ mod image {
             if ok { "all as expected" } else { "SOME WRONG" }
         );
         ok
+    }
+
+    /// Where stage 4b's copies land: off screen, 10 MiB in.
+    const DMA_DST: usize = 0x00A0_0000;
+    /// A full screen of RGB565: 600 KiB.
+    const SCREEN_BYTES: usize = 480 * 640 * 2;
+    /// One DMA transfer: 120 KiB (under the controller's 128 KiB chain).
+    const DMA_PIECE: usize = 120 * 1024;
+    /// The 2700G's local memory as the CPU sees it (CS3).
+    const CS3: u32 = 0x0C00_0000;
+
+    /// Spins `n` times; what the CPU gets done while a copy runs.
+    fn busy(n: &mut u32) {
+        *n = core::hint::black_box(*n + 1);
+    }
+
+    /// Stage 4b: a full screen from SDRAM into 2700G memory, by the CPU and
+    /// by DMA, both timed; how much the CPU gets done meanwhile; the copy
+    /// checked. Returns whether the DMA copy arrived intact (a refused or
+    /// failed transfer is logged, not a failure: the question is speed).
+    fn dma_vs_cpu(vram: &mut [u8]) -> bool {
+        let Some(scratch) = rp_hal_x51v::devices::take_scratch() else {
+            log!("dma: no scratch RAM");
+            return true;
+        };
+        let src = &mut scratch[..SCREEN_BYTES];
+        for (i, w) in src.chunks_exact_mut(4).enumerate() {
+            w.copy_from_slice(&(i as u32).wrapping_mul(0x9E37_79B9).to_le_bytes());
+        }
+        // The CPU's rate at spinning, for comparison.
+        let mut idle = 0u32;
+        let t0 = rt::ticks();
+        while us_since(t0) < 10_000 {
+            busy(&mut idle);
+        }
+        let t0 = rt::ticks();
+        vram[DMA_DST..DMA_DST + SCREEN_BYTES].copy_from_slice(src);
+        cpu::drain_write_buffer();
+        let cpu_us = us_since(t0);
+        log!(
+            "dma: CPU copies a full screen from SDRAM in {cpu_us} us ({} MB/s)",
+            SCREEN_BYTES as u32 / cpu_us.max(1)
+        );
+        // Clear the target so the check below sees what DMA wrote.
+        rp_hal_mem::fill32(&mut vram[DMA_DST..DMA_DST + SCREEN_BYTES], 0);
+        cpu::drain_write_buffer();
+        let Some(mut dma) = rt::take_dma(0) else {
+            log!("dma: no channel");
+            return true;
+        };
+        log!(
+            "dma: memory to memory, SDRAM 0x{:08x} to 0x{:08x}",
+            src.as_ptr() as u32,
+            CS3 + DMA_DST as u32
+        );
+        let mut spins = 0u32;
+        let t0 = rt::ticks();
+        for (k, piece) in src.chunks(DMA_PIECE).enumerate() {
+            let dst = CS3 + (DMA_DST + k * DMA_PIECE) as u32;
+            if !dma.arm_copy_to_device_memory(piece, dst) {
+                log!("  refused at piece {k}");
+                return true;
+            }
+            let p0 = rt::ticks();
+            loop {
+                match dma.done() {
+                    Some(true) => break,
+                    Some(false) => {
+                        log!("  bus error at piece {k}");
+                        return true;
+                    }
+                    None if us_since(p0) > 200_000 => {
+                        dma.abort();
+                        log!("  piece {k} not done after 200 ms: stopped");
+                        return true;
+                    }
+                    None => busy(&mut spins),
+                }
+            }
+        }
+        let dma_us = us_since(t0);
+        // Spins per microsecond, idle vs during DMA: how free the CPU was.
+        let free =
+            u64::from(spins) * 10_000 * 100 / (u64::from(idle).max(1) * u64::from(dma_us.max(1)));
+        log!(
+            "dma: a full screen in {dma_us} us ({} MB/s); the CPU kept {free}% of its idle pace meanwhile",
+            SCREEN_BYTES as u32 / dma_us.max(1)
+        );
+        let mut intact = true;
+        for at in [0, 4, SCREEN_BYTES / 2, SCREEN_BYTES - 4] {
+            let want = load32_volatile(src, at);
+            let got = load32_volatile(vram, DMA_DST + at);
+            if got != want {
+                intact = false;
+                log!("  word at +{at}: {got:08x?}, expected {want:08x?}  <-- WRONG");
+            }
+        }
+        log!("dma: copy {}", if intact { "intact" } else { "WRONG" });
+        intact
+    }
+
+    /// Where stage 4c's copies land, prefilled with a pattern the engine
+    /// won't produce by accident.
+    const PROBE_DST: usize = 0x00B0_0000;
+    const UNTOUCHED: u32 = 0xDEAD_BEEF;
+
+    /// Stage 4c: copies 64 bytes from addresses past the 2700G's 16 MiB
+    /// (its address field reaches 64 MiB) and says what arrived:
+    /// nothing, a mirror of local memory (the screen at offset 0, or the
+    /// test tile at 8 MiB), or something else (logged, to compare with
+    /// SDRAM). Informational: the engine may hang; the log names the
+    /// address before each try.
+    fn probe_beyond_local_memory(e: &mut Engine, vram: &mut [u8]) {
+        let screen0 = load32_volatile(vram, 0);
+        let tile0 = load32_volatile(vram, TILE);
+        for mib in [16usize, 24, 32, 40, 48, 56] {
+            let src = mib << 20;
+            for k in 0..16 {
+                let _ = store32_volatile(vram, PROBE_DST + 4 * k, UNTOUCHED);
+            }
+            cpu::drain_write_buffer();
+            log!("probe: engine reads local address 0x{src:08x} ({mib} MiB)");
+            let (w, n) = cmd::copy(
+                cmd::Format::Rgb565,
+                (PROBE_DST, 64),
+                (src, 64),
+                (0, 0),
+                (0, 0, 32, 1),
+                0,
+            );
+            if e.submit(&w[..n]).is_err() {
+                log!("  FIFO full: stopping the probe");
+                return;
+            }
+            if let Err(why) = e.finish(vram, 50_000) {
+                log!("  {why}: the engine is stuck; stopping the probe");
+                return;
+            }
+            let got: [Option<u32>; 4] =
+                core::array::from_fn(|k| load32_volatile(vram, PROBE_DST + 4 * k));
+            let what = if got[0] == Some(UNTOUCHED) {
+                "nothing written"
+            } else if got[0] == screen0 && mib % 16 == 0 {
+                "same as local 0x0 (a mirror?)"
+            } else if got[0] == tile0 && mib % 16 == 8 {
+                "same as local 8 MiB (a mirror?)"
+            } else {
+                "SOMETHING ELSE: compare with SDRAM"
+            };
+            log!("  {got:08x?}: {what}");
+        }
     }
 
     /// Keeps the picture up until a button is pressed and released (the

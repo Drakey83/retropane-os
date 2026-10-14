@@ -101,6 +101,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | Crash boxes drawn on the plane actually on screen (`Display::on_screen` decodes the 2700G's plane registers; on the device Windows Mobile's plane is at offset 0, so boxes drawn at `0x60000` never showed). Budgets ratcheted (test image rule): `rp-hello` 24 → 26, `rp-usb` 20 → 22, and `rp-crash` 8 → 14 KiB (it now draws the shared crash box, on a plane it moves to offset 0, for the emulator check) | `rp-hello` / `rp-usb` / `rp-probe` / `rp-crash` loaded size | 24,498 / 20,381 / 66,016 / 7,201 B | 24,738 / 21,001 / 66,596 / 13,161 B |
 | 2026-10-13 | `rp-mbx` becomes the first GPU-rectangle test (item 69: MBX 2D engine commands, fence, edge read-back, GPU vs CPU timing); it now links the display driver to adopt the screen and the CPU fill to time against. Budget 12 -> 19 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | under 12,288 B (ID reads only) | 17,077 B |
 | 2026-10-13 | `rp-mbx` adds the GPU copy checks (item 69 step 2: from off-screen memory, overlapping right and down, colour-keyed, ten full-screen copies timed). Budget 19 -> 27 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | 18,205 B | 24,297 B |
+| 2026-10-13 | `rp-mbx` adds DMA from SDRAM into 2700G memory (timed against the CPU, with the CPU's spare pace) and the probe of local addresses past 16 MiB (ADR-0022 open questions 1-2); the HAL gains memory-to-memory DMA. Budget 27 -> 38 KiB (test image rule) | `rp-mbx` loaded size | 24,297 B | 34,825 B |
 
 ## Real hardware
 
