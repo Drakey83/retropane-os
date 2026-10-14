@@ -177,6 +177,25 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
 - ADR-0021's "nothing in the list is CPU-only" holds only once the 3D
   core is up; until then gradients and ARGB images are CPU work.
 
+## Owner's answers (2026-10-14)
+
+- **Question 4, format:** mixed. The shell's glass layer stays ARGB4444
+  with per-pixel alpha over the video-plane wallpaper; a full-screen
+  program's surface is RGB565 and becomes the graphics plane by a flip.
+- **Question 6, legacy GDI:** what WM accelerated (fills, copies,
+  transparent copies, text, horizontal/vertical lines) on the 2D engine;
+  everything else on the tested CPU path.
+- **Question 7, the 3D core:** after `Mbx2dRenderer` draws the shell;
+  then a time-boxed start (goal: one measured triangle) under its own ADR.
+- **Downward overlaps are the service's job** (the owner asked that the
+  strip fix be automatic): the graphics service splits a copy down over
+  itself into bottom-first strips, or for small shifts copies through
+  scratch 2700G memory and back, whichever costs fewer engine words and
+  bytes; scrolling content avoids the copy altogether by moving the
+  surface's start address. Nothing above the service sees it.
+- Question 5 (a completion interrupt) is a measurement, not a vote: next
+  `rp-mbx` step. The overall decision is still to be voted.
+
 ## Open questions (for the owner; none decided here)
 
 1. **Can the 2D engine read system RAM after all?** A device test points
