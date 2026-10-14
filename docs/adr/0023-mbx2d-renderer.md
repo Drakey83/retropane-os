@@ -207,6 +207,16 @@ the renderer (all checked in the emulator, pending a device run):
   flip, background rebuilds); the latency now counts to the flip.
 - `rp-today`'s stack is 24 KiB (`--defsym=__stack_size`).
 
+**Second and third device runs (2026-10-14, logs
+`local/rp-today-gpu-run3.txt`, `-run4.txt`):** the glass "looks very
+smooth", "everything felt great" (owner); no stalls, no tearing; the
+background was built once. Typical tap (medians, run 4): touch landing to
+the filter's verdict **22 ms**, shell frame and CPU queueing **0.8 ms**,
+engine to flip **7 ms**; landing to screen 35.5 ms median, 72 ms worst. The
+drawing is no longer what a tap waits for: the CPU's share fell to under a
+millisecond and the engine's is ~7 ms; the touch filter's settling is
+most of the rest (the same under either renderer). Stack 17.4 of 24 KiB.
+
 ## Open questions
 
 1. ~~Owner: A or B?~~ B (2026-10-14).
