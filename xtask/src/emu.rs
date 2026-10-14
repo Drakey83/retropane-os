@@ -1173,6 +1173,14 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
         return Err(format!("mbx: didn't return cleanly:{log}"));
     }
+    for l in log.lines().filter(|l| {
+        l.starts_with("dma:")
+            || l.starts_with("probe:")
+            || l.starts_with("  [")
+            || l.contains("full-screen")
+    }) {
+        eprintln!("      {}", l.trim_end());
+    }
     eprintln!(
         "    mbx OK: fence, rectangle edges and the GPU-drawn picture exact; back at the loader on a button press"
     );

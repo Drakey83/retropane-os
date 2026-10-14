@@ -77,6 +77,9 @@ static mut CHAINS: [Chain; CHANNELS as usize] =
 pub struct Dma {
     ch: u32,
     request: u8,
+    /// The transfer is paced by `request` (a device FIFO), not memory to
+    /// memory: stopping unmaps the request line.
+    paced: bool,
     /// The armed transfer's buffer (address, length) and direction.
     armed: Option<(u32, u32, bool)>,
     /// The running ring: its address and length.
@@ -100,6 +103,7 @@ impl Dma {
         Self {
             ch,
             request: 0,
+            paced: false,
             armed: None,
             ring: None,
         }
@@ -147,6 +151,7 @@ impl Dma {
         write(ddadr(self.ch), base);
         write(dcsr(self.ch), DCSR_RUN);
         self.request = port.request;
+        self.paced = true;
     }
 
     fn arm(&mut self, port: Port, addr: u32, len: usize, to_device: bool) -> bool {
@@ -170,9 +175,53 @@ impl Dma {
         true
     }
 
+    /// Starts a memory-to-memory copy of `src` (SDRAM, whole cache lines,
+    /// up to 128 KiB) to physical address `dst` in device memory that the
+    /// CPU doesn't cache (2700G local memory): no request line, the
+    /// controller runs at its own pace while the CPU does other work.
+    /// Finish with [`DmaEngine::done`]. `false` if refused (busy, not whole
+    /// lines, too long, or `dst` not word aligned).
+    pub fn arm_copy_to_device_memory(&mut self, src: &[u8], dst: u32) -> bool {
+        let (addr, len) = (src.as_ptr() as u32, src.len());
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || (addr | len as u32) & (cpu::LINE - 1) != 0
+            || dst & 3 != 0
+            || len == 0
+            || len > CHUNK * DESCRIPTORS
+        {
+            return false;
+        }
+        // The controller reads memory, not the cache.
+        cpu::clean_range(addr, len as u32);
+        let chain = self.chain();
+        let n = len.div_ceil(CHUNK);
+        let base = chain.0.as_ptr() as u32;
+        for (i, d) in chain.0.iter_mut().take(n).enumerate() {
+            let piece = (len - i * CHUNK).min(CHUNK) as u32;
+            d[0] = if i + 1 < n {
+                base + 16 * (i as u32 + 1)
+            } else {
+                DDADR_STOP
+            };
+            d[1] = addr + (i * CHUNK) as u32;
+            d[2] = dst + (i * CHUNK) as u32;
+            d[3] = DCMD_INCSRC | DCMD_INCTRG | DCMD_SIZE32 | width(Width::Word) | piece;
+        }
+        cpu::clean_range(base, (16 * n) as u32);
+        write(dcsr(self.ch), 0);
+        write(ddadr(self.ch), base);
+        write(dcsr(self.ch), DCSR_RUN);
+        self.paced = false;
+        self.armed = Some((addr, len as u32, true));
+        true
+    }
+
     fn stop(&mut self) {
         write(dcsr(self.ch), 0);
-        write(drcmr(self.request), 0);
+        if self.paced {
+            write(drcmr(self.request), 0);
+        }
         if let Some((addr, len, to_device)) = self.armed.take()
             && !to_device
         {
