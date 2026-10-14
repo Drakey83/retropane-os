@@ -29,6 +29,11 @@
 //!   source (ARGB4444-, ARGB8888-shaped data), blended or not;
 //! - B4: translucent solid fills (a fill with bit 17 and alpha in the colour);
 //! - B5: does heavy 2D work starve scan-out (`DINTRS` underrun bits)?
+//! - B6 (ADR-0023): source stride 0 (one row repeated down a rectangle);
+//!   blending onto a 32 bpp destination against the reference; an
+//!   ARGB4444 destination (option A); a 32 bpp screen shown while the
+//!   engine fills and copies 32 bpp, scan-out's under/overrun bits read;
+//!   the screen left showing four smooth 32 bpp ramps until a button.
 //!
 //! First run (2026-10-14, docs/hw/2700g.md): all of it answered except E5
 //! and B5, which cleared bits by writing 1s and so set them; fixed.
@@ -36,8 +41,7 @@
 //! Every wait has a timeout. A stuck engine is reset and the probe goes on
 //! (logged); three in a row end the blend stages. Every state touched
 //! (`DVECTRL`, `DINTRCNT`, `DINTRE`, `MINTENABLE`, the blend word, the key)
-//! is put back: the 2700G isn't reset between images. The picture left up
-//! until a button: a GPU-blended ramp above the CPU's expected ramp.
+//! is put back: the 2700G isn't reset between images.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -151,7 +155,7 @@ mod image {
     use rp_drv_blit2d::{
         self as cmd, BLEND_DELL_TEXT, Engine, Format, OP_BLEND, ROP_PATCOPY, ROP_SRCCOPY,
     };
-    use rp_drv_mbx_display::{Display, fill_rect_rgb565};
+    use rp_drv_mbx_display::Display;
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
@@ -200,8 +204,6 @@ mod image {
     const DST_STRIDE: i32 = 64;
     const ARGB16: usize = 0x00C2_0000;
     const ARGB32: usize = 0x00C2_1000;
-    const RAMP: usize = 0x00C3_0000;
-    const RAMP_STRIDE: usize = 240;
     const OFFSCREEN: usize = 0x00D0_0000;
 
     const BLUE: u16 = 0x001F;
@@ -224,7 +226,7 @@ mod image {
         rt::check_in();
 
         let mut e = Engine::new(regs, FENCE, rt::ticks, TICKS_PER_MS);
-        let blend_ok = blending(&mut e, vram, screen);
+        let (blend_ok, saved) = blending(&mut e, vram, screen);
         rt::check_in();
 
         let verdict = if events_ok && blend_ok {
@@ -232,15 +234,17 @@ mod image {
         } else {
             "FAIL (see the log)"
         };
-        log!(
-            "{MARKER}: {verdict} - top band GPU-blended, bottom band the CPU's; held until a button"
-        );
+        log!("{MARKER}: {verdict} - 32 bpp ramps on screen; held until a button");
         if let Some(bus) = rt::take_ffuart() {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
             let _ = writeln!(uart, "{MARKER}: {verdict}");
         }
         hold_until_button();
+        // The plane as found (the 2700G keeps it across images).
+        for (off, v) in saved.into_iter().flatten() {
+            e.regs.write32(off, v);
+        }
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -568,7 +572,7 @@ mod image {
         (w, 2 + blit.1)
     }
 
-    fn blending(e: &mut Engine<Mmio>, vram: &mut [u8], (a, s): (usize, usize)) -> bool {
+    fn blending(e: &mut Engine<Mmio>, vram: &mut [u8], (_, s): (usize, usize)) -> (bool, Saved) {
         log!(
             "B0 engine: ID 0x{:08x}",
             e.regs.read32(cmd::MBX + cmd::reg::ID)
@@ -600,7 +604,7 @@ mod image {
         };
         if !p.baseline() {
             log!("B0 the engine doesn't run: blend stages skipped");
-            return false;
+            return (false, None);
         }
 
         // B1: Dell's text blit and its variants, against the CPU's lerp.
@@ -737,52 +741,273 @@ mod image {
             if fine { "" } else { ", fence never written" }
         );
 
-        // The picture: a GPU-blended ramp (Dell's state, 16 steps of 30 px)
-        // above the CPU's lerp of the same.
-        picture(e, vram, (a, s));
-        state_ok && fine && stalls < 3
+        // B6: what ADR-0023 needs; ends with a 32 bpp screen on show.
+        let (b6_ok, saved) = adr23(e, vram);
+        (state_ok && fine && stalls < 3 && b6_ok, saved)
     }
 
-    fn picture(e: &mut Engine<Mmio>, vram: &mut [u8], (a, s): (usize, usize)) {
-        for row in 0..64 {
-            for k in 0..RAMP_STRIDE / 4 {
-                // 4 bytes = 8 pixels; pixel x has coverage x / 30.
-                let mut w = 0u32;
-                for n in 0..8 {
-                    let x = 8 * k + n;
-                    w |= ((x / 30) as u32 & 0xF) << (4 * n);
-                }
-                let _ = store32_volatile(vram, RAMP + row * RAMP_STRIDE + 4 * k, w);
-            }
-        }
-        fill_rect_rgb565(vram, s, 0, 0, 480, 640, 0);
-        fill_rect_rgb565(vram, s, 0, 200, 480, 64, BLUE);
-        for c in 0..16u32 {
-            let x = (c * 30) as usize;
-            fill_rect_rgb565(vram, s, x, 300, 30, 64, lerp565(BLUE, RED, c, 15));
+    /// The plane's registers as found, to put back after the 32 bpp screen.
+    type Saved = Option<[(usize, u32); 5]>;
+
+    // B6's places in local memory: two 32 bpp screens (1.2 MiB each, at 2
+    // and 4 MiB, clear of the 16 bpp plane below 1 MiB), a row for
+    // stride-0 blits, small 32 bpp and ARGB4444 test rows.
+    const SCREEN32: usize = 0x0020_0000;
+    const SCREEN32B: usize = 0x0040_0000;
+    const STRIDE32: usize = 480 * 4;
+    const ROW: usize = 0x00C4_0000;
+    const DST32: usize = 0x00C5_0000;
+    const DST4444: usize = 0x00C6_0000;
+
+    /// `N` words of local memory from `at`.
+    fn words<const N: usize>(vram: &[u8], at: usize) -> [u32; N] {
+        core::array::from_fn(|k| load32_volatile(vram, at + 4 * k).unwrap_or(0xDEAD_BEEF))
+    }
+
+    /// Stores `ws` at `at` (CPU writes).
+    fn set(vram: &mut [u8], at: usize, ws: &[u32]) {
+        for (k, &w) in ws.iter().enumerate() {
+            let _ = store32_volatile(vram, at + 4 * k, w);
         }
         cpu::drain_write_buffer();
-        let blit = cmd::blit(
-            (Format::RGB565, a + 200 * s, s as i32),
-            (Format::COVERAGE4, RAMP, RAMP_STRIDE as i32),
-            (0, 0),
-            (0, 0, 480, 64),
-            ROP_SRCCOPY,
-            OP_BLEND,
-            u32::from(RED),
+    }
+
+    /// Runs `w` and waits for it; false (logged, engine reset) if stuck.
+    fn go(e: &mut Engine<Mmio>, vram: &[u8], w: &[u32], what: &str) -> bool {
+        match e.submit(w).and_then(|()| e.finish(vram, 1_000_000)) {
+            Ok(_) => true,
+            Err(why) => {
+                log!("B6 {what}: {why}: engine reset");
+                e.reset(rt::delay_us);
+                false
+            }
+        }
+    }
+
+    /// Straight-alpha `over` onto an opaque pixel, 8-bit channels, rounded:
+    /// the reference's arithmetic for B6's check.
+    fn over_opaque(src: u32, dst: u32) -> u32 {
+        let a = src >> 24;
+        let ch = |sh: u32| {
+            let (s, d) = ((src >> sh) & 0xFF, (dst >> sh) & 0xFF);
+            ((s * a + d * (255 - a) + 127) / 255) << sh
+        };
+        0xFF00_0000 | ch(16) | ch(8) | ch(0)
+    }
+
+    /// A pixel of the 16 bpp test row's line `l`.
+    fn px16(vram: &[u8], l: usize, k: usize) -> u16 {
+        let off = DST + l * DST_STRIDE as usize + 2 * k;
+        load32_volatile(vram, off & !3).map_or(0xDEAD, |w| (w >> (8 * (off & 2))) as u16)
+    }
+
+    /// B6 (ADR-0023): stride 0; blending onto a 32 bpp destination, checked
+    /// against the reference; an ARGB4444 destination (option A's record);
+    /// 32 bpp fills timed; a 32 bpp screen shown with the engine busy,
+    /// scan-out's under/overrun bits read. Leaves the 32 bpp screen up and
+    /// returns the plane's registers as found.
+    fn adr23(e: &mut Engine<Mmio>, vram: &mut [u8]) -> (bool, Saved) {
+        use rp_drv_mbx_display::{PixelFormat, Plane, event, layers::Layer, reg as dreg};
+        let mut ok = true;
+
+        // B6a: stride 0. A 16-pixel ARGB8888 row copied over 4 lines of
+        // RGB565, then red at alpha 0x80 blended over green.
+        for (name, flags, blend, base) in [
+            ("copy", 0, 0, 0x0000u16),
+            ("blend", OP_BLEND, BLEND_DELL_TEXT, GREEN),
+        ] {
+            let row: [u32; 16] = if flags == 0 {
+                core::array::from_fn(|k| 0xFF00_0000 | (k as u32 * 0x11) << 16 | 0x40)
+            } else {
+                [0x80FF_0000; 16]
+            };
+            set(vram, ROW, &row);
+            for line in 0..4 {
+                let at = DST + line * DST_STRIDE as usize;
+                set(vram, at, &[u32::from(base) * 0x0001_0001; 8]);
+            }
+            let (w, n) = with_blend(
+                blend,
+                cmd::blit(
+                    (Format::RGB565, DST, DST_STRIDE),
+                    (Format::BPP32, ROW, 0),
+                    (0, 0),
+                    (0, 0, 16, 4),
+                    ROP_SRCCOPY,
+                    flags,
+                    0,
+                ),
+            );
+            if !go(e, vram, &w[..n], "stride 0") {
+                ok = false;
+                continue;
+            }
+            let lines: [[u16; 4]; 4] =
+                core::array::from_fn(|l| core::array::from_fn(|k| px16(vram, l, k)));
+            let same = lines.iter().all(|l| *l == lines[0]);
+            log!(
+                "B6a stride 0 {name}: line 0{} line 3{} -> {}",
+                Px(&lines[0]),
+                Px(&lines[3]),
+                if same && lines[0][1] != base {
+                    "every line reads the row"
+                } else {
+                    "NOT repeated"
+                }
+            );
+        }
+
+        // B6b: blending onto 32 bpp (opaque green), against the reference.
+        set(vram, ARGB32, &SRC32);
+        set(vram, DST32, &[0xFF00_FF00; 4]);
+        let (w, n) = with_blend(
+            BLEND_DELL_TEXT,
+            cmd::blit(
+                (Format::BPP32, DST32, 16),
+                (Format::BPP32, ARGB32, 16),
+                (0, 0),
+                (0, 0, 4, 1),
+                ROP_SRCCOPY,
+                OP_BLEND,
+                0,
+            ),
         );
-        let (w, n) = with_blend(BLEND_DELL_TEXT, blit);
-        let mut all = [0u32; 14];
-        all[..n].copy_from_slice(&w[..n]);
-        all[n..n + 2].copy_from_slice(&cmd::blend(0));
-        let ok = e
-            .submit(&all[..n + 2])
-            .and_then(|()| e.finish(vram, 50_000))
-            .is_ok();
+        if go(e, vram, &w[..n], "32 bpp blend") {
+            let got: [u32; 4] = words(vram, DST32);
+            let want = SRC32.map(|s| over_opaque(s, 0xFF00_FF00));
+            let exact = got
+                .iter()
+                .zip(&want)
+                .all(|(g, w)| (g ^ w) & 0x00FF_FFFF == 0);
+            let close = got.iter().zip(&want).all(|(g, w)| {
+                [0, 8, 16]
+                    .iter()
+                    .all(|&sh| ((g >> sh) & 0xFF).abs_diff((w >> sh) & 0xFF) <= 1)
+            });
+            let verdict = if exact {
+                "exact (colour)"
+            } else if close {
+                "within 1"
+            } else {
+                "DIFFERENT"
+            };
+            log!("B6b 32 bpp over: {got:08x?}, reference {want:08x?} -> {verdict}");
+        } else {
+            ok = false;
+        }
+
+        // B6c: ARGB4444 destination (option A): half-clear green, then
+        // clear, under the same sources.
+        for (name, d) in [("half-clear green", 0x80F0u32), ("clear", 0)] {
+            set(vram, DST4444, &[d | d << 16; 2]);
+            let (w, n) = with_blend(
+                BLEND_DELL_TEXT,
+                cmd::blit(
+                    (Format::code(7), DST4444, 8),
+                    (Format::BPP32, ARGB32, 16),
+                    (0, 0),
+                    (0, 0, 4, 1),
+                    ROP_SRCCOPY,
+                    OP_BLEND,
+                    0,
+                ),
+            );
+            if go(e, vram, &w[..n], "ARGB4444 destination") {
+                let [w0, w1]: [u32; 2] = words(vram, DST4444);
+                let px = [w0 as u16, (w0 >> 16) as u16, w1 as u16, (w1 >> 16) as u16];
+                log!(
+                    "B6c ARGB4444 dest {name} ({d:04x}), red at alpha 0, 1/4, 1/2, 1:{}",
+                    Px(&px)
+                );
+            } else {
+                ok = false;
+            }
+        }
+
+        // B6d: a 32 bpp screen of four smooth ramps (grey, red, green,
+        // blue; 256 levels over 480 px), each one CPU row and one stride-0
+        // copy; 32 bpp full-screen fills timed.
+        for (k, c) in [0x00FF_FFFFu32, 0x00FF_0000, 0x0000_FF00, 0x0000_00FF]
+            .into_iter()
+            .enumerate()
+        {
+            for x in 0..480u32 {
+                let level = x * 255 / 479;
+                let ch = |sh: u32| (((c >> sh) & 0xFF) * level / 255) << sh;
+                let _ = store32_volatile(
+                    vram,
+                    ROW + 4 * x as usize,
+                    0xFF00_0000 | ch(16) | ch(8) | ch(0),
+                );
+            }
+            cpu::drain_write_buffer();
+            let y = 160 * k as u16;
+            let (w, n) = cmd::blit(
+                (Format::BPP32, SCREEN32, STRIDE32 as i32),
+                (Format::BPP32, ROW, 0),
+                (0, 0),
+                (0, y, 480, y + 160),
+                ROP_SRCCOPY,
+                0,
+                0,
+            );
+            ok &= go(e, vram, &w[..n], "ramp");
+        }
+        let fill32 = |c| cmd::fill(Format::BPP32, SCREEN32B, STRIDE32, (0, 0, 480, 640), c);
+        let t0 = rt::ticks();
+        for i in 0..10 {
+            let _ = e.submit(&fill32(0xFF00_0000 | i));
+        }
+        let fills = e.finish(vram, 1_000_000).map(|_| us_since(t0) / 10);
+        log!("B6d 32 bpp full-screen fill: {fills:?} us each");
+
+        // Show it (opaque, 32 bpp), keeping the registers as found.
+        let plane = Plane {
+            format: PixelFormat::Argb8888,
+            width: 480,
+            height: 640,
+            offset: SCREEN32,
+            stride: STRIDE32,
+        };
+        let regs32 = plane.registers();
+        let saved = regs32.map(|(off, _)| (off, e.regs.read32(off)));
+        let gamma = e.regs.read32(dreg::GSCTRL) & (1 << 26);
+        for (off, v) in regs32 {
+            let v = match off {
+                dreg::GSCTRL => v | gamma,
+                dreg::GSCADR => Layer::SOLO.scadr(v),
+                dreg::GBBASE => Layer::SOLO.bbase(v),
+                _ => v,
+            };
+            e.regs.write32(off, v);
+        }
+        // Scan-out of 32 bpp with the engine busy: 10 fills and 10 copies of
+        // the off-screen 32 bpp screen, the flags cleared first.
+        rt::delay_us(40_000);
+        let found = rp_drv_mbx_display::ack_events(&mut e.regs, event::UNDER_OVERRUN)
+            & event::UNDER_OVERRUN;
+        let t0 = rt::ticks();
+        for i in 0..10u32 {
+            let _ = e.submit(&fill32(0xFF10_1010 * (i & 1)));
+            let (w, n) = cmd::copy(
+                Format::BPP32,
+                (SCREEN32B, STRIDE32),
+                (SCREEN32B + STRIDE32 * 320, STRIDE32),
+                (0, 0),
+                (0, 0, 480, 320),
+                0,
+            );
+            let _ = e.submit(&w[..n]);
+        }
+        let busy = e.finish(vram, 2_000_000).map(|_| us_since(t0));
+        rt::delay_us(40_000);
+        let after = e.regs.read32(DINTRS) & event::UNDER_OVERRUN;
         log!(
-            "picture: GPU ramp at y 200-263, CPU ramp at y 300-363{}",
-            if ok { "" } else { " (GPU ramp: engine stuck)" }
+            "B6d 32 bpp screen on; 10 full fills + 10 half copies at 32 bpp: {busy:?} us; under/overrun bits 0x{found:08x} as found, 0x{after:08x} after"
         );
+        ok &= busy.is_ok() && fills.is_ok();
+        log!("B6d the screen shows four 32 bpp ramps: grey, red, green, blue");
+        (ok, Some(saved))
     }
 
     /// Keeps the picture up until a button is pressed and released,

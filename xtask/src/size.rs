@@ -327,10 +327,12 @@ pub const BUDGETS: &[Budget] = &[
         device: OnDevice::Returns,
     },
     // Test image (renderer step 1, ADR-0022): the blend-state and display-
-    // event probe (2026-10-14): 37.4 KiB measured, + ~10%.
+    // event probe (2026-10-14): 37.4 KiB measured, + ~10%; then 42 -> 51
+    // KiB for B6 (ADR-0023's unknowns: stride 0, 32 bpp blending and
+    // scan-out, an ARGB4444 destination), 46.1 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx-blend",
-        max_load: 42 * 1024,
+        max_load: 51 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
