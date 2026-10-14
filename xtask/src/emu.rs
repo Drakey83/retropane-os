@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.12.1";
+pub const QEMU_RELEASE: &str = "rp-v0.13.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -1206,12 +1206,104 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// rp-mbx-blend's run on the owner's X51v (2026-10-14): the lines the
+/// emulator must reproduce.
+const MBX_BLEND_DEVICE: &str = include_str!("../data/rp-mbx-blend-device.txt");
+
+/// The 4-digit hex pixels after a run-log line's colon, before any verdict.
+fn logged_pixels(rest: &str) -> Vec<&str> {
+    rest.split_whitespace()
+        .take_while(|t| t.len() == 4 && t.chars().all(|c| c.is_ascii_hexdigit()))
+        .collect()
+}
+
+/// Where an emulator run of rp-mbx-blend differs from the device's
+/// (`MBX_BLEND_DEVICE`): one entry per line. Pixels are compared exactly;
+/// the event lines up to the delays (host-independent under `-icount`, but
+/// the device's came from its own clears). Not compared, because nobody
+/// knows the answer: format code 4's rows (meaning unknown) and the 32-bit
+/// codes' pixels 2-3 from the 16-bit source (they read memory the image
+/// never wrote: the device's leftovers).
+fn mbx_blend_mismatches(log: &str, device: &str) -> Vec<String> {
+    let mut bad = Vec::new();
+    for want in device
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+    {
+        let Some((key, value)) = want.split_once(": ") else {
+            continue;
+        };
+        if key.starts_with("B3 code 4 ") {
+            continue;
+        }
+        let got = log
+            .lines()
+            .map(str::trim)
+            .find_map(|l| l.strip_prefix(key).and_then(|r| r.strip_prefix(": ")));
+        let Some(got) = got else {
+            bad.push(format!("no `{key}` line"));
+            continue;
+        };
+        let same = if key.starts_with('B') {
+            let (w, g) = (logged_pixels(value), logged_pixels(got));
+            let n = if ["12", "13", "14", "15"]
+                .iter()
+                .any(|c| key.starts_with(&format!("B3 code {c} src16")))
+            {
+                2
+            } else {
+                w.len()
+            };
+            w.len() == g.len() && w[..n] == g[..n]
+        } else if key == "E1 frame" {
+            frame_close(value, got)
+        } else if key.starts_with("E3") {
+            value.split(", after").next() == got.split(", after").next()
+        } else {
+            value == got
+        };
+        if !same {
+            bad.push(format!(
+                "{key}: device{}, emulator{}",
+                strip_tail(value),
+                strip_tail(got)
+            ));
+        }
+    }
+    bad
+}
+
+/// Two `E1 frame` values agree: the same lines, timings within 0.2% (the
+/// device's own runs differ by ~0.02%: 17712 and 17710 us a frame).
+fn frame_close(want: &str, got: &str) -> bool {
+    let nums = |v: &str| -> Vec<u64> {
+        v.split(|c: char| !c.is_ascii_digit())
+            .filter_map(|t| t.parse().ok())
+            .collect()
+    };
+    let (w, g) = (nums(want), nums(got));
+    // lines 0..TOP (N), US us a frame (MHZ mHz), NS ns a line
+    w.len() == 6
+        && g.len() == 6
+        && w[..3] == g[..3]
+        && w[3..]
+            .iter()
+            .zip(&g[3..])
+            .all(|(&a, &b)| a.abs_diff(b) * 500 <= a)
+}
+
+/// A run-log value without its verdict, for messages.
+fn strip_tail(v: &str) -> String {
+    format!(" `{}`", v.split(" ->").next().unwrap_or(v))
+}
+
 /// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
 /// loader starts it; it must run every stage to its verdict without a
 /// fault, put the blend state and the display registers back, and return
-/// on a button. The emulator models neither blending nor the display's
-/// events (docs/hw/emulator.md), so the findings themselves are only
-/// printed; the device run answers them.
+/// on a button. Under `-icount` (the event stages time scan lines), on an
+/// emulator that models the blend and the display's events (`mbx-blend`,
+/// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
+/// device's run (docs/hw/emulator.md).
 pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -1239,7 +1331,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
             screenshot: None,
             sd_image: None,
             steps: &[],
-            extra: &[],
+            extra: &["-icount", "shift=0"],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
             during: Some(&check),
             then: Some("RPL END"),
@@ -1262,7 +1354,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
         "B4 fill 0x8000f800 bit 17, blend 0:",
         "B blend state put back to 0: yes",
         "B5 under/overrun bits",
-        "picture: GPU ramp",
+        "B6d the screen shows four 32 bpp ramps",
     ] {
         if !log.contains(want) {
             return Err(format!("mbx-blend: the run log has no `{want}`:{log}"));
@@ -1283,9 +1375,27 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     }) {
         eprintln!("      {}", l.trim_end());
     }
-    eprintln!(
-        "    mbx-blend OK: every stage ran, state put back, back at the loader on a button press"
-    );
+    if device_has(root, "intel-2700g", "mbx-blend") {
+        let bad = mbx_blend_mismatches(log, MBX_BLEND_DEVICE);
+        if !bad.is_empty() {
+            return Err(format!(
+                "mbx-blend: {} line(s) differ from the X51v's run:
+  {}",
+                bad.len(),
+                bad.join(
+                    "
+  "
+                )
+            ));
+        }
+        eprintln!(
+            "    mbx-blend OK: B1-B3 pixels and the E1/E3/E4 scan-line timings match the X51v's run; state put back, back at the loader on a button press"
+        );
+    } else {
+        eprintln!(
+            "    mbx-blend OK: every stage ran, state put back, back at the loader on a button press (this emulator release doesn't model the blend: not compared with the device)"
+        );
+    }
     Ok(())
 }
 
@@ -4093,6 +4203,50 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn mbx_blend_device_matches_itself_and_catches_a_pixel() {
+        use super::{MBX_BLEND_DEVICE, mbx_blend_mismatches};
+        let log: String = MBX_BLEND_DEVICE
+            .lines()
+            .map(|l| {
+                format!(
+                    "      {l}
+"
+                )
+            })
+            .collect();
+        assert_eq!(
+            mbx_blend_mismatches(&log, MBX_BLEND_DEVICE),
+            Vec::<String>::new()
+        );
+        // An unblended (untouched) row, as an emulator without the model gives.
+        let off = log.replace(
+            "B2 0x09100000: 009d 0217 05a8 0722",
+            "B2 0x09100000: 001f 001f 001f 001f",
+        );
+        assert_eq!(mbx_blend_mismatches(&off, MBX_BLEND_DEVICE).len(), 1);
+        // The unknown pixels are not compared.
+        let free = log.replace(
+            "B3 code 12 src16 plain: 0060 0460 946d dc76",
+            "B3 code 12 src16 plain: 0060 0460 0000 0000",
+        );
+        assert!(mbx_blend_mismatches(&free, MBX_BLEND_DEVICE).is_empty());
+        // The frame within 0.2% (device run 2), but not a line short.
+        let run2 = log.replace(
+            "17712 us a frame (56458 mHz), 27460 ns",
+            "17710 us a frame (56465 mHz), 27457 ns",
+        );
+        assert!(mbx_blend_mismatches(&run2, MBX_BLEND_DEVICE).is_empty());
+        let short = log.replace("lines 0..644 (645)", "lines 0..643 (644)");
+        assert_eq!(mbx_blend_mismatches(&short, MBX_BLEND_DEVICE).len(), 1);
+        // A VEVENT on the wrong line.
+        let late = log.replace(
+            "first at lines [400, 400, 400]",
+            "first at lines [403, 403, 405]",
+        );
+        assert_eq!(mbx_blend_mismatches(&late, MBX_BLEND_DEVICE).len(), 1);
+    }
+
     use super::*;
 
     #[test]
