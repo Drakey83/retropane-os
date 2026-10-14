@@ -80,7 +80,7 @@ $deadline = (Get-Date).AddSeconds(10)
 $reply = ''
 while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch {{ break }}
-    if ($l -like 'RPL *') {{ $reply = $l; "REPLY " + $l; break }}
+    if ($l -match '^RPL (OK|ERR)') {{ $reply = $l; "REPLY " + $l; break }}
 }}
 try {{ $sp.Close() }} catch {{ }}
 if ($reply -like 'RPL ERR*') {{ exit 0 }}
@@ -151,7 +151,7 @@ while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch [System.TimeoutException] {{ continue }} catch {{ break }}
     if ($l -eq 'RPL LOG') {{ $pushed = $true; continue }}
     if ($pushed) {{ if ($l -eq 'RPL END') {{ $pushed = $false }}; continue }}
-    if ($l -like 'RPL *') {{ "REPLY " + $l; break }}
+    if ($l -match '^RPL (OK|ERR)') {{ "REPLY " + $l; break }}
 }}
 try {{ $sp.Close() }} catch {{ }}
 "#
@@ -162,8 +162,8 @@ try {{ $sp.Close() }} catch {{ }}
 /// the reply (listings, files).
 fn query_script(frame: &Path) -> String {
     put_script(frame).replace(
-        "    if ($l -like 'RPL *') {",
-        "    if ($l -like 'RPD *') { $l; continue }\n    if ($l -like 'RPL *') {",
+        "    if ($l -match '^RPL (OK|ERR)') {",
+        "    if ($l -like 'RPD *') { $l; continue }\n    if ($l -match '^RPL (OK|ERR)') {",
     )
 }
 
@@ -194,7 +194,7 @@ pub fn parse_query(text: &str, command: &str) -> Result<(Vec<String>, String), S
         .find_map(|l| {
             let l = l.trim_end();
             l.strip_prefix("REPLY ")
-                .or_else(|| l.starts_with("RPL ").then_some(l))
+                .or_else(|| (l.starts_with("RPL OK") || l.starts_with("RPL ERR")).then_some(l))
         })
         .ok_or("no reply from the loader")?;
     match reply.strip_prefix("RPL OK ") {
@@ -834,20 +834,22 @@ mod tests {
     fn the_put_script_waits_for_one_reply_line() {
         let s = put_script(Path::new("p.frame"));
         assert!(s.contains("ReadAllBytes('p.frame')"));
-        assert!(s.contains("-like 'RPL *'"));
+        assert!(s.contains("-match '^RPL (OK|ERR)'"));
         assert!(!s.contains("schtasks"), "no reconnect dance for a put");
     }
 
     #[test]
     fn a_pushed_run_log_is_not_a_reply() {
         // The loader sends the last run's log (RPL LOG .. RPL END) by itself
-        // when the port opens; its end marker once passed for `log`'s reply.
+        // when the port opens; its end marker once passed for `log`'s reply,
+        // twice: the second time its start marker was lost. Only OK and ERR
+        // lines are replies.
         for s in [
             put_script(Path::new("p.frame")),
             query_script(Path::new("q.frame")),
         ] {
             let skip = s.find("if ($pushed)").expect("pushed log skipped");
-            assert!(skip < s.find("-like 'RPL *'").unwrap());
+            assert!(skip < s.find("-match '^RPL (OK|ERR)'").unwrap());
         }
     }
 
