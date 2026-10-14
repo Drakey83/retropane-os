@@ -247,6 +247,17 @@ What it says:
   a completion barrier. v2 timed the 2D engine's queue; RetroPane's DMA
   rows (SD, tone) already wait for completion, and every GPU row from
   item 69 on must too.
+### GPU fills (2026-10-13, `cargo xtask load rp-mbx`, item 69)
+
+| Full-screen RGB565 fill (480 × 640) | Per fill | CPU busy |
+|---|---|---|
+| CPU (`fill_rect_rgb565`, burst stores) | 14.5 ms | 14.5 ms |
+| MBX 2D engine (RetroPane, bare metal) | 3.1 ms | 36 µs for 20 fills (queueing only) |
+| MBX 2D engine (Windows Mobile `PatBlt`, baseline above) | 3.2 ms | ~0.1 ms |
+
+RetroPane now matches WM's fill speed; the CPU is free while the GPU
+draws. Details and edge checks: docs/hw/2700g.md, "The MBX 2D engine".
+
 ## Interface layer flush (2026-10-12, emulator)
 
 `rp_gfx::layer::flush` converting a 480 x 640 ARGB8888 layer to the
