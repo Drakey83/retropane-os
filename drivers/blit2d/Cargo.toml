@@ -1,0 +1,18 @@
+[package]
+name = "rp-drv-blit2d"
+description = "The MBX 2D engine (Intel 2700G): command words, FIFO accounting and the fenced command stream (ADR-0022)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-mem = { path = "../../hal/mem" }
+
+[dev-dependencies]
+rp-hal-mock = { path = "../../hal/mock" }
+
+[lints]
+workspace = true

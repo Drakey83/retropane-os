@@ -1206,6 +1206,89 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
+/// loader starts it; it must run every stage to its verdict without a
+/// fault, put the blend state and the display registers back, and return
+/// on a button. The emulator models neither blending nor the display's
+/// events (docs/hw/emulator.md), so the findings themselves are only
+/// printed; the device run answers them.
+pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-mbx-blend.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-mbx-blend"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.command("sendkey ret")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend: never came back to the loader after the button press")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("mbx-blend: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "RETROPANE-MBX-BLEND: PASS",
+        "E restore: DVECTRL, DINTRE, DINTRCNT as found: yes",
+        "B1 Dell (blend 0x09100000, bit 17)",
+        "B2 0x09100000:",
+        "B3 code 15 src32 plain",
+        "B4 fill 0x8000f800 bit 17, blend 0:",
+        "B blend state put back to 0: yes",
+        "B5 under/overrun bits",
+        "picture: GPU ramp",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend: the run log has no `{want}`:{log}"));
+        }
+    }
+    for l in log.lines().filter(|l| {
+        [
+            "E",
+            "B",
+            "  ->",
+            "  stuck",
+            "  after",
+            "picture",
+            "RETROPANE",
+        ]
+        .iter()
+        .any(|p| l.starts_with(p))
+    }) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!(
+        "    mbx-blend OK: every stage ran, state put back, back at the loader on a button press"
+    );
+    Ok(())
+}
+
 /// The wallpaper rp-today was built with: its build script's output, the
 /// newest `wallpaper.yuv` under the release build folder in an `rp-today`
 /// folder (Cargo's layout is `build/rp-today-<hash>/out` or, newer,

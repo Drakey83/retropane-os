@@ -27,232 +27,9 @@
 /// Printed with the verdict.
 pub const MARKER: &str = "RETROPANE-MBX-2D";
 
-/// The MBX core's registers in the 2700G register window (`0x0FFE0000`).
-pub const MBX: usize = 0x4000;
-/// MBX register offsets used here (all ones the driver itself touches).
-pub mod reg {
-    /// Core ID (`0x01020000` on the X51v).
-    pub const ID: usize = 0xf00;
-    /// Reset control: `0x111` asserts, 0 releases.
-    pub const RESET: usize = 0x080;
-    /// Interrupt status; bits 16-23 and 30 are also the command FIFO's level.
-    pub const STATUS: usize = 0x12c;
-    /// Interrupt enables.
-    pub const ENABLE: usize = 0x130;
-    /// Interrupt clear (write 1s).
-    pub const CLEAR: usize = 0x134;
-}
-/// The 2D command window (`0x0FFF5000`) in the register window: 4 KiB,
-/// written sequentially, wrapping.
-pub const PORT: usize = 0x1_5000;
-/// The command window's size.
-pub const PORT_SIZE: usize = 0x1000;
-
 /// Where the fence word lives: the last 4 KiB of the 2700G's 16 MiB, far
 /// from every plane RetroPane uses.
 pub const FENCE: usize = 0x00FF_F000;
-
-/// The MBX 2D engine's command words (docs/hw/2700g.md, "The 2D engine").
-pub mod cmd {
-    /// Destination formats (the driver's table).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Format {
-        /// RGB 5:6:5.
-        Rgb565 = 0x5_0000,
-        /// 32 bits per pixel.
-        Bpp32 = 0x6_0000,
-    }
-    /// Pattern copy: fill with the colour.
-    pub const ROP_PATCOPY: u32 = 0xF0F0;
-    /// Ends a batch of commands (not a completion signal).
-    pub const FLUSH: u32 = 0x7000_0000;
-    /// The FIFO's capacity in words.
-    pub const FIFO_WORDS: u32 = 0x1FE;
-
-    /// A solid fill of `[x0, x1) × [y0, y1)` with `color` into the surface
-    /// at local-memory offset `addr`, `stride` bytes per line: seven words.
-    #[must_use]
-    pub fn fill(
-        format: Format,
-        addr: usize,
-        stride: usize,
-        (x0, y0, x1, y1): (u16, u16, u16, u16),
-        color: u32,
-    ) -> [u32; 7] {
-        [
-            0xA000_0000 | format as u32 | (stride as u32 & 0x7FFF),
-            addr as u32 & 0x03FF_FFFC,
-            0x8000_0000 | ROP_PATCOPY,
-            color,
-            xy(x0, y0),
-            xy(x1, y1),
-            FLUSH,
-        ]
-    }
-
-    /// Source copy.
-    pub const ROP_SRCCOPY: u32 = 0xCCCC;
-    /// Operation header bits: no colour word follows; the colour key applies.
-    pub const OP_NO_COLOUR: u32 = 1 << 16;
-    /// The colour key applies (with [`OP_NO_COLOUR`], as the driver sends it).
-    pub const OP_KEY: u32 = 1 << 20;
-    // Bit 23, the driver's "y not positive", is deliberately absent: it
-    // doesn't make the chip copy bottom-up (measured 2026-10-14). A copy
-    // down over itself is one copy with a negative stride on both surfaces
-    // (`Down::NegativeStride`), or strips as the fallback (see `copies`).
-    /// Copy right to left (for a destination right of an overlapping source).
-    pub const OP_RIGHT_LEFT: u32 = 1 << 24;
-    /// No scaling: the driver sends it once at start-up.
-    pub const SCALE_1_TO_1: u32 = 0x6080_0200;
-
-    /// The colour key: source pixels whose bits under `mask` equal `key`
-    /// leave the destination as it was (with [`OP_KEY`]). `key(0, 0)` with no
-    /// `OP_KEY` is the driver's "key off".
-    #[must_use]
-    pub fn key(key: u32, mask: u32) -> [u32; 3] {
-        [0x2000_0001, key, mask]
-    }
-
-    /// A copy of the `[x0, x1) × [y0, y1)` destination rectangle from the
-    /// source surface at `src` (`src_stride`), starting at `(sx, sy)` there.
-    /// `flags`: [`OP_RIGHT_LEFT`] for a rightward overlap, or
-    /// [`OP_KEY`]. Ten words (nine keyed: no colour word).
-    #[must_use]
-    pub fn copy(
-        format: Format,
-        (dst, dst_stride): (usize, usize),
-        (src, src_stride): (usize, usize),
-        (sx, sy): (u16, u16),
-        (x0, y0, x1, y1): (u16, u16, u16, u16),
-        flags: u32,
-    ) -> ([u32; 10], usize) {
-        let keyed = flags & OP_KEY != 0;
-        let op = 0x8000_0000 | ROP_SRCCOPY | flags | if keyed { OP_NO_COLOUR } else { 0 };
-        let mut w = [
-            0xA000_0000 | format as u32 | (dst_stride as u32 & 0x7FFF),
-            dst as u32 & 0x03FF_FFFC,
-            0x9400_0000 | format as u32 | (src_stride as u32 & 0x7FFF),
-            src as u32 & 0x03FF_FFFC,
-            0x3000_0000 | u32::from(sx & 0x1FFF) << 14 | u32::from(sy & 0x1FFF),
-            op,
-            0, // the colour word the driver always sends (ignored for a copy)
-            xy(x0, y0),
-            xy(x1, y1),
-            FLUSH,
-        ];
-        if keyed {
-            w.copy_within(7.., 6);
-            return (w, 9);
-        }
-        (w, 10)
-    }
-
-    /// A coordinate word: 13-bit x and y.
-    #[must_use]
-    pub fn xy(x: u16, y: u16) -> u32 {
-        u32::from(x & 0x1FFF) << 16 | u32::from(y & 0x1FFF)
-    }
-
-    /// The fence: writes `n` into the 32-bit word at local-memory `addr`.
-    #[must_use]
-    pub fn fence(addr: usize, n: u32) -> [u32; 7] {
-        fill(Format::Bpp32, addr, 4, (0, 0, 1, 1), n)
-    }
-
-    /// Free bytes in the command FIFO, from the status register.
-    #[must_use]
-    pub fn free_bytes(status: u32) -> u32 {
-        let used = ((status & 0x00FF_0000) | ((status >> 6) & 0x0100_0000)) >> 16;
-        FIFO_WORDS.saturating_sub(used) * 4
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-
-        #[test]
-        fn fill_words() {
-            let w = fill(Format::Rgb565, 0x6_0000, 960, (40, 120, 440, 320), 0xF800);
-            assert_eq!(
-                w,
-                [
-                    0xA005_03C0,
-                    0x0006_0000,
-                    0x8000_F0F0,
-                    0xF800,
-                    0x0028_0078,
-                    0x01B8_0140,
-                    0x7000_0000
-                ]
-            );
-        }
-
-        #[test]
-        fn fence_is_one_pixel_of_32_bits() {
-            let w = fence(super::super::FENCE, 7);
-            assert_eq!(w[0], 0xA006_0004);
-            assert_eq!(w[1], 0x00FF_F000);
-            assert_eq!((w[3], w[4], w[5]), (7, 0, 0x0001_0001));
-        }
-
-        #[test]
-        fn fifo_level() {
-            assert_eq!(free_bytes(0), 0x1FE * 4);
-            // WM's fills showed 0x00950000: 0x95 words queued.
-            assert_eq!(free_bytes(0x0095_0000), (0x1FE - 0x95) * 4);
-            // Bit 30 is the level's ninth bit; other bits are ignored.
-            assert_eq!(free_bytes(0x4000_0004), (0x1FE - 0x100) * 4);
-            assert_eq!(free_bytes(0x40FF_0000), 0);
-        }
-
-        #[test]
-        fn copy_words() {
-            let (w, n) = copy(
-                Format::Rgb565,
-                (0, 960),
-                (0x80_0000, 128),
-                (3, 5),
-                (40, 360, 104, 424),
-                OP_RIGHT_LEFT,
-            );
-            assert_eq!(
-                w[..n],
-                [
-                    0xA005_03C0,
-                    0,
-                    0x9405_0080,
-                    0x0080_0000,
-                    0x3000_C005,
-                    0x8100_CCCC,
-                    0,
-                    0x0028_0168,
-                    0x0068_01A8,
-                    0x7000_0000
-                ]
-            );
-        }
-
-        #[test]
-        fn keyed_copy_has_no_colour_word() {
-            let (w, n) = copy(
-                Format::Rgb565,
-                (0, 960),
-                (0, 960),
-                (0, 0),
-                (0, 0, 1, 1),
-                OP_KEY,
-            );
-            assert_eq!(n, 9);
-            assert_eq!(w[5], 0x8011_CCCC, "the driver's keyed header");
-            assert_eq!(w[6..9], [0, 0x0001_0001, 0x7000_0000]);
-        }
-
-        #[test]
-        fn coordinates_are_13_bits() {
-            assert_eq!(xy(0x2001, 0xFFFF), 0x0001_1FFF);
-        }
-    }
-}
 
 #[cfg(target_os = "none")]
 mod image {
@@ -266,7 +43,9 @@ mod image {
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
 
-    use super::{FENCE, MARKER, MBX, PORT, PORT_SIZE, cmd, reg};
+    use rp_drv_blit2d::{self as cmd, Engine, MBX, Stuck, reg};
+
+    use super::{FENCE, MARKER};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -279,58 +58,6 @@ mod image {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
     }
 
-    /// The 2D engine: the register window and the command window's write
-    /// offset.
-    struct Engine {
-        regs: Mmio,
-        at: usize,
-        fence: u32,
-    }
-
-    impl Engine {
-        fn status(&mut self) -> u32 {
-            self.regs.read32(MBX + reg::STATUS)
-        }
-
-        /// Queues `words`, waiting (up to 100 ms) for room in the FIFO.
-        fn submit(&mut self, words: &[u32]) -> Result<(), u32> {
-            let need = 4 * words.len() as u32;
-            let t0 = rt::ticks();
-            loop {
-                let s = self.status();
-                if cmd::free_bytes(s) >= need {
-                    break;
-                }
-                if us_since(t0) > 100_000 {
-                    return Err(s);
-                }
-            }
-            for &w in words {
-                self.regs.write32(PORT + self.at, w);
-                self.at = (self.at + 4) % PORT_SIZE;
-            }
-            Ok(())
-        }
-
-        /// Queues a fence and waits (up to `limit_us`) for the engine to
-        /// write it: everything queued before it is done. Returns the wait.
-        fn finish(&mut self, vram: &mut [u8], limit_us: u32) -> Result<u32, &'static str> {
-            self.fence += 1;
-            let n = self.fence;
-            self.submit(&cmd::fence(FENCE, n))
-                .map_err(|_| "FIFO full")?;
-            let t0 = rt::ticks();
-            loop {
-                if load32_volatile(vram, FENCE) == Some(n) {
-                    return Ok(us_since(t0));
-                }
-                if us_since(t0) > limit_us {
-                    return Err("fence never written");
-                }
-            }
-        }
-    }
-
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
@@ -341,11 +68,7 @@ mod image {
         let (plane, _) = display.adopt(vram.len());
         let regs = display.into_inner();
         let (a, s) = (plane.offset, plane.stride);
-        let mut e = Engine {
-            regs,
-            at: 0,
-            fence: 0,
-        };
+        let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
 
         log!("MBX ID 0xf00");
         log!("  = 0x{:08x}", e.regs.read32(MBX + reg::ID));
@@ -356,13 +79,7 @@ mod image {
         // The driver's reset (variant 2), interrupts left masked: this image
         // polls.
         log!("reset: 0x080 = 0x111, 0x130 masked, 0x080 = 0, 0x134 = 0xffff");
-        e.regs.write32(MBX + reg::RESET, 0x111);
-        rt::delay_us(2_000);
-        let en = e.regs.read32(MBX + reg::ENABLE);
-        e.regs.write32(MBX + reg::ENABLE, en & !0xFFFF);
-        e.regs.write32(MBX + reg::RESET, 0);
-        rt::delay_us(2_000);
-        e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
+        e.reset(rt::delay_us);
         let st = e.status();
         log!("  status 0x{st:08x} ({} bytes free)", cmd::free_bytes(st));
 
@@ -384,7 +101,7 @@ mod image {
         let rect = (40, 120, 440, 320);
         log!("rectangle {rect:?} red 0xf800 at 0x{a:x}, stride {s}");
         let t0 = rt::ticks();
-        if e.submit(&cmd::fill(cmd::Format::Rgb565, a, s, rect, 0xF800))
+        if e.submit(&cmd::fill(cmd::Format::RGB565, a, s, rect, 0xF800))
             .is_err()
         {
             fail(format_args!("FIFO full"));
@@ -422,7 +139,7 @@ mod image {
         let t0 = rt::ticks();
         for i in 0..20 {
             let w = cmd::fill(
-                cmd::Format::Rgb565,
+                cmd::Format::RGB565,
                 a,
                 s,
                 (0, 0, 480, 640),
@@ -480,7 +197,7 @@ mod image {
             ((456, 20, 460, 620), 0xFFFF),
         ];
         for (r, c) in scene {
-            if e.submit(&cmd::fill(cmd::Format::Rgb565, a, s, r, c))
+            if e.submit(&cmd::fill(cmd::Format::RGB565, a, s, r, c))
                 .is_err()
             {
                 fail(format_args!("FIFO full"));
@@ -525,12 +242,12 @@ mod image {
 
     /// Stage 3b: copies, each checked by reading pixels back.
     fn copies(
-        e: &mut Engine,
+        e: &mut Engine<Mmio>,
         vram: &mut [u8],
         (a, s): (usize, usize),
         px: &dyn Fn(&[u8], usize, usize) -> Option<u16>,
     ) -> bool {
-        use cmd::{Format::Rgb565, OP_KEY, OP_RIGHT_LEFT};
+        use cmd::{OP_KEY, OP_RIGHT_LEFT};
         for y in 0..64 {
             for x in 0..64 {
                 let at = y * TILE_STRIDE + x * 2;
@@ -542,7 +259,7 @@ mod image {
         cpu::drain_write_buffer();
         let mut ok = true;
         let mut run =
-            |e: &mut Engine, what: &str, words: &[u32], checks: &[(usize, usize, u16)]| {
+            |e: &mut Engine<Mmio>, what: &str, words: &[u32], checks: &[(usize, usize, u16)]| {
                 log!("{what}");
                 if e.submit(words).is_err() {
                     fail(format_args!("FIFO full"));
@@ -569,7 +286,7 @@ mod image {
             [(0, 0), (63, 63), (17, 40), (63, 0)].map(|(x, y)| (dx + x, dy + y, tile(x, y)))
         };
         let (w, n) = cmd::copy(
-            Rgb565,
+            cmd::Format::RGB565,
             (a, s),
             (TILE, TILE_STRIDE),
             (0, 0),
@@ -583,7 +300,7 @@ mod image {
             &checks(40, 360),
         );
         let (w, n) = cmd::copy(
-            Rgb565,
+            cmd::Format::RGB565,
             (a, s),
             (a, s),
             (40, 360),
@@ -605,7 +322,7 @@ mod image {
         let mut len = 0;
         for k in (0..64 / DY).rev() {
             let (w, n) = cmd::copy(
-                Rgb565,
+                cmd::Format::RGB565,
                 (a, s),
                 (a, s),
                 (48, 360 + k * DY),
@@ -621,9 +338,9 @@ mod image {
             &words[..len],
             &checks(48, 368),
         );
-        let green = cmd::fill(Rgb565, a, s, (200, 360, 264, 424), 0x07E0);
+        let green = cmd::fill(cmd::Format::RGB565, a, s, (200, 360, 264, 424), 0x07E0);
         let (w, n) = cmd::copy(
-            Rgb565,
+            cmd::Format::RGB565,
             (a, s),
             (KEYED, TILE_STRIDE),
             (0, 0),
@@ -651,7 +368,7 @@ mod image {
         let t0 = rt::ticks();
         for _ in 0..10 {
             let (w, n) = cmd::copy(
-                Rgb565,
+                cmd::Format::RGB565,
                 (a, s),
                 (SCREEN_COPY, s),
                 (0, 0),
@@ -790,7 +507,7 @@ mod image {
     /// test tile at 8 MiB), or something else (logged, to compare with
     /// SDRAM). Informational: the engine may hang; the log names the
     /// address before each try.
-    fn probe_beyond_local_memory(e: &mut Engine, vram: &mut [u8]) {
+    fn probe_beyond_local_memory(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         let screen0 = load32_volatile(vram, 0);
         let tile0 = load32_volatile(vram, TILE);
         for mib in [16usize, 24, 32, 40, 48, 56] {
@@ -801,7 +518,7 @@ mod image {
             cpu::drain_write_buffer();
             log!("probe: engine reads local address 0x{src:08x} ({mib} MiB)");
             let (w, n) = cmd::copy(
-                cmd::Format::Rgb565,
+                cmd::Format::RGB565,
                 (PROBE_DST, 64),
                 (src, 64),
                 (0, 0),
@@ -874,16 +591,15 @@ mod image {
 
     /// Queues one way's commands; returns how many copies it took.
     fn queue_down(
-        e: &mut Engine,
+        e: &mut Engine<Mmio>,
         m: Down,
         (at, st): (usize, usize),
         (w, h): (u16, u16),
         dy: u16,
-    ) -> Result<u32, u32> {
-        use cmd::Format::Rgb565;
+    ) -> Result<u32, Stuck> {
         let surf = (at, st);
         let mut send = |dst, src, origin, rect, flags| {
-            let (words, n) = cmd::copy(Rgb565, dst, src, origin, rect, flags);
+            let (words, n) = cmd::copy(cmd::Format::RGB565, dst, src, origin, rect, flags);
             e.submit(&words[..n])
         };
         let bottom = h - dy - 1;
@@ -957,7 +673,7 @@ mod image {
     /// 2026-10-14: one copy, 4.2 ms full screen), strips and scratch must
     /// work; the bit 23 ways are informational (all wrong on the device);
     /// stops at the first stuck engine.
-    fn ways_down(e: &mut Engine, vram: &mut [u8], screen: (usize, usize)) -> bool {
+    fn ways_down(e: &mut Engine<Mmio>, vram: &mut [u8], screen: (usize, usize)) -> bool {
         let surf = (WAYS + WAYS_STRIDE, WAYS_STRIDE);
         let mut works = [true; DOWN.len()];
         let mut ok = true;
@@ -965,7 +681,7 @@ mod image {
             for dy in [1u16, 8] {
                 ways_fill(vram);
                 if let Err(st) = queue_down(e, m, surf, (64, WAYS_H), dy) {
-                    log!("down {m:?} dy {dy}: FIFO stuck (0x{st:08x}): stopping");
+                    log!("down {m:?} dy {dy}: {st}: stopping");
                     return false;
                 }
                 if let Err(why) = e.finish(vram, 50_000) {
@@ -995,7 +711,7 @@ mod image {
                 let n = match queue_down(e, m, screen, (480, 640), dy) {
                     Ok(n) => n,
                     Err(st) => {
-                        log!("time {m:?} dy {dy}: FIFO stuck (0x{st:08x}): stopping");
+                        log!("time {m:?} dy {dy}: {st}: stopping");
                         return false;
                     }
                 };
@@ -1033,7 +749,7 @@ mod image {
     /// system-level interrupt registers are left as Windows Mobile set them
     /// and never read (their layout is unknown; a wrong read hangs the bus).
     fn completion(
-        e: &mut Engine,
+        e: &mut Engine<Mmio>,
         vram: &mut [u8],
         (a, s): (usize, usize),
     ) -> Option<(Mmio, [u32; 4], rt::IrqLine)> {
@@ -1089,14 +805,13 @@ mod image {
             log!("completion: 0x130 = 0x{enables:04x}, status 0x{st0:08x} before");
             let t0 = rt::ticks();
             for i in 0..20 {
-                let w = cmd::fill(cmd::Format::Rgb565, a, s, (0, 0, 480, 640), 0x0841 * i);
+                let w = cmd::fill(cmd::Format::RGB565, a, s, (0, 0, 480, 640), 0x0841 * i);
                 if e.submit(&w).is_err() {
                     log!("  FIFO full at fill {i}: stopping");
                     return None;
                 }
             }
-            e.fence += 1;
-            let n = e.fence;
+            let n = e.next_fence();
             if e.submit(&cmd::fence(FENCE, n)).is_err() {
                 log!("  FIFO full at the fence: stopping");
                 return None;
@@ -1183,7 +898,10 @@ mod image {
     /// The pin that follows an enabled event is the 2700G's interrupt
     /// (SYSINTR 27 under WM; candidates 11, 12, 83-87, 94, 96). `DINTRE` is
     /// put back after. Informational.
-    fn interrupt_line(e: &mut Engine, (mut gpio, noisy, mut irq): (Mmio, [u32; 4], rt::IrqLine)) {
+    fn interrupt_line(
+        e: &mut Engine<Mmio>,
+        (mut gpio, noisy, mut irq): (Mmio, [u32; 4], rt::IrqLine),
+    ) {
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
         let quiet = |a: [u32; 4], b: [u32; 4]| -> [u32; 4] {
             core::array::from_fn(|k| (a[k] ^ b[k]) & !noisy[k])
