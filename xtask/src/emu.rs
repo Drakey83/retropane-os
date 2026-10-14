@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.11.2";
+pub const QEMU_RELEASE: &str = "rp-v0.11.3";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
