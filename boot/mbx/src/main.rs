@@ -1029,6 +1029,20 @@ mod image {
             return;
         };
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
+        // Pins that change with the engine idle are other peripherals'
+        // clocks and PWM outputs (they filled the first run's log in 0.3 ms):
+        // learnt over 5 ms, then ignored.
+        let mut noisy = [0u32; 4];
+        let mut prev = levels(&mut gpio);
+        let t = rt::ticks();
+        while us_since(t) < 5_000 {
+            let g1 = levels(&mut gpio);
+            for k in 0..4 {
+                noisy[k] |= g1[k] ^ prev[k];
+            }
+            prev = g1;
+        }
+        log!("completion: GPIO bits busy while idle (ignored): {noisy:08x?}");
         for enables in [0u32, 0x87F5, 0x0400] {
             e.regs.write32(MBX + reg::ENABLE, enables);
             e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
@@ -1051,22 +1065,28 @@ mod image {
             }
             let (mut st, mut g) = (st0, g0);
             let mut landed: Option<u32> = None;
-            let mut changes = 0;
+            let (mut status_changes, mut pin_changes) = (0, 0);
+            let mut seen = st0;
             loop {
                 let now = us_since(t0);
                 let st1 = e.status() & STATUS_BITS;
                 let g1 = levels(&mut gpio);
                 if landed.is_none() && load32_volatile(vram, FENCE) == Some(n) {
                     landed = Some(now);
-                    log!("  {now} us: fence landed");
+                    log!("  {now} us: fence landed, status 0x{st1:08x}");
                 }
-                if (st1 != st || g1 != g) && changes < 12 {
-                    changes += 1;
-                    let flip: [u32; 4] = core::array::from_fn(|k| g1[k] ^ g[k]);
-                    log!(
-                        "  {now} us: status 0x{st1:08x}, GPIO bits flipped {flip:08x?} (now {g1:08x?})"
-                    );
+                // Status and pins on separate budgets: neither crowds out
+                // the other.
+                if st1 != st && status_changes < 16 {
+                    status_changes += 1;
+                    log!("  {now} us: status 0x{st1:08x}");
                 }
+                let flip: [u32; 4] = core::array::from_fn(|k| (g1[k] ^ g[k]) & !noisy[k]);
+                if flip != [0; 4] && pin_changes < 16 {
+                    pin_changes += 1;
+                    log!("  {now} us: GPIO bits flipped {flip:08x?} (now {g1:08x?})");
+                }
+                seen |= st1;
                 (st, g) = (st1, g1);
                 match landed {
                     Some(t) if now > t + 5_000 => break,
@@ -1077,10 +1097,11 @@ mod image {
                     _ => {}
                 }
             }
+            log!("  every status bit seen: 0x{seen:08x}; status now 0x{st:08x}");
             e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
             let st2 = e.status() & STATUS_BITS;
             let g2 = levels(&mut gpio);
-            let flip: [u32; 4] = core::array::from_fn(|k| g2[k] ^ g0[k]);
+            let flip: [u32; 4] = core::array::from_fn(|k| (g2[k] ^ g0[k]) & !noisy[k]);
             log!(
                 "  after clearing: status 0x{st2:08x}, GPIO bits differing from before {flip:08x?}"
             );
