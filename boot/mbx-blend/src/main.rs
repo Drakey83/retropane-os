@@ -235,12 +235,13 @@ mod image {
             "FAIL (see the log)"
         };
         log!("{MARKER}: {verdict} - 32 bpp ramps on screen; held until a button");
+        let keypad = arm_keypad();
         if let Some(bus) = rt::take_ffuart() {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
             let _ = writeln!(uart, "{MARKER}: {verdict}");
         }
-        hold_until_button();
+        hold_until_button(keypad);
         // The plane as found (the 2700G keeps it across images).
         for (off, v) in saved.into_iter().flatten() {
             e.regs.write32(off, v);
@@ -1010,16 +1011,28 @@ mod image {
         (ok, Some(saved))
     }
 
-    /// Keeps the picture up until a button is pressed and released,
-    /// checking in with the loader's watchdog; gives up after 5 minutes.
-    fn hold_until_button() {
+    /// The keypad, enabled with earlier activity discarded: taken before
+    /// the image says it is ready (the verdict on the serial port), so a
+    /// press that follows the verdict at once can't fall between the two
+    /// (the emulator check presses at once; CI lost the press, 2026-10-14).
+    fn arm_keypad() -> Option<Keypad<Mmio>> {
         let Some(kp) = rt::take_keypad() else {
             log!("no keypad: returning");
-            return;
+            return None;
         };
         let mut keypad = Keypad::new(kp);
         keypad.enable();
         keypad.acknowledge();
+        Some(keypad)
+    }
+
+    /// Keeps the picture up until a button is pressed and released (the
+    /// release too, so the press doesn't reach the loader), checking in with
+    /// the loader's watchdog; gives up after 5 minutes.
+    fn hold_until_button(keypad: Option<Keypad<Mmio>>) {
+        let Some(mut keypad) = keypad else {
+            return;
+        };
         let t0 = rt::ticks();
         let mut seen = false;
         while us_since(t0) < 300_000_000 {
