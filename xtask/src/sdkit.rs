@@ -86,12 +86,20 @@ Other images: copy one folder's retropane.bin over the one next to haret.exe.
             Mobile starts HaRET (and so the loader) at every boot, including
             after a watchdog reset. To stop: delete it from \\Windows\\StartUp,
             or just take the SD card out (then Windows Mobile boots normally).
+- cards/  The cards' drive icons on the PC (by Juanje, puntodepartida.com,
+          used with permission). `cargo xtask install` puts the sd/ pair on
+          the SD card; copy the cf/ pair to the CF card's root yourself.
 ";
 
 /// A Windows CE shortcut: the length of what follows `#`, then the command.
 fn shortcut(target: &str) -> String {
     let cmd = format!("\"{target}\"");
     format!("{}#{cmd}", cmd.chars().count())
+}
+
+/// A card's `autorun.inf`: only the drive icon (CRLF, as Windows writes it).
+fn autorun_inf(icon: &str) -> String {
+    format!("[autorun]\r\nicon={icon}\r\n")
 }
 
 /// Builds the kit into `target/sdkit`.
@@ -156,6 +164,18 @@ pub fn build(root: &Path) -> Result<(), String> {
         std::fs::write(kit.join(name), text.replace('\n', "\r\n"))
             .map_err(|e| format!("{name}: {e}"))?;
     }
+
+    // The cards' drive icons (assets/cards, used with the author's
+    // permission): each card's root gets its icon and an autorun.inf naming
+    // it, which is all Windows reads from a removable drive's autorun.inf.
+    for (dir, icon) in [("sd", "card-sd.ico"), ("cf", "card-compact-flash.ico")] {
+        let out = kit.join("cards").join(dir);
+        std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        std::fs::copy(root.join("assets/cards").join(icon), out.join(icon))
+            .map_err(|e| format!("{icon}: {e}"))?;
+        std::fs::write(out.join("autorun.inf"), autorun_inf(icon))
+            .map_err(|e| format!("cards/{dir}/autorun.inf: {e}"))?;
+    }
     eprintln!("    SD kit ready: {}", kit.display());
     Ok(())
 }
@@ -203,6 +223,15 @@ fn objcopy() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn autorun_names_the_icon_only() {
+        // The bytes of the file already on the owner's SD card.
+        assert_eq!(
+            autorun_inf("card-sd.ico"),
+            "[autorun]\r\nicon=card-sd.ico\r\n"
+        );
+    }
 
     #[test]
     fn shortcuts_count_the_characters_after_the_hash() {
