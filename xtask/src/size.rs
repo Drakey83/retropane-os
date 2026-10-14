@@ -312,10 +312,12 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),
     // with the display driver to adopt the screen and the CPU fill to time
-    // against. 16.7 KiB measured (2026-10-13), + ~10%.
+    // against. 16.7 KiB measured (2026-10-13), + ~10%; then 19 -> 27 KiB
+    // for the copy checks (step 2: off-screen, overlapping, colour-keyed,
+    // timed), 23.7 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 19 * 1024,
+        max_load: 27 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

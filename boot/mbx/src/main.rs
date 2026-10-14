@@ -90,6 +90,61 @@ pub mod cmd {
         ]
     }
 
+    /// Source copy.
+    pub const ROP_SRCCOPY: u32 = 0xCCCC;
+    /// Operation header bits: no colour word follows; the colour key applies.
+    pub const OP_NO_COLOUR: u32 = 1 << 16;
+    /// The colour key applies (with [`OP_NO_COLOUR`], as the driver sends it).
+    pub const OP_KEY: u32 = 1 << 20;
+    /// Copy bottom row first (for a destination below an overlapping source).
+    pub const OP_BOTTOM_UP: u32 = 1 << 23;
+    /// Copy right to left (for a destination right of an overlapping source).
+    pub const OP_RIGHT_LEFT: u32 = 1 << 24;
+    /// No scaling: the driver sends it once at start-up.
+    pub const SCALE_1_TO_1: u32 = 0x6080_0200;
+
+    /// The colour key: source pixels whose bits under `mask` equal `key`
+    /// leave the destination as it was (with [`OP_KEY`]). `key(0, 0)` with no
+    /// `OP_KEY` is the driver's "key off".
+    #[must_use]
+    pub fn key(key: u32, mask: u32) -> [u32; 3] {
+        [0x2000_0001, key, mask]
+    }
+
+    /// A copy of the `[x0, x1) × [y0, y1)` destination rectangle from the
+    /// source surface at `src` (`src_stride`), starting at `(sx, sy)` there.
+    /// `flags`: [`OP_BOTTOM_UP`] / [`OP_RIGHT_LEFT`] for overlaps, or
+    /// [`OP_KEY`]. Ten words (nine keyed: no colour word).
+    #[must_use]
+    pub fn copy(
+        format: Format,
+        (dst, dst_stride): (usize, usize),
+        (src, src_stride): (usize, usize),
+        (sx, sy): (u16, u16),
+        (x0, y0, x1, y1): (u16, u16, u16, u16),
+        flags: u32,
+    ) -> ([u32; 10], usize) {
+        let keyed = flags & OP_KEY != 0;
+        let op = 0x8000_0000 | ROP_SRCCOPY | flags | if keyed { OP_NO_COLOUR } else { 0 };
+        let mut w = [
+            0xA000_0000 | format as u32 | (dst_stride as u32 & 0x7FFF),
+            dst as u32 & 0x03FF_FFFC,
+            0x9400_0000 | format as u32 | (src_stride as u32 & 0x7FFF),
+            src as u32 & 0x03FF_FFFC,
+            0x3000_0000 | u32::from(sx & 0x1FFF) << 14 | u32::from(sy & 0x1FFF),
+            op,
+            0, // the colour word the driver always sends (ignored for a copy)
+            xy(x0, y0),
+            xy(x1, y1),
+            FLUSH,
+        ];
+        if keyed {
+            w.copy_within(7.., 6);
+            return (w, 9);
+        }
+        (w, 10)
+    }
+
     /// A coordinate word: 13-bit x and y.
     #[must_use]
     pub fn xy(x: u16, y: u16) -> u32 {
@@ -146,6 +201,48 @@ pub mod cmd {
             // Bit 30 is the level's ninth bit; other bits are ignored.
             assert_eq!(free_bytes(0x4000_0004), (0x1FE - 0x100) * 4);
             assert_eq!(free_bytes(0x40FF_0000), 0);
+        }
+
+        #[test]
+        fn copy_words() {
+            let (w, n) = copy(
+                Format::Rgb565,
+                (0, 960),
+                (0x80_0000, 128),
+                (3, 5),
+                (40, 360, 104, 424),
+                OP_RIGHT_LEFT,
+            );
+            assert_eq!(
+                w[..n],
+                [
+                    0xA005_03C0,
+                    0,
+                    0x9405_0080,
+                    0x0080_0000,
+                    0x3000_C005,
+                    0x8100_CCCC,
+                    0,
+                    0x0028_0168,
+                    0x0068_01A8,
+                    0x7000_0000
+                ]
+            );
+        }
+
+        #[test]
+        fn keyed_copy_has_no_colour_word() {
+            let (w, n) = copy(
+                Format::Rgb565,
+                (0, 960),
+                (0, 960),
+                (0, 0),
+                (0, 0, 1, 1),
+                OP_KEY,
+            );
+            assert_eq!(n, 9);
+            assert_eq!(w[5], 0x8011_CCCC, "the driver's keyed header");
+            assert_eq!(w[6..9], [0, 0x0001_0001, 0x7000_0000]);
         }
 
         #[test]
@@ -313,6 +410,11 @@ mod image {
             && px(vram, 440, 200) == Some(0)
             && px(vram, 100, 320) == Some(0);
 
+        // 3b. Copies: from off-screen memory, overlapping in both
+        // directions, colour-keyed; each checked by reading pixels back.
+        let copy_ok = copies(&mut e, vram, (a, s), &px);
+        let ok = ok && copy_ok;
+
         // 4. Timing: GPU full-screen fills, then the CPU's.
         let colors: [u16; 4] = [0x001F, 0x07E0, 0xF81F, 0xFFE0];
         let t0 = rt::ticks();
@@ -387,6 +489,166 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Off-screen test tile: 64 × 64 RGB565 at 8 MiB into local memory.
+    const TILE: usize = 0x0080_0000;
+    const TILE_STRIDE: usize = 128;
+    /// The same tile with every other pixel the key colour.
+    const KEYED: usize = TILE + 0x2000;
+    const KEY: u16 = 0x1234;
+    /// A full-screen source for the copy timing.
+    const SCREEN_COPY: usize = 0x0090_0000;
+
+    /// The tile's pixel at (x, y): distinct, every bit used, never `KEY`.
+    fn tile(x: usize, y: usize) -> u16 {
+        ((x * 37 + y * 101 + 1) as u16) | 0x8000
+    }
+
+    /// Stage 3b: copies, each checked by reading pixels back.
+    fn copies(
+        e: &mut Engine,
+        vram: &mut [u8],
+        (a, s): (usize, usize),
+        px: &dyn Fn(&[u8], usize, usize) -> Option<u16>,
+    ) -> bool {
+        use cmd::{Format::Rgb565, OP_BOTTOM_UP, OP_KEY, OP_RIGHT_LEFT};
+        for y in 0..64 {
+            for x in 0..64 {
+                let at = y * TILE_STRIDE + x * 2;
+                vram[TILE + at..TILE + at + 2].copy_from_slice(&tile(x, y).to_le_bytes());
+                let k = if (x + y) % 2 == 0 { KEY } else { tile(x, y) };
+                vram[KEYED + at..KEYED + at + 2].copy_from_slice(&k.to_le_bytes());
+            }
+        }
+        cpu::drain_write_buffer();
+        let mut ok = true;
+        let mut run =
+            |e: &mut Engine, what: &str, words: &[u32], checks: &[(usize, usize, u16)]| {
+                log!("{what}");
+                if e.submit(words).is_err() {
+                    fail(format_args!("FIFO full"));
+                }
+                if let Err(why) = e.finish(vram, 50_000) {
+                    fail(format_args!("{why}"));
+                }
+                for &(x, y, want) in checks {
+                    let got = px(vram, x, y);
+                    let fine = got == Some(want);
+                    ok &= fine;
+                    log!(
+                        "  pixel ({x},{y}) = {got:04x?}, expect {want:04x}{}",
+                        if fine { "" } else { "  <-- WRONG" }
+                    );
+                }
+            };
+        // The driver's start-up state: no scaling, no key.
+        let mut init = [0u32; 4];
+        init[0] = cmd::SCALE_1_TO_1;
+        init[1..].copy_from_slice(&cmd::key(0, 0));
+        run(e, "copy state: scale 1:1, key off", &init, &[]);
+        let checks = |dx: usize, dy: usize| {
+            [(0, 0), (63, 63), (17, 40), (63, 0)].map(|(x, y)| (dx + x, dy + y, tile(x, y)))
+        };
+        let (w, n) = cmd::copy(
+            Rgb565,
+            (a, s),
+            (TILE, TILE_STRIDE),
+            (0, 0),
+            (40, 360, 104, 424),
+            0,
+        );
+        run(
+            e,
+            "copy: tile from off-screen to (40,360)",
+            &w[..n],
+            &checks(40, 360),
+        );
+        let (w, n) = cmd::copy(
+            Rgb565,
+            (a, s),
+            (a, s),
+            (40, 360),
+            (48, 360, 112, 424),
+            OP_RIGHT_LEFT,
+        );
+        run(
+            e,
+            "copy: 8 px right over itself (right to left)",
+            &w[..n],
+            &checks(48, 360),
+        );
+        let (w, n) = cmd::copy(
+            Rgb565,
+            (a, s),
+            (a, s),
+            (48, 360),
+            (48, 368, 112, 432),
+            OP_BOTTOM_UP,
+        );
+        run(
+            e,
+            "copy: 8 px down over itself (bottom up)",
+            &w[..n],
+            &checks(48, 368),
+        );
+        let green = cmd::fill(Rgb565, a, s, (200, 360, 264, 424), 0x07E0);
+        let (w, n) = cmd::copy(
+            Rgb565,
+            (a, s),
+            (KEYED, TILE_STRIDE),
+            (0, 0),
+            (200, 360, 264, 424),
+            OP_KEY,
+        );
+        let mut words = [0u32; 3 + 7 + 9];
+        words[..3].copy_from_slice(&cmd::key(u32::from(KEY), 0xFFFF));
+        words[3..10].copy_from_slice(&green);
+        words[10..10 + n].copy_from_slice(&w[..n]);
+        run(
+            e,
+            "keyed copy over green: key pixels stay green",
+            &words[..10 + n],
+            &[
+                (200, 360, 0x07E0),
+                (201, 360, tile(1, 0)),
+                (263, 423, 0x07E0),
+                (262, 423, tile(62, 63)),
+            ],
+        );
+        run(e, "key off", &cmd::key(0, 0), &[]);
+
+        // Copy speed: ten full screens from off-screen memory.
+        let t0 = rt::ticks();
+        for _ in 0..10 {
+            let (w, n) = cmd::copy(
+                Rgb565,
+                (a, s),
+                (SCREEN_COPY, s),
+                (0, 0),
+                (0, 0, 480, 640),
+                0,
+            );
+            if e.submit(&w[..n]).is_err() {
+                fail(format_args!("FIFO full"));
+            }
+        }
+        let queued = us_since(t0);
+        match e.finish(vram, 1_000_000) {
+            Ok(_) => {
+                let us = us_since(t0);
+                log!(
+                    "10 GPU full-screen copies: {us} us ({} us each; queued in {queued} us)",
+                    us / 10
+                );
+            }
+            Err(why) => fail(format_args!("{why}")),
+        }
+        log!(
+            "copies: {}",
+            if ok { "all as expected" } else { "SOME WRONG" }
+        );
+        ok
     }
 
     /// Keeps the picture up until a button is pressed and released (the
