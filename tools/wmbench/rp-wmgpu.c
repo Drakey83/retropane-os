@@ -14,9 +14,10 @@
  *    not the CPU. Near 0%: a CPU thread draws later.
  * 2. DMA: the PXA270's 32 channels sampled while fills drain, against an
  *    idle sample: channels running and their source, target and command.
- * 3. The 2700G registers Dell's driver itself reads (v2; v1 read the
- *    whole 128 KB block and froze WM): idle, then how often each changes
- *    while fills drain, then while nothing is drawn.
+ * 3. 2700G registers known to exist (v7: the system block's named ones,
+ *    and the MBX core's at its own base, 0x0FFE4000; v2-v6 read MBX offsets
+ *    on the system block and hung the bus): idle, then how often each
+ *    changes while fills drain, then while nothing is drawn.
  *
  * Built by `cargo xtask wmbench` (cegcc in WSL).
  */
@@ -205,27 +206,20 @@ static void dma(void)
  * and froze WM. Names where Linux's mbxfb has one.
  */
 #define REGS_PHYS 0x0FFE0000UL
-#define REGS_SIZE 0x3000UL
+#define REGS_SIZE 0x5000UL
 static const struct { unsigned long off; const char *name; } SAFE[] = {
-    /* Named by Linux (mbxfb) and used by RetroPane or the display: first. */
+    /* The system block (0x0FFE0000): named by Linux, read fine under WM. */
     {0x0000, "SYSCFG"}, {0x002c, "SYSCLKSRC"}, {0x0040, "PLLSTAT"},
     {0x0044, "VOVRCLK"}, {0x0048, "PIXCLK"}, {0x0050, "M24CLK"},
     {0x0054, "MBXCLK"}, {0x0060, "LCD_CONFIG"}, {0x0204, "PWMCFG"},
-    {0x0210, "PWM0DIV"}, {0x0214, "PWM0DUTY"}, {0x0218, "PWM0PER"},
-    {0x0220, "PWM1DIV"}, {0x0224, "PWM1DUTY"}, {0x0228, "PWM1PER"},
     {0x0ff0, "ID"}, {0x100c, "LMPWRSTAT"}, {0x2154, "DSCTRL"},
-    {0x216c, "DVT03"}, {0x2308, "DVLNUM"}, {0x2060, "?2060"},
-    {0x2064, "?2064"}, {0x2100, "?2100"},
-    /* No public name: last, one at a time. */
-    /* 0x012c left out: reading it froze WM (v3, 2026-10-13): most likely an
-     * interrupt status cleared by reading, stolen from WM's driver. */
-    {0x0300, "?0300"}, {0x0304, "?0304"},
-    /* 0x030c left out too: it froze WM (v4), read then written back by
-     * the driver: an interrupt status. */
-    /* 0x085c froze WM (v5). */ {0x0f00, "?0f00"},
-    {0x0f10, "?0f10"}, {0x0fe0, "?0fe0"}, {0x0fe4, "?0fe4"},
-    {0x0fec, "?0fec"}, {0x0ff4, "?0ff4"}, {0x0ff8, "?0ff8"},
-    {0x0ffc, "?0ffc"},
+    {0x2308, "DVLNUM"}, {0x0300, "?0300"}, {0x0304, "?0304"},
+    /* The MBX core's block at 0x0FFE4000 (v7, 2026-10-13: v2-v6 read these
+     * offsets on the system block, where they hung the bus). Its ID first
+     * (read fine under the loader: 0x01020000, 0x00010000), then the four
+     * offsets that froze WM, now at the right base. */
+    {0x4f00, "MBX f00 ID"}, {0x4f10, "MBX f10 REV"},
+    {0x412c, "MBX 12c"}, {0x430c, "MBX 30c"}, {0x485c, "MBX 85c"},
 };
 #define NSAFE (sizeof SAFE / sizeof SAFE[0])
 
