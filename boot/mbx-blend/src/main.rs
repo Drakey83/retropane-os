@@ -7,7 +7,8 @@
 //! overruns; `DVECTRL` (`0x2310`) holds the VEVENT line, 643 here):
 //!
 //! - E1: the registers as found, and the frame (lines, period) from `DVLNUM`;
-//! - E2: how a status bit clears: writing 0 to it, or writing 1;
+//! - E2: each status bit clears by read-modify-write (`DINTRS` is plain
+//!   read/write: a 1 written sets a bit, measured on the first run);
 //! - E3: when each of bits 0-3 sets again after a clear, at 16 lines spread
 //!   over the frame: the scan line it sets on and the delay;
 //! - E4: VEVENT moved to lines 100 and 400: do bits 2/3 follow, and does
@@ -28,6 +29,9 @@
 //!   source (ARGB4444-, ARGB8888-shaped data), blended or not;
 //! - B4: translucent solid fills (a fill with bit 17 and alpha in the colour);
 //! - B5: does heavy 2D work starve scan-out (`DINTRS` underrun bits)?
+//!
+//! First run (2026-10-14, docs/hw/2700g.md): all of it answered except E5
+//! and B5, which cleared bits by writing 1s and so set them; fixed.
 //!
 //! Every wait has a timeout. A stuck engine is reset and the probe goes on
 //! (logged); three in a row end the blend stages. Every state touched
@@ -245,20 +249,10 @@ mod image {
 
     // ---------------------------------------------------------------- events
 
-    /// How a status bit clears.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Clear {
-        /// Write 0 to it, 1s elsewhere (Dell's way).
-        Zero,
-        /// Write 1 to it, 0s elsewhere.
-        One,
-    }
-
-    fn clear(regs: &mut Mmio, bit: u32, how: Clear) {
-        match how {
-            Clear::Zero => regs.write32(DINTRS, !(1 << bit)),
-            Clear::One => regs.write32(DINTRS, 1 << bit),
-        }
+    /// Clears one status bit: `DINTRS` is plain read/write (a 1 written
+    /// sets a bit; measured 2026-10-14), so only read-modify-write is safe.
+    fn clear(regs: &mut Mmio, bit: u32) {
+        rp_drv_mbx_display::ack_events(regs, 1 << bit);
     }
 
     /// Waits (up to `limit_us`) for `f`; true if it held.
@@ -314,36 +308,29 @@ mod image {
             frame_us * 1000 / lines.max(1)
         );
 
-        // E2: how each bit clears.
-        let mut how = [None; 4];
+        // E2: does each bit clear by read-modify-write?
+        let mut how = [false; 4];
         for bit in 0..4u32 {
-            for method in [Clear::Zero, Clear::One] {
-                if !wait(40_000, || regs.read32(DINTRS) & 1 << bit != 0) {
-                    log!("E2 {}: never set in 40 ms", BIT_NAMES[bit as usize]);
-                    break;
-                }
-                clear(regs, bit, method);
-                let r1 = regs.read32(DINTRS);
-                let line = regs.read32(DVLNUM) & 0xFFF;
-                let cleared = r1 & 1 << bit == 0;
-                log!(
-                    "E2 {} cleared by writing {}: {} (read 0x{r1:08x} at line {line})",
-                    BIT_NAMES[bit as usize],
-                    if method == Clear::Zero { 0 } else { 1 },
-                    if cleared { "yes" } else { "no" }
-                );
-                if cleared && how[bit as usize].is_none() {
-                    how[bit as usize] = Some(method);
-                }
+            if !wait(40_000, || regs.read32(DINTRS) & 1 << bit != 0) {
+                log!("E2 {}: never set in 40 ms", BIT_NAMES[bit as usize]);
+                continue;
             }
+            clear(regs, bit);
+            let r1 = regs.read32(DINTRS);
+            how[bit as usize] = r1 & 1 << bit == 0;
+            log!(
+                "E2 {} cleared by read-modify-write: {} (read 0x{r1:08x})",
+                BIT_NAMES[bit as usize],
+                if how[bit as usize] { "yes" } else { "no" }
+            );
         }
 
         // E3: when each bit sets again, cleared at 16 lines over the frame.
-        let set_after = |regs: &mut Mmio, bit: u32, how: Clear, at: u32| -> Option<(u32, u32)> {
+        let set_after = |regs: &mut Mmio, bit: u32, at: u32| -> Option<(u32, u32)> {
             if !wait(2 * frame_us, || regs.read32(DVLNUM) & 0xFFF == at) {
                 return None;
             }
-            clear(regs, bit, how);
+            clear(regs, bit);
             let t0 = rt::ticks();
             while us_since(t0) < 2 * frame_us {
                 if regs.read32(DINTRS) & 1 << bit != 0 {
@@ -352,23 +339,20 @@ mod image {
             }
             None
         };
-        let measure = |regs: &mut Mmio, bit: u32, how: Clear, n: u32| {
+        let measure = |regs: &mut Mmio, bit: u32, n: u32| {
             let mut s = SetStats::default();
             for k in 0..n {
-                s.add(set_after(regs, bit, how, k * lines / n));
+                s.add(set_after(regs, bit, k * lines / n));
                 rt::check_in();
             }
             s
         };
         for bit in 0..4u32 {
-            let Some(h) = how[bit as usize] else {
-                log!(
-                    "E3 {}: no way to clear it found: skipped",
-                    BIT_NAMES[bit as usize]
-                );
+            if !how[bit as usize] {
+                log!("E3 {}: doesn't clear: skipped", BIT_NAMES[bit as usize]);
                 continue;
-            };
-            let s = measure(regs, bit, h, 16);
+            }
+            let s = measure(regs, bit, 16);
             log!(
                 "E3 {}: set again {}/{} times, lines {:?}, after {:?} us: {}",
                 BIT_NAMES[bit as usize],
@@ -394,8 +378,10 @@ mod image {
         for line in [100u32, 400] {
             regs.write32(DVECTRL, (found[3] & !(0xFFF << 16)) | line << 16);
             for bit in [2u32, 3] {
-                let Some(h) = how[bit as usize] else { continue };
-                let s = measure(regs, bit, h, 8);
+                if !how[bit as usize] {
+                    continue;
+                }
+                let s = measure(regs, bit, 8);
                 log!(
                     "E4 VEVENT at {line}: {} set {}/{}, lines {:?}: {}",
                     BIT_NAMES[bit as usize],
@@ -405,13 +391,13 @@ mod image {
                     s.kind()
                 );
             }
-            let (Some(line_irq), Some(h)) = (irq.as_mut(), how[2]) else {
+            let (Some(line_irq), true) = (irq.as_mut(), how[2]) else {
                 continue;
             };
             // VEVENT0 enabled: each set should edge GPIO85; it is cleared
             // at once so the line can edge again next frame.
             regs.write32(MINTENABLE, 0x800F);
-            clear(regs, 2, h);
+            clear(regs, 2);
             let _ = line_irq.take();
             line_irq.done();
             regs.write32(DINTRE, 1 << 2);
@@ -425,7 +411,7 @@ mod image {
                     }
                     edges += 1;
                     if regs.read32(DINTRS) & 1 << 2 != 0 {
-                        clear(regs, 2, h);
+                        clear(regs, 2);
                     }
                     line_irq.done();
                 }
@@ -439,15 +425,15 @@ mod image {
         regs.write32(DVECTRL, found[3]);
 
         // E5: DINTRCNT's effect on how often each bit sets in 20 ms.
-        let count_sets = |regs: &mut Mmio, how: &[Option<Clear>; 4]| -> [u32; 4] {
+        let count_sets = |regs: &mut Mmio, how: &[bool; 4]| -> [u32; 4] {
             let mut n = [0u32; 4];
             let t0 = rt::ticks();
             while us_since(t0) < 20_000 {
                 let s = regs.read32(DINTRS);
                 for bit in 0..4 {
-                    if let (true, Some(h)) = (s & 1 << bit != 0, how[bit]) {
+                    if s & 1 << bit != 0 && how[bit] {
                         n[bit] += 1;
-                        clear(regs, bit as u32, h);
+                        clear(regs, bit as u32);
                     }
                 }
             }
@@ -730,9 +716,9 @@ mod image {
 
         // B5: 20 off-screen full-screen fills; do scan-out's underrun or
         // overrun bits (4-6, 16-18) set? Cleared both ways first.
-        e.regs.write32(DINTRS, !0x0007_0070);
-        e.regs.write32(DINTRS, 0x0007_0070);
-        let before = e.regs.read32(DINTRS) & 0x0007_0070;
+        let flags = rp_drv_mbx_display::event::UNDER_OVERRUN;
+        let found = rp_drv_mbx_display::ack_events(&mut e.regs, flags) & flags;
+        let before = e.regs.read32(DINTRS) & flags;
         let t0 = rt::ticks();
         for i in 0..20u32 {
             let _ = e.submit(&cmd::fill(
@@ -744,9 +730,9 @@ mod image {
             ));
         }
         let fine = e.finish(vram, 1_000_000).is_ok();
-        let after = e.regs.read32(DINTRS) & 0x0007_0070;
+        let after = e.regs.read32(DINTRS) & flags;
         log!(
-            "B5 under/overrun bits 0x{before:08x} before, 0x{after:08x} after 20 fills ({} us{})",
+            "B5 under/overrun bits as found 0x{found:08x}, cleared 0x{before:08x}, after 20 fills 0x{after:08x} ({} us{})",
             us_since(t0),
             if fine { "" } else { ", fence never written" }
         );

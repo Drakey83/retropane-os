@@ -134,7 +134,7 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
 | The 2D engine reads only 2700G memory | **Hardware for 2D copy addresses (measured 2026-10-14)**: 32 MiB decoded, its 16 MiB mirrored and a constant between; no copy address reaches system RAM. Other paths (3D core fetches, undecoded commands, bus mastering) **untested** | (P) docs/hw/2700g.md |
 | A copy down over itself on the CPU (WM) | **Choice**: the engine does it in one command with a negative stride, 4.2 ms full screen, the CPU idle (measured); bit 23 is not the way | (P) docs/hw/2700g.md |
 | The CPU reads 2700G memory slowly | Hardware (measured: 61 vs 14.5 ms) | docs/perf.md |
-| No ARGB blending or gradients in the 2D engine | Likely hardware for the 2D engine (Dell's driver has `AlphaBlend`-shaped code only for 4 bpp text coverage); the 3D core can blend (its objects carry blend words), so not a limit of the chip | (A) |
+| No ARGB blending or gradients in the 2D engine | **Wrong (measured 2026-10-14, `rp-mbx-blend`):** with header bit 17 the 2D engine blends ARGB8888 and ARGB4444 sources per pixel, and 4 bpp coverage with a solid colour, with source and destination factors set by the blend word (docs/hw/2700g.md). Gradients: not as such, but a colour through a coverage ramp is a 16-step one. Decision 4's split (ARGB images and glass on the 3D core) is for the owner to revisit | (P) |
 | WM has no compositor: programs draw on the screen | Choice (2005 RAM and CPU budget) | WM's design; replaced here |
 | WM stages bitmaps with the CPU, synchronously, four slots | Choice | (A); alternatives: DMA, surfaces born in 2700G memory |
 | WM's interface is opaque RGB565 | Choice: the planes do per-pixel alpha (measured) | rp-blend |

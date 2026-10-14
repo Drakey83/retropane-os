@@ -877,8 +877,8 @@ mod image {
 
     /// The display's interrupt status and enable (`DINTRS`, `DINTRE`: read
     /// and written by Dell's display ISR, so present; a status bit clears
-    /// by writing 0 to it, 1s leave bits alone: Dell writes the status back
-    /// with the handled bit removed), and the 2700G's interrupt enable (`MINTENABLE`, system
+    /// only by writing the status back without it: DINTRS is plain read/write,
+    /// a 1 written sets a bit; measured 2026-10-14), and the 2700G's interrupt enable (`MINTENABLE`, system
     /// block: write-only for us, never read; bit 15 the master enable, bits
     /// 0-3 the sources, as WM writes `0x800F`).
     const DINTRS: usize = 0x2178;
@@ -962,8 +962,9 @@ mod image {
                         held = Some((now, st));
                     }
                     Some((t, bits)) if now > t + 500 => {
-                        // Write 0 to the bits seen; 1s leave the others.
-                        e.regs.write32(DINTRS, !bits & DISPLAY_BITS);
+                        // Read-modify-write: a 1 written sets a bit
+                        // (the first runs' "events at every clear").
+                        rp_drv_mbx_display::ack_events(&mut e.regs, bits);
                         held = None;
                     }
                     _ => {}
