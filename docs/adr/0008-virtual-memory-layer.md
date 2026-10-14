@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -12,6 +13,14 @@ direction. Building the VM layer (`kernel/mm`: `arm`, `layout`, `pagetable`,
 ARMv5 and the XScale's VIVT caches, which a textbook design would get wrong.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** rule 10's region bound changed
+> (ADR-0019, commit 3ea6afd). Regions no longer sit in a fixed array of
+> 64 in `.bss`: each space's list lives in 4 KiB kernel pages from the
+> frame allocator, 20 bytes per region, up to 8 pages per process
+> (`kernel/mm/src/regions.rs`: `MAX_PAGES`, `MAX_REGIONS` = 1,632). The
+> second-level table bound (256 frames, `pagetable::MAX_SLABS`) is as
+> stated.
 
 1. **One set of page tables for the whole system.** With FCSE, every process
    lives in its own 32 MiB slot of one address space, so there's one
@@ -95,10 +104,16 @@ on a kernel stack; the first version overflowed the 4 KiB abort stack into
 the frame allocator. Buffers are static (`ZBuffers`) and pages are touched in
 place (`PhysMem::with_page`).
 
+> **Correction (note added 2026-10-13):** reclaim is now built
+> (`Vm::reclaim`, a second-chance clock; see ADR-0011's as-built note).
+
 Still to come, in order: reclaim policy (ADR-0011: by process,
 without accessed bits) and ADR-0006's rules one at a time.
 
 ## The four lenses
+
+> **Correction (note added 2026-10-13):** "49 host tests" was the count at
+> commit ed80580; `kernel/mm` now has 85.
 
 | Lens | Effect |
 |---|---|

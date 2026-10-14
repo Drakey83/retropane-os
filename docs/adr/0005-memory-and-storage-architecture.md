@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-10, by the project owner)
 - **Date:** 2026-10-10
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -23,6 +24,19 @@ The constraints that decide everything:
 uncompressed assets and general-purpose Rust machinery everywhere, doesn't fit.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** rule 7: "DESIGN §11" is now
+> `docs/memory-budget.md` (DESIGN.md says it replaced that section): the
+> OS gets at most 12 MiB, apps at least 52 MiB, checked by `cargo xtask
+> cross`; every image has load and zeroed-RAM budgets (17 in `BUDGETS`,
+> `xtask/src/size.rs`), so the "in place now for the bring-up image"
+> remark is out of date. Rule 8: no tiny formatter exists; cold paths use
+> `core::fmt::Write` (`rp-kernel`'s reports in `boot/kernel/src/main.rs`,
+> the console and crash box in `drivers/mbx-display`, `drivers/pxa-uart`).
+> `Debug` derives are unconditional in many kernel and driver crates (e.g.
+> `kernel/ipc/src/lib.rs`, `kernel/fat/src/lib.rs`; `kernel/lz4` limits
+> them to tests); unused impls are dropped at link time, but nothing
+> checks that.
 
 Ten rules, each owned by a layer and checked in CI where possible.
 

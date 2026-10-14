@@ -1,12 +1,13 @@
 # ADR-0017: Securing the development loader
 
-- **Status:** Deferred until release (2026-10-12, by the project owner:
-  "keep it open until release ... this needs to eventually be locked down
-  once it's no longer in active development, but it'll just be a hassle if
-  we do it now"). The design below stands as the plan; locking the loader
-  down (or removing it from release images) is a release requirement in
-  the ROADMAP (Phase 9).
+- **Status:** Proposed (deferred until release, 2026-10-12, by the project
+  owner: "keep it open until release ... this needs to eventually be locked
+  down once it's no longer in active development, but it'll just be a hassle
+  if we do it now"). The design below stands as the plan; locking the loader
+  down (or removing it from release images) is a release requirement in the
+  ROADMAP (Phase 9).
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -67,6 +68,13 @@ Facts that shape the design:
 - **Modernize:** the pattern phones use for USB debugging, with a modern MAC
   and replay protection.
 - **Legacy support:** Windows Mobile had no such check at all.
+
+> **Correction (note added 2026-10-13):** Windows Mobile's own SHA-256 on
+> the device runs at ~8.5-9.3 MB/s (docs/perf.md, `sha256_4k`), so a
+> 70 KB frame is ~8 ms; RetroPane's is not yet measured on the device
+> (the ~62 instructions per byte is the emulator baseline,
+> `bench/baseline-emulator.json`).
+
 - **Better/faster:** one tap per boot; HMAC on a 70 KB frame is a
   few milliseconds on the XScale (bench: ~62 instructions per byte).
 

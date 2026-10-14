@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-11, by the project owner; built ahead of acceptance at the owner's request)
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -21,12 +22,29 @@ Facts (docs/hw/udc.md):
   itself. The endpoint table (endpoint number, type, direction, configuration,
   interface) is fixed before the UDC is enabled. Software handles descriptor
   requests and class requests on endpoint 0, and moves data through FIFOs.
+
+> **Correction (note added 2026-10-13):** the next bullet did not hold on
+> the device. No software-controlled D+ pull-up was found (probably a
+> fixed resistor; `rp-reconnect` tried GPIO2, `UP2OCR` and CPLD bits),
+> and GPIO14 reads 0 while docked and enumerated under RetroPane, so it
+> is not a plain cable-present level (docs/hw/udc.md, "Board wiring";
+> see also the status notes below).
+
 - GPIO2 switches the D+ pull-up (the host sees the device only when it's on),
   and GPIO14 detects the cable. Both were in the state WM uses on the probe
   run.
 - The emulator has no UDC model yet.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** since ADR-0014 the device is a
+> composite (class 0xEF/0x02/0x01, CDC-ACM plus mass storage, `bcdDevice`
+> 26.01, `drivers/pxa-udc/src/usb.rs` `DEVICE`/`CONFIG`); the CDC-class
+> 0x02 device of point 2 survives only as the serial-only fallback
+> (`DEVICE_SERIAL`/`CONFIG_SERIAL`). The `udc` layer is still polled
+> (`Udc::poll`), not yet on an interrupt line, although it works on the
+> device. U2 was replaced by the run log (status notes below); U4 is not
+> started.
 
 1. **A `rp-drv-pxa-udc` driver** in two layers:
    - `usb`: hardware-independent USB device logic. It parses SETUP packets,
@@ -124,6 +142,9 @@ Facts (docs/hw/udc.md):
   image and returning a run log over USB, end to end. These tests skip on
   emulator releases without the model (the pinned `rp-v0.6.0`) until a new
   release is published.
+  > **Correction (note added 2026-10-13):** the pin has moved on
+  > (`QEMU_RELEASE` = `rp-v0.11.3` in `xtask/src/emu.rs`), so these USB
+  > tests run in every `cargo xtask emu`.
 - **Idle link (2026-10-12):** the first frame after an hour idle went
   unanswered. Cause: no IN request reaches the device while no PC program
   reads the port (docs/hw/udc.md), so the loader's once-a-second READY
@@ -159,7 +180,17 @@ Facts (docs/hw/udc.md):
 - The endpoint table is fixed at enable time. Changing the function set later
   (adding NCM/MTP) means a new table and a re-enumeration, which is the normal
   USB behaviour anyway.
+
+> **Correction (note added 2026-10-13):** the port is not opened as a
+> `\\.\COMn` file from Rust: `xtask/src/usb.rs` runs PowerShell scripts
+> (`System.IO.Ports.SerialPort`, passed with `-EncodedCommand`). Still no
+> new crates.
+
 - `cargo xtask` gains a serial-port dependency on the PC side, written with
   the standard library only (Windows `\\.\COMn` files), so no new crates.
+
+> **Correction (note added 2026-10-13):** out of date: the emulator has
+> had a UDC model since retropane-qemu `d7aa030` (status notes above).
+
 - A UDC model in the emulator (retropane-qemu) is still worth having for CI.
   Until it exists, the simulated host in the driver tests stands in.

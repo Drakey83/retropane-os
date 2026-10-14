@@ -4,12 +4,17 @@
   idea). Built with the installer and the first big pack (the browser),
   ROADMAP Phases 8-9.
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
 The owner asked whether RetroPane could give itself room to modernize by
 putting some of the OS on the SD card when one is present, and installing a
 smaller system when one isn't.
+
+> **Correction (note added 2026-10-13):** the flash size (~256 MB
+> DiskOnChip G3) is not yet confirmed on the device (docs/design-brief.md,
+> "Flash").
 
 What limits RetroPane is **RAM, not storage**. The X51v has about 256 MB of
 built-in flash (DiskOnChip) and 64 MB of RAM. Its flash can't run code in
@@ -31,6 +36,13 @@ Constraints that shape the answer:
 - **A card can be changed elsewhere.** It goes into PCs; FAT and exFAT have
   no permissions. Anything executable on it is untrusted until checked.
   The device will be on the internet (docs/security.md).
+
+> **Correction (note added 2026-10-13):** the 1.2 ms per block was the
+> owner's 4 GB card; the 32 GB SDHC card later measured 0.42 ms per block
+> with 4-block commands and 0.27 ms with 64-block ones (docs/perf.md,
+> 2026-10-12 SDHC row). The flash's read speed is not measured yet, so
+> "flash is faster" is still unproven.
+
 - **The card is slower for small reads.** 4-bit multi-block reads measured
   about 1.2 ms per 512-byte block on the owner's X51v; flash is faster for
   the small scattered reads of starting programs.

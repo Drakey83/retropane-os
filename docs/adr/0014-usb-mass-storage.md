@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-12, by the project owner: overnight queue)
 - **Date:** 2026-10-12
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -18,6 +19,16 @@ way on the owner's card), `BlockDevice` in `rp-hal-api`, the emulator's UDC
 model with a built-in host that enumerates like Windows.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** point 4 changed with item 58.
+> When the card reads by DMA (`Storage::overlaps`), the 32 KiB buffer is
+> used as two 16 KiB halves: one half goes to the PC while the next 32
+> sectors are read into the other, and the 16 KiB after a read are read
+> ahead for the next command (`drivers/usb-msc/src/lib.rs`, `read_step`).
+> Without DMA, and for writes, it is still one 64-sector command per
+> buffer. No device figure for the SD drive's speed is logged in
+> docs/perf.md: what is recorded is the emulator's 1 MiB read in ~2.8 s
+> (perf.md) and the CF drive's ~0.6 MB/s on the device (docs/hw/cf.md).
 
 1. **A composite device**: the CDC-ACM serial port (interfaces 0 and 1,
    grouped by an Interface Association Descriptor) **plus** a USB Mass
@@ -140,6 +151,13 @@ model with a built-in host that enumerates like Windows.
   delete of `default.txt` was refused on the card (Windows' cached view
   showed it gone until the drive was offered again, item 65); the boot
   files stayed identical to a backup.
+
+> **Correction (note added 2026-10-13):** in the next note, block 10880
+> did not stay unreadable: its data was damaged, and `cargo xtask card
+> repair 10880` restored it from the second FAT the same day (read time
+> 795,659 µs → 900 µs), which settled the scrub-or-new-card decision
+> (docs/hw/sd.md, "Reads that fail").
+
 - **Device run (2026-10-12, overnight):** Windows 11 enumerated the composite
   device first time: "USB Composite Device" with "USB Serial Device (COM4)"
   and "RetroPan SD card USB Device", read-only volume, 3,997,171,712 bytes
@@ -162,6 +180,14 @@ model with a built-in host that enumerates like Windows.
 
 ## Security
 
+> **Correction (note added 2026-10-13):** a malformed CBW (wrong length
+> or signature) gets no CSW at all: it is ignored and counted
+> (`Stats::bad_cbw`), as Bulk-Only Transport expects, and the host's
+> reset recovery follows (`take_command`; test
+> `malformed_cbws_are_ignored_and_the_next_command_works`). Only
+> well-formed commands that are unsupported or out of range fail with a
+> CSW and sense data.
+
 - **Input from the cable is hostile until checked.** The CBW parser and
   every SCSI command check signature, length, LUN, LBA and block count
   (with overflow-checked arithmetic: `lba + count` can't wrap past the
@@ -169,6 +195,11 @@ model with a built-in host that enumerates like Windows.
   is a failed CSW with sense data, never a panic, hang or out-of-range
   card access. Host tests feed it truncated, oversized and wrapping
   commands.
+
+> **Correction (note added 2026-10-13):** not "always on": the loader
+> offers the drive at start-up (`Lun::offered`, `boot/loader/src/main.rs`)
+> and `cargo xtask drive off` withdraws it (status notes above).
+
 - **Exposure.** In the development loader the drive is always on, like the
   loader itself (docs/security.md: development only). In the OS proper the
   card is offered only after the user allows it on the device for that

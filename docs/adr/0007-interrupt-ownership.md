@@ -2,6 +2,7 @@
 
 - **Status:** Accepted (2026-10-11, by the project owner)
 - **Date:** 2026-10-11
+- **Last verified:** 2026-10-13 (against commit 3158b26)
 
 ## Context
 
@@ -24,6 +25,16 @@ an interrupt service thread (IST) model (`InterruptInitialize`,
 to offer it.
 
 ## Decision
+
+> **As built (note added 2026-10-13):** two details differ. (a) Lines are
+> handed out by the SoC HAL's runtime, not the board description: the
+> caller names the source, `rt::take_irq(n)` / `rt::take_gpio_irq(pin,
+> edge)` (`hal/pxa27x/src/rt.rs`); `hal/x51v` hands out no lines. (b)
+> Besides the tick, a second kernel-owned source is served in interrupt
+> mode: the soft watchdog (run limit, OS timer 4-11), which `rp_irq`
+> disarms and turns into a fault (`report_fault(Fault::RunLimit, ..)`).
+> The kernel's signal hook (`rt::set_signal_hook`, ADR-0010) also runs in
+> interrupt mode, setting an event; it never touches the device.
 
 **Interrupt mode runs only kernel code, and that code never touches a
 driver's device.**
@@ -96,6 +107,10 @@ interrupts wake it, and the tick runs only while a button or the pen is held.
 ## Consequences
 
 - `RegisterBus` keeps `&mut self`; no trait changes are needed for interrupts.
+> **Correction (note added 2026-10-13):** there is no `is_signalled()`;
+> `IrqLine` has `take()` (consume a pending signal), `wait()`, `done()` and
+> `id()` (`hal/pxa27x/src/rt.rs`, `impl IrqLine`).
+
 - The HAL gains `IrqLine` (take-once per source) with `wait()`, `done()` and
   `is_signalled()`, plus the first-level handler logic. Host tests cover the
   handler's mask-and-signal behaviour against the mock interrupt controller.
