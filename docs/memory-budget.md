@@ -73,9 +73,11 @@ engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
 | Row ring (64 rows x 2.5 KiB, stride-0 fills and gradients) | 0x5C0000 | 160 KiB |
 | Image cache | 0x600000 | 256 KiB |
 | Glyph atlases (per font and colour; the shell's take 35, 24 and 75 KiB each) | 0x640000 | 512 KiB |
+| Background (wallpaper plus the glass, drawn once) | 0x6C0000 | 1.17 MiB |
+| Dither pattern (4 rows) | 0x800000 | 7.5 KiB |
 | Fence word | 0xFFF000 | 4 bytes |
-| Free for program surfaces (ADR-0022 decision 2) | 0x6C0000 up | ~9.2 MiB |
+| Free for program surfaces (ADR-0022 decision 2) | 0x802000 up | ~8 MiB |
 
-The SVC stack is 16 KiB in every image; each now reports its deepest use
+The SVC stack is 16 KiB in every image unless it sizes its own (`rp-today`: 24 KiB); each now reports its deepest use
 when it returns to the loader (`stack: deepest N of 16384 bytes` in the
 run log), since a silent overflow lost a glyph atlas on 2026-10-14.

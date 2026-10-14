@@ -22,10 +22,27 @@
 //!
 //! The back picture is two frames old, so each frame redraws its own and
 //! the previous frame's dirty rectangles ("buffer age 2"); the first two
-//! frames redraw everything. One fence per frame, then the flip: the
-//! graphics plane's start address moves to the picture just drawn
-//! (`flip_wait`, if set, runs first: the image waits for the VEVENT line
-//! there, so a half-drawn frame never shows).
+//! frames redraw everything.
+//!
+//! **Speed (after the first device run, 2026-10-14: 33 ms median, no
+//! better than the CPU):**
+//!
+//! - **The CPU doesn't wait.** `draw` queues the frame and a fence and
+//!   returns; [`Renderer::poll`] flips once the fence has landed. Only the
+//!   next `draw` waits, if the engine is still busy, and for scan-out to
+//!   leave the picture it will draw into (the VEVENT0 status bit, set at
+//!   the end of each frame's active lines, measured).
+//! - **The glass is drawn once.** Fills, gradients and outlines that come
+//!   before anything they'd cover ("hoistable": moving them first changes
+//!   nothing) go into a **background picture**, wallpaper included, kept
+//!   in 2700G memory and rebuilt only when they change (a hash of them).
+//!   Each changed rectangle then starts with one plain copy of it.
+//! - **Dithered.** The panel shows 16 or 18 bits (measured: 256-level
+//!   ramps band), so each redrawn rectangle ends with a 4 x 4 ordered
+//!   dither: the engine adds a threshold pattern (blend word 0: source +
+//!   destination, saturating, measured) and the panel's truncation does the
+//!   rest. Four blits per rectangle, one per line phase (destination stride
+//!   x 4, the pattern row read with stride 0).
 //!
 //! The renderer touches 2700G memory only through [`LocalMem`] and the
 //! engine only through its register window, so the same code runs on the
@@ -37,7 +54,7 @@
 #[cfg(any(test, feature = "model"))]
 pub mod model;
 
-use rp_draw::{Argb, Cmd, Drawn, Frame, MAX_DIRTY, Rect, Renderer};
+use rp_draw::{Argb, Cmd, Drawn, Frame, MAX_CMDS, MAX_DIRTY, Rect, Renderer};
 use rp_drv_blit2d::{self as cmd, BLEND_DELL_TEXT, Engine, Format, OP_BLEND, ROP_SRCCOPY};
 use rp_hal_api::RegisterBus;
 
@@ -74,19 +91,25 @@ pub struct Layout {
     pub images: (usize, usize),
     /// The glyph atlases and their size.
     pub glyphs: (usize, usize),
+    /// The background: wallpaper and hoisted glass, a picture's size.
+    pub background: usize,
+    /// The dither pattern's four rows (`W` pixels each, `STRIDE` apart).
+    pub dither: usize,
     /// The fence word.
     pub fence: usize,
 }
 
 impl Layout {
     /// The X51v's: from 2 MiB up (the loader's and Windows Mobile's planes
-    /// sit below 1 MiB), about 4.4 MiB in all (ADR-0023 decision 4).
+    /// sit below 1 MiB), about 5.6 MiB in all (ADR-0023 decision 4).
     pub const X51V: Self = Self {
         screens: [0x0020_0000, 0x0034_0000],
         wallpaper: 0x0048_0000,
         rows: 0x005C_0000,
         images: (0x0060_0000, 256 * 1024),
         glyphs: (0x0064_0000, 512 * 1024),
+        background: 0x006C_0000,
+        dither: 0x0080_0000,
         fence: 0x00FF_F000,
     };
 }
@@ -142,6 +165,41 @@ struct Atlas {
     at: [u16; GLYPHS],
 }
 
+/// What one frame cost, for the run log (microseconds).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameStats {
+    /// The CPU's time describing the frame (commands, rows, uploads).
+    pub queue_us: u32,
+    /// Waited at the start of `draw` for the previous frame's engine work
+    /// and for scan-out to leave the picture drawn into.
+    pub wait_us: u32,
+    /// From queueing the fence to the flip (as seen by `poll`: an upper
+    /// bound, set by how often it's called).
+    pub engine_us: u32,
+    /// Rectangles redrawn.
+    pub rects: u32,
+    /// Whether the background was rebuilt.
+    pub background: bool,
+}
+
+/// The 4 x 4 ordered (Bayer) pattern, 0..16.
+const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+
+/// The dither added at `(x, y)`: below one step of a 5-bit channel (8) for
+/// red and blue, of a 6-bit one (4) for green; the panel truncates.
+#[must_use]
+pub const fn dither_at(x: usize, y: usize) -> u32 {
+    let t = BAYER[y % 4][x % 4];
+    (t >> 1) << 16 | (t >> 2) << 8 | (t >> 1)
+}
+
+/// FNV-1a over a word.
+fn fnv(h: u32, w: u32) -> u32 {
+    w.to_le_bytes()
+        .iter()
+        .fold(h, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
+}
+
 /// Draws frames on the 2D engine. `R` is the 2700G register window, `M`
 /// its local memory.
 pub struct Mbx2dRenderer<R, M> {
@@ -160,12 +218,28 @@ pub struct Mbx2dRenderer<R, M> {
     images_top: usize,
     atlases: [Option<Atlas>; ATLASES],
     glyphs_top: usize,
-    /// Runs between the fence and the flip (the image waits for the
-    /// VEVENT line here).
+    /// Runs just before the flip.
     pub flip_wait: Option<fn()>,
     /// Frames the engine didn't finish (each reset it and redraws whole).
     pub stalls: u32,
+    /// Dither each redrawn rectangle (on; tests against the CPU renderer
+    /// turn it off).
+    pub dither: bool,
+    /// The last frame's costs.
+    pub last: FrameStats,
     delay_us: fn(u32),
+    now: fn() -> u32,
+    ticks_per_ms: u32,
+    /// A frame queued, not yet shown: (its picture, its fence, queued at).
+    pending: Option<(usize, u32, u32)>,
+    /// A flip happened: the old picture may still be scanning out.
+    vsync_due: bool,
+    /// The background's hash (None: not built).
+    bg_hash: Option<u32>,
+    /// Per command: in the background (scratch for `draw`).
+    hoist: [bool; MAX_CMDS],
+    /// Per command: its bounds (scratch for `draw`).
+    bounds: [Rect; MAX_CMDS],
 }
 
 /// The whole screen.
@@ -193,7 +267,16 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             glyphs_top: 0,
             flip_wait: None,
             stalls: 0,
+            dither: true,
+            last: FrameStats::default(),
             delay_us: |_| {},
+            now,
+            ticks_per_ms,
+            pending: None,
+            vsync_due: false,
+            bg_hash: None,
+            hoist: [false; MAX_CMDS],
+            bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
         }
     }
 
@@ -217,6 +300,19 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.e.reset(delay_us);
         self.front = 0;
         self.fresh = 2;
+        self.pending = None;
+        self.vsync_due = false;
+        self.bg_hash = None;
+        let mut buf = [0u32; CHUNK];
+        for y in 0..4 {
+            for x0 in (0..usize::from(W)).step_by(CHUNK) {
+                for (i, p) in buf.iter_mut().enumerate() {
+                    *p = dither_at(x0 + i, y);
+                }
+                self.mem.store(self.l.dither + y * STRIDE + 4 * x0, &buf);
+            }
+        }
+        self.mem.sync();
         let regs = rp_drv_mbx_display::Plane {
             format: rp_drv_mbx_display::PixelFormat::Argb8888,
             width: W,
@@ -260,11 +356,23 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         (r.x, r.y, r.right(), r.bottom())
     }
 
+    /// Microseconds since tick `t0`.
+    fn us_since(&self, t0: u32) -> u32 {
+        let t = u64::from((self.now)().wrapping_sub(t0));
+        (t * 1000 / u64::from(self.ticks_per_ms.max(1))) as u32
+    }
+
     /// Copies the wallpaper under `r` into picture `dst`.
     fn wallpaper(&mut self, dst: usize, r: Rect) {
+        let src = self.l.wallpaper;
+        self.copy(dst, src, r);
+    }
+
+    /// Copies `r` of the 32 bpp picture at `src` into the one at `dst`.
+    fn copy(&mut self, dst: usize, src: usize, r: Rect) {
         let (w, n) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
-            (Format::BPP32, self.l.wallpaper, STRIDE as i32),
+            (Format::BPP32, src, STRIDE as i32),
             (r.x, r.y),
             Self::coords(r),
             ROP_SRCCOPY,
@@ -341,6 +449,40 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             0,
         );
         self.submit(&w[..n]);
+    }
+
+    /// Adds the dither pattern to `r` of picture `dst`: one blit per line
+    /// phase (`y % 4`), every fourth line (destination stride × 4), the
+    /// phase's pattern row read with stride 0; blend word 0 adds
+    /// (saturating). The blend word goes back to "over" after.
+    fn dither_rect(&mut self, dst: usize, r: Rect) {
+        self.submit(&cmd::blend(0));
+        for k in 0..4u16 {
+            let first = r.y + (k + 4 - r.y % 4) % 4;
+            if first >= r.bottom() {
+                continue;
+            }
+            let lines = (r.bottom() - first).div_ceil(4);
+            let (w, n) = cmd::blit(
+                (
+                    Format::BPP32,
+                    dst + usize::from(first) * STRIDE,
+                    (4 * STRIDE) as i32,
+                ),
+                (
+                    Format::BPP32,
+                    self.l.dither + usize::from(first % 4) * STRIDE,
+                    0,
+                ),
+                (r.x, 0),
+                (r.x, 0, r.right(), lines),
+                ROP_SRCCOPY,
+                OP_BLEND,
+                0,
+            );
+            self.submit(&w[..n]);
+        }
+        self.submit(&cmd::blend(BLEND_DELL_TEXT));
     }
 
     /// Waits for everything queued (to reuse rows or cache space).
@@ -525,8 +667,85 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 }
 
 impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
+    // Out of line: one copy, not one per call site (16 KB inlined into
+    // rp-today's main loop, 2026-10-14).
+    #[inline(never)]
     fn draw(&mut self, frame: &Frame) -> Drawn {
         let mut drawn = Drawn::default();
+        // The previous frame shown, and scan-out off the picture we draw
+        // into; usually long done by the time anything changes.
+        let t0 = (self.now)();
+        self.last = FrameStats::default();
+        while !self.poll() {
+            if self.us_since(t0) > 200_000 {
+                self.stalls += 1;
+                self.pending = None;
+                self.fresh = 2;
+                self.bg_hash = None;
+                self.e.reset(self.delay_us);
+                break;
+            }
+        }
+        if self.vsync_due {
+            let t = (self.now)();
+            while self.e.regs.read32(rp_drv_mbx_display::reg::DINTRS)
+                & rp_drv_mbx_display::event::VEVENT0
+                == 0
+                && self.us_since(t) < 40_000
+            {}
+            self.vsync_due = false;
+        }
+        self.last.wait_us = self.us_since(t0);
+        let t0 = (self.now)();
+        // Which commands go in the background, and has it changed?
+        let cmds = frame.cmds().count().min(MAX_CMDS);
+        let mut hash = 0x811C_9DC5u32;
+        for (i, c) in frame.cmds().take(MAX_CMDS).enumerate() {
+            let b = c.bounds(frame);
+            self.bounds[i] = b;
+            let glass = matches!(
+                c,
+                Cmd::Fill { .. } | Cmd::HGradient { .. } | Cmd::Outline { .. }
+            );
+            let covers_earlier =
+                (0..i).any(|j| !self.hoist[j] && !self.bounds[j].intersect(&b).is_empty());
+            self.hoist[i] = glass && !covers_earlier;
+            if self.hoist[i] {
+                let (kind, a, b2) = match *c {
+                    Cmd::Fill { color, .. } => (1, color, 0),
+                    Cmd::HGradient { left, right, .. } => (2, left, right),
+                    Cmd::Outline { color, .. } => (3, color, 0),
+                    _ => (0, 0, 0),
+                };
+                for w in [
+                    kind,
+                    u32::from(b.x) << 16 | u32::from(b.y),
+                    u32::from(b.w) << 16 | u32::from(b.h),
+                    a,
+                    b2,
+                ] {
+                    hash = fnv(hash, w);
+                }
+            }
+        }
+        self.row = 0;
+        let mut state = [0u32; 6];
+        state[0] = cmd::SCALE_1_TO_1;
+        state[1..4].copy_from_slice(&cmd::key(0, 0));
+        state[4..].copy_from_slice(&cmd::blend(BLEND_DELL_TEXT));
+        self.submit(&state);
+        if self.bg_hash != Some(hash) {
+            let bg = self.l.background;
+            self.wallpaper(bg, SCREEN);
+            for (i, c) in frame.cmds().take(cmds).enumerate() {
+                if self.hoist[i] {
+                    self.command(frame, c, SCREEN, bg);
+                }
+            }
+            self.bg_hash = Some(hash);
+            self.fresh = 2;
+            self.last.background = true;
+        }
         let mut rects = [Rect::default(); 2 * MAX_DIRTY];
         let mut n = 0;
         if self.fresh > 0 {
@@ -548,33 +767,50 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         let back = 1 - self.front;
         let dst = self.l.screens[back];
-        self.row = 0;
-        let mut state = [0u32; 6];
-        state[0] = cmd::SCALE_1_TO_1;
-        state[1..4].copy_from_slice(&cmd::key(0, 0));
-        state[4..].copy_from_slice(&cmd::blend(BLEND_DELL_TEXT));
-        self.submit(&state);
         for &clip in &rects[..n] {
-            self.wallpaper(dst, clip);
-            for c in frame.cmds() {
-                if c.bounds(frame).intersect(&clip).is_empty() {
+            let bg = self.l.background;
+            self.copy(dst, bg, clip);
+            for (i, c) in frame.cmds().take(cmds).enumerate() {
+                if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
                     continue;
                 }
                 self.command(frame, c, clip, dst);
                 drawn.cmds += 1;
             }
+            if self.dither {
+                self.dither_rect(dst, clip);
+            }
             drawn.pixels += u64::from(clip.w) * u64::from(clip.h);
         }
-        if !self.wait() {
-            self.e.reset(self.delay_us);
-            return drawn;
+        self.last.rects = n as u32;
+        // The fence, and back to the caller: `poll` flips.
+        let n = self.e.next_fence();
+        let fence = cmd::fence(self.l.fence, n);
+        self.submit(&fence);
+        self.pending = Some((back, n, (self.now)()));
+        self.last.queue_us = self.us_since(t0);
+        drawn
+    }
+
+    #[inline(never)]
+    fn poll(&mut self) -> bool {
+        let Some((back, n, queued)) = self.pending else {
+            return true;
+        };
+        if self.mem.load(self.l.fence) != Some(n) {
+            return false;
         }
+        self.pending = None;
+        self.last.engine_us = self.us_since(queued);
         self.fresh = self.fresh.saturating_sub(1);
         if let Some(w) = self.flip_wait {
             w();
         }
         self.present(back);
-        drawn
+        // From now the old picture scans out until the frame's end.
+        rp_drv_mbx_display::ack_events(&mut self.e.regs, rp_drv_mbx_display::event::VEVENT0);
+        self.vsync_due = true;
+        true
     }
 }
 

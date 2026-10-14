@@ -183,6 +183,30 @@ does the rest: the same ordered dither the CPU path used, on the engine,
 no CPU cost. Its amplitude follows the link depth (565 or 666), which the
 owner's look at the ramps (green's bands finer than red's?) decides.
 
+## First device run of the renderer (2026-10-14, `rp-today`)
+
+The owner: "very responsive", no tearing seen; glass bands (no dither yet).
+Measured (67 taps): touch to screen median 33 ms, worst 80 ms; the CPU
+renderer's were 30 / 71 ms. No faster yet: the CPU waited for the engine
+each frame, 32 bpp is half the engine's 16 bpp speed, and every redraw
+re-blended the glass over the wallpaper. Stack 12.6 of 16 KiB. Answered in
+the renderer (all checked in the emulator, pending a device run):
+
+- **The CPU doesn't wait:** `draw` queues the frame and its fence;
+  `Renderer::poll` (new, default "done" for the CPU renderer) flips when
+  the fence lands. The next `draw` waits only for an unfinished frame and
+  for the VEVENT0 status bit (scan-out off the picture it draws into).
+- **Glass drawn once:** fills, gradients and outlines that precede
+  everything they'd cover are drawn into a background picture (wallpaper
+  included, 1.2 MiB at 0x6C0000), rebuilt only when their hash changes;
+  each changed rectangle starts with one copy of it.
+- **Dither:** each redrawn rectangle ends with four blits adding a 4 x 4
+  Bayer threshold (red, blue 0-7; green 0-3: sized for a 16-bit link,
+  harmless on 18) with blend word 0 (add, saturating).
+- **Per-frame costs in the run log** (CPU queueing, waiting, queue to
+  flip, background rebuilds); the latency now counts to the flip.
+- `rp-today`'s stack is 24 KiB (`--defsym=__stack_size`).
+
 ## Open questions
 
 1. ~~Owner: A or B?~~ B (2026-10-14).

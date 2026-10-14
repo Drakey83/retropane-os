@@ -170,6 +170,11 @@ mod image {
         // Touches found by the pen interrupt, and by the idle check.
         let (mut found_by_irq, mut found_by_poll) = (0u32, 0u32);
         let mut pending: Option<u32> = None; // when the input being answered was read
+        // An answered input whose frame is with the engine, not yet shown.
+        let mut showing: Option<u32> = None;
+        // The GPU renderer's costs (rp_mbx_render::FrameStats), worst seen.
+        let (mut queue_worst, mut wait_worst, mut engine_worst, mut rebuilds) =
+            (0u32, 0u32, 0u32, 0u32);
 
         loop {
             rt::check_in();
@@ -318,11 +323,25 @@ mod image {
                      touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}",
                     renderer.stalls
                 );
+                let _ = writeln!(
+                    RunLog,
+                    "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times"
+                );
                 before.restore(&mut renderer.parts().0.regs);
                 rp_hal_x51v::devices::return_to_loader();
                 loop {
                     core::hint::spin_loop();
                 }
+            }
+
+            // A frame the engine finished goes on the screen; the latency
+            // counts to then (the flip), not to the end of queueing.
+            if renderer.poll()
+                && let Some(at) = showing.take()
+            {
+                latency.add(rt::ticks().wrapping_sub(at) / 13 * 4);
+                let s = renderer.last;
+                engine_worst = engine_worst.max(s.engine_us);
             }
 
             // Draw what changed, timing it.
@@ -333,6 +352,10 @@ mod image {
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 draw_us_worst = draw_us_worst.max(us);
+                let s = renderer.last;
+                queue_worst = queue_worst.max(s.queue_us);
+                wait_worst = wait_worst.max(s.wait_us);
+                rebuilds += u32::from(s.background);
                 frames += 1;
                 if frames == 1 {
                     let _ = writeln!(RunLog, "{} first frame {us} us", rp_today::MARKER);
@@ -345,7 +368,8 @@ mod image {
                     );
                 }
                 if let Some(at) = pending.take() {
-                    latency.add(t1.wrapping_sub(at) / 13 * 4);
+                    // Answered by this frame: counted when it shows.
+                    showing = Some(showing.unwrap_or(at).min(at));
                 }
             }
 
@@ -359,7 +383,10 @@ mod image {
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
-            let wait_ms: u32 = if filter.down() || touch.pen_down() {
+            let wait_ms: u32 = if showing.is_some() {
+                // A frame is with the engine: flip it as soon as it's done.
+                1
+            } else if filter.down() || touch.pen_down() {
                 5
             } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20

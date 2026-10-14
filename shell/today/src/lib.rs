@@ -222,6 +222,7 @@ mod tests {
             1,
         );
         show_gpu(&mut gpu, &wall, |_| {});
+        gpu.dither = false;
         let mut work = vec![0u8; SCREEN_BYTES];
         let mut plane = vec![0u8; SCREEN_BYTES];
         let mut shell = Shell::new(shell_fonts(), true);
@@ -249,6 +250,7 @@ mod tests {
             }
             shell.frame(&mut f);
             gpu.draw(&f);
+            assert!(gpu.poll());
             let layer = Layer::in_bytes(&mut work, W as u32, H as u32).unwrap();
             CpuRenderer::new(layer, &mut plane, STRIDE, PlaneFormat::Argb8888).draw(&f);
             let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
