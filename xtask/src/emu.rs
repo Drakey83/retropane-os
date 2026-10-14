@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.11.3";
+pub const QEMU_RELEASE: &str = "rp-v0.12.1";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -323,6 +323,7 @@ pub fn boot_hello(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -426,6 +427,7 @@ pub fn boot_kernel(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -479,6 +481,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -514,6 +517,7 @@ pub fn boot_light(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -592,6 +596,7 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&frame, "RPL END")),
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -724,6 +729,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
             // box: the checks start while the box is up.
             input: Some((&frame, "PANIC deliberate test panic")),
             during: Some(&check_screen),
+            then: Some("RPL END"),
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -773,6 +779,7 @@ pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&hang, "did not return")),
             during: None,
+            then: None,
             timeout: Duration::from_secs(120),
         },
     )?;
@@ -810,6 +817,7 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&input, "RPL END")),
             during: None,
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -901,6 +909,7 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-PICTURE-SHOWN")),
             during: Some(&check),
+            then: Some("RPL END"),
             timeout: Duration::from_secs(90),
         },
     )?;
@@ -1031,6 +1040,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-BLEND-A")),
             during: Some(&check),
+            then: Some("RPL END"),
             timeout: Duration::from_secs(600),
         },
     )?;
@@ -1147,6 +1157,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-2D")),
             during: Some(&check),
+            then: Some("RPL END"),
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -1395,6 +1406,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             extra: &[],
             input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
             during: Some(&check),
+            then: Some("RPL END"),
             timeout: Duration::from_secs(600),
         },
     )?;
@@ -1640,6 +1652,7 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -1699,6 +1712,7 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -1780,6 +1794,7 @@ pub fn boot_loader_trace(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(90),
         },
     )?;
@@ -1946,6 +1961,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
                 extra: &extra,
                 input: None,
                 during: Some(&check),
+                then: None,
                 timeout: Duration::from_secs(900),
             },
         );
@@ -2180,6 +2196,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -2255,6 +2272,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -2367,6 +2385,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(90),
         },
     )?;
@@ -2617,6 +2636,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(90),
         },
     )?;
@@ -3109,6 +3129,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(120),
         },
     )?;
@@ -3163,6 +3184,7 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(90),
         },
     )?;
@@ -3222,6 +3244,7 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -3333,6 +3356,7 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             extra: &extra,
             input: None,
             during: Some(&check),
+            then: None,
             timeout: Duration::from_secs(60),
         },
     )?;
@@ -3359,6 +3383,7 @@ pub fn boot_usb(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: None,
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -3439,6 +3464,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
             extra: &[],
             input: None,
             during: Some(&screen),
+            then: None,
             timeout: BOOT_TIMEOUT,
         },
     )?;
@@ -3562,6 +3588,7 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
             extra: &["-icount", "shift=0"],
             input: None,
             during: None,
+            then: None,
             timeout: Duration::from_secs(120),
         },
     )?;
@@ -3703,6 +3730,10 @@ struct Boot<'a> {
     /// Run while the emulator is still up, after `input` (e.g. talk to the
     /// emulated USB serial port).
     during: Option<&'a dyn Fn() -> Result<(), String>>,
+    /// Serial text to wait for after `during`, before the emulator stops:
+    /// the run log's end, for checks that read it (`during` returns on what
+    /// it sees on screen, and the log can still be on its way).
+    then: Option<&'a str>,
     timeout: Duration,
 }
 
@@ -3716,6 +3747,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         extra,
         input,
         during,
+        then,
         timeout,
     } = *cfg;
     let port = monitor_port();
@@ -3789,9 +3821,19 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         output: String::new(),
         deadline: Instant::now() + timeout,
     };
+    let mut sent_at = 0;
     let result = run_session(&mut serial, marker, port, wsl, screenshot, steps)
-        .and_then(|()| send_input(&mut serial, &link, input))
-        .and_then(|()| during.map_or(Ok(()), |f| f()));
+        .and_then(|()| {
+            sent_at = serial.output.len();
+            send_input(&mut serial, &link, input)
+        })
+        .and_then(|()| during.map_or(Ok(()), |f| f()))
+        .and_then(|()| match then {
+            Some(text) if !serial.wait_for(text, sent_at) => {
+                Err(format!("no `{text}` on serial after the check"))
+            }
+            _ => Ok(()),
+        });
     let _ = child.kill();
     let _ = child.wait();
     if wsl {
