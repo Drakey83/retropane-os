@@ -44,7 +44,7 @@ section in every ADR (Phase 0).
 | G3 | **Modern internet** | TLS 1.3, WPA2 and WPA3, IPv6, UTF-8, a usable modern web browser |
 | G4 | **Modern take on the WM look** | Windows-esque, retro, modernised: recognisable but fresh |
 | G5 | **Proper engineering** | Layered architecture, unit tests from day one, CI, documented decisions |
-| G6 | **Anyone can try it** | Public GitHub repo; boots from SD card with no risk to the device; later, optional flash install |
+| G6 | **Anyone can try it** | Public GitHub repo; boots from SD card with no risk to the device (the way to try it and to develop it); the finished OS installs to and runs from the built-in flash |
 
 ### 1.2 Non-goals (for now)
 
