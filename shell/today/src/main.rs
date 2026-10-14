@@ -235,6 +235,9 @@ mod image {
                     found_by_poll += 1;
                 }
             }
+            // Whether a touch was in progress before this sample: its end
+            // is recorded even when nothing was reported.
+            let was_down = filter.down();
             let ev = filter.sample(
                 raw.map(|s| Sample {
                     x: s.x,
@@ -247,8 +250,11 @@ mod image {
             // The recorder (2026-10-13): every sample while the pen is down,
             // with the filter's verdict, into the run log, so the filter is
             // tuned on the PC against the owner's real taps instead of on
-            // the device by guesswork. Up to RECORD samples (~25 s).
-            if (raw.is_some() || ev != Pen::Nothing) && recorded < RECORD {
+            // the device by guesswork. Up to RECORD samples (~25 s). The
+            // sample that ends a touch is recorded whether or not the touch
+            // was reported (2026-10-14: a lift before the press left no
+            // line, so the replay ran two touches together).
+            if (raw.is_some() || ev != Pen::Nothing || was_down) && recorded < RECORD {
                 recorded += 1;
                 let what = match ev {
                     Pen::Nothing => 'n',

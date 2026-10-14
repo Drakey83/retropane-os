@@ -186,3 +186,21 @@ fn a_bounce_while_landing_is_not_a_lift() {
     // Pressure steady on two samples in a row (1601, 1638): pressed.
     assert_eq!(f.sample(at(3150, 902, 1638), 44), Pen::Down(3150, 902));
 }
+
+#[test]
+fn a_landing_in_place_is_pressed_on_its_second_sample() {
+    // The owner's tap on the GPU Today screen (2026-10-14, run 4): the
+    // second sample is where the first was, with pressure steady (1457,
+    // 1479): pressed there, 11 ms after the landing (the old rule waited
+    // for a third sample, 22 ms).
+    let mut f = Filter::new();
+    assert_eq!(f.sample(at(2276, 2622, 1457), 0), Pen::Nothing);
+    assert_eq!(f.sample(at(2274, 2628, 1479), 11), Pen::Down(2274, 2628));
+    assert_eq!(f.sample(at(2283, 2629, 1494), 22), Pen::Move(2279, 2629));
+    // Still sliding into place (2274 to 2300, more than STABLE_WITHIN):
+    // not yet, though pressure is steady; pressed on the next steady one.
+    let mut f = Filter::new();
+    f.sample(at(2274, 739, 1254), 0);
+    assert_eq!(f.sample(at(2300, 742, 1259), 11), Pen::Nothing);
+    assert_eq!(f.sample(at(2309, 745, 1273), 22), Pen::Down(2309, 745));
+}

@@ -332,6 +332,8 @@ pub struct Filter {
     peak_z: u16,
     /// The previous counted sample, if the last sample counted.
     prev: Option<(u16, u16)>,
+    /// The previous sample's position, counted or not (for the landing).
+    last_at: (u16, u16),
     /// The last stable position reported, while down.
     at: Option<(u16, u16)>,
     /// Pressure has fallen from its peak: the stylus is leaving.
@@ -347,6 +349,7 @@ impl Filter {
             last_z: 0,
             peak_z: 0,
             prev: None,
+            last_at: (0, 0),
             at: None,
             lifting: false,
         }
@@ -377,6 +380,7 @@ impl Filter {
             u32::from(s.z1.abs_diff(self.last_z)) * 256 <= Z_STEADY * u32::from(self.last_z.max(1));
         self.last_z = s.z1;
         self.peak_z = self.peak_z.max(s.z1);
+        let last_at = core::mem::replace(&mut self.last_at, (s.x, s.y));
         // Lifting only once a touch has been reported: before that a dip
         // is the stylus bouncing as it lands (one dipped 1508 to 1195 on
         // its second sample, and treating it as a lift threw away 60 ms of
@@ -391,20 +395,31 @@ impl Filter {
             self.prev = None;
             return Pen::Nothing;
         }
-        let Some((px, py)) = self.prev.replace((s.x, s.y)) else {
-            return Pen::Nothing;
+        let near = |a: (u16, u16), b: (u16, u16)| {
+            a.0.abs_diff(b.0) <= STABLE_WITHIN && a.1.abs_diff(b.1) <= STABLE_WITHIN
         };
-        // Landed (two samples in a row with steady pressure): the press is
-        // reported at once, at the newer position. The owner's free
-        // tapping: X can still creep ~24 a sample just after the landing,
-        // and waiting for positions to agree cost a sample; later samples
+        let prev = self.prev.replace((s.x, s.y));
+        // Landed: pressed at once, at this sample, when its pressure is
+        // steady and either it is where the previous sample was (the
+        // second sample of most landings: 11 ms) or the previous one
+        // counted too (pressure steady twice; the stylus may still be
+        // sliding into place, ~24 raw a sample, and waiting longer for
+        // positions to agree cost samples). Replayed on 230 recorded
+        // touches (docs/hw/touch.md, 2026-10-14): the median press came
+        // 11 ms after the landing instead of 22, no new or missed taps,
+        // none further from where the stylus came to rest. Later samples
         // refine the position (moves), and agreement governs those.
         if self.at.is_none() {
+            if prev.is_none() && !near(last_at, (s.x, s.y)) {
+                return Pen::Nothing;
+            }
             self.at = Some((s.x, s.y));
             return Pen::Down(s.x, s.y);
         }
-        let near = |a: u16, b: u16| a.abs_diff(b) <= STABLE_WITHIN;
-        if !(near(px, s.x) && near(py, s.y)) {
+        let Some((px, py)) = prev else {
+            return Pen::Nothing;
+        };
+        if !near((px, py), (s.x, s.y)) {
             return Pen::Nothing;
         }
         let avg = |a: u16, b: u16| (u32::from(a) + u32::from(b)).div_ceil(2) as u16;
