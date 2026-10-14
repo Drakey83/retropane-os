@@ -310,6 +310,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (item 69): reads the MBX core's identification registers.
+    // Provisional until measured.
+    Budget {
+        image: "rp-mbx",
+        max_load: 12 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

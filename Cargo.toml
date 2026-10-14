@@ -38,6 +38,7 @@ members = [
     "boot/light",
     "boot/crash",
     "boot/hang",
+    "boot/mbx",
     "boot/picture",
     "boot/blend",
     "boot/usb",
