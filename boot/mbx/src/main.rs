@@ -1013,6 +1013,11 @@ mod image {
         ok
     }
 
+    /// GPIO85 (the 2700G's interrupt line): GPDR2/GPLR2 bit 21, its
+    /// function in GAFR2_U bits 10-11.
+    const PIN85: u32 = 1 << 21;
+    const GPDR2: usize = 0x014;
+    const GAFR2_U: usize = 0x068;
     /// `0x12c`'s bits that aren't the FIFO level (16-23 and 30).
     const STATUS_BITS: u32 = !(0x00FF_0000 | 1 << 30);
     /// GPLR0-3: every GPIO's level.
@@ -1031,11 +1036,36 @@ mod image {
         e: &mut Engine,
         vram: &mut [u8],
         (a, s): (usize, usize),
-    ) -> Option<(Mmio, [u32; 4])> {
+    ) -> Option<(Mmio, [u32; 4], rt::IrqLine)> {
         let Some(mut gpio) = rt::take_gpio() else {
             log!("completion: no GPIO controller");
             return None;
         };
+        // The 2700G's interrupt line is GPIO85 (WM's OAL: SYSINTR 27, both
+        // edges; its Disable makes the pin an output driven low, which is
+        // how the earlier runs found it: low, never moving). Make it an input
+        // and claim its edges, so even a short pulse is caught.
+        let gpdr2 = gpio.read32(GPDR2);
+        let gafr2u = gpio.read32(GAFR2_U);
+        log!(
+            "completion: GPIO85 as found: {} , function {}, level {}",
+            if gpdr2 & PIN85 != 0 {
+                "output"
+            } else {
+                "input"
+            },
+            (gafr2u >> 10) & 3,
+            u32::from(gpio.read32(GPLR[2]) & PIN85 != 0)
+        );
+        gpio.write32(GPDR2, gpdr2 & !PIN85);
+        let Some(mut line) = rt::take_gpio_irq(85, rt::Edge::Both) else {
+            log!("completion: GPIO85's interrupt is taken");
+            return None;
+        };
+        log!(
+            "completion: GPIO85 now an input, both edges armed, level {}",
+            u32::from(gpio.read32(GPLR[2]) & PIN85 != 0)
+        );
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
         // Pins that change with the engine idle are other peripherals'
         // clocks and PWM outputs (they filled the first run's log in 0.3 ms):
@@ -1075,6 +1105,7 @@ mod image {
             let mut landed: Option<u32> = None;
             let (mut status_changes, mut pin_changes) = (0, 0);
             let mut seen = st0;
+            let mut edges = 0u32;
             loop {
                 let now = us_since(t0);
                 let st1 = e.status() & STATUS_BITS;
@@ -1095,6 +1126,13 @@ mod image {
                     log!("  {now} us: GPIO bits flipped {flip:08x?} (now {g1:08x?})");
                 }
                 seen |= st1;
+                if line.take() {
+                    edges += 1;
+                    if edges <= 3 {
+                        log!("  {now} us: GPIO85 edge (status 0x{st1:08x})");
+                    }
+                    line.done();
+                }
                 (st, g) = (st1, g1);
                 match landed {
                     Some(t) if now > t + 5_000 => break,
@@ -1105,7 +1143,9 @@ mod image {
                     _ => {}
                 }
             }
-            log!("  every status bit seen: 0x{seen:08x}; status now 0x{st:08x}");
+            log!(
+                "  every status bit seen: 0x{seen:08x}; status now 0x{st:08x}; GPIO85 edges {edges}"
+            );
             e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
             let st2 = e.status() & STATUS_BITS;
             let g2 = levels(&mut gpio);
@@ -1117,7 +1157,7 @@ mod image {
         // As the image found them: masked.
         e.regs.write32(MBX + reg::ENABLE, 0);
         e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
-        Some((gpio, noisy))
+        Some((gpio, noisy, line))
     }
 
     /// The display's interrupt status and enable (`DINTRS`, `DINTRE`: read
@@ -1143,7 +1183,7 @@ mod image {
     /// The pin that follows an enabled event is the 2700G's interrupt
     /// (SYSINTR 27 under WM; candidates 11, 12, 83-87, 94, 96). `DINTRE` is
     /// put back after. Informational.
-    fn interrupt_line(e: &mut Engine, (mut gpio, noisy): (Mmio, [u32; 4])) {
+    fn interrupt_line(e: &mut Engine, (mut gpio, noisy, mut irq): (Mmio, [u32; 4], rt::IrqLine)) {
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
         let quiet = |a: [u32; 4], b: [u32; 4]| -> [u32; 4] {
             core::array::from_fn(|k| (a[k] ^ b[k]) & !noisy[k])
@@ -1166,6 +1206,7 @@ mod image {
             );
             let mut g = g0;
             let mut events = [0u32; 3];
+            let mut edges = 0u32;
             let mut held: Option<(u32, u32)> = None;
             let mut pin_changes = 0;
             let t0 = rt::ticks();
@@ -1179,6 +1220,16 @@ mod image {
                     log!("  {now} us: GPIO bits flipped {flip:08x?} (status 0x{st:x})");
                 }
                 g = g1;
+                if irq.take() {
+                    edges += 1;
+                    if edges <= 3 {
+                        log!(
+                            "  {now} us: GPIO85 edge (status 0x{st:x}, line {})",
+                            e.regs.read32(DVLNUM)
+                        );
+                    }
+                    irq.done();
+                }
                 match held {
                     None if st != 0 => {
                         let line = e.regs.read32(DVLNUM);
@@ -1204,7 +1255,7 @@ mod image {
             e.regs.write32(DINTRS, 0);
             let g2 = levels(&mut gpio);
             log!(
-                "  in 40 ms: bit 0 set {} times, bit 1 {}, bit 2 {}; GPIO after disabling differs from before {:08x?}",
+                "  in 40 ms: bit 0 set {} times, bit 1 {}, bit 2 {}, GPIO85 edges {edges}; GPIO after disabling differs from before {:08x?}",
                 events[0],
                 events[1],
                 events[2],
