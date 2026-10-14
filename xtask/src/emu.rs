@@ -1193,6 +1193,8 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
             || l.contains(" us: ")
             || l.starts_with("  after clearing")
             || l.starts_with("  every status")
+            || l.starts_with("irq:")
+            || l.contains(" frame events in ")
             || l.starts_with("  [")
             || l.contains("full-screen")
     }) {

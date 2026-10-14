@@ -462,7 +462,11 @@ mod image {
         let ok = ways_down(&mut e, vram, (a, s)) && ok;
         // 4e. Does the engine say it's done, and does that reach the CPU
         // (ADR-0022 open question 5)? Informational.
-        completion(&mut e, vram, (a, s));
+        if let Some(pins) = completion(&mut e, vram, (a, s)) {
+            // 4f. The 2700G's interrupt line to the PXA, through the
+            // display's frame event. Informational.
+            interrupt_line(&mut e, pins);
+        }
 
         // 5. A picture for the photo: black, three bars, a white frame.
         let scene: [((u16, u16, u16, u16), u32); 8] = [
@@ -1023,10 +1027,14 @@ mod image {
     /// interrupt reaches the PXA (and on which pin). The 2700G's own
     /// system-level interrupt registers are left as Windows Mobile set them
     /// and never read (their layout is unknown; a wrong read hangs the bus).
-    fn completion(e: &mut Engine, vram: &mut [u8], (a, s): (usize, usize)) {
+    fn completion(
+        e: &mut Engine,
+        vram: &mut [u8],
+        (a, s): (usize, usize),
+    ) -> Option<(Mmio, [u32; 4])> {
         let Some(mut gpio) = rt::take_gpio() else {
             log!("completion: no GPIO controller");
-            return;
+            return None;
         };
         let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
         // Pins that change with the engine idle are other peripherals'
@@ -1054,14 +1062,14 @@ mod image {
                 let w = cmd::fill(cmd::Format::Rgb565, a, s, (0, 0, 480, 640), 0x0841 * i);
                 if e.submit(&w).is_err() {
                     log!("  FIFO full at fill {i}: stopping");
-                    return;
+                    return None;
                 }
             }
             e.fence += 1;
             let n = e.fence;
             if e.submit(&cmd::fence(FENCE, n)).is_err() {
                 log!("  FIFO full at the fence: stopping");
-                return;
+                return None;
             }
             let (mut st, mut g) = (st0, g0);
             let mut landed: Option<u32> = None;
@@ -1092,7 +1100,7 @@ mod image {
                     Some(t) if now > t + 5_000 => break,
                     None if now > 500_000 => {
                         log!("  fence never landed: stopping");
-                        return;
+                        return None;
                     }
                     _ => {}
                 }
@@ -1109,6 +1117,67 @@ mod image {
         // As the image found them: masked.
         e.regs.write32(MBX + reg::ENABLE, 0);
         e.regs.write32(MBX + reg::CLEAR, 0xFFFF);
+        Some((gpio, noisy))
+    }
+
+    /// The display's interrupt status and enable (`DINTRS`, `DINTRE`: read
+    /// and written by Dell's display ISR, so present), and the 2700G's
+    /// interrupt enable (`MINTENABLE`, system block: write-only for us,
+    /// never read; bit 15 the master enable, bits 0-3 the sources, as WM
+    /// writes `0x800F`).
+    const DINTRS: usize = 0x2178;
+    const DINTRE: usize = 0x217C;
+    const MINTENABLE: usize = 0x018;
+    /// The display's frame event in `DINTRS`/`DINTRE` (Dell's display ISR).
+    const FRAME: u32 = 1 << 2;
+
+    /// Stage 4f: the 2700G's interrupt line. Turns on the display's frame
+    /// event and the chip's master enable, then for 100 ms logs each frame
+    /// event (clearing it at once) and every GPIO that changes outside the
+    /// pins busy on their own: the pin that follows the frame events is the
+    /// 2700G's interrupt to the PXA (SYSINTR 27 under WM; candidates 11,
+    /// 12, 83-87, 94, 96). Puts `DINTRE` back after. Informational.
+    fn interrupt_line(e: &mut Engine, (mut gpio, noisy): (Mmio, [u32; 4])) {
+        let levels = |g: &mut Mmio| GPLR.map(|r| g.read32(r));
+        let re0 = e.regs.read32(DINTRE);
+        let rs0 = e.regs.read32(DINTRS);
+        log!("irq: DINTRE 0x{re0:08x}, DINTRS 0x{rs0:08x}; MINTENABLE = 0x800F, frame event on");
+        e.regs.write32(DINTRS, rs0);
+        e.regs.write32(MINTENABLE, 0x800F);
+        e.regs.write32(DINTRE, re0 | FRAME);
+        let mut g = levels(&mut gpio);
+        let (mut frames, mut pin_changes) = (0u32, 0);
+        let mut flipped = [0u32; 4];
+        let t0 = rt::ticks();
+        while us_since(t0) < 100_000 {
+            let now = us_since(t0);
+            let st = e.regs.read32(DINTRS);
+            let g1 = levels(&mut gpio);
+            let flip: [u32; 4] = core::array::from_fn(|k| (g1[k] ^ g[k]) & !noisy[k]);
+            if flip != [0; 4] {
+                for k in 0..4 {
+                    flipped[k] |= flip[k];
+                }
+                if pin_changes < 16 {
+                    pin_changes += 1;
+                    log!("  {now} us: GPIO bits flipped {flip:08x?} (now {g1:08x?})");
+                }
+            }
+            g = g1;
+            if st & FRAME != 0 {
+                frames += 1;
+                if frames <= 4 {
+                    log!("  {now} us: frame event (DINTRS 0x{st:08x})");
+                }
+                e.regs.write32(DINTRS, FRAME);
+            }
+        }
+        e.regs.write32(DINTRE, re0);
+        e.regs.write32(DINTRS, FRAME);
+        let g2 = levels(&mut gpio);
+        log!(
+            "  {frames} frame events in 100 ms; GPIO bits that changed {flipped:08x?}; DINTRE back to 0x{re0:08x}, GPIO now {g2:08x?}"
+        );
     }
 
     /// Keeps the picture up until a button is pressed and released (the
