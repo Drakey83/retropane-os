@@ -1,8 +1,8 @@
 # ADR-0022: The graphics stack: compositor, GDI layer and the MBX renderer
 
-- **Status:** Proposed (2026-10-13, drafted overnight for the project
-  owner's review; nothing here is decided, and the open questions below
-  stay open until the owner rules and the measurements are in)
+- **Status:** Accepted (2026-10-14, by the project owner; drafted
+  2026-10-13; open questions 1-4, 6 and 7 answered below, 5 is a
+  measurement)
 - **Date:** 2026-10-13
 
 ## Context
@@ -132,7 +132,7 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
 | Behaviour | Limit or choice | Evidence |
 |---|---|---|
 | The 2D engine reads only 2700G memory | **Hardware (measured 2026-10-14)**: the engine decodes 32 MiB, its 16 MiB mirrored and a constant between; no address reaches system RAM. Dell's driver masks every address to it and pays for CPU staging plus a fence per band | (A) + (P) docs/hw/2700g.md |
-| A copy down over itself can't run bottom-up | **Hardware, as far as measured**: bit 23 smears; Dell's driver sends every such overlap to the CPU. Strips (bottom first) work around it on the engine | (A) + (P) docs/hw/2700g.md |
+| A copy down over itself on the CPU (WM) | **Choice**: the engine does it in one command with a negative stride, 4.2 ms full screen, the CPU idle (measured); bit 23 is not the way | (P) docs/hw/2700g.md |
 | The CPU reads 2700G memory slowly | Hardware (measured: 61 vs 14.5 ms) | docs/perf.md |
 | No ARGB blending or gradients in the 2D engine | Likely hardware for the 2D engine (Dell's driver has `AlphaBlend`-shaped code only for 4 bpp text coverage); the 3D core can blend (its objects carry blend words), so not a limit of the chip | (A) |
 | WM has no compositor: programs draw on the screen | Choice (2005 RAM and CPU budget) | WM's design; replaced here |
@@ -194,7 +194,9 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
   fallback. Scrolling content can avoid the copy altogether by moving the
   surface's start address. Nothing above the service sees it.
 - Question 5 (a completion interrupt) is a measurement, not a vote: next
-  `rp-mbx` step. The overall decision is still to be voted.
+  `rp-mbx` step. The owner accepted the decision on 2026-10-14, with the
+  rule that the hardware is the only limit: WM's and Dell's ways are
+  findings to beat, never a ceiling or a fallback.
 
 ## Open questions (for the owner; none decided here)
 
