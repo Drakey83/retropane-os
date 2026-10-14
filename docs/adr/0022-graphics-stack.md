@@ -193,8 +193,14 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
   stride (measured fastest, no CPU work); bottom-first strips are the
   fallback. Scrolling content can avoid the copy altogether by moving the
   surface's start address. Nothing above the service sees it.
-- Question 5 (a completion interrupt) is a measurement, not a vote: next
-  `rp-mbx` step. The owner accepted the decision on 2026-10-14, with the
+- Question 5 (a completion interrupt), measured 2026-10-14
+  (docs/hw/2700g.md): **no 2D completion signal exists in the MBX status
+  register under any enable**, and no 2700G interrupt reached a PXA pin
+  in four runs (Dell's driver polls its fences too). Decision 7 therefore
+  wakes by a timer set from the measured engine speeds (fill 3.1 ms, copy
+  4.8 ms per full screen) and reads the fence once; flips are timed from
+  the scan-line counter `DVLNUM`. Left open: SYSINTR 27's pin (in the
+  unextracted OAL). The owner accepted the decision on 2026-10-14, with the
   rule that the hardware is the only limit: WM's and Dell's ways are
   findings to beat, never a ceiling or a fallback.
 
