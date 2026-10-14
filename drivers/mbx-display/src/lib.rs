@@ -51,6 +51,35 @@ pub mod reg {
     pub const DHDET: usize = 0x2314;
     /// Vertical display enable.
     pub const DVDET: usize = 0x2318;
+    /// Display interrupt status: a plain read/write register (measured
+    /// 2026-10-14): events set bits, a write stores its value, so writing
+    /// a 1 *sets* a bit. Clear only with [`super::ack_events`].
+    pub const DINTRS: usize = 0x2178;
+    /// Display interrupt enable.
+    pub const DINTRE: usize = 0x217C;
+    /// The current scan line (bits 0-11).
+    pub const DVLNUM: usize = 0x2308;
+}
+
+/// `DINTRS`/`DINTRE` bits (mbxfb's names; measured on the X51v 2026-10-14).
+pub mod event {
+    /// Horizontal blank: once a line.
+    pub const HBLNK0: u32 = 1 << 0;
+    /// Once a frame, on the line in `DVECTRL` bits 16-27 (moveable).
+    pub const VEVENT0: u32 = 1 << 2;
+    /// Underruns (bits 4-6) and overruns (16-18) of the two streams and
+    /// the cursor.
+    pub const UNDER_OVERRUN: u32 = 0x0007_0070;
+}
+
+/// Clears the `handled` bits of `DINTRS` the only safe way: read the
+/// status, write it back without them (Dell's way). Writing anything else
+/// sets every bit written as 1, which made an earlier probe see events
+/// that weren't there. Returns the status read.
+pub fn ack_events<B: RegisterBus>(regs: &mut B, handled: u32) -> u32 {
+    let s = regs.read32(reg::DINTRS);
+    regs.write32(reg::DINTRS, s & !handled);
+    s
 }
 
 const HI12: Field = Field::new(16, 12);
@@ -445,6 +474,15 @@ pub const SAVED_REGS: &[(&str, usize)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ack_writes_back_only_the_rest() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(reg::DINTRS, event::VEVENT0 | event::HBLNK0 | 0x10);
+        assert_eq!(ack_events(&mut bus, event::VEVENT0), 0x15);
+        // Never a 1 the status didn't already hold: a 1 would set it.
+        assert_eq!(bus.writes(), [(reg::DINTRS, event::HBLNK0 | 0x10)]);
+    }
 
     #[test]
     fn decode_inverts_registers() {
