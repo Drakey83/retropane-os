@@ -1,6 +1,6 @@
 [package]
 name = "rp-mbx"
-description = "Test image (item 69): reads the MBX 3D core's identification registers at 0x0FFE4000 (the base the static analysis found), each name logged before its read, then returns"
+description = "Test image (item 69): the first GPU-drawn rectangle, through the MBX 2D engine's command window at 0x0FFF5000, fenced, edges read back, timed against the CPU"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,8 @@ publish.workspace = true
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 
 [lints]
 workspace = true

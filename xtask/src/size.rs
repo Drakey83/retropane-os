@@ -310,11 +310,12 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
-    // Test image (item 69): reads the MBX core's identification registers.
-    // Provisional until measured.
+    // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),
+    // with the display driver to adopt the screen and the CPU fill to time
+    // against. 16.7 KiB measured (2026-10-13), + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 12 * 1024,
+        max_load: 19 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
