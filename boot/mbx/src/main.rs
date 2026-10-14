@@ -1121,17 +1121,17 @@ mod image {
     }
 
     /// The display's interrupt status and enable (`DINTRS`, `DINTRE`: read
-    /// and written by Dell's display ISR, so present; status bits clear by
-    /// writing 1), and the 2700G's interrupt enable (`MINTENABLE`, system
+    /// and written by Dell's display ISR, so present; a status bit clears
+    /// by writing 0 to it, 1s leave bits alone: Dell writes the status back
+    /// with the handled bit removed), and the 2700G's interrupt enable (`MINTENABLE`, system
     /// block: write-only for us, never read; bit 15 the master enable, bits
     /// 0-3 the sources, as WM writes `0x800F`).
     const DINTRS: usize = 0x2178;
     const DINTRE: usize = 0x217C;
     const MINTENABLE: usize = 0x018;
-    /// The display's three status bits. Device, 2026-10-14: bit 0 was set
-    /// and cleared by writing 1; bit 2 read set at every one of 26,237 polls
-    /// in 100 ms, even right after writing 1 (a level: "the last address
-    /// change was taken", as Dell enables it only while a flip is pending).
+    /// The display's current scan line (Dell polls it to time flips).
+    const DVLNUM: usize = 0x2308;
+    /// The display's three status bits (Dell handles bit 2 only).
     const DISPLAY_BITS: u32 = 0b111;
 
     /// Stage 4f: the 2700G's interrupt line and the display's events.
@@ -1153,10 +1153,10 @@ mod image {
         let rs0 = e.regs.read32(DINTRS);
         log!("irq: DINTRE 0x{re0:08x}, DINTRS 0x{rs0:08x} as found");
         e.regs.write32(DINTRE, 0);
-        e.regs.write32(DINTRS, DISPLAY_BITS);
+        e.regs.write32(DINTRS, 0);
         e.regs.write32(MINTENABLE, 0x800F);
         for enable in [0u32, 1, 2, 4] {
-            e.regs.write32(DINTRS, DISPLAY_BITS);
+            e.regs.write32(DINTRS, 0);
             e.regs.write32(DINTRE, enable);
             let g0 = levels(&mut gpio);
             log!(
@@ -1180,32 +1180,31 @@ mod image {
                 }
                 g = g1;
                 match held {
-                    None if st & 0b011 != 0 => {
-                        for b in 0..2 {
+                    None if st != 0 => {
+                        let line = e.regs.read32(DVLNUM);
+                        for b in 0..3 {
                             if st & 1 << b != 0 {
                                 events[b] += 1;
                                 if events[b] <= 3 {
-                                    log!("  {now} us: display bit {b} set");
+                                    log!("  {now} us: display bit {b} set (line {line})");
                                 }
                             }
                         }
-                        held = Some((now, st & 0b011));
+                        held = Some((now, st));
                     }
                     Some((t, bits)) if now > t + 500 => {
-                        e.regs.write32(DINTRS, bits);
+                        // Write 0 to the bits seen; 1s leave the others.
+                        e.regs.write32(DINTRS, !bits & DISPLAY_BITS);
                         held = None;
                     }
                     _ => {}
                 }
-                if st & 0b100 != 0 {
-                    events[2] += 1;
-                }
             }
             e.regs.write32(DINTRE, 0);
-            e.regs.write32(DINTRS, DISPLAY_BITS);
+            e.regs.write32(DINTRS, 0);
             let g2 = levels(&mut gpio);
             log!(
-                "  in 40 ms: bit 0 set {} times, bit 1 {}, bit 2 read set {} times; GPIO after disabling differs from before {:08x?}",
+                "  in 40 ms: bit 0 set {} times, bit 1 {}, bit 2 {}; GPIO after disabling differs from before {:08x?}",
                 events[0],
                 events[1],
                 events[2],
