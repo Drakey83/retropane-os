@@ -158,6 +158,9 @@ mod image {
         let mut minute_shown = -1i64;
 
         let mut latency = Latency::new();
+        // The parts of a tap's answer, for their medians.
+        let (mut settle, mut queueing, mut to_flip) =
+            (Latency::new(), Latency::new(), Latency::new());
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
         // Samples to what the person meant (rp_touch_cal::Filter).
@@ -294,6 +297,10 @@ mod image {
                 Pen::Down(..) => landed_ticks.unwrap_or(read_at),
                 _ => read_at,
             };
+            // The touch's share: from the landing to the filter's verdict.
+            if matches!(ev, Pen::Down(..)) {
+                settle.add(read_at.wrapping_sub(since) / 13 * 4);
+            }
             if matches!(ev, Pen::Up(..)) || raw.is_none() {
                 landed_ticks = None;
             }
@@ -327,6 +334,18 @@ mod image {
                     RunLog,
                     "gpu frames: worst CPU queueing {queue_worst} us, worst wait for the previous frame and scan-out {wait_worst} us, worst queue-to-flip {engine_worst} us, background rebuilt {rebuilds} times"
                 );
+                // Typical values (medians) of each part of a tap's answer.
+                for (name, l) in [
+                    ("touch landing to the filter's verdict", &mut settle),
+                    ("shell frame + CPU queueing", &mut queueing),
+                    ("queue to flip (engine, polled every ms)", &mut to_flip),
+                ] {
+                    let (n, median, worst) = l.summary();
+                    let _ = writeln!(
+                        RunLog,
+                        "  {name}: {n} times, median {median} us, worst {worst} us"
+                    );
+                }
                 before.restore(&mut renderer.parts().0.regs);
                 rp_hal_x51v::devices::return_to_loader();
                 loop {
@@ -342,6 +361,7 @@ mod image {
                 latency.add(rt::ticks().wrapping_sub(at) / 13 * 4);
                 let s = renderer.last;
                 engine_worst = engine_worst.max(s.engine_us);
+                to_flip.add(s.engine_us);
             }
 
             // Draw what changed, timing it.
@@ -352,6 +372,7 @@ mod image {
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 draw_us_worst = draw_us_worst.max(us);
+                queueing.add(us);
                 let s = renderer.last;
                 queue_worst = queue_worst.max(s.queue_us);
                 wait_worst = wait_worst.max(s.wait_us);
