@@ -213,9 +213,10 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
    **Measured 2026-10-14 (`rp-mbx` on the device, docs/hw/2700g.md):**
    (1) **Not through 2D copy addresses.** The 2D engine decodes 32 MiB,
    local memory mirrored at 32 MiB and a constant (`0x1000008C`) at
-   16-31 MiB. Decision 2 stands for the 2D engine; a direct path through
-   the 3D core, undecoded commands or bus mastering is **not ruled out**
-   (open, being checked; if one exists, decision 2 gains a faster option). (2) DMA
+   16-31 MiB. Decision 2 stands. The wiring rules out bus mastering (CS3 is
+   a VLIO slave; no MBREQ/MBGNT pin configured: docs/hw/2700g.md); the
+   3D core's fetches are untested but can only reach what the chip can
+   address. (2) DMA
    writes 30 MB/s against the CPU's 33 MB/s, the CPU keeping 84% of its
    pace: no faster, but nearly free, so CPU-drawn tiles reach 2700G memory
    by DMA (alternative 4 joins decision 4 as the copier, not a separate
