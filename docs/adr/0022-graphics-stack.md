@@ -198,7 +198,8 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
    by DMA (alternative 4 joins decision 4 as the copier, not a separate
    path). (3) Plain, right-to-left and colour-keyed copies behave as
    found; full-screen copies 4.8 ms; **bottom-up does not** (bit 23 alone
-   smears), being looked up in Dell's driver. The ARGB4444 format code is
+   smears; Dell's driver sends such copies to the CPU); strips of the
+   shift's height, bottom first, are exact on the device (fourth run). The ARGB4444 format code is
    still untested.
 4. **The interface plane's format:** ARGB4444 dithered (the owner's
    choice for SDRAM composition) assumes CPU dithering on flush; with
