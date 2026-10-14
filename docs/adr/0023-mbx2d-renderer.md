@@ -169,6 +169,20 @@ on the engine, not the CPU, and only where something changed.
   the reference and the fallback.
 - The shell (`rp-today`) changes only its renderer and set-up.
 
+## Measured after acceptance (2026-10-14, `rp-mbx-blend` B6)
+
+Stride 0 works; blending onto 32 bpp is as modelled; 32 bpp scan-out keeps
+up; a full-screen 32 bpp fill takes 6.2 ms and a copy about 14 ms (a full
+redraw's wallpaper copy). **But the panel bands a 256-level ramp:** it
+shows 16 or 18 bits, so B's picture needs dithering too (the engine has no
+dither bit and the display none known). **Proposed fix (to build):** as
+the last step of each redrawn rectangle, the engine adds a 4 x 4 ordered
+dither threshold pattern (kept in 2700G memory) with the blend word 0
+(source + destination, saturating, measured), and the panel's truncation
+does the rest: the same ordered dither the CPU path used, on the engine,
+no CPU cost. Its amplitude follows the link depth (565 or 666), which the
+owner's look at the ramps (green's bands finer than red's?) decides.
+
 ## Open questions
 
 1. ~~Owner: A or B?~~ B (2026-10-14).
