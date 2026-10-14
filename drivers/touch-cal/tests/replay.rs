@@ -99,3 +99,71 @@ fn every_recorded_touch_lands_where_it_was_meant_and_soon() {
         );
     }
 }
+
+/// The owner's free tapping (2026-10-13, after the scripted session): 26
+/// touches anywhere. Every touch that gives three samples with steady
+/// pressure must be recognised within 45 ms of landing (the 50 ms
+/// promise), and no press may wander from its release by more than a
+/// button's half-width.
+#[test]
+fn free_tapping_is_recognised_promptly() {
+    let text = include_str!("data/owner-2026-10-13-free.txt");
+    let cal = Calibration::X51V_DEFAULT;
+    let map = |x, y| cal.to_screen(x, y, (480, 640));
+    let mut f = Filter::new();
+    let (mut landed, mut down) = (None::<u32>, None::<(u32, (u16, u16))>);
+    let mut slow = Vec::new();
+    let mut touches = 0;
+    let mut seen: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        seen.push(line);
+        let v: Vec<&str> = line.split_whitespace().collect();
+        let ms: u32 = v[1].parse().unwrap();
+        let s = (v[2] != "-").then(|| {
+            let n = |i: usize| v[i].parse::<u16>().unwrap();
+            Sample {
+                x: n(2),
+                y: n(3),
+                z1: n(4),
+            }
+        });
+        if s.is_some_and(|s| s.z1 >= rp_touch_cal::Z_MIN) && landed.is_none() {
+            landed = Some(ms);
+        }
+        match f.sample(s, ms) {
+            Pen::Down(x, y) => down = Some((ms, map(x, y))),
+            Pen::Up(x, y) => {
+                touches += 1;
+                let (at, p) = down.expect("up without down");
+                let after = at - landed.unwrap();
+                if after > 45 {
+                    slow.push(after);
+                    eprintln!(
+                        "late {after} ms:
+  {}",
+                        seen.join(
+                            "
+  "
+                        )
+                    );
+                }
+                seen.clear();
+                let q = map(x, y);
+                assert!(
+                    p.0.abs_diff(q.0) < 41 && p.1.abs_diff(q.1) < 41,
+                    "pressed {p:?}, released {q:?}"
+                );
+                landed = None;
+                down = None;
+            }
+            _ => {}
+        }
+        if s.is_none_or(|s| s.z1 < rp_touch_cal::Z_MIN) && down.is_none() {
+            landed = None;
+        }
+    }
+    assert!(touches >= 24, "{touches} touches");
+    // The program was busy redrawing during one touch (a 56 ms gap
+    // between its samples): at most that one may be late.
+    assert!(slow.len() <= 1, "late: {slow:?} ms");
+}
