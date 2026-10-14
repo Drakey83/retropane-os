@@ -317,10 +317,12 @@ pub const BUDGETS: &[Budget] = &[
     // timed), 23.7 KiB measured, + ~10%; then 27 -> 38 KiB for the DMA
     // timing and the past-16-MiB probe (ADR-0022 open questions 1-2), 34.0
     // KiB measured, + ~10%; then 38 -> 44 KiB for every way to copy down
-    // over itself, checked and timed (2026-10-14), 39.1 KiB measured, + ~10%.
+    // over itself, checked and timed (2026-10-14), 39.1 KiB measured, + ~10%;
+    // then 44 -> 50 KiB for the completion and interrupt-line stages (ADR-0022
+    // question 5), 44.8 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 44 * 1024,
+        max_load: 50 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
