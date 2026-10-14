@@ -456,6 +456,9 @@ mod image {
         // 16 MiB (open question 1)? Last, as it may hang the engine.
         let ok = dma_vs_cpu(vram) && ok;
         probe_beyond_local_memory(&mut e, vram);
+        // 4d. Every way to copy down over itself, checked and timed (the
+        // owner: the most efficient that works, not the easiest).
+        let ok = ways_down(&mut e, vram, (a, s)) && ok;
 
         // 5. A picture for the photo: black, three bars, a white frame.
         let scene: [((u16, u16, u16, u16), u32); 8] = [
@@ -818,6 +821,186 @@ mod image {
             };
             log!("  {got:08x?}: {what}");
         }
+    }
+
+    /// The ways tried to copy rows `[0, h - dy)` of a surface onto
+    /// `[dy, h)`, the copy a scroll needs.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Down {
+        /// Bit 23, coordinates as for a plain copy (smeared, 2026-10-14).
+        Bit23,
+        /// Bit 23, the source origin on the source's bottom row.
+        Bit23OriginBottom,
+        /// Bit 23, origin on the bottom row, destination given bottom to top.
+        Bit23Flipped,
+        /// Bit 23, origin on the top row, destination given bottom to top.
+        Bit23RectFlipped,
+        /// Both surfaces start at their bottom row with a negative stride
+        /// (15-bit two's complement): a plain top-down copy in mirrored
+        /// memory, bottom first in reality, if the engine takes it.
+        NegativeStride,
+        /// Strips no taller than `dy`, the bottom one first.
+        Strips,
+        /// Out to scratch memory, then back `dy` lower: two copies.
+        Scratch,
+    }
+    const DOWN: [Down; 7] = [
+        Down::Bit23,
+        Down::Bit23OriginBottom,
+        Down::Bit23Flipped,
+        Down::Bit23RectFlipped,
+        Down::NegativeStride,
+        Down::Strips,
+        Down::Scratch,
+    ];
+    /// Bit 23 of the operation header (Dell's "y not positive").
+    const BIT23: u32 = 1 << 23;
+    /// The small test surface: a guard row, 72 rows of 64 pixels, a guard
+    /// row; 12 MiB into local memory, clear of everything else here (a
+    /// negative stride read as unsigned stays below 15 MiB).
+    const WAYS: usize = 0x00C0_0000;
+    const WAYS_STRIDE: usize = 128;
+    const WAYS_H: u16 = 72;
+    /// Scratch for [`Down::Scratch`] (a full screen fits).
+    const SCRATCH: usize = 0x00D0_0000;
+
+    /// Queues one way's commands; returns how many copies it took.
+    fn queue_down(
+        e: &mut Engine,
+        m: Down,
+        (at, st): (usize, usize),
+        (w, h): (u16, u16),
+        dy: u16,
+    ) -> Result<u32, u32> {
+        use cmd::Format::Rgb565;
+        let surf = (at, st);
+        let mut send = |dst, src, origin, rect, flags| {
+            let (words, n) = cmd::copy(Rgb565, dst, src, origin, rect, flags);
+            e.submit(&words[..n])
+        };
+        let bottom = h - dy - 1;
+        match m {
+            Down::Bit23 => send(surf, surf, (0, 0), (0, dy, w, h), BIT23)?,
+            Down::Bit23OriginBottom => send(surf, surf, (0, bottom), (0, dy, w, h), BIT23)?,
+            Down::Bit23Flipped => send(surf, surf, (0, bottom), (0, h - 1, w, dy - 1), BIT23)?,
+            Down::Bit23RectFlipped => send(surf, surf, (0, 0), (0, h - 1, w, dy - 1), BIT23)?,
+            Down::NegativeStride => {
+                let neg = 0x8000 - st;
+                let last = |row: u16| at + usize::from(row) * st;
+                send(
+                    (last(h - 1), neg),
+                    (last(bottom), neg),
+                    (0, 0),
+                    (0, 0, w, h - dy),
+                    0,
+                )?;
+            }
+            Down::Strips => {
+                let n = (h - dy).div_ceil(dy);
+                for i in (0..n).rev() {
+                    let y0 = dy + i * dy;
+                    send(surf, surf, (0, i * dy), (0, y0, w, (y0 + dy).min(h)), 0)?;
+                }
+                return Ok(u32::from(n));
+            }
+            Down::Scratch => {
+                send((SCRATCH, st), surf, (0, 0), (0, 0, w, h - dy), 0)?;
+                send(surf, (SCRATCH, st), (0, 0), (0, dy, w, h), 0)?;
+                return Ok(2);
+            }
+        }
+        Ok(1)
+    }
+
+    /// The small surface's pixel at row `r` (0 and `WAYS_H + 1` are guards).
+    fn ways_px(x: usize, r: usize) -> u16 {
+        tile(x, r)
+    }
+
+    /// Fills the small surface, guards included.
+    fn ways_fill(vram: &mut [u8]) {
+        for r in 0..usize::from(WAYS_H) + 2 {
+            for x in (0..64).step_by(2) {
+                let v = u32::from(ways_px(x, r)) | u32::from(ways_px(x + 1, r)) << 16;
+                let _ = store32_volatile(vram, WAYS + r * WAYS_STRIDE + x * 2, v);
+            }
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// Pixels of the small surface that differ from a correct shift by `dy`.
+    fn ways_wrong(vram: &[u8], dy: usize) -> u32 {
+        let h = usize::from(WAYS_H);
+        let mut wrong = 0;
+        for r in 0..h + 2 {
+            let from = if r > dy && r <= h { r - dy } else { r };
+            for x in (0..64).step_by(2) {
+                let want = u32::from(ways_px(x, from)) | u32::from(ways_px(x + 1, from)) << 16;
+                let got = load32_volatile(vram, WAYS + r * WAYS_STRIDE + x * 2).unwrap_or(!want);
+                wrong += ((got ^ want) & 0xFFFF != 0) as u32 + ((got ^ want) >> 16 != 0) as u32;
+            }
+        }
+        wrong
+    }
+
+    /// Stage 4d: each way on the small surface, shifted 1 and 8 rows, every
+    /// pixel and both guard rows checked; then the ways that worked, timed
+    /// on the whole screen. Informational except strips and scratch (the
+    /// emulator models only those); stops at the first stuck engine.
+    fn ways_down(e: &mut Engine, vram: &mut [u8], screen: (usize, usize)) -> bool {
+        let surf = (WAYS + WAYS_STRIDE, WAYS_STRIDE);
+        let mut works = [true; DOWN.len()];
+        let mut ok = true;
+        for (k, &m) in DOWN.iter().enumerate() {
+            for dy in [1u16, 8] {
+                ways_fill(vram);
+                if let Err(st) = queue_down(e, m, surf, (64, WAYS_H), dy) {
+                    log!("down {m:?} dy {dy}: FIFO stuck (0x{st:08x}): stopping");
+                    return false;
+                }
+                if let Err(why) = e.finish(vram, 50_000) {
+                    log!("down {m:?} dy {dy}: {why}: stopping");
+                    return false;
+                }
+                let wrong = ways_wrong(vram, usize::from(dy));
+                works[k] &= wrong == 0;
+                log!(
+                    "down {m:?} dy {dy}: {}",
+                    if wrong == 0 { "exact" } else { "WRONG" }
+                );
+                if wrong != 0 {
+                    log!("  {wrong} of 4736 pixels differ");
+                }
+            }
+            if matches!(m, Down::Strips | Down::Scratch) {
+                ok &= works[k];
+            }
+        }
+        for (k, &m) in DOWN.iter().enumerate() {
+            if !works[k] {
+                continue;
+            }
+            for dy in [1u16, 8, 32] {
+                let t0 = rt::ticks();
+                let n = match queue_down(e, m, screen, (480, 640), dy) {
+                    Ok(n) => n,
+                    Err(st) => {
+                        log!("time {m:?} dy {dy}: FIFO stuck (0x{st:08x}): stopping");
+                        return false;
+                    }
+                };
+                let queued = us_since(t0);
+                if let Err(why) = e.finish(vram, 2_000_000) {
+                    log!("time {m:?} dy {dy}: {why}: stopping");
+                    return false;
+                }
+                log!(
+                    "time {m:?} full screen dy {dy}: {} us, {n} copies (CPU busy queueing {queued} us)",
+                    us_since(t0)
+                );
+            }
+        }
+        ok
     }
 
     /// Keeps the picture up until a button is pressed and released (the

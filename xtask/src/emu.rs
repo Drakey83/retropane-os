@@ -1176,6 +1176,8 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     for l in log.lines().filter(|l| {
         l.starts_with("dma:")
             || l.starts_with("probe:")
+            || l.starts_with("down ")
+            || l.starts_with("time ")
             || l.starts_with("  [")
             || l.contains("full-screen")
     }) {
