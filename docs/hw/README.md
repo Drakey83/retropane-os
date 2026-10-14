@@ -65,6 +65,13 @@ booted through HaRET. Details in the per-block files.
 > owner's device), its `IOCTL_HAL_REBOOT` handler, analysed locally for
 > its hardware accesses and their order (no code from it is here). Not yet
 > tried on the device.
+>
+> **Caution (2026-10-14):** the `nk.exe` this section was read from
+> (`local/re/reboot/nk.exe`) is **not byte-identical to the A08 ROM's**
+> (code shifted from about `0x8C248000`, data placed differently; it
+> matches neither L11 nor L16). Recheck these findings against the copy
+> extracted from the ROM (`local/re/oal/nk.exe`, `interrupts.md`) before
+> the device test.
 
 Today only the stylus reset (a hardware reset) brings Windows Mobile back;
 a watchdog reset stops at Dell's factory prompt, which is in Dell's
