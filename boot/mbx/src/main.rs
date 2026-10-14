@@ -98,7 +98,8 @@ pub mod cmd {
     pub const OP_KEY: u32 = 1 << 20;
     // Bit 23, the driver's "y not positive", is deliberately absent: it
     // doesn't make the chip copy bottom-up (measured 2026-10-14). A copy
-    // down over itself goes in strips (see `copies`).
+    // down over itself is one copy with a negative stride on both surfaces
+    // (`Down::NegativeStride`), or strips as the fallback (see `copies`).
     /// Copy right to left (for a destination right of an overlapping source).
     pub const OP_RIGHT_LEFT: u32 = 1 << 24;
     /// No scaling: the driver sends it once at start-up.
@@ -945,8 +946,10 @@ mod image {
 
     /// Stage 4d: each way on the small surface, shifted 1 and 8 rows, every
     /// pixel and both guard rows checked; then the ways that worked, timed
-    /// on the whole screen. Informational except strips and scratch (the
-    /// emulator models only those); stops at the first stuck engine.
+    /// on the whole screen. The negative stride (the winner on the device,
+    /// 2026-10-14: one copy, 4.2 ms full screen), strips and scratch must
+    /// work; the bit 23 ways are informational (all wrong on the device);
+    /// stops at the first stuck engine.
     fn ways_down(e: &mut Engine, vram: &mut [u8], screen: (usize, usize)) -> bool {
         let surf = (WAYS + WAYS_STRIDE, WAYS_STRIDE);
         let mut works = [true; DOWN.len()];
@@ -972,7 +975,7 @@ mod image {
                     log!("  {wrong} of 4736 pixels differ");
                 }
             }
-            if matches!(m, Down::Strips | Down::Scratch) {
+            if matches!(m, Down::NegativeStride | Down::Strips | Down::Scratch) {
                 ok &= works[k];
             }
         }

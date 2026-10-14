@@ -188,10 +188,10 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
 - **Question 7, the 3D core:** after `Mbx2dRenderer` draws the shell;
   then a time-boxed start (goal: one measured triangle) under its own ADR.
 - **Downward overlaps are the service's job** (the owner asked that the
-  strip fix be automatic): the graphics service splits a copy down over
-  itself into bottom-first strips, or for small shifts copies through
-  scratch 2700G memory and back, whichever costs fewer engine words and
-  bytes; scrolling content avoids the copy altogether by moving the
+  fix be automatic and the most efficient that works): the graphics
+  service sends a copy down over itself as one copy with a negative
+  stride (measured fastest, no CPU work); bottom-first strips are the
+  fallback. Scrolling content can avoid the copy altogether by moving the
   surface's start address. Nothing above the service sees it.
 - Question 5 (a completion interrupt) is a measurement, not a vote: next
   `rp-mbx` step. The overall decision is still to be voted.
@@ -217,8 +217,10 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
    by DMA (alternative 4 joins decision 4 as the copier, not a separate
    path). (3) Plain, right-to-left and colour-keyed copies behave as
    found; full-screen copies 4.8 ms; **bottom-up does not** (bit 23 alone
-   smears; Dell's driver sends such copies to the CPU); strips of the
-   shift's height, bottom first, are exact on the device (fourth run). The ARGB4444 format code is
+   smears; Dell's driver sends such copies to the CPU); a **negative
+   stride** on both surfaces does it in one command, exact, 4.2 ms full
+   screen, the CPU idle (fifth run); strips (CPU queueing up to 4.5 ms for
+   a 1 px scroll) and a scratch round trip (9 ms) also work and are slower. The ARGB4444 format code is
    still untested.
 4. **The interface plane's format:** ARGB4444 dithered (the owner's
    choice for SDRAM composition) assumes CPU dithering on flush; with
