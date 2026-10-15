@@ -153,5 +153,31 @@ pub fn start_table(
     ]
 }
 
+/// Status (`0x12c`) bit: the parameter memory manager is ready (set after
+/// [`pm_init_table`]'s last write; Dell enables it in `0x130` first and
+/// clears it by writing it to `0x134`).
+pub const PM_READY: u32 = 1 << 6;
+/// Status bit: the 3D stage finished a render.
+pub const RENDER_DONE: u32 = 1 << 2;
+
+/// The parameter memory manager's set-up, as Dell's driver writes it
+/// before any render (`0x021179a8`): `pm` (4 KiB aligned, `pm_size` bytes,
+/// its first 4 KiB a header Dell keeps its own small lists in) and a
+/// 16 KiB-aligned 16 KiB block `table`. The last pair starts it; then wait
+/// for [`PM_READY`].
+#[must_use]
+pub fn pm_init_table(pm: u32, pm_size: u32, table: u32) -> [(usize, u32); 6] {
+    let first = (pm + 4096) >> 12;
+    let pages_minus_one = (pm_size >> 12).saturating_sub(1);
+    [
+        (0x824, table),
+        (0x828, first),
+        (0x82C, pages_minus_one + first - 1),
+        (0x83C, pm),
+        (0x6D8, 0x0900_0000),
+        (0x838, 1),
+    ]
+}
+
 #[cfg(test)]
 mod tests;

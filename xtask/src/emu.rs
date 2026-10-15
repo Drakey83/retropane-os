@@ -1348,11 +1348,13 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
         return Err(format!("mbx3d: didn't return cleanly:{log}"));
     }
     // The fork doesn't model the 3D core (docs/hw/emulator.md): the image
-    // must try both size encodings, draw nothing, and come back.
+    // must try the parameter memory set-up on both clocks, get no "ready",
+    // try no render, and come back.
     for want in [
         "core ID 0x01020000",
-        "A: red screen-covering triangle, 15 x 20 grid of 32 px, sizes in pixels",
-        "A: red screen-covering triangle, 15 x 20 grid of 32 px, sizes in tiles",
+        "P: parameter memory set-up, MBXCLK",
+        "(source 2)",
+        "the parameter memory never said ready: no render tried",
         "RETROPANE-MBX3D: nothing drawn",
     ] {
         if !log.contains(want) {

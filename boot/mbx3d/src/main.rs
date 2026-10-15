@@ -1,31 +1,29 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader.
+//! 3D core, under the loader. Version 2.
 //!
-//! Everything it sends is what Windows Mobile's own driver sends (docs/hw/
-//! 2700g.md, "The scene bytes"; encoded by `rp-drv-mbx3d`): a region array
-//! over a tile grid, every tile pointing at one object list (a strip
-//! pointer, then the end word), one 17-word triangle (ISP "always", Dell's
-//! TSP word, x/y pairs, z, 1/w, colours), then Dell's 15-pair start table,
-//! the target a 32 bpp picture in 2700G memory. Three things are unknown and
-//! are found here:
+//! Version 1 (2026-10-14) sent only Dell's 15-pair start table: nothing
+//! drew, nothing moved, nothing hung. Dell's driver does three things first
+//! that it skipped (docs/hw/2700g.md, "The scene bytes"):
 //!
-//! - **whether it draws at all, and how it says it's done:** after the
-//!   start, `0x12c` (status), `0x804` (noted 2026-10-13) and a pixel the
-//!   triangle covers are polled for 200 ms, every change logged with its
-//!   time;
-//! - **the tile size:** a screen-covering triangle (Dell's background, red)
-//!   is drawn with a grid that assumes 32-pixel tiles (15 x 20); how far
-//!   the red reaches says the real size (16-pixel tiles: the top-left
-//!   quarter; 64: all of it, from half as many tiles);
-//! - **whether `0x654`/`0x658` count pixels or tiles:** pixels first (as
-//!   Dell's table has them); if nothing is drawn, tiles.
+//! 1. **the 3D core's clock on source 2**: Dell's submit routine votes
+//!    `MBXCLK` (system block `0x054`) to `((divider - 1) << 2) | 2` before
+//!    3D work; Windows Mobile leaves `0x5` (source 1). Tried as found
+//!    first, then source 2 if step 2 doesn't answer;
+//! 2. **the parameter memory manager**: six pairs (`0x824`-`0x83C`, `0x6D8`,
+//!    then `0x838 = 1`) with status bit 6 enabled in `0x130`, then a wait
+//!    for that bit in `0x12c` ("ready"), cleared through `0x134`;
+//! 3. **status bits enabled before polling them**: Dell sets the bit in
+//!    `0x130`, polls `0x12c`, clears through `0x134`.
 //!
-//! Then, if the red background drew: a triangle with red, green and blue
-//! corners over grey (shading), read back at its corners and middle, and
-//! shown until a button. Every wait has a timeout; the core is reset
-//! after each try and at the end; the plane and every register changed is
-//! put back (the 2700G keeps state between images). Only registers Dell's
-//! driver touches are read (a wrong read hangs the bus).
+//! Then, if the parameter memory answers: the screen-covering red triangle
+//! (Dell's background) on an assumed 32-px tile grid, its lists inside the
+//! parameter memory as Dell keeps them, with render-done (bit 2) enabled:
+//! try A Dell's table plus the likely target register `0x65C`; try B
+//! adding the GLES table's extras. How far the red reaches gives the tile
+//! size. Then a red/green/blue triangle, read back and shown until a
+//! button. Every wait has a timeout; the core is reset at the end; the
+//! clock, the plane and every register changed are put back. Only
+//! registers Dell's driver touches are read (a wrong read hangs the bus).
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -49,13 +47,19 @@ pub fn tile_size(reach: u32, tiles: u32, screen: u32) -> Option<u32> {
     (size.is_power_of_two() && size * tiles == reach).then_some(size)
 }
 
+/// `MBXCLK` with the same divider on clock source 2 (Dell's 3D vote).
+#[must_use]
+pub const fn source2(mbxclk: u32) -> u32 {
+    (mbxclk & !3) | 2
+}
+
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
 
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
-    use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, TSP_DELL, Vertex};
+    use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, PM_READY, RENDER_DONE, TSP_DELL, Vertex};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
@@ -63,7 +67,7 @@ mod image {
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
 
-    use super::{MARKER, tile_size};
+    use super::{MARKER, source2, tile_size};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -77,25 +81,35 @@ mod image {
     }
 
     // 2700G local memory: the 32 bpp target (2 MiB in, clear of the
-    // loader's plane below 1 MiB), the parameter buffer (4 KiB aligned:
-    // the object list at +0, the triangle at +64, as Dell's minimal scene),
-    // the region array, the 2D engine's fence.
+    // loader's plane below 1 MiB); the parameter memory (1 MiB at 12 MiB,
+    // 4 KiB aligned; our lists in its first 4 KiB, where Dell keeps its
+    // own); the manager's 16 KiB block (16 KiB aligned); the region array;
+    // the 2D engine's fence.
     const TARGET: usize = 0x0020_0000;
     const W: u32 = 480;
     const H: u32 = 640;
     const STRIDE: usize = 480 * 4;
-    const PARAMS: usize = 0x00C0_0000;
+    const PM: usize = 0x00C0_0000;
+    const PM_SIZE: u32 = 0x0010_0000;
+    const PM_TABLE: usize = 0x00D0_0000;
+    const PARAMS: usize = PM;
     const OBJECT: usize = PARAMS + 64;
-    const REGIONS: usize = 0x00C1_0000;
+    const REGIONS: usize = 0x00D1_0000;
     const FENCE: usize = 0x00FF_F000;
     /// The tile size assumed for the grid.
     const TILE: u32 = 32;
     const COLS: u32 = W / TILE;
     const ROWS: u32 = H / TILE;
 
-    /// MBX registers read here (all ones Dell's driver touches).
+    /// MBX registers (all ones Dell's driver touches).
     const STATUS: usize = MBX + reg::STATUS;
+    const ENABLE: usize = MBX + reg::ENABLE;
+    const CLEAR: usize = MBX + reg::CLEAR;
     const R804: usize = MBX + 0x804;
+    /// The 3D core's clock (system block, read fine under WM).
+    const MBXCLK: usize = 0x054;
+    /// The PLLs' lock bits (system block; `0x7`, all locked, under WM).
+    const PLLSTAT: usize = 0x040;
 
     const GREY: u32 = 0xFF20_2020;
 
@@ -115,27 +129,84 @@ mod image {
         e.submit(&w).and_then(|()| e.finish(vram, 200_000)).is_ok()
     }
 
-    /// How a try's start table sizes the target.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    enum Size {
-        /// `0x654`/`0x658` = (pixels - 1) << 16, as Dell's table.
-        Pixels,
-        /// (tiles - 1) << 16.
-        Tiles,
+    /// Writes `pairs` to the MBX block with `bit` enabled in `0x130`, then
+    /// polls `0x12c`, `0x804` and (if given) a target pixel for `limit_us`,
+    /// logging every change with its time. Returns (when the bit set, when
+    /// the pixel changed). The bit is cleared through `0x134` and the
+    /// enables put back.
+    fn run(
+        e: &mut Engine<Mmio>,
+        vram: &[u8],
+        pairs: &[(usize, u32)],
+        bit: u32,
+        probe: Option<(u32, u32)>,
+        limit_us: u32,
+    ) -> (Option<u32>, Option<u32>) {
+        let en = e.regs.read32(ENABLE);
+        e.regs.write32(CLEAR, bit);
+        e.regs.write32(ENABLE, en | bit);
+        let p0 = probe.map(|(x, y)| px(vram, x, y));
+        let (s0, r0) = (e.regs.read32(STATUS), e.regs.read32(R804));
+        log!(
+            "  before: status 0x{s0:08x}, enable 0x{:08x}, 0x804 0x{r0:08x}, probe {p0:08x?}",
+            en | bit
+        );
+        let t0 = rt::ticks();
+        for &(off, v) in pairs {
+            e.regs.write32(MBX + off, v);
+        }
+        let (mut s, mut r, mut p) = (s0, r0, p0);
+        let (mut set, mut drew) = (None, None);
+        let mut changes = 0;
+        while us_since(t0) < limit_us {
+            let now = us_since(t0);
+            let s1 = e.regs.read32(STATUS);
+            let r1 = e.regs.read32(R804);
+            let p1 = probe.map(|(x, y)| px(vram, x, y));
+            if (s1, r1, p1) != (s, r, p) && changes < 12 {
+                changes += 1;
+                log!("  {now} us: status 0x{s1:08x}, 0x804 0x{r1:08x}, probe {p1:08x?}");
+            }
+            if s1 & bit != 0 && set.is_none() {
+                set = Some(now);
+            }
+            if p1 != p0 && drew.is_none() {
+                drew = Some(now);
+            }
+            (s, r, p) = (s1, r1, p1);
+            if set.is_some() && (probe.is_none() || drew.is_some()) && now > 2_000 {
+                break;
+            }
+        }
+        e.regs.write32(CLEAR, bit);
+        e.regs.write32(ENABLE, en);
+        log!(
+            "  bit 0x{bit:x} set at {set:?} us, probe changed at {drew:?} us; status now 0x{:08x}",
+            e.regs.read32(STATUS)
+        );
+        (set, drew)
     }
 
-    /// Writes one triangle's scene and starts the 3D stage, then polls the
-    /// status, `0x804` and `probe` for 200 ms. Returns whether `probe`
-    /// changed (the triangle drew), logging each change with its time.
+    /// The parameter memory manager's set-up; true if it said ready.
+    fn pm_init(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        for k in 0..4096 {
+            let _ = store32_volatile(vram, PM_TABLE + 4 * k, 0);
+        }
+        cpu::drain_write_buffer();
+        let t = m3::pm_init_table(PM as u32, PM_SIZE, PM_TABLE as u32);
+        run(e, vram, &t, PM_READY, None, 100_000).0.is_some()
+    }
+
+    /// One triangle's scene inside the parameter memory, then `table`
+    /// (start last), render-done enabled; true if `probe` changed.
     fn draw(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
         v: &[Vertex; 3],
-        size: Size,
+        table: &[(usize, u32)],
         probe: (u32, u32),
     ) -> bool {
-        let object = m3::triangle(ISP_ALWAYS, TSP_DELL, v);
-        store(vram, OBJECT, &object);
+        store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, v));
         store(
             vram,
             PARAMS,
@@ -143,57 +214,46 @@ mod image {
         );
         let mut regions = [0u32; 2 * 15 * 20];
         let Some(n) = m3::region_array(&mut regions, COLS, ROWS, PARAMS as u32) else {
-            log!("  region array doesn't fit");
             return false;
         };
         store(vram, REGIONS, &regions[..n]);
         cpu::drain_write_buffer();
-        let (w, h) = match size {
-            Size::Pixels => (W, H),
-            Size::Tiles => (COLS, ROWS),
-        };
-        let table = m3::start_table(REGIONS as u32, PARAMS as u32, w, h, STRIDE as u32);
-        let before = px(vram, probe.0, probe.1);
-        let (s0, r0) = (e.regs.read32(STATUS), e.regs.read32(R804));
-        log!("  before: status 0x{s0:08x}, 0x804 0x{r0:08x}, probe pixel 0x{before:08x}");
-        let t0 = rt::ticks();
-        for (reg_off, value) in table {
-            e.regs.write32(MBX + reg_off, value);
-        }
-        let (mut s, mut r, mut p) = (s0, r0, before);
-        let mut changes = 0;
-        let mut drew = None;
-        while us_since(t0) < 200_000 {
-            let now = us_since(t0);
-            let (s1, r1, p1) = (
-                e.regs.read32(STATUS),
-                e.regs.read32(R804),
-                px(vram, probe.0, probe.1),
-            );
-            if (s1, r1, p1) != (s, r, p) && changes < 12 {
-                changes += 1;
-                log!("  {now} us: status 0x{s1:08x}, 0x804 0x{r1:08x}, probe 0x{p1:08x}");
-            }
-            if p1 != before && drew.is_none() {
-                drew = Some(now);
-            }
-            (s, r, p) = (s1, r1, p1);
-        }
-        log!(
-            "  after 200 ms: status 0x{s:08x}, 0x804 0x{r:08x}; probe {}",
-            match drew {
-                Some(t) => {
-                    let _ = writeln!(RunLog, "  probe changed at {t} us");
-                    "DREW"
-                }
-                None => "unchanged",
-            }
-        );
-        drew.is_some()
+        run(e, vram, table, RENDER_DONE, Some(probe), 200_000)
+            .1
+            .is_some()
     }
 
-    /// How far a colour reaches from the top-left along row `y` and column
-    /// `x` (pixels whose colour differs from `bg`, stepping by 2).
+    /// Dell's start table with the likely target register, and optionally
+    /// the GLES table's extras; the start stays last.
+    fn table(extras: bool) -> ([(usize, u32); 21], usize) {
+        let dell = m3::start_table(REGIONS as u32, PARAMS as u32, W, H, STRIDE as u32);
+        let mut t = [(0usize, 0u32); 21];
+        let mut n = 0;
+        for &p in &dell[..14] {
+            t[n] = p;
+            n += 1;
+        }
+        let more: &[(usize, u32)] = if extras {
+            &[
+                (0x65C, TARGET as u32),
+                (0x6D0, 1),
+                (0x6DC, 1),
+                (0x648, 1),
+                (0x614, 0x1E3C_E508),
+                (0x618, 0x1E3C_E508),
+            ]
+        } else {
+            &[(0x65C, TARGET as u32)]
+        };
+        for &p in more {
+            t[n] = p;
+            n += 1;
+        }
+        t[n] = dell[14];
+        (t, n + 1)
+    }
+
+    /// How far a colour reaches from the top-left along row 2 and column 2.
     fn reach(vram: &[u8], bg: u32) -> (u32, u32) {
         let across = (0..W)
             .step_by(2)
@@ -218,57 +278,85 @@ mod image {
         let _ = display.adopt(vram.len());
         let regs = display.into_inner();
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
-        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4)");
+        let clk0 = e.regs.read32(MBXCLK);
+        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4, version 2)");
         log!(
-            "core ID 0x{:08x}, status 0x{:08x}, 0x804 0x{:08x}, 0x85c 0x{:08x}",
+            "core ID 0x{:08x}, MBXCLK 0x{clk0:x}, PLLSTAT 0x{:x}, status 0x{:08x}, enable 0x{:08x}, 0x804 0x{:08x}",
             e.regs.read32(MBX + reg::ID),
+            e.regs.read32(PLLSTAT),
             e.regs.read32(STATUS),
-            e.regs.read32(R804),
-            e.regs.read32(MBX + 0x85c)
+            e.regs.read32(ENABLE),
+            e.regs.read32(R804)
         );
-        e.reset(rt::delay_us);
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
 
-        // A: the screen-covering red triangle (Dell's background), pixels
-        // then tiles in the size registers.
+        // 1-2: the parameter memory, clock as found, then on source 2.
+        let mut ready = false;
+        for (name, clk) in [("as found", clk0), ("source 2", source2(clk0))] {
+            rt::check_in();
+            if clk != clk0 && e.regs.read32(PLLSTAT) & 7 != 7 {
+                // A clock source that isn't running would stop the core,
+                // and reading a stopped core might hang the bus.
+                log!(
+                    "P: PLLSTAT 0x{:x}: not every PLL locked, source 2 not tried",
+                    e.regs.read32(PLLSTAT)
+                );
+                break;
+            }
+            e.regs.write32(MBXCLK, clk);
+            rt::delay_us(1_000);
+            e.reset(rt::delay_us);
+            log!("P: parameter memory set-up, MBXCLK 0x{clk:x} ({name})");
+            ready = pm_init(&mut e, vram);
+            if ready {
+                break;
+            }
+        }
+
+        // 3: the red screen-covering triangle, try A then B.
         let background = [
             Vertex::flat(0.0, 0.0, 0xFFFF_0000),
             Vertex::flat(2048.0, 0.0, 0xFFFF_0000),
             Vertex::flat(0.0, 2048.0, 0xFFFF_0000),
         ];
         let mut drew = false;
-        let mut size_used = Size::Pixels;
-        for (name, size) in [("pixels", Size::Pixels), ("tiles", Size::Tiles)] {
-            rt::check_in();
-            if !clear(&mut e, vram, GREY) {
-                log!("A: the 2D clear didn't finish: stopping");
-                break;
+        let mut extras = false;
+        if ready {
+            for (name, x) in [
+                ("A: Dell's table + 0x65C", false),
+                ("B: + the GLES extras", true),
+            ] {
+                rt::check_in();
+                if !clear(&mut e, vram, GREY) {
+                    log!("{name}: the 2D clear didn't finish: stopping");
+                    break;
+                }
+                let (t, n) = table(x);
+                log!("{name}: red screen-covering triangle, {COLS} x {ROWS} grid of {TILE} px");
+                drew = draw(&mut e, vram, &background, &t[..n], (8, 8));
+                if drew {
+                    extras = x;
+                    let (across, down) = reach(vram, GREY);
+                    log!(
+                        "  drawn {across} px across, {down} down; (8,8) 0x{:08x}, (240,320) 0x{:08x}, (470,630) 0x{:08x}",
+                        px(vram, 8, 8),
+                        px(vram, 240, 320),
+                        px(vram, 470, 630)
+                    );
+                    log!(
+                        "  tile size from the reach: across {:?}, down {:?}",
+                        tile_size(across, COLS, W),
+                        tile_size(down, ROWS, H)
+                    );
+                    break;
+                }
             }
-            log!(
-                "A: red screen-covering triangle, {COLS} x {ROWS} grid of {TILE} px, sizes in {name}"
-            );
-            drew = draw(&mut e, vram, &background, size, (8, 8));
-            e.reset(rt::delay_us);
-            if drew {
-                size_used = size;
-                let (across, down) = reach(vram, GREY);
-                log!(
-                    "A: drawn {across} px across, {down} px down; pixel (8,8) 0x{:08x}, (240,320) 0x{:08x}, (470,630) 0x{:08x}",
-                    px(vram, 8, 8),
-                    px(vram, 240, 320),
-                    px(vram, 470, 630)
-                );
-                log!(
-                    "A: tile size from the reach: across {:?}, down {:?}",
-                    tile_size(across, COLS, W),
-                    tile_size(down, ROWS, H)
-                );
-                break;
-            }
+        } else {
+            log!("the parameter memory never said ready: no render tried");
         }
 
-        // B: red, green and blue corners over grey (shading), if A drew.
+        // 4: red, green and blue corners over grey (shading), if it drew.
         let mut shown = false;
         if drew {
             rt::check_in();
@@ -278,26 +366,25 @@ mod image {
                 Vertex::flat(420.0, 560.0, 0xFF00_FF00),
                 Vertex::flat(60.0, 560.0, 0xFF00_00FF),
             ];
-            log!("B: red/green/blue triangle (240,80) (420,560) (60,560)");
-            let ok = draw(&mut e, vram, &tri, size_used, (240, 400));
-            e.reset(rt::delay_us);
+            let (t, n) = table(extras);
+            log!("C: red/green/blue triangle (240,80) (420,560) (60,560)");
+            shown = draw(&mut e, vram, &tri, &t[..n], (240, 400));
             log!(
-                "B: {}; near the corners 0x{:08x} 0x{:08x} 0x{:08x}, middle 0x{:08x}, outside 0x{:08x}",
-                if ok { "drew" } else { "DIDN'T DRAW" },
+                "  near the corners 0x{:08x} 0x{:08x} 0x{:08x}, middle 0x{:08x}, outside 0x{:08x}",
                 px(vram, 240, 90),
                 px(vram, 405, 552),
                 px(vram, 75, 552),
                 px(vram, 240, 400),
                 px(vram, 20, 20)
             );
-            shown = ok;
         }
 
-        // Show the target (32 bpp, opaque) until a button; plane put back.
         let saved = show_target(&mut e.regs);
         let keypad = arm_keypad();
         let verdict = if drew {
             "DREW"
+        } else if ready {
+            "parameter memory ready, nothing drawn"
         } else {
             "nothing drawn (see the log)"
         };
@@ -319,6 +406,7 @@ mod image {
             e.regs.write32(off, v);
         }
         e.reset(rt::delay_us);
+        e.regs.write32(MBXCLK, clk0);
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -402,7 +490,7 @@ fn main() {}
 
 #[cfg(test)]
 mod tests {
-    use super::tile_size;
+    use super::{source2, tile_size};
 
     #[test]
     fn tile_size_from_the_red_reach() {
@@ -412,5 +500,12 @@ mod tests {
         assert_eq!(tile_size(480, 15, 480), Some(32));
         assert_eq!(tile_size(0, 15, 480), None);
         assert_eq!(tile_size(250, 15, 480), None, "not whole tiles");
+    }
+
+    #[test]
+    fn mbxclk_source_2_keeps_the_divider() {
+        // WM's 0x5: divider 2, source 1; Dell's 3D vote: source 2.
+        assert_eq!(source2(0x5), 0x6);
+        assert_eq!(source2(0x9), 0xA);
     }
 }
