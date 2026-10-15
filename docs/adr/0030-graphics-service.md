@@ -1,7 +1,7 @@
 # ADR-0030: The graphics service: one owner for the 2D engine and the 3D core
 
-- **Status:** Proposed (G1 needs the owner's vote; G2-G4 recommended and
-  built as a library behind them, easy to change)
+- **Status:** Accepted (2026-10-15: G1 option A by the owner's vote; G2-G4
+  as recommended, under the owner's standing go-ahead)
 - **Date:** 2026-10-15
 
 ## In plain words
@@ -34,7 +34,7 @@ who draws where on the screen); the rest has a recommendation.
 
 ## Decisions
 
-### G1. Who draws where on the screen (owner's vote)
+### G1. Who draws where on the screen: **A, areas (owner, 2026-10-15)**
 
 | | **A: areas (recommended first)** | B: 3D under 2D | C: 3D over 2D through a texture |
 |---|---|---|---|
@@ -71,6 +71,28 @@ evicted behind its back (ADR-0027 watch item).
 A library (`services/graphics`, `rp-graphics`) now, used by the test images
 and the shell in one process; hosted in the display driver host (ADR-0016
 D5) when IPC can move pages, with the same interface.
+
+## Built (2026-10-15, `services/graphics`)
+
+`rp_graphics::Graphics` owns the 2D renderer (and through it the register
+window and memory), the pool and the one 3D scene. A frame goes:
+
+1. **2D** draws its changed rectangles into the picture not on screen; the
+   2D renderer holds the flip (`Mbx2dRenderer::hold`, new).
+2. **3D** renders its area into the same picture: its own changed tiles,
+   the tiles the other picture missed, and the tiles 2D just drew over
+   (2D draws under the area like anywhere else; the scene draws over it).
+3. **The flip.** Nothing half-drawn or stale reaches the screen.
+
+A frame with only 3D changes renders into the picture not on screen (it
+holds the same 2D frame) and shows it; a frame with no change does
+nothing. Closing the scene gives the area back to 2D, redrawn whole. Each
+step is a `Step::Wait(time)` for a tickless caller, never a spin.
+Host-tested on both engines' models at once (`services/graphics`
+tests). Next: the shell's Today screen on the service, then a device run.
+
+Later (B in G1): 2D could leave out the area instead of drawing under it
+(saves the 2D engine's work there), and text over 3D.
 
 ## The four lenses
 
