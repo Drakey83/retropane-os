@@ -286,6 +286,24 @@ report; device runs only with the owner's go.
    moves the parameter memory to 6 MiB and logs the words around the
    first list.
 
+   **Version 15 on the device (2026-10-15, `local/rp-mbx3d-run15.txt`):
+   the TA path draws.** TA done in 1.9 ms; the 3D stage, with `0x608` =
+   the TA's region array and `0x60C` = the parameter memory, drew the
+   clear: the middle pixel went from grey to `0x00000000` (the clear's
+   colour words are 0), not the white of an empty tile. The TA's object
+   for the flat clear is **10 words: TSP, x/y x3, z x3** (`22206f80`, 0,
+   0, 960, 0, 0, 1280, 1.0 x3) - no ISP word, no 1/w, no colours (the
+   colour comes from the state words) - and its list pointer
+   `0x401897C0` has 0 in bits 24-21 (our hand-written 17-word form needs
+   4, the game's 26-word textured form 8): those bits are the object's
+   layout. The objects landed at `0xC25F00`, 6 MiB past the parameter
+   memory's start (the pointer's offset, read against `0x60C`, agrees),
+   so the "8 MiB reach" read of version 14 was wrong in detail: where the
+   manager puts pages relative to `0x83C`/`0x828` is still open (version
+   14's lists at `0x6DC6DC` fit no simple rule). The 3D stage reads them
+   right either way. Next: a textured triangle through the TA (the
+   vertex words the GLES driver's transform stage sends).
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.
