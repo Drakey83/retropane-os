@@ -93,6 +93,13 @@ const TX_PORT: Port = Port {
 const I_RXFIFO_REQ: u32 = 1 << 5;
 const I_TXFIFO_REQ: u32 = 1 << 6;
 const FIFO_BYTES: usize = 32;
+/// Blocks one data command can move: `NUMBLK` holds 16 bits, so a longer
+/// buffer is refused rather than cut short.
+pub const MAX_BLOCKS: u32 = 0xFFFF;
+/// Blocks per [`SPIN_LIMIT`] of DMA waiting: the poll limit is a backstop
+/// (the card's own timeouts end a stalled transfer), and it grows with the
+/// transfer so no length runs into it.
+const BLOCKS_PER_LIMIT: u32 = 128;
 
 /// Base card clock.
 pub const BASE_HZ: u32 = 19_500_000;
@@ -116,6 +123,15 @@ pub const MIN_HZ: u32 = BASE_HZ >> 6;
 pub fn clkrt_for(hz: u32) -> u32 {
     debug_assert!(hz >= MIN_HZ, "card clock below the controller's minimum");
     (0..=6).find(|&n| BASE_HZ >> n <= hz).unwrap_or(6)
+}
+
+/// Blocks in a data buffer: whole blocks, and no more than one command
+/// carries.
+fn data_blocks(len: usize) -> Result<u32, HostError> {
+    match u32::try_from(len / BLOCK) {
+        Ok(n) if len.is_multiple_of(BLOCK) && n <= MAX_BLOCKS => Ok(n),
+        _ => Err(HostError::Data),
+    }
 }
 
 /// `CMDAT` response-type bits.
@@ -379,11 +395,12 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
         buf: &mut [u8],
         wait: &mut dyn FnMut(),
     ) -> Result<u32, HostError> {
-        let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        let blocks = data_blocks(buf.len())?;
         self.dma_on = blocks > 1 && self.dma_reads && self.dma.arm_from_device(RX_PORT, buf);
         let status = self.issue(cmd, blocks)?[0];
         if self.dma_on {
-            self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, SPIN_LIMIT, wait)?;
+            let limit = SPIN_LIMIT.saturating_mul(blocks.div_ceil(BLOCKS_PER_LIMIT));
+            self.dma_wait(STAT_READ_TIMEOUT | STAT_CRC_READ, limit, wait)?;
             self.receive(&mut [])?;
         } else {
             self.receive(buf)?;
@@ -406,11 +423,12 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
     }
 
     fn write_blocks(&mut self, cmd: Command, buf: &[u8]) -> Result<u32, HostError> {
-        let blocks = u32::try_from(buf.len() / BLOCK).map_err(|_| HostError::Data)?;
+        let blocks = data_blocks(buf.len())?;
         self.dma_on = blocks > 1 && self.dma_writes && self.dma.arm_to_device(TX_PORT, buf);
         let status = self.issue_data(cmd, blocks, true)?[0];
         if self.dma_on {
-            self.dma_wait(0, WRITE_SPIN_LIMIT, &mut || {})?;
+            let limit = WRITE_SPIN_LIMIT.saturating_mul(blocks.div_ceil(BLOCKS_PER_LIMIT));
+            self.dma_wait(0, limit, &mut || {})?;
             self.transmit(&[])?;
         } else {
             self.transmit(buf)?;
@@ -953,6 +971,53 @@ mod tests {
             w.iter().filter(|&&(r, _)| r == reg::TXFIFO).count(),
             2 * BLOCK
         );
+    }
+
+    /// Every size class goes by DMA in one command, both ways: the
+    /// 128 KiB the DMA chain once held, and past it (it used to fall back
+    /// to the FIFO above that, at a third of the speed:
+    /// docs/research/storage-speed.md). Only a buffer too long for one
+    /// command is refused, loudly.
+    #[test]
+    fn every_multi_block_size_goes_by_dma_in_one_command() {
+        for blocks in [
+            2u32, 3, 8, 63, 64, 255, 256, 257, 512, 2048, 8192, MAX_BLOCKS,
+        ] {
+            let mut bus = MockBus::new();
+            bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+            let mut mmc = PxaMmc::with_dma(bus, fake());
+            let mut buf = vec![0u8; blocks as usize * BLOCK];
+            mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf)
+                .unwrap();
+            mmc.write_blocks(Command::new(25, 0, Response::R1), &buf)
+                .unwrap();
+            assert_eq!(mmc.dma_transfers(), 2, "{blocks} blocks");
+            let len = blocks as usize * BLOCK;
+            assert_eq!(
+                mmc.dma.arms,
+                [(DREQ_RX, 0x4110_0040, len), (DREQ_TX, 0x4110_0044, len)]
+            );
+            let w = mmc.into_inner_for_test().writes();
+            let counts: Vec<u32> = w
+                .iter()
+                .filter(|(o, _)| *o == reg::NUMBLK)
+                .map(|&(_, v)| v)
+                .collect();
+            assert_eq!(counts, [blocks, blocks]);
+        }
+        let mut mmc = PxaMmc::with_dma(MockBus::new(), fake());
+        let mut buf = vec![0u8; (MAX_BLOCKS as usize + 1) * BLOCK];
+        assert_eq!(
+            mmc.read_blocks(Command::new(18, 0, Response::R1), &mut buf),
+            Err(HostError::Data)
+        );
+        assert_eq!(
+            mmc.write_blocks(Command::new(25, 0, Response::R1), &buf),
+            Err(HostError::Data)
+        );
+        assert!(mmc.dma.arms.is_empty());
+        let w = mmc.into_inner_for_test().writes();
+        assert!(!w.iter().any(|(o, _)| *o == reg::CMD), "nothing issued");
     }
 
     #[test]
