@@ -69,7 +69,13 @@ each on 2026-10-15 (logs kept in the session notes folder,
   through the FAT layer, checked contiguous, and only after every block
   matched its pattern; the same bytes are written back. Read back after:
   **0 of 4,096 blocks differ**. The file was removed afterwards
-  (`cargo xtask rm`).
+  (`cargo xtask rm`). Card check after the run: the root listing is
+  entry for entry what it was before, and the loader kit files on the
+  card (retropane.bin, haret.exe, startup.txt, default.txt,
+  card-sd.ico, autorun.inf) match `target/sdkit`'s by SHA-256. Since
+  then the image writes only inside its own folder `/rp-storage-bench/`
+  and removes it at the end (the rule after another session's benchmark
+  wiped a file on the card).
 
 The core ran at 624 MHz turbo, 208 MHz run, with `CCCR` 0x02000310 (A = 1)
 and `CLKCFG` B = 1 as Windows Mobile left it, so the **memory controller
