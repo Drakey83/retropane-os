@@ -1044,3 +1044,50 @@ fn mip_levels_are_made_by_averaging() {
     assert!(upload_mipmapped(&mut g.pool, &mut g.mem, 8, format::RGB565, &texels).is_none());
     assert!(upload_mipmapped(&mut g.pool, &mut g.mem, 0, format::ARGB8888, &texels).is_none());
 }
+
+#[test]
+fn sixteen_bit_targets_as_measured() {
+    // rp-mbx3d run 26, S26b: a 4 x 4 tile block, quarters red, green, blue
+    // and white: RGB565 (0x650 1) and ARGB1555 (0x650 3), 0x660 the stride
+    // in bytes / 4.
+    for (format, want) in [
+        (PixelFormat::Rgb565, [0xF800u32, 0x07E0, 0x001F, 0xFFFF]),
+        (PixelFormat::Argb1555, [0xFC00, 0x83E0, 0x801F, 0xFFFF]),
+    ] {
+        let mut g = rig(32, 64);
+        g.r.set_background(None).unwrap();
+        for (k, c) in [RED, 0xFF00_FF00, BLUE, 0xFFFF_FFFF]
+            .into_iter()
+            .enumerate()
+        {
+            let (x, y) = (16 * (k as i32 % 2), 32 * (k as i32 / 2));
+            g.set(k, Some(Draw::rect(x, y, 16, 32, Paint::Flat(c))));
+        }
+        let pic = Picture::packed(0x00A0_0000, 480, 640, format);
+        g.frame_into(Target {
+            picture: pic,
+            x: 0,
+            y: 0,
+        });
+        assert_eq!(g.gpu.reg(0x650), format.code());
+        assert_eq!(g.gpu.reg(0x660), 240, "960 bytes a line / 4");
+        let p16 = |g: &Rig, x: u32, y: u32| {
+            let a = (pic.at + y * pic.stride + 2 * x) as usize;
+            u32::from(g.mem.load(a & !3).unwrap() >> (8 * (a & 2)) & 0xFFFF)
+        };
+        assert_eq!(
+            [
+                p16(&g, 2, 2),
+                p16(&g, 18, 2),
+                p16(&g, 2, 34),
+                p16(&g, 18, 34)
+            ],
+            want
+        );
+        assert_eq!(
+            p16(&g, 32, 2),
+            0,
+            "the block ends at 32 px: tiles stay 8 x 16"
+        );
+    }
+}

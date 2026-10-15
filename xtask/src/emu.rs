@@ -1460,6 +1460,26 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
             }
         }
     }
+    // Version 26's 16-bit targets, likewise.
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("S26b") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            (
+                "S26b 0x650 1, 0x660 240:",
+                "(2,2) 0xf800 (18,2) 0x07e0 (2,34) 0x001f (18,34) 0xffff; drawn to x Some(32) on row 2, y Some(64)",
+            ),
+            (
+                "S26b 0x650 3, 0x660 240:",
+                "(2,2) 0xfc00 (18,2) 0x83e0 (2,34) 0x801f (18,34) 0xffff",
+            ),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
     eprintln!(
         "    mbx3d OK: {}, back at the loader on a button press",
         if modelled {
