@@ -220,3 +220,15 @@ fn a_textured_list_points_like_doomgles() {
     let l = tex::list([0x10D0, 0x1138]);
     assert_eq!(l[..3], [0x4100_0434, 0x4100_044E, END]);
 }
+
+#[test]
+fn the_frame_state_matches_the_gles_drivers_values() {
+    // DoomGLES's frame: 60 x 40 tiles, depth cleared to 1.0.
+    assert_eq!(frame::clear_depth(1.0), 0x3F80_0001);
+    assert_eq!(frame::depth_setup(60 * 40, false), 2399 << 7 | 2);
+    assert_eq!(frame::depth_setup(60 * 40, true), 2399 << 7 | 3);
+    assert_eq!(frame::tile_grid(60, 40), 0x0027_003B);
+    // The game's last region header: tile (59, 39), bit 29, bit 31.
+    let last = region_entry(59, 39, 0, true)[0] | frame::REGION_GAME;
+    assert_eq!(last, 0xA000_273B);
+}

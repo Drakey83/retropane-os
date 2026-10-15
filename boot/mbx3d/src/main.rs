@@ -1,5 +1,13 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 11: version 10 showed DoomGLES's
+//! 3D core, under the loader. Version 12: version 11's `0x61C` changed
+//! nothing. Read since (static, 2026-10-15): DoomGLES's frames set bit 29
+//! on every region header (ours never), the GLES driver writes `0x6DC` =
+//! the clear depth as a float with bit 0 (`0x3F800001`; ours 0 or 1, a
+//! clear depth near 0), a depth buffer at `0x674` with
+//! `0x610 = (tiles - 1) << 7 | 2`, and `0x860` = the tile grid. The game's object and our
+//! square with each of those, alone and together, after a flat control
+//! with all of them; the depth buffer's first word is checked for a store.
+//! Version 11: version 10 showed DoomGLES's
 //! own object doesn't draw either: textures need state outside the object.
 //! The GLES driver's 3D table sets `0x61C = 0x00020007` where Dell's has
 //! `0x00020004`: the same tries with that, then with the GLES table's
@@ -134,6 +142,12 @@ mod image {
     const PARAMS: usize = PM;
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
+    /// Version 12's depth buffer (`0x674`): 2 MiB free here, more than
+    /// any 60 x 40 tile layout of 32-bit depths needs.
+    const ZBUF: usize = 0x0040_0000;
+    /// Written at the depth buffer's start before each try: a store
+    /// changes it.
+    const ZMARK: u32 = 0xA5A5_A5A5;
     const FENCE: usize = 0x00FF_F000;
     /// The texture for stage T: 256 x 256 16-bit texels (128 KiB),
     /// texel k holding k.
@@ -155,7 +169,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 11;
+    const VERSION: u32 = 12;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -263,16 +277,77 @@ mod image {
             PARAMS,
             &m3::one_triangle_list((OBJECT - PARAMS) as u32),
         );
-        // Straight into 2700G memory (19 KiB: too big for the stack).
-        let n = COLS * ROWS;
-        for k in 0..n {
-            let entry = m3::region_entry(k % COLS, k / COLS, PARAMS as u32, k + 1 == n);
-            store(vram, REGIONS + 8 * k as usize, &entry);
-        }
-        cpu::drain_write_buffer();
+        regions(vram, 0);
         run(e, vram, table, RENDER_DONE, Some(probe), 200_000)
             .1
             .is_some()
+    }
+
+    /// The region array, every tile on the list at the parameter
+    /// buffer's start, `flags` ORed into each header. Straight into 2700G
+    /// memory (19 KiB: too big for the stack).
+    fn regions(vram: &mut [u8], flags: u32) {
+        let n = COLS * ROWS;
+        for k in 0..n {
+            let mut entry = m3::region_entry(k % COLS, k / COLS, PARAMS as u32, k + 1 == n);
+            entry[0] |= flags;
+            store(vram, REGIONS + 8 * k as usize, &entry);
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// Version 12's frame state, each a lever on top of table 3 (Dell's
+    /// with the GLES driver's `0x61C`).
+    #[derive(Clone, Copy)]
+    struct Levers {
+        /// Bit 29 on every region header.
+        r29: bool,
+        /// `0x6DC` = clear depth 1.0 with bit 0.
+        clear: bool,
+        /// A depth buffer: `0x674` and `0x610`.
+        depth: bool,
+        /// `0x860` = the tile grid.
+        grid: bool,
+        /// The GLES table's other values (`0x614`/`0x618`, `0x648`,
+        /// `0x6D0`, `0x63C`, `0x64C`, `0x65C`).
+        gles: bool,
+    }
+
+    /// Table 3 with `l`'s registers (start last), and the region headers
+    /// rewritten for `l.r29`.
+    fn levered(vram: &mut [u8], l: Levers) -> ([(usize, u32); 24], usize) {
+        regions(vram, if l.r29 { m3::frame::REGION_GAME } else { 0 });
+        let (mut t, mut n) = table(3);
+        let start = t[n - 1];
+        n -= 1;
+        for p in &mut t[..n] {
+            match p.0 {
+                0x6DC if l.clear => p.1 = m3::frame::clear_depth(1.0),
+                0x610 if l.depth => p.1 = m3::frame::depth_setup(COLS * ROWS, false),
+                0x610 if l.gles => p.1 = 0x0003_0001,
+                0x614 | 0x618 if l.gles => p.1 = 0x1E3C_E508,
+                0x648 if l.gles => p.1 = 1,
+                _ => {}
+            }
+        }
+        let mut add = |p: (usize, u32)| {
+            t[n] = p;
+            n += 1;
+        };
+        if l.depth {
+            add((0x674, ZBUF as u32));
+        }
+        if l.grid {
+            add((0x860, m3::frame::tile_grid(COLS, ROWS)));
+        }
+        if l.gles {
+            add((0x6D0, 1));
+            add((0x63C, 0));
+            add((0x64C, 0));
+            add((0x65C, TARGET as u32));
+        }
+        add(start);
+        (t, n)
     }
 
     /// How stage T draws its square: the ISP word, the corner order
@@ -610,7 +685,6 @@ mod image {
                 let _ = store32_volatile(vram, TEXTURE + 4 * k, t | (t + 1) << 16);
             }
             cpu::drain_write_buffer();
-            let (t, n) = table(level);
             // Texels 0, 1, 2, 3 across, 1 and 2 down, the diagonal, then
             // further out; offsets from the square's top left.
             const AT: [(u32, u32); 12] = [
@@ -630,80 +704,85 @@ mod image {
             log!(
                 "T: dark background, then a textured square at (16,16), 256 px, tint 0x{TINT:08x}, texel k = k"
             );
-            // 1. Controls (flat), then which form draws (format 9, the game's),
-            // with Dell's table and with the GLES table's extras.
+            // 1. A flat control with every lever (does it still draw?),
+            // then the game's object and our square with each lever.
             let mut found = None;
-            let mut k = 0;
-            let mut tries = [None; 16];
-            let mut nt = 0;
-            tries[nt] = Some((
-                0u8,
-                Combo {
-                    isp: ISP_ALWAYS,
-                    clockwise: true,
-                    strip: m3::STRIP_ONE_TRIANGLE,
-                    flat: true,
-                    game: false,
-                },
-            ));
-            nt += 1;
-            // Version 9: the square in the textured form never drew; now the
-            // game's own object, with the flags its lists pointed at it with.
-            for lv in [3u8, 4] {
-                for strip in [0x4100_0000, 0x4160_0000, 0x4960_0000] {
-                    for isp in [m3::tex::ISP_GAME, ISP_ALWAYS] {
-                        tries[nt] = Some((
-                            lv,
-                            Combo {
-                                isp,
-                                clockwise: true,
-                                strip,
-                                flat: false,
-                                game: true,
-                            },
-                        ));
-                        nt += 1;
-                    }
-                }
-            }
-            // And our own square, in the game's form.
-            for lv in [3u8, 4] {
-                tries[nt] = Some((
-                    lv,
-                    Combo {
-                        isp: m3::tex::ISP_GAME,
-                        clockwise: true,
-                        strip: m3::tex::STRIP_GAME,
-                        flat: false,
-                        game: false,
-                    },
-                ));
-                nt += 1;
-            }
-            for &(lv, c) in tries.iter().flatten() {
+            const OFF: Levers = Levers {
+                r29: false,
+                clear: false,
+                depth: false,
+                grid: false,
+                gles: false,
+            };
+            const ALL: Levers = Levers {
+                r29: true,
+                clear: true,
+                depth: true,
+                grid: true,
+                gles: true,
+            };
+            let rc = Levers {
+                r29: true,
+                clear: true,
+                ..OFF
+            };
+            let game = Combo {
+                isp: m3::tex::ISP_GAME,
+                clockwise: true,
+                strip: m3::tex::STRIP_GAME,
+                flat: false,
+                game: true,
+            };
+            let square = Combo {
+                game: false,
+                ..game
+            };
+            let flat = Combo {
+                isp: ISP_ALWAYS,
+                strip: m3::STRIP_ONE_TRIANGLE,
+                flat: true,
+                ..square
+            };
+            let tries = [
+                (ALL, flat),
+                (Levers { r29: true, ..OFF }, game),
+                (Levers { clear: true, ..OFF }, game),
+                (rc, game),
+                (Levers { grid: true, ..rc }, game),
+                (Levers { depth: true, ..rc }, game),
+                (ALL, game),
+                (Levers { r29: false, ..ALL }, game),
+                (rc, square),
+                (ALL, square),
+            ];
+            for (k, &(l, c)) in tries.iter().enumerate() {
                 rt::check_in();
-                let (t, n) = table(lv);
+                let _ = store32_volatile(vram, ZBUF, ZMARK);
+                let (t, n) = levered(vram, l);
                 let _ = clear(&mut e, vram, GREY);
                 let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
                 // Inside the square, or inside the game's thin triangle.
                 let (mx, my) = if c.game { (55, 100) } else { (144, 144) };
                 let (mid, out) = (px(vram, mx, my), px(vram, 300, 300));
                 log!(
-                    "  T1.{k} table {lv}, flat {}, game {}, ISP 0x{:08x}, strip 0x{:08x}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}",
+                    "  T1.{k} r29 {} clear {} depth {} grid {} gles {}, flat {}, game {}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}, zbuf {:08x}",
+                    l.r29,
+                    l.clear,
+                    l.depth,
+                    l.grid,
+                    l.gles,
                     c.flat,
                     c.game,
-                    c.isp,
-                    c.strip,
-                    px(vram, 67, 200)
+                    px(vram, 67, 200),
+                    load32_volatile(vram, ZBUF).unwrap_or(0)
                 );
-                k += 1;
                 if found.is_none() && !c.flat && done && mid != out && mid != 0xFFFF_FFFF {
-                    found = Some((lv, c));
+                    found = Some((l, square));
                 }
             }
             // 2. With it, every value of the format field.
-            if let Some((lv, c)) = found {
-                let (t, n) = table(lv);
+            if let Some((l, c)) = found {
+                let (t, n) = levered(vram, l);
                 log!(
                     "T2: samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
                 );

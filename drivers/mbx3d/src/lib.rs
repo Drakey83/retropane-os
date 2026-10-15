@@ -274,6 +274,44 @@ pub const PM_READY: u32 = 1 << 6;
 /// Status bit: the 3D stage finished a render.
 pub const RENDER_DONE: u32 = 1 << 2;
 
+/// The GLES driver's frame state, the part Dell's start table leaves out
+/// (`libGLES_CL.dll`: the 3D table `0x022616dc`-`0x02261848`, patched per
+/// frame by the scene routine `0x0225e5c4`; static reading 2026-10-15,
+/// meanings likely until the device confirms them).
+pub mod frame {
+    /// Region header bit 29: on every entry of DoomGLES's frames (capture
+    /// version 4 at `0x265000`, version 6 at `0x191000`: 2400 entries, 60
+    /// x 40, bit 31 on the last), never in Dell's clear scene. Dell's own
+    /// flush path (`0x02118af4`) sets it on a list's tiles.
+    pub const REGION_GAME: u32 = 1 << 29;
+
+    /// `0x6DC`: the depth the tiles start at, as a float, with bit 0 set
+    /// when the frame clears depth (`glClear` stores the clear depth at
+    /// context `+0x6F0`; the scene routine writes it with bit 0,
+    /// `0x0225e7e4`). Dell's table writes 0.
+    #[must_use]
+    pub fn clear_depth(z: f32) -> u32 {
+        z.to_bits() | 1
+    }
+
+    /// `0x610` with a depth buffer (`0x674` its address) of `tiles` tiles:
+    /// `(tiles - 1) << 7`, bit 1 set (store, likely), bit 0 when the depth
+    /// is loaded rather than cleared (the scene routine clears it when the
+    /// frame clears depth). Without a depth buffer the GLES driver writes
+    /// `0x30001` and `0x674 = 0`.
+    #[must_use]
+    pub fn depth_setup(tiles: u32, load: bool) -> u32 {
+        tiles.saturating_sub(1) << 7 | 2 | u32::from(load)
+    }
+
+    /// `0x860`: the tile grid, `(cols - 1) | (rows - 1) << 16` (from the
+    /// scene object's `+0xC` and `+0x10`, likely columns and rows).
+    #[must_use]
+    pub fn tile_grid(cols: u32, rows: u32) -> u32 {
+        cols.saturating_sub(1) | rows.saturating_sub(1) << 16
+    }
+}
+
 /// The parameter memory manager's set-up, as Dell's driver writes it
 /// before any render (`0x021179a8`): `pm` (4 KiB aligned, `pm_size` bytes,
 /// its first 4 KiB a header Dell keeps its own small lists in) and a
