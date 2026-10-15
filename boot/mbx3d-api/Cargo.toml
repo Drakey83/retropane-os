@@ -1,0 +1,25 @@
+[package]
+name = "rp-mbx3d-api"
+description = "Test image (ADR-0026): RetroPane's own 3D renderer (rp-mbx3d-render) on the device, reproducing rp-mbx3d versions 19-23 through its API: dirty tiles, sub-rectangle targets, blending, textures and address modes, depth, frame costs, the clock gate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true

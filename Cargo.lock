@@ -489,6 +489,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-mbx3d-api"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-uart",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-mbx3d-render",
+ "rp-vram-map",
+]
+
+[[package]]
+name = "rp-mbx3d-render"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-mbx3d",
+ "rp-hal-api",
+ "rp-hal-mock",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-noise"
 version = "0.0.0"
 dependencies = [

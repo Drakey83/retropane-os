@@ -365,6 +365,18 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0026): RetroPane's own 3D renderer through its API,
+    // reproducing rp-mbx3d versions 19-23 (stages S1-S7). 50.8 KiB measured
+    // (2026-10-15), + ~10%; then 56 -> 70 KiB for run 3 (S8, the "less"
+    // exploration, and exact render times), 64.8 KiB measured, + ~8%; then
+    // tightened 70 -> 66 KiB for run 4 (S8 done and removed), 60.0 KiB
+    // measured, + ~10%.
+    Budget {
+        image: "rp-mbx3d-api",
+        max_load: 66 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

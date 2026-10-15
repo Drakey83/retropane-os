@@ -339,3 +339,16 @@ fn address_modes_match_version_22() {
     assert_eq!(tex::with_address(t, tex::WRAP, tex::CLAMP) >> 28, 0x2);
     assert_eq!(tex::with_address(t, tex::MIRROR, tex::CLAMP) >> 28, 0x6);
 }
+
+#[test]
+fn blend_and_depth_words_match_version_23() {
+    // The flat square's word that blended half and half.
+    assert_eq!(
+        blend(TSP_DELL, factor::SRC_ALPHA, factor::INV_SRC_ALPHA),
+        0x9620_2E80
+    );
+    // Dell's low bits are always, no write; version 23's writing modes.
+    assert_eq!(depth_test(TSP_DELL, depth::ALWAYS, false), TSP_DELL);
+    assert_eq!(depth_test(TSP_DELL, depth::GREATER, true), 0x2220_0800);
+    assert_eq!(depth_test(TSP_DELL, depth::LESS, true), 0x2220_0200);
+}

@@ -1594,6 +1594,70 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
+/// runs under the loader; the fork doesn't model the 3D core, so the
+/// renderer's set-up never hears "ready" and every frame is refused
+/// (`NoCore`) without a fault; the clock, plane and core are put back and
+/// it returns on a button. The 3D results themselves are checked by the
+/// host model (`cargo test -p rp-mbx3d-render`).
+pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    mbx3d-api: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-mbx3d-api.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-mbx3d-api"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.command("sendkey ret")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX3D-API: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(180),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx3d-api: never came back to the loader after the button press")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("mbx3d-api: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "S1 (T1)",
+        "whole screen: NoCore",
+        "S7: the 3D clock gate",
+        "everything given back: true",
+        "RETROPANE-MBX3D-API: ",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx3d-api: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!(
+        "    mbx3d-api OK: every stage ran, every frame refused safely (the 3D core isn't modelled), back at the loader on a button press"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");

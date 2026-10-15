@@ -201,9 +201,9 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T2 | Do status bits 2 and 4 raise GPIO85? | D3: **no, as tried** (version 20: bit 2 enabled in `0x130`, `MINTENABLE` `0x800F`: 0 edges); timer fallback |
 | T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5: **passed** (version 20: any pixel offset, even 4 bytes) |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
-| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D (version 21) |
+| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | **passed** (version 23: factors in 31-26, bit 13 on; vertex and texture alpha) |
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality (version 21, on a hand-written textured object) |
-| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games (version 21: compare modes within one render) |
+| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | **passed within a render** (version 23: TSP bits 11-9 mode, bit 7 no-write; larger z nearer); storing depth across renders (`0x674`) still open |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
 | T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
 
@@ -251,6 +251,113 @@ and the run went on).
   the core. Next, by static reading: the combine word TEX2 (the GLES
   driver takes it from a table by texture mode; Dell's `0xD6886610` and
   the game's `0x86086610` differ in bits 30, 28 and 23).
+
+**Version 23 on the device (2026-10-15, `local/rp-mbx3d-run23.txt`):
+alpha blending and depth work**, with the forms read from the GLES
+driver (`0x02267700` builds the TSP; `glBlendFunc`, `glDepthFunc`,
+`glDepthMask`; TEX2 table `0x0225D3A0`):
+
+- **TSP bit 13 turns blending on** with the factors in bits 31-26
+  (source 31-29, destination 28-26, GL's codes: 0 zero, 1 one, 2/3
+  destination colour and inverse, 4/5 source alpha and inverse, 6/7
+  destination alpha and inverse). A flat square at alpha `0x80` over red:
+  `0xBF7F007F`, half and half exactly; an ARGB4444 texture at alpha 8/15:
+  `0xBF770087` (R `0xFF` x 7/15, B `0xFF` x 8/15). Without bit 13 the
+  texture drew opaque. Clearing TEX2 bit 13 made no difference here (it
+  may matter for other combine modes).
+- **Depth compare and write live in the TSP's low bits** (as
+  `glDepthFunc`/`glDepthMask` store them): bits 11-9 the mode (PowerVR2
+  numbering: 1 less, 4 greater, 6 greater or equal, 7 always), bit 7 set =
+  don't write. With writes on, blue at z 0.8 "greater" covered red at
+  0.5, blue at 0.3 stayed behind, "less" never passed against the
+  background at 0.1: **larger z is nearer**. Dell's `0x0E80` (always, no
+  write) is why version 22 saw no writes. The ISP's top bits were set to
+  the same mode here; which of the two fields the core obeys is a detail
+  for the renderer's tests.
+
+## Implementation (2026-10-15, milestones 1-2: `drivers/mbx3d-render`)
+
+`rp-mbx3d-render` builds D1 (the direct path; the TA path for games comes
+later), D2, D3 (the timer fallback), D4, D5 and D8, host-tested against a
+model of the 3D core (its `model` feature, every behaviour above that the
+device showed; anything unmeasured panics):
+
+- **A retained scene of up to 64 quads** (flat, Gouraud, textured in the
+  four decoded formats with wrap/mirror/clamp, blended with bit 13, depth),
+  each written into the parameter memory only when its words change (a
+  hash per slot); slot order is draw order.
+- **Per-tile lists, shared:** each rendered tile's list holds the
+  background object and only the quads touching it; tiles with the same
+  quads share one list, kept across frames (128 kept; a quad changing
+  kind drops the lists naming it; the space is reclaimed between frames,
+  when nothing references it). A full screen of large quads needs a
+  handful of lists, not 2400.
+- **Buffer age:** a frame into the picture rendered two frames ago adds
+  the tiles it missed; an unknown picture gets everything.
+- **Costs (host model):** a frame after the first is the start write, one
+  status read at the predicted time and its clear; a moved 200 x 200 square
+  costs 34 quad words and 2 words a tile (351 tiles), no new lists.
+- **No floats:** positions in 1/16 pixel, depth and texture coordinates
+  fixed point, the core's float words built with integer operations,
+  rounded exactly as a conversion would (checked against it).
+- **Rules the code keeps:** a rendered tile is written whole, so the scene
+  has a background (on by default) or must cover what it renders; one
+  renderer drives the core at a time (a new one resets the core first); its
+  resets reset the whole MBX, so the 2D engine is idle then and restarts
+  its stream (`Engine::after_core_reset`, `core_resets()`).
+
+New on the device with the first run of `rp-mbx3d-api` (owner's go):
+tiles pointing at different lists, objects and lists beyond the parameter
+memory's first 4 KiB, the ADR-0027 placements (parameter memory at 1 MiB,
+the manager's block at `0xFC000`, the region array and textures in the
+pool), and the 3D clock off and on again between renders.
+
+**`rp-mbx3d-api` run 1 on the device (2026-10-15,
+`local/rp-mbx3d-api-run1.txt`): 92 checks, 88 passed.** S1-S4, S6, S7 as
+version 19-23 found them, through the API: dirty tiles (unlisted ones
+untouched), every sub-rectangle offset, both alpha results, textures
+texel-exact with all three address modes, the clock gate off and on;
+renders of plain tiles matched the prediction to the microsecond, a frame
+after the first cost one register write. **The 4 failures were depth:** the
+background didn't write depth, and "greater" failed wherever only it lay
+under a quad: **a tile's depth is not cleared by `0x6DC = 0`** (version
+23's background wrote depth, so it never showed). Fix: the background
+writes depth (z 0); the model now starts tiles' depth undefined while
+`0x6DC` bit 0 is clear, and a test guards it. Also: with real objects the
+render took longer than 16 us + 5.2 us a tile (a 10 x 10 block under one
+quad: 541-678 us), so the prediction adds ~1 us a quad a tile and the poll
+step is a sixteenth of it; run 2 logs the exact times to calibrate.
+
+**Run 2 (`local/rp-mbx3d-api-run2.txt`): 92 checks, 91 passed** (the
+depth fix holds: all three "greater" cases right). Exact render times: ~10
+us + 5.25 us a tile, plus per quad a tile ~0.3-0.45 us flat, ~1.1 us
+textured and **~4.9 us blended** (a blended quad costs about as much as a
+tile: keep glass and fades to the tiles they cover). `predict_us` and
+`quad_cost` now fit all eleven frames within 6%, pinned by a test. The one
+failure is "less": blue "less" at 0.3 over red at 0.5 showed the floor
+(the background, z 0), where version 23 (its floor at z 0.1) showed red. No
+compare explains that the floor's z decides it; "less" and "less or equal"
+are marked unreliable (the model refuses them; the interface needs only
+"greater"), and run 3's stage S8 varies the floor's z, red, blue's write
+and a partial render to find out.
+
+**Run 3 (`local/rp-mbx3d-api-run3.txt`): 89 checks, 0 BAD; S8 answered
+"less".** Over whole-screen renders "less" and "less or equal" **never
+passed**, whatever the floor's z (0, 0.1, 0.6: even blue at 0.3 over a
+0.6 floor stayed hidden) and with or without depth writes; red under them
+always stayed. The floor's z was a red herring: what hid red in runs 1-2
+was the **partial render** (only blue's tiles), the one S8 variant that
+lost red again; version 23 rendered whole screens. Conclusion: the two
+modes don't work as we drive the core (the PowerVR2 family uses "greater"
+for nearer; whatever "less" needs is unknown), and they can damage what's
+under them. The renderer now **refuses every depth mode the device hasn't
+shown working** (`DEPTH_MODES`: greater, greater or equal, always;
+`Error::Unsupported`), so no client can reach the failure; the interface
+needs only "greater". S8 is removed; S5 checks the refusal.
+
+**Open, found while modelling:** "less" never passed on the device, not
+even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
+should have; "greater" behaved exactly. The model keeps it as measured.
 
 ## The four lenses
 

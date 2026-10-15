@@ -255,6 +255,19 @@ impl core::fmt::Display for Stuck {
     }
 }
 
+/// Dell's reset of the whole MBX core (2D engine and 3D core, variant 2),
+/// interrupts left masked. One definition for both renderers: after it the
+/// 2D [`Engine`]'s window offset must restart ([`Engine::after_core_reset`]).
+pub fn reset_core<B: RegisterBus>(regs: &mut B, mut delay_us: impl FnMut(u32)) {
+    regs.write32(MBX + reg::RESET, 0x111);
+    delay_us(2_000);
+    let en = regs.read32(MBX + reg::ENABLE);
+    regs.write32(MBX + reg::ENABLE, en & !0xFFFF);
+    regs.write32(MBX + reg::RESET, 0);
+    delay_us(2_000);
+    regs.write32(MBX + reg::CLEAR, 0xFFFF);
+}
+
 /// The command stream: the register window, the window's write offset and
 /// the fence counter. The clock is a free-running wrapping counter and its
 /// rate (differences are taken in ticks, so its wrap is harmless).
@@ -297,13 +310,14 @@ impl<R: RegisterBus> Engine<R> {
     /// Dell's reset (core variant 2), interrupts left masked; the command
     /// window's offset starts again at 0. `delay_us` waits.
     pub fn reset(&mut self, delay_us: fn(u32)) {
-        self.regs.write32(MBX + reg::RESET, 0x111);
-        delay_us(2_000);
-        let en = self.regs.read32(MBX + reg::ENABLE);
-        self.regs.write32(MBX + reg::ENABLE, en & !0xFFFF);
-        self.regs.write32(MBX + reg::RESET, 0);
-        delay_us(2_000);
-        self.regs.write32(MBX + reg::CLEAR, 0xFFFF);
+        reset_core(&mut self.regs, delay_us);
+        self.at = 0;
+    }
+
+    /// After something else reset the MBX core ([`reset_core`]: the 3D
+    /// renderer recovering from a hung render), the command window's
+    /// offset starts again at 0.
+    pub fn after_core_reset(&mut self) {
         self.at = 0;
     }
 
