@@ -73,14 +73,24 @@ pub const AVERAGE: u16 = 8;
 /// this many conversions.
 pub const CURVE_AT: [u16; 6] = [1, 4, 16, 32, 64, 128];
 
+/// Shorter settling times [`Settle::early`] measures a channel at: the
+/// value a sample would keep had it settled only this many conversions
+/// (the next [`AVERAGE`] conversions averaged), for deciding on recorded
+/// taps how short a sample can be (docs/hw/touch.md). Free: they are
+/// conversions the full settling makes anyway.
+pub const EARLY_AT: [u16; 4] = [16, 32, 64, 128];
+
 /// One channel's settling, for diagnostics and calibration.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Settle {
     /// The conversions at [`CURVE_AT`], to see the curve on the device.
     pub curve: [u16; 6],
     /// The value kept: the average of [`AVERAGE`] conversions after
-    /// [`SETTLE_CONVERSIONS`].
+    /// [`settle_for`] the channel.
     pub value: u16,
+    /// The value had the channel settled only [`EARLY_AT`] conversions;
+    /// 0 where that average doesn't fit inside its settling.
+    pub early: [u16; 4],
 }
 
 /// Both position channels' settling in the last sample.
@@ -135,20 +145,29 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
     pub fn settle(&mut self, ch: u8) -> Settle {
         let mut curve = [0; 6];
         let mut at = 0;
-        for n in 1..=settle_for(ch) {
+        let mut early = [0u32; 4];
+        let settle = settle_for(ch);
+        for n in 1..=settle {
             let v = self.read_pd(ch, pd::ADC_ON);
             if CURVE_AT.get(at) == Some(&n) {
                 curve[at] = v;
                 at += 1;
+            }
+            for (sum, &k) in early.iter_mut().zip(&EARLY_AT) {
+                if n > k && n <= k + AVERAGE && k + AVERAGE <= settle {
+                    *sum += u32::from(v);
+                }
             }
         }
         let sum: u32 = (0..AVERAGE)
             .map(|_| u32::from(self.read_pd(ch, pd::ADC_ON)))
             .sum();
         let n = u32::from(AVERAGE);
+        let avg = |sum: u32| ((sum + n / 2) / n) as u16;
         Settle {
             curve,
-            value: ((sum + n / 2) / n) as u16,
+            value: avg(sum),
+            early: early.map(avg),
         }
     }
 
@@ -323,12 +342,29 @@ mod tests {
             ramp.push(v as u16);
         }
         ramp.extend([1998, 2002, 2000, 2001, 1999, 2000, 2003, 1997]);
-        c.borrow_mut().ramp = ramp;
+        c.borrow_mut().ramp = ramp.clone();
         let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
         let s = ts.settle(channel::X);
         assert_eq!(s.value, 2000);
         assert_eq!(s.curve[0], 195);
         assert!(s.curve[1] < s.curve[2] && s.curve[4] < s.curve[5]);
+        // Settled for less, the value would have been further off.
+        let early_x = |k: usize| {
+            let at = usize::from(EARLY_AT[k]);
+            let sum: u32 = ramp[at..at + 8].iter().map(|&v| u32::from(v)).sum();
+            ((sum + 4) / 8) as u16
+        };
+        assert_eq!(s.early, [early_x(0), early_x(1), early_x(2), early_x(3)]);
+        assert!(s.early[0] < s.early[1] && s.early[3] < s.value);
+    }
+
+    #[test]
+    fn early_values_only_inside_the_settling() {
+        let c = chip([0, 1111, 0, 600, 2000, 3333, 0, 0]);
+        let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
+        assert_eq!(ts.settle(channel::X).early, [3333; 4]);
+        // Y settles 32: only the 16-conversion value fits.
+        assert_eq!(ts.settle(channel::Y).early, [1111, 0, 0, 0]);
     }
 
     #[test]
