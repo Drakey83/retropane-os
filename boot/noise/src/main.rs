@@ -33,6 +33,11 @@
 pub const MARKER: &str = "RETROPANE-NOISE: done";
 /// Samples per source (SP 800-90B asks for at least 1,000,000).
 pub const SAMPLES: usize = 1_000_000;
+/// Spaced series: ticks between samples (ADR-0029 option 2: phase noise
+/// adds up over time).
+pub const SPACING: u32 = 16;
+/// Samples in the spaced series (~49 s at 16 ticks a sample).
+pub const SPACED_SAMPLES: usize = 100_000;
 /// Samples of source A per restart-test row.
 pub const RESTART_ROW: usize = 1_000;
 /// Rows the restart file holds at most (90B: 1,000 restarts).
@@ -209,11 +214,13 @@ mod image {
     use rp_fat::AnyVolume;
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
+    use rp_hal_pxa27x::rt::IrqLine;
+    use rp_hal_pxa27x::soc::{OstChannels, irq};
     use rp_hal_pxa27x::{Mmio, diag, rt};
     use rp_hal_x51v::devices::{self, RunLog};
 
     use super::stats::{self, Summary};
-    use super::{MARKER, RESTART_ROW, RESTART_ROWS, SAMPLES};
+    use super::{MARKER, RESTART_ROW, RESTART_ROWS, SAMPLES, SPACED_SAMPLES, SPACING};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -405,35 +412,50 @@ mod image {
                 ost.set_count(ch, 0);
             }
             let _ = writeln!(out, "timer: sampling with channel {ch}, OMCR {mode:#04x}");
-            let start = rt::ticks();
-            let mut last = ost.count(ch);
-            while ost.count(ch) == last {}
-            last = ost.count(ch);
-            let mut prev = rt::cycles();
-            for (i, s) in samples.iter_mut().enumerate() {
-                let mut now = ost.count(ch);
-                while now == last {
-                    now = ost.count(ch);
-                }
-                let c = rt::cycles();
-                last = now;
-                *s = c.wrapping_sub(prev) as u16;
-                prev = c;
-                if i % CHECK_IN == 0 {
-                    rt::check_in();
+            // Run 3 polled the counter: every sample landed on one of two
+            // values 504 cycles apart (one register read), a near-regular
+            // beat. Now the tick's interrupt is timestamped as the IRQ path
+            // is entered (`rt::last_irq_cycles`). The channels share one
+            // interrupt line with the run limit (FIQ), so the run limit is
+            // handed off for this part; every wait below is bounded, and
+            // the hardware watchdog stays armed (`check_in`).
+            let limit = rt::run_limit_ms();
+            rt::disarm_run_limit();
+            let Some(mut line) = rt::take_irq(irq::OST_4_11) else {
+                crash(format_args!("OS timer interrupt taken"))
+            };
+            let tries: [(u32, usize, &str, &str); 2] = [
+                (
+                    1,
+                    SAMPLES,
+                    "A interrupt (cycles between 32 kHz tick interrupts)",
+                    "noise-ai.bin",
+                ),
+                (
+                    SPACING,
+                    SPACED_SAMPLES,
+                    "A spaced (cycles across 16 tick interrupts, low 16 bits)",
+                    "noise-as.bin",
+                ),
+            ];
+            for (k, n, name, file) in tries {
+                let series = &mut samples[..n];
+                let start = rt::ticks();
+                let missed = sample_ticks(&mut ost, &mut line, ch, k, series);
+                let took = rt::ticks().wrapping_sub(start);
+                rt::irq_disable();
+                ost.disarm_match(ch);
+                let sum = stats::summarise(series, 0xFF, hist);
+                report(&mut out, name, &sum, took, "low byte");
+                let _ = writeln!(out, "  ticks missed and resynchronised: {missed}");
+                save(&mut out, card.as_mut(), file, series, fat);
+                if k == 1 {
+                    save_restart_row(&mut out, card.as_mut(), series, restart, fat);
                 }
             }
-            let took = rt::ticks().wrapping_sub(start);
-            let sum = stats::summarise(samples, 0xFF, hist);
-            report(
-                &mut out,
-                "A two-crystal (cycles a 32 kHz tick)",
-                &sum,
-                took,
-                "low byte",
-            );
-            save(&mut out, card.as_mut(), "noise-a.bin", samples, fat);
-            save_restart_row(&mut out, card.as_mut(), samples, restart, fat);
+            if let Some(ms) = limit {
+                rt::arm_run_limit(ms);
+            }
         } else {
             let _ = writeln!(
                 out,
@@ -527,6 +549,79 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
+    }
+
+    /// Fills `out` with the core cycles between every `k`th 32 kHz tick of
+    /// channel `ch`, each tick taken as an interrupt and timestamped on
+    /// entry. The wait spins on memory only (no peripheral reads, whose
+    /// ~500-cycle bus time would put run 3's beat back into the timing),
+    /// bounded by the cycle counter. A tick missed (a match already past)
+    /// is waited out, resynchronised and not counted; returns how many.
+    fn sample_ticks(
+        ost: &mut OstChannels<Mmio>,
+        line: &mut IrqLine,
+        ch: u8,
+        k: u32,
+        out: &mut [u16],
+    ) -> u32 {
+        // 10 ms at 624 MHz: hundreds of ticks.
+        const TIMEOUT: u32 = 6_240_000;
+        let wait = |line: &mut IrqLine| {
+            let t0 = rt::cycles();
+            while !line.take() {
+                if rt::cycles().wrapping_sub(t0) > TIMEOUT {
+                    return false;
+                }
+            }
+            true
+        };
+        let mut missed = 0u32;
+        let mut at = 0u32;
+        // Start (and restart after a miss) two ticks ahead; the first
+        // interrupt only sets the reference.
+        let sync = |ost: &mut OstChannels<Mmio>, line: &mut IrqLine, at: &mut u32| -> Option<u32> {
+            for _ in 0..4 {
+                rt::irq_disable();
+                *at = ost.count(ch).wrapping_add(2);
+                ost.arm_match(ch, *at);
+                line.done();
+                rt::irq_enable();
+                if wait(line) {
+                    return Some(rt::last_irq_cycles());
+                }
+            }
+            None
+        };
+        let Some(mut prev) = sync(ost, line, &mut at) else {
+            return u32::MAX;
+        };
+        let mut i = 0;
+        while i < out.len() {
+            rt::irq_disable();
+            at = at.wrapping_add(k);
+            ost.arm_match(ch, at);
+            line.done();
+            rt::irq_enable();
+            if i % CHECK_IN == 0 {
+                rt::check_in();
+            }
+            if !wait(line) {
+                missed += 1;
+                if missed > 1000 {
+                    break;
+                }
+                match sync(ost, line, &mut at) {
+                    Some(c) => prev = c,
+                    None => break,
+                }
+                continue;
+            }
+            let c = rt::last_irq_cycles();
+            out[i] = c.wrapping_sub(prev) as u16;
+            prev = c;
+            i += 1;
+        }
+        missed
     }
 
     /// One source's line: what it is, how long it took, its first look.

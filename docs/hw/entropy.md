@@ -42,7 +42,12 @@ So far nothing sampled this way is good enough to carry the generator:
 ADR-0029's rule (credit only after measurement) did its job. The touch
 controller and SDRAM timing stay mixed only.
 
-### What next for A (for the owner's choice)
+### What next for A (owner's choice, 2026-10-15: options 1 and 2 together)
+
+`rp-noise` version 4 takes every tick as an interrupt and timestamps it as
+the IRQ path is entered (`noise-ai.bin`, 1,000,000 samples), then one tick
+in 16 (`noise-as.bin`, 100,000 samples, the low 16 bits of each ~305,000
+cycles). Run 3's polled file was `noise-a.bin`.
 
 The noise between two crystals is real but tiny per tick (a crystal's
 jitter is picoseconds; one core cycle is 1.6 ns); polling a slow timer
@@ -69,7 +74,8 @@ returns to the loader by itself after about two minutes.
 2. On the device, **only when the owner says go**: `cargo xtask load
    rp-noise`. The run log gives a first look at every source (range,
    distinct values, the 90B most-common-value estimate).
-3. Fetch the files: `cargo xtask get noise-a.bin` (and `noise-b.bin`,
+3. Fetch the files: `cargo xtask get noise-ai.bin` (and `noise-as.bin`,
+   `noise-b.bin`,
    `noise-t0.bin`, `noise-vb.bin`, `noise-ax.bin`, `noise-t1.bin`,
    `noise-r.bin`, `noise.txt`).
 4. Each run adds one row to `noise-r.bin` (the restart test, up to 1,000

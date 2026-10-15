@@ -1035,8 +1035,23 @@ pub fn set_preempt_hook(f: fn()) {
     unsafe { core::ptr::addr_of_mut!(PREEMPT_HOOK).write(Some(f)) }
 }
 
+/// The cycle counter when the last IRQ reached [`rp_irq_frame`] (0 until
+/// [`cycle_counter_start`]): interrupt timing for the random number
+/// generator's collector (ADR-0029 R1) and its measurement (`rp-noise`).
+static mut IRQ_CYCLES: u32 = 0;
+
+/// The cycle counter's value when the last IRQ was entered.
+#[must_use]
+pub fn last_irq_cycles() -> u32 {
+    // SAFETY: a plain read of a word the IRQ path writes whole.
+    unsafe { core::ptr::addr_of!(IRQ_CYCLES).read_volatile() }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn rp_irq_frame(frame: *const u32) {
+    // First, before any dispatch: the timestamp.
+    // SAFETY: IRQs are masked in the handler; the only writer.
+    unsafe { core::ptr::addr_of_mut!(IRQ_CYCLES).write_volatile(cycles()) };
     rp_irq();
     // SAFETY: `frame` is the 18-word frame the IRQ entry built; word 17 is
     // the interrupted CPSR.
@@ -1101,8 +1116,11 @@ fn rp_irq() {
         }
     }
     // Everything else: mask and signal its owner, or mask and record it as
-    // unclaimed (ADR-0007). No driver code runs here.
-    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::OST_4_11);
+    // unclaimed (ADR-0007). No driver code runs here. That includes the
+    // shared OS timer line when it isn't the run limit (channels 5-11 as an
+    // IRQ, `rp-noise`): left out, it was never masked and fired forever
+    // (2026-10-15, found in the emulator).
+    let other = pending & !(1 << crate::soc::irq::OST1);
     if other != 0 {
         // SAFETY: we're in the IRQ handler with IRQs masked, and main code
         // only touches DISPATCH with IRQs masked, so this access is exclusive.

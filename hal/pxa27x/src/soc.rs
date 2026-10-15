@@ -372,9 +372,39 @@ impl<B: RegisterBus> OstChannels<B> {
         }
     }
 
-    /// Stops channels 5-11 (as the loader leaves them).
+    /// Arms channel `ch`'s match at count `at`: its status bit cleared,
+    /// its interrupt enabled (the shared `irq::OST_4_11`). `OIER` is shared:
+    /// call with IRQs masked.
+    pub fn arm_match(&mut self, ch: u8, at: u32) {
+        if Self::ok(ch) {
+            self.0.write32(ost_reg::OSMR4 + 4 * usize::from(ch - 4), at);
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+            let oier = self.0.read32(ost_reg::OIER) | 1 << ch;
+            self.0.write32(ost_reg::OIER, oier);
+        }
+    }
+
+    /// Clears channel `ch`'s match status.
+    pub fn ack(&mut self, ch: u8) {
+        if Self::ok(ch) {
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+        }
+    }
+
+    /// Disables channel `ch`'s match interrupt and clears its status.
+    pub fn disarm_match(&mut self, ch: u8) {
+        if Self::ok(ch) {
+            let oier = self.0.read32(ost_reg::OIER) & !(1 << ch);
+            self.0.write32(ost_reg::OIER, oier);
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+        }
+    }
+
+    /// Stops channels 5-11 and their match interrupts (as the loader
+    /// leaves them).
     pub fn stop_all(&mut self) {
         for ch in 5..=11 {
+            self.disarm_match(ch);
             self.set_mode(ch, 0);
         }
     }

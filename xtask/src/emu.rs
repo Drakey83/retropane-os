@@ -1363,7 +1363,9 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "card: ready",
         "timer: channel 5 OMCR 0x81 mode first",
         "timer: sampling with channel 5, OMCR 0x81",
-        "A two-crystal (cycles a 32 kHz tick): 1000000 samples",
+        "A interrupt (cycles between 32 kHz tick interrupts): 1000000 samples",
+        "A spaced (cycles across 16 tick interrupts, low 16 bits): 100000 samples",
+        "ticks missed and resynchronised:",
         "B one-clock (cycles for 64 SDRAM reads): 1000000 samples",
         "T TEMP0: 1000000 samples",
         "T VBAT: 1000000 samples",
@@ -1378,8 +1380,15 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             return Err(format!("noise: the run log has no `{want}`:{log}"));
         }
     }
+    let spaced = card_file(&sd, "noise-as.bin")?;
+    if spaced.len() != 200_000 {
+        return Err(format!(
+            "noise: noise-as.bin is {} bytes, want 200,000",
+            spaced.len()
+        ));
+    }
     for name in [
-        "noise-a.bin",
+        "noise-ai.bin",
         "noise-b.bin",
         "noise-t0.bin",
         "noise-vb.bin",
@@ -1406,7 +1415,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         return Err("noise: noise.txt has no summaries".into());
     }
     eprintln!(
-        "    noise OK: clocks read, all six sources collected and saved whole, restart row appended, back at the loader (timing in the emulator is the PC's: plumbing only)"
+        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, restart row appended, back at the loader (timing in the emulator is the PC's: plumbing only)"
     );
     Ok(())
 }

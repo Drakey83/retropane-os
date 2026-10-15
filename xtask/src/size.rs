@@ -356,10 +356,12 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image (ADR-0029): the RNG's noise sources measured, samples to
     // the card. 94.3 KiB measured (2026-10-15), + ~10%; most of it is
-    // rp-fat's writes for both FAT32 and exFAT cards, as in the loader.
+    // rp-fat's writes for both FAT32 and exFAT cards, as in the loader;
+    // then 104 -> 117 KiB for interrupt-timestamped ticks (the IRQ
+    // dispatch code), 106.5 KiB measured, + ~10%.
     Budget {
         image: "rp-noise",
-        max_load: 104 * 1024,
+        max_load: 117 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
