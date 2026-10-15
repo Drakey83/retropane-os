@@ -15,6 +15,9 @@
 //!   (refresh kept through every change) and 256 KiB written and checked
 //!   at the point, then benchmarks: `memcpy`/`memset`, SDRAM and SRAM
 //!   pointer chases, 256 KiB written to the 2700G.
+//! - **C2b, 624 MHz as the manual lists it** (`CCCR` A = 0: memory clock
+//!   104 MHz) beside the 624 MHz point WM runs (A = 1, 208 MHz), measured
+//!   the same way: the manual's table 3-7 lists only the first.
 //! - **C3, switch costs:** turbo off/on at the top allowed point (no PLL
 //!   relock) and a full relock change, each timed over many switches.
 //! - The starting clocks put back exactly (and on any fault before the
@@ -196,7 +199,7 @@ mod image {
         rt::init_mmu();
         let start = clocks::save();
         let sp = start.point();
-        log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 1");
+        log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 2");
         log_raw("C1 as found", start);
         let power = clocks::power_snapshot();
         for ((name, _), v) in POWER_REGS.iter().zip(power) {
@@ -232,9 +235,12 @@ mod image {
         fill(keep, 0x5EED_0001);
         benches("start", work, sram.as_deref_mut(), vram.as_deref_mut());
 
-        // C2: every point the starting voltage covers.
+        // C2: every point, then 624 MHz as the manual lists it (A = 0).
+        let mut pts = [("", POINTS[0].1); POINTS.len() + 1];
+        pts[..POINTS.len()].copy_from_slice(&POINTS);
+        pts[POINTS.len()] = ("624m", clocks::P624_MANUAL);
         let mut top = None;
-        for (i, (name, p)) in POINTS.iter().enumerate() {
+        for (i, (name, p)) in pts.iter().enumerate() {
             rt::check_in();
             log!("C2 {name} MHz");
             let need = Code::for_turbo_khz(p.turbo_khz());
@@ -275,7 +281,9 @@ mod image {
                 verify(&work[..FRESH], seed) == 0,
             );
             benches(name, work, sram.as_deref_mut(), vram.as_deref_mut());
-            top = Some(*p);
+            if i < POINTS.len() {
+                top = Some(*p);
+            }
         }
 
         // C3: switch costs at the top allowed point.

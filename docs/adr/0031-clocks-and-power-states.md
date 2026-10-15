@@ -1,6 +1,6 @@
 # ADR-0031: RetroPane owns the CPU clocks, voltage and power states
 
-- **Status:** Proposed (votes V1-V3 below are the owner's)
+- **Status:** Proposed (votes V1-V4 below are the owner's)
 - **Date:** 2026-10-15
 - **Audit item:** 67 (docs/research/imitation-audit.md, "CPU clock, voltage,
   power states": the highest-value item)
@@ -65,6 +65,14 @@ point up). The top point is **L16 x 2N6**: run 208, turbo 624, bus and
 memory 208 MHz. The alternative, L24 x 2N4, would drop the bus to 156 MHz.
 At L16 x 2N6, turbo off gives 208 MHz with no relock. Every point is
 checked against the chip's limits (`Point::legal`) before it is used.
+
+Every change is first worked out as a pure `clocks::plan` (the register
+writes in order), and `change` only executes it. A host test runs every
+pair of points, both ways, turbo on and off, and checks that the final
+refresh interval is always the rule's for the new memory clock, that the
+interval is never late during the change, and that any memory-clock change
+is a relock. A switch can't skip the `DRI` rewrite (memory-timing report:
+a stale interval at a lower memory clock corrupts SDRAM silently).
 
 The SDRAM refresh interval is **derived** from the 64 ms rule and the row
 count in `MDCNFG` (49 at 208 MHz, against WM's 48), not copied. Around a
@@ -202,6 +210,19 @@ code, which is safe.
 - **V3 (624 MHz while the screen is on):** **recommended**: the UI never
   waits for a clock ramp. The alternative is 520 MHz at code `110`, about
   12% less power while running, for 17% less speed.
+
+- **V4 (which 624 MHz set-up):** the manual's table 3-7 lists 624 MHz for
+  the C5 stepping (this unit: `CP15 ID 0x69054117`) only with `CCCR` A =
+  0, which puts the memory clock at 104 MHz. SDRAM stays at 104 MHz either
+  way, but the static buses run at half speed, the 2700G's among them.
+  Windows Mobile runs A = 1 (memory clock 208 MHz) on this unit every day,
+  and Linux's table carries it, but the manual doesn't list it
+  (docs/research/memory-timing.md, open question 4). `rp-clocks` measures
+  both (C2 `624` and `624m`). **Recommended:** A = 1 if the device run
+  shows it clean and measurably faster (2700G writes, chases), with the
+  manual's A = 0 as the fallback the boot code can drop to. Pro: the faster
+  bus. Con: it is outside Intel's published table, though it has years of
+  use behind it.
 
 ## The four lenses
 

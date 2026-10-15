@@ -250,6 +250,17 @@ pub const POINTS: [(&str, Point); 7] = [
     ("624", pt(16, 6, true)),
 ];
 
+/// 624 MHz as the manual's table 3-7 lists it for the C5 stepping: `A` = 0,
+/// so the memory clock is run / 2 = 104 MHz (SDRAM 104 MHz undivided, but
+/// the static buses, the 2700G's among them, at half the clock). The 624 in
+/// [`POINTS`] (`A` = 1, memory 208 MHz) is what WM runs on this unit and
+/// Linux's table carries, but the manual doesn't list it: `rp-clocks`
+/// measures both (memory-timing report, open question 4; ADR-0031 V4).
+pub const P624_MANUAL: Point = Point {
+    a: false,
+    ..pt(16, 6, true)
+};
+
 /// SDRAM rows per bank from `MDCNFG` (the larger of partition pairs 0/1
 /// and 2/3: DRAC bits 6-5 and 22-21, rows = 2^(11 + DRAC)). A pair counts
 /// only if one of its partitions is enabled (DE bits 0-1, 16-17); with none
@@ -306,6 +317,93 @@ pub const fn mdrefr_around(mdrefr: u32, to: Point, rows: u32) -> (u32, u32) {
     (pre, post)
 }
 
+/// The clock registers as read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Raw {
+    /// `CCCR`.
+    pub cccr: u32,
+    /// `CCSR`.
+    pub ccsr: u32,
+    /// `CLKCFG`.
+    pub clkcfg: u32,
+    /// `MDREFR`.
+    pub mdrefr: u32,
+    /// `MDCNFG`.
+    pub mdcnfg: u32,
+}
+
+impl Raw {
+    /// The point these registers describe.
+    #[must_use]
+    pub const fn point(self) -> Point {
+        Point::decode(self.cccr, self.ccsr, self.clkcfg)
+    }
+}
+
+/// The register writes of one operating-point change, worked out before
+/// any is made (a pure function, so host tests can hold every change to the
+/// rules; `change` only executes it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Plan {
+    /// Whether the core PLL relocks (`CCCR` then `CLKCFG` with F). Without
+    /// one only `clkcfg` is written: the memory clock can't change.
+    pub relock: bool,
+    /// `CCCR` to write first (relock only).
+    pub cccr: u32,
+    /// `MDREFR` just before the relock.
+    pub pre: u32,
+    /// `CLKCFG` to write (F included for a relock).
+    pub clkcfg: u32,
+    /// `MDREFR` just after the relock.
+    pub first: u32,
+    /// `MDREFR` 3 us later, if it differs from `first` (clearing the SDRAM
+    /// divider: the longest interval goes in first, WM's stricter order;
+    /// Linux writes the final value at once: a finding to work).
+    pub settle: Option<u32>,
+}
+
+impl Plan {
+    /// `MDREFR` once the change is complete.
+    #[must_use]
+    pub const fn final_mdrefr(self) -> u32 {
+        match self.settle {
+            Some(v) => v,
+            None => self.first,
+        }
+    }
+}
+
+/// The plan for moving from `now` to `to`, or `None` for an illegal point.
+/// Any memory-clock change is a relock, and every relock rewrites the
+/// refresh interval for the new memory clock (memory-timing report: a stale
+/// interval at a lower memory clock corrupts SDRAM silently).
+#[must_use]
+pub const fn plan(now: Raw, to: Point) -> Option<Plan> {
+    if !to.legal() {
+        return None;
+    }
+    if !now.point().needs_relock(to) {
+        return Some(Plan {
+            relock: false,
+            cccr: now.cccr,
+            pre: now.mdrefr,
+            clkcfg: to.clkcfg(),
+            first: now.mdrefr,
+            settle: None,
+        });
+    }
+    let (pre, post) = mdrefr_around(now.mdrefr, to, sdram_rows(now.mdcnfg));
+    let undivide = pre & MDREFR_DB2 != 0 && post & MDREFR_DB2 == 0;
+    Some(Plan {
+        relock: true,
+        cccr: to.cccr(now.cccr),
+        pre,
+        clkcfg: to.clkcfg() | clkcfg::F,
+        first: if undivide { post | MDREFR_DRI } else { post },
+        settle: if undivide { Some(post) } else { None },
+    })
+}
+
 /// Cycles counted by the performance monitor's cycle counter over `ticks`
 /// OS-timer ticks (3.25 MHz), as kHz: the core clock actually running.
 #[must_use]
@@ -318,31 +416,8 @@ pub const fn khz_from_cycles(cycles: u32, ticks: u32) -> u32 {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod target {
-    use super::{CCCR, CCSR, MDCNFG, MDREFR, Point, clkcfg, mdrefr_around, sdram_rows};
+    use super::{CCCR, CCSR, MDCNFG, MDREFR, Point, Raw, clkcfg, plan};
     use crate::devmap::va;
-
-    /// The clock registers as read.
-    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-    pub struct Raw {
-        /// `CCCR`.
-        pub cccr: u32,
-        /// `CCSR`.
-        pub ccsr: u32,
-        /// `CLKCFG`.
-        pub clkcfg: u32,
-        /// `MDREFR`.
-        pub mdrefr: u32,
-        /// `MDCNFG`.
-        pub mdcnfg: u32,
-    }
-
-    impl Raw {
-        /// The point these registers describe.
-        #[must_use]
-        pub const fn point(self) -> Point {
-            Point::decode(self.cccr, self.ccsr, self.clkcfg)
-        }
-    }
 
     fn rd(phys: usize) -> u32 {
         // SAFETY: clock-manager and memory-controller configuration
@@ -414,32 +489,22 @@ mod target {
     /// The caller answers for the core voltage: `to.min_mv()` must be met.
     #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
     pub fn change(to: Point) -> bool {
-        if !to.legal() {
-            return false;
-        }
         let was = crate::rt::irqs_enabled_now();
         crate::rt::irq_disable();
-        let now = read();
-        if now.point().needs_relock(to) {
-            let (pre, post) = mdrefr_around(now.mdrefr, to, sdram_rows(now.mdcnfg));
-            // Clearing the SDRAM divider: the interval field goes to its
-            // longest first and the final value follows a few microseconds
-            // later (Windows Mobile's order; Linux writes the final value
-            // at once. The stricter of the two until the difference is
-            // understood: a finding to work, ADR-0031).
-            let undivide = pre & super::MDREFR_DB2 != 0 && post & super::MDREFR_DB2 == 0;
-            let first = if undivide {
-                post | super::MDREFR_DRI
-            } else {
-                post
-            };
+        let Some(p) = plan(read(), to) else {
+            if was {
+                crate::rt::irq_enable();
+            }
+            return false;
+        };
+        if p.relock {
             let mdrefr = va(MDREFR);
             // SAFETY: CCCR only takes effect at the next F write.
-            unsafe { (va(CCCR) as *mut u32).write_volatile(to.cccr(now.cccr)) };
+            unsafe { (va(CCCR) as *mut u32).write_volatile(p.cccr) };
             // SAFETY: MDREFR's refresh interval and SDRAM dividers set as
             // the memory controller requires around a memory-clock change
-            // (`mdrefr_around`); the CLKCFG write relocks the core PLL with
-            // CCCR's (legal) multipliers. The branch dance loads the 32-byte
+            // (`plan`); the CLKCFG write relocks the core PLL with CCCR's
+            // (legal) multipliers. The branch dance loads the 32-byte
             // aligned line holding the three writes into the I-cache before
             // the first runs (no fetch from SDRAM during the change). The
             // MDREFR read beforehand puts its translation in the TLB.
@@ -456,19 +521,19 @@ mod target {
                     "3: nop",
                     t = out(reg) _,
                     m = in(reg) mdrefr,
-                    pre = in(reg) pre,
-                    cfg = in(reg) to.clkcfg() | clkcfg::F,
-                    post = in(reg) first,
+                    pre = in(reg) p.pre,
+                    cfg = in(reg) p.clkcfg,
+                    post = in(reg) p.first,
                     options(nostack),
                 );
             }
-            if undivide {
+            if let Some(v) = p.settle {
                 crate::rt::delay_us(3);
                 // SAFETY: the final MDREFR for the new memory clock.
-                unsafe { (mdrefr as *mut u32).write_volatile(post) };
+                unsafe { (mdrefr as *mut u32).write_volatile(v) };
             }
         } else {
-            set_clkcfg(to.clkcfg());
+            set_clkcfg(p.clkcfg);
         }
         if was {
             crate::rt::irq_enable();
@@ -676,6 +741,76 @@ mod tests {
             post & !(MDREFR_DRI | MDREFR_DB2),
             WM_MDREFR & !(MDREFR_DRI | MDREFR_DB2)
         );
+    }
+
+    fn raw(p: Point, mdrefr: u32) -> Raw {
+        let c = p.cccr(WM_CCCR);
+        Raw {
+            cccr: c,
+            ccsr: c | 3 << 28,
+            clkcfg: p.clkcfg(),
+            mdrefr,
+            mdcnfg: WM_MDCNFG,
+        }
+    }
+
+    #[test]
+    fn no_change_can_skip_the_refresh_rewrite() {
+        let all: [Point; 8] = [
+            POINTS[0].1,
+            POINTS[1].1,
+            POINTS[2].1,
+            POINTS[3].1,
+            POINTS[4].1,
+            POINTS[5].1,
+            POINTS[6].1,
+            P624_MANUAL,
+        ];
+        let rows = sdram_rows(WM_MDCNFG);
+        for from in all {
+            for to in all {
+                for turbo in [false, true] {
+                    let to = to.with_turbo(turbo);
+                    let mdrefr = mdrefr_around(WM_MDREFR, from, rows).1;
+                    let p = plan(raw(from, mdrefr), to).unwrap();
+                    let fin = p.final_mdrefr();
+                    // The interval is always right for the new memory clock.
+                    assert_eq!(
+                        fin & MDREFR_DRI,
+                        dri(to.mem_khz(), rows),
+                        "{from:?} -> {to:?}"
+                    );
+                    // Never late during the change either.
+                    assert!(p.pre & MDREFR_DRI <= dri(from.mem_khz(), rows));
+                    assert!(p.pre & MDREFR_DRI <= dri(to.mem_khz(), rows));
+                    // A memory-clock change is always a relock.
+                    if from.mem_khz() != to.mem_khz() {
+                        assert!(p.relock, "{from:?} -> {to:?}");
+                    }
+                    // The SDRAM divider matches the new memory clock.
+                    assert_eq!(fin & MDREFR_DB2 != 0, to.sdram_div2());
+                    if p.relock {
+                        assert_ne!(p.clkcfg & clkcfg::F, 0);
+                        assert_eq!(Point::decode(p.cccr, p.cccr, p.clkcfg), to);
+                    } else {
+                        assert_eq!(fin, mdrefr);
+                        assert_eq!(p.clkcfg & clkcfg::F, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn manual_624_halves_the_memory_clock_not_the_sdram() {
+        let m = P624_MANUAL;
+        assert!(m.legal());
+        assert_eq!(
+            (m.core_khz(), m.bus_khz(), m.mem_khz(), m.sdclk_khz()),
+            (624_000, 208_000, 104_000, 104_000)
+        );
+        assert!(plan(raw(POINTS[6].1, WM_MDREFR), m).unwrap().relock);
+        assert_eq!(plan(raw(POINTS[0].1, WM_MDREFR), pt(24, 6, true)), None);
     }
 
     #[test]
