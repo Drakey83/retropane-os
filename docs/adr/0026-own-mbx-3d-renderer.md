@@ -439,6 +439,12 @@ and 2400); T12b mipmaps with TEX0 bits 12-9 set; T13b PVRTC's block order.
   interface doesn't need it (each render's depth starts from the
   background).
 
+**Next: `rp-mbx3d` version 26** (static reading in `docs/hw/2700g.md`,
+"The MBX cores' clock"): S26a render and fill times at `MBXCLK` divide-by
+2 (WM's), 3 and 4 (all within Dell's 75 MHz cap; divide-by-1 exceeds it
+and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
+`0x660` in pixels or words), S26c the PLLs read (last).
+
 ## The four lenses
 
 | Lens | Effect |
