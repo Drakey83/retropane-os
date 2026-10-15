@@ -1,9 +1,10 @@
 # ADR-0027: The 2700G memory map
 
-- **Status:** Proposed (2026-10-15). The regions ADR-0023 already uses are
-  unchanged (accepted there); **the 3D regions and the pool are this ADR's
-  proposal and need the owner's approval** (an OS memory budget). The map
-  and allocator are built (`rp-vram-map`) so the proposal can be checked.
+- **Status:** Accepted (2026-10-15, by the owner's review; budgets
+  approved: the 16 KiB 3D memory manager block at `0x0FC000`, 1 MiB
+  parameter memory at `0x100000`, the 6.75 MiB pool at `0x940000`; the
+  review checked the map against `rp-vram-map`: no overlaps, ends at
+  exactly 16 MiB). The regions ADR-0023 uses are unchanged.
 - **Date:** 2026-10-15
 
 ## In plain words
@@ -85,3 +86,11 @@ client's commands can be checked against its own blocks (ADR-0026 D6).
   pool, never a literal (test images excepted: they own the whole chip).
 - The 3D renderer (ADR-0026) gets its per-tile buffer, region arrays,
   textures and depth from the pool.
+- **Watch item (owner's review, 2026-10-15): the pool will be contended.**
+  6.75 MiB must hold textures, the 3D per-tile buffer and region arrays,
+  depth and video frames together. Double-buffered 480 x 640 32 bpp frames
+  alone are ~2.3 MiB; a 3D game and video playback at once will press on
+  it. The graphics service arbitrates at run time (per-client quotas, a
+  refused allocation reported to the client, never silent eviction of
+  another client's surfaces), and its design must say how before a
+  second large client exists.
