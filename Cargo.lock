@@ -214,6 +214,10 @@ name = "rp-drv-mbx3d"
 version = "0.0.0"
 
 [[package]]
+name = "rp-drv-mved"
+version = "0.0.0"
+
+[[package]]
 name = "rp-drv-pxa-gpio"
 version = "0.0.0"
 dependencies = [
@@ -599,6 +603,21 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-mock",
  "rp-vram-map",
+]
+
+[[package]]
+name = "rp-mved"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-mved",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-uart",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
 ]
 
 [[package]]

@@ -2581,6 +2581,76 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The MVED1 video decoder's first test (rp-mved, ADR-0025 S0-S2): runs
+/// under the loader, back on a button. The fork doesn't model the decoder
+/// (docs/hw/emulator.md): its registers read as written (status 0), so S0
+/// and S1 see an idle unit, the conversion times out, the guards hold,
+/// mode 3 isn't tried, and the image puts the clock back.
+pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    mved: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-mved.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-mved"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.command("sendkey ret")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MVED: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mved: never came back to the loader after the button press")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("mved: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "S0: M24CLK 0x0",
+        "set to 0x3",
+        "S1: reset; FIFO 0x00000000; status 0x00000000: passed",
+        "S2: 64 x 64 4:2:0 at 0x400000 to YUY2 at 0x410000",
+        "job 0x30=0x80000 0x34=0x82000 0x38=0x20040 0x3c=0x4020 0x48=0x1",
+        "NOT DONE after",
+        "guards intact: true; destination words unwritten: 2048 of 2048",
+        "RETROPANE-MVED: S0 passed, S1 passed, S2 YUY2 FAILED, mode 3 not run",
+        "put back: the unit reset, M24CLK 0x0",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mved: the run log has no `{want}`:{log}"));
+        }
+    }
+    if log.contains("S2 mode 3: to") {
+        return Err(format!("mved: mode 3 ran after a failed conversion:{log}"));
+    }
+    eprintln!(
+        "    mved OK: every stage safe, the conversion timed out inside its guards (the decoder isn't modelled), back at the loader on a button press"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");

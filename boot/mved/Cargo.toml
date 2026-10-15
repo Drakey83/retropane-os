@@ -1,0 +1,24 @@
+[package]
+name = "rp-mved"
+description = "Test image (ADR-0025 S0-S2): the 2700G's MVED1 video decoder switched on, reset, and asked to convert a 64 x 64 4:2:0 test frame to YUY2 and to its 3-byte format, compared with host references, shown and logged"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-drv-mved = { path = "../../drivers/mved" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true

@@ -1,7 +1,7 @@
 # ADR-0025: Bringing up the MVED1 video decoder
 
-- **Status:** Proposed (draft, 2026-10-14; needs the owner's decision and
-  the owner's go for every device run)
+- **Status:** Accepted (2026-10-14, by the owner). S0-S2 built (`rp-mved`, `rp-drv-mved`);
+  every device run still needs the owner's go
 - **Date:** 2026-10-14
 
 ## In plain words
@@ -98,6 +98,35 @@ explain, stop and report before going on.
 **Afterwards (its own ADR):** a video service that owns the unit (one
 client at a time, as Dell's driver enforces), a decoder for whichever
 formats S4 makes worthwhile, and the media player on the ROADMAP.
+
+## As built (S0-S2, 2026-10-14)
+
+`boot/mved` (`rp-mved`, 28.4 KiB, budget 31 KiB) and `drivers/mved`
+(`rp-drv-mved`, pure, host-tested). Choices beyond the text above:
+
+- **Chroma varies across, not down.** The first chroma half is `0x40`
+  rising by 2 per chroma column, the second `0xC0` falling: the two never
+  share a value, so the chroma order (and a mirrored half) shows in one
+  comparison, and since each column is constant down the frame a chip
+  that interpolates chroma vertically still matches exactly. Luma is
+  `16 + 2x + y`.
+- **Guards.** 4 KiB either side of each destination are filled with
+  `0xA5A5A5A5` and checked afterwards, with a count of destination words
+  left unwritten: the unit is a bus master, so where it wrote is a
+  finding of its own (the address and stride units).
+- **Mode 3** runs after a YUY2 conversion that finished inside its
+  guards, even if no chroma order matched (that is a finding, not a
+  danger); a timeout or a guard hit stops the run. Mode 3 is compared with
+  BT.601 studio-range RGB and BGR for both chroma orders, within 3.
+- Jobs are built only by `convert_yuy2` / `convert_rgb3`, which check
+  alignment, the strides, the field widths, the end of 2700G memory and
+  overlap. Reads go through `may_read` (only `0x50`, `0x80`, `0xA0`;
+  anything else stops the image before the read).
+- The screen shows the host's picture, the chip's YUY2 (read as U first)
+  and its mode-3 output at 3x, and a square per stage (green, amber
+  surprise, red failed, grey not run), until a button.
+- `cargo xtask emu-mved`: the emulator doesn't model the unit, so it checks
+  only that every wait times out safely and everything is put back.
 
 ## The four lenses
 

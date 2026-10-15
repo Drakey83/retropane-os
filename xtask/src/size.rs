@@ -461,6 +461,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0025 S0-S2): the MVED1 video decoder's clock, reset
+    // and frame conversion. 27.7 KiB measured (2026-10-14; 36.6 KiB with
+    // Debug formatting in its log, replaced by plain hex), + ~10%.
+    Budget {
+        image: "rp-mved",
+        max_load: 31 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
