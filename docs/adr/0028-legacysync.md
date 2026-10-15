@@ -1,7 +1,7 @@
 # ADR-0028: LegacySync, the Windows companion for Pocket PC software
 
-- **Status:** Proposed (2026-10-15, the owner's idea). Nothing built.
-  Decisions L1-L5 wait for the owner's vote.
+- **Status:** Accepted (2026-10-15, by the project owner: L1-L5 as
+  recommended). Work starts in its own session.
 - **Date:** 2026-10-15
 
 ## In plain words

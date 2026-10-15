@@ -164,6 +164,24 @@ service. Its geometry stage runs on the CPU in fixed point (WMMX for the
 inner loops, once profiled). The CE personality's drawing stays 2D (GDI);
 GLES does not grow beyond games.
 
+**Amended (owner, 2026-10-15): three layers, each in its place.**
+
+1. **Our own driver for the OS** (D1-D6, D8): the interface and
+   everything RetroPane draws, purpose-built, no GL in between.
+2. **Binary GLES kept for legacy games**: the original Windows Mobile
+   executables of closed games (Virtual Pool Mobile v1.29, Toy Golf, Geo
+   Rally, and more found on the owner's card: the card is still being
+   catalogued, and some GLES titles were unknown to us) run unchanged
+   through the CE personality, on a GLES 1.x library over our driver.
+   Sized by the import tables of the games actually owned, never
+   speculatively; both DLL names (`libGLES_CL`, `libGLES_CM`).
+3. **New native ports where the source is open** (DoomGLES's Doom
+   engine, Quake III Arena, Quake Mobile's Quake engine): built straight
+   on our driver for speed, with **extra features** the originals lack
+   (first asked for: a brightness/gamma control: the owner can barely
+   see in DoomGLES), RetroPane controls, and their packs (ADR-0018). Each
+   port's licence is GPL-2.0, as RetroPane's.
+
 ### D8. The 3D clock
 
 **Recommended:** on while 3D work is queued, off 100 ms after the last
