@@ -373,7 +373,9 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
    predictable beat: at most ~0.02 bit a sample (run 3). Taken as an
    interrupt and timestamped on entry (run 4), ~0.06 bit a sample (upper
    estimate), ~2,000 bits a second: the first candidate to carry the
-   generator, pending NIST's tool and the restart test. Spacing samples out
+   generator. **NIST's `ea_non_iid` agrees: 0.0629 bit a sample** (~2,060
+   bits a second; at half credit 256 bits in ~0.25 s). Pending: the
+   restart test (power-ups) before the kernel credits it. Spacing samples out
    added nothing (the noise is per interrupt, not drift), so the collector
    takes every tick.
 2. Are the TSC2046's `VBAT` and `AUX` inputs wired to anything on the X51v?

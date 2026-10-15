@@ -43,10 +43,22 @@ the lowest of ten), so these are ceilings.
 | Restart test (A) | 2 rows (run 3 polled, run 4 by interrupt) | Needs many runs, from the loader and from power-up | | Next |
 
 After run 4: **A taken by interrupt, every tick, is the first source that
-might carry the generator** (~0.06 bit a sample by the predictor above,
-an upper estimate). Before it earns credit: NIST's `ea_non_iid` on
-`noise-ai.bin` (it may estimate lower), and the restart test from many
-runs including power-ups. Polled A, B and the touch controller stay mixed
+might carry the generator.**
+
+**NIST SP 800-90B `ea_non_iid` on run 4's `noise-ai.bin`** (2026-10-15;
+NIST's tool at commit 87c104d, built in WSL): samples as 3-bit symbols,
+`(cycles - 18,984) / 24`, 1,000,000 of them. **H_original = 0.0629 bit a
+sample** (the lowest estimator, Multi Markov Model with Counting; Lag 0.12,
+LZ78Y 0.87, MultiMCW 1.61); H_bitstring 0.028 a bit, so min(0.0629, 3 x
+0.028) = **0.0629**. The low byte as 8-bit symbols gives the same 0.0629.
+This matches the predictor above (95.7% right).
+
+So A by interrupt: **0.0629 bit a sample x 32,768 a second = ~2,060 bits a
+second**; at ADR-0029's half credit, ~1,030, so **256 bits in about 0.25 s**
+of boot. Still before it earns credit in the kernel: the restart test
+(many runs, including power-ups: is a fresh boot's first second as
+unpredictable?), and a second device's or day's run to see the estimate
+holds (temperature moves the crystals). Polled A, B and the touch controller stay mixed
 only: ADR-0029's rule (credit only after measurement) did its job.
 
 ### What next for A (owner's choice, 2026-10-15: options 1 and 2 together)
