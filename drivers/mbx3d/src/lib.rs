@@ -398,6 +398,43 @@ pub mod ta {
     /// triangle list), the polygon offset 0.
     pub const STRIP: u32 = 0x4000_0000;
 
+    /// Words in a textured, coloured vertex the GLES driver's transform
+    /// stage sends (`0x02272064`: 16 bytes, + 4 with a colour, + 8 per
+    /// texture unit; the 7-word emitter `0x02274644`): x, y, z, 1/w,
+    /// colour, u, v (the order read from the object planes, likely).
+    pub const TEX_VERTEX_WORDS: usize = 7;
+
+    /// One textured triangle as a strip: the state block (mask
+    /// `0x10000057`: TSP, ISP, texture unit 0's three words, two more
+    /// words, the clear's form with bit 2 added), the strip word, then
+    /// three [`TEX_VERTEX_WORDS`]-word vertices. Then a `1` goes to
+    /// [`END_PORT`].
+    #[must_use]
+    pub fn textured_stream(
+        tsp: u32,
+        isp: u32,
+        tex: [u32; 3],
+        v: &[super::tex::Vertex; 3],
+    ) -> [u32; 9 + 3 * TEX_VERTEX_WORDS] {
+        let mut s = [0u32; 9 + 3 * TEX_VERTEX_WORDS];
+        s[..6].copy_from_slice(&[0x1000_0057, tsp, isp, tex[0], tex[1], tex[2]]);
+        // s[6], s[7]: the two more words, 0 as in the clear.
+        s[8] = STRIP;
+        for (k, p) in v.iter().enumerate() {
+            let at = 9 + k * TEX_VERTEX_WORDS;
+            s[at..at + TEX_VERTEX_WORDS].copy_from_slice(&[
+                p.x.to_bits(),
+                p.y.to_bits(),
+                p.z.to_bits(),
+                p.rhw.to_bits(),
+                p.argb,
+                p.u.to_bits(),
+                p.v.to_bits(),
+            ]);
+        }
+        s
+    }
+
     /// The GLES driver's clear (`0x0226dff0`), word for word: the state
     /// block (mask `0x10000053`: TSP, ISP, two more words), a strip of one
     /// triangle covering a `width` x `height` target twice over, x, y, z

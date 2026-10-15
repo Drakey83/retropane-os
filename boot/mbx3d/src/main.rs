@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 15: version 14's TA ran (done in
+//! 3D core, under the loader. Version 16: version 15 drew the GLES clear
+//! through the TA (black over grey; the TA's flat object: TSP, x/y x3,
+//! z x3). Now the clear again (control), then a textured triangle through
+//! the TA, as the GLES driver sends one: the state block with texture
+//! unit 0's words (mask `0x10000057`), a strip word, three 7-word vertices
+//! (x, y, z, 1/w, colour, u, v), with ISP "always" and with the game's
+//! ISP; the TA's object logged word for word.
+//! Version 15: version 14's TA ran (done in
 //! 1.9 ms, a region array in the game's form) but wrote its lists 4 MiB
 //! low (`0xEDC6DC` as `0x6DC6DC`): the parameter memory manager reaches
 //! only 8 MiB (11-bit page numbers), so the parameter memory moves from
@@ -172,6 +179,9 @@ mod image {
     const TAIL: usize = 0x00A0_0000;
     const TAIL_SIZE: usize = 0x1_0000;
     const TA_REGIONS: usize = 0x00A2_0000;
+    /// Stage X's texture: 256 x 256 16-bit texels (128 KiB), texel k
+    /// holding k (any format decodes it to something visible).
+    const TEXTURE: usize = 0x00E0_0000;
     /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -184,7 +194,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 15;
+    const VERSION: u32 = 16;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -326,13 +336,22 @@ mod image {
         log!("");
     }
 
-    /// Stage X: the TA's buffers zeroed, its start table, the GLES clear
-    /// streamed into the TA's window, then `1` into the end window (all
-    /// as one write list); wait for TA done (status bit 4) and log what
-    /// the TA wrote; if it finished, the 3D stage on the TA's region array
-    /// (Dell's table `level`). True if the middle pixel changed.
+    /// Stage X: the TA's buffers zeroed, its start table, `stream` into
+    /// the TA's window, `1` into the end window, then the scene's end as
+    /// the GLES driver's flush sends it (`0x0226fdc0`: `0x85C` bit 7,
+    /// `0xF0000000` into the TA window), all as one write list; wait for
+    /// TA done (status bit 4) and log what the TA wrote (`words` of the
+    /// first object); if it finished, the 3D stage on the TA's region
+    /// array (Dell's table `level`). True if `probe` changed.
     #[inline(never)]
-    fn through_ta(e: &mut Engine<Mmio>, vram: &mut [u8], level: u8) -> bool {
+    fn through_ta(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        level: u8,
+        stream: &[u32],
+        words: usize,
+        probe: (u32, u32),
+    ) -> bool {
         for k in 0..TAIL_SIZE / 4 {
             let _ = store32_volatile(vram, TAIL + 4 * k, 0);
         }
@@ -341,41 +360,34 @@ mod image {
         }
         cpu::drain_write_buffer();
         let t = m3::ta::start_table(TAIL as u32, TA_REGIONS as u32, W, H, COLS, ROWS);
-        let stream = m3::ta::clear_stream(W, H);
         // `run` writes at the MBX block's offsets: the windows are below it.
-        // Then the scene's end as the GLES driver's flush sends it
-        // (`0x0226fdc0`): `0x85C` bit 7, `0xF0000000` into the TA window.
-        let mut w = [(0usize, 0u32); 9 + 15 + 3];
+        let n = stream.len().min(32);
+        let mut w = [(0usize, 0u32); 9 + 32 + 3];
         w[..9].copy_from_slice(&t);
-        for (k, &v) in stream.iter().enumerate() {
+        for (k, &v) in stream[..n].iter().enumerate() {
             w[9 + k] = (m3::ta::PORT - MBX + 4 * k, v);
         }
-        w[24] = (m3::ta::END_PORT - MBX, 1);
         let r85c = t[7];
-        w[25] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
-        w[26] = (m3::ta::PORT - MBX + 4 * stream.len(), m3::END);
+        w[9 + n] = (m3::ta::END_PORT - MBX, 1);
+        w[10 + n] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
+        w[11 + n] = (m3::ta::PORT - MBX + 4 * n, m3::END);
         log!(
-            "X: the GLES clear through the TA; FIFO {} bytes free",
+            "  TA: {n} words, FIFO {} bytes free",
             cmd::free_bytes(e.regs.read32(STATUS))
         );
-        let done = run(e, vram, &w, m3::ta::DONE, None, 200_000).0.is_some();
+        let done = run(e, vram, &w[..12 + n], m3::ta::DONE, None, 200_000)
+            .0
+            .is_some();
         e.regs.write32(MBX + r85c.0, r85c.1);
         dump(vram, "regions", TA_REGIONS, 6);
-        dump(vram, "tail", TAIL, 4);
         let list = load32_volatile(vram, TA_REGIONS + 4).unwrap_or(0) as usize;
         dump(vram, "first list", list & m3::ADDR_MASK as usize, 8);
-        dump(
-            vram,
-            "around it",
-            (list & m3::ADDR_MASK as usize).saturating_sub(0x40),
-            24,
-        );
         let ptr = load32_volatile(vram, list & m3::ADDR_MASK as usize).unwrap_or(0);
         dump(
             vram,
             "its object",
             PARAMS + 4 * (ptr & 0x001F_FFFF) as usize,
-            17,
+            words,
         );
         if !done {
             log!("  the TA never said done: no 3D render");
@@ -387,7 +399,7 @@ mod image {
                 p.1 = TA_REGIONS as u32;
             }
         }
-        run(e, vram, &t3[..n], RENDER_DONE, Some((240, 320)), 200_000)
+        run(e, vram, &t3[..n], RENDER_DONE, Some(probe), 200_000)
             .1
             .is_some()
     }
@@ -578,21 +590,65 @@ mod image {
             );
         }
 
-        // X: the GLES clear through the tile accelerator (ADR-0024 M5).
+        // X: through the tile accelerator (ADR-0024 M5): the GLES clear
+        // (version 15 drew it), then a textured triangle.
         if drew {
             rt::check_in();
             let _ = clear(&mut e, vram, GREY);
-            let ta = through_ta(&mut e, vram, level);
-            log!(
-                "X: {}; (240,320) 0x{:08x}, (5,5) 0x{:08x}",
-                if ta {
-                    "the 3D stage drew the TA's scene"
-                } else {
-                    "nothing drawn from the TA"
-                },
-                px(vram, 240, 320),
-                px(vram, 5, 5)
+            log!("X1: the GLES clear through the TA");
+            let ok = through_ta(
+                &mut e,
+                vram,
+                level,
+                &m3::ta::clear_stream(W, H),
+                10,
+                (240, 320),
             );
+            log!(
+                "X1: {}; (240,320) 0x{:08x}",
+                if ok { "drawn" } else { "nothing drawn" },
+                px(vram, 240, 320)
+            );
+            for k in 0..256 * 256 / 2 {
+                // Two texels a word, texel k holding k.
+                let t = 2 * k as u32;
+                let _ = store32_volatile(vram, TEXTURE + 4 * k, t | (t + 1) << 16);
+            }
+            cpu::drain_write_buffer();
+            let v = |x: f32, y: f32, u: f32, v: f32| m3::tex::Vertex {
+                x,
+                y,
+                z: 1.0,
+                rhw: 1.0,
+                argb: 0xFFFF_C080,
+                u,
+                v,
+            };
+            let tri = [
+                v(40.0, 40.0, 0.0, 0.0),
+                v(440.0, 40.0, 1.0, 0.0),
+                v(40.0, 600.0, 0.0, 1.0),
+            ];
+            let texw = [
+                m3::tex::FORMAT_GAME,
+                m3::tex::address(TEXTURE as u32),
+                m3::tex::COMBINE_GAME,
+            ];
+            for (name, isp) in [("X2", ISP_ALWAYS), ("X3", m3::tex::ISP_GAME)] {
+                rt::check_in();
+                let _ = clear(&mut e, vram, GREY);
+                log!("{name}: a textured triangle through the TA, ISP 0x{isp:08x}");
+                let s = m3::ta::textured_stream(m3::tex::TSP_GAME, isp, texw, &tri);
+                let ok = through_ta(&mut e, vram, level, &s, 26, (120, 160));
+                log!(
+                    "{name}: {}; inside (120,160) 0x{:08x} (60,60) 0x{:08x} (200,100) 0x{:08x}, outside (300,500) 0x{:08x}",
+                    if ok { "drawn" } else { "nothing drawn" },
+                    px(vram, 120, 160),
+                    px(vram, 60, 60),
+                    px(vram, 200, 100),
+                    px(vram, 300, 500)
+                );
+            }
         }
 
         let saved = show_target(&mut e.regs);

@@ -304,6 +304,18 @@ report; device runs only with the owner's go.
    right either way. Next: a textured triangle through the TA (the
    vertex words the GLES driver's transform stage sends).
 
+   **The vertex words (static, 2026-10-15):** a draw is the state block
+   (`0x02267868`), a primitive word (`0x02274a1c` `0x7...` list,
+   `0x02274b80` strip/fan), the vertices, then `1` to the end window
+   (`0x02274c78`). The transform stage gives each vertex 16 bytes, + 4
+   with a colour, + 4 more with a second colour or fog, + 8 per texture
+   unit (`0x02272064`); six emitters for 5-10 words (table `0x0227C4A4`)
+   copy finished vertices into the TA window, jumping back to its start
+   rather than splitting one. So a coloured, textured vertex is 7 words:
+   x, y, z, 1/w, colour, u, v (the order read from the object planes,
+   likely). **Version 16** sends the clear (control), then a textured
+   triangle that way, with ISP "always" and with the game's.
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.
