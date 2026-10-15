@@ -1,5 +1,9 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 10: version 9's flat control
+//! 3D core, under the loader. Version 11: version 10 showed DoomGLES's
+//! own object doesn't draw either: textures need state outside the object.
+//! The GLES driver's 3D table sets `0x61C = 0x00020007` where Dell's has
+//! `0x00020004`: the same tries with that, then with the GLES table's
+//! other values too. Version 10: version 9's flat control
 //! drew (a list draws past its first object; the flags must match the
 //! object: 0x41000000 dropped a flat one), its textured square never: now
 //! DoomGLES's own first object, word for word, only its TEX1 pointed at
@@ -151,7 +155,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 10;
+    const VERSION: u32 = 11;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -414,17 +418,35 @@ mod image {
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
-    /// and with the GLES table's extras too (2); the start stays last.
-    fn table(level: u8) -> ([(usize, u32); 21], usize) {
+    /// and with the GLES table's extras too (2); 3 is Dell's with `0x61C`
+    /// as the GLES table sets it (`0x00020007`, Dell's `0x00020004`;
+    /// `libGLES_CL.dll` `0x0226175c`), 4 that and the extras and the GLES
+    /// table's `0x610 = 0x30001` (no scene pointer), `0x64C = 0`. The start
+    /// stays last.
+    fn table(level: u8) -> ([(usize, u32); 24], usize) {
         let dell = m3::start_table(REGIONS as u32, PARAMS as u32, W, H, STRIDE as u32);
-        let mut t = [(0usize, 0u32); 21];
+        let mut t = [(0usize, 0u32); 24];
         let mut n = 0;
         for &p in &dell[..14] {
-            t[n] = p;
+            t[n] = match p {
+                (0x61C, _) if level >= 3 => (0x61C, 0x0002_0007),
+                (0x610, _) if level == 4 => (0x610, 0x0003_0001),
+                p => p,
+            };
             n += 1;
         }
-        let more: &[(usize, u32)] = if level == 0 {
+        let more: &[(usize, u32)] = if level == 0 || level == 3 {
             &[]
+        } else if level == 4 {
+            &[
+                (0x65C, TARGET as u32),
+                (0x6D0, 1),
+                (0x6DC, 1),
+                (0x648, 1),
+                (0x614, 0x1E3C_E508),
+                (0x618, 0x1E3C_E508),
+                (0x64C, 0),
+            ]
         } else if level == 2 {
             &[
                 (0x65C, TARGET as u32),
@@ -627,7 +649,7 @@ mod image {
             nt += 1;
             // Version 9: the square in the textured form never drew; now the
             // game's own object, with the flags its lists pointed at it with.
-            for lv in [0u8, 2] {
+            for lv in [3u8, 4] {
                 for strip in [0x4100_0000, 0x4160_0000, 0x4960_0000] {
                     for isp in [m3::tex::ISP_GAME, ISP_ALWAYS] {
                         tries[nt] = Some((
@@ -643,6 +665,20 @@ mod image {
                         nt += 1;
                     }
                 }
+            }
+            // And our own square, in the game's form.
+            for lv in [3u8, 4] {
+                tries[nt] = Some((
+                    lv,
+                    Combo {
+                        isp: m3::tex::ISP_GAME,
+                        clockwise: true,
+                        strip: m3::tex::STRIP_GAME,
+                        flat: false,
+                        game: false,
+                    },
+                ));
+                nt += 1;
             }
             for &(lv, c) in tries.iter().flatten() {
                 rt::check_in();
