@@ -329,3 +329,13 @@ fn texture_words_and_twiddling_match_version_18() {
     // (43,41): texel (15, 3): 175 (0xAF).
     assert_eq!(tex::twiddle(15, 3), 175);
 }
+
+#[test]
+fn address_modes_match_version_22() {
+    let t = tex::tex0(0, tex::RGB565);
+    // Dell's high nibble is clamp/clamp.
+    assert_eq!(tex::with_address(t, tex::CLAMP, tex::CLAMP), t);
+    // The values version 22 tried for u: 0x2 wrap, 0x6 mirror (v clamp).
+    assert_eq!(tex::with_address(t, tex::WRAP, tex::CLAMP) >> 28, 0x2);
+    assert_eq!(tex::with_address(t, tex::MIRROR, tex::CLAMP) >> 28, 0x6);
+}

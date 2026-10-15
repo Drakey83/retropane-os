@@ -229,6 +229,29 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
   manager's set-up) after any render that times out, so one bad bit can't
   void the rest of a run.
 
+**Version 22 on the device (2026-10-15, `local/rp-mbx3d-run22.txt`):**
+recovery after a timeout works (TSP bit 19 hung the core; it was reset
+and the run went on).
+
+- **Texture address modes found: TEX0 bits 31-28.** With u past 1:
+  `0x2` repeats (wrap), `0x6` mirrors, `0xA` (Dell's) clamps to the edge
+  texel; `0xC`/`0xE` break sampling. So bits 31-30 = U mode (0 wrap, 1
+  mirror, 2 clamp), bits 29-28 = V mode (v stayed in 0-1: untested).
+  Filtering is not in these bits either (point sampling throughout).
+- **Depth compare (T7) likely found.** Blue drew with ISP modes 4 and 6
+  (greater, greater or equal) and never with 1 and 3 (less, less or
+  equal), at z 0.3 and 0.8 alike, the same over the red square as over the
+  background. That fits the PowerVR2's numbering against a depth buffer
+  cleared to 0 (`0x6DC` = 0 in Dell's table) with "always" objects not
+  writing depth. Next: the red square with a writing mode, and `0x6DC`
+  set, to confirm.
+- **Alpha still doesn't reach the blend:** neither a flat square's vertex
+  alpha nor an ARGB4444 texture's alpha changed the 4/5 blend (result as
+  alpha 1); Gouraud, bit 20, bit 21 cleared changed nothing; bit 19 hung
+  the core. Next, by static reading: the combine word TEX2 (the GLES
+  driver takes it from a table by texture mode; Dell's `0xD6886610` and
+  the game's `0x86086610` differ in bits 30, 28 and 23).
+
 ## The four lenses
 
 | Lens | Effect |

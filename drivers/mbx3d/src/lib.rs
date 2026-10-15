@@ -145,6 +145,22 @@ pub mod tex {
     /// texels (code 8 = 2048: version 18).
     pub const SIZE_SHIFTS: (u32, u32) = (24, 20);
 
+    /// TEX0 bits 31-30 (U) and 29-28 (V): what a coordinate past the
+    /// texture does (`rp-mbx3d` version 22: u past 1 repeated with 0,
+    /// mirrored with 1, held the edge texel with 2; 3 broke sampling).
+    pub const WRAP: u32 = 0;
+    /// See [`WRAP`].
+    pub const MIRROR: u32 = 1;
+    /// See [`WRAP`]. Dell's choice for both (TEX0 `0xA...`).
+    pub const CLAMP: u32 = 2;
+
+    /// `tex0` with the U and V address modes ([`WRAP`], [`MIRROR`],
+    /// [`CLAMP`]) in place of Dell's clamp/clamp.
+    #[must_use]
+    pub const fn with_address(tex0: u32, u: u32, v: u32) -> u32 {
+        (tex0 & 0x0FFF_FFFF) | (u & 3) << 30 | (v & 3) << 28
+    }
+
     /// TEX0 with Dell's high bits (`0xA` in bits 31-28), square sides of
     /// `2^(code + 3)` texels and `format`.
     #[must_use]
