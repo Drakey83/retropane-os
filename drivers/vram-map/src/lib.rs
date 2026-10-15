@@ -130,6 +130,19 @@ pub const fn check(map: &[Region]) -> Result<(), Clash> {
     Ok(())
 }
 
+/// 2700G local memory as the CPU sees it (the 2D and 3D renderers write
+/// it through this, so the same code runs on the device and against a
+/// model in tests).
+pub trait LocalMem {
+    /// Stores `words` from byte offset `at`.
+    fn store(&mut self, at: usize, words: &[u32]);
+    /// The word at byte offset `at`.
+    fn load(&self, at: usize) -> Option<u32>;
+    /// Makes every store so far visible to the engine (drains the CPU's
+    /// write buffer on the device).
+    fn sync(&mut self);
+}
+
 // The map is checked when anything using it builds.
 const _: () = assert!(check(&MAP).is_ok());
 
