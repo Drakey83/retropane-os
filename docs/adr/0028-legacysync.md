@@ -126,7 +126,9 @@ permissions (install, files, sync, pass-through).
 - **Device link**: designed, for review
   ([device-link.md](../legacysync/device-link.md)): its own USB interface,
   a Noise handshake with a code on both screens, encrypted frames,
-  partnerships on the card guarded from the drive.
+  partnerships signed and kept in the built-in flash's system store at
+  the end state (the card, guarded from the drive, as the SD-stage
+  stand-in).
 
 ## The four lenses
 
