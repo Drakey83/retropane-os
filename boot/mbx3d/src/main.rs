@@ -1,5 +1,8 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 4.
+//! 3D core, under the loader. Version 5: the shaded triangle sets ISP
+//! bit 23 (Gouraud in the PowerVR2); version 4 drew it flat.
+//!
+//! Version 4:
 //!
 //! Version 3 drew (2026-10-14): the 3D clock was the missing piece; each
 //! region entry covered 8 x 16 pixels. Version 4 sizes the grid to that
@@ -71,7 +74,9 @@ mod image {
 
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
-    use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, PM_READY, RENDER_DONE, TSP_DELL, Vertex};
+    use rp_drv_mbx3d::{
+        self as m3, ISP_ALWAYS, ISP_GOURAUD, PM_READY, RENDER_DONE, TSP_DELL, Vertex,
+    };
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
@@ -214,11 +219,12 @@ mod image {
     fn draw(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
+        isp: u32,
         v: &[Vertex; 3],
         table: &[(usize, u32)],
         probe: (u32, u32),
     ) -> bool {
-        store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, v));
+        store(vram, OBJECT, &m3::triangle(isp, TSP_DELL, v));
         store(
             vram,
             PARAMS,
@@ -349,7 +355,7 @@ mod image {
                 }
                 let (t, n) = table(x);
                 log!("{name}: red screen-covering triangle, {COLS} x {ROWS} grid of 8 x 16 px");
-                drew = draw(&mut e, vram, &background, &t[..n], (8, 8));
+                drew = draw(&mut e, vram, ISP_ALWAYS, &background, &t[..n], (8, 8));
                 if drew {
                     level = x;
                     let (across, down) = reach(vram, GREY);
@@ -382,8 +388,17 @@ mod image {
                 Vertex::flat(60.0, 560.0, 0xFF00_00FF),
             ];
             let (t, n) = table(level);
-            log!("C: red/green/blue triangle (240,80) (420,560) (60,560)");
-            shown = draw(&mut e, vram, &tri, &t[..n], (240, 400));
+            log!(
+                "C: red/green/blue triangle (240,80) (420,560) (60,560), ISP bit 23 (Gouraud) set"
+            );
+            shown = draw(
+                &mut e,
+                vram,
+                ISP_ALWAYS | ISP_GOURAUD,
+                &tri,
+                &t[..n],
+                (240, 400),
+            );
             log!(
                 "  near the corners 0x{:08x} 0x{:08x} 0x{:08x}, middle 0x{:08x}, outside 0x{:08x}",
                 px(vram, 240, 90),
