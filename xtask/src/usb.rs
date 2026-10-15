@@ -384,7 +384,11 @@ fn parse(output: &str) -> Outcome {
     o
 }
 
+/// Runs a script on the device's port. The one way xtask reaches the Axim,
+/// so it takes the machine-wide lock first and keeps it until the process
+/// ends (crate::devlock; a test keeps this the only way).
 fn powershell(script: &str) -> Result<std::process::Output, String> {
+    crate::devlock::ensure_held()?;
     Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
         .arg(encode_command(script))
