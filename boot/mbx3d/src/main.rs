@@ -49,21 +49,6 @@ pub fn tile_size(reach: u32, tiles: u32, screen: u32) -> Option<u32> {
     (size.is_power_of_two() && size * tiles == reach).then_some(size)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::tile_size;
-
-    #[test]
-    fn tile_size_from_the_red_reach() {
-        // 15 x 20 tiles assumed (32 px); 16-pixel tiles draw 240 x 320.
-        assert_eq!(tile_size(240, 15, 480), Some(16));
-        assert_eq!(tile_size(320, 20, 640), Some(16));
-        assert_eq!(tile_size(480, 15, 480), Some(32));
-        assert_eq!(tile_size(0, 15, 480), None);
-        assert_eq!(tile_size(250, 15, 480), None, "not whole tiles");
-    }
-}
-
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
@@ -414,3 +399,18 @@ mod image {
 
 #[cfg(not(target_os = "none"))]
 fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::tile_size;
+
+    #[test]
+    fn tile_size_from_the_red_reach() {
+        // 15 x 20 tiles assumed (32 px); 16-pixel tiles draw 240 x 320.
+        assert_eq!(tile_size(240, 15, 480), Some(16));
+        assert_eq!(tile_size(320, 20, 640), Some(16));
+        assert_eq!(tile_size(480, 15, 480), Some(32));
+        assert_eq!(tile_size(0, 15, 480), None);
+        assert_eq!(tile_size(250, 15, 480), None, "not whole tiles");
+    }
+}
