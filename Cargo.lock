@@ -276,6 +276,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-graphics"
+version = "0.0.0"
+dependencies = [
+ "rp-draw",
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-hal-api",
+ "rp-mbx-render",
+ "rp-mbx3d-render",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-hal-api"
 version = "0.0.0"
 
