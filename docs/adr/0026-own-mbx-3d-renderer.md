@@ -409,6 +409,11 @@ came after the run).**
   both twiddled and row block order: open). Built (`upload32`,
   `upload_pvrtc` for blocks compressed on the PC).
 
+**Next: `rp-mbx3d` version 25** (static reading in `docs/hw/2700g.md`,
+"Depth buffers, mipmap levels and the target format"): T11b depth stored
+with the GLES driver's full register set (`0x648` and `0x6D0` 1, `n` 16
+and 2400); T12b mipmaps with TEX0 bits 12-9 set; T13b PVRTC's block order.
+
 ## The four lenses
 
 | Lens | Effect |
