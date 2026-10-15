@@ -475,20 +475,52 @@ and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
   bus traffic of every picture; the 2D engine's blends onto 565 need
   their own device check).
 
-**Version 27 withdrawn before running (2026-10-15):** the core PLL is
-also the 2700G's local-memory clock, and Dell's SDRAM table for the X51v
-rates that memory to 100 MHz (`docs/hw/2700g.md`, "The 2700G's local
-memory sets the clock limit"): its steps above 99.67 MHz overclock the
-memory. The in-spec option (75 MHz system clock, cores divide by 1) and the
-overclock (cores divide by 1 at 99.67 MHz, past Dell's 75 MHz core cap)
-are the owner's choice. Version 27 as it was:
-110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock"; the cores at
-half, at most 66.6 MHz, under Dell's 75 MHz cap; Dell's bus-timing tier
-unchanged), changed as Dell's driver does it (system clock on the 13 MHz
-reference, PLL written, lock awaited), each step checked (a 256 KiB
-memory pattern, a 2D fill, ten 3D renders matching WM's pixels) and
-timed; WM's PLL back on any failure and at the end. 149.5 MHz waits for
-the owner.
+**Results of version 27 (device, 2026-10-15): the core PLL stepped to
+133.25 MHz, every step good.** It was nearly withdrawn on the static
+finding that the PLL also clocks the 2700G's local memory, which Dell's
+SDRAM table for the X51v rates to 100 MHz (`docs/hw/2700g.md`, "The
+2700G's local memory sets the clock limit"); the owner ran it as a short
+check. It changed the PLL as Dell's driver does: the system clock on the
+13 MHz reference, the PLL written, the lock awaited, then the system
+clock back on the PLL. Each step ran three checks, all good at every
+step: a 256 KiB memory pattern (0 words wrong), a 2D fill, and ten 3D
+renders whose sample sums matched WM's clock (10 of 10). The PLL locked
+at once each time.
+
+| System clock (`COREPLL`) | 3D, 2400 tiles (slowest of 10) | 2D full-screen fill |
+|---|---|---|
+| 99.67 MHz (`0xBB1`, WM's) | 12,496 us | 6,180 us |
+| 110.50 MHz | 11,268 us | 5,576 us |
+| 121.33 MHz | 10,264 us | 5,076 us |
+| 133.25 MHz (`0x14C1`) | 9,344 us | 4,624 us |
+
+- **Both cores' times follow the system clock exactly**, so the cores
+  are clock-bound. At 133.25 MHz everything is 25% faster.
+- **The memory ran out of its rating with WM's CL2 timing.** A short pass
+  proves nothing about margin: heat, a full memory and minutes of traffic
+  are untested.
+- Linux mbxfb sets CL3 at its "100 MHz" (with WM's other timings). Dell's
+  table would give CL3 at 133 MHz and its timing routine would recompute
+  `LMTIM`: tRC 12, tRP 4, tRCD 4, tRAS 12 - 4 + 1 = 9, tDPL 2 = `0x944C2`.
+  `LMREFRESH` `0x615` refreshes more often at the higher clock, so it stays
+  (Dell's would be `0x822`).
+- Built: `rp_drv_mbx_display::clock::set_core_pll`, a set-up option. The
+  default stays WM's 99.67 MHz.
+
+**Next: `rp-mbx3d` version 28, a soak at 133.25 MHz.** The memory is set
+as Dell would set it for 133 MHz first (`LMTYPE` CL3 `0xEC8`, `LMTIM`
+`0x944C2`, the system clock on the reference while they change); then
+rounds run for several minutes. Each round has:
+
+- a pattern written and read back over all free 2700G memory;
+- a 2D fill;
+- 3D renders whose sums must match WM's clock.
+
+A second phase repeats the rounds once the device has warmed up.
+Temperature and battery are not readable yet (no gauge driver before
+Phase 9), so the log notes that. The first failure stops the soak; the
+end, or a failure, restores WM's PLL and memory timing (`0xBB1`, `0xAC8`,
+`0x73392`, `0x615`).
 
 ## The four lenses
 
