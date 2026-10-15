@@ -201,9 +201,9 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T2 | Do status bits 2 and 4 raise GPIO85? | D3: **no, as tried** (version 20: bit 2 enabled in `0x130`, `MINTENABLE` `0x800F`: 0 edges); timer fallback |
 | T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5: **passed** (version 20: any pixel offset, even 4 bytes) |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
-| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D (version 21) |
+| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | **passed** (version 23: factors in 31-26, bit 13 on; vertex and texture alpha) |
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality (version 21, on a hand-written textured object) |
-| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games (version 21: compare modes within one render) |
+| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | **passed within a render** (version 23: TSP bits 11-9 mode, bit 7 no-write; larger z nearer); storing depth across renders (`0x674`) still open |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
 | T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
 
@@ -251,6 +251,29 @@ and the run went on).
   the core. Next, by static reading: the combine word TEX2 (the GLES
   driver takes it from a table by texture mode; Dell's `0xD6886610` and
   the game's `0x86086610` differ in bits 30, 28 and 23).
+
+**Version 23 on the device (2026-10-15, `local/rp-mbx3d-run23.txt`):
+alpha blending and depth work**, with the forms read from the GLES
+driver (`0x02267700` builds the TSP; `glBlendFunc`, `glDepthFunc`,
+`glDepthMask`; TEX2 table `0x0225D3A0`):
+
+- **TSP bit 13 turns blending on** with the factors in bits 31-26
+  (source 31-29, destination 28-26, GL's codes: 0 zero, 1 one, 2/3
+  destination colour and inverse, 4/5 source alpha and inverse, 6/7
+  destination alpha and inverse). A flat square at alpha `0x80` over red:
+  `0xBF7F007F`, half and half exactly; an ARGB4444 texture at alpha 8/15:
+  `0xBF770087` (R `0xFF` x 7/15, B `0xFF` x 8/15). Without bit 13 the
+  texture drew opaque. Clearing TEX2 bit 13 made no difference here (it
+  may matter for other combine modes).
+- **Depth compare and write live in the TSP's low bits** (as
+  `glDepthFunc`/`glDepthMask` store them): bits 11-9 the mode (PowerVR2
+  numbering: 1 less, 4 greater, 6 greater or equal, 7 always), bit 7 set =
+  don't write. With writes on, blue at z 0.8 "greater" covered red at
+  0.5, blue at 0.3 stayed behind, "less" never passed against the
+  background at 0.1: **larger z is nearer**. Dell's `0x0E80` (always, no
+  write) is why version 22 saw no writes. The ISP's top bits were set to
+  the same mode here; which of the two fields the core obeys is a detail
+  for the renderer's tests.
 
 ## The four lenses
 

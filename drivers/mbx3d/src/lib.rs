@@ -36,6 +36,68 @@ pub const ISP_ALWAYS: u32 = 0xE000_0000;
 /// vertex's colour (measured 2026-10-14; ISP bit 23, the PowerVR2's place
 /// for it, changed nothing).
 pub const TSP_GOURAUD: u32 = 1 << 22;
+/// TSP bit 13: blending on, with the factors of [`blend`] (`rp-mbx3d`
+/// version 23: vertex alpha and ARGB4444 texture alpha both blended
+/// exactly; without it the factors still apply but alpha acts as 1).
+pub const TSP_BLEND: u32 = 1 << 13;
+
+/// Blend factor codes, as `glBlendFunc` stores them (`libGLES_CL.dll`
+/// `0x022620fc`).
+pub mod factor {
+    /// 0.
+    pub const ZERO: u32 = 0;
+    /// 1.
+    pub const ONE: u32 = 1;
+    /// The other side's colour.
+    pub const OTHER_COLOR: u32 = 2;
+    /// 1 minus it.
+    pub const INV_OTHER_COLOR: u32 = 3;
+    /// The source's alpha.
+    pub const SRC_ALPHA: u32 = 4;
+    /// 1 minus it.
+    pub const INV_SRC_ALPHA: u32 = 5;
+    /// The destination's alpha.
+    pub const DST_ALPHA: u32 = 6;
+    /// 1 minus it.
+    pub const INV_DST_ALPHA: u32 = 7;
+}
+
+/// `tsp` blending `src` and `dst` factors ([`factor`]), [`TSP_BLEND`] on.
+#[must_use]
+pub const fn blend(tsp: u32, src: u32, dst: u32) -> u32 {
+    (tsp & 0x03FF_FFFF) | (src & 7) << 29 | (dst & 7) << 26 | TSP_BLEND
+}
+
+/// Depth compare modes (PowerVR2 numbering; larger z is nearer: version
+/// 23).
+pub mod depth {
+    /// Never passes.
+    pub const NEVER: u32 = 0;
+    /// Less (farther: larger z is nearer).
+    pub const LESS: u32 = 1;
+    /// Equal.
+    pub const EQUAL: u32 = 2;
+    /// Less or equal.
+    pub const LEQUAL: u32 = 3;
+    /// Greater: nearer.
+    pub const GREATER: u32 = 4;
+    /// Not equal.
+    pub const NOT_EQUAL: u32 = 5;
+    /// Greater or equal.
+    pub const GEQUAL: u32 = 6;
+    /// Always.
+    pub const ALWAYS: u32 = 7;
+}
+
+/// `tsp` with the depth compare `mode` ([`depth`]) in bits 11-9 and depth
+/// writes on or off (bit 7 set = off), as `glDepthFunc`/`glDepthMask`
+/// store them (version 23: writes and compares measured). Dell's `0x0E80`
+/// is always, no write.
+#[must_use]
+pub const fn depth_test(tsp: u32, mode: u32, write: bool) -> u32 {
+    (tsp & !0x0F80) | (mode & 7) << 9 | if write { 0 } else { 1 << 7 }
+}
+
 /// The TSP word Dell's driver writes with [`ISP_ALWAYS`]: flat-shaded
 /// (bit 22 clear), opaque; the other bits not yet decoded.
 pub const TSP_DELL: u32 = 0x2220_0E80;
