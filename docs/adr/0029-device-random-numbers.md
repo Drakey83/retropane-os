@@ -365,7 +365,9 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
 ## Open questions
 
 1. Is the X51v's 32.768 kHz clock its own crystal (`OSCC`)? Everything in
-   R1 leans on it.
+   R1 leans on it. **Likely yes** (found 2026-10-15 in the probe's
+   2026-10-11 run: `OSCC = 0x0F`, the oscillator on and stable;
+   docs/hw/entropy.md); `rp-noise` reads it again.
 2. Are the TSC2046's `VBAT` and `AUX` inputs wired to anything on the X51v?
 3. The measured entropy per sample of each source, and so the real time to
    "ready".
@@ -380,6 +382,9 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
 2. Emulator noise device (deterministic, stuck, biased) and the kernel's
    collector and boot wait; emulator tests.
 3. `rp-noise` test image. **Device runs only when the owner says go.**
+   Built 2026-10-15 (the owner's go on the measurements): checked in the
+   emulator (`cargo xtask emu-noise`, plumbing only); the device run waits
+   for the owner.
 4. The measured credit table, `docs/hw/entropy.md`; the generator becomes
    ready on the device; LegacySync's device side may use it.
 5. Seed file (SD stand-in), then the flash record with the installer at

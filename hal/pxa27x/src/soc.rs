@@ -75,6 +75,11 @@ pub mod ost_reg {
     pub const OSMR4: usize = 0x80;
     /// Match control 4: bits 2-0 the resolution (2: 1 ms ticks).
     pub const OMCR4: usize = 0xC0;
+    /// Counter 5 (its own when `OMCR5` bit 7 is set, else OSCR4's).
+    pub const OSCR5: usize = 0x44;
+    /// Match control 5: bits 2-0 the resolution (1: 1/32768 s, from the
+    /// 32.768 kHz oscillator), bit 7 "count with OSCR5, not OSCR4".
+    pub const OMCR5: usize = 0xC4;
 }
 
 /// The interrupt controller.
@@ -321,6 +326,31 @@ impl Dispatch {
         let was = self.signalled_gpio[b] & bit != 0;
         self.signalled_gpio[b] &= !bit;
         was
+    }
+}
+
+/// OS timer channel 5 counting the 32.768 kHz oscillator's ticks on its own
+/// counter (no match, no interrupt): a clock from a different crystal than
+/// the core's and OSCR0's 13 MHz, for measuring jitter between the two
+/// (ADR-0029, `rp-noise`).
+pub struct SlowClock<B>(pub B);
+
+impl<B: RegisterBus> SlowClock<B> {
+    /// Starts the counter at 0, one count per 1/32768 s.
+    pub fn start(&mut self) {
+        self.0.write32(ost_reg::OMCR5, 0);
+        self.0.write32(ost_reg::OSCR5, 0);
+        self.0.write32(ost_reg::OMCR5, 1 << 7 | 1);
+    }
+
+    /// The count now.
+    pub fn now(&mut self) -> u32 {
+        self.0.read32(ost_reg::OSCR5)
+    }
+
+    /// Stops the counter (the channel as the loader found it).
+    pub fn stop(&mut self) {
+        self.0.write32(ost_reg::OMCR5, 0);
     }
 }
 

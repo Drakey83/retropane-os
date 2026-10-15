@@ -20,6 +20,20 @@ pub mod channel {
     pub const X: u8 = 5;
 }
 
+/// Single-ended inputs (TSC2046 datasheet, SER/DFR = 1): the battery,
+/// the two temperature diodes and the spare input. Whether Dell wired
+/// `VBAT` and `AUX` to anything on the X51v is unknown (ADR-0029).
+pub mod single {
+    /// Temperature, first diode reading.
+    pub const TEMP0: u8 = 0;
+    /// Battery voltage (through the chip's divide-by-4).
+    pub const VBAT: u8 = 2;
+    /// The auxiliary input.
+    pub const AUX: u8 = 6;
+    /// Temperature, second diode reading.
+    pub const TEMP1: u8 = 7;
+}
+
 /// Power-down bits (PD1..PD0) of a control byte (TSC2046 datasheet).
 pub mod pd {
     /// Powered down between conversions, pen interrupt enabled: the last
@@ -43,6 +57,17 @@ pub const fn command(ch: u8) -> u8 {
 pub const fn command_pd(ch: u8, pd: u8) -> u8 {
     0x80 | ((ch & 7) << 4) | (pd & 3)
 }
+
+/// Control byte for a 12-bit single-ended conversion on `ch` (a
+/// [`single`] input) with power-down bits `pd`.
+#[must_use]
+pub const fn command_single(ch: u8, pd: u8) -> u8 {
+    command_pd(ch, pd) | 0x04
+}
+
+/// Power-down bits for single-ended readings: internal reference and
+/// converter both on.
+pub const PD_REF_ON: u8 = 0b11;
 
 /// Conversions spent letting a channel settle before it is measured
 /// (~10 us each at 2.6 MHz: ~1.3 ms). Measured on the X51v (2026-10-13):
@@ -180,8 +205,19 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
 
     /// One 12-bit conversion on `ch` with power-down bits `pd`.
     pub fn read_pd(&mut self, ch: u8, pd: u8) -> u16 {
+        self.convert(command_pd(ch, pd))
+    }
+
+    /// One 12-bit single-ended conversion of a [`single`] input, reference
+    /// and converter left on (finish with [`Self::read`] to power down and
+    /// re-arm the pen interrupt).
+    pub fn read_single(&mut self, ch: u8) -> u16 {
+        self.convert(command_single(ch, PD_REF_ON))
+    }
+
+    fn convert(&mut self, control: u8) -> u16 {
         self.cs.set_low();
-        self.spi.transfer(command_pd(ch, pd));
+        self.spi.transfer(control);
         let hi = self.spi.transfer(0);
         let lo = self.spi.transfer(0);
         self.cs.set_high();
@@ -222,6 +258,16 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn single_ended_commands_set_ser_and_the_reference() {
+        // S, A2-A0 = 010 (VBAT), 12-bit, SER, PD = 11: 1010_0111.
+        assert_eq!(command_single(single::VBAT, PD_REF_ON), 0xA7);
+        assert_eq!(command_single(single::TEMP1, PD_REF_ON), 0xF7);
+        assert_eq!(command_single(single::TEMP0, PD_REF_ON), 0x87);
+        // Differential commands are unchanged (SER clear).
+        assert_eq!(command(channel::X) & 0x04, 0);
+    }
 
     #[test]
     fn command_bytes() {

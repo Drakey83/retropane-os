@@ -580,6 +580,51 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     }))
 }
 
+static mut SLOW_CLOCK_TAKEN: bool = false;
+
+/// Hands out OS timer channel 5 once, as a 32.768 kHz counter
+/// ([`crate::soc::SlowClock`]).
+pub fn take_slow_clock() -> Option<crate::soc::SlowClock<Mmio>> {
+    // SAFETY: single core; called during setup.
+    let taken = unsafe { core::ptr::addr_of_mut!(SLOW_CLOCK_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: the OS timer's register window. The slow clock touches only
+    // channel 5's counter and match control, which nothing else uses (the
+    // run limit is channel 4, the alarm 1, the spare 2, the watchdog 3).
+    Some(crate::soc::SlowClock(unsafe {
+        Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0xE0)
+    }))
+}
+
+/// Starts the XScale's cycle counter (CP14 `PMNC`: enable, reset `CCNT`, a
+/// count every cycle, not every 64th). Privileged modes only.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn cycle_counter_start() {
+    // SAFETY: writes the performance monitor's control register (PXA27x:
+    // CP14 c0, c1); it only starts and resets the counters, which nothing
+    // else in RetroPane uses yet. No interrupts are enabled (INTEN stays 0).
+    unsafe {
+        core::arch::asm!("mcr p14, 0, {v}, c0, c1, 0", v = in(reg) 0b101u32, options(nostack, nomem))
+    }
+}
+
+/// The XScale's cycle counter (CP14 `CCNT`, c1, c1): core clock cycles
+/// since [`cycle_counter_start`], wrapping. A few cycles to read, against
+/// ~846 ns for an OS timer register.
+#[inline]
+#[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn cycles() -> u32 {
+    let c: u32;
+    // Not `nomem`: the compiler must not move memory accesses across it
+    // (timed loops would time nothing).
+    // SAFETY: a read of the cycle counter; no side effects.
+    unsafe { core::arch::asm!("mrc p14, 0, {c}, c1, c1, 0", c = out(reg) c, options(nostack)) }
+    c
+}
+
 /// The whole OS timer block (channels 0-11), for the run limit.
 fn ost_block() -> Mmio {
     // SAFETY: the OS timer's register window, channels 0-11 (0xE0 bytes).

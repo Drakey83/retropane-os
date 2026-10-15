@@ -1304,6 +1304,111 @@ fn strip_tail(v: &str) -> String {
 /// emulator that models the blend and the display's events (`mbx-blend`,
 /// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
 /// device's run (docs/hw/emulator.md).
+/// The noise-source measurement (rp-noise, ADR-0029): under the loader it
+/// must read the clocks, collect every source, save each to the card
+/// whole (1,000,000 16-bit samples), append its restart row to the rows
+/// already there, and return. The emulator's timing comes from the PC, so
+/// its numbers say nothing about the Axim's noise (docs/hw/emulator.md):
+/// this checks the plumbing only.
+pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-noise.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-noise"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    // Two restart rows from "earlier runs": the run must keep them and add
+    // its own after them.
+    let earlier: Vec<u8> = (0..2000u32).map(|i| (i * 7) as u8).collect();
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "noise-r.bin",
+            data: &earlier,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = root.join("target/emulator/sd-noise.img");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-NOISE: done")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("noise: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("noise: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "clocks: OSCC",
+        "clocks: core measured",
+        "card: ready",
+        "A two-crystal (cycles a 32 kHz tick): 1000000 samples",
+        "B one-clock (cycles for 64 SDRAM reads): 1000000 samples",
+        "T TEMP0: 1000000 samples",
+        "T VBAT: 1000000 samples",
+        "T AUX: 1000000 samples",
+        "T TEMP1: 1000000 samples",
+        "noise-r.bin: row added",
+        "restart rows: 3 of 1000",
+        "noise.txt: saved",
+        "RETROPANE-NOISE: done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("noise: the run log has no `{want}`:{log}"));
+        }
+    }
+    for name in [
+        "noise-a.bin",
+        "noise-b.bin",
+        "noise-t0.bin",
+        "noise-vb.bin",
+        "noise-ax.bin",
+        "noise-t1.bin",
+    ] {
+        let data = card_file(&sd, name)?;
+        if data.len() != 2_000_000 {
+            return Err(format!(
+                "noise: {name} is {} bytes, want 2,000,000",
+                data.len()
+            ));
+        }
+    }
+    let rows = card_file(&sd, "noise-r.bin")?;
+    if rows.len() != 3000 || rows[..2000] != earlier[..] {
+        return Err(format!(
+            "noise: noise-r.bin is {} bytes, want the 2 earlier rows kept and 1 added",
+            rows.len()
+        ));
+    }
+    let text = card_file(&sd, "noise.txt")?;
+    if !String::from_utf8_lossy(&text).contains("MCV min-entropy") {
+        return Err("noise: noise.txt has no summaries".into());
+    }
+    eprintln!(
+        "    noise OK: clocks read, all six sources collected and saved whole, restart row appended, back at the loader (timing in the emulator is the PC's: plumbing only)"
+    );
+    Ok(())
+}
+
 /// The MBX 3D core's first-triangle test (rp-mbx3d, ADR-0024 M4): runs
 /// under the loader, every try timed out (no 3D model), back on a button.
 pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {

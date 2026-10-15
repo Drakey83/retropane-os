@@ -45,6 +45,7 @@ members = [
     "boot/mbx",
     "boot/mbx-blend",
     "boot/mbx3d",
+    "boot/noise",
     "boot/picture",
     "boot/blend",
     "boot/usb",

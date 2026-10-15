@@ -354,6 +354,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0029): the RNG's noise sources measured, samples to
+    // the card. 94.3 KiB measured (2026-10-15), + ~10%; most of it is
+    // rp-fat's writes for both FAT32 and exFAT cards, as in the loader.
+    Budget {
+        image: "rp-noise",
+        max_load: 104 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
