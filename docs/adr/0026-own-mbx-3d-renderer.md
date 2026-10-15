@@ -414,6 +414,31 @@ came after the run).**
 with the GLES driver's full register set (`0x648` and `0x6D0` 1, `n` 16
 and 2400); T12b mipmaps with TEX0 bits 12-9 set; T13b PVRTC's block order.
 
+**`rp-mbx3d` version 25 on the device (2026-10-15,
+`local/rp-mbx3d-run25.txt`).**
+
+- **T12b, mipmaps: work.** With TEX0 bits 12-9 non-zero (3, 6, 7 or
+  `0xB`: all alike) and TEX1 nearest-mipmap (bit 29), **layout B** (the
+  base first, each level after the larger one) drew the 16 x 16 level on a
+  16 px quad and the 8 x 8 on an 8 px quad (a 64 x 64 texture); layout A
+  (the PowerVR2's, smallest first) always drew the base. Version 24 left
+  bits 12-9 at 0 and drew only the base: **bits 12-9 are the highest level
+  index allowed**. Built (`upload_mipmapped`: levels made on the CPU by
+  2 x 2 averages, integer only; both models select levels as measured).
+- **T13b, PVRTC's block order: twiddled like texels** (x in the odd bits):
+  each block's centre showed row 0 = blocks 0, 2, 8, 10, row 1 = 1, 3, 9,
+  11. Both models had assumed it; now measured.
+- **T11b, depth stored across renders: still nothing** with the GLES
+  driver's full register set (`0x648`, `0x6D0`, the rest), `n` 16 or
+  2400, load bit on or off: the buffer untouched, B drew everywhere. The
+  GLES scene routine (`0x0225e5c4`), with a depth buffer, also sets **bit
+  19 of the tile accelerator's configuration word** (`0x85C`, ours never
+  written on the direct path) and `0x610`'s store bit: depth storage may
+  belong to the TA path. **Parked** until the TA path is built for games
+  (ADR-0026 D7); then one try with `0x85C` bit 19 settles it. The
+  interface doesn't need it (each render's depth starts from the
+  background).
+
 ## The four lenses
 
 | Lens | Effect |

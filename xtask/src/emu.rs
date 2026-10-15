@@ -1435,6 +1435,31 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
             }
         }
     }
+    // Version 25's stages, likewise (mipmaps and PVRTC's block order,
+    // from rp-v0.16.0's model).
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("T12b") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            (
+                "T12b layout B, TEX0 bits 12-9 = 7:",
+                "16 px quad 0xff0000ff, of the 8 px quad 0xffffff00",
+            ),
+            (
+                "T12b layout A, TEX0 bits 12-9 = 7:",
+                "16 px quad 0xffff0000, of the 8 px quad 0xffff0000",
+            ),
+            (
+                "T13b PVRTC 4 bpp",
+                "[[00, 21, 84, a5], [10, 31, 94, b5], [42, 63, c6, e7], [52, 73, d6, f7]]",
+            ),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
     eprintln!(
         "    mbx3d OK: {}, back at the loader on a button press",
         if modelled {
