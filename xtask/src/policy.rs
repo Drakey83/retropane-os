@@ -22,7 +22,8 @@ pub enum Layer {
 pub enum Placement {
     /// Part of the OS, in a layer.
     Os(Layer),
-    /// Host-side tooling (`xtask`, `tools/*`): never a dependency of OS crates.
+    /// Host-side programs (`xtask`, `tools/*`, `pc/*`): never a dependency
+    /// of OS crates.
     Host,
 }
 
@@ -37,7 +38,8 @@ pub fn placement(rel_dir: &str) -> Option<Placement> {
         "services" | "gwes" => Placement::Os(Layer::System),
         "personality" => Placement::Os(Layer::Personality),
         "shell" | "apps" => Placement::Os(Layer::Apps),
-        "xtask" | "tools" => Placement::Host,
+        // `pc`: the PC companions users run (LegacySync, ADR-0028).
+        "xtask" | "tools" | "pc" => Placement::Host,
         _ => return None,
     })
 }
@@ -109,6 +111,7 @@ mod tests {
             Some(Placement::Os(Layer::Personality))
         );
         assert_eq!(placement("tools/romdump"), Some(Placement::Host));
+        assert_eq!(placement("pc/legacysync"), Some(Placement::Host));
         assert_eq!(placement("random"), None);
     }
 

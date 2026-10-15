@@ -69,6 +69,13 @@ some CABs (native ARM code run at install time) run inside the CE
 personality's sandbox like any other program. The device asks the user
 before every install: "Install Toy Golf (from LegacySync)?"
 
+> **Correction (note added 2026-10-15):** the INI doesn't say which CAB is
+> for which CPU, and names like `ARMV4` are only conventions. Application
+> Manager reads the processor type and OS range from each CAB's setup
+> script and picks by those; LegacySync does the same
+> (docs/legacysync/activesync-interfaces.md §3). Also, all seven real CABs
+> on the Dell discs use the `.000` script; none uses `_setup.xml`.
+
 ### L3. RAPI
 
 **Recommended, second.** A `rapi.dll` of our own, with Microsoft's
@@ -96,6 +103,30 @@ and asks; LegacySync stores a key; later connections are checked with it.
 A PC without a partnership can do nothing beyond the USB drive (ADR-0014).
 Like ActiveSync's partnerships, but with modern crypto and per-feature
 permissions (install, files, sync, pass-through).
+
+## Implementation status (2026-10-15)
+
+- **Research**: [docs/legacysync/activesync-interfaces.md](../legacysync/activesync-interfaces.md),
+  from the owner's Dell discs and PC: how installers find `CeAppMgr.exe`
+  (two registry keys, read through `WOW6432Node`), its command line, the
+  INI, Application Manager's records, the MSCF and `.000` layouts (seven
+  real CABs), and the finding that Windows 11 still ships a `rapi.dll`
+  (a layer over WMDC's RAPI2 COM server), which opens a second route for L3.
+- **Shared parsers** (device and PC, `no_std`, no heap, hostile-input
+  tested, mutants): `rp-cab` (`personality/ce/cab`: cabinets, uncompressed
+  and MSZIP, streamed) and `rp-ce-setup` (`personality/ce/setup`: `.000`
+  and `_setup.xml` to a validated install plan).
+- **L2's PC half**: `pc/legacysync`'s `ceappmgr.exe` stages the right CAB
+  and a readable plan for all six of the owner's real installers with
+  INIs ([ceappmgr-standin.md](../legacysync/ceappmgr-standin.md)).
+  Registration: option A (the owner, 2026-10-15): LegacySync's installer
+  backs up the lookups' current values (WMDC's, on the owner's PC), takes
+  them over, and its uninstaller restores them. The backup, take-over and
+  check exist (read-only); not applied to the owner's registry yet.
+- **Device link**: designed, for review
+  ([device-link.md](../legacysync/device-link.md)): its own USB interface,
+  a Noise handshake with a code on both screens, encrypted frames,
+  partnerships on the card guarded from the drive.
 
 ## The four lenses
 

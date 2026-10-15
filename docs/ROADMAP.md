@@ -95,7 +95,7 @@ Personality's drawing (Phase 4) are designed:
 - [ ] coredll (core subset), aygshell basics, GDI on the software backend
 - [ ] GAPI (`gx.dll`)
 - [ ] Registry and file-system semantics matching CE
-- [ ] CAB installer (Windows Mobile's `wceload`): cabinet unpack, `_setup.xml` and `000` setup scripts, registry keys, shortcuts, setup DLLs in the sandbox; installs from the card first (ADR-0028 L2, proposed)
+- [ ] CAB installer (Windows Mobile's `wceload`): cabinet unpack, `_setup.xml` and `000` setup scripts, registry keys, shortcuts, setup DLLs in the sandbox; installs from the card first (ADR-0028 L2; the parsers exist: `rp-cab`, `rp-ce-setup`)
 
 **Exit:** a set of simple WM5/6.x apps (calculator, a GAPI game, text editor) run unmodified.
 
@@ -148,8 +148,14 @@ Personality's drawing (Phase 4) are designed:
 - [ ] Installer; v1.0 public release with SD and flash images
 - [ ] Optional packs (ADR-0018, accepted): complete base system in flash; signed, verified packs (browser, codecs, fonts, language packs) on the card or in flash; clean card removal
 
-## LegacySync: the Windows companion (ADR-0028, proposed)
+## LegacySync: the Windows companion (ADR-0028, accepted 2026-10-15)
 **Idea recorded 2026-10-15 (owner).** A Windows 11 program that does ActiveSync's jobs for RetroPane over the Dell cable: old Pocket PC `setup.exe` installers work again (a `CeAppMgr.exe` stand-in sends the ARM CAB to the device), then a `rapi.dll` for old PC tools, time sync, file browsing, encrypted backups, contacts/calendar/tasks sync (Outlook and CardDAV/CalDAV), and internet pass-through (off by default). Our own protocol over the USB link, not Microsoft's; partnerships with per-feature permissions. Needs Phase 4 (programs run, CABs install) first.
+- [x] Research: ActiveSync's PC-side interfaces, from the owner's discs and PC (docs/legacysync/activesync-interfaces.md)
+- [x] Shared CAB and setup-script parsers, device and PC (`rp-cab`, `rp-ce-setup`)
+- [x] `ceappmgr.exe` stand-in: checks, chooses and stages the CAB with its plan (registration: option A chosen, backup/take-over/check built, not yet applied; docs/legacysync/ceappmgr-standin.md)
+- [ ] Device link session: design for review (docs/legacysync/device-link.md), then X25519/ChaCha20-Poly1305 in `rp-crypto`, frames, pairing
+- [ ] Sending to the device and installing (needs Phase 4's CAB installer)
+- [ ] RAPI (L3), time, Explore, backup; then sync and pass-through
 
 ## After everything else: the Field Kit pack
 **Idea recorded, specifics later** (ADR-0020, owner's initial ideas, 2026-10-13). The last thing built, after the browser and the rest of the roadmap: a pack of client-only network and utility tools (terminal, hex editor, password manager, encryption and hashes, serial console, crash log viewer; then SSH, IRC, network diagnostics, Wi-Fi scanner), each a separate program run one at a time from the card.

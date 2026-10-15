@@ -59,8 +59,11 @@ members = [
     "services/display-host",
     "shell/core",
     "shell/today",
+    "personality/ce/cab",
+    "personality/ce/setup",
     "tools/romdump",
     "tools/apiscan",
+    "pc/legacysync",
     "xtask",
 ]
 
