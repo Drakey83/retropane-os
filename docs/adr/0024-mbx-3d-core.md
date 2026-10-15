@@ -112,6 +112,22 @@ report; device runs only with the owner's go.
    `0xd6886610`, whose low 21 bits x 8 = 0x433080 lands in the texture
    area (a texture address as in the PowerVR2's texture control word?
    to be confirmed). Next: decode those words against the textures.
+
+   **Version 6 (0x100000-0x2FFFFF, three times; 1 and 2 one frame each):
+   the game's objects found.** 978 objects of 26 words, 104 bytes apart,
+   from 0x2B5000, and 3,819 list end words (`0xF0000000`) in
+   0x2B0000-0x2FFFFF, lists and objects together (the tile accelerator's
+   parameter memory). Hypothesis for a textured object, from the first
+   ones: `ISP` (`0xEC800000`), three words (`0x03339600`, `0xCE00xxxx`
+   varying, `0x86086610` the same throughout, like Dell's `0xD6886610`:
+   texture words?), `TSP` (`0x22640200`: bit 22, Gouraud, as found on the
+   device), x/y x3 (screen pixels, e.g. 79.25, 292.69), z x3 (~0.998),
+   1/w x3 (~0.002-0.003), then per vertex colour (`0xFF575757`) and two
+   floats (texture coordinates?). Our 17-word untextured objects lack the
+   three words: the list pointer's flag bits likely say which form.
+   Region arrays at 0x130000 and 0x188000 (80 x 40, one empty list) are
+   templates, not the frame's. Next: the list pointers' format and
+   parameter base, the three words, then a textured triangle.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
