@@ -2425,8 +2425,9 @@ pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
 /// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1 and
 /// no SD card, so the CF path stands alone. The emulated slot starts
 /// unpowered, as Windows Mobile hands it over; the loader attaches the
-/// card on its own (powered through the CPLD, reset, identified) and the
-/// PC sees it as the second drive; `cf` reports it (capacity, write cache
+/// card on its own (powered through the CPLD, reset, identified) before it
+/// offers the drive, so the PC's first question finds the second drive
+/// ready; `cf` reports it (capacity, write cache
 /// off, partition) without taking it again; the CPLD writes leave the
 /// backlight on (its registers don't read back, docs/hw/cpld.md); pulled
 /// out, the slot is switched off, and pushed back in, attached again.
@@ -2475,7 +2476,17 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(200));
             }
         };
-        ready(&mut bot, "card in at start-up, not attached on its own")?;
+        // The card in the slot at start-up is attached before the PC can
+        // see the drive: its first question finds it ready, with no "no
+        // medium" or "medium changed" first (the owner's flaky "USB Drive
+        // (J:)": Explorer drew the drive empty, its icon minutes later).
+        let first = bot.command(&[0; 6], 0, false, &[])?;
+        if first.status != 0 {
+            let sense = bot.sense()?;
+            return Err(format!(
+                "CF unit not ready at the PC's first question (sense {sense:?}): the card in the slot at start-up must be attached before the drive is offered"
+            ));
+        }
         // `cf` reports the card the loader attached, without taking it again.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
@@ -2599,7 +2610,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: attached on its own from an unpowered slot, powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
+        "    CF card OK: attached on its own from an unpowered slot before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }

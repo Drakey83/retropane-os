@@ -271,6 +271,24 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
     Mutant {
+        name: "CF card in at start-up attached only after the drive is offered (the PC's \"USB Drive\" with no size)",
+        file: "boot/loader/src/main.rs",
+        from: "        if cf_in {\n            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);\n        }\n",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "a medium arriving where the host saw none is kept away for seconds",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "            if u.shown || u.away.is_some() {",
+        to: "            if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_medium_arriving_where_the_host_saw_none_is_offered_at_once",
+        ]),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",
