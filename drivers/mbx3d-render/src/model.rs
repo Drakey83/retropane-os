@@ -38,7 +38,7 @@ use rp_drv_mbx_display::clock::MBXCLK;
 use rp_drv_mbx3d::{self as m3, tex};
 use rp_hal_api::RegisterBus;
 
-use crate::{Clock, LocalMem, predict_us};
+use crate::{Clock, LocalMem, predict_us, quad_cost};
 
 /// 2700G local memory, shared by the model and the renderer.
 pub type Shared = Rc<RefCell<Vec<u8>>>;
@@ -256,7 +256,11 @@ impl Gpu {
                     return (n, 0);
                 }
                 o.draw(&m, &mut tile);
-                quads += 1;
+                // Time: every object but the tile's first (the
+                // background), each half a quad (run 2's fit).
+                if j > 0 {
+                    quads += quad_cost(o.tex.is_some(), o.tsp & m3::TSP_BLEND != 0);
+                }
             }
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
@@ -267,9 +271,7 @@ impl Gpu {
             }
             n += 1;
             if w0 & m3::LAST_REGION != 0 {
-                // Objects past the first (the background) cost the time:
-                // two triangles a quad, ~1 us a quad (run 1, to calibrate).
-                return (n, quads.saturating_sub(n) / 2);
+                return (n, quads / 2);
             }
         }
         panic!("region array without a last entry");
@@ -418,10 +420,12 @@ impl Obj {
                 let z = w[0] * v[0].z + w[1] * v[1].z + w[2] * v[2].z;
                 let mode = (self.tsp >> 9) & 7;
                 let pass = match mode {
-                    // "Less" and "less or equal" never passed on the device
-                    // (versions 22-23), not even blue at 0.3 over red at
-                    // 0.5 with writes on: open.
-                    1 | 3 => false,
+                    // "Less" and "less or equal" behave in no way a compare
+                    // explains (version 23: blue at 0.3 over red at 0.5
+                    // left red; runs 1-2, the background at z 0 not 0.1:
+                    // the background showed through red). Unreliable until
+                    // device stage S8 explains them: refused here.
+                    1 | 3 => panic!("depth mode {mode}: unreliable on the device (ADR-0026)"),
                     4 => z > t.z[k],
                     6 => z >= t.z[k],
                     7 => true,

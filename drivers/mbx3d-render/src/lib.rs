@@ -218,7 +218,9 @@ impl Paint {
     }
 }
 
-/// A depth test (version 23: larger z is nearer).
+/// A depth test (version 23: larger z is nearer). Use "greater", "greater
+/// or equal" or "always": "less" and "less or equal" behaved in no way a
+/// compare explains on the device (ADR-0026, stage S8 of `rp-mbx3d-api`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depth {
     /// One of [`depth`].
@@ -376,14 +378,30 @@ pub struct FrameStats {
     pub done_us: u32,
 }
 
-/// The predicted render time of `tiles` tiles listing `quads` quads in all
-/// (beyond the background): version 19, 16 us for one tile and 12,484 us
-/// for 2400 (~16 us + 5.2 us a tile), plus ~1 us a quad a tile
-/// (`rp-mbx3d-api` run 1: a 10 x 10 block under one quad between 541 and
-/// 678 us; to calibrate from run 2's exact times).
+/// The predicted render time of `tiles` tiles whose quads (beyond the
+/// background) cost `quarters` quarter-microseconds in all (see
+/// [`quad_cost`]). Fitted to `rp-mbx3d-api` run 2's exact times: ~10 us
+/// plus 5.25 us a tile (1 tile 15 us, 2400 tiles 12,521 us; 16 tiles
+/// 92-95 us).
 #[must_use]
-pub const fn predict_us(tiles: u32, quads: u32) -> u32 {
-    16 + tiles * 21 / 4 + quads
+pub const fn predict_us(tiles: u32, quarters: u32) -> u32 {
+    10 + tiles * 21 / 4 + quarters / 4
+}
+
+/// What one quad adds to a tile's render time, in quarter-microseconds
+/// (run 2): opaque flat or Gouraud ~0.3-0.45 us (100 tiles under one quad
+/// 559 us; 325 tiles, 416 quads 1,888 us), textured ~1.1 us (285 quads
+/// 12,813 us), blended ~4.9 us, about a tile's worth (338 additive tiles
+/// 3,387 us; 378 alpha quads 14,342 us).
+#[must_use]
+pub const fn quad_cost(textured: bool, blended: bool) -> u32 {
+    if blended {
+        20
+    } else if textured {
+        4
+    } else {
+        2
+    }
 }
 
 /// Where things sit in the parameter memory, in bytes from its start (the
@@ -424,6 +442,8 @@ struct Slot {
     kind: Kind,
     tiles: TileRect,
     hash: u64,
+    /// [`quad_cost`].
+    cost: u8,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -775,6 +795,7 @@ impl Renderer {
                     kind,
                     tiles,
                     hash: hash(&words[..n], tiles),
+                    cost: quad_cost(kind == Kind::Textured, d.blend.is_some()) as u8,
                 };
                 if s.kind == old.kind && s.hash == old.hash {
                     return Ok(());
@@ -889,7 +910,7 @@ impl Renderer {
             self.forget_lists();
         }
         let writes0 = self.shadow.writes;
-        let (tiles, quads, lists) = match self.write_regions(mem, &todo) {
+        let (tiles, quads, cost, lists) = match self.write_regions(mem, &todo) {
             Some(r) => r,
             None => {
                 self.forget_lists();
@@ -911,7 +932,7 @@ impl Renderer {
         self.shadow.write(bus, 0x65C, addr);
         self.shadow.write(bus, m3::START, 1);
 
-        let predicted = predict_us(tiles, quads);
+        let predicted = predict_us(tiles, cost);
         let start = clock.now_us();
         self.pending = Some(Pending {
             start,
@@ -1053,12 +1074,17 @@ impl Renderer {
     }
 
     /// The region array listing `todo`, each tile pointing at the list of
-    /// the quads touching it. Returns (tiles, quads listed, lists written),
-    /// or `None` if the lists ran out of parameter memory.
-    fn write_regions<M: LocalMem>(&mut self, mem: &mut M, todo: &Tiles) -> Option<(u32, u32, u32)> {
+    /// the quads touching it. Returns (tiles, quads listed, their
+    /// [`quad_cost`]s, lists written), or `None` if the lists ran out of
+    /// parameter memory.
+    fn write_regions<M: LocalMem>(
+        &mut self,
+        mem: &mut M,
+        todo: &Tiles,
+    ) -> Option<(u32, u32, u32, u32)> {
         let mut buf = [0u32; 64];
         let (mut nb, mut flushed, mut n, mut lists) = (0usize, 0u32, 0u32, 0u32);
-        let mut quads = 0;
+        let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
         for k in todo.iter() {
             let (x, y) = (k as u32 % self.cols, k as u32 / self.cols);
@@ -1088,6 +1114,11 @@ impl Renderer {
                 }
             }
             quads += mask.count_ones();
+            let mut m = mask;
+            while m != 0 {
+                cost += u32::from(self.slots[m.trailing_zeros() as usize].cost);
+                m &= m - 1;
+            }
             let (at, new) = self.list_for(mem, mask)?;
             lists += u32::from(new);
             if nb == buf.len() {
@@ -1106,7 +1137,7 @@ impl Renderer {
             mem.store((self.regions + 4 * flushed) as usize, &buf[..nb]);
         }
         self.mem_words += 2 * n;
-        Some((n, quads, lists))
+        Some((n, quads, cost, lists))
     }
 
     /// The list of the quads in `mask` (after the background), in the

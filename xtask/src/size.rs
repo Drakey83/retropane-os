@@ -356,10 +356,11 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image (ADR-0026): RetroPane's own 3D renderer through its API,
     // reproducing rp-mbx3d versions 19-23 (stages S1-S7). 50.8 KiB measured
-    // (2026-10-15), + ~10%.
+    // (2026-10-15), + ~10%; then 56 -> 70 KiB for run 3 (S8, the "less"
+    // exploration, and exact render times), 64.8 KiB measured, + ~8%.
     Budget {
         image: "rp-mbx3d-api",
-        max_load: 56 * 1024,
+        max_load: 70 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

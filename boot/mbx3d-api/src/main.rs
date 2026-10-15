@@ -15,8 +15,10 @@
 //!   texture at alpha 8/15 `0xBF770087`, additive `0xFFFF00FF`;
 //! - **S4 (T6, textures):** the 8 x 8 checker texel-exact, and wrap,
 //!   mirror and clamp past u = 1;
-//! - **S5 (T7, depth):** larger z nearer with "greater", "less" never
-//!   passing (as version 23 found);
+//! - **S5 (T7, depth):** larger z nearer with "greater" (run 3: "less" moved
+//!   to S8);
+//! - **S8 (exploration, logged, not counted):** what "less" does, with the
+//!   floor's z, red, blue's write and a partial render varied;
 //! - **S6 Gouraud** corners, logged;
 //! - **S7 the 3D clock gate:** off after 100 ms idle, on again for the next
 //!   frame, which still draws.
@@ -178,6 +180,7 @@ mod image {
             }
         }
 
+        #[inline(never)]
         fn set(&mut self, r: &mut Renderer, slot: usize, d: Option<Draw>) {
             if let Err(err) = r.set(&mut self.mem, slot, d.as_ref()) {
                 log!("  set {slot}: {err:?}");
@@ -492,13 +495,6 @@ mod image {
             ("greater, z 0.8", depth::GREATER, 8, BLUE, BLUE),
             ("greater, z 0.3", depth::GREATER, 3, RED, BLUE),
             ("greater or equal, z 0.3", depth::GEQUAL, 3, RED, BLUE),
-            (
-                "less, z 0.3 (never passed in version 23)",
-                depth::LESS,
-                3,
-                RED,
-                GREY,
-            ),
         ] {
             g.set(
                 &mut r,
@@ -513,6 +509,110 @@ mod image {
             g.check("overlap", 250, 250, overlap);
             g.check("blue alone", 350, 350, alone);
             g.check("red alone", 150, 150, RED);
+        }
+        let _ = r.release(&mut g.pool);
+    }
+
+    /// S8 (exploration, logged, not counted): what "less" does. Version 23
+    /// (a floor at z 0.1) left red where blue "less" 0.3 lay over red 0.5;
+    /// runs 1-2 (the floor at z 0) showed the floor there instead, as if red
+    /// were gone. Each variant renders the whole screen (one partial):
+    /// a full-screen grey floor at `floor` (always, writing), red 0.5
+    /// (always, writing) or none, blue at 0.3 with `mode` and `write`.
+    #[inline(never)]
+    fn s8(g: &mut Rig) {
+        log!(
+            "S8: \"less\" explored (floor z, red, blue mode/write): pixels at overlap (250,250), blue alone (350,350), red alone (150,150), floor (50,50)"
+        );
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            return;
+        };
+        let _ = r.set_background(None);
+        let z = |tenths: u32| (tenths * 65536 / 10) as u16;
+        let d = |mode, write, tenths| Depth {
+            mode,
+            write,
+            z: z(tenths),
+        };
+        let variants: [(&str, u32, bool, u32, bool, bool); 9] = [
+            (
+                "greater (control), floor 0",
+                0,
+                true,
+                depth::GREATER,
+                true,
+                true,
+            ),
+            (
+                "less, floor 0 (as runs 1-2)",
+                0,
+                true,
+                depth::LESS,
+                true,
+                true,
+            ),
+            (
+                "less, floor 0.1 (as version 23)",
+                1,
+                true,
+                depth::LESS,
+                true,
+                true,
+            ),
+            ("less no write, floor 0", 0, true, depth::LESS, false, true),
+            (
+                "less no write, floor 0.1",
+                1,
+                true,
+                depth::LESS,
+                false,
+                true,
+            ),
+            ("less, floor 0.6, no red", 6, false, depth::LESS, true, true),
+            ("less, floor 0.6, red 0.5", 6, true, depth::LESS, true, true),
+            ("less or equal, floor 0", 0, true, depth::LEQUAL, true, true),
+            (
+                "less, floor 0, only blue's tiles rendered",
+                0,
+                true,
+                depth::LESS,
+                true,
+                false,
+            ),
+        ];
+        for (name, floor, red, mode, write, full) in variants {
+            g.set(
+                &mut r,
+                0,
+                Some(rect(0, 0, 480, 640, GREY).with_depth(d(depth::ALWAYS, true, floor))),
+            );
+            let red_quad = rect(100, 100, 200, 200, RED).with_depth(d(depth::ALWAYS, true, 5));
+            g.set(&mut r, 1, red.then_some(red_quad));
+            g.set(
+                &mut r,
+                2,
+                Some(rect(200, 200, 200, 200, BLUE).with_depth(d(mode, write, 3))),
+            );
+            if full {
+                r.invalidate_all();
+            } else {
+                // Same scene as before but blue: only its tiles render.
+                g.set(&mut r, 2, Some(rect(200, 200, 200, 200, BLUE)));
+                g.frame(&mut r, FULL, "  (blue plain first)");
+                g.set(
+                    &mut r,
+                    2,
+                    Some(rect(200, 200, 200, 200, BLUE).with_depth(d(mode, write, 3))),
+                );
+            }
+            g.frame(&mut r, FULL, name);
+            log!(
+                "    {name}: 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x}",
+                g.px(250, 250),
+                g.px(350, 350),
+                g.px(150, 150),
+                g.px(50, 50)
+            );
         }
         let _ = r.release(&mut g.pool);
     }
@@ -577,7 +677,7 @@ mod image {
         let _ = store32_volatile(vram, map::FENCE.at as usize, 0);
         cpu::drain_write_buffer();
         log!(
-            "{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), run 2 (background writes depth; exact render times), MBXCLK 0x{clk0:x}"
+            "{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), run 3 (prediction fitted to run 2; S8 explores less), MBXCLK 0x{clk0:x}"
         );
         let mut g = Rig {
             e,
@@ -599,6 +699,7 @@ mod image {
         s3(&mut g);
         s4(&mut g);
         s5(&mut g);
+        s8(&mut g);
         s6_s7(&mut g);
         log!(
             "pool: {} bytes free of {} (everything given back: {})",

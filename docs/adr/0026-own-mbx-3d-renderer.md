@@ -328,6 +328,19 @@ render took longer than 16 us + 5.2 us a tile (a 10 x 10 block under one
 quad: 541-678 us), so the prediction adds ~1 us a quad a tile and the poll
 step is a sixteenth of it; run 2 logs the exact times to calibrate.
 
+**Run 2 (`local/rp-mbx3d-api-run2.txt`): 92 checks, 91 passed** (the
+depth fix holds: all three "greater" cases right). Exact render times: ~10
+us + 5.25 us a tile, plus per quad a tile ~0.3-0.45 us flat, ~1.1 us
+textured and **~4.9 us blended** (a blended quad costs about as much as a
+tile: keep glass and fades to the tiles they cover). `predict_us` and
+`quad_cost` now fit all eleven frames within 6%, pinned by a test. The one
+failure is "less": blue "less" at 0.3 over red at 0.5 showed the floor
+(the background, z 0), where version 23 (its floor at z 0.1) showed red. No
+compare explains that the floor's z decides it; "less" and "less or equal"
+are marked unreliable (the model refuses them; the interface needs only
+"greater"), and run 3's stage S8 varies the floor's z, red, blue's write
+and a partial render to find out.
+
 **Open, found while modelling:** "less" never passed on the device, not
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.

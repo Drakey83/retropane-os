@@ -149,7 +149,7 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
     assert_eq!(g.px(108, 150), BLUE);
     assert_eq!(g.px(307, 150), BLUE);
     assert_eq!(g.px(308, 150), GREY);
-    assert!(s.predicted_us == predict_us(s.tiles, s.quads) && s.done_us >= s.predicted_us);
+    assert!(s.predicted_us == predict_us(s.tiles, 2 * s.quads) && s.done_us >= s.predicted_us);
     assert_eq!(
         s.quads,
         26 * 13,
@@ -388,9 +388,9 @@ fn alpha_blends_as_measured() {
 
 #[test]
 fn depth_larger_z_is_nearer() {
-    // Version 23's T7b, through the API: red at 0.5 writing depth, blue at
-    // 0.3 or 0.8 with "greater", and "less" never passing (not even over
-    // red at 0.3, where it should: open, kept as measured).
+    // Version 23's T7b and rp-mbx3d-api run 2, through the API: red at 0.5
+    // writing depth, blue at 0.3 or 0.8 with "greater" ("less" is
+    // unreliable on the device: the model refuses it).
     let z = |tenths: u32| (tenths * 65536 / 10) as u16;
     let red = |z0| {
         square(100, 100, 200, Paint::Flat(RED)).with_depth(Depth {
@@ -410,7 +410,6 @@ fn depth_larger_z_is_nearer() {
         (depth::GREATER, 8, BLUE, BLUE),
         (depth::GREATER, 3, RED, BLUE),
         (depth::GEQUAL, 3, RED, BLUE),
-        (depth::LESS, 3, RED, GREY),
     ] {
         let mut g = rig(480, 640);
         g.r.set_background(Some(GREY)).unwrap();
@@ -735,4 +734,32 @@ fn the_set_up_is_the_proven_sequence() {
         0x6DC, 0x65C, 0x680,
     ]));
     assert_eq!(w, want);
+}
+
+#[test]
+fn the_prediction_fits_run_2s_exact_times() {
+    // rp-mbx3d-api run 2 (local/rp-mbx3d-api-run2.txt): tiles, flat,
+    // textured and blended quads summed over the tiles, the exact time.
+    let flat = quad_cost(false, false);
+    let textured = quad_cost(true, false);
+    let blended = quad_cost(false, true);
+    for (tiles, cost, exact) in [
+        (1, flat, 15),
+        (16, 0, 93),
+        (2400, 0, 12_521),
+        (100, 100 * flat, 559),
+        (600, 600 * flat, 3_323),
+        (325, 416 * flat, 1_888),
+        (2400, 512 * flat, 12_683),
+        (32, 64 * flat, 218),
+        (2400, 285 * textured, 12_813),
+        (338, 338 * blended, 3_387),
+        (2400, 378 * blended, 14_342),
+    ] {
+        let p = predict_us(tiles, cost);
+        assert!(
+            p.abs_diff(exact) * 100 <= exact * 6,
+            "{tiles} tiles: {p} vs {exact}"
+        );
+    }
 }
