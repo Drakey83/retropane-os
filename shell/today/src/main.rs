@@ -55,6 +55,11 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// OS timer ticks per millisecond.
     const TICKS_MS: u32 = 3250;
+    /// An answer to a touch slower than this gets its own log line.
+    const SLOW_ANSWER_US: u32 = 40_000;
+    /// A frame (after the first, which builds the background: ~54 ms)
+    /// taking more CPU than this gets its own log line.
+    const SLOW_FRAME_US: u32 = 10_000;
     /// Samples the recorder keeps (~47 bytes each with the early settling
     /// values, in the 64 KiB run log: ~8 s of pen-down at ~7 ms a sample).
     const RECORD: u32 = 1150;
@@ -173,6 +178,8 @@ mod image {
             (Latency::new(), Latency::new(), Latency::new());
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
+        // The CPU time of the frame last queued (for the slow-answer line).
+        let mut last_frame_us = 0u32;
         // Samples to what the person meant (rp_touch_cal::Filter).
         let mut filter = Filter::new();
         // When the pen landed (OS timer): latency counts from the touch.
@@ -391,8 +398,18 @@ mod image {
             if renderer.poll()
                 && let Some(at) = showing.take()
             {
-                latency.add(rt::ticks().wrapping_sub(at) / 13 * 4);
+                let total = rt::ticks().wrapping_sub(at) / 13 * 4;
+                latency.add(total);
                 let s = renderer.last;
+                // A slow answer, taken apart (2026-10-14: one of 57 took
+                // 101 ms on the device, every part's worst far less).
+                if total > SLOW_ANSWER_US {
+                    let _ = writeln!(
+                        RunLog,
+                        "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us",
+                        now_ms, s.wait_us, s.engine_us
+                    );
+                }
                 engine_worst = engine_worst.max(s.engine_us);
                 to_flip.add(s.engine_us);
             }
@@ -406,7 +423,19 @@ mod image {
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 draw_us_worst = draw_us_worst.max(us);
                 queueing.add(us);
+                last_frame_us = us;
                 let s = renderer.last;
+                if us > SLOW_FRAME_US && frames > 0 {
+                    let _ = writeln!(
+                        RunLog,
+                        "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {})",
+                        frames + 1,
+                        now_ms,
+                        s.queue_us,
+                        s.wait_us,
+                        s.background
+                    );
+                }
                 queue_worst = queue_worst.max(s.queue_us);
                 wait_worst = wait_worst.max(s.wait_us);
                 rebuilds += u32::from(s.background);
