@@ -22,6 +22,9 @@ rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
+rp-graphics = { path = "../../services/graphics" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }

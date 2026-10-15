@@ -606,13 +606,16 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-drv-tsc2046",
  "rp-gfx",
+ "rp-graphics",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-mbx-render",
+ "rp-mbx3d-render",
  "rp-shell",
  "rp-touch-cal",
+ "rp-vram-map",
 ]
 
 [[package]]
