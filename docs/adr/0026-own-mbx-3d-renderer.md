@@ -207,6 +207,28 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
 | T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
 
+**Version 21 on the device (2026-10-15, `local/rp-mbx3d-run21.txt`):**
+
+- **T5 blending, partly:** TSP bits 28-26 are the destination factor and
+  31-29 the source factor, as on the PowerVR2: source 1 / destination 1
+  drew additive (red + blue = `0xFFFF00FF`); source 1 / destination 0
+  opaque. With source alpha / inverse source alpha (4/5, and 5/4) the
+  result was as if alpha were 1 (`0x800100FC` over red): the square's
+  vertex alpha (`0x80`) doesn't reach the blend, with or without bit 20.
+  Where alpha comes from (another TSP bit, Gouraud, the ISP) is open.
+- **T6:** the **hand-written textured path draws** with Dell's TSP (the
+  8 x 8 checker landed exactly, texel boundaries at the expected pixel,
+  texel (7,0) green where it belongs): D1's direct path holds for
+  textures. Sampling stayed point with TSP bits 14-13 set (filtering is
+  elsewhere: TEX0 bits 31-28 changed sampling in version 18). Past u = 1
+  the **edge texel repeats (clamp) by default**; bit 15 changed nothing.
+  **TSP bit 16 hung the 3D core**: that render and every one after it
+  timed out.
+- **T7 depth: void**, every render timed out after T6's bit 16. Lesson
+  for the class: a test image must reset the core (and redo the memory
+  manager's set-up) after any render that times out, so one bad bit can't
+  void the rest of a run.
+
 ## The four lenses
 
 | Lens | Effect |
