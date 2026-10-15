@@ -12,7 +12,8 @@
 //! TEX0 bits 31-28; blending with TSP bit 13 and the factors in bits 31-26
 //! (each term `value x factor >> 8`, alpha factor `a` and `256 - a`: fits
 //! the device's `0xBF7F007F` and `0xBF770087` exactly); depth compare and
-//! write in TSP bits 11-9 and 7, larger z nearer ("greater", "greater or
+//! write in TSP bits 11-9 and 7 (a tile's depth undefined until written
+//! while `0x6DC` bit 0 is clear: run 1), larger z nearer ("greater", "greater or
 //! equal", "always"; "less" and "less or equal" never passed, even where
 //! they should have: kept as measured), each tile starting at `0x6DC`; render done (status bit 2) after ~16 us + 5.2 us a tile; the
 //! parameter memory manager ready (bit 6) 164 us after `0x838`, only with
@@ -207,16 +208,26 @@ impl Gpu {
         u32::from_le_bytes(m[a..a + 4].try_into().expect("4 bytes"))
     }
 
-    /// Renders the region array: returns the tiles rendered (stops early
-    /// if an object hangs the core).
-    fn render(&mut self) -> u32 {
+    /// Renders the region array: returns the tiles rendered and the
+    /// objects drawn beyond the first in each (stops early if an object
+    /// hangs the core).
+    fn render(&mut self) -> (u32, u32) {
         let mem = self.mem.clone();
         let mut m = mem.borrow_mut();
         let regions = self.reg(0x608) & m3::ADDR_MASK;
         let params = self.reg(0x60C);
         let target = self.reg(0x65C);
         let stride = self.reg(0x660) * 4;
-        let clear_z = f64::from(f32::from_bits(self.reg(0x6DC) & !1));
+        // Bit 0 clear: the tiles' depth isn't cleared (`rp-mbx3d-api` run 1:
+        // "greater" failed wherever nothing had written depth), so it starts
+        // undefined: no compare passes but "always".
+        let r6dc = self.reg(0x6DC);
+        let clear_z = if r6dc & 1 != 0 {
+            f64::from(f32::from_bits(r6dc & !1))
+        } else {
+            f64::NAN
+        };
+        let mut quads = 0u32;
         let mut n = 0;
         for k in 0..4096 {
             let w0 = Self::word(&m, regions + 8 * k);
@@ -242,9 +253,10 @@ impl Gpu {
                 if o.tsp & (1 << 16 | 1 << 19) != 0 {
                     // TSP bits 16 and 19 hung the device's core.
                     self.hung = true;
-                    return n;
+                    return (n, 0);
                 }
                 o.draw(&m, &mut tile);
+                quads += 1;
             }
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
@@ -255,7 +267,9 @@ impl Gpu {
             }
             n += 1;
             if w0 & m3::LAST_REGION != 0 {
-                return n;
+                // Objects past the first (the background) cost the time:
+                // two triangles a quad, ~1 us a quad (run 1, to calibrate).
+                return (n, quads.saturating_sub(n) / 2);
             }
         }
         panic!("region array without a last entry");
@@ -302,10 +316,10 @@ impl RegisterBus for Gpu {
                     self.hung = true;
                     return;
                 }
-                let n = self.render();
+                let (n, quads) = self.render();
                 self.tiles = n;
                 if !self.hung {
-                    self.done_at = Some(self.now.get().wrapping_add(predict_us(n)));
+                    self.done_at = Some(self.now.get().wrapping_add(predict_us(n, quads)));
                 }
             }
             _ => {}

@@ -149,7 +149,12 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
     assert_eq!(g.px(108, 150), BLUE);
     assert_eq!(g.px(307, 150), BLUE);
     assert_eq!(g.px(308, 150), GREY);
-    assert!(s.predicted_us >= predict_us(s.tiles) && s.done_us >= s.predicted_us);
+    assert!(s.predicted_us == predict_us(s.tiles, s.quads) && s.done_us >= s.predicted_us);
+    assert_eq!(
+        s.quads,
+        26 * 13,
+        "the square in all its tiles but the column it left"
+    );
 }
 
 #[test]
@@ -419,6 +424,26 @@ fn depth_larger_z_is_nearer() {
 }
 
 #[test]
+fn depth_needs_something_to_write_it_first() {
+    // Run 1 on the device: with the background not writing depth, "greater"
+    // failed wherever only the background was under it (a tile's depth
+    // isn't cleared). The background writes depth now; without one, a
+    // quad must.
+    let mut g = rig(480, 640);
+    g.r.set_background(None).unwrap();
+    let d = |mode, write, z| Depth { mode, write, z };
+    let under = |write| square(0, 0, 480, Paint::Flat(GREY)).with_depth(d(depth::ALWAYS, write, 0));
+    let blue = square(100, 100, 100, Paint::Flat(BLUE)).with_depth(d(depth::GREATER, true, 40_000));
+    g.set(0, Some(under(false)));
+    g.set(1, Some(blue));
+    g.frame();
+    assert_eq!(g.px(150, 150), GREY, "nothing wrote depth: greater fails");
+    g.set(0, Some(under(true)));
+    g.frame();
+    assert_eq!(g.px(150, 150), BLUE);
+}
+
+#[test]
 fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
     // TSP bits 16 and 19 hung the device's core (versions 21-22): no
     // combination of paint, blend and depth may set them.
@@ -477,7 +502,7 @@ fn a_hung_render_is_recovered_and_the_next_frame_redraws_everything() {
             .unwrap();
     g.clock.set(due);
     let mut recovered = false;
-    for _ in 0..1000 {
+    for _ in 0..5000 {
         match g.r.poll(&mut g.gpu, &mut g.mem, &mut g.clock) {
             Poll::Wait(t) => g.clock.set(t),
             Poll::Recovered => {

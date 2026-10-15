@@ -312,6 +312,22 @@ memory's first 4 KiB, the ADR-0027 placements (parameter memory at 1 MiB,
 the manager's block at `0xFC000`, the region array and textures in the
 pool), and the 3D clock off and on again between renders.
 
+**`rp-mbx3d-api` run 1 on the device (2026-10-15,
+`local/rp-mbx3d-api-run1.txt`): 92 checks, 88 passed.** S1-S4, S6, S7 as
+version 19-23 found them, through the API: dirty tiles (unlisted ones
+untouched), every sub-rectangle offset, both alpha results, textures
+texel-exact with all three address modes, the clock gate off and on;
+renders of plain tiles matched the prediction to the microsecond, a frame
+after the first cost one register write. **The 4 failures were depth:** the
+background didn't write depth, and "greater" failed wherever only it lay
+under a quad: **a tile's depth is not cleared by `0x6DC = 0`** (version
+23's background wrote depth, so it never showed). Fix: the background
+writes depth (z 0); the model now starts tiles' depth undefined while
+`0x6DC` bit 0 is clear, and a test guards it. Also: with real objects the
+render took longer than 16 us + 5.2 us a tile (a 10 x 10 block under one
+quad: 541-678 us), so the prediction adds ~1 us a quad a tile and the poll
+step is a sixteenth of it; run 2 logs the exact times to calibrate.
+
 **Open, found while modelling:** "less" never passed on the device, not
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.
