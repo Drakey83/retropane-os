@@ -131,10 +131,32 @@ sockets, card present). The PC Card timings belong to the CF timing brief
 
 These are identical to the values published for an X50v under WinCE (W).
 Note that **Dell runs the 2700G's memory at CL2 where Linux uses CL3**. So
-Dell was not uniformly conservative. The 2700G's memory clock depends on
-its core PLL (`COREPLL 0x038`), which no probe has read. Reading
-unproven 2700G registers has hung the bus before (docs/hw/2700g.md), so
-it stays an open question, and so do these values in nanoseconds.
+Dell was not uniformly conservative.
+
+**The 2700G's clock (found by the MBX 3D session, `rp-mbx3d` run 26).**
+`COREPLL 0xBB1` gives 13 MHz × 23 / 3 = **99.7 MHz**. Dell's default
+`CoreClock` literal is 133 MHz; the X51v's settings evidently pick ~100.
+Dell's display driver (`ddi_2700g`, `0x02120160`-`0x021201e8`) chooses
+the PXA-side bus timing for CS3 from that clock:
+
+| 2700G clock | CS3 timing |
+|---|---|
+| ≥ 99 MHz | `0x2484` / `0x2481` (today's `MSC1`) |
+| 25-99 MHz | `0x79D4` / `0x7DF1` |
+| < 25 MHz | `0x7DF4` / `0x7FF1` |
+
+So `MSC1` is a clock-dependent table, not one fixed choice. Dell gave the
+fastest tier the same timing up to 133 MHz.
+
+If the local memory runs on that clock (`MEMCLK 0x1`, likely, not
+proven), it runs at CL2 at 10 ns, with tRCD/tRP 30 ns. **Raising
+`COREPLL` towards 133 MHz (7.5 ns) puts CL2 out of spec for typical
+SDRAM**, which allows CL2 only up to ~100-105 MHz. The other timings stay
+comfortable: tRCD/tRP 22.5 ns, tRAS 52 ns, tRC 67 ns. Before any core
+clock rise, either Dell's driver must be shown to change `LMTYPE` per
+clock tier, or `LMTYPE` must be switched to CL3 (Linux's choice). Each
+step needs a 16 MiB pattern read-back (§7), because the failure is
+silent corruption of textures and buffers.
 
 ## 2. The physical chips
 
@@ -371,7 +393,7 @@ flash-boot design.
 
 1. The X51v's SDRAM chip markings (the owner can read them).
 2. The 2700G's minimum VLIO strobe times and RDY behaviour (measure: §7).
-3. The 2700G's core PLL (`COREPLL`) and so its local memory in ns.
+3. The 2700G's local-memory clock source (`MEMCLK`; the core PLL is 99.7 MHz), and whether Dell changes `LMTYPE` per clock tier.
 4. Whether the PXA270 C5 officially supports 624 MHz with `CCCR[A]` = 1
    (Intel specification update), for item 67.
 5. What is on CS1, CS2 and CS5, and whether partition 3 (`0xAC000000`)
