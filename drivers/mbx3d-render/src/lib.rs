@@ -96,6 +96,21 @@ pub const TEX2_OPAQUE: u32 = 0xD688_6610;
 /// 23: an ARGB4444 texture at alpha 8/15 blended exactly).
 pub const TEX2_ALPHA: u32 = 0x8608_4610;
 
+/// What the renderer redoes when the 3D clock comes back on (ADR-0026 D8,
+/// device test T9: whether the core keeps its state across the clock off
+/// is what `rp-mbx3d-api` stage S9 measures).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ClockPolicy {
+    /// A core reset and the memory manager's set-up (~4.5 ms; safe).
+    #[default]
+    SetUpAgain,
+    /// Every state register written again on the next frame (the memory
+    /// manager's set-up assumed kept).
+    RewriteRegisters,
+    /// Nothing (registers and set-up assumed kept).
+    KeepAll,
+}
+
 /// Time and waiting, in microseconds (any wrapping clock).
 pub trait Clock {
     /// Now.
@@ -658,6 +673,7 @@ pub struct Renderer {
     pending: Option<Pending>,
     mem_words: u32,
     resets: u32,
+    clock_policy: ClockPolicy,
 }
 
 impl Renderer {
@@ -718,6 +734,7 @@ impl Renderer {
             pending: None,
             mem_words: 0,
             resets: 0,
+            clock_policy: ClockPolicy::SetUpAgain,
         })
     }
 
@@ -744,6 +761,11 @@ impl Renderer {
     #[must_use]
     pub const fn core_resets(&self) -> u32 {
         self.resets
+    }
+
+    /// What to redo when the 3D clock comes back on ([`ClockPolicy`]).
+    pub fn set_clock_policy(&mut self, p: ClockPolicy) {
+        self.clock_policy = p;
     }
 
     /// Whether a render is in flight.
@@ -909,10 +931,12 @@ impl Renderer {
 
         let now = clock.now_us();
         if self.gate.work(bus, now) {
-            // Until device test T9 says the core keeps its set-up across
-            // the clock off, set it up again.
             clock.delay_us(1_000);
-            self.ready = false;
+            match self.clock_policy {
+                ClockPolicy::SetUpAgain => self.ready = false,
+                ClockPolicy::RewriteRegisters => self.shadow.forget(),
+                ClockPolicy::KeepAll => {}
+            }
         }
         if !self.ready {
             self.bring_up(bus, mem, clock)?;
