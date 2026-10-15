@@ -380,6 +380,14 @@ name = "rp-kernel-trace"
 version = "0.0.0"
 
 [[package]]
+name = "rp-legacysync"
+version = "0.0.0"
+dependencies = [
+ "rp-cab",
+ "rp-ce-setup",
+]
+
+[[package]]
 name = "rp-light"
 version = "0.0.0"
 dependencies = [
