@@ -135,9 +135,16 @@ when it goes in (or was in at start-up), as the SD card is, read-only until
 `drive rw` (as the SD card), and back to empty when GPIO13 says the card
 left. Windows shows it as a second removable drive. `cf` reports an
 attached card without taking it again (and without a medium change, which
-would make Windows remount it). A card that fails to attach or stops
-answering stays idle until it is re-inserted or `cf` is sent: never an
-automatic retry loop, which would power-cycle a broken card forever.
+would make Windows remount it). A card in the slot at start-up is attached
+before the USB pull-up goes on (2026-10-15), so the PC's first question
+finds it ready, as the SD card: attached later in the loop, it was "no
+medium" while Windows enumerated, then away for seconds, and the attach
+stalled the PC's requests meanwhile; Explorer drew a bare "USB Drive (J:)"
+with no size, or the label with a broken icon for minutes. A card that
+fails to attach or stops answering is taken again once on its own (one
+retry per insertion, a second later), then stays idle until it is
+re-inserted or `cf` is sent: never a retry loop, which would power-cycle a
+broken card forever.
 
 Taking the card (2026-10-12, item 62): the loader power-cycles the slot
 (steps 1-2 above), then `CfCard::init` holds RESET (CPLD `0x18` bit 1)
