@@ -152,6 +152,8 @@ mod image {
         );
         // Samples recorded into the run log so far (see RECORD).
         let mut recorded = 0u32;
+        // The pen interrupt fired since the pen was last up.
+        let mut irq_seen = false;
         // Until the align screen runs: the rough default from the owner's
         // first taps (no settings store yet to keep a better one).
         let mut cal = Calibration::X51V_DEFAULT;
@@ -233,15 +235,8 @@ mod image {
             let raw = traced.map(|(s, _)| s);
             if raw.is_some() && !filter.down() {
                 landed_ticks = Some(read_at);
-                // Which found this touch: the pen interrupt, or the idle
-                // check of the line (diagnostics: touch went dead after a
-                // hold on the device, as if the interrupt were missed).
-                if pen_event {
-                    found_by_irq += 1;
-                } else {
-                    found_by_poll += 1;
-                }
             }
+            irq_seen |= pen_event;
             // Whether a touch was in progress before this sample: its end
             // is recorded even when nothing was reported.
             let was_down = filter.down();
@@ -253,6 +248,22 @@ mod image {
                 }),
                 (now_ms & 0xFFFF_FFFF) as u32,
             );
+            // Which found this touch: the pen interrupt, or the idle check
+            // of the line (diagnostics: touch went dead after a hold on the
+            // device, as if the interrupt were missed). Counted once a
+            // touch, when it lands (2026-10-14: counted per sample before
+            // the landing, the light-pressure samples of 39 touches read as
+            // 382 touches found).
+            if !was_down && filter.down() {
+                if irq_seen {
+                    found_by_irq += 1;
+                } else {
+                    found_by_poll += 1;
+                }
+            }
+            if raw.is_none() {
+                irq_seen = false;
+            }
             let map = |x: u16, y: u16| cal.to_screen(x, y, (W as u16, H as u16));
             // The recorder (2026-10-13): every sample while the pen is down,
             // with the filter's verdict, into the run log, so the filter is

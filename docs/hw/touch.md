@@ -164,6 +164,30 @@ the two alignments rebuilt the background 27 times (run 4: once).
 Next: the sliding landings, and faster samples (both need a recording
 at the new rate first).
 
+**Faster samples, recorded (P, 2026-10-14, log
+`local/rp-today-touch-fast.txt`).** 1 ms sleeps while the pen is down,
+each sample also logging X as settled 16/32/64/128 conversions and Y 16.
+The owner: "working really well". The log (39 touches, 2 drags, no
+alignment):
+
+- Samples every **7 ms** (median; p10 6, p90 8).
+- Landing to verdict median **7 ms** (worst 27): 25 of 36 taps pressed on
+  the second sample. Touch to flush median **20.4 ms** (worst 63; run 4
+  35.5).
+- No tap pressed more than 20 px from where it was released (only the two
+  drags).
+- **X settled 16 conversions is as steady as 256**: sample to sample
+  while held (586 pairs), X's change median 5 raw, p90 14 at 256; 5 and
+  13 at 16; 5 and 14 at 32. Y at 16 as at 32 (2 and 12). The early value
+  differs from the kept one by more (p99 120-300 raw) only while the
+  stylus moves within the sample. The 64-conversion build that was
+  "much worse" on 2026-10-13 changed two things at once, with the filter of
+  then. A sample could be ~1/3 of today's conversions (X 32 + 8 instead of
+  256 + 8): ~2 ms instead of ~6.
+- The run's "touches found by the interrupt 376" counted samples, not
+  touches (282 light-pressure samples before landings); now counted once
+  a touch.
+
 **The recorder's gap (fixed 2026-10-14).** A sample with no pressure was
 logged only when it ended a reported touch, so a touch that lifted before
 its press ran on into the next one in the log. `rp-today` now logs the
