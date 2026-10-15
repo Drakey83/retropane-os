@@ -17,7 +17,11 @@
  * copy is due) while a slice is copied, 50 ms after, for the core to finish
  * what it has.
  *
- * Version 3 (2026-10-14). Version 1 copied into RAM first: with the game
+ * Version 4 (2026-10-14): version 3's process list came back empty
+ * (now without heap lists, errors logged), so the window in front is used
+ * too when its title says Doom.
+ *
+ * Version 3. Version 1 copied into RAM first: with the game
  * running there were no 16 MiB to be had (4 MiB free), so nothing was
  * copied; and it drew on its window when done, and the game froze there
  * (music still playing; a soft reset): nothing is drawn after the start
@@ -119,11 +123,17 @@ static DWORD find_game(void)
 {
     PROCESSENTRY32 pe;
     DWORD game = 0;
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE)
+    /* No heap lists: version 3's snapshot came back empty with the game
+     * running (3-9 MiB of RAM free). */
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | 0x40000000 /* NOHEAPS */, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        out("# processes: snapshot error %lu", (unsigned long)GetLastError());
         return 0;
+    }
     pe.dwSize = sizeof pe;
-    if (Process32First(snap, &pe)) {
+    if (!Process32First(snap, &pe))
+        out("# processes: Process32First error %lu", (unsigned long)GetLastError());
+    else {
         do {
             char name[MAX_PATH];
             int i;
@@ -193,10 +203,34 @@ static void capture(int k, volatile unsigned long *mem, volatile unsigned long *
         GetWindowThreadProcessId(fg, &pid);
     out("# capture %d: in front: window %08lx, process %08lx; free RAM %lu KiB", k,
         (unsigned long)fg, (unsigned long)pid, (unsigned long)(ms.dwAvailPhys >> 10));
-    pid = find_game();
+    {
+        /* The window in front named (title and class, ASCII): no drawing. */
+        WCHAR t[64], c[64];
+        char tn[64], cn[64];
+        int i;
+        t[0] = c[0] = 0;
+        if (fg) {
+            GetWindowTextW(fg, t, 64);
+            GetClassNameW(fg, c, 64);
+        }
+        for (i = 0; i < 63 && t[i]; i++)
+            tn[i] = t[i] >= 'A' && t[i] <= 'Z' ? (char)(t[i] + 32) : t[i] < 128 ? (char)t[i] : '?';
+        tn[i] = 0;
+        for (i = 0; i < 63 && c[i]; i++)
+            cn[i] = c[i] < 128 ? (char)c[i] : '?';
+        cn[i] = 0;
+        out("# capture %d: in front: title \"%s\", class \"%s\"", k, tn, cn);
+        {
+            DWORD named = find_game();
+            if (named)
+                pid = named;
+            else if (!strstr(tn, "doom"))
+                pid = 0;
+        }
+    }
     out("# capture %d: the game: process %08lx", k, (unsigned long)pid);
     if (!pid || pid == mine) {
-        out("# capture %d: no program named *doom* running: nothing copied", k);
+        out("# capture %d: no program or window named *doom*: nothing copied", k);
         return;
     }
     while (slice >= (256UL << 10) &&
