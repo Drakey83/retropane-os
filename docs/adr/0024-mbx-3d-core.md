@@ -331,6 +331,21 @@ report; device runs only with the owner's go.
    tries that draw's words with the full-screen clip, the game's words
    with it, and the game's TSP with Dell's texture words.
 
+   **Version 17 on the device (2026-10-15, `local/rp-mbx3d-run17.txt`):
+   the first textured triangle.** With the GLES driver's own draw's words
+   (TSP `0x22220E80`, ISP `0xE0000000`, TEX `0xA8800000` / `0x0E000000 |
+   address / 128` / `0xD6886610`, full-screen clip), the TA took the
+   triangle and the 3D stage drew it textured: inside it `0xFFFFFFFF`,
+   `0xFF73184A`, `0xFF000000` at three points (the texel ramp decoded by
+   an unknown format), outside 0; the render took 15 ms (9.6 empty). With
+   the game's TSP `0x22640200`, with the game's texture words or Dell's,
+   nothing reached a tile. So **the TSP word decides**: `0x22640200` (the
+   word in the game's parameter memory, which versions 7-13 used in every
+   hand-written textured object) is not what the TA takes or the 3D stage
+   draws in our set-up. Next: the TA's textured object word for word (the
+   right region entry this time), and a sweep of TEX0's format field
+   against the texel ramp.
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.
