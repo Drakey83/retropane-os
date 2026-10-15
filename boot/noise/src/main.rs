@@ -5,12 +5,14 @@
 //! 1. **Clocks**: `OSCC` (is the 32.768 kHz oscillator its own crystal,
 //!    on and stable?), `CCCR`/`CCSR`/`CLKCFG`, and the core clock measured
 //!    with the cycle counter against the 3.25 MHz OS timer.
-//! 2. **A, two-crystal jitter**: 1,000,000 samples of the core cycles
-//!    between one 32.768 kHz tick and the next (an OS timer channel on the
-//!    slow oscillator, the XScale's `CCNT`; how to start a channel on the
-//!    32 kHz clock is found first, each way tried for 2 ms and logged).
-//!    Its first 1,000 low bytes are appended to `noise-r.bin` as one row of SP 800-90B's restart test
-//!    (each run one row, up to 1,000).
+//! 2. **A, two-crystal jitter**: the core cycles between 32.768 kHz ticks
+//!    of an OS timer channel, each tick taken as an interrupt and
+//!    timestamped on entry (`CCNT`): 1,000,000 every tick, 100,000 one tick
+//!    in 16 (how to start a channel on the 32 kHz clock is found first,
+//!    each way tried for 2 ms and logged). The first 1,000 low bytes of
+//!    each run are appended to `noise-ri.bin` as one row of SP 800-90B's
+//!    restart test (up to 1,000 rows). With `noise-quick.txt` on the card
+//!    the run does only that row (a few seconds), for the restarts.
 //! 3. **B, one-clock jitter**: 1,000,000 timings (cycles) of 64 reads that
 //!    all miss the data cache (one cache set, 64 lines for 32 ways), so
 //!    each goes to SDRAM.
@@ -363,6 +365,15 @@ mod image {
         let (fat, rest) = rest.split_at_mut(WALK_AT - FAT_AT);
         let (walk, rest) = rest.split_at_mut(WALK_BYTES);
         let restart = rest;
+        // Quick mode (`noise-quick.txt` on the card, put there with `cargo
+        // xtask put`): only this start's restart-test row, a few seconds a
+        // run, for the 1,000 restarts SP 800-90B's restart test needs.
+        let quick = card.as_mut().is_some_and(|sd| {
+            mount(sd).is_ok_and(|mut v| v.read_back("noise-quick.txt", fat, &mut |_| {}).is_ok())
+        });
+        if quick {
+            let _ = writeln!(out, "quick mode (noise-quick.txt): the restart row only");
+        }
 
         // 2. A: two-crystal jitter. First find how a channel counts the
         // 32 kHz oscillator on the X51v: runs 1 and 2 set channel 5 as the
@@ -439,6 +450,10 @@ mod image {
                 ),
             ];
             for (k, n, name, file) in tries {
+                if quick && k != 1 {
+                    continue;
+                }
+                let n = if quick { super::RESTART_ROW } else { n };
                 let series = &mut samples[..n];
                 let start = rt::ticks();
                 let missed = sample_ticks(&mut ost, &mut line, ch, k, series);
@@ -448,7 +463,9 @@ mod image {
                 let sum = stats::summarise(series, 0xFF, hist);
                 report(&mut out, name, &sum, took, "low byte");
                 let _ = writeln!(out, "  ticks missed and resynchronised: {missed}");
-                save(&mut out, card.as_mut(), file, series, fat);
+                if !quick {
+                    save(&mut out, card.as_mut(), file, series, fat);
+                }
                 if k == 1 {
                     save_restart_row(&mut out, card.as_mut(), series, restart, fat);
                 }
@@ -464,77 +481,79 @@ mod image {
         }
         ost.stop_all();
 
-        // 3. B: one-clock jitter, 64 reads that all miss the cache. The
-        // D-cache is 32 KiB, 32 ways of 32-byte lines: 32 sets, so a 1 KiB
-        // stride lands every read in one set, and 64 lines evict each other.
-        let start = rt::ticks();
-        let mut sink = 0u32;
-        for (i, s) in samples.iter_mut().enumerate() {
-            let c0 = rt::cycles();
-            for k in 0..64 {
-                sink = sink.wrapping_add(rp_hal_mem::load32_volatile(walk, k * 1024).unwrap_or(0));
-            }
-            *s = rt::cycles().wrapping_sub(c0) as u16;
-            if i % CHECK_IN == 0 {
-                rt::check_in();
-            }
-        }
-        let took = rt::ticks().wrapping_sub(start);
-        let sum = stats::summarise(samples, 0xFF, hist);
-        report(
-            &mut out,
-            "B one-clock (cycles for 64 SDRAM reads)",
-            &sum,
-            took,
-            "low byte",
-        );
-        let _ = writeln!(RunLog, "  (sink {sink:#x})");
-        save(&mut out, card.as_mut(), "noise-b.bin", samples, fat);
-
-        // 4. T: the TSC2046's single-ended inputs.
-        let (Some(gpio), Some(ssp)) = (rt::take_gpio(), rt::take_ssp1()) else {
-            crash(format_args!("no GPIO or SSP"))
-        };
-        let gpio = RefCell::new(Gpio::new(gpio));
-        // As rp-today: Windows Mobile leaves GPIO24 as SSP1's frame signal
-        // (docs/hw/touch.md); level and direction first, then a plain GPIO.
-        gpio.borrow_mut().make_output(TS_CS, true);
-        gpio.borrow_mut().set_function(TS_CS, 0);
-        gpio.borrow_mut().make_input(TS_PENIRQ);
-        let mut ssp = Ssp::new(ssp);
-        ssp.configure_spi(2_600_000);
-        let mut touch = Tsc2046::new(
-            ssp,
-            GpioPin::new(&gpio, TS_CS),
-            GpioPin::new(&gpio, TS_PENIRQ),
-        );
-        for (ch, name, file) in [
-            (single::TEMP0, "T TEMP0", "noise-t0.bin"),
-            (single::VBAT, "T VBAT", "noise-vb.bin"),
-            (single::AUX, "T AUX", "noise-ax.bin"),
-            (single::TEMP1, "T TEMP1", "noise-t1.bin"),
-        ] {
-            // Let the reference and the input settle first.
-            for _ in 0..64 {
-                touch.read_single(ch);
-            }
+        if !quick {
+            // 3. B: one-clock jitter, 64 reads that all miss the cache. The
+            // D-cache is 32 KiB, 32 ways of 32-byte lines: 32 sets, so a 1 KiB
+            // stride lands every read in one set, and 64 lines evict each other.
             let start = rt::ticks();
+            let mut sink = 0u32;
             for (i, s) in samples.iter_mut().enumerate() {
-                *s = touch.read_single(ch);
+                let c0 = rt::cycles();
+                for k in 0..64 {
+                    sink =
+                        sink.wrapping_add(rp_hal_mem::load32_volatile(walk, k * 1024).unwrap_or(0));
+                }
+                *s = rt::cycles().wrapping_sub(c0) as u16;
                 if i % CHECK_IN == 0 {
                     rt::check_in();
                 }
             }
             let took = rt::ticks().wrapping_sub(start);
-            let sum = stats::summarise(samples, 0xFFF, hist);
-            report(&mut out, name, &sum, took, "12-bit value");
-            save(&mut out, card.as_mut(), file, samples, fat);
-        }
-        // A last differential conversion powers the converter down and
-        // re-arms the pen interrupt, as the touch driver leaves it.
-        touch.read(channel::Y);
+            let sum = stats::summarise(samples, 0xFF, hist);
+            report(
+                &mut out,
+                "B one-clock (cycles for 64 SDRAM reads)",
+                &sum,
+                took,
+                "low byte",
+            );
+            let _ = writeln!(RunLog, "  (sink {sink:#x})");
+            save(&mut out, card.as_mut(), "noise-b.bin", samples, fat);
 
-        if let Some(sd) = card.as_mut() {
+            // 4. T: the TSC2046's single-ended inputs.
+            let (Some(gpio), Some(ssp)) = (rt::take_gpio(), rt::take_ssp1()) else {
+                crash(format_args!("no GPIO or SSP"))
+            };
+            let gpio = RefCell::new(Gpio::new(gpio));
+            // As rp-today: Windows Mobile leaves GPIO24 as SSP1's frame signal
+            // (docs/hw/touch.md); level and direction first, then a plain GPIO.
+            gpio.borrow_mut().make_output(TS_CS, true);
+            gpio.borrow_mut().set_function(TS_CS, 0);
+            gpio.borrow_mut().make_input(TS_PENIRQ);
+            let mut ssp = Ssp::new(ssp);
+            ssp.configure_spi(2_600_000);
+            let mut touch = Tsc2046::new(
+                ssp,
+                GpioPin::new(&gpio, TS_CS),
+                GpioPin::new(&gpio, TS_PENIRQ),
+            );
+            for (ch, name, file) in [
+                (single::TEMP0, "T TEMP0", "noise-t0.bin"),
+                (single::VBAT, "T VBAT", "noise-vb.bin"),
+                (single::AUX, "T AUX", "noise-ax.bin"),
+                (single::TEMP1, "T TEMP1", "noise-t1.bin"),
+            ] {
+                // Let the reference and the input settle first.
+                for _ in 0..64 {
+                    touch.read_single(ch);
+                }
+                let start = rt::ticks();
+                for (i, s) in samples.iter_mut().enumerate() {
+                    *s = touch.read_single(ch);
+                    if i % CHECK_IN == 0 {
+                        rt::check_in();
+                    }
+                }
+                let took = rt::ticks().wrapping_sub(start);
+                let sum = stats::summarise(samples, 0xFFF, hist);
+                report(&mut out, name, &sum, took, "12-bit value");
+                save(&mut out, card.as_mut(), file, samples, fat);
+            }
+            // A last differential conversion powers the converter down and
+            // re-arms the pen interrupt, as the touch driver leaves it.
+            touch.read(channel::Y);
+        }
+        if let Some(sd) = card.as_mut().filter(|_| !quick) {
             let text = &out.buf[..out.len];
             let ok = mount(sd).and_then(|mut v| v.put("noise.txt", text, fat).map_err(|_| "write"));
             let _ = writeln!(RunLog, "noise.txt: {}", ok.map_or_else(|e| e, |_| "saved"));
@@ -679,7 +698,7 @@ mod image {
     }
 
     /// Appends this run's first [`RESTART_ROW`] samples of A (low bytes) to
-    /// `noise-r.bin`, the restart test's rows, up to [`RESTART_ROWS`].
+    /// `noise-ri.bin`, the restart test's rows, up to [`RESTART_ROWS`].
     fn save_restart_row(
         out: &mut Text<'_>,
         sd: Option<&mut Sd>,
@@ -691,7 +710,7 @@ mod image {
         let Ok(mut vol) = mount(sd) else { return };
         let mut have = 0usize;
         let mut fits = true;
-        let _ = vol.read_back("noise-r.bin", fat, &mut |piece| {
+        let _ = vol.read_back("noise-ri.bin", fat, &mut |piece| {
             let end = have + piece.len();
             if end <= rows.len() {
                 rows[have..end].copy_from_slice(piece);
@@ -703,17 +722,17 @@ mod image {
         // Only whole rows count (a file cut short by hand loses its tail).
         have -= have % RESTART_ROW;
         if !fits || have >= rows.len() {
-            let _ = writeln!(out, "  noise-r.bin: full ({RESTART_ROWS} rows): not added");
+            let _ = writeln!(out, "  noise-ri.bin: full ({RESTART_ROWS} rows): not added");
             return;
         }
         for (d, s) in rows[have..have + RESTART_ROW].iter_mut().zip(a) {
             *d = *s as u8;
         }
         have += RESTART_ROW;
-        let ok = vol.put("noise-r.bin", &rows[..have], fat);
+        let ok = vol.put("noise-ri.bin", &rows[..have], fat);
         let _ = writeln!(
             out,
-            "  noise-r.bin: {}",
+            "  noise-ri.bin: {}",
             if ok.is_ok() {
                 "row added"
             } else {

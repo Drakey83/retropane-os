@@ -1379,7 +1379,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         total_sectors: 64 * 1024,
         sectors_per_cluster: 8,
         files: &[rp_fat::format::Entry {
-            name: "noise-r.bin",
+            name: "noise-ri.bin",
             data: &earlier,
         }],
         blocked_clusters: &[],
@@ -1423,7 +1423,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "T VBAT: 1000000 samples",
         "T AUX: 1000000 samples",
         "T TEMP1: 1000000 samples",
-        "noise-r.bin: row added",
+        "noise-ri.bin: row added",
         "restart rows: 3 of 1000",
         "noise.txt: saved",
         "RETROPANE-NOISE: done",
@@ -1456,10 +1456,10 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    let rows = card_file(&sd, "noise-r.bin")?;
+    let rows = card_file(&sd, "noise-ri.bin")?;
     if rows.len() != 3000 || rows[..2000] != earlier[..] {
         return Err(format!(
-            "noise: noise-r.bin is {} bytes, want the 2 earlier rows kept and 1 added",
+            "noise: noise-ri.bin is {} bytes, want the 2 earlier rows kept and 1 added",
             rows.len()
         ));
     }
@@ -1467,8 +1467,66 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
     if !String::from_utf8_lossy(&text).contains("MCV min-entropy") {
         return Err("noise: noise.txt has no summaries".into());
     }
+    // Quick mode: with `noise-quick.txt` on the card, only the restart row.
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[
+            rp_fat::format::Entry {
+                name: "noise-quick.txt",
+                data: b"restart rows only",
+            },
+            rp_fat::format::Entry {
+                name: "noise-ri.bin",
+                data: &earlier[..1000],
+            },
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-NOISE: done")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("noise quick: never came back to the loader")?;
+    for want in [
+        "quick mode (noise-quick.txt)",
+        "noise-ri.bin: row added",
+        "restart rows: 2 of 1000",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("noise quick: the run log has no `{want}`:{log}"));
+        }
+    }
+    if log.contains("B one-clock") || log.contains("FAULT") || log.contains("PANIC") {
+        return Err(format!(
+            "noise quick: did more than the restart row, or crashed:{log}"
+        ));
+    }
+    let rows = card_file(&sd, "noise-ri.bin")?;
+    if rows.len() != 2000 || rows[..1000] != earlier[..1000] {
+        return Err(format!(
+            "noise quick: noise-ri.bin is {} bytes, want 2,000",
+            rows.len()
+        ));
+    }
     eprintln!(
-        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, restart row appended, back at the loader (timing in the emulator is the PC's: plumbing only)"
+        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, restart row appended, quick mode adds only its row, back at the loader (timing in the emulator is the PC's: plumbing only)"
     );
     Ok(())
 }
