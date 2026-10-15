@@ -474,7 +474,15 @@ impl Obj {
                     };
                     let u = w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u;
                     let vv = w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v;
-                    src = modulate(sample(m, tw, u, vv), src);
+                    // TEX2 bit 13 (Dell's opaque combine word) makes the
+                    // texel's alpha 1 (version 23: texture alpha blended
+                    // only with it clear; version 24: a 32-bit texel at
+                    // alpha 0x80 and a black PVRTC block drew alpha 0xFF).
+                    let mut t = sample(m, tw, u, vv);
+                    if tw[2] & (1 << 13) != 0 {
+                        t |= 0xFF00_0000;
+                    }
+                    src = modulate(t, src);
                 }
                 t.c[k] = blend(self.tsp, src, t.c[k]);
                 if self.tsp & (1 << 7) == 0 {
