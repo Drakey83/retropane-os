@@ -48,6 +48,19 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "xtask: two emulator runs given the same ports",
+        file: "xtask/src/devlock.rs",
+        from: "        if file.try_lock().is_ok() && (start..start + len).all(is_free) {
+",
+        to: "        if (start..start + len).all(is_free) {
+",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "concurrent_emulator_runs_get_their_own_ports",
+        ]),
+    },
+    Mutant {
         name: "xtask: a port script run without the Axim lock (two runs overlapped)",
         file: "xtask/src/usb.rs",
         from: "    crate::devlock::ensure_held()?;
