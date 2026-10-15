@@ -277,8 +277,32 @@ pub const MUTANTS: &[Mutant] = &[
         to: "            self.powered = false;",
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
+    Mutant {
+        name: "cab: a DEFLATE match reaching before the window is followed",
+        file: "personality/ce/cab/src/inflate.rs",
+        from: "            if distance > *pos || *pos + len > end {",
+        to: "            if *pos + len > end {",
+        check: Check::Host(&[
+            "-p",
+            "rp-cab",
+            "a_match_into_the_history_works_and_before_it_fails",
+        ]),
+    },
+    Mutant {
+        name: "cab: data block checksums ignored",
+        file: "personality/ce/cab/src/lib.rs",
+        from: "            if csum != 0 && checksum(&h[4..8], checksum(data, 0)) != csum {",
+        to: "            if csum != 0 && checksum(&h[4..8], checksum(data, 0)) != csum && false {",
+        check: Check::Host(&["-p", "rp-cab", "a_changed_byte_fails_the_checksum"]),
+    },
+    Mutant {
+        name: "cab: a file running past its folder's end accepted short",
+        file: "personality/ce/cab/src/lib.rs",
+        from: "        if done < end { Err(Error::Truncated) } else { Ok(()) }",
+        to: "        Ok(())",
+        check: Check::Host(&["-p", "rp-cab", "a_file_past_its_folder_end_is_truncated"]),
+    },
 ];
-
 /// Puts a file back when dropped.
 struct Restore {
     path: PathBuf,

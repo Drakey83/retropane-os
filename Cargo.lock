@@ -92,6 +92,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-cab"
+version = "0.0.0"
+
+[[package]]
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [
