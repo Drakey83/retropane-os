@@ -131,6 +131,10 @@ struct Unit {
     away: Option<Option<u32>>,
     /// "No medium" answers the host has had while away.
     away_seen: u8,
+    /// The host's last medium-dependent command found a medium: it may
+    /// have cached the volume. If not (it saw the unit empty, or never
+    /// asked), a change needs no away time: the host has nothing to drop.
+    shown: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -276,14 +280,22 @@ impl<'b> Msc<'b> {
     /// [`AWAY_MIN_MS`], or [`AWAY_MAX_MS`] with no host looking), then
     /// comes back with a unit attention, so the host drops everything it
     /// cached and re-reads the volume. A unit attention alone isn't enough
-    /// for Windows. Also offers an ejected medium again.
+    /// for Windows. A unit the host last saw empty (or never asked about)
+    /// skips the away time: it has nothing cached, so the medium is
+    /// offered at once with the unit attention (a card inserted, or one
+    /// attached after the host enumerated, shows up without seconds of
+    /// "no medium"). Also offers an ejected medium again.
     pub fn medium_changed(&mut self, lun: usize) {
         self.ahead = None;
         if let Some(u) = self.units.get_mut(lun) {
-            u.attention = false;
             u.ejected = false;
-            u.away = Some(None);
             u.away_seen = 0;
+            if u.shown || u.away.is_some() {
+                u.attention = false;
+                u.away = Some(None);
+            } else {
+                u.attention = true;
+            }
         }
     }
 
@@ -441,6 +453,7 @@ impl<'b> Msc<'b> {
             return;
         }
         let present = !unit.ejected && unit.away.is_none() && luns[self.lun].present();
+        self.units[self.lun].shown = present;
         let blocks = luns[self.lun].blocks();
         let read_only = luns[self.lun].read_only();
         match op {

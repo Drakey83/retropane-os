@@ -1030,6 +1030,12 @@ mod image {
         /// off yet. Power Windows Mobile left on with no card in isn't
         /// switched off: the socket is touched only when a card is in.
         powered: bool,
+        /// One automatic retry left for this insertion: a card that failed
+        /// to attach or stopped answering is taken again once (a passing
+        /// hiccup no longer leaves the PC an empty drive until someone
+        /// re-inserts it); after that it waits for re-insertion or `cf`,
+        /// never a retry loop.
+        retry: bool,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -1082,6 +1088,7 @@ mod image {
                 return false;
             }
             self.inserted = now;
+            self.retry = now;
             self.changes = self.changes.saturating_add(1);
             if !now {
                 self.release("removed");
@@ -1789,6 +1796,31 @@ mod image {
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();
         lun.dirty_found = lun.dirty_flag();
+        // The CF card too, before the pull-up (the owner's flaky "USB Drive
+        // (J:)" with no size, 2026-10-15): attached later in the loop, it
+        // was "no medium" when the PC enumerated, then away for seconds,
+        // and the attach stalled the PC's requests meanwhile; Explorer drew
+        // the drive empty and its icon only minutes later. Now the PC finds
+        // it ready from its first question, as the SD card.
+        let cf_in = !gpio.read(CF_DETECT);
+        let mut cf = CfLun {
+            slot: CfSlot::Untried,
+            inserted: cf_in,
+            seen: cf_in,
+            writable: false,
+            changes: 0,
+            ready: gpio.read(CF_READY),
+            events: CfEvents {
+                at: [(0, 0); 12],
+                len: 0,
+            },
+            powered: false,
+            retry: cf_in,
+        };
+        cf.events.push(if cf.ready { b'1' } else { b'0' });
+        if cf_in {
+            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+        }
 
         let Some((regs, vram)) = devices::take_mbx() else {
             halt()
@@ -1898,20 +1930,6 @@ mod image {
             plugged: gpio.read(HP_DETECT),
             seen: gpio.read(HP_DETECT),
         };
-        let mut cf = CfLun {
-            slot: CfSlot::Untried,
-            inserted: false,
-            seen: false,
-            writable: false,
-            changes: 0,
-            ready: gpio.read(CF_READY),
-            events: CfEvents {
-                at: [(0, 0); 12],
-                len: 0,
-            },
-            powered: false,
-        };
-        cf.events.push(if cf.ready { b'1' } else { b'0' });
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
         // Layout fallback: if the PC keeps trying (bus resets) but never
@@ -2414,6 +2432,25 @@ mod image {
                         (CfSlot::Card(_), true) => "in: attached",
                         (CfSlot::Idle(_, _, why), true) => why,
                         _ => "in: socket unavailable",
+                    }
+                );
+            }
+            // A card that is in but not attached (failed, or dropped as
+            // dead) is taken again, once per insertion.
+            if rt::ticks().wrapping_sub(last) >= TICK_1S
+                && cf.inserted
+                && matches!(cf.slot, CfSlot::Idle(..))
+                && core::mem::take(&mut cf.retry)
+            {
+                cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+                msc.medium_changed(1);
+                let _ = writeln!(
+                    log,
+                    "CF card retried: {}",
+                    match &cf.slot {
+                        CfSlot::Card(_) => "attached",
+                        CfSlot::Idle(_, _, why) => why,
+                        _ => "socket unavailable",
                     }
                 );
             }
