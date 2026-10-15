@@ -1,7 +1,8 @@
 # ADR-0029: The device's random number generator
 
-- **Status:** Proposed, for the owner's vote (decisions R1-R7). Nothing is
-  built and nothing runs on the Axim until the owner says go.
+- **Status:** Accepted (2026-10-15, by the owner: R1-R7 as recommended:
+  "Accept ADR-0029 R1-R7 as recommended"). Nothing is built yet, and
+  nothing runs on the Axim until the owner says go.
 - **Date:** 2026-10-15
 - **Gates:** the device side of LegacySync's link (docs/legacysync/device-link.md
   K2, accepted 2026-10-15), and later Wi-Fi (WPA3-SAE), TLS 1.3 and the
@@ -66,7 +67,7 @@ The plan, in one line each:
   never refused for lacking modern features; design for 64 MB and the
   flash install; measure, don't assume; emulator tracks the device.
 
-## Decisions (for the owner's vote)
+## Decisions (accepted 2026-10-15)
 
 Each decision has a recommendation in bold. "Credit" means: counts towards
 the 256 bits needed before keys can be made. "Mixed only" means: stirred
@@ -236,8 +237,8 @@ the pool worse, because mixing only adds).
   under a development-only build flag that `cargo xtask lint` refuses in
   release images, like the other development exposures in security.md.
 
-Proposed vote: **R1 sources as in the table, R2 A, R3 A, R4 B, R5 as in
-the table, R6 A, R7 as above.**
+**Accepted by the owner, 2026-10-15: R1 sources as in the table, R2 A,
+R3 A, R4 B, R5 as in the table, R6 A, R7 as above.**
 
 ## How it will be measured
 
