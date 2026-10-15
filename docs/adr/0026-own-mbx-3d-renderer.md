@@ -111,6 +111,17 @@ Fallback if T2 fails: a one-shot timer at the expected finish (render time
 is predictable: tiles x per-tile cost), as the 2D renderer does for the
 2D engine (ADR-0022 decision 7).
 
+**T2 on the device (2026-10-15, `rp-mbx3d` version 20,
+`local/rp-mbx3d-run20.txt`): no edge.** With status bit 2 enabled in
+`0x130`, `MINTENABLE` `0x800F` (WM's) and display events off, a
+full-screen render set bit 2 at 12,484 us and GPIO85 never edged (nor in
+the control without the enable, nor when the bit was cleared). So the
+renderer uses the fallback: render time is predictable (T1: ~16 us plus
+~5.2 us a tile), so it sleeps until the expected finish, then reads the
+status once. Still open, by static reading first: which other enable
+routes the 3D core to the line (`SINTENABLE` `0x20` / `SINTSTAT` `0x24`,
+layout unknown; how Dell's interrupt thread is wired for SYSINTR 27).
+
 ### D4. State written once
 
 **Recommended.** The renderer keeps a copy of every 3D register it has
@@ -125,6 +136,14 @@ address, the parameter base and the start: 3 writes, where Dell writes
 | Cost | an engine copy per frame (~9 ms full screen at 32 bpp) | none |
 | Mixing with 2D | in the copy | the 2D renderer and the 3D core take turns on the same picture (one queue in the graphics service) |
 | Unknown | none | the 3D core's target stride and offset set to a sub-rectangle (`0x660`, `0x65C`): test T3 |
+
+**T3 on the device (2026-10-15, version 20): passed, D5 is no longer
+gated.** The target `0x65C` moved inside the picture with the stride
+kept: a 4 x 4 tile block (32 x 64 px) landed exactly at (0,0), (0,100),
+(64,100), (8,100) and even (1,100), a 4-byte offset; edges exact (the
+next pixel right and below grey), the picture's origin untouched. Each
+render ~92-96 us for 16 tiles. So the 3D core draws straight into any
+rectangle of the screen picture, no copy.
 
 ### D6. One GPU owner
 
@@ -161,8 +180,8 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | Test | Question | Decides |
 |---|---|---|
 | T1 | A region array listing only some tiles: are the rest left untouched? Render time vs tiles listed | D2: **passed** (version 19: untouched; 5.2 us a tile) |
-| T2 | Do status bits 2 and 4 raise GPIO85? | D3 (version 20 tries bit 2) |
-| T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5 (version 20: row, 256-, 32- and 4-byte offsets) |
+| T2 | Do status bits 2 and 4 raise GPIO85? | D3: **no, as tried** (version 20: bit 2 enabled in `0x130`, `MINTENABLE` `0x800F`: 0 edges); timer fallback |
+| T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5: **passed** (version 20: any pixel offset, even 4 bytes) |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
 | T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D |
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality |
