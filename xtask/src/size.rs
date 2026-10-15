@@ -373,12 +373,22 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
-    // Test image (docs/research/cf-timing.md): the CF socket's timings,
+    // Test image (docs/research/storage-speed.md): the CF socket's timings,
     // the card's CIS and IDENTIFY, five read paths timed; report only.
     // 32.8 KiB measured (2026-10-15), + ~10%.
     Budget {
         image: "rp-cftime",
         max_load: 37 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Test image (docs/research/storage-speed.md): the SD card's registers
+    // and speeds by size, DMA, pre-erase, clock code and FAT layer. 74.7
+    // KiB measured (2026-10-15, most of it the FAT layer, which also makes
+    // the test file), + ~10%.
+    Budget {
+        image: "rp-sdtime",
+        max_load: 82 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

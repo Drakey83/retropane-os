@@ -1,6 +1,6 @@
 [package]
 name = "rp-cftime"
-description = "Report-only test image (docs/research/cf-timing.md): the CompactFlash socket's timings as set, the card's CIS and ATA IDENTIFY, the bus cycle measured, and four read paths timed and compared; nothing written to the card's media"
+description = "Report-only test image (docs/research/storage-speed.md): the CompactFlash socket's timings as set, the card's CIS and ATA IDENTIFY, the bus cycle measured, and four read paths timed and compared; nothing written to the card's media"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

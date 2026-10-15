@@ -1,4 +1,4 @@
-//! Report-only test image (docs/research/cf-timing.md): is the CompactFlash
+//! Report-only test image (docs/research/storage-speed.md): is the CompactFlash
 //! socket running at what the card can do, or at Windows Mobile's values?
 //! Nothing is written to the card's media; the socket's timing registers
 //! are only ever made *slower* than Windows Mobile's (for calibration), and
@@ -357,7 +357,7 @@ mod image {
         diag::snapshot(&mut soc);
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        log!("{MARKER} 1: CF socket timing, report only (docs/research/cf-timing.md)");
+        log!("{MARKER} 1: CF socket timing, report only (docs/research/storage-speed.md)");
         let mut i = 0;
         for (_, regs) in diag::GROUPS {
             for r in *regs {
