@@ -1,0 +1,21 @@
+[package]
+name = "rp-cftime"
+description = "Report-only test image (docs/research/cf-timing.md): the CompactFlash socket's timings as set, the card's CIS and ATA IDENTIFY, the bus cycle measured, and four read paths timed and compared; nothing written to the card's media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cf = { path = "../../drivers/cf" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+
+[lints]
+workspace = true
