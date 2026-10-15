@@ -259,3 +259,49 @@ fn the_clear_stream_is_the_gles_drivers() {
     assert_eq!(s[9..12], [0x4470_0000, 0, 0x3F80_0000]);
     assert_eq!(s[12..15], [0, 0x44A0_0000, 0x3F80_0000]);
 }
+
+#[test]
+fn a_textured_stream_has_the_state_block_then_seven_word_vertices() {
+    let p = |x: f32, u: f32| tex::Vertex {
+        x,
+        y: 2.0,
+        z: 1.0,
+        rhw: 1.0,
+        argb: 0xFF11_2233,
+        u,
+        v: 0.5,
+    };
+    let s = ta::textured_stream(
+        tex::TSP_GAME,
+        ISP_ALWAYS,
+        [tex::FORMAT_GAME, 0xCE00_3060, tex::COMBINE_GAME],
+        &[p(0.0, 0.0), p(8.0, 1.0), p(4.0, 0.5)],
+    );
+    assert_eq!(
+        s[..9],
+        [
+            0x1000_0057,
+            tex::TSP_GAME,
+            ISP_ALWAYS,
+            tex::FORMAT_GAME,
+            0xCE00_3060,
+            tex::COMBINE_GAME,
+            0,
+            0,
+            ta::STRIP
+        ]
+    );
+    // The second vertex: x 8, y 2, z 1, 1/w 1, colour, u 1, v 0.5.
+    assert_eq!(
+        s[16..23],
+        [
+            0x4100_0000,
+            0x4000_0000,
+            0x3F80_0000,
+            0x3F80_0000,
+            0xFF11_2233,
+            0x3F80_0000,
+            0x3F00_0000
+        ]
+    );
+}
