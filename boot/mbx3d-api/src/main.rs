@@ -18,6 +18,10 @@
 //! - **S5 (T7, depth):** larger z nearer with "greater" (run 3: "less" moved
 //!   to run 3's S8, which showed it never passes and, in a partial render,
 //!   hides an "always" quad below: the renderer now refuses it, checked);
+//! - **S9 (T9):** the core's state across the 3D clock off and on:
+//!   nothing redone, the registers rewritten, or a full set-up (control),
+//!   each after 1 ms and 300 ms off; the render call's time logged (the
+//!   set-up's cost);
 //! - **S6 Gouraud** corners, logged;
 //! - **S7 the 3D clock gate:** off after 100 ms idle, on again for the next
 //!   frame, which still draws.
@@ -51,8 +55,8 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
     const RENDER_DONE: u32 = 1 << 2;
     use rp_mbx3d_render::{
-        self as r3d, Clock, Depth, Draw, Error, FrameStats, LocalMem, Paint, Picture, Poll,
-        Renderer, Target, UV_ONE, address, depth, factor, format,
+        self as r3d, Clock, ClockPolicy, Depth, Draw, Error, FrameStats, LocalMem, Paint, Picture,
+        Poll, Renderer, Target, UV_ONE, address, depth, factor, format,
     };
     use rp_vram_map::{self as map, Pool};
 
@@ -190,7 +194,9 @@ mod image {
         /// (counting status reads) until done. Logs its cost.
         fn frame(&mut self, r: &mut Renderer, t: Target, what: &str) -> Option<FrameStats> {
             rt::check_in();
+            let c0 = self.clock.now_us();
             let res = r.render(&mut self.e.regs, &mut self.mem, &mut self.clock, t);
+            let call = self.clock.now_us().wrapping_sub(c0);
             if r.core_resets() != self.resets {
                 // The renderer reset the MBX: the 2D stream restarts.
                 self.resets = r.core_resets();
@@ -226,7 +232,7 @@ mod image {
                     Poll::Wait(t) => at = t,
                     Poll::Done(s) => {
                         log!(
-                            "  {what}: {} tiles, {} quads listed, {} lists written, {} words to memory, {} register writes; exact {exact:?} us, predicted {}",
+                            "  {what}: {} tiles, {} quads listed, {} lists written, {} words to memory, {} register writes; exact {exact:?} us, predicted {}; render call {call} us",
                             s.tiles,
                             s.quads,
                             s.lists,
@@ -519,6 +525,51 @@ mod image {
         let _ = r.release(&mut g.pool);
     }
 
+    /// S9 (T9): does the core keep its state across the 3D clock off and
+    /// on (`MBXCLK` 2 -> 1 -> 2)? Logged, not counted (the answer is the
+    /// question), except the control. For each policy and two off times,
+    /// a blue square moves and is checked; a hang is recovered by the
+    /// renderer (reset and set-up) so the next try starts clean.
+    #[inline(never)]
+    fn s9(g: &mut Rig) {
+        log!("S9 (T9): the core's state across the 3D clock off and on");
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            return;
+        };
+        let _ = r.set_background(Some(GREY));
+        g.frame(&mut r, FULL, "set up");
+        let mut k = 0;
+        for (name, policy) in [
+            ("nothing redone", ClockPolicy::KeepAll),
+            ("registers rewritten", ClockPolicy::RewriteRegisters),
+            ("set up again (control)", ClockPolicy::SetUpAgain),
+        ] {
+            r.set_clock_policy(policy);
+            for off_ms in [1u32, 300] {
+                k += 1;
+                let x = 16 * k;
+                let off = r.idle_due().is_some_and(|due| r.idle(&mut g.e.regs, due));
+                let clk = g.e.regs.read32(MBXCLK);
+                for _ in 0..off_ms {
+                    rt::check_in();
+                    rt::delay_us(1_000);
+                }
+                g.set(&mut r, 0, Some(rect(x as i32, 100, 16, 16, BLUE)));
+                let s = g.frame(&mut r, FULL, name);
+                let (here, left) = (g.px(x + 8, 108), g.px(x - 8, 108));
+                let right = s.is_some() && here == BLUE && (k == 1 || left == GREY);
+                log!(
+                    "    T9 {name}, clock off {off_ms} ms (switched off {off}, MBXCLK 0x{clk:x}): {} (square 0x{here:08x}, where it was 0x{left:08x})",
+                    if right { "drew right" } else { "WRONG" }
+                );
+                if policy == ClockPolicy::SetUpAgain {
+                    g.expect("control drew right", right);
+                }
+            }
+        }
+        let _ = r.release(&mut g.pool);
+    }
+
     /// S6 Gouraud, S7 the clock gate; leaves the Gouraud square on screen.
     #[inline(never)]
     fn s6_s7(g: &mut Rig) {
@@ -579,7 +630,7 @@ mod image {
         let _ = store32_volatile(vram, map::FENCE.at as usize, 0);
         cpu::drain_write_buffer();
         log!(
-            "{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), run 4 (depth modes the device broke refused), MBXCLK 0x{clk0:x}"
+            "{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), run 4 (S9: T9, the core's state across the 3D clock), MBXCLK 0x{clk0:x}"
         );
         let mut g = Rig {
             e,
@@ -601,6 +652,7 @@ mod image {
         s3(&mut g);
         s4(&mut g);
         s5(&mut g);
+        s9(&mut g);
         s6_s7(&mut g);
         log!(
             "pool: {} bytes free of {} (everything given back: {})",

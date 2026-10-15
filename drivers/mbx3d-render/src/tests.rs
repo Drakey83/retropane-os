@@ -784,3 +784,40 @@ fn depth_modes_the_device_broke_are_refused() {
     }
     assert_eq!(DEPTH_MODES, [depth::GREATER, depth::GEQUAL, depth::ALWAYS]);
 }
+
+#[test]
+fn clock_policies_redo_what_they_say() {
+    // T9's three answers: after the clock is off and on, a full set-up, the
+    // registers again, or nothing. The model keeps its state across the
+    // clock (whether the device does is T9's question).
+    for (policy, inits, starts_only) in [
+        (ClockPolicy::SetUpAgain, 1, false),
+        (ClockPolicy::RewriteRegisters, 0, false),
+        (ClockPolicy::KeepAll, 0, true),
+    ] {
+        let mut g = rig(480, 640);
+        g.r.set_clock_policy(policy);
+        g.frame();
+        let due = g.r.idle_due().unwrap();
+        assert!(g.r.idle(&mut g.gpu, due));
+        g.clock.set(due);
+        let n = g.gpu.writes.len();
+        let count = |g: &Rig, off| {
+            g.gpu.writes[n..]
+                .iter()
+                .filter(|w| w.0 == MBX + off)
+                .count()
+        };
+        g.set(0, Some(square(0, 0, 8, Paint::Flat(BLUE))));
+        let s = g.frame();
+        assert_eq!(count(&g, 0x838), inits, "{policy:?}");
+        assert_eq!(
+            s.reg_writes == 1,
+            starts_only,
+            "{policy:?}: {}",
+            s.reg_writes
+        );
+        assert_eq!(g.px(0, 0), BLUE, "{policy:?}");
+        assert_eq!(g.gpu.read32(MBXCLK), 0x6);
+    }
+}
