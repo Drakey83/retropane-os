@@ -271,6 +271,11 @@ pub fn start_table(
 /// [`pm_init_table`]'s last write; Dell enables it in `0x130` first and
 /// clears it by writing it to `0x134`).
 pub const PM_READY: u32 = 1 << 6;
+/// `0x6D8` as the parameter memory set-up leaves it. The GLES driver
+/// never writes `0x6D8` (static reading 2026-10-15), so DoomGLES renders
+/// with this; Dell's start table writes `0x01000000` (bit 27 clear) for
+/// its flat scenes.
+pub const PM_6D8: u32 = 0x0900_0000;
 /// Status bit: the 3D stage finished a render.
 pub const RENDER_DONE: u32 = 1 << 2;
 
@@ -326,7 +331,7 @@ pub fn pm_init_table(pm: u32, pm_size: u32, table: u32) -> [(usize, u32); 6] {
         (0x828, first),
         (0x82C, pages_minus_one + first - 1),
         (0x83C, pm),
-        (0x6D8, 0x0900_0000),
+        (0x6D8, PM_6D8),
         (0x838, 1),
     ]
 }
