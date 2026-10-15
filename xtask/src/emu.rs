@@ -2496,7 +2496,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S polled),
+/// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S fed by a DMA ring),
 /// recorded by the emulator to a wav file, and the recording's pitch
 /// measured from its zero crossings.
 pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
