@@ -21,7 +21,10 @@
 //! - **S5 the FAT layer:** a 1 MiB file put and removed (`SDFAT.TMP`), and
 //!   `SDTIME.BIN` read through `read_file`.
 //!
-//! The loader resets the card when this returns.
+//! Everything it writes is inside `/rp-storage-bench/`, which it removes
+//! at the end (file, then the empty folder); nothing else on the card is
+//! written, replaced or deleted. The loader resets the card when this
+//! returns.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -52,10 +55,13 @@ mod image {
     type Card = SdCard<Host>;
 
     /// The test file and its size (blocks).
-    const FILE: &str = "SDTIME.BIN";
+    /// The image's own folder: it writes and deletes nothing outside it
+    /// (the card holds the owner's and other sessions' files).
+    const DIR: &str = "rp-storage-bench";
+    const FILE: &str = "rp-storage-bench/SDTIME.BIN";
     const FILE_BLOCKS: u32 = 4096;
     /// The FAT test's file.
-    const FAT_FILE: &str = "SDFAT.TMP";
+    const FAT_FILE: &str = "rp-storage-bench/SDFAT.TMP";
     /// Bytes each speed measurement moves.
     const TOTAL: usize = 4 << 20;
     /// Bytes each write measurement moves.
@@ -136,6 +142,22 @@ mod image {
         clock_codes(&mut card, lba, scratch);
         writes(&mut card, lba, scratch);
         fat_layer(&mut card, start, scratch);
+        clean_up(&mut card, start);
+    }
+
+    /// Removes the test file and the image's folder, nothing else.
+    fn clean_up(card: &mut Card, start: u32) {
+        let Ok(mut vol) = Volume::mount(&mut *card, start) else {
+            log!("S6 clean-up: mount failed; {DIR} left on the card");
+            return;
+        };
+        let file = vol.remove(FILE);
+        let dir = vol.remove(DIR);
+        log!(
+            "S6 clean-up: {FILE} {}, {DIR} {}",
+            file.map_or_else(|e| e.name(), |()| "removed"),
+            dir.map_or_else(|e| e.name(), |()| "removed")
+        );
     }
 
     fn addr(card: &Card, lba: u32) -> u32 {
