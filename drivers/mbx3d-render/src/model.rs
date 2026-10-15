@@ -23,7 +23,8 @@
 //! +0.5 with a top-left fill rule (each pixel of a shared edge drawn once);
 //! Gouraud and modulate rounding; 5/6-bit texel channels widened by
 //! repeating their top bits; both windings drawn; `0x654`/`0x658` not
-//! clipping. Anything else in the words panics, so a test sees the
+//! clipping; the core's state kept across the 3D clock off is measured
+//! (T9). Anything else in the words panics, so a test sees the
 //! renderer ask for something no device run has shown.
 
 extern crate std;

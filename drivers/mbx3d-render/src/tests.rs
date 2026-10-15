@@ -531,13 +531,15 @@ fn the_3d_clock_is_on_for_work_and_off_when_idle() {
     let due = g.r.idle_due().unwrap();
     assert!(g.r.idle(&mut g.gpu, due));
     assert_eq!(g.gpu.read32(MBXCLK), 0x5, "off after 100 ms idle");
-    // Back on, set up again (until T9 says it's not needed), and drawing.
+    // Back on and drawing, nothing set up again (T9: the core keeps its
+    // state across the clock off).
     let inits = |g: &Rig| g.gpu.writes.iter().filter(|w| w.0 == MBX + 0x838).count();
     let before = inits(&g);
     g.clock.set(due);
     g.set(0, Some(square(0, 0, 8, Paint::Flat(BLUE))));
-    g.frame();
-    assert_eq!(inits(&g), before + 1);
+    let s = g.frame();
+    assert_eq!(inits(&g), before);
+    assert_eq!(s.reg_writes, 1, "the start alone");
     assert_eq!(g.px(0, 0), BLUE);
 }
 
