@@ -298,7 +298,11 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "cab: a file running past its folder's end accepted short",
         file: "personality/ce/cab/src/lib.rs",
-        from: "        if done < end { Err(Error::Truncated) } else { Ok(()) }",
+        from: "        if done < end {
+            Err(Error::Truncated)
+        } else {
+            Ok(())
+        }",
         to: "        Ok(())",
         check: Check::Host(&["-p", "rp-cab", "a_file_past_its_folder_end_is_truncated"]),
     },
