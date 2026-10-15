@@ -47,52 +47,6 @@ pub fn shell_fonts() -> rp_shell::Fonts {
 pub const W: usize = 480;
 /// Screen height.
 pub const H: usize = 640;
-/// The wallpaper's video plane in 2700G memory (above the loader's and
-/// WM's planes at 0).
-pub const VIDEO_AT: usize = 0x60_0000;
-/// The interface's graphics plane.
-pub const GRAPHICS_AT: usize = 0xA0_0000;
-
-/// Puts `wallpaper` (planar 4:2:0, `W * H * 3 / 2` bytes) in the video
-/// plane, clears the graphics plane and shows both, mixed at scan-out:
-/// stage F's set-up from `rp-blend`. Returns the graphics plane. Shared by
-/// the image and the emulator check's reference, so they can't drift.
-pub fn show<B: rp_hal_api::RegisterBus>(
-    d: &mut rp_drv_mbx_display::Display<B>,
-    vram: &mut [u8],
-    wallpaper: &[u8],
-) -> rp_drv_mbx_display::Plane {
-    use rp_drv_mbx_display::blendtest::{GRAPHICS, VIDEO};
-    use rp_drv_mbx_display::layers::{VideoFormat, VideoPlane};
-    use rp_drv_mbx_display::{PixelFormat, Plane};
-
-    let video = VideoPlane::new(VideoFormat::Yuv420, W as u16, H as u16, VIDEO_AT);
-    let (luma, chroma) = wallpaper.split_at((W * H).min(wallpaper.len()));
-    let (u, v) = chroma.split_at((W * H / 4).min(chroma.len()));
-    for (y, row) in luma.chunks(W).enumerate() {
-        let at = video.offset + y * video.stride;
-        vram[at..at + row.len()].copy_from_slice(row);
-    }
-    for (plane, at0) in [(u, video.u_offset), (v, video.v_offset)] {
-        for (y, row) in plane.chunks(W / 2).enumerate() {
-            let at = at0 + y * (video.stride / 2);
-            vram[at..at + row.len()].copy_from_slice(row);
-        }
-    }
-    let gfx = Plane {
-        format: PixelFormat::Argb4444,
-        width: W as u16,
-        height: H as u16,
-        offset: GRAPHICS_AT,
-        stride: W * 2,
-    };
-    // Clear before it shows: nothing but the wallpaper for a moment.
-    vram[gfx.offset..gfx.offset + gfx.stride * H].fill(0);
-    d.show_video(&video, VIDEO);
-    d.set_graphics(&gfx, GRAPHICS);
-    gfx
-}
-
 /// ADR-0023's set-up: `wallpaper` (planar 4:2:0) converted to XRGB8888
 /// into the renderer's wallpaper, the engine reset and the first picture
 /// shown as an opaque 32 bpp plane. Shared by the image and the emulator

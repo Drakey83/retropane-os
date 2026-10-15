@@ -1,0 +1,191 @@
+# ADR-0026: Our own MBX 3D renderer
+
+- **Status:** Proposed (2026-10-15). Written overnight at the owner's
+  request; **nothing in it is built yet**. Decisions D1-D8 below wait for
+  the owner's vote; the device tests in "Before building" need the owner's
+  go, one run at a time.
+- **Date:** 2026-10-15
+
+## In plain words
+
+The 2700G's 3D core now draws on our own terms: flat, shaded and
+textured triangles, both from objects we build ourselves and through the
+chip's tile accelerator (ADR-0024, versions 3-18). The owner's direction
+(2026-10-15): **the GPU driver must be built for RetroPane's own work and
+be as fast as the silicon allows, not a copy of Dell's driver.** Dell's
+code stays a source of hardware facts only.
+
+Dell's way, as read from its code (`docs/research/driver-inefficiencies.md`):
+the CPU spins while the GPU works, every frame rewrites ~29 registers
+through a function call each, and every frame renders the whole screen
+(~12.5 ms at 32 bpp) however little changed. This ADR proposes a renderer
+that does none of that:
+
+1. **Only changed tiles are rendered** (the screen is 60 x 40 tiles of 8 x
+   16 pixels; the region array we hand the chip can list just some).
+2. **The CPU sleeps while the GPU works** (wait on the interrupt).
+3. **State is written once**, not every frame.
+4. **Two ways to build a scene, each where it wins**: our own objects for
+   the interface (few, large, known shapes), the tile accelerator for
+   games (many small triangles).
+5. **One owner for the GPU**: the graphics service. Programs never touch
+   its registers (Dell lets any GLES program do so: a security hole).
+
+## Context
+
+Measured on the X51v (ADR-0024; `local/rp-mbx3d-run*.txt`):
+
+| Fact | Value |
+|---|---|
+| 3D clock | `MBXCLK` bits 1-0 = 2 (WM idles at 1, 2D only) |
+| Tile | 8 x 16 pixels at 32 bpp; 60 x 40 tiles on 480 x 640 |
+| Full-screen render, 32 bpp | ~12.48 ms with objects, 9.6 ms all tiles empty |
+| Tile accelerator (TA), small scene | done in 1.2-1.9 ms |
+| Objects | flat 17 words, textured 26 words, list pointer bits 24-21 = layout, bits 30-25 a triangle mask |
+| Textures | twiddled, point sampled, sides 2^(code+3), ARGB1555 / RGB565 / ARGB4444 / RGB332 |
+| TSP that draws textured | `0x22220E80` (the game's `0x22640200` never draws for us) |
+| Parameter memory | must sit low (version 14: pages above 8 MiB landed elsewhere) |
+| CPU writes into 2700G memory | ~33 MB/s (the bus to the chip; DMA 30 MB/s, CPU free) |
+| 2D engine and TA | share one command FIFO (`0x12C` level) |
+| Interrupt | the 2700G's line is GPIO85; Dell's handler takes status bits 2 (3D done) and 4 (TA done) |
+
+The bus is the bottleneck, not the GPU: every word the CPU writes to the
+chip costs ~120 ns. A design that writes fewer words wins.
+
+## Decisions (for the owner's vote)
+
+### D1. Who builds a scene
+
+| | A: our own objects and region arrays (CPU) | B: the tile accelerator | **C: both, each where it wins (recommended)** |
+|---|---|---|---|
+| How | the CPU works out which tiles each triangle touches, writes objects, lists and the region array | the CPU streams vertices; the TA bins them and writes lists itself | interface and 2D-like work through A; games through B |
+| Bus words per textured triangle | 26 (object) + 1 per tile touched + list ends | 21 (3 vertices x 7) + state when it changes | the cheaper of the two per client |
+| CPU cost | binning per triangle (cheap for big quads, costly for thousands of small triangles) | none for binning | |
+| Control | complete: exact tiles, static scenes can be reused frame to frame without rewriting | the TA's memory manager decides where lists go (its rules only partly known) | |
+| Known risks | none new: versions 3-13 drew this way | page allocation rules, FIFO shared with the 2D engine | both paths to maintain |
+
+Why C: the interface is a handful of large quads (glass, images, text
+atlases) that rarely change, where reusing a built scene costs no bus
+traffic at all; a game frame is hundreds of small triangles, where the TA
+does the binning in hardware and the CPU writes fewer words.
+
+### D2. Render only the tiles that changed
+
+**Recommended.** The region array is ours to write: a frame that changed
+three tiles lists three tiles. Expected: render time in proportion to the
+area changed (12.5 ms for the whole screen, so well under 1 ms for a
+button). **Unmeasured:** that tiles left out of the array are left
+untouched in the target (version 3 suggests drawn tiles are filled
+entirely, unlisted ones untouched). First device test (T1 below).
+
+Alternative: always render everything (Dell's way): simple, 12.5 ms per
+frame, the 2D renderer (ADR-0023) would still beat it for the interface.
+
+### D3. Waiting for the GPU
+
+| | A: poll status with a timer (today's test images) | **B: interrupt (recommended)** |
+|---|---|---|
+| CPU while the GPU works | busy (Dell spins too) | asleep or running other threads |
+| Latency | the poll interval | the interrupt's (GPIO85, already used for display events) |
+| Unknown | none | whether bits 2 and 4 raise GPIO85 (Dell's handler suggests yes): test T2 |
+
+Fallback if T2 fails: a one-shot timer at the expected finish (render time
+is predictable: tiles x per-tile cost), as the 2D renderer does for the
+2D engine (ADR-0022 decision 7).
+
+### D4. State written once
+
+**Recommended.** The renderer keeps a copy of every 3D register it has
+written and writes only differences. A frame then costs the region array
+address, the parameter base and the start: 3 writes, where Dell writes
+~29 through function calls. Dell's 15-pair table is the proven minimum.
+
+### D5. Where the 3D core draws
+
+| | A: its own buffer, copied into the screen picture by the 2D engine | **B: straight into the ADR-0023 screen picture (recommended)** |
+|---|---|---|
+| Cost | an engine copy per frame (~9 ms full screen at 32 bpp) | none |
+| Mixing with 2D | in the copy | the 2D renderer and the 3D core take turns on the same picture (one queue in the graphics service) |
+| Unknown | none | the 3D core's target stride and offset set to a sub-rectangle (`0x660`, `0x65C`): test T3 |
+
+### D6. One GPU owner
+
+**Recommended (and required by docs/security.md).** The graphics service
+owns the 2D engine, the 3D core and their shared FIFO. Clients (the shell,
+GLES programs, the CE personality's GDI) hand it command lists; it checks
+every address against the client's own memory (ADR-0027, the 2700G memory
+map, below) before anything reaches the chip. Dell maps the register
+window into every GLES program: any of them can make the GPU write
+anywhere in 2700G memory.
+
+### D7. GLES is a client, scoped to games
+
+**Recommended (owner, 2026-10-15).** GLES 1.x (the Common-Lite fixed-point
+profile the WM games link, and the Common profile Quake 3's port ships)
+becomes a library that turns GL calls into TA streams for the graphics
+service. Its geometry stage runs on the CPU in fixed point (WMMX for the
+inner loops, once profiled). The CE personality's drawing stays 2D (GDI);
+GLES does not grow beyond games.
+
+### D8. The 3D clock
+
+**Recommended:** on while 3D work is queued, off 100 ms after the last
+render (a timer in the graphics service), so the interface on the 2D
+engine pays no 3D clock. Measuring the power saved needs the battery
+gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
+164 us after enabling).
+
+## Before building: device tests (one `rp-mbx3d` version each, owner's go)
+
+| Test | Question | Decides |
+|---|---|---|
+| T1 | A region array listing only some tiles: are the rest left untouched? Render time vs tiles listed | D2 |
+| T2 | Do status bits 2 and 4 raise GPIO85? | D3 |
+| T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5 |
+| T4 | 16 bpp target: render time (half the bytes) | target format for games |
+| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D |
+| T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality |
+| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games |
+| T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
+
+## The four lenses
+
+| Lens | Effect |
+|---|---|
+| 🔁 Iterate | Every claim above is a device test with a logged result; `docs/perf.md` gets each speed-up against Dell's numbers (12.5 ms full frame; busy-spin waits) |
+| ✨ Modernize | Dirty-tile rendering and retained scenes are how modern compositors work; Dell's driver re-renders everything |
+| 🗄️ Legacy support | WM games keep their GLES calls (D7); only the layer under them changes |
+| ⚡ Better / faster | Fewer bus words per frame (the real bottleneck), a sleeping CPU, renders proportional to change |
+
+## Hardware limit or choice?
+
+- Full-screen renders every frame: **Dell's choice.** The region array is
+  ours to shorten (T1 checks the silicon agrees).
+- CPU spinning during renders: **Dell's choice.** The core raises status
+  bits; whether they reach GPIO85 is T2.
+- Register tables every frame: **Dell's choice.** The registers keep
+  their values (they survive even between images: docs/hw/2700g.md).
+- The 8 MiB parameter-memory placement: **likely silicon** (version 14).
+- The bus speed to the chip (~33 MB/s): **silicon** (VLIO, measured).
+
+## Alternatives considered
+
+- **Reimplement Dell's driver faithfully:** rejected by the owner's
+  direction and by the evidence log.
+- **Only the TA (B in D1):** simpler, but the interface would rebuild its
+  scene every frame through the FIFO where a retained region array costs
+  nothing.
+- **Only our own objects (A in D1):** fine for the interface, but CPU
+  binning of thousands of small triangles costs more CPU and bus than the
+  TA's hardware binning.
+- **No 3D for the interface at all (ADR-0023's 2D renderer only):** kept
+  as the default until T1-T5 say the 3D core can do glass and fades
+  better; the 3D core then joins in where it wins (rotations, scaling,
+  perspective, effects the 2D engine can't do).
+
+## Consequences
+
+- The graphics service grows a 3D queue next to the 2D one, a register
+  shadow, and a 2700G memory map it enforces (ADR-0027).
+- Eight device tests before building (T1-T8), each small.
+- GLES becomes a library on top, not the driver's shape.

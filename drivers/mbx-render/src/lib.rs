@@ -66,6 +66,8 @@ pub const H: u16 = 640;
 pub const STRIDE: usize = W as usize * 4;
 /// Bytes in one 32 bpp picture.
 pub const SCREEN_BYTES: usize = STRIDE * H as usize;
+const _: () = assert!(SCREEN_BYTES == rp_vram_map::SCREEN_BYTES as usize);
+const _: () = assert!(ROWS * 2560 <= rp_vram_map::ROWS.size as usize);
 
 /// Rows in the ring for stride-0 blits (reset at each frame's fence).
 const ROWS: usize = 64;
@@ -113,17 +115,21 @@ pub struct Layout {
 impl Layout {
     /// The X51v's: from 2 MiB up (the loader's and Windows Mobile's planes
     /// sit below 1 MiB), about 5.6 MiB in all (ADR-0023 decision 4).
-    pub const X51V: Self = Self {
-        screens: [0x0020_0000, 0x0034_0000],
-        wallpaper: 0x0048_0000,
-        rows: 0x005C_0000,
-        images: (0x0060_0000, 256 * 1024),
-        glyphs: (0x0064_0000, 512 * 1024),
-        background: 0x006C_0000,
-        dither: 0x0080_0000,
-        fence: 0x00FF_F000,
-        // One picture's worth (1.17 MiB) of the ~8 MiB above the dither.
-        cache: (0x0081_0000, SCREEN_BYTES),
+    /// Taken from the 2700G memory map (`rp-vram-map`, ADR-0027), which
+    /// checks the regions for overlaps.
+    pub const X51V: Self = {
+        use rp_vram_map as m;
+        Self {
+            screens: [m::SCREENS[0].at as usize, m::SCREENS[1].at as usize],
+            wallpaper: m::WALLPAPER.at as usize,
+            rows: m::ROWS.at as usize,
+            images: (m::IMAGES.at as usize, m::IMAGES.size as usize),
+            glyphs: (m::GLYPHS.at as usize, m::GLYPHS.size as usize),
+            background: m::BACKGROUND.at as usize,
+            dither: m::DITHER.at as usize,
+            fence: m::FENCE.at as usize,
+            cache: (m::CACHE.at as usize, m::CACHE.size as usize),
+        }
     };
 }
 

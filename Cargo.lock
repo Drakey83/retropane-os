@@ -451,6 +451,7 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-gfx",
  "rp-hal-api",
+ "rp-vram-map",
 ]
 
 [[package]]
@@ -577,6 +578,10 @@ version = "0.0.0"
 dependencies = [
  "rp-hal-api",
 ]
+
+[[package]]
+name = "rp-vram-map"
+version = "0.0.0"
 
 [[package]]
 name = "serde"

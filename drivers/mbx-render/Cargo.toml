@@ -18,6 +18,7 @@ rp-draw = { path = "../draw" }
 rp-gfx = { path = "../gfx" }
 rp-drv-blit2d = { path = "../blit2d" }
 rp-drv-mbx-display = { path = "../mbx-display" }
+rp-vram-map = { path = "../vram-map" }
 
 [dev-dependencies]
 rp-drv-mbx-display = { path = "../mbx-display" }
