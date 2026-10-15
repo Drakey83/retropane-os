@@ -372,6 +372,43 @@ owner's go:
 | T12 | Bilinear filtering (TEX1 bit 31) and mipmaps (TEX1 bits 30-29, LOD bits 28-25), the level layout (smallest or largest first) | interface image quality when scaled |
 | T13 | PVRTC 4 bpp (TEX0 code 28) and 2 bpp (code 16) from known blocks; 32-bit texels (code 12) | the 64 MB budget: 4-8x less texture memory |
 
+**`rp-mbx3d` version 24 on the device (2026-10-15,
+`local/rp-mbx3d-run24.txt`; the image as first built, `6f6557e`: T10
+counted edges through GPIO85's interrupt, the reviewed polling-only form
+came after the run).**
+
+- **T10, render done reaches GPIO85: yes.** With the line quieted
+  (`0x130` 0, all status cleared, the display's events off), a full-screen
+  render set status bit 2 at 12,484-12,492 us and GPIO85 edged **at the
+  same microsecond**, once, with `0x130` = `0x8004` or Dell's `0x87F5`;
+  **none with `0x0004`** (T2's form: bit 15 is the MBX core's master
+  enable). `MINTENABLE` `0x8004` and `0x800F` edged, `0x8001`, `0x8002`,
+  `0x8008` and `0x000F` didn't: **bit 2 routes the MBX core, bit 15 is the
+  master**. The level never read low between samples (a pulse) and was
+  high after the clear. **3D waits can sleep on the interrupt**: built
+  (`Renderer::set_interrupt`).
+- **T11, depth across renders: not stored as tried.** With `0x674` a
+  buffer and `0x610 = 15 << 7 | 2`, render A left all 2048 words at the
+  fill (`0xAAAAAAAA`); render B drew blue everywhere, with and without the
+  load bit. Open (static reading next: what else the GLES scene routine
+  sets with a depth buffer).
+- **T12, bilinear: works.** TEX1 bit 31 turned the checker's step into a
+  ramp `0xFF3F3F`, `0x7F7F`, `0xBFBF` at pixels 106, 108, 110 (texel 0's
+  centre at 104, texel 1's at 112): **weights linear between texel
+  centres, the pixel sampled at its corner (not its centre), each channel
+  truncated**. Built (`Texture::with_linear`; the model matches the run's
+  pixels exactly). **Mipmaps: not engaged.** Bit 29 drew the base level at
+  every size (64 to 8 px), in both layouts, at every LOD value 0-15;
+  **bit 30 alone hung the core** (recovered). Open (static reading next:
+  the upload's level layout and what else enables levels).
+- **T13, 32-bit and PVRTC: work.** Code 12 decoded ARGB8888 (red, green,
+  blue exact; drawn opaque, its alpha in blending untested). **PVRTC
+  4 bpp (code 28) and 2 bpp (code 16) decoded** solid red blocks exactly;
+  the words swapped drew black (modulation word first, confirmed);
+  half-red, half-green blocks drew red left, green right (the samples fit
+  both twiddled and row block order: open). Built (`upload32`,
+  `upload_pvrtc` for blocks compressed on the PC).
+
 ## The four lenses
 
 | Lens | Effect |

@@ -342,3 +342,20 @@ fn the_service_stays_small() {
     let size = core::mem::size_of::<Graphics<'static, Both, m2::Mem>>();
     assert!(size <= 6 * 1024, "{size} bytes");
 }
+
+#[test]
+fn compressed_textures_count_at_their_size() {
+    // PVRTC 4 bpp: a 16 x 16 texture is 128 bytes against the quota (16-bit
+    // texels: 512); 32-bit texels count 4 a texel.
+    let mut r = rig();
+    let c = r.g.client(128 + 256).unwrap();
+    let blocks = [0u32, 0xFC00_FC00].repeat(16);
+    r.g.upload_pvrtc(c, 1, format::PVRTC4, &blocks).unwrap();
+    assert_eq!(r.g.used(c), 128);
+    r.g.upload_texture32(c, 0, &[0xFFFF_0000; 64]).unwrap();
+    assert_eq!(r.g.used(c), 384);
+    assert_eq!(
+        r.g.upload_texture(c, 0, format::RGB565, &texels()),
+        Err(Error::Quota)
+    );
+}
