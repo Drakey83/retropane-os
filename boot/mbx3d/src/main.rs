@@ -1,5 +1,9 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 8: version 7's square never showed
+//! 3D core, under the loader. Version 9: version 8 drew the dark
+//! background but never the square: first two controls (the square flat,
+//! after the background: does a list draw past its first object?), then
+//! the textured forms with Dell's table and with the GLES table's extras.
+//! Version 8: version 7's square never showed
 //! (every sample the core's white tile fill, drawn or not: a flaw of the
 //! test), so first a dark background and a tinted square in 8 forms (ISP
 //! word, corner order for culling, list flags), then the format sweep with
@@ -143,7 +147,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 8;
+    const VERSION: u32 = 9;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -270,6 +274,9 @@ mod image {
         isp: u32,
         clockwise: bool,
         strip: u32,
+        /// Control: the square's triangles in the flat 17-word form (does
+        /// a list draw more than its first object?).
+        flat: bool,
     }
 
     /// Stage T: a dark full-screen flat triangle (the proven form), then a
@@ -316,16 +323,22 @@ mod image {
         let ta = OBJECT + 4 * m3::TRIANGLE_WORDS;
         let tb = ta + 4 * m3::tex::WORDS;
         store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &back));
-        store(
-            vram,
-            ta,
-            &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &a),
-        );
-        store(
-            vram,
-            tb,
-            &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &b),
-        );
+        if c.flat {
+            let f = |t: &[m3::tex::Vertex; 3]| t.map(|p| Vertex::flat(p.x, p.y, TINT));
+            store(vram, ta, &m3::triangle(c.isp, TSP_DELL, &f(&a)));
+            store(vram, tb, &m3::triangle(c.isp, TSP_DELL, &f(&b)));
+        } else {
+            store(
+                vram,
+                ta,
+                &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &a),
+            );
+            store(
+                vram,
+                tb,
+                &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &b),
+            );
+        }
         let off = |at: usize| ((at - PARAMS) / 4) as u32;
         store(
             vram,
@@ -536,34 +549,62 @@ mod image {
             log!(
                 "T: dark background, then a textured square at (16,16), 256 px, tint 0x{TINT:08x}, texel k = k"
             );
-            // 1. Which form draws at all (format 9, the game's).
+            // 1. Controls (flat), then which form draws (format 9, the game's),
+            // with Dell's table and with the GLES table's extras.
             let mut found = None;
             let mut k = 0;
-            for isp in [ISP_ALWAYS, m3::tex::ISP_GAME] {
-                for clockwise in [true, false] {
-                    for strip in [m3::tex::STRIP_GAME, m3::STRIP_ONE_TRIANGLE] {
-                        rt::check_in();
-                        let c = Combo {
-                            isp,
-                            clockwise,
-                            strip,
-                        };
-                        let _ = clear(&mut e, vram, GREY);
-                        let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
-                        let (mid, out) = (px(vram, 144, 144), px(vram, 300, 300));
-                        log!(
-                            "  T1.{k} ISP 0x{isp:08x}, clockwise {clockwise}, strip 0x{strip:08x}: done {done}, middle {mid:08x}, (40,20) {:08x}, outside {out:08x}",
-                            px(vram, 40, 20)
-                        );
-                        k += 1;
-                        if found.is_none() && done && mid != out && mid != 0xFFFF_FFFF {
-                            found = Some(c);
-                        }
+            let mut tries = [None; 16];
+            let mut nt = 0;
+            for strip in [m3::STRIP_ONE_TRIANGLE, m3::tex::STRIP_GAME] {
+                tries[nt] = Some((
+                    0u8,
+                    Combo {
+                        isp: ISP_ALWAYS,
+                        clockwise: true,
+                        strip,
+                        flat: true,
+                    },
+                ));
+                nt += 1;
+            }
+            for lv in [0u8, 2] {
+                for strip in [m3::tex::STRIP_GAME, 0x4160_0000, m3::STRIP_ONE_TRIANGLE] {
+                    for clockwise in [true, false] {
+                        tries[nt] = Some((
+                            lv,
+                            Combo {
+                                isp: m3::tex::ISP_GAME,
+                                clockwise,
+                                strip,
+                                flat: false,
+                            },
+                        ));
+                        nt += 1;
                     }
                 }
             }
+            for &(lv, c) in tries.iter().flatten() {
+                rt::check_in();
+                let (t, n) = table(lv);
+                let _ = clear(&mut e, vram, GREY);
+                let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
+                let (mid, out) = (px(vram, 144, 144), px(vram, 300, 300));
+                log!(
+                    "  T1.{k} table {lv}, flat {}, ISP 0x{:08x}, clockwise {}, strip 0x{:08x}: done {done}, middle {mid:08x}, (40,20) {:08x}, outside {out:08x}",
+                    c.flat,
+                    c.isp,
+                    c.clockwise,
+                    c.strip,
+                    px(vram, 40, 20)
+                );
+                k += 1;
+                if found.is_none() && !c.flat && done && mid != out && mid != 0xFFFF_FFFF {
+                    found = Some((lv, c));
+                }
+            }
             // 2. With it, every value of the format field.
-            if let Some(c) = found {
+            if let Some((lv, c)) = found {
+                let (t, n) = table(lv);
                 log!(
                     "T2: samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
                 );
