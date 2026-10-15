@@ -7,12 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-hal-mem = { path = "../../hal/mem" }
-rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }

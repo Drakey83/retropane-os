@@ -131,7 +131,10 @@ GLES does not grow beyond games.
 
 **Recommended:** on while 3D work is queued, off 100 ms after the last
 render (a timer in the graphics service), so the interface on the 2D
-engine pays no 3D clock. Measuring the power saved needs the battery
+engine pays no 3D clock. Built (2026-10-15):
+`rp_drv_mbx_display::clock::Gate` (host-tested), which reports when it
+switched the clock on so the caller can redo the set-up until T9 says
+whether that's needed. Measuring the power saved needs the battery
 gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 164 us after enabling).
 
@@ -147,6 +150,7 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality |
 | T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
+| T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
 
 ## The four lenses
 

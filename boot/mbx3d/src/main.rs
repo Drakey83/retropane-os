@@ -131,14 +131,9 @@ pub fn tile_size(reach: u32, tiles: u32, screen: u32) -> Option<u32> {
     (size.is_power_of_two() && size * tiles == reach).then_some(size)
 }
 
-/// `MBXCLK` with the same divider and the 3D core's clock on too: bits
-/// 1-0 are the enable (0 none, 1 2D only, 2 2D and 3D; Linux mbxfb's
-/// `MBXCLK_EN`), bits 3-2 the divider. Windows Mobile leaves `0x5` (2D
-/// only); Dell's driver writes 2 there before 3D work.
-#[must_use]
-pub const fn with_3d(mbxclk: u32) -> u32 {
-    (mbxclk & !3) | 2
-}
+/// `MBXCLK` with the 3D clock on, the divider kept (one definition, in the
+/// display driver's `clock` module, ADR-0026 D8).
+pub use rp_drv_mbx_display::clock::with_3d;
 
 #[cfg(target_os = "none")]
 mod image {
@@ -209,7 +204,7 @@ mod image {
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
     const VERSION: u32 = 18;
-    const MBXCLK: usize = 0x054;
+    const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
     const PLLSTAT: usize = 0x040;

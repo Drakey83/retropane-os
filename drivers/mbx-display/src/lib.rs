@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 
 pub mod blendtest;
+pub mod clock;
 pub mod console;
 pub mod crash;
 pub mod font;
