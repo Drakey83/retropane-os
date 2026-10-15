@@ -1,7 +1,11 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 6: the shaded triangle sets TSP
-//! bit 22 (where `libGLES_CL.dll` puts `glShadeModel(GL_SMOOTH)`); version
-//! 5's ISP bit 23 (the PowerVR2's place) changed nothing.
+//! 3D core, under the loader. Version 7: after the shaded triangle (TSP
+//! bit 22, Gouraud, proven by version 6), a textured square in DoomGLES's
+//! object form (ADR-0024 M3, capture version 6), once for each of the 16
+//! values of the texture format field: the texture holds its own texel
+//! numbers (texel k = k, 16 bits), so the pixels logged tell, on the PC,
+//! the format, the texel order and the size code. Unattended: it returns
+//! by itself after 10 s.
 //!
 //! Version 4 drew the whole screen (Dell's table alone, 8 x 16 px regions) but
 //! the shaded triangle flat; version 5 tried ISP bit 23.
@@ -115,6 +119,11 @@ mod image {
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
     const FENCE: usize = 0x00FF_F000;
+    /// The texture for stage T: 256 x 256 16-bit texels (128 KiB),
+    /// texel k holding k.
+    const TEXTURE: usize = 0x00E0_0000;
+    /// Stage T's square: its top left on screen and its side (pixels).
+    const SQ: (f32, f32, f32) = (16.0, 16.0, 256.0);
     /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -127,7 +136,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 6;
+    const VERSION: u32 = 7;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -245,6 +254,59 @@ mod image {
         run(e, vram, table, RENDER_DONE, Some(probe), 200_000)
             .1
             .is_some()
+    }
+
+    /// Stage T: a textured square (two triangles, u and v 0 to 1) with TEX0
+    /// `tex0`; true if the render finished.
+    fn draw_textured(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        tex0: u32,
+        table: &[(usize, u32)],
+    ) -> bool {
+        let (x0, y0, s) = SQ;
+        let v = |x: f32, y: f32, u: f32, w: f32| m3::tex::Vertex {
+            x: x0 + x * s,
+            y: y0 + y * s,
+            z: 1.0,
+            rhw: 1.0,
+            argb: 0xFFFF_FFFF,
+            u,
+            v: w,
+        };
+        let texw = [
+            tex0,
+            m3::tex::address(TEXTURE as u32),
+            m3::tex::COMBINE_GAME,
+        ];
+        let a = [
+            v(0.0, 0.0, 0.0, 0.0),
+            v(1.0, 0.0, 1.0, 0.0),
+            v(0.0, 1.0, 0.0, 1.0),
+        ];
+        let b = [
+            v(1.0, 0.0, 1.0, 0.0),
+            v(1.0, 1.0, 1.0, 1.0),
+            v(0.0, 1.0, 0.0, 1.0),
+        ];
+        let second = OBJECT + 4 * m3::tex::WORDS;
+        store(
+            vram,
+            OBJECT,
+            &m3::tex::triangle(m3::tex::ISP_GAME, texw, m3::tex::TSP_GAME, &a),
+        );
+        store(
+            vram,
+            second,
+            &m3::tex::triangle(m3::tex::ISP_GAME, texw, m3::tex::TSP_GAME, &b),
+        );
+        store(
+            vram,
+            PARAMS,
+            &m3::tex::list([(OBJECT - PARAMS) as u32, (second - PARAMS) as u32]),
+        );
+        cpu::drain_write_buffer();
+        run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some()
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -414,6 +476,53 @@ mod image {
             );
         }
 
+        // T: the textured square, once per format field value.
+        if drew {
+            for k in 0..256 * 256 / 2 {
+                // Two texels a word, texel k holding k.
+                let t = 2 * k as u32;
+                let _ = store32_volatile(vram, TEXTURE + 4 * k, t | (t + 1) << 16);
+            }
+            cpu::drain_write_buffer();
+            let (t, n) = table(level);
+            // Texels 0, 1, 2, 3 across, 1 and 2 down, the diagonal, then
+            // further out; offsets from the square's top left.
+            const AT: [(u32, u32); 12] = [
+                (0, 0),
+                (1, 0),
+                (2, 0),
+                (3, 0),
+                (0, 1),
+                (0, 2),
+                (1, 1),
+                (4, 4),
+                (16, 0),
+                (0, 16),
+                (100, 37),
+                (255, 255),
+            ];
+            log!(
+                "T: textured square at (16,16), 256 px, texel k = k; samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
+            );
+            for f in 0..16u32 {
+                rt::check_in();
+                let _ = clear(&mut e, vram, GREY);
+                let tex0 = m3::tex::FORMAT_GAME & !(0xF << m3::tex::FORMAT_SHIFT)
+                    | f << m3::tex::FORMAT_SHIFT;
+                let done = draw_textured(&mut e, vram, tex0, &t[..n]);
+                // Word by word: formatting the array as a whole costs ~6 KiB.
+                let _ = write!(RunLog, "  T{f:x} TEX0 0x{tex0:08x}: done {done}, pixels");
+                for &(dx, dy) in &AT {
+                    let _ = write!(RunLog, " {:08x}", px(vram, 16 + dx, 16 + dy));
+                }
+                log!(", outside {:08x}", px(vram, 300, 300));
+            }
+            // The game's own format word, last: what stays on screen.
+            let _ = clear(&mut e, vram, GREY);
+            let done = draw_textured(&mut e, vram, 0x0333_5600, &t[..n]);
+            log!("  T last: TEX0 0x03335600 (format 5, as the GLES default word): done {done}");
+        }
+
         let saved = show_target(&mut e.regs);
         let keypad = arm_keypad();
         let verdict = if drew {
@@ -436,7 +545,8 @@ mod image {
             uart.init(115_200);
             let _ = writeln!(uart, "{MARKER}: {verdict}");
         }
-        hold_until_button(keypad);
+        // Unattended (the owner asleep, 2026-10-14): 10 s, or a button.
+        hold_until_button(keypad, 10_000_000);
         for (off, v) in saved {
             e.regs.write32(off, v);
         }
@@ -483,15 +593,15 @@ mod image {
         Some(keypad)
     }
 
-    /// Holds until a button is pressed and released (5 minutes at most),
+    /// Holds until a button is pressed and released (`limit_us` at most),
     /// checking in with the loader.
-    fn hold_until_button(keypad: Option<Keypad<Mmio>>) {
+    fn hold_until_button(keypad: Option<Keypad<Mmio>>, limit_us: u32) {
         let Some(mut keypad) = keypad else {
             return;
         };
         let t0 = rt::ticks();
         let mut seen = false;
-        while us_since(t0) < 300_000_000 {
+        while us_since(t0) < limit_us {
             rt::check_in();
             seen |= keypad.acknowledge();
             if seen && keypad.pressed() == Pressed::NONE {
@@ -499,7 +609,7 @@ mod image {
             }
             rt::delay_us(20_000);
         }
-        log!("no button in 5 minutes: returning");
+        log!("no button: returning");
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {

@@ -113,6 +113,93 @@ pub fn one_triangle_list(params_offset: u32) -> [u32; 2] {
     ]
 }
 
+/// Textured objects, as DoomGLES's on the device (ADR-0024 M3, capture
+/// version 6, 2026-10-14): `ISP, TEX0, TEX1, TEX2, TSP`, the x/y pairs,
+/// z, 1/w, then per vertex its colour and texture coordinates (u, v, 0 to
+/// 1). The three texture words are the GLES context's per-unit words
+/// (`libGLES_CL.dll` `0x02267434`): format and size, address, combine.
+pub mod tex {
+    /// The ISP word DoomGLES's textured objects carry (our flat ones:
+    /// `0xE0000000`; bits 27, 26 and 23 more, meaning not yet known).
+    pub const ISP_GAME: u32 = 0xEC80_0000;
+    /// The TSP word of most of DoomGLES's objects: Gouraud (bit 22) and
+    /// `0x0200` where untextured ones have `0x0E80`.
+    pub const TSP_GAME: u32 = 0x2264_0200;
+    /// TEX0 of DoomGLES's 128 x 128 (likely) PVRTC textures: sizes in bits
+    /// 27-24 and 23-20 (likely, 3 and 3 here), the format in bits 15-12
+    /// (likely; 9 here, PVRTC 4 bpp), the rest as found.
+    pub const FORMAT_GAME: u32 = 0x0333_9600;
+    /// TEX0's format field (likely).
+    pub const FORMAT_SHIFT: u32 = 12;
+    /// TEX1's high bits as DoomGLES writes them (bits 31-25: a level of
+    /// detail setting); the texture's address / 128 goes below.
+    pub const ADDRESS_GAME: u32 = 0xCE00_0000;
+    /// TEX2: how the texture and the vertex colour combine; DoomGLES's
+    /// (modulate, likely: its vertex colours are greys).
+    pub const COMBINE_GAME: u32 = 0x8608_6610;
+    /// The list pointer for one textured triangle as DoomGLES's lists have
+    /// it (bit 24 where the flat ones have bit 23); the object's offset in
+    /// words below.
+    pub const STRIP_GAME: u32 = 0x4100_0000;
+    /// Words in a textured one-triangle object.
+    pub const WORDS: usize = 26;
+
+    /// A vertex with texture coordinates.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Vertex {
+        /// Horizontal position (pixels).
+        pub x: f32,
+        /// Vertical position.
+        pub y: f32,
+        /// Depth.
+        pub z: f32,
+        /// 1/w.
+        pub rhw: f32,
+        /// Colour, `0xAARRGGBB`.
+        pub argb: u32,
+        /// Texture coordinate across, 0 to 1.
+        pub u: f32,
+        /// Texture coordinate down, 0 to 1.
+        pub v: f32,
+    }
+
+    /// TEX1 for a texture at `addr` in 2700G memory (128-byte aligned).
+    #[must_use]
+    pub const fn address(addr: u32) -> u32 {
+        ADDRESS_GAME | (addr >> 7) & 0x01FF_FFFF
+    }
+
+    /// A textured one-triangle object.
+    #[must_use]
+    pub fn triangle(isp: u32, texw: [u32; 3], tsp: u32, v: &[Vertex; 3]) -> [u32; WORDS] {
+        let mut w = [0u32; WORDS];
+        w[0] = isp;
+        w[1..4].copy_from_slice(&texw);
+        w[4] = tsp;
+        for (k, p) in v.iter().enumerate() {
+            w[5 + 2 * k] = p.x.to_bits();
+            w[6 + 2 * k] = p.y.to_bits();
+            w[11 + k] = p.z.to_bits();
+            w[14 + k] = p.rhw.to_bits();
+            w[17 + 3 * k] = p.argb;
+            w[18 + 3 * k] = p.u.to_bits();
+            w[19 + 3 * k] = p.v.to_bits();
+        }
+        w
+    }
+
+    /// An object list of textured triangles at `offsets` (bytes into the
+    /// parameter buffer), then the end word.
+    #[must_use]
+    pub fn list<const N: usize>(offsets: [u32; N]) -> [u32; 8] {
+        let mut l = [super::END; 8];
+        for (k, o) in offsets.iter().enumerate().take(7) {
+            l[k] = STRIP_GAME | ((o / 4) & 0x001F_FFFF);
+        }
+        l
+    }
+}
+
 /// A region (tile) as the core covers it on the X51v at 32 bpp, measured
 /// 2026-10-14: 8 pixels wide, 16 tall.
 pub const TILE_W: u32 = 8;

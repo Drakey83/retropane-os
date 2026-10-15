@@ -343,10 +343,11 @@ pub const BUDGETS: &[Budget] = &[
     // Test image (ADR-0024 M4): the MBX 3D core's first triangle. 19.9 KiB
     // measured (2026-10-14), + ~10%; then 22 -> 25 KiB for version 2 (the
     // parameter memory set-up, the clock vote, two table tries), 22.6 KiB
-    // measured, + ~10%.
+    // measured, + ~10%; then 25 -> 29 KiB for version 7 (the textured
+    // square's format sweep), 26.2 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx3d",
-        max_load: 25 * 1024,
+        max_load: 29 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
