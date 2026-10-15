@@ -152,7 +152,7 @@ Personality's drawing (Phase 4) are designed:
 **Idea recorded 2026-10-15 (owner).** A Windows 11 program that does ActiveSync's jobs for RetroPane over the Dell cable: old Pocket PC `setup.exe` installers work again (a `CeAppMgr.exe` stand-in sends the ARM CAB to the device), then a `rapi.dll` for old PC tools, time sync, file browsing, encrypted backups, contacts/calendar/tasks sync (Outlook and CardDAV/CalDAV), and internet pass-through (off by default). Our own protocol over the USB link, not Microsoft's; partnerships with per-feature permissions. Needs Phase 4 (programs run, CABs install) first.
 - [x] Research: ActiveSync's PC-side interfaces, from the owner's discs and PC (docs/legacysync/activesync-interfaces.md)
 - [x] Shared CAB and setup-script parsers, device and PC (`rp-cab`, `rp-ce-setup`)
-- [x] `ceappmgr.exe` stand-in: checks, chooses and stages the CAB with its plan (not yet registered: owner's vote, docs/legacysync/ceappmgr-standin.md)
+- [x] `ceappmgr.exe` stand-in: checks, chooses and stages the CAB with its plan (registration: option A chosen, backup/take-over/check built, not yet applied; docs/legacysync/ceappmgr-standin.md)
 - [ ] Device link session: design for review (docs/legacysync/device-link.md), then X25519/ChaCha20-Poly1305 in `rp-crypto`, frames, pairing
 - [ ] Sending to the device and installing (needs Phase 4's CAB installer)
 - [ ] RAPI (L3), time, Explore, backup; then sync and pass-through
