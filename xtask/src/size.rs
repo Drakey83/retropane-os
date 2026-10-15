@@ -535,8 +535,12 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
 const FLOAT_ALLOWED: &[(&str, &str)] = &[];
 
 /// Whether `name` is a software floating-point helper (EABI or
-/// compiler-rt names).
+/// compiler-rt names) or float formatting (`core::fmt` printing an `f32`
+/// costs ~20 KiB of integer code: `rp-mbx3d` version 21, 2026-10-15).
 fn is_float_helper(name: &str) -> bool {
+    if name.contains("float_to_decimal") || name.contains("flt2dec") {
+        return true;
+    }
     if let Some(f) = name.strip_prefix("__aeabi_") {
         // Every EABI float routine starts with f or d (fadd, dmul, f2iz,
         // d2uiz, fcmpeq...) or converts to one (i2f, ul2d...); none of the
@@ -762,6 +766,7 @@ mod tests {
             "__aeabi_d2iz",
             "__addsf3",
             "__floatsisf",
+            "_RNvNtNtCs1_4core3fmt5float32float_to_decimal_common_shortest",
             "main",
         ]);
         assert_eq!(
@@ -771,7 +776,8 @@ mod tests {
                 "__aeabi_ui2f",
                 "__aeabi_d2iz",
                 "__addsf3",
-                "__floatsisf"
+                "__floatsisf",
+                "_RNvNtNtCs1_4core3fmt5float32float_to_decimal_common_shortest"
             ]
         );
         assert!(
