@@ -15,6 +15,7 @@ rp-hal-x51v = { path = "../../hal/x51v" }
 rp-bench-suite = { path = "../suite" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 
 [lints]
 workspace = true

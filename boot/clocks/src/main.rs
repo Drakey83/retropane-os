@@ -37,6 +37,7 @@ mod image {
 
     use rp_bench_suite as suite;
     use rp_drv_pxa_gpio::Gpio;
+    use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::clocks::{self, POINTS, POWER_REGS, Point, Raw};
     use rp_hal_pxa27x::{diag, rt};
@@ -200,6 +201,15 @@ mod image {
         let start = clocks::save();
         let sp = start.point();
         log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 2");
+        // The banner and the verdict also go to the serial port (the
+        // emulator's check waits for them there; on the device a bounded
+        // write to an unclocked UART).
+        let mut uart = rt::take_ffuart().map(|bus| {
+            let mut u = PxaUart::new(bus);
+            u.init(115_200);
+            let _ = writeln!(u, "{MARKER}: version 2");
+            u
+        });
         log_raw("C1 as found", start);
         let power = clocks::power_snapshot();
         for ((name, _), v) in POWER_REGS.iter().zip(power) {
@@ -336,6 +346,9 @@ mod image {
         log!("  core counted {khz} kHz");
         let (checks, bad) = (g.checks, g.bad);
         log!("{MARKER}: {checks} checks, {bad} BAD");
+        if let Some(u) = uart.as_mut() {
+            let _ = writeln!(u, "{MARKER}: {checks} checks, {bad} BAD");
+        }
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
