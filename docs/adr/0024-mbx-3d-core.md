@@ -417,3 +417,12 @@ lists.
 1. Is the time box right (M1 and M2 two sessions each, then report)?
 2. M3 needs you to start DoomGLES under Windows Mobile while a probe runs:
    fine when we get there?
+
+## Later results (2026-10-15)
+
+The 3D core's interrupt, filtering and texture formats were measured with
+`rp-mbx3d` version 24 (ADR-0026, "`rp-mbx3d` version 24 on the device"):
+render done reaches GPIO85 (`0x130` bits 15 and 2, `MINTENABLE` bits 15
+and 2), bilinear filtering is TEX1 bit 31, 32-bit texels are TEX0 code 12,
+PVRTC 4 and 2 bpp are codes 28 and 16; depth stored across renders and
+mipmaps are still open.
