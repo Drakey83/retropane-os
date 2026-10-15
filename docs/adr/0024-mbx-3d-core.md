@@ -101,6 +101,17 @@ report; device runs only with the owner's go.
    all to one empty list at 0x12a068) and textures filling
    0x2F0000-0xAEFFFF. The game's own frame is likely above 0xC00000:
    next, a capture of that part first.
+
+   **Version 5 (top 4 MiB, twice, both whole):** no scene there. Textures
+   to 0xD57FFF (16-bit colour), from 0xD58000 blocks that look like PVRTC
+   (the compressed format the GLES driver advertises), above 0xE00000
+   unused (all ones). So the game's scene is in the low part version 4
+   saved: candidates the region array at 0x130000 (80 x 40 entries) and
+   object words at 0x12A000 (`e0000000 a8800000 0e000000 d6886610
+   22220e80`, then floats): our ISP word, a TSP-like word, and
+   `0xd6886610`, whose low 21 bits x 8 = 0x433080 lands in the texture
+   area (a texture address as in the PowerVR2's texture control word?
+   to be confirmed). Next: decode those words against the textures.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
