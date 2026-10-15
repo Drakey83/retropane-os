@@ -180,6 +180,28 @@ pub struct FrameStats {
     pub rects: u32,
     /// Whether the background was rebuilt.
     pub background: bool,
+    /// Text atlases built (a font in a colour not cached).
+    pub atlases: u32,
+    /// Pictures uploaded to the image cache.
+    pub images: u32,
+    /// Times the frame waited for the engine mid-way (row buffers or a
+    /// cache full).
+    pub waits: u32,
+    /// Command words queued.
+    pub words: u32,
+    /// Pixels the engine copies or fills, and blends (read, mix, write:
+    /// the slower kind), by what it was drawing.
+    pub px_copy: u32,
+    /// See [`Self::px_copy`]: blended pixels outside text.
+    pub px_blend: u32,
+    /// See [`Self::px_copy`]: text pixels (glyph blends).
+    pub px_text: u32,
+    /// See [`Self::px_copy`]: dither pixels.
+    pub px_dither: u32,
+    /// Blits queued.
+    pub blits: u32,
+    /// Rectangles copied forward from the picture on screen.
+    pub forward: u32,
 }
 
 /// The 4 x 4 ordered (Bayer) pattern, 0..16.
@@ -347,6 +369,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     }
 
     fn submit(&mut self, w: &[u32]) {
+        self.last.words += w.len() as u32;
         // A FIFO that stays full is caught by the frame's fence.
         let _ = self.e.submit(w);
     }
@@ -370,6 +393,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 
     /// Copies `r` of the 32 bpp picture at `src` into the one at `dst`.
     fn copy(&mut self, dst: usize, src: usize, r: Rect) {
+        self.last.px_copy += u32::from(r.w) * u32::from(r.h);
+        self.last.blits += 1;
         let (w, n) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, src, STRIDE as i32),
@@ -384,6 +409,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 
     /// `r` set to the opaque colour `c`.
     fn fill(&mut self, dst: usize, r: Rect, c: Argb) {
+        self.last.px_copy += u32::from(r.w) * u32::from(r.h);
+        self.last.blits += 1;
         let w = cmd::fill(Format::BPP32, dst, STRIDE, Self::coords(r), c | 0xFF00_0000);
         self.submit(&w);
     }
@@ -407,6 +434,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             self.mem.store(at + 4 * k0, &buf[..n]);
         }
         self.mem.sync();
+        let a = u32::from(r.w) * u32::from(r.h);
+        if blend {
+            self.last.px_blend += a;
+        } else {
+            self.last.px_copy += a;
+        }
+        self.last.blits += 1;
         let (w, n) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, at, 0),
@@ -439,6 +473,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         sx: u16,
         sy: u16,
     ) {
+        self.last.px_blend += u32::from(to.w) * u32::from(to.h);
+        self.last.blits += 1;
         let (w, n) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, src, stride as i32),
@@ -463,6 +499,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 continue;
             }
             let lines = (r.bottom() - first).div_ceil(4);
+            self.last.px_dither += u32::from(r.w) * u32::from(lines);
+            self.last.blits += 1;
             let (w, n) = cmd::blit(
                 (
                     Format::BPP32,
@@ -487,6 +525,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 
     /// Waits for everything queued (to reuse rows or cache space).
     fn wait(&mut self) -> bool {
+        self.last.waits += 1;
         let mem = &self.mem;
         let ok = self.e.finish_with(200_000, |at| mem.load(at)).is_ok();
         if !ok {
@@ -515,6 +554,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             self.images_top = 0;
         }
         let at = self.l.images.0 + self.images_top;
+        self.last.images += 1;
         self.mem.store(at, px);
         self.mem.sync();
         self.images[self.images_n] = (key, at);
@@ -551,6 +591,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             }
         };
         let (rgb, a) = (color & 0x00FF_FFFF, color >> 24);
+        self.last.atlases += 1;
         // Built in place: no copy of the table on the stack.
         self.atlases[slot] = Some(Atlas {
             font: key,
@@ -659,6 +700,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                     let (w, h) = (u16::from(g.w), u16::from(g.h));
                     if let Some((to, sx, sy)) = place(w, h, gx, gy, clip) {
                         self.blend_from(dst, to, (at, usize::from(w) * 4), sx, sy);
+                        let a = u32::from(to.w) * u32::from(to.h);
+                        self.last.px_text += a;
+                        self.last.px_blend -= a;
                     }
                 }
             }
@@ -746,27 +790,47 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             self.fresh = 2;
             self.last.background = true;
         }
-        let mut rects = [Rect::default(); 2 * MAX_DIRTY];
+        // What this frame changed is drawn; what the previous frame changed
+        // (the picture drawn into is two frames old) is copied forward from
+        // the picture on screen, one plain copy instead of drawing it again
+        // (2026-10-14: the frame after the Start menu opened drew the whole
+        // menu a second time, glass, text and dither: ~30 ms of engine).
+        let mut rects = [Rect::default(); MAX_DIRTY];
         let mut n = 0;
+        let mut forward = [Rect::default(); MAX_DIRTY];
+        let mut nf = 0;
         if self.fresh > 0 {
             rects[0] = SCREEN;
             n = 1;
         } else {
-            for r in frame.dirty().iter().chain(&self.prev[..self.prev_n]) {
+            for r in frame.dirty() {
                 let r = r.intersect(&SCREEN);
                 if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
                     rects[n] = r;
                     n += 1;
                 }
             }
+            for r in &self.prev[..self.prev_n] {
+                let r = r.intersect(&SCREEN);
+                if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
+                    forward[nf] = r;
+                    nf += 1;
+                }
+            }
         }
         self.prev_n = frame.dirty().len().min(MAX_DIRTY);
         self.prev[..self.prev_n].copy_from_slice(&frame.dirty()[..self.prev_n]);
-        if n == 0 {
+        if n == 0 && nf == 0 {
             return drawn;
         }
         let back = 1 - self.front;
         let dst = self.l.screens[back];
+        let shown = self.l.screens[self.front];
+        // First: drawing over these afterwards is still right.
+        for &r in &forward[..nf] {
+            self.copy(dst, shown, r);
+            drawn.pixels += u64::from(r.w) * u64::from(r.h);
+        }
         for &clip in &rects[..n] {
             let bg = self.l.background;
             self.copy(dst, bg, clip);
@@ -783,6 +847,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             drawn.pixels += u64::from(clip.w) * u64::from(clip.h);
         }
         self.last.rects = n as u32;
+        self.last.forward = nf as u32;
         // The fence, and back to the caller: `poll` flips.
         let n = self.e.next_fence();
         let fence = cmd::fence(self.l.fence, n);

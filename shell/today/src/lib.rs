@@ -284,6 +284,66 @@ mod tests {
         assert_eq!(gpu.stalls, 0);
     }
 
+    /// What each frame of opening and closing the Start menu costs the
+    /// CPU: atlases built, pictures uploaded, mid-frame waits, words queued.
+    #[test]
+    fn menu_frames_cost() {
+        use rp_draw::{Frame, Renderer};
+        use rp_mbx_render::model::{self, Bus, Mem};
+        use rp_mbx_render::{Layout, Mbx2dRenderer};
+        use rp_shell::{Input, Shell};
+
+        let wall = vec![128u8; W * H * 3 / 2];
+        let mem = model::memory();
+        let mut gpu = Mbx2dRenderer::new(
+            Bus::new(mem.clone()),
+            Mem(mem.clone()),
+            Layout::X51V,
+            || 0,
+            1,
+        );
+        show_gpu(&mut gpu, &wall, |_| {});
+        let mut shell = Shell::new(shell_fonts(), true);
+        let mut f = Frame::new();
+        let s = rp_shell::START;
+        let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);
+        let mut steps = vec![("first", None)];
+        for _ in 0..3 {
+            steps.push(("start down", Some(Input::PenDown { x: sx, y: sy })));
+            steps.push(("start up (menu)", Some(Input::PenUp { x: sx, y: sy })));
+            steps.push(("start down", Some(Input::PenDown { x: sx, y: sy })));
+            steps.push(("start up (close)", Some(Input::PenUp { x: sx, y: sy })));
+        }
+        for (name, step) in steps {
+            if let Some(e) = step {
+                shell.input(e);
+            }
+            if !shell.needs_frame() {
+                eprintln!("{name}: no frame");
+                continue;
+            }
+            shell.frame(&mut f);
+            gpu.draw(&f);
+            assert!(gpu.poll());
+            let t = gpu.last;
+            eprintln!(
+                "{name}: rects {}, forward {}, bg {}, atlases {}, images {}, waits {}, words {}, blits {}, px copy {} blend {} text {} dither {}",
+                t.rects,
+                t.forward,
+                t.background,
+                t.atlases,
+                t.images,
+                t.waits,
+                t.words,
+                t.blits,
+                t.px_copy,
+                t.px_blend,
+                t.px_text,
+                t.px_dither
+            );
+        }
+    }
+
     #[test]
     fn the_real_fonts_fit_the_shell() {
         // Every frame of the real Today screen fits, menu open included.
