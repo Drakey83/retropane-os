@@ -552,7 +552,11 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
             screenshot: None,
             sd_image: None,
             steps: &[],
-            extra: &[],
+            // Guest time from instructions: its quanta and sleeps are timer
+            // deadlines, and on host time a busy PC let a 5 ms quantum end
+            // before the first thread reached its system call (the order
+            // check saw `BS`).
+            extra: &["-icount", "shift=0"],
             input: None,
             during: None,
             then: None,
@@ -5688,13 +5692,9 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             "    drive: 1 MiB read in {} ms through the emulated drive",
             t.elapsed().as_millis()
         );
-        // About 3 s in the emulator; a loader napping mid-transfer took 17.
-        if t.elapsed() > Duration::from_secs(8) {
-            return Err(format!(
-                "drive: 1 MiB took {:?}, far slower than usual",
-                t.elapsed()
-            ));
-        }
+        // About 3 s on an idle PC (a loader napping mid-transfer took 17),
+        // but the wall clock is the PC's, not the loader's: the loader's
+        // own count of naps mid-command is checked below instead.
         // Item 58: sequential reads, as a PC copying a file makes them: the
         // second starts where the first ended, so its first chunk was read
         // ahead (by DMA, while the first one's last chunk went out). Both
@@ -5726,6 +5726,11 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         if ahead == 0 {
             return Err(format!(
                 "drive: sequential reads found nothing read ahead: {status:?}"
+            ));
+        }
+        if !status.contains("naps mid-command 0,") {
+            return Err(format!(
+                "drive: the loader napped with a drive command under way: {status:?}"
             ));
         }
         eprintln!("    drive read-ahead OK: {ahead} reads found their first chunk already read");
@@ -6449,7 +6454,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let emu = emulator(root)?;
     let wsl = matches!(emu, Emulator::Wsl);
     let _load = match std::env::var_os(LOAD_ENV) {
-        Some(_) if wsl => Some(start_load(timeout + Duration::from_secs(30))?),
+        Some(_) if wsl => Some(start_load(port, timeout + Duration::from_secs(30))?),
         Some(_) => {
             return Err(format!(
                 "{LOAD_ENV}: the load runs in WSL, with the WSL emulator"
@@ -6540,14 +6545,8 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let _ = child.wait();
     if wsl {
         // Killing wsl.exe may not reach the Linux process at once; make sure
-        // it's gone before the next test binds the same ports. Only this
-        // run's emulator, found by its own serial port: other sessions run
-        // emulators at the same time on their own port blocks.
-        let _ = wsl_bash(&format!(
-            "pkill -f -- '-serial tcp:127.0.0.1:{},'; sleep 0.3; true",
-            serial_port()
-        ))
-        .status();
+        // it's gone before the next test binds the same ports.
+        let _ = wsl_bash(&stop_own_qemu(port)).status();
     }
     // Whatever the guest printed while `during` ran is still queued: keep it,
     // so a test can check what happened after its own waiting.
@@ -6565,23 +6564,43 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
 /// passed on an idle PC and failed on a busy one, 2026-10-15).
 const LOAD_ENV: &str = "RETROPANE_EMU_LOAD";
 
-/// Marks the load's processes, for `stop_load`.
+/// Marks the load's processes, with the run's monitor port after it, for
+/// [`Load`]'s drop to end this run's load and no other.
 const LOAD_TAG: &str = "rp-emu-load";
+
+/// Ends this run's emulator and no other: its command line names this
+/// run's monitor port. Two sessions' runs share WSL (each in its own port
+/// block), and a `pkill -x qemu-system-arm` here once ended the other
+/// run's emulator mid-check (rp-blend under load, 2026-10-15: "terminating
+/// on signal 15"). The `[,]` keeps the pattern from matching its own
+/// shell's command line.
+fn stop_own_qemu(monitor_port: u16) -> String {
+    format!(
+        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; sleep 0.3; true"
+    )
+}
 
 /// The load script: one spinner per core, a fixed count, each ended by
 /// `timeout` after `secs` even if nothing stops it (an unbounded spawn
-/// loop once froze WSL). It waits for them: WSL ends them with it.
-fn load_script(secs: u64) -> String {
+/// loop once froze WSL). It waits for them: WSL ends them with it. Each
+/// spinner carries `LOAD_TAG-port;`, the run's own mark.
+fn load_script(monitor_port: u16, secs: u64) -> String {
     format!(
-        "for i in $(seq $(nproc)); do timeout {secs} bash -c ': {LOAD_TAG}; while :; do :; done' & done; wait
+        "for i in $(seq $(nproc)); do timeout {secs} bash -c ': {LOAD_TAG}-{monitor_port}; while :; do :; done' & done; wait
 "
     )
+}
+
+/// Ends this run's load and no other's (see [`stop_own_qemu`]); the `[;]`
+/// keeps the pattern from matching its own shell's command line.
+fn stop_own_load(monitor_port: u16) -> String {
+    format!("pkill -f '{LOAD_TAG}-{monitor_port}[;]'; true")
 }
 
 /// Starts the load in WSL (see [`LOAD_ENV`]); it lasts until the returned
 /// guard drops (or its limit). The script goes on stdin: `wsl.exe` passes a command line
 /// through a shell, which would expand its `$(...)` early.
-fn start_load(limit: Duration) -> Result<Load, String> {
+fn start_load(monitor_port: u16, limit: Duration) -> Result<Load, String> {
     eprintln!(
         "    load: one spinner per WSL core for at most {} s",
         limit.as_secs()
@@ -6596,19 +6615,18 @@ fn start_load(limit: Duration) -> Result<Load, String> {
         .stdin
         .take()
         .expect("piped")
-        .write_all(load_script(limit.as_secs()).as_bytes())
+        .write_all(load_script(monitor_port, limit.as_secs()).as_bytes())
         .map_err(|e| format!("starting the load: {e}"))?;
-    Ok(Load(child))
+    Ok(Load(child, monitor_port))
 }
 
-/// The running load; dropping it ends it, on every way out of `boot`.
-struct Load(std::process::Child);
+/// The running load (and its run's monitor port); dropping it ends it, on
+/// every way out of `boot`.
+struct Load(std::process::Child, u16);
 
 impl Drop for Load {
     fn drop(&mut self) {
-        // The pattern doesn't match its own shell's command line.
-        let (head, last) = LOAD_TAG.split_at(LOAD_TAG.len() - 1);
-        let _ = wsl_bash(&format!("pkill -f '{head}[{last}]'; true")).status();
+        let _ = wsl_bash(&stop_own_load(self.1)).status();
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
@@ -6796,11 +6814,115 @@ mod tests {
     /// ended by `timeout`.
     #[test]
     fn the_load_is_bounded() {
-        let s = super::load_script(90);
+        let s = super::load_script(45_441, 90);
         assert!(s.starts_with("for i in $(seq $(nproc)); do "), "{s}");
         assert!(s.contains("timeout 90 bash"), "{s}");
-        assert!(s.contains(super::LOAD_TAG), "{s}");
+        assert!(s.contains(&format!("{}-45441;", super::LOAD_TAG)), "{s}");
         assert_eq!(s.matches("while").count(), 1, "{s}");
+    }
+
+    /// Whether `pkill -f`'s pattern (ERE; only the `.`, `.*` and `[c]`
+    /// these patterns use) matches somewhere in `line`.
+    fn ere_finds(pat: &str, line: &str) -> bool {
+        fn here(p: &[u8], t: &[u8]) -> bool {
+            match p {
+                [] => true,
+                [b'.', b'*', rest @ ..] => (0..=t.len()).any(|i| here(rest, &t[i..])),
+                [b'[', c, b']', rest @ ..] => t.first() == Some(c) && here(rest, &t[1..]),
+                [b'.', rest @ ..] => !t.is_empty() && here(rest, &t[1..]),
+                [c, rest @ ..] => t.first() == Some(c) && here(rest, &t[1..]),
+            }
+        }
+        (0..=line.len()).any(|i| here(pat.as_bytes(), &line.as_bytes()[i..]))
+    }
+
+    /// The `pkill -f '...'` pattern in a cleanup command.
+    fn pattern(cmd: &str) -> &str {
+        cmd.split('\'').nth(1).expect("quoted pattern")
+    }
+
+    /// A run's cleanup ends its own emulator and load, never another
+    /// session's run (one ended rp-blend mid-check), nor the shell running
+    /// the pkill.
+    #[test]
+    fn cleanup_ends_only_this_runs_processes() {
+        let qemu = |port: u16| {
+            format!(
+                "timeout 70 /home/u/retropane-qemu/build/qemu-system-arm -M x51v -display none -serial tcp:127.0.0.1:{},server=on,wait=on -monitor tcp:127.0.0.1:{port},server,nowait -qmp tcp:127.0.0.1:{},server,nowait -kernel '/mnt/c/x/rp-loader.bin'",
+                port - 1,
+                port + 1
+            )
+        };
+        let stop = super::stop_own_qemu(45_441);
+        let p = pattern(&stop);
+        assert!(ere_finds(p, &qemu(45_441)), "{p}");
+        assert!(!ere_finds(p, &qemu(45_461)), "another run's emulator");
+        assert!(!ere_finds(p, &qemu(4_544)), "a port that is a prefix");
+        assert!(!ere_finds(p, &format!("bash -c {stop}")), "its own shell");
+
+        let spinner = |port: u16| {
+            let s = super::load_script(port, 90);
+            let body = s.split("bash -c '").nth(1).expect("spinner");
+            format!("bash -c {}", body.split('\'').next().expect("body"))
+        };
+        let stop = super::stop_own_load(45_441);
+        let p = pattern(&stop);
+        assert!(ere_finds(p, &spinner(45_441)), "{p}");
+        assert!(!ere_finds(p, &spinner(45_461)), "another run's load");
+        assert!(!ere_finds(p, &format!("bash -c {stop}")), "its own shell");
+
+        // No other pkill: every kill goes through these two.
+        let src = include_str!("emu.rs");
+        let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
+        let kills = code
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains("pkill"))
+            .count();
+        assert_eq!(kills, 2, "pkill outside stop_own_qemu / stop_own_load");
+    }
+
+    /// The body of `pub fn name` in this file.
+    fn body(name: &str) -> &'static str {
+        let src = include_str!("emu.rs");
+        let start = src.find(&format!("pub fn {name}(")).expect(name);
+        let body = &src[start..];
+        &body[..body.find("\n}\n").expect("end")]
+    }
+
+    /// The threads image's checks are timer deadlines in its own time (a
+    /// 5 ms quantum): on host time a busy PC ended a quantum before the
+    /// first thread reached its system call.
+    #[test]
+    fn threads_keep_instruction_time() {
+        assert!(body("boot_threads").contains("\"-icount\""));
+    }
+
+    /// No check bounds the guest's work by the PC's wall clock: a busy PC
+    /// made the drive's 1 MiB read take 8.7 s against an 8 s limit. The
+    /// drive check reads the loader's own count of naps mid-command (what
+    /// the limit was there to catch), which the loader must report. The
+    /// one wall-clock bound left is the idle loader's answer (500 ms; 26 ms
+    /// with every core busy), which is about the PC's round trip.
+    #[test]
+    fn guest_work_is_not_timed_on_the_wall_clock() {
+        let drive = body("boot_loader_drive");
+        assert!(
+            drive.contains("naps mid-command 0,"),
+            "drive checks the count"
+        );
+        assert!(!drive.contains("elapsed() >"), "drive: no wall-clock bound");
+        let loader = include_str!("../../boot/loader/src/main.rs");
+        assert!(
+            loader.contains("naps mid-command {}"),
+            "the loader reports it"
+        );
+        let src = include_str!("emu.rs");
+        let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
+        let bounds = code.matches("elapsed() >").count() + code.matches("took >").count();
+        assert_eq!(
+            bounds, 1,
+            "a new wall-clock bound: wait on the guest instead"
+        );
     }
 
     /// emu-today holds every press until the screen answers it: no stylus

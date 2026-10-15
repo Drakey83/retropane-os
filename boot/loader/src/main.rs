@@ -1974,6 +1974,10 @@ mod image {
         let (mut asleep, mut idle_pct) = (0u32, 0u32);
         // Whole packets go straight from the FIFO into it (both buffers).
         let mut buf = [0u8; 512];
+        // Naps taken with a drive command under way: must stay 0 (a loader
+        // napping mid-transfer once made a 1 MiB read take 17 s). Counted,
+        // so the check needn't time the transfer on a busy PC's clock.
+        let mut naps_mid_command = 0u32;
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
@@ -2027,6 +2031,9 @@ mod image {
                 watchdog.feed(RUN_LIMIT);
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
+                if msc.busy() {
+                    naps_mid_command = naps_mid_command.wrapping_add(1);
+                }
                 let t = rt::ticks();
                 // Until the next tick, or at once when the PC sends or takes
                 // a USB packet (ADR-0007: the controller's interrupt).
@@ -2197,7 +2204,7 @@ mod image {
                             let dirty = (flag(lun.dirty_found), flag(lun.dirty_flag()));
                             let _ = write!(
                                 status,
-                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, read ahead {}, kept alive {}, dirty flag found {} now {}, idle {}%\r\n",
+                                "RPL OK drive {} cmds {} failed, {} blocks read, {} errors (last at {}+{}), {} card retries, {} block-by-block, {} slow-clock, {} weak ranges{}, read ahead {}, kept alive {}, dirty flag found {} now {}, naps mid-command {}, idle {}%\r\n",
                                 s.commands,
                                 s.failed,
                                 s.blocks_read,
@@ -2220,6 +2227,7 @@ mod image {
                                 KEPT_ALIVE.with(|k| *k),
                                 dirty.0,
                                 dirty.1,
+                                naps_mid_command,
                                 idle_pct.min(100),
                             );
                             status.as_str()

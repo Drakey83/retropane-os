@@ -75,8 +75,21 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
   clock, so a starved guest saw its time jump past the loader's 30 s run
   limit while checking in every 5 ms of its own time. emu-today runs under
   `-icount` (guest time from instructions), as the cycle-exact checks do.
+  So does the threads image: its 5 ms quantum once ended before the first
+  thread reached its system call, and the preemption-order check saw `BS`.
+  Nor is the guest's work timed on the PC's clock: the drive's 1 MiB read
+  took 8.7 s against an 8 s limit with every core busy, so the check now
+  reads the loader's own count of naps mid-command (`drive status`), the
+  slowdown the limit was there to catch. Tests keep both, and allow one
+  wall-clock bound (the idle loader's 500 ms answer, 26 ms under load).
   `RETROPANE_EMU_LOAD=1` runs any check with one spinner per WSL core
-  (a fixed count, each ended by `timeout`), to prove it.
+  (a fixed count, each ended by `timeout`), to prove it; the full suite
+  passes under it.
+- **A run ends only its own processes.** Two sessions' runs share WSL, so
+  cleanup finds this run's emulator and load by the monitor port in their
+  command lines. A `pkill -x qemu-system-arm` once ended another session's
+  rp-blend mid-check (2026-10-15, "terminating on signal 15"); a test
+  checks the patterns against both runs' command lines.
 - **Every check stands alone in a fresh checkout.** Scratch files go
   through `scratch()` and raw binaries through `raw_image()`, which create
   their folders and build what they need; screendump makes its folder and
