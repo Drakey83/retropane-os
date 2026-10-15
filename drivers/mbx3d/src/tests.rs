@@ -275,6 +275,7 @@ fn a_textured_stream_has_the_state_block_then_seven_word_vertices() {
         tex::TSP_GAME,
         ISP_ALWAYS,
         [tex::FORMAT_GAME, 0xCE00_3060, tex::COMBINE_GAME],
+        ta::clip(480, 640),
         &[p(0.0, 0.0), p(8.0, 1.0), p(4.0, 0.5)],
     );
     assert_eq!(
@@ -286,7 +287,7 @@ fn a_textured_stream_has_the_state_block_then_seven_word_vertices() {
             tex::FORMAT_GAME,
             0xCE00_3060,
             tex::COMBINE_GAME,
-            0,
+            0x2007_4027,
             0,
             ta::STRIP
         ]
@@ -303,5 +304,15 @@ fn a_textured_stream_has_the_state_block_then_seven_word_vertices() {
             0x3F80_0000,
             0x3F00_0000
         ]
+    );
+}
+
+#[test]
+fn the_clip_word_covers_the_screen_in_16_pixel_units() {
+    // x 0-29, y 0-39 (480 / 16 - 1, 640 / 16 - 1), bit 29 on.
+    assert_eq!(ta::clip(480, 640), 0x2007_4027);
+    assert_eq!(
+        ta::dell_texture(0x00E0_0000),
+        [0xA880_0000, 0x0E01_C000, 0xD688_6610]
     );
 }
