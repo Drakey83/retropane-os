@@ -119,9 +119,72 @@ commands:
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
+/// Commands that talk to the Axim over the cable.
+const DEVICE_COMMANDS: &[&str] = &[
+    "usb",
+    "load",
+    "put",
+    "drive",
+    "card",
+    "backlight",
+    "ls",
+    "get",
+    "rm",
+    "cf",
+    "log",
+    "cpld",
+    "trace",
+    "wmbench",
+    "reboot-wm",
+    "tone",
+    "device-check",
+    "install",
+];
+
+/// Takes the machine-wide Axim lock for the whole command, waiting while
+/// another `cargo xtask` (any checkout, any session) holds it. Two loads at
+/// once collided on 2026-10-15: one was lost and the USB link dropped
+/// until the Axim was reseated. The OS releases the lock when the process
+/// ends, so a killed command can't leave it held.
+fn axim_lock() -> Result<std::fs::File> {
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+        .join("RetroPane");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join("axim.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!("    the Axim is busy with another xtask command: waiting for it");
+            file.lock()
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+        }
+        Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
+    }
+    Ok(file)
+}
+
 fn main() -> ExitCode {
     let cmd = std::env::args().nth(1).unwrap_or_default();
     let flag = std::env::args().nth(2).unwrap_or_default();
+    // Held until main returns.
+    let _axim = if DEVICE_COMMANDS.contains(&cmd.as_str()) {
+        match axim_lock() {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("xtask: the Axim lock: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let result = match cmd.as_str() {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
