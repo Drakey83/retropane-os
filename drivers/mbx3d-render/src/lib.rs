@@ -218,9 +218,9 @@ impl Paint {
     }
 }
 
-/// A depth test (version 23: larger z is nearer). Use "greater", "greater
-/// or equal" or "always": "less" and "less or equal" behaved in no way a
-/// compare explains on the device (ADR-0026, stage S8 of `rp-mbx3d-api`).
+/// A depth test (version 23: larger z is nearer). Only the modes the
+/// device showed working are accepted ([`DEPTH_MODES`]: "greater",
+/// "greater or equal", "always"); [`Renderer::set`] refuses the others.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depth {
     /// One of [`depth`].
@@ -230,6 +230,14 @@ pub struct Depth {
     /// The quad's depth, `z / 65536` (each tile starts at 0).
     pub z: u16,
 }
+
+/// The depth modes [`Renderer::set`] accepts: the ones that behaved as a
+/// compare on the device. "Less" and "less or equal" never passed in any
+/// test (`rp-mbx3d-api` run 3, S8: whatever the floor's z, with and without
+/// writes), and in a frame rendering only some tiles one of them under
+/// another quad's tiles made an "always" quad below it vanish (runs 1-3);
+/// "never", "equal" and "not equal" were never tried.
+pub const DEPTH_MODES: [u32; 3] = [depth::GREATER, depth::GEQUAL, depth::ALWAYS];
 
 /// One quad of the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -341,6 +349,8 @@ pub enum Error {
     NoCore,
     /// The frame's object lists don't fit the parameter memory.
     TooComplex,
+    /// A depth mode outside [`DEPTH_MODES`].
+    Unsupported,
 }
 
 /// What [`Renderer::poll`] found.
@@ -773,6 +783,12 @@ impl Renderer {
             return Err(Error::Busy);
         }
         let old = *self.slots.get(slot).ok_or(Error::BadSlot)?;
+        if draw
+            .and_then(|d| d.depth)
+            .is_some_and(|d| !DEPTH_MODES.contains(&d.mode))
+        {
+            return Err(Error::Unsupported);
+        }
         let new = match draw {
             None => Slot::default(),
             Some(d) => {

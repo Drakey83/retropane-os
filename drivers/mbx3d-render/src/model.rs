@@ -420,12 +420,10 @@ impl Obj {
                 let z = w[0] * v[0].z + w[1] * v[1].z + w[2] * v[2].z;
                 let mode = (self.tsp >> 9) & 7;
                 let pass = match mode {
-                    // "Less" and "less or equal" behave in no way a compare
-                    // explains (version 23: blue at 0.3 over red at 0.5
-                    // left red; runs 1-2, the background at z 0 not 0.1:
-                    // the background showed through red). Unreliable until
-                    // device stage S8 explains them: refused here.
-                    1 | 3 => panic!("depth mode {mode}: unreliable on the device (ADR-0026)"),
+                    // "Less" and "less or equal" never passed on the device
+                    // and, in partial renders, hid an "always" object below
+                    // (run 3, S8): the renderer refuses them.
+                    1 | 3 => panic!("depth mode {mode}: broken on the device (ADR-0026)"),
                     4 => z > t.z[k],
                     6 => z >= t.z[k],
                     7 => true,

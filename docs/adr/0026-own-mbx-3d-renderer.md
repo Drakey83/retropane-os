@@ -341,6 +341,20 @@ are marked unreliable (the model refuses them; the interface needs only
 "greater"), and run 3's stage S8 varies the floor's z, red, blue's write
 and a partial render to find out.
 
+**Run 3 (`local/rp-mbx3d-api-run3.txt`): 89 checks, 0 BAD; S8 answered
+"less".** Over whole-screen renders "less" and "less or equal" **never
+passed**, whatever the floor's z (0, 0.1, 0.6: even blue at 0.3 over a
+0.6 floor stayed hidden) and with or without depth writes; red under them
+always stayed. The floor's z was a red herring: what hid red in runs 1-2
+was the **partial render** (only blue's tiles), the one S8 variant that
+lost red again; version 23 rendered whole screens. Conclusion: the two
+modes don't work as we drive the core (the PowerVR2 family uses "greater"
+for nearer; whatever "less" needs is unknown), and they can damage what's
+under them. The renderer now **refuses every depth mode the device hasn't
+shown working** (`DEPTH_MODES`: greater, greater or equal, always;
+`Error::Unsupported`), so no client can reach the failure; the interface
+needs only "greater". S8 is removed; S5 checks the refusal.
+
 **Open, found while modelling:** "less" never passed on the device, not
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.

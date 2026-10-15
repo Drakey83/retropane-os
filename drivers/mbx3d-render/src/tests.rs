@@ -763,3 +763,24 @@ fn the_prediction_fits_run_2s_exact_times() {
         );
     }
 }
+
+#[test]
+fn depth_modes_the_device_broke_are_refused() {
+    // Run 3 (S8): "less" and "less or equal" never passed, and in a partial
+    // render one made an "always" quad under it vanish; the others untried.
+    let mut g = rig(480, 640);
+    for mode in 0..8 {
+        let d = square(0, 0, 8, Paint::Flat(BLUE)).with_depth(Depth {
+            mode,
+            write: true,
+            z: 1,
+        });
+        let want = if DEPTH_MODES.contains(&mode) {
+            Ok(())
+        } else {
+            Err(Error::Unsupported)
+        };
+        assert_eq!(g.r.set(&mut g.mem, 0, Some(&d)), want, "mode {mode}");
+    }
+    assert_eq!(DEPTH_MODES, [depth::GREATER, depth::GEQUAL, depth::ALWAYS]);
+}
