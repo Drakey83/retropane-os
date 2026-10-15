@@ -127,7 +127,7 @@ new clusters first, FAT links in every copy, then one sector write switches
 the directory entry, then the old clusters are freed. The probe lists the
 root directory read-only; the loader takes `RPF1` frames (`cargo xtask put`).
 
-### DMA (M; emulator-verified, device run pending)
+### DMA (M; emulator-verified; reads confirmed on the device 2026-10-15)
 
 Multi-block transfers can move by DMA instead of byte-wide FIFO reads:
 `CMDAT[7]` sends the controller's FIFO requests to the DMA controller,
@@ -153,7 +153,8 @@ with a pattern, compared with the same blocks read one by one); reads use
 DMA only if they match. Writes stay on the FIFO until the owner runs
 `cargo xtask card dma writes` for a session (a `put` is then verified by
 read-back). `cargo xtask card dma` reports the verdict and the transfer
-count.
+count. On the X51v (2026-10-15): "dma reads on (self-test passed), writes
+off, 194 transfers".
 
 ## Speed (measured, real X51v)
 
