@@ -289,6 +289,11 @@ DWORD, HANDLE)`; written up per function when L3 starts.
 - The 14 other Dell-disc installers (NSIS, InstallShield, Wise and unknown
   packers) keep their CABs inside compressed installers; running them is
   how their CABs come out. Not done here (it changes the PC); the five
-  already run today cover four installer kinds.
+  already run today cover four installer kinds. One installer kind
+  opens without running: the X50 Game CD's Enigmo (`EnA01En.exe`) keeps
+  a zlib stream in PE resource 99/2, which inflates to a second installer
+  with the MSCF cabinet inside (found by the GLES-games session,
+  2026-10-15). That CAB is byte-identical to the one WMDC staged, and
+  `rp-cab`'s extraction of all 68 files matches 7-Zip's.
 - CeAppMgr's exit codes and how installers react to them (**guess**: most
   ignore them).
