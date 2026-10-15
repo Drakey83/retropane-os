@@ -46,7 +46,9 @@
 //! tile buffer (uncovered pixels white, measured), it doesn't load what the
 //! picture held. So the scene must cover every tile it renders: the
 //! [`Renderer::set_background`] colour (on by default) is drawn first in
-//! every tile.
+//! every tile. It also writes depth (z 0): a tile's depth starts undefined
+//! (run 1), so without a background, depth tests need a quad writing depth
+//! under them first.
 
 #![cfg_attr(not(any(test, feature = "model")), no_std)]
 #![forbid(unsafe_code)]
@@ -359,6 +361,8 @@ pub enum Poll {
 pub struct FrameStats {
     /// Tiles rendered.
     pub tiles: u32,
+    /// Quads listed in them, summed over the tiles.
+    pub quads: u32,
     /// Object lists written for it (the others reused).
     pub lists: u32,
     /// Words stored into 2700G memory since the previous frame (quads,
@@ -372,11 +376,14 @@ pub struct FrameStats {
     pub done_us: u32,
 }
 
-/// The predicted render time of `tiles` tiles (version 19: 16 us for one,
-/// 12,484 us for 2400: ~16 us + 5.2 us a tile).
+/// The predicted render time of `tiles` tiles listing `quads` quads in all
+/// (beyond the background): version 19, 16 us for one tile and 12,484 us
+/// for 2400 (~16 us + 5.2 us a tile), plus ~1 us a quad a tile
+/// (`rp-mbx3d-api` run 1: a 10 x 10 block under one quad between 541 and
+/// 678 us; to calibrate from run 2's exact times).
 #[must_use]
-pub const fn predict_us(tiles: u32) -> u32 {
-    16 + tiles * 21 / 4
+pub const fn predict_us(tiles: u32, quads: u32) -> u32 {
+    16 + tiles * 21 / 4 + quads
 }
 
 /// Where things sit in the parameter memory, in bytes from its start (the
@@ -882,7 +889,7 @@ impl Renderer {
             self.forget_lists();
         }
         let writes0 = self.shadow.writes;
-        let (tiles, lists) = match self.write_regions(mem, &todo) {
+        let (tiles, quads, lists) = match self.write_regions(mem, &todo) {
             Some(r) => r,
             None => {
                 self.forget_lists();
@@ -904,7 +911,7 @@ impl Renderer {
         self.shadow.write(bus, 0x65C, addr);
         self.shadow.write(bus, m3::START, 1);
 
-        let predicted = predict_us(tiles);
+        let predicted = predict_us(tiles, quads);
         let start = clock.now_us();
         self.pending = Some(Pending {
             start,
@@ -914,6 +921,7 @@ impl Renderer {
             deadline: predicted.saturating_mul(4).saturating_add(20_000),
             stats: FrameStats {
                 tiles,
+                quads,
                 lists,
                 mem_words: core::mem::take(&mut self.mem_words),
                 reg_writes: self.shadow.writes - writes0,
@@ -963,8 +971,9 @@ impl Renderer {
             let _ = self.bring_up(bus, mem, clock);
             return Poll::Recovered;
         }
-        // Not yet: look again a quarter of the prediction later.
-        Poll::Wait(now.wrapping_add((p.stats.predicted_us / 4).max(50)))
+        // Not yet: look again a sixteenth of the prediction later (a status
+        // read is one bus read; a coarse step wastes the GPU's time).
+        Poll::Wait(now.wrapping_add((p.stats.predicted_us / 16).max(20)))
     }
 
     /// When idle: the 3D clock off once [`CLOCK_IDLE_US`] has passed since
@@ -1031,7 +1040,12 @@ impl Renderer {
                 rhw: f(1),
                 argb: c,
             });
-            let words = m3::triangle(m3::ISP_ALWAYS, m3::TSP_DELL, &v);
+            // It writes depth (z 0, the farthest): a tile's depth isn't
+            // cleared by `0x6DC = 0` (rp-mbx3d-api run 1: "greater" failed
+            // where nothing had written depth; version 23's background
+            // wrote it and passed).
+            let tsp = m3::depth_test(m3::TSP_DELL, depth::ALWAYS, true);
+            let words = m3::triangle(m3::ISP_ALWAYS, tsp, &v);
             mem.store((self.params.at + BG_AT) as usize, &words);
             self.mem_words += words.len() as u32;
         }
@@ -1039,11 +1053,12 @@ impl Renderer {
     }
 
     /// The region array listing `todo`, each tile pointing at the list of
-    /// the quads touching it. Returns (tiles, lists written), or `None` if
-    /// the lists ran out of parameter memory.
-    fn write_regions<M: LocalMem>(&mut self, mem: &mut M, todo: &Tiles) -> Option<(u32, u32)> {
+    /// the quads touching it. Returns (tiles, quads listed, lists written),
+    /// or `None` if the lists ran out of parameter memory.
+    fn write_regions<M: LocalMem>(&mut self, mem: &mut M, todo: &Tiles) -> Option<(u32, u32, u32)> {
         let mut buf = [0u32; 64];
         let (mut nb, mut flushed, mut n, mut lists) = (0usize, 0u32, 0u32, 0u32);
+        let mut quads = 0;
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
         for k in todo.iter() {
             let (x, y) = (k as u32 % self.cols, k as u32 / self.cols);
@@ -1072,6 +1087,7 @@ impl Renderer {
                     mask |= 1 << s;
                 }
             }
+            quads += mask.count_ones();
             let (at, new) = self.list_for(mem, mask)?;
             lists += u32::from(new);
             if nb == buf.len() {
@@ -1090,7 +1106,7 @@ impl Renderer {
             mem.store((self.regions + 4 * flushed) as usize, &buf[..nb]);
         }
         self.mem_words += 2 * n;
-        Some((n, lists))
+        Some((n, quads, lists))
     }
 
     /// The list of the quads in `mask` (after the background), in the

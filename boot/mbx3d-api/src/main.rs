@@ -23,7 +23,10 @@
 //!
 //! The renderer waits by its predicted render time and reads the status
 //! once (ADR-0026 D3); this image busy-waits for that time (no scheduler
-//! here). Unattended: the last picture stays 10 s or until a button; the
+//! here). Run 2: the background writes depth (run 1's S5 failed where
+//! nothing had: a tile's depth isn't cleared), and each frame's exact render
+//! time is measured beside the prediction (now counting quads a tile), to
+//! calibrate it. Unattended: the last picture stays 10 s or until a button; the
 //! plane, the core and the clock are put back.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
@@ -36,7 +39,7 @@ pub const MARKER: &str = "RETROPANE-MBX3D-API";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_blit2d::{self as cmd, Engine, Format};
+    use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::clock::{MBXCLK, has_3d};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
     use rp_drv_pxa_keypad::{Keypad, Pressed};
@@ -45,6 +48,7 @@ mod image {
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
+    const RENDER_DONE: u32 = 1 << 2;
     use rp_mbx3d_render::{
         self as r3d, Clock, Depth, Draw, FrameStats, LocalMem, Paint, Picture, Poll, Renderer,
         Target, UV_ONE, address, depth, factor, format,
@@ -201,6 +205,17 @@ mod image {
                     return None;
                 }
             };
+            // Calibration (run 2): the exact finish, by watching the status
+            // bit (it stays set until the renderer's poll clears it). The
+            // renderer itself reads it once at the predicted time.
+            let t0 = self.clock.now_us();
+            let mut exact = None;
+            while self.clock.now_us().wrapping_sub(t0) < 200_000 {
+                if self.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
+                    exact = Some(self.clock.now_us().wrapping_sub(t0));
+                    break;
+                }
+            }
             let mut polls = 0;
             loop {
                 while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {}
@@ -209,12 +224,12 @@ mod image {
                     Poll::Wait(t) => at = t,
                     Poll::Done(s) => {
                         log!(
-                            "  {what}: {} tiles, {} lists written, {} words to memory, {} register writes; done by {} us (predicted {}), {polls} poll(s)",
+                            "  {what}: {} tiles, {} quads listed, {} lists written, {} words to memory, {} register writes; exact {exact:?} us, predicted {}",
                             s.tiles,
+                            s.quads,
                             s.lists,
                             s.mem_words,
                             s.reg_writes,
-                            s.done_us,
                             s.predicted_us
                         );
                         return Some(s);
@@ -561,7 +576,9 @@ mod image {
         let clk0 = e.regs.read32(MBXCLK);
         let _ = store32_volatile(vram, map::FENCE.at as usize, 0);
         cpu::drain_write_buffer();
-        log!("{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), MBXCLK 0x{clk0:x}");
+        log!(
+            "{MARKER}: RetroPane's own 3D renderer through its API (ADR-0026), run 2 (background writes depth; exact render times), MBXCLK 0x{clk0:x}"
+        );
         let mut g = Rig {
             e,
             mem: Vram(vram),
