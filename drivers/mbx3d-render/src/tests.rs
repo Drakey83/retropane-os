@@ -1073,7 +1073,7 @@ fn sixteen_bit_targets_as_measured() {
         assert_eq!(g.gpu.reg(0x660), 240, "960 bytes a line / 4");
         let p16 = |g: &Rig, x: u32, y: u32| {
             let a = (pic.at + y * pic.stride + 2 * x) as usize;
-            u32::from(g.mem.load(a & !3).unwrap() >> (8 * (a & 2)) & 0xFFFF)
+            (g.mem.load(a & !3).unwrap() >> (8 * (a & 2))) & 0xFFFF
         };
         assert_eq!(
             [
