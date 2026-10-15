@@ -224,6 +224,50 @@ fn now_secs() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// The emulator's sibling of the Axim lock: a block of `len` local TCP
+/// ports for one process's emulator runs (serial, monitor, QMP, USB...).
+/// Two `cargo xtask emu*` runs on fixed ports collided on 2026-10-15
+/// ("Address already in use"). Each block is claimed with an OS lock on
+/// `emu-ports/<first>.lock`, so no two xtask processes share one and a
+/// killed one frees its block; a block with a port some other program
+/// holds (`is_free`, e.g. a QEMU that outlived its xtask) is skipped.
+/// Returns the first port and the lock to keep for the process's life.
+pub fn reserve_ports(
+    dir: &Path,
+    first: u16,
+    len: u16,
+    blocks: u16,
+    is_free: &dyn Fn(u16) -> bool,
+) -> Result<(u16, File), String> {
+    let dir = dir.join("emu-ports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Start at a different block in each process, so concurrent runs don't
+    // all race for the first one.
+    let offset = u16::try_from(std::process::id() % u32::from(blocks)).unwrap_or(0);
+    for i in 0..blocks {
+        let start = first + (i + offset) % blocks * len;
+        let path = dir.join(format!("{start}.lock"));
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if file.try_lock().is_ok() && (start..start + len).all(is_free) {
+            return Ok((start, file));
+        }
+    }
+    Err(format!(
+        "no free block of {len} emulator ports in {first}..{} (another {blocks} runs at once?)",
+        first + blocks * len
+    ))
+}
+
+/// Whether nothing listens on local `port` (for [`reserve_ports`]).
+pub fn port_is_free(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 fn ago(secs: u64) -> String {
     match secs {
         0..60 => format!("{secs} s"),
@@ -445,6 +489,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn concurrent_emulator_runs_get_their_own_ports() {
+        let dir = temp_dir("ports");
+        let free = |_| true;
+        let (a, _la) = reserve_ports(&dir, 50_000, 16, 4, &free).expect("first");
+        let (b, _lb) = reserve_ports(&dir, 50_000, 16, 4, &free).expect("second");
+        assert_ne!(a, b);
+        for s in [a, b] {
+            assert!(
+                (50_000..50_064).contains(&s) && (s - 50_000) % 16 == 0,
+                "{s}"
+            );
+        }
+        // A block with one port held by some other program is skipped.
+        let (c, _lc) =
+            reserve_ports(&dir, 50_000, 16, 4, &|p| p != a + 20 && p != b + 20).expect("third");
+        assert!(![a, b].contains(&c) && !(c..c + 16).any(|p| p == a + 20 || p == b + 20));
+        let (d, ld) = reserve_ports(&dir, 50_000, 16, 4, &free).expect("fourth");
+        assert!(
+            reserve_ports(&dir, 50_000, 16, 4, &free).is_err(),
+            "all four taken"
+        );
+        // A finished (or killed) run's block is free again.
+        drop(ld);
+        assert_eq!(
+            reserve_ports(&dir, 50_000, 16, 4, &free).expect("again").0,
+            d
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

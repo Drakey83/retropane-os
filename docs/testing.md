@@ -55,6 +55,15 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
 - **A loop releases the lock between runs**, so other sessions can take
   turns. Pausing someone else's loop is a message to that session, never a
   file.
+- **Emulator runs never share ports.** Each `cargo xtask emu*` process
+  reserves its own block of 20 local ports (serial, monitor, QMP, USB
+  chardevs) from 45440 up, with an OS lock per block in
+  `%LOCALAPPDATA%\RetroPane\emu-ports\` (`devlock::reserve_ports`), and
+  skips a block where any port is already in use. Fixed ports made two
+  sessions' runs fail with "Address already in use" on 2026-10-15. Every
+  emulator port is an offset from `monitor_port()`; a test fails if a USB
+  chardev number reaches past the block (it found `msc_args(13)` doing so
+  the day it landed). `RETROPANE_MONITOR_PORT` still pins the ports by hand.
 
 ## Mutants: proving the tests bite
 
