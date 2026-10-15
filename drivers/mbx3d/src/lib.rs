@@ -26,6 +26,10 @@
 /// ISP word "depth compare always" (bits 31-29 = 7), as Dell's driver
 /// writes it for its background and minimal objects.
 pub const ISP_ALWAYS: u32 = 0xE000_0000;
+/// ISP word bit 23: Gouraud shading, colours blended between the vertices
+/// (the PowerVR2's bit; Dell's objects leave it clear and draw flat, the
+/// first vertex's colour: measured 2026-10-14). Being checked on the X51v.
+pub const ISP_GOURAUD: u32 = 1 << 23;
 /// The TSP word Dell's driver writes with [`ISP_ALWAYS`] (bits not yet
 /// decoded; Gouraud-shaded, opaque as far as the objects that use it go).
 pub const TSP_DELL: u32 = 0x2220_0E80;
