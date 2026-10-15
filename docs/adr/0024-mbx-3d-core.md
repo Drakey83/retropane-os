@@ -77,6 +77,17 @@ report; device runs only with the owner's go.
    runs, a probe in the style of `rp-wmgpu` snapshots only the registers
    M1 named and the scene buffers at a render. This confirms M2 on a real
    render. The owner launches the game; nothing is written.
+
+   **Built 2026-10-14 (`tools/wmbench/rp-wm3d.c`):** after M4 drew flat
+   and shaded triangles, textures are next, and textured objects (like
+   the tile accelerator's output) are written by the core, not by code we
+   can read. So the probe copies the 2700G's whole 16 MiB, read-only, twice
+   while DoomGLES plays (at 1 and 1.5 minutes), at the highest thread
+   priority after a 30 ms wait so the frame isn't torn (about a second;
+   the game pauses), and saves the copies to the SD card for the PC.
+   Registers: only `MBXCLK` and the core's status, both read by Dell's
+   driver. The copies are analysed on the PC; nothing is copied into
+   RetroPane but facts.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a

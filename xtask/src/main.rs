@@ -238,13 +238,14 @@ fn main() -> ExitCode {
                          -o target/wmbench/rp-wmbench.exe tools/wmbench/rp-wmbench.c && \
                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
-                         -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c",
+                         -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c &&                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1                          -o target/wmbench/rp-wm3d.exe tools/wmbench/rp-wm3d.c",
                         emu::to_wsl_path(&workspace_root())
                     ))
                 })
                 .map(|()| {
                     eprintln!("    target/wmbench/rp-wmbench.exe: put it in the SD root (cargo xtask put target/wmbench/rp-wmbench.exe rp-wmbench.exe), run it under Windows Mobile, then fetch rp-wm-baseline.txt");
                     eprintln!("    target/wmbench/rp-wmgpu.exe (item 69, what draws WM's screen): the same way; its log is rp-wm-gpu.txt");
+                    eprintln!("    target/wmbench/rp-wm3d.exe (ADR-0024 M3): the same way, then start DoomGLES; its log is rp-wm3d.txt, its copies rp-wm3d-1.bin and -2.bin (16 MiB each)");
                 })
         }
         "reboot-wm" => {
