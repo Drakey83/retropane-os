@@ -185,6 +185,12 @@ with the performance monitor built first to measure everything else).
   limits; polling is a choice (above).
 - **Verdict:** ✅ well past WM; remaining interrupt/DMA-writes work is in
   items 58 and 73.
+- **Measured 2026-10-15 (docs/research/storage-speed.md, part B):** not
+  maxed after all. 19.5 MHz is confirmed the top (the reserved clock code
+  is slower), but DMA writes are built and off (+52%: 1.9 -> 2.9 MB/s),
+  DMA quietly falls back to PIO above 128 KiB (1 MiB reads 1.9 against
+  5.2 MB/s), and single-block writes cost 10.8 ms on the owner's card,
+  which is the FAT layer's metadata cost. ACMD23 measured no gain.
 
 ### CompactFlash
 
@@ -199,6 +205,18 @@ with the performance monitor built first to measure everything else).
   MULTIPLE; the card's interrupt instead of polling DRQ; DMA
   memory-to-memory from the socket window.
 - **Verdict:** 🔧 **item 75**.
+- **Measured 2026-10-15 (docs/research/storage-speed.md, part A):** WM's
+  timings decode to a 260 ns common-memory cycle at CLK_MEM 208 MHz
+  (calibrated on the device), a generic table (529 ns at WM's 104 MHz
+  points); the card rates itself 80 ns (CIS and IDENTIFY word 164): 3x
+  headroom per field, ~2x on the bus if tuned, at the price of silent
+  corruption if wrong (validation plan in the report). Without touching
+  timings: 4.1 MB/s today, 4.9 with 32-bit loads from the 0x400-0x7FF
+  data window, 5.2 by DMA from it (both checked byte for byte). READ
+  MULTIPLE gives nothing on this card (1 sector); GPIO84 is the card's
+  busy line (an interrupt for writes; reads wait only 2%). The drive's
+  0.6 MB/s is the USB side, not the socket. **Status: report delivered,
+  owner decides.**
 
 ### Touch screen
 
@@ -370,7 +388,7 @@ more found the same day: docs/hw/2700g.md's "WM draws 2D on the CPU"
 | 7 | 76 Touch quality (and backlight low steps) | How the device *feels* |
 | 8 | 71 iWMMXt pixel paths | What stays on the CPU, faster |
 | 9 | 72 Own the display set-up | Removes the 500 ms settle and WM's state |
-| 10 | 75 CF tuned timings, multiple-sector, interrupts | The CF drive's speed |
+| 10 | 75 CF tuned timings, multiple-sector, interrupts (measured: docs/research/storage-speed.md) | The CF card's speed for the OS (not the USB drive's) |
 | 11 | 77 CPLD shadow from WM's | Removes a bug class |
 | 12 | 78 ADR-0006's measured wins; CE5 layout limits | Memory speed; process limits |
 | 13 | 79 Fix the documents above | Truth in the docs |
