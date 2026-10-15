@@ -18,8 +18,5 @@ rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 
-[dependencies]
-rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
-
 [lints]
 workspace = true
