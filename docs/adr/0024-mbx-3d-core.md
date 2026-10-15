@@ -223,6 +223,56 @@ report; device runs only with the owner's go.
    per-vertex-coloured one (a gradient), then a textured one. Every wait
    has a timeout; every finding is modelled in the emulator fork or listed
    as not modellable (standing rule).
+5. **M5, the tile accelerator path (static reading 2026-10-15; device
+   test `rp-mbx3d` version 14).** Hand-written textured objects never
+   drew with every register as the game has them, so the next step is to
+   draw the way the game does: through the tile accelerator (TA), which
+   writes the region array, the lists and the objects itself. Found in
+   `libGLES_CL.dll` and `ddi_2700g.dll`:
+
+   - **Three 4 KiB command windows** (Dell's map, `0x02120a54`;
+     `0x0211c088`-`0x0211c104`): `0x0FFF4000` the TA's input (register
+     window `+0x14000`), `0x0FFF5000` the 2D stream (`+0x15000`, ours
+     already), `0x0FFF6000` (`+0x16000`) where a single `1` ends a TA
+     batch (`0x022619b4`). Each is written sequentially and wraps at
+     4 KiB; the write offsets are software counters in Dell's device
+     structure (`+0x164`, `+0x168`, `+0x16C`), shared with the game.
+     Space is the same FIFO level as the 2D engine's (`0x12C` bits 16-23
+     and 30: `0x02270558`), so the 2D engine and the TA share one FIFO.
+   - **The TA stream** (`0x022618d0` copies words into the window):
+     a state block, then primitives. The state block's first word is a
+     mask of the words that follow (`0x02267868`): bit 0 the TSP word,
+     bit 1 the ISP word, bit 2 texture unit 0's three words, bit 3 unit
+     1's, bit 4 one more word, bit 6 one more (`ctx+0xF0`); the clear
+     sends `0x10000053`. A primitive starts with a word whose bits 31-28
+     are its type (`0x4` strip, `0x5` fan, `0x7` triangle list, `0x6`
+     lines, `0xE` points; `0x022685f4`), its low 17 bits the polygon
+     offset (`glPolygonOffset`, `ctx+0x1C4`), then the vertices.
+   - **The GLES clear, word for word** (`0x0226dff0`): `0x10000053`,
+     TSP `0x22206F80`, ISP `0xE0000000`, `0`, `0`; `0x40000000` (a
+     strip); three vertices of x, y, z as floats: (0, 0, 1), (2w, 0, 1),
+     (0, 2h, 1); then `1` to the end window.
+   - **The TA's start table** (9 pairs, context `+4`, `0x02261580`):
+     `0x840` a zeroed 128 KiB-aligned buffer Dell sizes from the
+     bit-interleaved (Morton) tile coordinates, 4 bytes a tile (a
+     per-tile tail pointer table, likely; scene `+0x3C`), `0x844` the
+     region array (scene `+0x30`/`+0x34`, double-buffered, `(tiles + 1)
+     x 8` bytes), `0x848 = 0x00FF0004`, `0x84C`/`0x850` width/height
+     `<< 16`, `0x854`/`0x858` `1.0e-5`, `0x85C = 0x400E1 | ((rows - 1)
+     | ((cols - 1) & 0xFE) << 9) << 10`, then `0x800 = 1`. The TA
+     takes its pages from the parameter memory manager (already set up);
+     the 3D stage then renders with `0x608` = the same region array and
+     `0x60C` = the parameter memory's base. Status bit 4 = TA done.
+   - Tile grid: Dell divides the size by its tile size, rounded up to
+     whole groups (`0x02117b18`); 60 x 40 here, as the game's frames.
+
+   **Version 14** replaces the texture tries (versions 7-13, ruled
+   out above) with the GLES clear sent through the TA, alone: the TA
+   started with that table, the stream into `+0x14000`, the end word into
+   `+0x16000`, wait for bit 4; the region array, the first tile's list
+   and the object it points to logged; then the 3D stage on the TA's
+   region array. If the TA path draws, the textured object goes through
+   it next and its output is compared with ours word by word.
 
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's

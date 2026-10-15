@@ -336,5 +336,89 @@ pub fn pm_init_table(pm: u32, pm_size: u32, table: u32) -> [(usize, u32); 6] {
     ]
 }
 
+/// The tile accelerator (TA) path, as the GLES driver drives it (ADR-0024
+/// M5; static reading 2026-10-15): the TA takes a stream of words and
+/// writes the region array, lists and objects itself.
+pub mod ta {
+    /// The TA's input window in the register window (`0x0FFF4000`): 4 KiB,
+    /// written sequentially, wrapping, sharing the 2D engine's FIFO level.
+    pub const PORT: usize = 0x1_4000;
+    /// The window one `1` goes to after a batch (`0x0FFF6000`).
+    pub const END_PORT: usize = 0x1_6000;
+    /// The windows' size.
+    pub const PORT_SIZE: usize = 0x1000;
+    /// Writing 1 starts the TA (the TA table's last register).
+    pub const START: usize = 0x800;
+    /// Status bit: the TA finished (Dell's interrupt handler).
+    pub const DONE: u32 = 1 << 4;
+    /// `1.0e-5` as a float: `0x854` and `0x858`.
+    pub const EPSILON: u32 = 0x3727_C5AC;
+
+    /// The TA's start table (`libGLES_CL.dll` `0x02261580`): `tail` a
+    /// zeroed 128 KiB-aligned buffer of 4 bytes a tile (likely tail
+    /// pointers), `regions` the region array the TA writes ((tiles + 1) x
+    /// 8 bytes), a `width` x `height` target of `cols` x `rows` tiles. The
+    /// last pair starts it.
+    #[must_use]
+    pub fn start_table(
+        tail: u32,
+        regions: u32,
+        width: u32,
+        height: u32,
+        cols: u32,
+        rows: u32,
+    ) -> [(usize, u32); 9] {
+        let grid = rows.saturating_sub(1) | (cols.saturating_sub(1) & 0xFE) << 9;
+        [
+            (0x840, tail),
+            (0x844, regions),
+            (0x848, 0x00FF_0004),
+            (0x84C, width << 16),
+            (0x850, height << 16),
+            (0x854, EPSILON),
+            (0x858, EPSILON),
+            (0x85C, 0x0004_00E1 | grid << 10),
+            (START, 1),
+        ]
+    }
+
+    /// `0x85C` bit 7, set while the scene's end word goes in: a whole
+    /// scene (`libGLES_CL.dll` `0x0226fdc0`; clear when the TA is paused
+    /// for another context, whose state is then saved). The end word is
+    /// [`super::END`] (`0xF0000000`) in the TA window; `0x85C` is put back
+    /// after.
+    pub const SCENE_END: u32 = 1 << 7;
+    /// A primitive's first word: a strip (bits 31-28; `0x5` fan, `0x7`
+    /// triangle list), the polygon offset 0.
+    pub const STRIP: u32 = 0x4000_0000;
+
+    /// The GLES driver's clear (`0x0226dff0`), word for word: the state
+    /// block (mask `0x10000053`: TSP, ISP, two more words), a strip of one
+    /// triangle covering a `width` x `height` target twice over, x, y, z
+    /// per vertex. Then a `1` goes to [`END_PORT`].
+    #[must_use]
+    pub fn clear_stream(width: u32, height: u32) -> [u32; 15] {
+        let (w, h) = (2.0 * width as f32, 2.0 * height as f32);
+        let one = 1.0f32.to_bits();
+        [
+            0x1000_0053,
+            0x2220_6F80,
+            super::ISP_ALWAYS,
+            0,
+            0,
+            STRIP,
+            0,
+            0,
+            one,
+            w.to_bits(),
+            0,
+            one,
+            0,
+            h.to_bits(),
+            one,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests;
