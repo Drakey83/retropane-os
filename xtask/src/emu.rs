@@ -1378,7 +1378,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
         return Err(format!("mbx3d: didn't return cleanly:{log}"));
     }
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
-    // Without the fork's 3D model (before rp-v0.14.0) the image must try
+    // Without the fork's 3D model (before rp-v0.15.0) the image must try
     // the parameter memory set-up without and with the 3D clock, get no
     // "ready", try no render, and come back. With it: the memory manager
     // is ready only with the 3D clock on (as on the device), and the red
@@ -1416,7 +1416,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
 }
 
 /// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
-/// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.14.0)
+/// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.15.0)
 /// every counted check must pass, as on the device (run 3: 0 BAD), and
 /// every T9 try draw right (the model keeps the core's state across the
 /// clock: an assumption until run 4). Without it, the renderer's set-up
