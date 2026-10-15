@@ -308,9 +308,13 @@ pub const BUDGETS: &[Budget] = &[
     // wallpaper), + ~10%. Zeroed RAM 20 -> 30 KiB (2026-10-14): its stack
     // is 24 KiB, not 16 (the shell's frame and the GPU renderer's tables
     // on it; 12.6 of 16 KiB used on the device), 26.1 KiB measured.
+    // 592 -> 610 KiB (2026-10-15, test image): the Today screen on the
+    // graphics service (ADR-0030: rp-graphics with the 3D renderer it owns,
+    // ~10.7 KiB of code); 596.0 KiB measured, + ~10% of the code (the
+    // wallpaper isn't code).
     Budget {
         image: "rp-today",
-        max_load: 592 * 1024,
+        max_load: 610 * 1024,
         max_zero: 30 * 1024,
         device: OnDevice::Returns,
     },
