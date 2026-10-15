@@ -1,7 +1,8 @@
-# The LegacySync session on the USB link (design for review)
+# The LegacySync session on the USB link
 
 ADR-0028 milestone 4. Status: **accepted by the owner, 2026-10-15**: K1 B,
-K2 encrypted (Noise XX then KK), K3 on the card, K4 as described, with
+K2 encrypted (Noise XX then KK), K3 kept across resets (in the built-in
+flash at the end state, on the card as the SD-stage stand-in), K4 as described, with
 the owner's review points worked in (named Noise patterns, the RNG
 dependency, a signed partnership list, the email scope, transport-agnostic
 framing). Nothing here is built; nothing is sent to the Axim until the
@@ -126,31 +127,39 @@ the **PC's public key** and the permissions given, never a secret, so
 being readable is fine; being *writable* by a PC is not (a PC with write
 access to the drive could add itself).
 
-| | RAM only (tap once per boot) | **On the card, protected from the drive (recommended)** |
+**Designed for the flash-installed OS first** (the end state: RetroPane
+installed to the built-in flash, DESIGN G6 and §10c; the SD-card stage is
+the road there). The flash-installed design is the target, and the
+SD-card stage gets a stand-in with the same file format and code:
+
+| | **Target: the flash-installed OS** | Stand-in: the SD-card stage |
 |---|---|---|
-| How | As ADR-0017 | A partnership file in RetroPane's system folder; the mass-storage function's write guard (`rp_fat::Guard`, which already protects the boot files, ADR-0014) refuses writes to it from the PC |
-| Survives reset | No | Yes |
-| Risk | None at rest | Someone with the card in their hands can edit it: the physical-possession case, the same as replacing the OS, handled by signed boot images later |
+| Where the list lives | RetroPane's own system store in the built-in flash (DiskOnChip G3 on the X51v, StrataFlash on the X50v), outside the Dell bootloader region, which is never written | A partnership file in RetroPane's folder on the card |
+| Reachable from the PC? | **No**: only the cards are ever offered as USB drives, never the system store, so no PC can add itself | Only through the drive, and the drive's write guard (`rp_fat::Guard`, ADR-0014, which already protects the boot files) refuses writes to it |
+| Someone holding the hardware | Needs the whole device and tools to read its flash | Can take the card out and edit it |
+| Survives reset | Yes | Yes |
+
+RAM only (ADR-0017's loader model: tap Allow every boot) was considered
+and set aside: ActiveSync's partnerships survived resets, and the flash
+store makes keeping them safe.
 
 **Signing the partnership list** (owner's review): the device signs the
 list (Ed25519, or an HMAC-SHA256 tag) whenever it writes it, and checks
 it at boot; a list that fails is treated as empty (every PC pairs again)
-and the user is told. This is built in from the start because it is
-cheap, but how much it protects depends on **where the signing key
-lives**, and it has to be said plainly:
+and the user is told. How much that protects depends on **where the
+signing key lives**:
 
 | Where the key lives | What signing stops |
 |---|---|
-| On the card, beside the list (SD-card stage, DESIGN §10c stage 2) | Corruption, and edits by anything that doesn't read the key. **Not** someone with the card: the key is on the same card, so they can re-sign their edit. That is circular, and the note doesn't claim otherwise |
-| In the device's flash (flash-install stage 3; outside the Dell bootloader region, which is never written) | Card edits: taking the card out no longer gives the key. Someone with the whole device and the tools to read its flash still can |
-| Derived from the user's lock-screen PIN (if they set one) through a slow password hash | Card edits even in the SD-card stage, without flash. The list can't be checked until the PIN is entered, so LegacySync pairs only after unlock |
+| **Target:** the flash system store, with the list | Corruption, and any edit by something without the whole device and a flash reader. With the list out of the PC's reach as well, this closes the gap the review raised |
+| Stand-in: on the card, beside the list | Corruption, and edits by anything that doesn't read the key. **Not** someone with the card: the key is on the same card, so they can re-sign their edit. That is circular, and the note doesn't claim otherwise |
+| Optional at either stage: derived from a lock-screen PIN (if RetroPane gets a lock screen and the user sets one) through a slow password hash | Edits even by someone with the whole device. The list can't be checked until the PIN is entered, so LegacySync pairs only after unlock |
 
-Recommended: build the signing now with the key on the card (it costs
-almost nothing and the format won't change), move the key to flash at
-stage 3, and offer the PIN-derived key when RetroPane gets a lock screen.
-The device's long-term Noise key has the same storage question and gets
-the same answer; until the RNG and storage exist it can be made fresh
-each boot (then every boot re-pairs, like RAM only).
+The code and file format are the same at both stages; only the store
+underneath changes. The device's long-term Noise key and the RNG's seed
+follow the same rule: the flash store is their home, and the card is
+their stand-in until the flash driver exists. Until the RNG exists the
+key is made fresh each boot (every boot re-pairs).
 
 ### K4. What the user sees on the device
 
@@ -248,11 +257,20 @@ fields; each request gets one reply with the same id. First set:
 | `install.result` (device) | installed / refused + why | |
 
 Install flow: offer, the user taps Accept on the device, the CAB arrives
-in chunks into a staging folder on the card (resumable after a cable pull
-by offset), the device checks its SHA-256 and the whole CAB
+in chunks into a staging area (resumable after a cable pull by offset),
+the device checks its SHA-256 and the whole CAB
 (`rp-cab`, `rp-ce-setup`, the same parsers LegacySync used) **before**
 installing anything, installs, reports. Nothing is installed from a
 partial or unverified CAB.
+
+Where things go is designed for the flash-installed OS: the staging area
+and the installed program live in the built-in flash's store by default,
+with the card as the choice Windows Mobile offered ("Install to: Main
+memory / Storage card"); in the SD-card stage both are on the card. The
+speed that matters is measured there: once the cable's ~1 MB/s is no
+longer the limit, the DiskOnChip's write speed and the parsers' streaming
+(no CAB held in RAM, ADR-0005) decide the install time, so both are
+measured on the device before the install path is tuned.
 
 **Compression**: measured on the owner's seven real CABs (zlib level 1,
 32 KiB chunks, as a stand-in for LZ4): apps shrink to 49-54%, games only
