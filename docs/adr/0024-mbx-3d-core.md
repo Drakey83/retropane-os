@@ -346,6 +346,25 @@ report; device runs only with the owner's go.
    right region entry this time), and a sweep of TEX0's format field
    against the texel ramp.
 
+   **Version 18 on the device (2026-10-15, `local/rp-mbx3d-run18.txt`):
+   textures decoded.** The TA's textured object is **exactly the form our
+   encoder writes** (`rp_drv_mbx3d::tex::triangle`): ISP, TEX0, TEX1,
+   TEX2, TSP, x/y x3, z x3, 1/w x3, (colour, u, v) x3, list pointer
+   `0x41000000`: the hand-written path was right but for the TSP word.
+   Fitted against the texel ramp (all eight checkable samples):
+   textures are **twiddled** (Morton order, x in the odd bits, y in the
+   even), **point sampled** at whole-pixel positions, **size code 8 =
+   2048 texels** (2^(code + 3)) in TEX0 bits 27-24 and 23-20. **TEX0
+   bits 15-13 are the format** (bit 12 ignored): 0 ARGB1555, 2 RGB565,
+   4 ARGB4444, 6 RGB332 in a 16-bit texel's low byte (alpha above,
+   likely); 1 and 3 give greys (YUV-like, likely), 5 black and white, 7
+   mostly black (compressed, likely): not yet decoded. TEX0 bits 31-28:
+   values 3, 7 and B change low colour bits slightly, C-F change sampling
+   (not decoded). So **the game's TEX0 `0x03339600` is ARGB4444 64 x 64**
+   (not PVRTC as read before). Next: a 3D renderer test with a real
+   picture (twiddled ARGB4444/RGB565) on the hand-written path with
+   Dell's TSP, and TSP bit 22 (Gouraud) with textures.
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.

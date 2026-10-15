@@ -123,14 +123,51 @@ pub mod tex {
     /// `0xE0000000`; bits 27, 26 and 23 more, meaning not yet known).
     pub const ISP_GAME: u32 = 0xEC80_0000;
     /// The TSP word of most of DoomGLES's objects: Gouraud (bit 22) and
-    /// `0x0200` where untextured ones have `0x0E80`.
+    /// `0x0200` where untextured ones have `0x0E80`. Neither the TA nor
+    /// the 3D stage draws with it in our set-up (`rp-mbx3d` versions 7-17);
+    /// [`super::ta::TSP_DELL_TEXTURED`] draws.
     pub const TSP_GAME: u32 = 0x2264_0200;
-    /// TEX0 of DoomGLES's 128 x 128 (likely) PVRTC textures: sizes in bits
-    /// 27-24 and 23-20 (likely, 3 and 3 here), the format in bits 15-12
-    /// (likely; 9 here, PVRTC 4 bpp), the rest as found.
+    /// TEX0 of DoomGLES's textures: size codes 3 and 3 (64 x 64), format
+    /// 4 (ARGB4444) (`rp-mbx3d` version 18).
     pub const FORMAT_GAME: u32 = 0x0333_9600;
-    /// TEX0's format field (likely).
-    pub const FORMAT_SHIFT: u32 = 12;
+    /// TEX0's format field: bits 15-13 (bit 12 has no effect; version 18).
+    pub const FORMAT_SHIFT: u32 = 13;
+    /// TEX0 formats decoded on the device (version 18, texel ramp): 16-bit
+    /// texels. 1 and 3 (greys, YUV-like), 5 and 7 are not yet decoded.
+    pub const ARGB1555: u32 = 0;
+    /// See [`ARGB1555`].
+    pub const RGB565: u32 = 2;
+    /// See [`ARGB1555`].
+    pub const ARGB4444: u32 = 4;
+    /// RGB332 in the 16-bit texel's low byte. See [`ARGB1555`].
+    pub const RGB332: u32 = 6;
+    /// TEX0's size codes: bits 27-24 and 23-20, a side of `2^(code + 3)`
+    /// texels (code 8 = 2048: version 18).
+    pub const SIZE_SHIFTS: (u32, u32) = (24, 20);
+
+    /// TEX0 with Dell's high bits (`0xA` in bits 31-28), square sides of
+    /// `2^(code + 3)` texels and `format`.
+    #[must_use]
+    pub const fn tex0(code: u32, format: u32) -> u32 {
+        0xA000_0000
+            | (code & 15) << SIZE_SHIFTS.0
+            | (code & 15) << SIZE_SHIFTS.1
+            | (format & 7) << FORMAT_SHIFT
+    }
+
+    /// Where texel `(x, y)` sits in a texture (in texels): twiddled, x in
+    /// the odd bits, y in the even (version 18: all eight checkable samples
+    /// of the texel ramp).
+    #[must_use]
+    pub const fn twiddle(x: u32, y: u32) -> u32 {
+        let mut r = 0;
+        let mut b = 0;
+        while b < 16 {
+            r |= ((y >> b) & 1) << (2 * b) | ((x >> b) & 1) << (2 * b + 1);
+            b += 1;
+        }
+        r
+    }
     /// TEX1's high bits as DoomGLES writes them (bits 31-25: a level of
     /// detail setting); the texture's address / 128 goes below.
     pub const ADDRESS_GAME: u32 = 0xCE00_0000;
