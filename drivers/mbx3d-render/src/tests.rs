@@ -489,6 +489,7 @@ fn a_hung_render_is_recovered_and_the_next_frame_redraws_everything() {
     }
     assert!(recovered);
     assert!(!g.gpu.hung(), "reset");
+    assert_eq!(g.r.core_resets(), 2, "set-up, then the recovery");
     assert!(!g.r.busy());
     let s = g.frame();
     assert_eq!(s.tiles, 2400);
