@@ -17,6 +17,11 @@
  * copy is due) while a slice is copied, 50 ms after, for the core to finish
  * what it has.
  *
+ * Version 5 (2026-10-14): only the top 4 MiB (0xC00000-0xFFFFFF), twice,
+ * 30 s apart: version 4 saved 0x000000-0xBFFFFF (textures, Dell's clear
+ * scene) before the owner left, ~5 s a 1.5 MiB slice; the game's frame is
+ * likely above. The file holds just that range.
+ *
  * Version 4 (2026-10-14): version 3's process list came back empty
  * (now without heap lists, errors logged), so the window in front is used
  * too when its title says Doom.
@@ -46,13 +51,16 @@ BOOL VirtualCopy(LPVOID dest, LPVOID src, DWORD size, DWORD protect);
 
 #define MEM_PHYS 0x0C000000UL
 #define MEM_SIZE (16UL << 20)
+/* The part copied: the top 4 MiB. */
+#define CAP_FROM (12UL << 20)
+#define CAP_SIZE (4UL << 20)
 #define REGS_PHYS 0x0FFE0000UL
 #define REGS_SIZE 0x5000UL
 #define MBXCLK 0x0054UL
 #define MBX_STATUS 0x412cUL
 
 /* Seconds before each copy: time to start the game and get playing. */
-static const DWORD AT_S[2] = {60, 60};
+static const DWORD AT_S[2] = {60, 30};
 
 static LARGE_INTEGER freq;
 static HANDLE logf_ = INVALID_HANDLE_VALUE;
@@ -248,13 +256,14 @@ static void capture(int k, volatile unsigned long *mem, volatile unsigned long *
         return;
     }
     out("# capture %d: slices of %lu KiB", k, (unsigned long)(slice >> 10));
-    for (at = 0; at < MEM_SIZE && ok; at += slice) {
+    out("# capture %d: 2700G memory %08lx-%08lx", k, CAP_FROM, CAP_FROM + CAP_SIZE - 1);
+    for (at = CAP_FROM; at < CAP_FROM + CAP_SIZE && ok; at += slice) {
         out("# capture %d: slice at %08lx", k, (unsigned long)at);
-        DWORD len = MEM_SIZE - at < slice ? MEM_SIZE - at : slice;
+        DWORD len = CAP_FROM + CAP_SIZE - at < slice ? CAP_FROM + CAP_SIZE - at : slice;
         /* Suspended: no file, no log, no drawing until resumed. */
         n = suspend_all(pid, 0, ids, 0);
         Sleep(50);
-        if (at == 0) {
+        if (at == CAP_FROM) {
             clk = regs[MBXCLK / 4];
             st0 = regs[MBX_STATUS / 4];
         }
@@ -321,7 +330,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         Sleep(5000);
         return 1;
     }
-    say(L"Start DoomGLES now; play 4 minutes.", L"Short hitches at 1 and 2 minutes.");
+    say(L"Start DoomGLES now; keep it on 3 minutes.", L"Short hitches at 1 and 2 minutes.");
     MessageBeep(MB_OK);
     for (k = 0; k < 2; k++) {
         Sleep(AT_S[k] * 1000);
