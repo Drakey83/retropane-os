@@ -11,6 +11,7 @@ members = [
     "drivers/mbx-display",
     "drivers/blit2d",
     "drivers/mbx-render",
+    "drivers/mbx3d",
     "drivers/cpld",
     "drivers/gfx",
     "drivers/draw",
