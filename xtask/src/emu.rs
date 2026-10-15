@@ -2552,6 +2552,18 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
             return Err(format!("clocks: the run log has no `{want}`:{log}"));
         }
     }
+    // A fork that models the clocks (the cycle counter at the core clock,
+    // CCSR latched at F, WM's voltage pins: branch pxa-clocks) must pass
+    // every check, with every point visited.
+    if log.contains("ok  cycle counter agrees") {
+        if !log.contains(" checks, 0 BAD") || log.contains("skipped") {
+            return Err(format!(
+                "clocks: the modelled clocks must pass every check:{log}"
+            ));
+        }
+        eprintln!("    clocks OK: every point visited, every check passed on the modelled clocks");
+        return Ok(());
+    }
     eprintln!("    clocks: returned cleanly; run log:{log}");
     Ok(())
 }

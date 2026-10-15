@@ -208,8 +208,9 @@ code, which is safe.
   *or* stress-test one code lower per point. Pro: battery. Con: silent
   corruption risk, and weeks of stress testing per point.
 - **V3 (624 MHz while the screen is on):** **recommended**: the UI never
-  waits for a clock ramp. The alternative is 520 MHz at code `110`, about
-  12% less power while running, for 17% less speed.
+  waits for a clock ramp. The alternative is 520 MHz at code `110`: 17%
+  slower, for about 25% less energy per unit of work (V² by Dell's voltage
+  labels, 1.364 against 1.574 V; the real rail voltages are unmeasured).
 
 - **V4 (which 624 MHz set-up):** the manual's table 3-7 lists 624 MHz for
   the C5 stepping (this unit: `CP15 ID 0x69054117`) only with `CCCR` A =
