@@ -504,23 +504,43 @@ at once each time.
   `LMTIM`: tRC 12, tRP 4, tRCD 4, tRAS 12 - 4 + 1 = 9, tDPL 2 = `0x944C2`.
   `LMREFRESH` `0x615` refreshes more often at the higher clock, so it stays
   (Dell's would be `0x822`).
-- Built: `rp_drv_mbx_display::clock::set_core_pll`, a set-up option. The
-  default stays WM's 99.67 MHz.
+- Built: `rp_drv_mbx_display::clock::{Speed, set_speed}`, the system
+  clock as a set-up option, changed as Dell's driver does it. The default
+  stays WM's 99.67 MHz.
 
-**Next: `rp-mbx3d` version 28, a soak at 133.25 MHz.** The memory is set
-as Dell would set it for 133 MHz first (`LMTYPE` CL3 `0xEC8`, `LMTIM`
-`0x944C2`, the system clock on the reference while they change); then
-rounds run for several minutes. Each round has:
+**Version 28 withdrawn before running (2026-10-15).** It was a 133.25 MHz
+soak with CL3. **The owner chose option A instead: "in-spec 75 MHz
+drawing engines, measured together with the bus tuning".** Nothing runs
+the memory past its 100 MHz rating.
 
-- a pattern written and read back over all free 2700G memory;
-- a 2D fill;
-- 3D renders whose sums must match WM's clock.
+**Next: `rp-mbx3d` version 29, option A.**
 
-A second phase repeats the rounds once the device has warmed up.
-Temperature and battery are not readable yet (no gauge driver before
-Phase 9), so the log notes that. The first failure stops the soak; the
-end, or a failure, restores WM's PLL and memory timing (`0xBB1`, `0xAC8`,
-`0x73392`, `0x615`).
+- **The clock:** the system clock at 74.75 MHz (13 x 23 / 4) with
+  `MBXCLK` divide by 1. The cores run 50% faster than WM's 49.8 MHz, and
+  the memory runs at 75% of its rating.
+- **The memory timing** comes from the SDRAM's own ratings at 13.4 ns:
+  CL2, `LMTIM` `0x62272`, refresh `0x48F` (`clock::Speed::A75`).
+- **Today's setting is measured in the same run** for a direct
+  comparison: 99.67 MHz, divide by 2, CS3 `0x2484`.
+- **The question is ours, not Dell's** (the owner: only what our drivers
+  do matters). What is the fastest CS3 (`MSC1`) timing that reads back
+  100% right at 74.75 MHz?
+  - It starts from `0x79D4`, used only as a known-safe start. RDF steps
+    down one code at a time, then RDN, with RRR at 7.
+  - WM's `0x2484` is tried too. If it holds, option A costs no bus speed.
+- **Each step:**
+  - a full-screen flush from SDRAM, timed and checked word by word;
+  - 256 KiB read back;
+  - a pattern and its inverse over all 12.5 MiB of free 2700G memory;
+  - a 2D fill and five 3D renders.
+- **The first mismatch ends the stepping.** The failing word is re-read
+  at the long timing to tell a read fault from a write fault.
+- **The chosen value** is the fastest step with a quarter more clocks a
+  beat than the fastest good one. It is soaked for 2 minutes.
+- **WM's state comes back** at the end and from the fault handler: bus
+  timing, divider, PLL and memory timing.
+- **Report:** the ADR records our measured limit and the value chosen
+  with margin.
 
 ## The four lenses
 

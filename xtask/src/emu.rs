@@ -2480,21 +2480,23 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
             }
         }
     }
-    // Version 28's soak: the model doesn't keep WM's memory timing (the
-    // margin past the memory's rating isn't modellable), so the image runs
-    // one round a phase without changing the clock; every round must pass.
+    // Version 29's option A: the model has neither the PXA's bus timing
+    // nor the 2700G's clock and memory registers as Windows Mobile leaves
+    // them, so the image measures today's setting once (every check must
+    // pass) and changes nothing.
     if modelled {
         for want in [
-            "S28 as found",
-            "S28 not Windows Mobile's setting: one round a phase",
-            "S28 warm-up at 99.67 MHz: GOOD",
-            "S28 soak at 133.25 MHz: GOOD",
-            "S28 back at 99.67 MHz: GOOD",
-            "S28 verdict: 133.25 MHz with CL3 held, warm: GOOD",
+            "S29 as found",
+            "S29 today: 99.67 MHz, divide by 2, CS3 0x2484:",
+            "S29 not Windows Mobile's state: nothing changed",
         ] {
             if !log.contains(want) {
                 return Err(format!("mbx3d: the run log has no `{want}`:{log}"));
             }
+        }
+        let today = log.lines().find(|l| l.contains("S29 today:")).unwrap_or("");
+        if !today.ends_with("| GOOD") {
+            return Err(format!("mbx3d: today's setting should check GOOD:{log}"));
         }
     }
     eprintln!(

@@ -171,6 +171,35 @@ pub const fn cs3_timing(msc1: u32, rdf: u32, rdn: u32) -> Option<u32> {
     Some(msc1 & !(0xFF << 20) | rdf << 20 | rdn << 24)
 }
 
+/// `MSC1` with all of CS3's VLIO timing replaced: `rdf` and `rdn` as
+/// codes 3-15 and 2-15 (12-15 table-encoded to 15, 20, 26 and 30 clocks:
+/// longer, so also legal), `rrr` 0-7 (the chip-select gap, 2 x `rrr` + 1
+/// clocks). For the 2700G clock experiments (rp-mbx3d version 29), which
+/// start from the long timing `0x79D4` and step down. CS2's half, CS3's
+/// type, width and buffering are kept; `None` unless CS3 is a 32-bit VLIO
+/// device and the values are in range.
+#[must_use]
+pub const fn cs3_vlio(msc1: u32, rdf: u32, rdn: u32, rrr: u32) -> Option<u32> {
+    let upper = msc1 >> 16;
+    let vlio_32 = upper & 0xF == 0b0100;
+    if !vlio_32 || rdf < 3 || rdf > 15 || rdn < 2 || rdn > 15 || rrr > 7 {
+        return None;
+    }
+    Some(msc1 & !(0x7FF << 20) | rdf << 20 | rdn << 24 | rrr << 28)
+}
+
+/// A VLIO `RDF` or `RDN` code's clocks (codes 12-15 are a table).
+#[must_use]
+pub const fn vlio_clocks(code: u32) -> u32 {
+    match code {
+        12 => 15,
+        13 => 20,
+        14 => 26,
+        15 => 30,
+        c => c,
+    }
+}
+
 /// Physical base of the PXA27x internal SRAM.
 pub const SRAM_BASE: u32 = 0x5C00_0000;
 /// Internal SRAM size.
@@ -268,6 +297,20 @@ mod target {
         crate::cpu::drain_write_buffer();
         // SAFETY: only CS3's RDF/RDN fields change, within the PXA27x's legal
         // VLIO range (checked above); the register is the memory
+        // controller's, mapped as device memory.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
+        Some(msc1())
+    }
+
+    /// Sets CS3's whole VLIO timing ([`super::cs3_vlio`]) and returns
+    /// `MSC1` as read back, or `None` (nothing written) out of range. As
+    /// [`set_cs3_timing`]: the write buffer drained first, the read-back
+    /// latching the new value; the caller keeps the 2700G idle meanwhile.
+    pub fn set_cs3_vlio(rdf: u32, rdn: u32, rrr: u32) -> Option<u32> {
+        let new = super::cs3_vlio(msc1(), rdf, rdn, rrr)?;
+        crate::cpu::drain_write_buffer();
+        // SAFETY: only CS3's RDF/RDN/RRR fields change, within the PXA27x's
+        // legal VLIO range (checked above); the register is the memory
         // controller's, mapped as device memory.
         unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
         Some(msc1())
@@ -404,8 +447,8 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs3_timing, snapshot, take_sram,
-    take_sram_words,
+    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs3_timing, set_cs3_vlio, snapshot,
+    take_sram, take_sram_words,
 };
 
 #[cfg(test)]
@@ -427,6 +470,26 @@ mod tests {
         // CS3 not a 32-bit VLIO device (SRAM type, or 16 bits): refused.
         assert_eq!(cs3_timing(0x2481_2481, 8, 4), None);
         assert_eq!(cs3_timing(0x248C_2481, 8, 4), None);
+    }
+
+    #[test]
+    fn cs3_vlio_sets_all_three_fields() {
+        let wm = 0x2484_2481;
+        // Dell's long timing (0x79D4: RDF code 13, RDN 9, RRR 7) and back.
+        assert_eq!(cs3_vlio(wm, 13, 9, 7), Some(0x79D4_2481));
+        assert_eq!(cs3_vlio(0x79D4_2481, 8, 4, 2), Some(wm));
+        assert_eq!(cs3_vlio(wm, 3, 2, 0), Some(0x0234_2481));
+        assert_eq!(cs3_vlio(wm, 15, 15, 7), Some(0x7FF4_2481));
+        assert_eq!(cs3_vlio(wm, 2, 4, 2), None);
+        assert_eq!(cs3_vlio(wm, 8, 1, 2), None);
+        assert_eq!(cs3_vlio(wm, 16, 4, 2), None);
+        assert_eq!(cs3_vlio(wm, 8, 4, 8), None);
+        assert_eq!(cs3_vlio(0x2481_2481, 8, 4, 2), None);
+        assert_eq!(
+            vlio_clocks(13) + 1 + 2 * vlio_clocks(9),
+            39,
+            "0x79D4: 39 clocks a beat (memory-timing.md)"
+        );
     }
 
     #[test]

@@ -64,17 +64,19 @@ impl Speed {
         lmrefresh: 0x615,
     };
 
-    /// 13 x 41 / 4 = 133.25 MHz (Dell's default "CoreClock"; the cores at
-    /// half under `MBXCLK` divide by 2), with the timing Dell's routine
-    /// gives for 7.5 ns cycles: CL3, tRC 12, tRP 4, tRCD 4, tRAS 9, tDPL 2.
-    /// WM's refresh count is kept (11.7 us at this clock, more often than
-    /// needed). Past the memory's rating: 25% faster in `rp-mbx3d` run 27's
-    /// short pass (with CL2); a soak (version 28) decides whether it ships.
-    pub const FAST: Self = Self {
-        pll: 41 << 7 | 4 << 4 | 1,
-        lmtype: 0xEC8,
-        lmtim: 0x944C2,
-        lmrefresh: 0x615,
+    /// The owner's option A (2026-10-15): 13 x 23 / 4 = 74.75 MHz, for
+    /// `MBXCLK` divide by 1 (the cores at 74.75 MHz, under the 75 MHz the
+    /// cores are run at most; 50% faster than WM's 49.8), the memory 25%
+    /// slower and inside its rating. Its timing from the SDRAM's ratings
+    /// (tRC 85, tRP and tRCD 25, tRAS 48 ns; CL2 below 100 MHz) at 13.4 ns
+    /// cycles: tRC 7, tRP 2, tRCD 2, tRAS 7 - 2 + 1 = 6, tDPL 2; refresh
+    /// every 1167 cycles (15.6 us, 64 ms over 4096 rows). Nothing runs the
+    /// memory past its 100 MHz rating.
+    pub const A75: Self = Self {
+        pll: 23 << 7 | 4 << 4 | 1,
+        lmtype: 0xAC8,
+        lmtim: 0x62272,
+        lmrefresh: 0x48F,
     };
 
     /// The system clock in kHz (by mbxfb's formula).
@@ -250,19 +252,23 @@ mod tests {
     #[test]
     fn speeds_as_computed() {
         assert_eq!(Speed::WM.khz(), 99_666);
-        assert_eq!(Speed::FAST.khz(), 133_250);
-        assert_eq!(Speed::FAST.pll, 0x14C1, "run 27's COREPLL");
+        assert_eq!(Speed::A75.khz(), 74_750);
+        assert!(Speed::A75.khz() <= 75_000 && Speed::WM.khz() <= 100_000);
         // Dell's routine (docs/hw/2700g.md): cycles = ceil(ns / period),
-        // tRAS raised to tRC - tRP + 1; CL3 at 100 MHz and up.
+        // tRAS raised to tRC - tRP + 1.
         let lmtim = |khz: u32| {
             let cyc = |ns: u32| (ns * khz).div_ceil(1_000_000);
             let (trc, trp, trcd) = (cyc(85), cyc(25), cyc(25));
             let tras = cyc(48).max(trc - trp + 1);
             tras << 16 | trp << 12 | trcd << 8 | trc << 4 | 2
         };
-        assert_eq!(lmtim(Speed::WM.khz()), Speed::WM.lmtim);
-        assert_eq!(lmtim(Speed::FAST.khz()), Speed::FAST.lmtim);
-        assert_eq!(Speed::FAST.lmtype, Speed::WM.lmtype & !(7 << 10) | 3 << 10);
+        // Refresh: 64 ms over 4096 rows, whole cycles, rounded down.
+        let refresh = |khz: u32| khz * 15_625 / 1_000_000;
+        for s in [Speed::WM, Speed::A75] {
+            assert_eq!(lmtim(s.khz()), s.lmtim);
+            assert_eq!(refresh(s.khz()), s.lmrefresh);
+            assert_eq!(s.lmtype >> 10 & 7, 2, "CL2 below 100 MHz");
+        }
     }
 
     #[test]
@@ -270,15 +276,15 @@ mod tests {
         let mut bus = rp_hal_mock::MockBus::new();
         bus.preset(PLLSTAT, 7);
         let mut waited = 0;
-        assert_eq!(set_speed(&mut bus, Speed::FAST, |us| waited += us), Some(0));
+        assert_eq!(set_speed(&mut bus, Speed::A75, |us| waited += us), Some(0));
         assert_eq!(
             bus.writes(),
             [
                 (SYSCLKSRC, 0),
-                (LMTIM, 0x944C2),
-                (LMREFRESH, 0x615),
-                (LMTYPE, 0xEC8),
-                (COREPLL, 0x14C1),
+                (LMTIM, 0x62272),
+                (LMREFRESH, 0x48F),
+                (LMTYPE, 0xAC8),
+                (COREPLL, 0xBC1),
                 (SYSCLKSRC, 2),
             ]
         );
@@ -290,7 +296,7 @@ mod tests {
         let mut bus = rp_hal_mock::MockBus::new();
         bus.preset(PLLSTAT, 0);
         let mut waited = 0u32;
-        assert_eq!(set_speed(&mut bus, Speed::FAST, |us| waited += us), None);
+        assert_eq!(set_speed(&mut bus, Speed::A75, |us| waited += us), None);
         let w = bus.writes();
         assert_eq!(
             &w[5..9],

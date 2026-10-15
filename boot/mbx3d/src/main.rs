@@ -1,14 +1,19 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 28 (ADR-0026: version 27 ran the
-//! core PLL at 133.25 MHz in a short pass, 25% faster, its memory past
-//! its 100 MHz rating): S28 a soak. The memory timing set as Dell's
-//! routine gives for 133.25 MHz (CL3, `LMTIM` `0x944C2`:
-//! `rp_drv_mbx_display::clock::Speed::FAST`); 2 minutes of rounds at WM's
-//! clock (a warm-up), 5 at 133.25 MHz, 15 s back at WM's. A round: a
-//! pattern over all 12.5 MiB of free 2700G memory, a 1 MiB 2D copy of it,
-//! all read back; a 2D fill; 20 3D renders matching WM's samples. A
-//! summary every 30 s; the first failure stops it; WM's setting back at
-//! the end. Temperature and battery: no gauge yet. S27 is done.
+//! 3D core, under the loader. Version 29 (ADR-0026, the owner's option A
+//! for the GPU clock, 2026-10-15): S29 the 2700G's system clock at 74.75
+//! MHz (13 x 23 / 4) with `MBXCLK` divide by 1, so the MBX cores run 50%
+//! faster and the local memory inside its 100 MHz rating
+//! (`clock::Speed::A75`), measured against today's 99.67 MHz with divide
+//! by 2. Then the fastest CS3 (`MSC1`) bus timing that reads back right
+//! at 74.75 MHz: from the long `0x79D4` (only a known-safe start) RDF
+//! down one code at a time, then RDN, RRR kept at 7, and WM's `0x2484`
+//! tried too; the first mismatch ends the stepping. At each step a
+//! full-screen flush from SDRAM (timed, checked), 256 KiB read back, a
+//! pattern and its inverse over all 12.5 MiB of free 2700G memory, a 2D
+//! fill and five 3D renders. A timing a quarter slower than the fastest
+//! good is soaked for 2 minutes. WM's bus timing and clocks back at the
+//! end and from the fault handler. Version 28 (a 133.25 MHz soak) was
+//! withdrawn before running: nothing runs the memory past its rating.
 //! Version 27 (ADR-0026: version 26 found the
 //! MBX cores clock-bound, at half a 99.67 MHz core PLL): S27 the core PLL
 //! stepped to 110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock" is
@@ -225,7 +230,8 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
-    use rp_hal_pxa27x::{Mmio, cpu, rt};
+
+    use rp_hal_pxa27x::{Mmio, cpu, diag, rt};
     use rp_hal_x51v::devices::RunLog;
 
     use super::{MARKER, tile_size, with_3d};
@@ -271,7 +277,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 28;
+    const VERSION: u32 = 29;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -443,9 +449,9 @@ mod image {
         regions(vram, keep);
     }
 
-    /// The free 2700G memory, soaked: all but the loader's plane (below 1
-    /// MiB), the target, the parameter memory and its manager's block, the
-    /// region array and the fence. 12.5 MiB.
+    /// The free 2700G memory, checked at every step: all but the loader's
+    /// plane (below 1 MiB), the target, the parameter memory and its
+    /// manager's block, the region array and the fence. 12.5 MiB.
     const FREE: [(usize, usize); 4] = [
         (0x0010_0000, 0x0020_0000),
         (0x0034_0000, 0x0060_0000),
@@ -455,54 +461,97 @@ mod image {
     const _: () = assert!(TARGET + STRIDE * H as usize <= FREE[1].0);
     const _: () = assert!(PM_TABLE + 0x4000 <= FREE[2].0);
     const _: () = assert!(REGIONS + 8 * (COLS * ROWS) as usize <= FREE[3].0);
-    /// Each round's 2D copy: 1 MiB (512 x 512 at 32 bpp) from the first
-    /// free block into the third, checked as the pattern moved.
-    const COPY_FROM: usize = FREE[0].0;
-    const COPY_TO: usize = 0x00C0_0000;
-    const COPY_SIDE: u16 = 512;
-    const COPY_BYTES: usize = 512 * 512 * 4;
-    const _: () = assert!(COPY_FROM + COPY_BYTES <= FREE[0].1);
-    const _: () = assert!(FREE[2].0 <= COPY_TO && COPY_TO + COPY_BYTES <= FREE[2].1);
-    /// The soak's phases in seconds: a warm-up at WM's clock (the device
-    /// warms, and the checks prove themselves), 133.25 MHz, and WM's again.
-    const WARM_S: u32 = 120;
-    const SOAK_S: u32 = 300;
-    const AFTER_S: u32 = 15;
-    /// A summary every so often.
+    /// The flush: one full screen (1.2 MB) from SDRAM into 2700G memory,
+    /// the OS's `memcpy`, as a frame's upload; then 256 KiB read back.
+    const FLUSH_AT: usize = FREE[1].0;
+    const FLUSH_BYTES: usize = 480 * 640 * 4;
+    const READ_BYTES: usize = 256 * 1024;
+    const _: () = assert!(FLUSH_AT + FLUSH_BYTES <= FREE[1].1);
+    /// 3D renders a step.
+    const RENDERS: u32 = 5;
+    /// `MSC1` as Windows Mobile leaves it (CS3 `0x2484`: RDF 8, RDN 4,
+    /// RRR 2, 17 clocks a beat), and the long CS3 timing the steps start
+    /// from (`0x79D4`: RDF code 13 = 20 clocks, RDN 9, RRR 7, 39 clocks a
+    /// beat; Dell's driver's choice below 99 MHz, used here only as a
+    /// known-safe start).
+    const WM_MSC1: u32 = 0x2484_2481;
+    const WM_CS3: Cs3 = (8, 4, 2);
+    const LONG_CS3: Cs3 = (13, 9, 7);
+    /// The steps after the long start: RDF down one code at a time, then
+    /// RDN, RRR kept at 7.
+    const RDF_STEPS: [u32; 10] = [12, 11, 10, 9, 8, 7, 6, 5, 4, 3];
+    const RDN_STEPS: [u32; 7] = [8, 7, 6, 5, 4, 3, 2];
+    /// The soak of the chosen timing, and its summaries, in seconds.
+    const SOAK_S: u32 = 120;
     const REPORT_S: u32 = 30;
-    /// 3D renders a round.
-    const RENDERS: u32 = 20;
 
-    /// The pattern word at `a` in round `seed`: every bit flips between
-    /// rounds (odd rounds inverted), and differs between neighbours.
+    /// CS3's (RDF, RDN, RRR) codes.
+    type Cs3 = (u32, u32, u32);
+
+    /// Memory clocks a 32-bit beat, without RDY waits.
+    const fn beat(c: Cs3) -> u32 {
+        diag::vlio_clocks(c.0) + 1 + 2 * diag::vlio_clocks(c.1)
+    }
+
+    fn set_cs3(c: Cs3) -> u32 {
+        diag::set_cs3_vlio(c.0, c.1, c.2).unwrap_or(0)
+    }
+
+    /// Windows Mobile's state back wherever S29 left it (no state kept, so
+    /// the fault handler can call it whatever failed): the long bus timing
+    /// first (safe at either clock), `MBXCLK` divide by 2, the PLL and
+    /// memory timing (Dell's procedure), then WM's bus timing. Nothing if
+    /// all is WM's already.
+    fn restore<B: RegisterBus>(regs: &mut B) {
+        let clk = regs.read32(MBXCLK);
+        let speed = Speed {
+            pll: regs.read32(clk::COREPLL),
+            lmtype: regs.read32(clk::LMTYPE),
+            lmtim: regs.read32(clk::LMTIM),
+            lmrefresh: regs.read32(clk::LMREFRESH),
+        };
+        if diag::msc1() == WM_MSC1 && speed == Speed::WM && (clk >> 2) & 3 == 1 {
+            return;
+        }
+        set_cs3(LONG_CS3);
+        regs.write32(MBXCLK, clk & !0xC | 1 << 2);
+        rt::delay_us(1_000);
+        if speed != Speed::WM {
+            let _ = clk::set_speed(regs, Speed::WM, rt::delay_us);
+        }
+        set_cs3(WM_CS3);
+    }
+
+    /// The pattern word at `a` for `seed`: odd seeds inverted.
     fn pat(a: usize, seed: u32) -> u32 {
         let w = (a as u32).wrapping_mul(0x9E37_79B9) ^ seed.wrapping_mul(0x85EB_CA6B);
         if seed & 1 == 1 { !w } else { w }
     }
 
-    /// The word expected at `a` after a round's writes and copy.
-    fn expected(a: usize, seed: u32) -> u32 {
-        if (COPY_TO..COPY_TO + COPY_BYTES).contains(&a) {
-            pat(a - COPY_TO + COPY_FROM, seed)
-        } else {
-            pat(a, seed)
-        }
-    }
-
-    /// One phase's counts.
+    /// One step's results.
     #[derive(Clone, Copy, Default)]
-    struct Tally {
-        rounds: u32,
+    struct Meas {
+        flush_us: u32,
+        flush_wrong: u32,
+        read_us: u32,
+        read_wrong: u32,
         words_wrong: u32,
         /// The first wrong word: (address, expected, read).
         first: Option<(usize, u32, u32)>,
-        copies_wrong: u32,
-        fills_wrong: u32,
-        fill_worst: u32,
-        renders: u32,
-        sums_wrong: u32,
-        hangs: u32,
-        render_worst: u32,
+        fill_us: u32,
+        fill_ok: bool,
+        render_us: u32,
+        sums: u32,
+    }
+
+    impl Meas {
+        fn good(&self) -> bool {
+            self.flush_wrong == 0
+                && self.read_wrong == 0
+                && self.words_wrong == 0
+                && self.fill_ok
+                && self.sums == RENDERS
+        }
     }
 
     /// The scene (a red background and a Gouraud triangle: the core's
@@ -541,236 +590,330 @@ mod image {
         Some((t, sum))
     }
 
-    /// One round: the pattern over all free memory, a 2D copy of 1 MiB of
-    /// it, all read back; a full-screen 2D fill; [`RENDERS`] 3D renders
-    /// whose sums must be `want`. Counts into `t`; false on any failure.
-    fn round(
+    fn word(b: &[u8], k: usize) -> u32 {
+        u32::from_le_bytes([b[4 * k], b[4 * k + 1], b[4 * k + 2], b[4 * k + 3]])
+    }
+
+    /// One step: a full-screen flush (best of 3) checked word by word, 256
+    /// KiB read back and checked, a pattern and its inverse over all free
+    /// memory, a full-screen 2D fill, [`RENDERS`] 3D renders whose sums
+    /// must be `want` (`None`: the first one's). Returns the results and
+    /// the sum.
+    fn measure(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
+        src: &[u8],
+        back: &mut [u8],
         table: &[(usize, u32)],
         seed: u32,
-        want: u32,
-        t: &mut Tally,
-    ) -> bool {
-        t.rounds += 1;
-        for &(a0, a1) in &FREE {
-            for a in (a0..a1).step_by(4) {
-                let _ = store32_volatile(vram, a, pat(a, seed));
-            }
+        want: Option<u32>,
+    ) -> (Meas, u32) {
+        let mut m = Meas {
+            flush_us: u32::MAX,
+            ..Meas::default()
+        };
+        for _ in 0..3 {
+            let t0 = rt::ticks();
+            vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
+            cpu::drain_write_buffer();
+            m.flush_us = m.flush_us.min(us_since(t0));
             rt::check_in();
         }
-        cpu::drain_write_buffer();
-        let side = COPY_SIDE as usize * 4;
-        let (w, n) = cmd::copy(
-            Format::BPP32,
-            (COPY_TO, side),
-            (COPY_FROM, side),
-            (0, 0),
-            (0, 0, COPY_SIDE, COPY_SIDE),
-            0,
-        );
-        let copied = e
-            .submit(&w[..n])
-            .and_then(|()| e.finish(vram, 200_000))
-            .is_ok();
-        let mut wrong = 0u32;
-        let mut copy_wrong = !copied;
-        for &(a0, a1) in &FREE {
-            for a in (a0..a1).step_by(4) {
-                let want = expected(a, seed);
-                let got = load32_volatile(vram, a).unwrap_or(!want);
-                if got != want {
-                    wrong += 1;
-                    copy_wrong |= (COPY_TO..COPY_TO + COPY_BYTES).contains(&a);
-                    t.first.get_or_insert((a, want, got));
+        m.flush_wrong = (0..FLUSH_BYTES / 4)
+            .filter(|&k| load32_volatile(vram, FLUSH_AT + 4 * k) != Some(word(src, k)))
+            .count() as u32;
+        let t0 = rt::ticks();
+        back.copy_from_slice(&vram[FLUSH_AT..FLUSH_AT + READ_BYTES]);
+        m.read_us = us_since(t0);
+        m.read_wrong = (0..READ_BYTES / 4)
+            .filter(|&k| word(back, k) != word(src, k))
+            .count() as u32;
+        for s in [seed, seed + 1] {
+            for &(a0, a1) in &FREE {
+                for a in (a0..a1).step_by(4) {
+                    let _ = store32_volatile(vram, a, pat(a, s));
                 }
+                rt::check_in();
             }
-            rt::check_in();
+            cpu::drain_write_buffer();
+            for &(a0, a1) in &FREE {
+                for a in (a0..a1).step_by(4) {
+                    let want = pat(a, s);
+                    let got = load32_volatile(vram, a).unwrap_or(!want);
+                    if got != want {
+                        m.words_wrong += 1;
+                        m.first.get_or_insert((a, want, got));
+                    }
+                }
+                rt::check_in();
+            }
         }
-        t.words_wrong += wrong;
-        t.copies_wrong += u32::from(copy_wrong);
         let t0 = rt::ticks();
         let filled = clear(e, vram, GREY);
-        t.fill_worst = t.fill_worst.max(us_since(t0));
-        let fill_ok = filled && px(vram, 100, 100) == GREY && px(vram, 479, 639) == GREY;
-        t.fills_wrong += u32::from(!fill_ok);
-        let mut good = wrong == 0 && !copy_wrong && fill_ok;
+        m.fill_us = us_since(t0);
+        m.fill_ok = filled && px(vram, 100, 100) == GREY && px(vram, 479, 639) == GREY;
+        let mut first = None;
         for _ in 0..RENDERS {
-            t.renders += 1;
+            rt::check_in();
             let Some((us, sum)) = render_sum(e, vram, table) else {
-                t.hangs += 1;
-                return false;
+                break;
             };
-            t.render_worst = t.render_worst.max(us);
-            if sum != want {
-                t.sums_wrong += 1;
-                good = false;
-            }
+            m.render_us = m.render_us.max(us);
+            let want = *first.get_or_insert(want.unwrap_or(sum));
+            m.sums += u32::from(sum == want);
         }
-        rt::check_in();
-        good
+        (m, first.unwrap_or(0))
     }
 
-    fn report(name: &str, s: u32, t: &Tally) {
+    /// Bytes over microseconds as MB/s with one decimal.
+    fn rate(bytes: usize, us: u32) -> (u32, u32) {
+        let r = (bytes as u64 * 10 / u64::from(us.max(1))) as u32;
+        (r / 10, r % 10)
+    }
+
+    fn report(name: &str, m: &Meas) {
+        let (f0, f1) = rate(FLUSH_BYTES, m.flush_us);
+        let (r0, r1) = rate(READ_BYTES, m.read_us);
         log!(
-            "  S28 {name}, {s} s: {} rounds; memory words wrong {} (12.5 MiB a round), first {:x?}; 2D copies wrong {}, fills wrong {} (slowest {} us); 3D renders {}, sums wrong {}, hangs {}, slowest {} us",
-            t.rounds,
-            t.words_wrong,
-            t.first,
-            t.copies_wrong,
-            t.fills_wrong,
-            t.fill_worst,
-            t.renders,
-            t.sums_wrong,
-            t.hangs,
-            t.render_worst
+            "  S29 {name}: MSC1 0x{:08x} | flush 1.2 MB {} us ({f0}.{f1} MB/s), wrong {} | read 256 KiB {} us ({r0}.{r1} MB/s), wrong {} | 2 x 12.5 MiB words wrong {}, first {:x?} | 2D fill {} us, right {} | 3D slowest {} us, sums {}/{RENDERS} | {}",
+            diag::msc1(),
+            m.flush_us,
+            m.flush_wrong,
+            m.read_us,
+            m.read_wrong,
+            m.words_wrong,
+            m.first,
+            m.fill_us,
+            m.fill_ok,
+            m.render_us,
+            m.sums,
+            if m.good() { "GOOD" } else { "BAD" }
         );
     }
 
-    /// Rounds for `secs` (0: one round), a summary every [`REPORT_S`] and
-    /// at the end; stops at the first failing round. True if all passed.
-    fn phase(
+    /// A step at CS3 timing `c`: set, measured, reported. True if good.
+    #[allow(clippy::too_many_arguments)]
+    fn step(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
+        src: &[u8],
+        back: &mut [u8],
         table: &[(usize, u32)],
-        name: &str,
-        secs: u32,
         seed: &mut u32,
         want: u32,
+        c: Cs3,
     ) -> bool {
-        let start = rt::ticks();
-        let mut t = Tally::default();
-        let mut next = REPORT_S;
-        loop {
-            *seed = seed.wrapping_add(1);
-            let ok = round(e, vram, table, *seed, want, &mut t);
-            let s = us_since(start) / 1_000_000;
-            if !ok {
-                report(name, s, &t);
-                log!("  S28 {name}: round {} FAILED", t.rounds);
-                return false;
-            }
-            if s >= secs {
-                report(name, s, &t);
-                log!("  S28 {name}: GOOD");
-                return true;
-            }
-            if s >= next {
-                report(name, s, &t);
-                next += REPORT_S;
-            }
+        rt::check_in();
+        set_cs3(c);
+        *seed += 2;
+        let (m, _) = measure(e, vram, src, back, table, *seed, Some(want));
+        let mut name = [0u8; 48];
+        let n = {
+            let mut w = Buf(&mut name, 0);
+            let _ = write!(
+                w,
+                "74.75 MHz, RDF {} RDN {} RRR {} ({} clk/beat)",
+                c.0,
+                c.1,
+                c.2,
+                beat(c)
+            );
+            w.1
+        };
+        report(core::str::from_utf8(&name[..n]).unwrap_or("step"), &m);
+        if !m.good()
+            && let Some((a, want, got)) = m.first
+        {
+            // Read or write fault? The word again at the long timing.
+            set_cs3(LONG_CS3);
+            let again = load32_volatile(vram, a);
+            log!(
+                "  S29 first wrong word 0x{a:x}: wanted 0x{want:08x}, read 0x{got:08x}, at the long timing 0x{:08x} ({})",
+                again.unwrap_or(0),
+                if again == Some(want) {
+                    "a read fault"
+                } else {
+                    "written wrong"
+                }
+            );
+        }
+        m.good()
+    }
+
+    /// A small formatting buffer.
+    struct Buf<'a>(&'a mut [u8], usize);
+
+    impl Write for Buf<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let end = (self.1 + s.len()).min(self.0.len());
+            self.0[self.1..end].copy_from_slice(&s.as_bytes()[..end - self.1]);
+            self.1 = end;
+            Ok(())
         }
     }
 
-    /// The memory and clock registers.
-    fn speed_now(e: &mut Engine<Mmio>) -> Speed {
+    /// S29, the owner's option A: the 2700G's system clock at 74.75 MHz
+    /// with `MBXCLK` divide by 1 (the cores 50% faster, the memory inside
+    /// its rating), measured against today's (99.67 MHz, divide by 2, CS3
+    /// `0x2484`); then the fastest CS3 timing that reads back right at
+    /// 74.75 MHz, stepped down from the long `0x79D4`; WM's `0x2484` tried
+    /// too; a timing with margin chosen and soaked. WM's state back at the
+    /// end (and from the fault handler). Changes only from WM's own state.
+    #[inline(never)]
+    fn s29(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        src: &[u8],
+        back: &mut [u8],
+        table: &[(usize, u32)],
+    ) {
+        let found = clk_state(e);
+        let clk0 = e.regs.read32(MBXCLK);
+        log!(
+            "  S29 as found: MSC1 0x{:08x}, COREPLL 0x{:x} ({} kHz), LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}, MBXCLK 0x{clk0:x}",
+            diag::msc1(),
+            found.pll,
+            found.khz(),
+            found.lmtype,
+            found.lmtim,
+            found.lmrefresh
+        );
+        let wm = diag::msc1() == WM_MSC1 && found == Speed::WM && (clk0 >> 2) & 3 == 1;
+        let mut seed = 0;
+        let (m0, want) = measure(e, vram, src, back, table, seed, None);
+        report("today: 99.67 MHz, divide by 2, CS3 0x2484", &m0);
+        if !m0.good() {
+            log!("  S29 today's own setting failed a check: nothing changed");
+            return;
+        }
+        if !wm {
+            log!("  S29 not Windows Mobile's state: nothing changed");
+            return;
+        }
+        set_cs3(LONG_CS3);
+        seed += 2;
+        let (m, _) = measure(e, vram, src, back, table, seed, Some(want));
+        report("99.67 MHz, divide by 2, CS3 0x79D4 (the long start)", &m);
+        let lock = clk::set_speed(&mut e.regs, Speed::A75, rt::delay_us);
+        if lock.is_some() {
+            e.regs.write32(MBXCLK, clk0 & !0xC);
+            rt::delay_us(1_000);
+            e.reset(rt::delay_us);
+            let _ = pm_init(e, vram);
+        }
+        let now = clk_state(e);
+        log!(
+            "  S29 option A: locked after {lock:?} us; COREPLL 0x{:x} ({} kHz), LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}, MBXCLK 0x{:x}",
+            now.pll,
+            now.khz(),
+            now.lmtype,
+            now.lmtim,
+            now.lmrefresh,
+            e.regs.read32(MBXCLK)
+        );
+        let mut best = None;
+        if lock.is_some() && step(e, vram, src, back, table, &mut seed, want, LONG_CS3) {
+            best = Some(LONG_CS3);
+            let mut failed = false;
+            for rdf in RDF_STEPS {
+                if !step(e, vram, src, back, table, &mut seed, want, (rdf, 9, 7)) {
+                    failed = true;
+                    break;
+                }
+                best = Some((rdf, 9, 7));
+            }
+            let rdf = best.map_or(13, |b| b.0);
+            if !failed {
+                for rdn in RDN_STEPS {
+                    if !step(e, vram, src, back, table, &mut seed, want, (rdf, rdn, 7)) {
+                        break;
+                    }
+                    best = Some((rdf, rdn, 7));
+                }
+            }
+            // WM's own timing at 74.75 MHz: does option A cost bus speed?
+            let b = best.unwrap_or(LONG_CS3);
+            if beat(b) <= beat(WM_CS3) {
+                let ok = step(e, vram, src, back, table, &mut seed, want, WM_CS3);
+                log!(
+                    "  S29 WM's CS3 0x2484 at 74.75 MHz: {}",
+                    if ok { "GOOD" } else { "BAD" }
+                );
+            } else {
+                log!("  S29 WM's CS3 0x2484 at 74.75 MHz: not tried (slower timings failed)");
+            }
+        }
+        if let Some(b) = best {
+            // A quarter more clocks a beat than the fastest good: the
+            // fastest step at or over that.
+            let floor = beat(b) * 5 / 4;
+            let mut chosen = LONG_CS3;
+            for c in RDF_STEPS
+                .iter()
+                .map(|&r| (r, 9, 7))
+                .chain(RDN_STEPS.iter().map(|&n| (b.0, n, 7)))
+            {
+                if beat(c) >= floor && beat(c) < beat(chosen) {
+                    chosen = c;
+                }
+            }
+            log!(
+                "  S29 fastest good: RDF {} RDN {} RRR {} ({} clk/beat); chosen with a quarter margin: RDF {} RDN {} RRR {} ({} clk/beat), soaked {SOAK_S} s",
+                b.0,
+                b.1,
+                b.2,
+                beat(b),
+                chosen.0,
+                chosen.1,
+                chosen.2,
+                beat(chosen)
+            );
+            set_cs3(chosen);
+            let start = rt::ticks();
+            let (mut rounds, mut next) = (0, REPORT_S);
+            loop {
+                seed += 2;
+                rounds += 1;
+                let (m, _) = measure(e, vram, src, back, table, seed, Some(want));
+                let s = us_since(start) / 1_000_000;
+                if !m.good() || s >= next || s >= SOAK_S {
+                    report("soak", &m);
+                    log!(
+                        "  S29 soak, {s} s: {rounds} rounds, {}",
+                        if m.good() { "all good" } else { "FAILED" }
+                    );
+                    next += REPORT_S;
+                }
+                if !m.good() || s >= SOAK_S {
+                    break;
+                }
+            }
+        }
+        restore(&mut e.regs);
+        e.reset(rt::delay_us);
+        let _ = pm_init(e, vram);
+        let now = clk_state(e);
+        log!(
+            "  S29 WM's state back: MSC1 0x{:08x}, COREPLL 0x{:x}, LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}, MBXCLK 0x{:x}",
+            diag::msc1(),
+            now.pll,
+            now.lmtype,
+            now.lmtim,
+            now.lmrefresh,
+            e.regs.read32(MBXCLK)
+        );
+        let (m, _) = measure(e, vram, src, back, table, seed + 2, Some(want));
+        report("back: 99.67 MHz, divide by 2, CS3 0x2484", &m);
+    }
+
+    /// The clock and memory registers.
+    fn clk_state(e: &mut Engine<Mmio>) -> Speed {
         Speed {
             pll: e.regs.read32(clk::COREPLL),
             lmtype: e.regs.read32(clk::LMTYPE),
             lmtim: e.regs.read32(clk::LMTIM),
             lmrefresh: e.regs.read32(clk::LMREFRESH),
         }
-    }
-
-    /// S28: a soak at 133.25 MHz with the memory timing Dell's routine
-    /// gives for it (CL3; `clock::Speed::FAST`), after a warm-up at WM's
-    /// clock; WM's setting back at the end or the first failure. Only from
-    /// WM's own setting (elsewhere, as in the emulator: one round of each
-    /// phase, no clock change).
-    #[inline(never)]
-    fn s28(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let found = speed_now(e);
-        log!(
-            "  S28 as found: COREPLL 0x{:x} ({} kHz), LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}, SYSCLKSRC 0x{:x}, MBXCLK 0x{:x}",
-            found.pll,
-            found.khz(),
-            found.lmtype,
-            found.lmtim,
-            found.lmrefresh,
-            e.regs.read32(clk::SYSCLKSRC),
-            e.regs.read32(MBXCLK)
-        );
-        log!("  S28 temperature and battery: not readable yet (no gauge driver before Phase 9)");
-        let wm = found == Speed::WM;
-        let secs = |s: u32| if wm { s } else { 0 };
-        if !wm {
-            log!("  S28 not Windows Mobile's setting: one round a phase, no clock change");
-        }
-        let Some((_, want)) = render_sum(e, vram, table) else {
-            log!("  S28 the reference render never finished: no soak");
-            return;
-        };
-        let mut seed = 0;
-        if !phase(
-            e,
-            vram,
-            table,
-            "warm-up at 99.67 MHz",
-            secs(WARM_S),
-            &mut seed,
-            want,
-        ) {
-            log!("  S28 the warm-up failed at WM's own clock: no soak");
-            return;
-        }
-        let lock = if wm {
-            clk::set_speed(&mut e.regs, Speed::FAST, rt::delay_us)
-        } else {
-            Some(0)
-        };
-        let now = speed_now(e);
-        log!(
-            "  S28 133.25 MHz, CL3: locked after {lock:?} us; COREPLL 0x{:x} ({} kHz), LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}",
-            now.pll,
-            now.khz(),
-            now.lmtype,
-            now.lmtim,
-            now.lmrefresh
-        );
-        let soaked = lock.is_some()
-            && phase(
-                e,
-                vram,
-                table,
-                "soak at 133.25 MHz",
-                secs(SOAK_S),
-                &mut seed,
-                want,
-            );
-        let back = if wm {
-            clk::set_speed(&mut e.regs, found, rt::delay_us)
-        } else {
-            Some(0)
-        };
-        if !soaked {
-            e.reset(rt::delay_us);
-            let _ = pm_init(e, vram);
-        }
-        let now = speed_now(e);
-        log!(
-            "  S28 WM's setting back: locked after {back:?} us; COREPLL 0x{:x}, LMTYPE 0x{:x}, LMTIM 0x{:x}, LMREFRESH 0x{:x}",
-            now.pll,
-            now.lmtype,
-            now.lmtim,
-            now.lmrefresh
-        );
-        let after = phase(
-            e,
-            vram,
-            table,
-            "back at 99.67 MHz",
-            secs(AFTER_S),
-            &mut seed,
-            want,
-        );
-        log!(
-            "  S28 verdict: {}",
-            if soaked && after {
-                "133.25 MHz with CL3 held, warm: GOOD"
-            } else {
-                "BAD (see above)"
-            }
-        );
     }
 
     /// A render with `table`, timed by polling status bit 2 (no logging):
@@ -982,13 +1125,23 @@ mod image {
             );
         }
 
-        // S28 (ADR-0026): a soak at 133.25 MHz, CL3.
+        // S29 (ADR-0026): the owner's option A, 74.75 MHz with divide by 1,
+        // and the fastest reliable CS3 timing there.
         if drew {
             let (t, n) = table(level);
+            let Some(ram) = rp_hal_x51v::devices::take_scratch() else {
+                crash(format_args!("no scratch RAM"))
+            };
+            let (src, rest) = ram.split_at_mut(FLUSH_BYTES);
+            let back = &mut rest[..READ_BYTES];
+            for (k, w) in src.chunks_exact_mut(4).enumerate() {
+                let x = (k as u32 ^ 0xF1A5_0000).wrapping_mul(0x9E37_79B9);
+                w.copy_from_slice(&(x ^ x >> 15).to_le_bytes());
+            }
             log!(
-                "S28: a soak at 133.25 MHz with CL3 memory timing: {WARM_S} s warm-up at 99.67 MHz, {SOAK_S} s at 133.25 MHz, {AFTER_S} s back"
+                "S29: option A, 74.75 MHz with MBXCLK divide by 1, against today's; CS3 stepped from 0x79D4; a chosen timing soaked {SOAK_S} s"
             );
-            s28(&mut e, vram, &t[..n]);
+            s29(&mut e, vram, src, back, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);
@@ -1084,8 +1237,13 @@ mod image {
         crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
     }
 
+    /// Faults and panics put Windows Mobile's bus timing and clocks back
+    /// first (S29), through the crash-path handle on the 2700G.
     #[inline(never)]
     fn crash(msg: core::fmt::Arguments) -> ! {
+        if let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            restore(&mut regs);
+        }
         rp_hal_x51v::devices::crash_to_loader(msg);
         loop {
             core::hint::spin_loop();

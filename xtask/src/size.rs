@@ -414,10 +414,13 @@ pub const BUDGETS: &[Budget] = &[
     // KiB for version 24 (T10-T13: the interrupt line, depth across
     // renders, filtering and mipmaps, 32-bit and PVRTC textures), 39.3 KiB
     // measured, + ~7%; tightened 42 -> 35 KiB for version 26 (the clock
-    // and 16-bit target stages; texture helpers gone), 31.2 KiB measured.
+    // and 16-bit target stages; texture helpers gone), 31.2 KiB measured;
+    // raised to 44 KiB for version 29 (option A's clock and CS3 bus-timing
+    // steps: per-step flush, read-back, all-free-memory patterns, the
+    // report lines), 41.0 KiB measured.
     Budget {
         image: "rp-mbx3d",
-        max_load: 35 * 1024,
+        max_load: 44 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
