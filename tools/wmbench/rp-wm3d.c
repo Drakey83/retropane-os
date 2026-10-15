@@ -14,15 +14,19 @@
  * uncached; of the registers, only the two Dell's driver itself reads
  * (MBXCLK, the core's status at 0x12c). To get a frame not torn by the
  * game, the game's threads are suspended (the program in front when the
- * copy is due), 50 ms are left for the core to finish what it has, and the
- * memory goes straight from the chip to the card in 64 KiB pieces (~15 s);
- * then the game resumes.
+ * copy is due) while a slice is copied, 50 ms after, for the core to finish
+ * what it has.
  *
- * Version 2 (2026-10-14). Version 1 copied into RAM first: with the game
- * running there were no 16 MiB to be had, so nothing was copied; and it
- * drew on its window when done, and the game froze there (music still
- * playing; a soft reset). Now nothing is drawn after the start screen:
- * beeps only.
+ * Version 3 (2026-10-14). Version 1 copied into RAM first: with the game
+ * running there were no 16 MiB to be had (4 MiB free), so nothing was
+ * copied; and it drew on its window when done, and the game froze there
+ * (music still playing; a soft reset): nothing is drawn after the start
+ * screen now, beeps only. Version 2 wrote to the card while the game was
+ * suspended and stopped after 64 KiB: a suspended game thread can hold a
+ * lock the card's writes need. Now nothing touches a file while the game is
+ * suspended: per slice of up to 3 MiB, suspend, copy to RAM (~0.2 s),
+ * resume, then write. Slices are of different frames; the PC compares two
+ * captures.
  *
  * Its log is rp-wm3d.txt next to itself; the copies rp-wm3d-1.bin and
  * rp-wm3d-2.bin (16 MiB each). Built by `cargo xtask wmbench`.
@@ -44,7 +48,7 @@ BOOL VirtualCopy(LPVOID dest, LPVOID src, DWORD size, DWORD protect);
 #define MBX_STATUS 0x412cUL
 
 /* Seconds before each copy: time to start the game and get playing. */
-static const DWORD AT_S[2] = {60, 30};
+static const DWORD AT_S[2] = {60, 60};
 
 static LARGE_INTEGER freq;
 static HANDLE logf_ = INVALID_HANDLE_VALUE;
@@ -106,7 +110,38 @@ static volatile unsigned long *map_phys(DWORD phys, DWORD size)
 }
 
 #define MAX_THREADS 64
-static unsigned long piece[65536 / 4];
+
+/* Logs every process, and returns the one whose program name has "doom"
+ * in it (any case), else 0. Version 2 suspended the program owning the
+ * window in front: 3 threads, and the game didn't pause, so that wasn't
+ * the game. */
+static DWORD find_game(void)
+{
+    PROCESSENTRY32 pe;
+    DWORD game = 0;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    pe.dwSize = sizeof pe;
+    if (Process32First(snap, &pe)) {
+        do {
+            char name[MAX_PATH];
+            int i;
+            /* Lower-case ASCII, for the log and the match. */
+            for (i = 0; pe.szExeFile[i] && i < MAX_PATH - 1; i++) {
+                WCHAR c = pe.szExeFile[i];
+                name[i] = c >= 'A' && c <= 'Z' ? (char)(c + 32) : c < 128 ? (char)c : '?';
+            }
+            name[i] = 0;
+            out("# process %08lx: %s, %lu threads", (unsigned long)pe.th32ProcessID, name,
+                (unsigned long)pe.cntThreads);
+            if (!game && strstr(name, "doom"))
+                game = pe.th32ProcessID;
+        } while (Process32Next(snap, &pe));
+    }
+    CloseToolhelp32Snapshot(snap);
+    return game;
+}
 
 /* Suspends (or, `resume`, resumes) every thread of process `pid`; the
  * count of threads. */
@@ -138,41 +173,19 @@ static int suspend_all(DWORD pid, int resume, DWORD *ids, int n)
     return n;
 }
 
-/* The chip's memory, straight to rp-wm3d-<k>.bin in 64 KiB pieces; true
- * if all of it was written. */
-static int save(int k, volatile unsigned long *mem)
-{
-    WCHAR path[MAX_PATH];
-    HANDLE f;
-    DWORD done = 0, w, i;
-    _snwprintf(path, MAX_PATH, L"%srp-wm3d-%d.bin", dir, k);
-    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE) {
-        out("# save %d: CreateFile error %lu", k, (unsigned long)GetLastError());
-        return 0;
-    }
-    while (done < MEM_SIZE) {
-        for (i = 0; i < sizeof piece / 4; i++)
-            piece[i] = mem[done / 4 + i];
-        if (!WriteFile(f, piece, sizeof piece, &w, NULL) || w != sizeof piece) {
-            out("# save %d: WriteFile error %lu at %lu", k, (unsigned long)GetLastError(),
-                (unsigned long)done);
-            break;
-        }
-        done += w;
-    }
-    CloseHandle(f);
-    return done == MEM_SIZE;
-}
-
+/* The chip's memory to rp-wm3d-<k>.bin, a slice at a time: the game
+ * suspended only while a slice is copied to RAM, never during file work. */
 static void capture(int k, volatile unsigned long *mem, volatile unsigned long *regs)
 {
-    DWORD ids[MAX_THREADS], pid = 0, mine = GetCurrentProcessId();
+    DWORD ids[MAX_THREADS], pid = 0, mine = GetCurrentProcessId(), slice = 3UL << 20;
+    DWORD at, i, w, worst_us = 0;
     MEMORYSTATUS ms;
     HWND fg = GetForegroundWindow();
-    unsigned long clk, st0, st1;
+    WCHAR path[MAX_PATH];
+    HANDLE f;
+    unsigned long *buf = NULL, clk = 0, st0 = 0, st1 = 0;
     unsigned long long t0, t1;
-    int n, ok;
+    int n = 0, ok = 1;
 
     ms.dwLength = sizeof ms;
     GlobalMemoryStatus(&ms);
@@ -180,22 +193,55 @@ static void capture(int k, volatile unsigned long *mem, volatile unsigned long *
         GetWindowThreadProcessId(fg, &pid);
     out("# capture %d: in front: window %08lx, process %08lx; free RAM %lu KiB", k,
         (unsigned long)fg, (unsigned long)pid, (unsigned long)(ms.dwAvailPhys >> 10));
+    pid = find_game();
+    out("# capture %d: the game: process %08lx", k, (unsigned long)pid);
     if (!pid || pid == mine) {
-        out("# capture %d: no game in front: nothing copied", k);
+        out("# capture %d: no program named *doom* running: nothing copied", k);
         return;
     }
-    n = suspend_all(pid, 0, ids, 0);
-    out("# capture %d: %d threads of the game suspended", k, n);
-    Sleep(50);
-    clk = regs[MBXCLK / 4];
-    st0 = regs[MBX_STATUS / 4];
-    t0 = now_ticks();
-    ok = save(k, mem);
-    t1 = now_ticks();
-    st1 = regs[MBX_STATUS / 4];
-    suspend_all(pid, 1, ids, n);
-    out("CAPTURE %d: MBXCLK %08lx, status %08lx before, %08lx after; %s in %lu ms", k, clk,
-        st0, st1, ok ? "saved whole" : "SAVED IN PART", us_between(t0, t1) / 1000);
+    while (slice >= (256UL << 10) &&
+           !(buf = (unsigned long *)VirtualAlloc(NULL, slice, MEM_COMMIT, PAGE_READWRITE)))
+        slice /= 2;
+    if (!buf) {
+        out("# capture %d: no RAM for a slice: nothing copied", k);
+        return;
+    }
+    _snwprintf(path, MAX_PATH, L"%srp-wm3d-%d.bin", dir, k);
+    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        out("# capture %d: CreateFile error %lu", k, (unsigned long)GetLastError());
+        VirtualFree(buf, 0, MEM_RELEASE);
+        return;
+    }
+    out("# capture %d: slices of %lu KiB", k, (unsigned long)(slice >> 10));
+    for (at = 0; at < MEM_SIZE && ok; at += slice) {
+        out("# capture %d: slice at %08lx", k, (unsigned long)at);
+        DWORD len = MEM_SIZE - at < slice ? MEM_SIZE - at : slice;
+        /* Suspended: no file, no log, no drawing until resumed. */
+        n = suspend_all(pid, 0, ids, 0);
+        Sleep(50);
+        if (at == 0) {
+            clk = regs[MBXCLK / 4];
+            st0 = regs[MBX_STATUS / 4];
+        }
+        t0 = now_ticks();
+        for (i = 0; i < len / 4; i++)
+            buf[i] = mem[at / 4 + i];
+        t1 = now_ticks();
+        st1 = regs[MBX_STATUS / 4];
+        suspend_all(pid, 1, ids, n);
+        if (us_between(t0, t1) > worst_us)
+            worst_us = us_between(t0, t1);
+        ok = WriteFile(f, buf, len, &w, NULL) && w == len;
+        if (!ok)
+            out("# capture %d: WriteFile error %lu at %08lx", k, (unsigned long)GetLastError(),
+                (unsigned long)at);
+    }
+    CloseHandle(f);
+    VirtualFree(buf, 0, MEM_RELEASE);
+    out("CAPTURE %d: MBXCLK %08lx, status %08lx first, %08lx last; %d game threads; "
+        "%s; longest slice copy %lu ms", k, clk, st0, st1, n,
+        ok ? "saved whole" : "SAVED IN PART", worst_us / 1000);
 }
 
 static LRESULT CALLBACK proc(HWND h, UINT m, WPARAM w, LPARAM l)
@@ -241,7 +287,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         Sleep(5000);
         return 1;
     }
-    say(L"Start DoomGLES now and play.", L"It pauses at 1 min and ~2 min. Beeps when done.");
+    say(L"Start DoomGLES now; play 4 minutes.", L"Short hitches at 1 and 2 minutes.");
     MessageBeep(MB_OK);
     for (k = 0; k < 2; k++) {
         Sleep(AT_S[k] * 1000);
