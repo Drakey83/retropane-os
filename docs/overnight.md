@@ -1482,3 +1482,25 @@ comes before the UI and GDI designs, which are written GPU-first.
     early boot and through suspend. Done when no reachable state shows the
     pop-up, checked on the device in each. Meanwhile, debugging never
     queries the device while a test image runs.
+
+83. **The CF card's drive flaky in Explorer** (owner, 2026-10-15: a bare
+    "USB Drive (J:)" with no size, or the label with a broken icon that
+    fixes itself minutes later; "very flaky" since the drive was built).
+    **Fixed in the emulator, device check pending.** Cause: the loader
+    attached a CF card that was in at start-up only on its second detect
+    poll (~1 s into the loop, after the pull-up), so Windows enumerated
+    LUN 1 as "no medium", the attach then stalled every USB request for
+    0.5-3.5 s, and `medium_changed` kept the new card away 2-10 s more.
+    Each image run (the RNG restart loop: every ~9 s) did it again.
+    Class fixes: (1) the card is attached before the pull-up, as the SD
+    card; (2) `rp-usb-msc` skips the away time when the host last saw the
+    unit empty or never asked (it has nothing cached), so an inserted or
+    re-attached card is offered at once with a unit attention; (3) a card
+    that fails to attach or stops answering is retried once per
+    insertion (then idle, never a loop). Guards: emu-cf needs LUN 1 ready
+    at the PC's first question; a unit test for the away skip; two
+    mutants (both killed). Not covered by the emulator: the one retry
+    (the fork can't make a card fail once). **Device check:** with a CF
+    card in, `cargo xtask load` any returning image a few times with
+    Explorer open: J: should come back each time with its label, size and
+    icon at once; `cargo xtask cf log` should show no `dead` events.
