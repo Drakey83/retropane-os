@@ -351,10 +351,13 @@ pub const BUDGETS: &[Budget] = &[
     // square's format sweep), 26.2 KiB measured, + ~10%; then 29 -> 33 KiB
     // for version 8 (8 forms of the square first), 30.1 KiB, + ~10%; then
     // 33 -> 36 KiB for version 22 (recovery after a timed-out render, the
-    // alpha-source and filtering sweeps), 33.1 KiB measured.
+    // alpha-source and filtering sweeps), 33.1 KiB measured; then 36 -> 42
+    // KiB for version 24 (T10-T13: the interrupt line, depth across
+    // renders, filtering and mipmaps, 32-bit and PVRTC textures), 39.3 KiB
+    // measured, + ~7%.
     Budget {
         image: "rp-mbx3d",
-        max_load: 36 * 1024,
+        max_load: 42 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

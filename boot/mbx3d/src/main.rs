@@ -1,5 +1,14 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 23: the GLES driver's own forms,
+//! 3D core, under the loader. Version 24 (ADR-0026 T10-T13, from static
+//! reading 2026-10-15): T10 render done on GPIO85 with `0x130` bit 15 (Dell
+//! enables `0x87F5`; T2 had bit 2 alone after a reset), the line quieted
+//! first, then which `MINTENABLE` bit routes the MBX core; T11 depth kept
+//! across renders (`0x674`, `0x610` store then load); T12 bilinear
+//! filtering (TEX1 bit 31) and mipmaps (TEX1 bits 30-29) with two level
+//! layouts and a level-of-detail sweep; T13 32-bit texels (TEX0 code 12)
+//! and PVRTC 4 bpp (28) and 2 bpp (16) from hand-made blocks. T5-T7 are
+//! done (version 23) and gone.
+//! Version 23: the GLES driver's own forms,
 //! read statically: blending sets TSP bit 13, a texture with alpha takes a
 //! combine word (TEX2) with bit 13 clear, and depth compare and write mask
 //! sit in the TSP's low bits (Dell's `0x0E80`: always, no write). T5c tries
@@ -223,7 +232,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 23;
+    const VERSION: u32 = 24;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -362,38 +371,6 @@ mod image {
     /// Where stage T6 keeps its 8 x 8 texture (free 2700G memory).
     const TEX: usize = 0x00E0_0000;
 
-    /// A scene of `objs` (each its words and list pointer flags) in the
-    /// parameter memory, in that order, every tile listing them all;
-    /// rendered with `table`. True if it finished.
-    #[inline(never)]
-    fn scene(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        table: &[(usize, u32)],
-        objs: &[(&[u32], u32)],
-    ) -> bool {
-        let mut at = OBJECT;
-        let mut list = [m3::END; 16];
-        let n = objs.len().min(15);
-        for (k, (w, flags)) in objs[..n].iter().enumerate() {
-            store(vram, at, w);
-            list[k] = flags | ((at - PARAMS) / 4) as u32;
-            at += 4 * w.len();
-        }
-        store(vram, PARAMS, &list[..=n]);
-        regions(vram, |_, _| true);
-        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
-        if !done {
-            // A bad word can hang the core (version 21: TSP bit 16 voided
-            // every render after it): reset it and set the memory manager
-            // up again, so the next try starts clean.
-            e.reset(rt::delay_us);
-            let ok = pm_init(e, vram);
-            log!("  (timed out: core reset, memory manager ready again: {ok})");
-        }
-        done
-    }
-
     /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
     #[allow(clippy::too_many_arguments)]
     fn square(
@@ -440,45 +417,52 @@ mod image {
         )
     }
 
-    /// T5c: the GLES driver's blending form (`0x02267700`): factors in
-    /// TSP bits 31-26 plus **TSP bit 13**, and for a texture with alpha a
-    /// combine word with **TEX2 bit 13 clear** (its table `0x0225D3A0`: RGBA
-    /// rows `0x86084610`, RGB rows `0x86086610`; Dell's `0xD6886610` says
-    /// "no alpha"). Source alpha / inverse (4/5), over red.
+    /// A scene of `objs` in the parameter memory, the region array listing
+    /// the tiles `keep` says, rendered with `table`. True if it finished;
+    /// a hang resets the core and sets the memory manager up again.
     #[inline(never)]
-    fn t5(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFFFF_0000, 0.0);
-        let blend = 4u32 << 29 | 5 << 26;
-        let p = m3::STRIP_ONE_TRIANGLE;
-        for (name, tsp) in [
-            ("flat, bit 13", blend | (TSP_DELL & 0x03FF_FFFF) | 1 << 13),
-            (
-                "flat, Gouraud + bit 13",
-                blend | (TSP_DELL & 0x03FF_FFFF) | TSP_GOURAUD | 1 << 13,
-            ),
-        ] {
-            rt::check_in();
-            let sq = square(
-                100.0,
-                100.0,
-                300.0,
-                300.0,
-                0x8000_00FF,
-                0.0,
-                ISP_ALWAYS,
-                tsp,
-            );
-            let done = scene(e, vram, table, &[(&bg, p), (&sq[0], p), (&sq[1], p)]);
-            log!(
-                "  T5 {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
-                px(vram, 200, 200)
-            );
+    fn scene_in(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        table: &[(usize, u32)],
+        objs: &[(&[u32], u32)],
+        keep: fn(u32, u32) -> bool,
+    ) -> bool {
+        load(vram, objs, keep);
+        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
+        if !done {
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("  (timed out: core reset, memory manager ready again: {ok})");
         }
-        // An 8 x 8 ARGB4444 texture, every texel blue with alpha 8.
-        for k in 0..32 {
-            let _ = store32_volatile(vram, TEX + 4 * k, 0x800F_800F);
+        done
+    }
+
+    /// `objs` into the parameter memory (one list, at its start) and the
+    /// region array for the tiles `keep` says.
+    fn load(vram: &mut [u8], objs: &[(&[u32], u32)], keep: fn(u32, u32) -> bool) {
+        let mut at = OBJECT;
+        let mut list = [m3::END; 16];
+        let n = objs.len().min(15);
+        for (k, (w, flags)) in objs[..n].iter().enumerate() {
+            store(vram, at, w);
+            list[k] = flags | ((at - PARAMS) / 4) as u32;
+            at += 4 * w.len();
         }
-        cpu::drain_write_buffer();
+        store(vram, PARAMS, &list[..=n]);
+        regions(vram, keep);
+    }
+
+    /// A textured square from `(x0, y0)` to `(x1, y1)`, texture coordinates
+    /// 0 to `uv` both ways, white vertices.
+    fn tex_square(
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        uv: f32,
+        texw: [u32; 3],
+    ) -> [[u32; m3::tex::WORDS]; 2] {
         let v = |x, y, u, v| m3::tex::Vertex {
             x,
             y,
@@ -488,98 +472,461 @@ mod image {
             u,
             v,
         };
-        let tsp_t = blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF) | 1 << 13;
-        for (name, tex2, tsp) in [
-            (
-                "TEX2 RGBA modulate 0x86084610, TSP bit 13",
-                0x8608_4610u32,
-                tsp_t,
+        let tsp = m3::ta::TSP_DELL_TEXTURED;
+        [
+            m3::tex::triangle(
+                ISP_ALWAYS,
+                texw,
+                tsp,
+                &[v(x0, y0, 0.0, 0.0), v(x1, y0, uv, 0.0), v(x0, y1, 0.0, uv)],
             ),
-            ("TEX2 Dell's minus bit 13, TSP bit 13", 0xD688_4610, tsp_t),
-            ("TEX2 RGBA, no TSP bit 13", 0x8608_4610, tsp_t & !(1 << 13)),
+            m3::tex::triangle(
+                ISP_ALWAYS,
+                texw,
+                tsp,
+                &[v(x1, y0, uv, 0.0), v(x1, y1, uv, uv), v(x0, y1, 0.0, uv)],
+            ),
+        ]
+    }
+
+    /// The texture words for a square texture at `at`: side code, format,
+    /// TEX1's filter and level-of-detail value; Dell's opaque combine word.
+    fn texw(at: usize, code: u32, format: u32, filter: u32, lod: u32) -> [u32; 3] {
+        [
+            m3::tex::tex0(code, format),
+            m3::tex::tex1(at as u32, lod, filter),
+            0xD688_6610,
+        ]
+    }
+
+    /// Fills `n` 16-bit texels at `at` with `c`.
+    fn fill16(vram: &mut [u8], at: usize, n: usize, c: u16) {
+        let w = u32::from(c) | u32::from(c) << 16;
+        for k in 0..n / 2 {
+            let _ = store32_volatile(vram, at + 4 * k, w);
+        }
+    }
+
+    // T10-T13's 2700G memory (free above the version 21 texture).
+    const DEPTH: usize = 0x00E8_0000;
+    const MIPS: usize = 0x00E2_0000;
+    const PVR: usize = 0x00E4_0000;
+    const T32: usize = 0x00E6_0000;
+
+    /// The PXA's GPIO block: GPIO85 is bit 21 of the third bank.
+    const GPLR2: usize = 0x008;
+    const GPDR2: usize = 0x014;
+    const PIN85: u32 = 1 << 21;
+    /// The 2700G's system interrupt enable (write-only: never read) and
+    /// the display's event status and enable.
+    const MINTENABLE: usize = 0x018;
+    const DINTRS: usize = 0x2178;
+    const DINTRE: usize = 0x217C;
+
+    /// T10 (ADR-0026): does render done reach GPIO85 with `0x130` bit 15
+    /// (Dell's `0x87F5`; T2 had bit 2 alone, after a reset)? The line is
+    /// quieted first (every MBX source masked and cleared, the display's
+    /// events off), then a full-screen render per enable, GPIO85's level
+    /// and edges timed against status bit 2.
+    #[inline(never)]
+    fn t10(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let Some(mut gpio) = rt::take_gpio() else {
+            log!("T10: no GPIO block");
+            return;
+        };
+        let dir0 = gpio.read32(GPDR2);
+        gpio.write32(GPDR2, dir0 & !PIN85);
+        let Some(mut line) = rt::take_gpio_irq(85, rt::Edge::Both) else {
+            log!("T10: GPIO85's interrupt unavailable");
+            gpio.write32(GPDR2, dir0);
+            return;
+        };
+        let en0 = e.regs.read32(ENABLE);
+        let dintre0 = e.regs.read32(DINTRE);
+        let quiet = |e: &mut Engine<Mmio>| {
+            e.regs.write32(ENABLE, 0);
+            e.regs.write32(CLEAR, 0xFFFF);
+            e.regs.write32(DINTRE, 0);
+            e.regs.write32(DINTRS, 0);
+        };
+        quiet(e);
+        e.regs.write32(MINTENABLE, 0x800F);
+        rt::delay_us(1_000);
+        let _ = line.take();
+        line.done();
+        log!(
+            "T10: line quiet: GPIO85 {} (1 = idle, likely), status 0x{:08x}",
+            u32::from(gpio.read32(GPLR2) & PIN85 != 0),
+            e.regs.read32(STATUS)
+        );
+        let bg = background(0xFF20_2020, 0.0);
+        let p = m3::STRIP_ONE_TRIANGLE;
+        let mut edged_8004 = false;
+        for (mint, en) in [
+            (0x800F, 0x0004u32),
+            (0x800F, 0x8004),
+            (0x800F, 0x87F5),
+            (0x8001, 0x8004),
+            (0x8002, 0x8004),
+            (0x8004, 0x8004),
+            (0x8008, 0x8004),
+            (0x000F, 0x8004),
         ] {
+            if en == 0x8004 && mint != 0x800F && !edged_8004 {
+                break; // the routing sweep only if 0x8004 edged
+            }
             rt::check_in();
-            let mut texw = m3::ta::dell_texture(TEX as u32);
-            texw[0] = m3::tex::tex0(0, m3::tex::ARGB4444);
-            texw[2] = tex2;
-            let a = m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[
-                    v(100.0, 100.0, 0.0, 0.0),
-                    v(300.0, 100.0, 1.0, 0.0),
-                    v(100.0, 300.0, 0.0, 1.0),
-                ],
-            );
-            let b = m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[
-                    v(300.0, 100.0, 1.0, 0.0),
-                    v(300.0, 300.0, 1.0, 1.0),
-                    v(100.0, 300.0, 0.0, 1.0),
-                ],
-            );
-            let t = m3::tex::STRIP_GAME;
-            let done = scene(e, vram, table, &[(&bg, p), (&a, t), (&b, t)]);
+            quiet(e);
+            e.regs.write32(MINTENABLE, mint);
+            load(vram, &[(&bg, p)], |_, _| true);
+            let _ = line.take();
+            line.done();
+            e.regs.write32(ENABLE, en);
+            let lvl0 = gpio.read32(GPLR2) & PIN85 != 0;
+            let t0 = rt::ticks();
+            for &(off, v) in table {
+                e.regs.write32(MBX + off, v);
+            }
+            let (mut done, mut fell, mut edge, mut edges) = (None, None, None, 0u32);
+            while us_since(t0) < 40_000 {
+                let now = us_since(t0);
+                if done.is_none() && e.regs.read32(STATUS) & RENDER_DONE != 0 {
+                    done = Some(now);
+                }
+                if fell.is_none() && (gpio.read32(GPLR2) & PIN85 != 0) != lvl0 {
+                    fell = Some(now);
+                }
+                if line.take() {
+                    edges += 1;
+                    edge.get_or_insert(now);
+                    line.done();
+                }
+                if done.is_some() && now > done.unwrap_or(0) + 2_000 {
+                    break;
+                }
+            }
+            let held = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
+            // Cleared as Dell clears it (bits 2 and 3).
+            e.regs.write32(CLEAR, 0x0C);
+            rt::delay_us(100);
+            let after = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
+            if line.take() {
+                edges += 1;
+                line.done();
+            }
+            e.regs.write32(ENABLE, 0);
+            if mint == 0x800F && en == 0x8004 {
+                edged_8004 = edges > 0;
+            }
             log!(
-                "  T5 textured ARGB4444 alpha 8, {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
-                px(vram, 200, 200)
+                "  T10 MINTENABLE 0x{mint:04x}, 0x130 0x{en:04x}: done at {done:?} us; GPIO85 {} -> {held} (changed at {fell:?} us), {after} after the clear; edges {edges} (first at {edge:?} us)",
+                u32::from(lvl0)
+            );
+        }
+        quiet(e);
+        e.regs.write32(MINTENABLE, 0x800F);
+        e.regs.write32(ENABLE, en0);
+        e.regs.write32(DINTRE, dintre0);
+        gpio.write32(GPDR2, dir0);
+    }
+
+    /// T11: depth kept across renders. A 4 x 4 tile block; render A stores
+    /// its depth in a buffer (`0x674`, `0x610` bit 1), render B loads it
+    /// (bit 0) and draws blue "greater" at z 0.3 over where red stood at
+    /// 0.5 (left half). Colour isn't loaded: where blue fails, the tile's
+    /// own fill (white) shows.
+    #[inline(never)]
+    fn t11(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let block = |x: u32, y: u32| x < 4 && y < 4;
+        let with = |table: &[(usize, u32)], r610: u32, r6dc: u32, buf: &mut [(usize, u32); 32]| {
+            let mut n = 0;
+            for &(off, v) in &table[..table.len() - 1] {
+                buf[n] = match off {
+                    0x610 => (0x610, r610),
+                    0x6DC => (0x6DC, r6dc),
+                    _ => (off, v),
+                };
+                n += 1;
+            }
+            buf[n] = (0x674, DEPTH as u32);
+            buf[n + 1] = table[table.len() - 1];
+            n + 2
+        };
+        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
+        let red = square(0.0, 0.0, 16.0, 64.0, 0xFFFF_0000, 0.5, 7 << 29, tsp(7));
+        let blue = square(0.0, 0.0, 32.0, 64.0, 0xFF00_00FF, 0.3, 4 << 29, tsp(4));
+        let p = m3::STRIP_ONE_TRIANGLE;
+        for (name, load_bit) in [("B loads the depth", 1u32), ("control: B doesn't load", 0)] {
+            rt::check_in();
+            for k in 0..16 * 512 / 4 {
+                let _ = store32_volatile(vram, DEPTH + 4 * k, 0xAAAA_AAAA);
+            }
+            cpu::drain_write_buffer();
+            let mut buf = [(0usize, 0u32); 32];
+            let n = with(table, 15 << 7 | 2, 1, &mut buf);
+            let a = scene_in(e, vram, &buf[..n], &[(&red[0], p), (&red[1], p)], block);
+            let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
+            let changed = (0..16 * 512 / 4).filter(|&k| w(k) != 0xAAAA_AAAA).count();
+            log!(
+                "  T11 {name}: render A (red z 0.5, store) done {a}; depth buffer words changed {changed} of 2048, first 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x}, tile 0 word 64 0x{:08x}",
+                w(0),
+                w(1),
+                w(2),
+                w(3),
+                w(64)
+            );
+            let n = with(table, 15 << 7 | 2 | load_bit, 0, &mut buf);
+            let b = scene_in(e, vram, &buf[..n], &[(&blue[0], p), (&blue[1], p)], block);
+            log!(
+                "  T11 {name}: render B (blue z 0.3 greater) done {b}; where red was (8,32) 0x{:08x}, beside it (24,32) 0x{:08x}",
+                px(vram, 8, 32),
+                px(vram, 24, 32)
             );
         }
     }
 
-    /// T7b: depth with writes on, as the GLES driver forms it
-    /// (`glDepthFunc` stores (mode << 9), `glDepthMask(false)` bit 7, both
-    /// into the TSP's low bits: Dell's `0x0E80` = always, no write). Every
-    /// object: ISP bits 31-29 and TSP bits 11-9 the same mode, TSP bit 7
-    /// clear. Background z 0.1 and red z 0.5 "always"; blue z 0.3 or 0.8
-    /// with each mode.
+    /// T12: bilinear filtering (TEX1 bit 31) and mipmaps (bits 30-29, the
+    /// level layout unknown: smallest first as the PowerVR2 has it, or the
+    /// base first).
     #[inline(never)]
-    fn t7(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
-        let bg = background_tsp(0xFF20_2020, 0.1, tsp(7));
-        let a = square(
-            100.0,
-            100.0,
-            300.0,
-            300.0,
-            0xFFFF_0000,
-            0.5,
-            ISP_ALWAYS,
-            tsp(7),
-        );
+    fn t12(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let bg = background(0xFF00_0000, 0.0);
         let p = m3::STRIP_ONE_TRIANGLE;
-        for (zb, tenths) in [(0.3f32, 3u32), (0.8, 8)] {
-            for mode in [1u32, 4, 6] {
+        let t = m3::tex::STRIP_GAME;
+        // The 8 x 8 red/white checker, 8 px a texel.
+        for i in 0..64u32 {
+            let (x, y) = (i % 8, i / 8);
+            let c: u32 = if (x + y) % 2 == 0 { 0xF800 } else { 0xFFFF };
+            let at = TEX + 2 * m3::tex::twiddle(x, y) as usize;
+            let w = load32_volatile(vram, at & !3).unwrap_or(0);
+            let w = if at & 2 == 0 {
+                (w & 0xFFFF_0000) | c
+            } else {
+                (w & 0xFFFF) | c << 16
+            };
+            let _ = store32_volatile(vram, at & !3, w);
+        }
+        cpu::drain_write_buffer();
+        for (name, filter) in [
+            ("point", 0u32),
+            ("TEX1 bit 31 (linear)", m3::tex::TEX1_LINEAR),
+            (
+                "TEX1 bit 29 (mipmap nearest, no levels)",
+                m3::tex::TEX1_MIP_NEAREST,
+            ),
+            (
+                "TEX1 bit 30 (mipmap linear, no levels)",
+                m3::tex::TEX1_MIP_LINEAR,
+            ),
+        ] {
+            rt::check_in();
+            let sq = tex_square(
+                100.0,
+                100.0,
+                164.0,
+                164.0,
+                1.0,
+                texw(TEX, 0, m3::tex::RGB565, filter, m3::tex::TEX1_LOD),
+            );
+            let done = scene_in(
+                e,
+                vram,
+                table,
+                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+                |_, _| true,
+            );
+            let row: [u32; 8] = core::array::from_fn(|k| px(vram, 100 + 2 * k as u32, 104));
+            log!("  T12 {name}: done {done}; y 104, x 100-114 step 2: {row:08x?}");
+        }
+        // Mipmaps: 64 red, 32 green, 16 blue, 8 yellow, 4-1 cyan.
+        let colours: [(u32, u16); 7] = [
+            (64, 0xF800),
+            (32, 0x07E0),
+            (16, 0x001F),
+            (8, 0xFFE0),
+            (4, 0x07FF),
+            (2, 0x07FF),
+            (1, 0x07FF),
+        ];
+        // A: the PowerVR2's layout (16 bpp, twiddled): 1 x 1 at byte 6,
+        // 2 x 2 at 8, 4 x 4 at 0x10, 8 x 8 at 0x30, then 0xB0, 0x2B0, 0xAB0.
+        // B: the base first, each level after the larger one.
+        let a = [0xAB0usize, 0x2B0, 0xB0, 0x30, 0x10, 0x8, 0x6];
+        let mut b = [0usize; 7];
+        let mut off = 0;
+        for (k, &(side, _)) in colours.iter().enumerate() {
+            b[k] = off;
+            off += (side * side * 2) as usize;
+        }
+        for (layout, offs) in [("A (smallest first)", a), ("B (base first)", b)] {
+            for k in 0..0x3000 / 4 {
+                let _ = store32_volatile(vram, MIPS + 4 * k, 0);
+            }
+            for (k, &(side, c)) in colours.iter().enumerate() {
+                if side == 1 {
+                    // One texel, maybe not word aligned: by halves.
+                    let at = MIPS + offs[k];
+                    let w = load32_volatile(vram, at & !3).unwrap_or(0);
+                    let c = u32::from(c);
+                    let w = if at & 2 == 0 {
+                        (w & 0xFFFF_0000) | c
+                    } else {
+                        (w & 0xFFFF) | c << 16
+                    };
+                    let _ = store32_volatile(vram, at & !3, w);
+                } else {
+                    fill16(vram, MIPS + offs[k], (side * side) as usize, c);
+                }
+            }
+            cpu::drain_write_buffer();
+            // (the far corner, the size): literals, no float arithmetic.
+            for (end, size) in [(264.0f32, 64u32), (232.0, 32), (216.0, 16), (208.0, 8)] {
                 rt::check_in();
-                let b = square(
+                let sq = tex_square(
                     200.0,
                     200.0,
-                    400.0,
-                    400.0,
-                    0xFF00_00FF,
-                    zb,
-                    mode << 29,
-                    tsp(mode),
+                    end,
+                    end,
+                    1.0,
+                    texw(
+                        MIPS,
+                        3,
+                        m3::tex::RGB565,
+                        m3::tex::TEX1_MIP_NEAREST,
+                        m3::tex::TEX1_LOD,
+                    ),
                 );
-                let done = scene(
+                let done = scene_in(
                     e,
                     vram,
                     table,
-                    &[(&bg, p), (&a[0], p), (&a[1], p), (&b[0], p), (&b[1], p)],
+                    &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+                    |_, _| true,
                 );
                 log!(
-                    "  T7 blue z 0.{tenths} mode {mode}, TSP 0x{:08x}: done {done}; overlap (250,250) 0x{:08x}, blue alone (350,350) 0x{:08x}, red alone (150,150) 0x{:08x}",
-                    tsp(mode),
-                    px(vram, 250, 250),
-                    px(vram, 350, 350),
-                    px(vram, 150, 150)
+                    "  T12 mipmaps, layout {layout}, quad {size} px: done {done}; centre 0x{:08x}",
+                    px(vram, 200 + size / 2, 200 + size / 2)
                 );
             }
         }
+        // The level-of-detail value on a 16 px quad, layout B left in place.
+        let mut by_lod = [0u32; 16];
+        for (lod, out) in by_lod.iter_mut().enumerate() {
+            rt::check_in();
+            let sq = tex_square(
+                200.0,
+                200.0,
+                216.0,
+                216.0,
+                1.0,
+                texw(
+                    MIPS,
+                    3,
+                    m3::tex::RGB565,
+                    m3::tex::TEX1_MIP_NEAREST,
+                    lod as u32,
+                ),
+            );
+            let done = scene_in(
+                e,
+                vram,
+                table,
+                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+                |_, _| true,
+            );
+            *out = if done {
+                px(vram, 208, 208)
+            } else {
+                0xDEAD_DEAD
+            };
+        }
+        log!("  T12 LOD 0-15, 16 px quad, layout B: {by_lod:08x?}");
+    }
+
+    /// T13: 32-bit texels (code 12) and PVRTC 4 bpp (code 28) and 2 bpp
+    /// (code 16) from hand-made blocks (colour A = colour B, modulation 0).
+    #[inline(never)]
+    fn t13(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let bg = background(0xFF00_0000, 0.0);
+        let p = m3::STRIP_ONE_TRIANGLE;
+        let t = m3::tex::STRIP_GAME;
+        let draw = |e: &mut Engine<Mmio>, vram: &mut [u8], texw: [u32; 3]| {
+            let sq = tex_square(100.0, 100.0, 164.0, 164.0, 1.0, texw);
+            let done = scene_in(
+                e,
+                vram,
+                table,
+                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+                |_, _| true,
+            );
+            (
+                done,
+                [
+                    px(vram, 108, 108),
+                    px(vram, 156, 108),
+                    px(vram, 108, 156),
+                    px(vram, 156, 156),
+                ],
+            )
+        };
+        // 32-bit: quadrants red, green, blue, white-at-half-alpha.
+        for i in 0..64u32 {
+            let (x, y) = (i % 8, i / 8);
+            let c = match (x < 4, y < 4) {
+                (true, true) => 0xFFFF_0000u32,
+                (false, true) => 0xFF00_FF00,
+                (true, false) => 0xFF00_00FF,
+                (false, false) => 0x80FF_FFFF,
+            };
+            let _ = store32_volatile(vram, T32 + 4 * m3::tex::twiddle(x, y) as usize, c);
+        }
+        cpu::drain_write_buffer();
+        rt::check_in();
+        let (done, q) = draw(
+            e,
+            vram,
+            texw(T32, 0, m3::tex::ARGB8888, 0, m3::tex::TEX1_LOD),
+        );
+        log!(
+            "  T13 32-bit texels (code 12), quadrants red/green/blue/white a 0x80: done {done}; {q:08x?}"
+        );
+        // PVRTC blocks: (modulation word, colour word); colours opaque,
+        // A (RGB554) = B (RGB555).
+        const RED: u32 = 0xFC00_FC00;
+        const GREEN: u32 = 0x83E0_83E0;
+        for (name, format, blocks, word_order_swapped) in [
+            (
+                "PVRTC 4 bpp (code 28), red",
+                m3::tex::PVRTC4,
+                16usize,
+                false,
+            ),
+            ("PVRTC 4 bpp, words swapped", m3::tex::PVRTC4, 16, true),
+            ("PVRTC 2 bpp (code 16), red", m3::tex::PVRTC2, 8, false),
+        ] {
+            rt::check_in();
+            for k in 0..blocks {
+                let (m, c) = (0u32, RED);
+                let (w0, w1) = if word_order_swapped { (c, m) } else { (m, c) };
+                let _ = store32_volatile(vram, PVR + 8 * k, w0);
+                let _ = store32_volatile(vram, PVR + 8 * k + 4, w1);
+            }
+            cpu::drain_write_buffer();
+            // 16 x 16 texels (code 1).
+            let (done, q) = draw(e, vram, texw(PVR, 1, format, 0, m3::tex::TEX1_LOD));
+            log!("  T13 {name}: done {done}; {q:08x?}");
+        }
+        // Half and half: the left blocks red, the right green (4 bpp, 16 x
+        // 16 = 4 x 4 blocks; the block order is the question).
+        for k in 0..16usize {
+            let c = if k % 4 < 2 { RED } else { GREEN };
+            let _ = store32_volatile(vram, PVR + 8 * k, 0);
+            let _ = store32_volatile(vram, PVR + 8 * k + 4, c);
+        }
+        cpu::drain_write_buffer();
+        rt::check_in();
+        let (done, q) = draw(e, vram, texw(PVR, 1, m3::tex::PVRTC4, 0, m3::tex::TEX1_LOD));
+        log!("  T13 PVRTC 4 bpp, blocks 0-1 of each 4 red, 2-3 green: done {done}; {q:08x?}");
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -768,18 +1115,18 @@ mod image {
             );
         }
 
-        // T5-T7 (ADR-0026): blending, texture filtering and clamping (and
-        // the hand-written textured path), depth compare.
+        // T10-T13 (ADR-0026): the render-done interrupt, depth across
+        // renders, filtering and mipmaps, 32-bit and compressed textures.
         if drew {
             let (t, n) = table(level);
-            log!(
-                "T5c: alpha as the GLES driver forms it (TSP bit 13; TEX2 bit 13 clear), blend 4/5 over red"
-            );
-            t5(&mut e, vram, &t[..n]);
-            log!(
-                "T7b: depth with writes on (TSP bits 11-9 mode, bit 7 clear), red z 0.5, blue z 0.3/0.8"
-            );
-            t7(&mut e, vram, &t[..n]);
+            log!("T10: render done on GPIO85, 0x130 bit 15 (Dell's 0x87F5)");
+            t10(&mut e, vram, &t[..n]);
+            log!("T11: depth kept across renders (0x674, 0x610 store/load)");
+            t11(&mut e, vram, &t[..n]);
+            log!("T12: TEX1 filtering (bit 31) and mipmaps (bits 30-29, LOD 28-25)");
+            t12(&mut e, vram, &t[..n]);
+            log!("T13: 32-bit texels (code 12), PVRTC 4 bpp (28) and 2 bpp (16)");
+            t13(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);
