@@ -266,6 +266,27 @@ What it says:
 RetroPane now matches WM's fill speed; the CPU is free while the GPU
 draws. Details and edge checks: docs/hw/2700g.md, "The MBX 2D engine".
 
+### Slow frames around the Start menu (2026-10-14, `rp-today`)
+
+The GPU Today screen's worst taps (one of 57 at 101 ms) came from frames
+of 24-29 ms of CPU, in pairs, as the Start menu opened and the next
+frame drew. The CPU time is waiting for FIFO room while the 2D engine
+works: no atlas builds, uploads or mid-frame waits (counted on the PC,
+`rp-today`'s `menu_frames_cost`). Opening the menu covers ~140,000 px
+three times (background copy, glass blend, dither) plus text. The frame
+after drew it all again: the picture drawn into is two frames old.
+
+- **Fix 1 (`rp-mbx-render`): copy the previous frame's changes forward**
+  from the picture on screen, one plain copy. On the PC: 1,851 command
+  words to 147. On the device (log `local/rp-today-menu-fwd.txt`): slow
+  frames 8 to 3 in a similar session, one per menu opening, none after;
+  touch to flush median 19.0 ms, worst 54 (101); queue to flip median 3.0
+  ms (5.9).
+- Left: the menu opening itself (~24 ms of CPU waiting on the engine);
+  and the first tap after start-up (the second full-screen frame after
+  the background is built: 14.7 ms of CPU, 23.7 of engine), which a
+  full-screen copy forward would also cover.
+
 ## Interface layer flush (2026-10-12, emulator)
 
 `rp_gfx::layer::flush` converting a 480 x 640 ARGB8888 layer to the
