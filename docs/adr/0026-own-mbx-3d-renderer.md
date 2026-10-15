@@ -475,7 +475,13 @@ and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
   bus traffic of every picture; the 2D engine's blends onto 565 need
   their own device check).
 
-**Next: `rp-mbx3d` version 27:** the core PLL stepped from 99.67 MHz to
+**Version 27 withdrawn before running (2026-10-15):** the core PLL is
+also the 2700G's local-memory clock, and Dell's SDRAM table for the X51v
+rates that memory to 100 MHz (`docs/hw/2700g.md`, "The 2700G's local
+memory sets the clock limit"): its steps above 99.67 MHz overclock the
+memory. The in-spec option (75 MHz system clock, cores divide by 1) and the
+overclock (cores divide by 1 at 99.67 MHz, past Dell's 75 MHz core cap)
+are the owner's choice. Version 27 as it was:
 110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock"; the cores at
 half, at most 66.6 MHz, under Dell's 75 MHz cap; Dell's bus-timing tier
 unchanged), changed as Dell's driver does it (system clock on the 13 MHz
