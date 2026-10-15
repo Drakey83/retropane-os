@@ -29,12 +29,44 @@ git).
 | Game | Source | Binary | GLES DLL | Notes |
 |---|---|---|---|---|
 | Enigmo (Aspyr, 2004) | closed | Axim X50 Game CD (`F:\Game\Games\EnA01En.exe`): installer resource 99/2, zlib, a second installer with a Windows CE CAB inside (68 files; game `00Enigmo.001`, old-style `000` setup script) | `libGLES_CL.dll` (fixed point), 54 imports by ordinal | also `gx.dll` (GAPI input only: `GXOpenInput`, `GXGetDefaultKeys`, `GXCloseInput`), FMOD CE for sound (`fmodce.dll`), `aygshell` |
-| Stuntcar Extreme (Fathammer) | closed | same CD (`SCERC0B.exe`, InstallShield: not unpacked yet) | unknown | read from the owner's card once installed |
-| Virtual Pool Mobile v1.29 (Celeris) | closed | owner's SD card (installed 2026-10-15) | to read | |
-| Toy Golf, Geo Rally | closed | Dell X51v companion CD: owner looking for it | to read | |
-| DoomGLES, Doom2GLES, HereticGLES (Kokak) | open engines (GPL) | `local/apps/` | `libGLES_CL.dll` (to confirm) | native port planned (brightness control first) |
-| Quake III Arena (Q3CE, noctemware) | open engine (GPL) | `local/apps/Quake 3` | ships `libGLES_CM_NoE.dll` + `libEGL.dll` | native port planned |
-| more on the owner's card | ? | installed 2026-10-15 | to read | some GLES titles were unknown to us |
+| Geo Rally | closed | installed on the owner's card | `libGLES_CL.dll`, 48 | |
+| Solterra | closed | installed on the owner's card | `libGLES_CL.dll`, 50 | found 2026-10-15, unknown to us before |
+| Stuntcar Extreme (Fathammer) | closed | Axim X50 Game CD (`SCERC0B.exe`, InstallShield: not unpacked) | unknown | not installed |
+| Virtual Pool Mobile | closed | installed build is v1.78, **software rendered** (GAPI, no GLES); the GLES build v1.29 is a CAB on the owner's CF card, not installed | (v1.29) to read | |
+| Toy Golf | closed | owner looking for it | to read | |
+| Quake Mobile | Quake engine (GPL) | installer only on the card, not installed | to read | |
+| DoomGLES, Doom2GLES, HereticGLES (Kokak) | open engines (GPL) | installed on the card | `libGLES_CL.dll`, 59 each | native ports planned (brightness control first) |
+| Quake III Arena (Q3CE) | open engine (GPL) | installed on the card | `libGLES_CL.dll`, 57 | its own `libGLES_CM_NoE.dll` (+ `libEGL.dll`) looks like a software fallback (it imports JIT helpers: `eglAllocExecutable`...); on the 2700G Q3CE uses Intel's DLL. Native port planned |
+| Pocket Cube (Cube engine) | open engine | installed on the card | `libGLES_CL.dll`: game and server 35 each, its SDL port 14 (EGL) | |
+
+## The union: 76 functions (owner's cards, 2026-10-15)
+
+Ten programs scanned (the games above with GLES imports). Together they
+import **76** functions from `libGLES_CL.dll`, all by ordinal: the binary
+GLES layer's whole first target.
+
+`eglChooseConfig eglCreateContext eglCreateWindowSurface eglDestroyContext
+eglDestroySurface eglGetConfigAttrib eglGetConfigs eglGetCurrentContext
+eglGetDisplay eglGetError eglInitialize eglMakeCurrent eglSwapBuffers
+eglTerminate glActiveTexture glAlphaFuncx glBindTexture glBlendFunc
+glClear glClearColorx glClearDepthx glClientActiveTexture glColor4x
+glColorPointer glCompressedTexImage2D glCullFace glDeleteTextures
+glDepthFunc glDepthMask glDepthRangex glDisable glDisableClientState
+glDrawArrays glDrawElements glEnable glEnableClientState glFinish glFogx
+glFogxv glFrontFace glFrustumx glGenTextures glGetError glGetIntegerv
+glGetString glHint glLightModelx glLightModelxv glLightx glLightxv
+glLineWidthx glLoadIdentity glLoadMatrixx glMaterialxv glMatrixMode
+glMultMatrixx glNormalPointer glOrthox glPixelStorei glPolygonOffsetx
+glPopMatrix glPushMatrix glReadPixels glRotatex glScissor glShadeModel
+glStencilFunc glStencilOp glTexCoordPointer glTexEnvx glTexImage2D
+glTexParameterx glTexSubImage2D glTranslatex glVertexPointer glViewport`
+
+Used by one program only: `eglGetCurrentContext glDepthRangex
+glLightModelx glStencilFunc glStencilOp glTexSubImage2D`.
+
+Also found: two games draw through DirectDraw (`ddraw.dll`) instead: CE
+personality 2D work, not GLES. Most of the owner's other games use GAPI
+(`gx.dll`) or GDI.
 
 ## Enigmo's GLES calls (54)
 
