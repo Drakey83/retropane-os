@@ -163,6 +163,9 @@ pub struct PxaMmc<B, D = NoDma> {
     last_failure: Option<(u8, u32)>,
     /// The data command in progress (for `last_failure`).
     data_cmd: u8,
+    /// Bytes per data block of the next data command (512 but for
+    /// [`PxaMmc::read_short`]).
+    blklen: u32,
 }
 
 impl<B: RegisterBus + RegisterBus8> PxaMmc<B> {
@@ -189,6 +192,7 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
             writing: false,
             last_failure: None,
             data_cmd: 0,
+            blklen: BLOCK as u32,
         }
     }
 
@@ -216,6 +220,35 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
     #[must_use]
     pub fn last_failure(&self) -> Option<(u8, u32)> {
         self.last_failure
+    }
+
+    /// Sends a command that brings one short data block (`buf.len()` bytes,
+    /// 1-512: the SCR's 8 with ACMD51, the SD status's 64 with ACMD13, a
+    /// CMD6 query's 64) and receives it through the FIFO. Diagnostics.
+    pub fn read_short(&mut self, cmd: Command, buf: &mut [u8]) -> Result<u32, HostError> {
+        if buf.is_empty() || buf.len() > BLOCK {
+            return Err(HostError::Data);
+        }
+        self.dma_on = false;
+        self.blklen = buf.len() as u32;
+        let issued = self.issue(cmd, 1);
+        self.blklen = BLOCK as u32;
+        let status = issued?[0];
+        self.receive(buf)?;
+        Ok(status)
+    }
+
+    /// Sets `CLKRT` to `code` as given, reserved codes included (the
+    /// clock is stopped first, as [`SdHost::set_clock`] does). Diagnostics:
+    /// what the controller does past its documented rates.
+    pub fn set_clkrt_raw(&mut self, code: u32) {
+        self.regs.write32(reg::STRPCL, STRPCL_STOP);
+        for _ in 0..SPIN_LIMIT {
+            if self.regs.read32(reg::STAT) & STAT_CLK_EN == 0 {
+                break;
+            }
+        }
+        self.regs.write32(reg::CLKRT, code & 7);
     }
 
     fn wait_stat(&mut self, mask: u32) -> Result<u32, HostError> {
@@ -255,7 +288,7 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
         self.writing = write && data_blocks > 1;
         self.data_cmd = cmd.index;
         if data_blocks > 0 {
-            self.regs.write32(reg::BLKLEN, BLOCK as u32);
+            self.regs.write32(reg::BLKLEN, self.blklen);
             self.regs.write32(reg::NUMBLK, data_blocks);
             cmdat |= CMDAT_DATA_EN;
             if write {
@@ -601,6 +634,34 @@ mod tests {
         let w = mmc.into_inner_for_test().writes();
         assert!(w.contains(&(reg::BLKLEN, 512)) && w.contains(&(reg::NUMBLK, 1)));
         assert!(w.contains(&(reg::CMDAT, 1 | CMDAT_DATA_EN)));
+    }
+
+    #[test]
+    fn short_reads_set_their_length_then_blocks_are_whole_again() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::STAT, STAT_END_CMD_RES | STAT_DATA_DONE);
+        bus.preset(reg::I_REG, I_RXFIFO_REQ);
+        bus.script_reads(reg::RXFIFO, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut mmc = PxaMmc::new(bus);
+        let mut scr = [0u8; 8];
+        mmc.read_short(Command::new(51, 0, Response::R1), &mut scr)
+            .unwrap();
+        assert_eq!(scr, [1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            mmc.read_short(Command::new(51, 0, Response::R1), &mut []),
+            Err(HostError::Data)
+        );
+        let mut buf = [0u8; BLOCK];
+        mmc.read_block(Command::new(17, 0, Response::R1), &mut buf)
+            .unwrap();
+        let blklens: Vec<u32> = mmc
+            .into_inner_for_test()
+            .writes()
+            .iter()
+            .filter(|(o, _)| *o == reg::BLKLEN)
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(blklens, [8, 512]);
     }
 
     #[test]

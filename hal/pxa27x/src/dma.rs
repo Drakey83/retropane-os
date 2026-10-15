@@ -221,7 +221,7 @@ impl Dma {
     /// from device memory the CPU doesn't cache, read `window` bytes at a
     /// time from the same physical address `src`: for a device whose data
     /// register repeats across a window (a CompactFlash card's common
-    /// memory 0x400-0x7FF, docs/research/cf-timing.md), one descriptor per
+    /// memory 0x400-0x7FF, docs/research/storage-speed.md), one descriptor per
     /// window. No request line: the caller starts it only when the device
     /// has the data (DRQ). Finish with [`DmaEngine::done`]. `false` if
     /// refused (busy, not whole lines, `dst` not whole windows, more than
