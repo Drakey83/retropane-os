@@ -192,7 +192,9 @@ pub mod tex {
     /// TEX0 of DoomGLES's textures: size codes 3 and 3 (64 x 64), format
     /// 4 (ARGB4444) (`rp-mbx3d` version 18).
     pub const FORMAT_GAME: u32 = 0x0333_9600;
-    /// TEX0's format field: bits 15-13 (bit 12 has no effect; version 18).
+    /// TEX0's format field: bits 17-13 (bit 12 has no effect; version 18
+    /// measured the codes below 8; the GLES driver's table, 2026-10-15,
+    /// uses codes up to 28).
     pub const FORMAT_SHIFT: u32 = 13;
     /// TEX0 formats decoded on the device (version 18, texel ramp): 16-bit
     /// texels. 1 and 3 (greys, YUV-like), 5 and 7 are not yet decoded.
@@ -203,6 +205,34 @@ pub mod tex {
     pub const ARGB4444: u32 = 4;
     /// RGB332 in the 16-bit texel's low byte. See [`ARGB1555`].
     pub const RGB332: u32 = 6;
+    /// 32-bit texels (the GLES driver's RGBA8888 and RGB888 rows, code 12;
+    /// static, 2026-10-15: untested).
+    pub const ARGB8888: u32 = 12;
+    /// PVRTC, 4 bits a texel in 64-bit blocks of 4 x 4 (the GLES driver's
+    /// `GL_COMPRESSED_*_PVRTC_4BPPV1_IMG`, code 28; static, untested).
+    pub const PVRTC4: u32 = 28;
+    /// PVRTC, 2 bits a texel in 64-bit blocks of 8 x 4 (code 16; static,
+    /// untested).
+    pub const PVRTC2: u32 = 16;
+
+    /// TEX1 bit 31: linear (bilinear) filtering; bits 30-29 the mipmap
+    /// mode (the GLES driver's `glTexParameter` and per-unit words,
+    /// static, 2026-10-15: untested). Dell's TEX1 has none: point sampling.
+    pub const TEX1_LINEAR: u32 = 1 << 31;
+    /// TEX1 bits 30-29 = 1: the nearest mipmap level.
+    pub const TEX1_MIP_NEAREST: u32 = 1 << 29;
+    /// TEX1 bits 30-29 = 2: between the two nearest levels.
+    pub const TEX1_MIP_LINEAR: u32 = 2 << 29;
+    /// Dell's and DoomGLES's TEX1 level-of-detail value (bits 28-25).
+    pub const TEX1_LOD: u32 = 7;
+
+    /// TEX1 for a texture at `addr` (128-byte aligned): `filter`
+    /// ([`TEX1_LINEAR`] and a mipmap mode, or 0 for point sampling) and a
+    /// level-of-detail value `lod` (bits 28-25).
+    #[must_use]
+    pub const fn tex1(addr: u32, lod: u32, filter: u32) -> u32 {
+        (filter & 0xE000_0000) | (lod & 15) << 25 | (addr >> 7) & 0x01FF_FFFF
+    }
     /// TEX0's size codes: bits 27-24 and 23-20, a side of `2^(code + 3)`
     /// texels (code 8 = 2048: version 18).
     pub const SIZE_SHIFTS: (u32, u32) = (24, 20);
@@ -230,7 +260,7 @@ pub mod tex {
         0xA000_0000
             | (code & 15) << SIZE_SHIFTS.0
             | (code & 15) << SIZE_SHIFTS.1
-            | (format & 7) << FORMAT_SHIFT
+            | (format & 0x1F) << FORMAT_SHIFT
     }
 
     /// Where texel `(x, y)` sits in a texture (in texels): twiddled, x in
