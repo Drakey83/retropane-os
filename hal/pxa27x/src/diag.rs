@@ -40,6 +40,9 @@ pub const GROUPS: &[(&str, &[Reg])] = &[
             r("MECR", 0x4800_0014),
             r("SXCNFG", 0x4800_001C),
             r("MDMRS", 0x4800_0040),
+            // The low-power mode value (PASR, TCSR, drive strength) last
+            // written: reading it issues nothing (writing does).
+            r("MDMRSLP", 0x4800_0058),
             r("BOOTDEF", 0x4800_0044),
             r("ARBCNTL", 0x4800_0048),
             r("SA1110", 0x4800_0064),
