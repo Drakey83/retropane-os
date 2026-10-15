@@ -41,12 +41,42 @@ fn serial_port() -> u16 {
 }
 
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
+///
+/// Every port a run uses is an offset from this one, inside a block of
+/// [`PORT_BLOCK`] this process reserved (`devlock::reserve_ports`): serial
+/// one below, QMP one above, the USB chardevs after that. Two `emu` runs at
+/// once (two sessions) once shared fixed ports and failed.
 fn monitor_port() -> u16 {
-    std::env::var("RETROPANE_MONITOR_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(45_455)
+    // The block's lock lives here until the process ends; the OS frees
+    // the block then.
+    static BASE: std::sync::OnceLock<(u16, Option<std::fs::File>)> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        if let Some(p) = std::env::var("RETROPANE_MONITOR_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            return (p, None);
+        }
+        let (start, lock) = crate::devlock::reserve_ports(
+            &crate::devlock::dir(),
+            PORT_FIRST,
+            PORT_BLOCK,
+            PORT_BLOCKS,
+            &crate::devlock::port_is_free,
+        )
+        .unwrap_or_else(|e| panic!("emulator ports: {e}"));
+        (start + 1, Some(lock))
+    })
+    .0
 }
+
+/// The emulator's port blocks: `PORT_BLOCKS` blocks of `PORT_BLOCK` ports
+/// from `PORT_FIRST`. A block holds serial, monitor, QMP and
+/// [`USB_PORTS`] USB chardevs.
+const PORT_FIRST: u16 = 45_440;
+const PORT_BLOCK: u16 = 20;
+const PORT_BLOCKS: u16 = 64;
+const USB_PORTS: u16 = PORT_BLOCK - 3;
 
 struct Platform {
     asset: &'static str,
@@ -1893,6 +1923,7 @@ fn expected_picture(root: &Path) -> Result<Vec<u8>, String> {
 /// Port of the emulated USB serial port (the UDC model's chardev); each test
 /// gets its own (`n`), so one can never reach another test's emulator.
 fn usb_port(n: u16) -> u16 {
+    assert!(n < USB_PORTS, "usb_port({n}): past this run's port block");
     monitor_port() + 2 + n
 }
 
@@ -4463,6 +4494,25 @@ mod tests {
             u32::from(probe_checksum("CPU ID 69054117      ")),
             sum % 256
         );
+    }
+
+    /// Every USB chardev a test names fits in the run's port block, so no
+    /// test reaches past it into another run's ports.
+    #[test]
+    fn usb_ports_fit_the_port_block() {
+        let src = include_str!("emu.rs");
+        let mut seen = 0;
+        for call in ["usb_connect(", "usb_args(", "msc_args(", "usb_port("] {
+            for rest in src.split(call).skip(1) {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                if let Ok(n) = digits.parse::<u16>() {
+                    assert!(n < USB_PORTS, "{call}{n}): past the port block");
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 10, "the scan found the calls");
+        assert!(PORT_FIRST as u32 + PORT_BLOCK as u32 * PORT_BLOCKS as u32 <= 49_152);
     }
 
     #[test]
