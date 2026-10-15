@@ -148,6 +148,29 @@ pub const COUNT: usize = {
     n
 };
 
+/// Physical address of `MSC1` (static chip selects 2 and 3; CS3 is the
+/// 2700G on the X51v).
+pub const MSC1: u32 = 0x4800_000C;
+
+/// `MSC1` with CS3's VLIO strobe timing replaced: `rdf` (strobe asserted
+/// for `rdf` + 1 memory clocks per beat) and `rdn` (released for 2 x `rdn`:
+/// address setup and hold), the only two fields the bus-timing experiment
+/// steps (docs/research/memory-timing.md §7). Everything else is kept:
+/// CS2's half, CS3's type, width, recovery (`RRR`, which also guards the
+/// data bus against the SDRAM's next cycle) and buffering. `None` unless
+/// CS3 is a 32-bit VLIO device and both values are inside the PXA27x's
+/// legal VLIO range with plain (not table-encoded) values: `rdf` 3-11,
+/// `rdn` 2-11 (Developer's Manual table 6-28).
+#[must_use]
+pub const fn cs3_timing(msc1: u32, rdf: u32, rdn: u32) -> Option<u32> {
+    let upper = msc1 >> 16;
+    let vlio_32 = upper & 0xF == 0b0100; // RT3 = VLIO, RBW3 = 32 bits
+    if !vlio_32 || rdf < 3 || rdf > 11 || rdn < 2 || rdn > 11 {
+        return None;
+    }
+    Some(msc1 & !(0xFF << 20) | rdf << 20 | rdn << 24)
+}
+
 /// Physical base of the PXA27x internal SRAM.
 pub const SRAM_BASE: u32 = 0x5C00_0000;
 /// Internal SRAM size.
@@ -224,6 +247,30 @@ mod target {
             );
         }
         c
+    }
+
+    /// The live `MSC1`.
+    #[must_use]
+    pub fn msc1() -> u32 {
+        // SAFETY: MSC1 is a memory-controller configuration register with no
+        // read side effects, mapped as device memory under either map.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *const u32).read_volatile() }
+    }
+
+    /// Sets CS3's strobe timing ([`super::cs3_timing`]) and returns `MSC1`
+    /// as read back, or `None` (nothing written) for a value outside the
+    /// legal range. The write buffer is drained first, so every 2700G
+    /// write already issued completes under the old timing; the read-back
+    /// makes the controller latch the new value before the next access
+    /// (manual §6.5.2). The caller keeps the 2700G otherwise idle meanwhile.
+    pub fn set_cs3_timing(rdf: u32, rdn: u32) -> Option<u32> {
+        let new = super::cs3_timing(msc1(), rdf, rdn)?;
+        crate::cpu::drain_write_buffer();
+        // SAFETY: only CS3's RDF/RDN fields change, within the PXA27x's legal
+        // VLIO range (checked above); the register is the memory
+        // controller's, mapped as device memory.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
+        Some(msc1())
     }
 
     static mut SRAM_TAKEN: bool = false;
@@ -357,12 +404,30 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, move_l1_table, move_l1_table_at, snapshot, take_sram, take_sram_words,
+    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs3_timing, snapshot, take_sram,
+    take_sram_words,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cs3_timing_changes_only_the_strobes() {
+        // Windows Mobile's MSC1 (probe 2026-10-11 and 2026-10-15).
+        let wm = 0x2484_2481;
+        assert_eq!(cs3_timing(wm, 8, 4), Some(wm));
+        assert_eq!(cs3_timing(wm, 3, 2), Some(0x2234_2481));
+        assert_eq!(cs3_timing(wm, 5, 3), Some(0x2354_2481));
+        // Below the PXA's VLIO minimums, or table-encoded values: refused.
+        assert_eq!(cs3_timing(wm, 2, 4), None);
+        assert_eq!(cs3_timing(wm, 8, 1), None);
+        assert_eq!(cs3_timing(wm, 12, 4), None);
+        assert_eq!(cs3_timing(wm, 8, 12), None);
+        // CS3 not a 32-bit VLIO device (SRAM type, or 16 bits): refused.
+        assert_eq!(cs3_timing(0x2481_2481, 8, 4), None);
+        assert_eq!(cs3_timing(0x248C_2481, 8, 4), None);
+    }
 
     #[test]
     fn whitelist_is_aligned_and_unique() {

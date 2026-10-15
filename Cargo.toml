@@ -49,6 +49,7 @@ members = [
     "boot/mbx3d-api",
     "boot/picture",
     "boot/blend",
+    "boot/cs3bus",
     "boot/usb",
     "boot/reconnect",
     "boot/loadproto",
