@@ -77,6 +77,14 @@ const IMAGES: usize = 32;
 const ATLASES: usize = 8;
 /// Glyphs a font may have.
 const GLYPHS: usize = 160;
+/// Areas kept in the cache at once.
+const CACHED: usize = 8;
+/// Keys of areas drawn recently: an area is kept the second time it's
+/// drawn, so a one-off doesn't cost a copy into the cache.
+const SEEN: usize = 16;
+/// Areas smaller than this (pixels) are drawn, not cached: the copy saves
+/// little.
+const CACHE_MIN_PX: u32 = 16 * 1024;
 
 /// Where everything lives in 2700G local memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,6 +105,9 @@ pub struct Layout {
     pub dither: usize,
     /// The fence word.
     pub fence: usize,
+    /// Finished areas kept for reuse (an opened menu: one copy instead
+    /// of drawing it again), and its size.
+    pub cache: (usize, usize),
 }
 
 impl Layout {
@@ -111,6 +122,8 @@ impl Layout {
         background: 0x006C_0000,
         dither: 0x0080_0000,
         fence: 0x00FF_F000,
+        // One picture's worth (1.17 MiB) of the ~8 MiB above the dither.
+        cache: (0x0081_0000, SCREEN_BYTES),
     };
 }
 
@@ -202,6 +215,10 @@ pub struct FrameStats {
     pub blits: u32,
     /// Rectangles copied forward from the picture on screen.
     pub forward: u32,
+    /// Rectangles copied from the cache instead of drawn.
+    pub cache_hits: u32,
+    /// Rectangles drawn and then kept in the cache.
+    pub cache_stores: u32,
 }
 
 /// The 4 x 4 ordered (Bayer) pattern, 0..16.
@@ -262,6 +279,18 @@ pub struct Mbx2dRenderer<R, M> {
     hoist: [bool; MAX_CMDS],
     /// Per command: its bounds (scratch for `draw`).
     bounds: [Rect; MAX_CMDS],
+    /// The picture on screen is a whole, finished frame (it can be copied
+    /// forward).
+    front_whole: bool,
+    /// The frame queued finished without a stall.
+    pending_whole: bool,
+    /// Cached areas: (key, rectangle, address).
+    cached: [(u32, Rect, usize); CACHED],
+    cached_n: usize,
+    cache_top: usize,
+    /// Keys of areas drawn lately (a ring).
+    seen: [u32; SEEN],
+    seen_at: usize,
 }
 
 /// The whole screen.
@@ -297,6 +326,13 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             pending: None,
             vsync_due: false,
             bg_hash: None,
+            front_whole: false,
+            pending_whole: false,
+            cached: [(0, Rect::new(0, 0, 0, 0), 0); CACHED],
+            cached_n: 0,
+            cache_top: 0,
+            seen: [0; SEEN],
+            seen_at: 0,
             hoist: [false; MAX_CMDS],
             bounds: [Rect::new(0, 0, 0, 0); MAX_CMDS],
         }
@@ -620,6 +656,129 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         Some(slot)
     }
 
+    /// What decides how `clip` looks: the background, the commands that
+    /// meet it (their text included) and whether it's dithered.
+    fn area_key(&self, frame: &Frame, cmds: usize, clip: Rect) -> u32 {
+        let rect = |r: Rect| {
+            [
+                u32::from(r.x) << 16 | u32::from(r.y),
+                u32::from(r.w) << 16 | u32::from(r.h),
+            ]
+        };
+        let mut h = fnv(0x811C_9DC5, self.bg_hash.unwrap_or(0));
+        for w in rect(clip).into_iter().chain([u32::from(self.dither)]) {
+            h = fnv(h, w);
+        }
+        for (i, c) in frame.cmds().take(cmds).enumerate() {
+            if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
+                continue;
+            }
+            let words: [u32; 5] = match *c {
+                Cmd::Fill { r, color } => {
+                    let [a, b] = rect(r);
+                    [1, a, b, color, 0]
+                }
+                Cmd::HGradient { r, left, right } => {
+                    let [a, b] = rect(r);
+                    [2, a, b, left, right]
+                }
+                Cmd::Outline { r, color } => {
+                    let [a, b] = rect(r);
+                    [3, a, b, color, 0]
+                }
+                Cmd::Image { x, y, img } => [
+                    4,
+                    u32::from(x) << 16 | u32::from(y),
+                    core::ptr::from_ref(img) as usize as u32,
+                    0,
+                    0,
+                ],
+                Cmd::Text {
+                    x,
+                    baseline,
+                    font,
+                    color,
+                    text,
+                } => {
+                    for &b in frame.text_of(text) {
+                        h = fnv(h, u32::from(b));
+                    }
+                    [
+                        5,
+                        u32::from(x) << 16 | u32::from(baseline),
+                        core::ptr::from_ref(font) as usize as u32,
+                        color,
+                        0,
+                    ]
+                }
+            };
+            for w in words {
+                h = fnv(h, w);
+            }
+        }
+        h
+    }
+
+    /// A cached area's line: its width, in whole 16-byte units (the
+    /// engine's line pitch is kept aligned, as every surface's is so far).
+    const fn cache_stride(clip: Rect) -> usize {
+        (clip.w as usize * 4).next_multiple_of(16)
+    }
+
+    /// Copies the cached area at `at` (`clip`'s size, packed) into `clip`
+    /// of picture `dst`.
+    fn copy_in(&mut self, dst: usize, clip: Rect, at: usize) {
+        self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
+        self.last.blits += 1;
+        let (w, n) = cmd::blit(
+            (Format::BPP32, dst, STRIDE as i32),
+            (Format::BPP32, at, Self::cache_stride(clip) as i32),
+            (0, 0),
+            Self::coords(clip),
+            ROP_SRCCOPY,
+            0,
+            0,
+        );
+        self.submit(&w[..n]);
+    }
+
+    /// Keeps `clip` of picture `dst`, just drawn, under `key`: the second
+    /// time the key is seen (a one-off isn't worth the copy). The engine
+    /// works in order, so the copy reads the finished area, and a cached
+    /// area overwritten later was read before.
+    fn keep(&mut self, dst: usize, clip: Rect, key: u32) {
+        if !self.seen.contains(&key) {
+            self.seen[self.seen_at] = key;
+            self.seen_at = (self.seen_at + 1) % SEEN;
+            return;
+        }
+        let bytes = Self::cache_stride(clip) * usize::from(clip.h);
+        if bytes > self.l.cache.1 {
+            return;
+        }
+        if self.cached_n == CACHED || self.cache_top + bytes > self.l.cache.1 {
+            self.cached_n = 0;
+            self.cache_top = 0;
+        }
+        let at = self.l.cache.0 + self.cache_top;
+        self.cache_top += bytes;
+        self.cached[self.cached_n] = (key, clip, at);
+        self.cached_n += 1;
+        self.last.cache_stores += 1;
+        self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
+        self.last.blits += 1;
+        let (w, n) = cmd::blit(
+            (Format::BPP32, at, Self::cache_stride(clip) as i32),
+            (Format::BPP32, dst, STRIDE as i32),
+            (clip.x, clip.y),
+            (0, 0, clip.w, clip.h),
+            ROP_SRCCOPY,
+            0,
+            0,
+        );
+        self.submit(&w[..n]);
+    }
+
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {
         match *c {
             Cmd::Fill { r, color } => {
@@ -741,6 +900,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.last.wait_us = self.us_since(t0);
         let t0 = (self.now)();
+        let stalls0 = self.stalls;
         // Which commands go in the background, and has it changed?
         let cmds = frame.cmds().count().min(MAX_CMDS);
         let mut hash = 0x811C_9DC5u32;
@@ -799,10 +959,18 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let mut n = 0;
         let mut forward = [Rect::default(); MAX_DIRTY];
         let mut nf = 0;
-        if self.fresh > 0 {
+        if self.fresh > 1 || (self.fresh == 1 && !self.front_whole) {
             rects[0] = SCREEN;
             n = 1;
         } else {
+            // The frame after a whole one (start-up, a new background): the
+            // other picture is two frames old, so all of it comes forward
+            // (2026-10-14: the first tap after start-up drew the whole
+            // screen again, 14.7 ms of CPU and 23.7 of engine).
+            if self.fresh == 1 {
+                forward[0] = SCREEN;
+                nf = 1;
+            }
             for r in frame.dirty() {
                 let r = r.intersect(&SCREEN);
                 if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
@@ -810,7 +978,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                     n += 1;
                 }
             }
-            for r in &self.prev[..self.prev_n] {
+            // (Nothing more to bring forward when it's all coming.)
+            let prev = if nf == 0 { self.prev_n } else { 0 };
+            for r in &self.prev[..prev] {
                 let r = r.intersect(&SCREEN);
                 if !r.is_empty() && !rects[..n].iter().any(|d| d.intersect(&r) == r) {
                     forward[nf] = r;
@@ -832,6 +1002,20 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             drawn.pixels += u64::from(r.w) * u64::from(r.h);
         }
         for &clip in &rects[..n] {
+            drawn.pixels += u64::from(clip.w) * u64::from(clip.h);
+            // An area drawn before, unchanged (the same background and
+            // commands): one copy from the cache.
+            let key = (u32::from(clip.w) * u32::from(clip.h) >= CACHE_MIN_PX)
+                .then(|| self.area_key(frame, cmds, clip));
+            if let Some(key) = key
+                && let Some(&(_, _, at)) = self.cached[..self.cached_n]
+                    .iter()
+                    .find(|(k, r, _)| *k == key && *r == clip)
+            {
+                self.copy_in(dst, clip, at);
+                self.last.cache_hits += 1;
+                continue;
+            }
             let bg = self.l.background;
             self.copy(dst, bg, clip);
             for (i, c) in frame.cmds().take(cmds).enumerate() {
@@ -844,7 +1028,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
             if self.dither {
                 self.dither_rect(dst, clip);
             }
-            drawn.pixels += u64::from(clip.w) * u64::from(clip.h);
+            if let Some(key) = key {
+                self.keep(dst, clip, key);
+            }
         }
         self.last.rects = n as u32;
         self.last.forward = nf as u32;
@@ -853,6 +1039,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let fence = cmd::fence(self.l.fence, n);
         self.submit(&fence);
         self.pending = Some((back, n, (self.now)()));
+        self.pending_whole = self.stalls == stalls0;
         self.last.queue_us = self.us_since(t0);
         drawn
     }
@@ -868,6 +1055,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         self.pending = None;
         self.last.engine_us = self.us_since(queued);
         self.fresh = self.fresh.saturating_sub(1);
+        self.front_whole = self.pending_whole;
         if let Some(w) = self.flip_wait {
             w();
         }

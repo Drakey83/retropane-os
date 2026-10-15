@@ -237,13 +237,22 @@ mod tests {
         let mut f = Frame::new();
         let s = rp_shell::START;
         let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);
-        let steps = [
+        let mut steps = vec![
             None,
             Some(Input::PenDown { x: sx, y: sy }),
             Some(Input::PenUp { x: sx, y: sy }),
             Some(Input::Key(rp_shell::Key::Down)),
             Some(Input::Key(rp_shell::Key::Home)),
         ];
+        // The menu opened and closed again and again: from the third time
+        // its areas come from the renderer's cache, and must still match.
+        for _ in 0..3 {
+            for _ in 0..2 {
+                steps.push(Some(Input::PenDown { x: sx, y: sy }));
+                steps.push(Some(Input::PenUp { x: sx, y: sy }));
+            }
+        }
+        let mut hits = 0;
         for (k, step) in steps.into_iter().enumerate() {
             if let Some(e) = step {
                 shell.input(e);
@@ -251,6 +260,7 @@ mod tests {
             shell.frame(&mut f);
             gpu.draw(&f);
             assert!(gpu.poll());
+            hits += gpu.last.cache_hits;
             let layer = Layer::in_bytes(&mut work, W as u32, H as u32).unwrap();
             CpuRenderer::new(layer, &mut plane, STRIDE, PlaneFormat::Argb8888).draw(&f);
             let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
@@ -282,6 +292,7 @@ mod tests {
             );
         }
         assert_eq!(gpu.stalls, 0);
+        assert!(hits >= 4, "cache hits {hits}");
     }
 
     /// What each frame of opening and closing the Start menu costs the
@@ -327,9 +338,11 @@ mod tests {
             assert!(gpu.poll());
             let t = gpu.last;
             eprintln!(
-                "{name}: rects {}, forward {}, bg {}, atlases {}, images {}, waits {}, words {}, blits {}, px copy {} blend {} text {} dither {}",
+                "{name}: rects {}, forward {}, hits {}, stores {}, bg {}, atlases {}, images {}, waits {}, words {}, blits {}, px copy {} blend {} text {} dither {}",
                 t.rects,
                 t.forward,
+                t.cache_hits,
+                t.cache_stores,
                 t.background,
                 t.atlases,
                 t.images,
