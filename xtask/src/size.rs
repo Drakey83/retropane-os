@@ -373,6 +373,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (docs/research/cf-timing.md): the CF socket's timings,
+    // the card's CIS and IDENTIFY, five read paths timed; report only.
+    // 32.8 KiB measured (2026-10-15), + ~10%.
+    Budget {
+        image: "rp-cftime",
+        max_load: 37 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
