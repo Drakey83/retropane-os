@@ -143,3 +143,80 @@ fn region_entry_matches_region_array() {
         assert_eq!(e, [out[2 * k as usize], out[2 * k as usize + 1]]);
     }
 }
+
+/// DoomGLES's first textured object on the device (capture version 6, at
+/// 0x2B5000), rebuilt from its numbers.
+#[test]
+fn a_textured_object_matches_doomgles_words() {
+    let f = f32::from_bits;
+    let v = [
+        tex::Vertex {
+            x: f(0x429E_8000),
+            y: f(0x4392_5800),
+            z: f(0x3F7F_9100),
+            rhw: f(0x3B03_0000),
+            argb: 0xFF57_5757,
+            u: f(0x4202_0000),
+            v: 0.0,
+        },
+        tex::Vertex {
+            x: f(0x4207_4000),
+            y: 0.0,
+            z: f(0x3F7F_4100),
+            rhw: f(0x3B54_0000),
+            argb: 0xFF57_5757,
+            u: f(0x41DF_6270),
+            v: f(0x3F5F_2E00),
+        },
+        tex::Vertex {
+            x: f(0x424C_4000),
+            y: 0.0,
+            z: f(0x3F7F_6000),
+            rhw: f(0x3B35_0000),
+            argb: 0xFF57_5757,
+            u: f(0x41E1_3098),
+            v: f(0x3FF7_8A00),
+        },
+    ];
+    let texw = [tex::FORMAT_GAME, 0xCE00_3060, tex::COMBINE_GAME];
+    assert_eq!(
+        tex::triangle(tex::ISP_GAME, texw, tex::TSP_GAME, &v),
+        [
+            0xEC80_0000,
+            0x0333_9600,
+            0xCE00_3060,
+            0x8608_6610,
+            0x2264_0200,
+            0x429E_8000,
+            0x4392_5800,
+            0x4207_4000,
+            0,
+            0x424C_4000,
+            0,
+            0x3F7F_9100,
+            0x3F7F_4100,
+            0x3F7F_6000,
+            0x3B03_0000,
+            0x3B54_0000,
+            0x3B35_0000,
+            0xFF57_5757,
+            0x4202_0000,
+            0,
+            0xFF57_5757,
+            0x41DF_6270,
+            0x3F5F_2E00,
+            0xFF57_5757,
+            0x41E1_3098,
+            0x3FF7_8A00,
+        ]
+    );
+    // Its TEX1 is the address of a texture in the same capture.
+    assert_eq!(tex::address(0x0018_3000), 0xCE00_3060);
+}
+
+#[test]
+fn a_textured_list_points_like_doomgles() {
+    // 0x41000434 pointed at the object 0x10D0 bytes into its buffer.
+    let l = tex::list([0x10D0, 0x1138]);
+    assert_eq!(l[..3], [0x4100_0434, 0x4100_044E, END]);
+}
