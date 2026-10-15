@@ -59,6 +59,7 @@ members = [
     "boot/kernel",
     "boot/threads",
     "services/display-host",
+    "services/graphics",
     "shell/core",
     "shell/today",
     "personality/ce/cab",
