@@ -2,7 +2,7 @@
 //! regulator's level, not a power-management IC on the power I2C. GPIO3 and
 //! GPIO4 are the PXA270's power-I2C pins, used here as plain GPIOs (function
 //! 0); GPIO38 is the third. Found statically in Windows Mobile's OAL
-//! (side-session note `clocks-re-facts.md`, 2026-10-15); every value below
+//! (`docs/hw/clocks.md`, 2026-10-15); every value below
 //! is a **finding to work** (docs/research/imitation-audit.md): the real
 //! rail voltage of each code is unmeasured, and the codes per frequency are
 //! what Dell validated, not a proven minimum.

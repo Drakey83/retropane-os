@@ -103,6 +103,14 @@ with the performance monitor built first to measure everything else).
   SDRAM self-refresh when nothing is due. Also a suspect for the 12 µs
   thread switch (target 2 µs).
 - **Verdict:** 🔧 **item 67, highest value** (speed everywhere and battery).
+- **Progress (2026-10-15):** ADR-0031 (proposed): RetroPane's own operating
+  points (624 MHz as L16 x 2N6 with the bus at 208), race to idle with
+  turbo on demand, idle depths, the cycle counter as timestamp. The core
+  voltage is **three GPIOs** (3, 4, 38), not a power IC (static read of
+  WM's OAL); `rp_hal_pxa27x::clocks`, `rp_hal_x51v::vcore` and the test
+  image `rp-clocks` (step a) are built, the emulator passes, the device
+  run is next. Findings still open: voltage codes per frequency, the 2.5 ms
+  settle, the SDRAM divider-clearing order, `PSLR`, `PCFR`, wake masks.
 
 ### SDRAM and static-memory (bus) timings
 
