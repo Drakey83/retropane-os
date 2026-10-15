@@ -148,15 +148,36 @@ the PXA-side bus timing for CS3 from that clock:
 So `MSC1` is a clock-dependent table, not one fixed choice. Dell gave the
 fastest tier the same timing up to 133 MHz.
 
-If the local memory runs on that clock (`MEMCLK 0x1`, likely, not
-proven), it runs at CL2 at 10 ns, with tRCD/tRP 30 ns. **Raising
-`COREPLL` towards 133 MHz (7.5 ns) puts CL2 out of spec for typical
-SDRAM**, which allows CL2 only up to ~100-105 MHz. The other timings stay
-comfortable: tRCD/tRP 22.5 ns, tRAS 52 ns, tRC 67 ns. Before any core
-clock rise, either Dell's driver must be shown to change `LMTYPE` per
-clock tier, or `LMTYPE` must be switched to CL3 (Linux's choice). Each
-step needs a 16 MiB pattern read-back (§7), because the failure is
-silent corruption of textures and buffers.
+**Confirmed from Dell's driver (MBX 3D session, 2026-10-15, docs/hw/2700g.md
+commit 18a430b on `claude/mbx3d-render-2`).** The 2700G's system clock is
+its local SDRAM's clock. Dell's driver (`0x0211fb98`) computes `LMTIM`,
+`LMREFRESH` and `LMTYPE` from it, choosing CL by clock thresholds. The
+X51v's memory table (`0x0213F93C`, the only one of Dell's ten that gives
+WM's `LMTIM 0x73392` with CL2) rates the part as follows:
+- tRAS 48 ns, tRP 25 ns, tRCD 25 ns, tRC 85 ns;
+- CL3 from 100 MHz, at most 100 MHz.
+
+Dell clamps the 2700G's clock to that limit, hence 99.67 MHz. At 10.03 ns,
+WM's settings give:
+
+| | WM's setting | Rated | Margin |
+|---|---|---|---|
+| tRCD, tRP | 3 clk = 30.1 ns | 25 ns | 20% |
+| tRAS | 7 clk = 70 ns | 48 ns | 46% |
+| tRC | 9 clk = 90 ns | 85 ns | 6% |
+| CL | 2 | 2, just under the 100 MHz switch to CL3 | - |
+
+**The 2700G's memory is at its rated clock limit: no headroom.** Raising
+`COREPLL` was withdrawn.
+
+**The 75 MHz option (the owner's GPU clock choice A).** 75 MHz falls in
+Dell's 25-99 MHz tier, where CS3 is set to `0x79D4`. That decodes to VLIO,
+32-bit, `RDF` 13 (decoded 20), `RDN` 9, `RRR` 7: 21 + 18 = **39 memory
+clocks per beat (187 ns, ~21 MB/s ceiling)**, 2.3× slower than the fast
+tier. Dell evidently gives the 2700G's host interface longer strobes when
+its clock is slower. So at 75 MHz the safe starting point is `0x79D4`, not
+the fast tier's `0x2484`, and the legal-minimum steps of §7 are less
+likely to hold.
 
 ## 2. The physical chips
 
