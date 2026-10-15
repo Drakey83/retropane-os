@@ -15,6 +15,17 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
   differ, especially for 2700G memory, which sits behind a slower bus.
 - **Size:** `cargo xtask cross` checks every bare-metal image against its budget.
 
+## Rules
+
+- **No floating point in device code** (2026-10-15). The PXA270 has no FPU:
+  every float operation is a library call costing tens to over a hundred
+  cycles. Hot code uses fixed point; floats the 3D core consumes (object and
+  TA vertex words are IEEE floats) are built from integers or folded at
+  compile time. `cargo xtask cross` fails any image whose symbol table names
+  a software float helper (`__aeabi_fmul`, `__addsf3`...) unless it is listed
+  in `FLOAT_ALLOWED` (`xtask/src/size.rs`) with a reason. On the day the
+  check went in, no image linked one.
+
 ## Log
 
 | Date | Change | Metric | Before | After |

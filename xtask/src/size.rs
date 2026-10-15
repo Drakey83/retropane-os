@@ -494,6 +494,7 @@ pub struct Sizes {
 
 const SHF_ALLOC: u32 = 0x2;
 const SHT_NOBITS: u32 = 8;
+const SHT_SYMTAB: u32 = 2;
 
 /// Measures an ELF32 little-endian image by its section headers.
 pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
@@ -526,6 +527,72 @@ pub fn measure(elf: &[u8]) -> Result<Sizes, String> {
     Ok(sizes)
 }
 
+/// Images allowed to link software floating-point helpers, with the reason
+/// (the no-float rule: the PXA270 has no FPU, so a float operation costs
+/// tens to over a hundred cycles; hot code uses fixed point, and floats
+/// the 3D core consumes are built from integers or folded at compile
+/// time). Empty: no image needs one (checked 2026-10-15).
+const FLOAT_ALLOWED: &[(&str, &str)] = &[];
+
+/// Whether `name` is a software floating-point helper (EABI or
+/// compiler-rt names).
+fn is_float_helper(name: &str) -> bool {
+    if let Some(f) = name.strip_prefix("__aeabi_") {
+        // Every EABI float routine starts with f or d (fadd, dmul, f2iz,
+        // d2uiz, fcmpeq...) or converts to one (i2f, ul2d...); none of the
+        // integer ones (uidiv, ldivmod, memcpy...) does.
+        return f.starts_with('f') || f.starts_with('d') || f.ends_with("2f") || f.ends_with("2d");
+    }
+    name.starts_with("__float")
+        || name.starts_with("__fix")
+        || ["sf3", "df3", "sf2", "df2"]
+            .iter()
+            .any(|t| name.starts_with("__") && name.ends_with(t))
+}
+
+/// The software floating-point helpers an ELF32 image's symbol table names.
+pub fn float_helpers(elf: &[u8]) -> Result<Vec<String>, String> {
+    let u16_at = |o: usize| elf.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |o: usize| {
+        elf.get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let shoff = u32_at(0x20).ok_or("truncated ELF header")? as usize;
+    let shentsize = usize::from(u16_at(0x2E).ok_or("truncated ELF header")?);
+    let shnum = usize::from(u16_at(0x30).ok_or("truncated ELF header")?);
+    let section = |i: usize| -> Result<(u32, usize, usize, usize), String> {
+        let sh = shoff + i * shentsize;
+        let field = |o: usize| u32_at(sh + o).ok_or("truncated section header");
+        Ok((
+            field(4)?,
+            field(16)? as usize,
+            field(20)? as usize,
+            field(24)? as usize,
+        ))
+    };
+    let mut found = Vec::new();
+    for i in 0..shnum {
+        let (kind, off, size, link) = section(i)?;
+        if kind != SHT_SYMTAB {
+            continue;
+        }
+        let (_, str_off, str_size, _) = section(link)?;
+        let strtab = elf
+            .get(str_off..str_off + str_size)
+            .ok_or("string table out of range")?;
+        for sym in (off..off + size).step_by(16) {
+            let name_at = u32_at(sym).ok_or("symbol out of range")? as usize;
+            let name = strtab.get(name_at..).unwrap_or(&[]);
+            let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+            let name = String::from_utf8_lossy(&name[..end]);
+            if is_float_helper(&name) && !found.iter().any(|n: &String| *n == name) {
+                found.push(name.into_owned());
+            }
+        }
+    }
+    Ok(found)
+}
+
 /// Checks every budget against the built images.
 pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
     check_allotments(BUDGETS, ALLOTMENTS, DEVICE_RAM, APP_RAM_FLOOR)?;
@@ -550,6 +617,14 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
             return Err(format!(
                 "{} exceeds its size budget (ADR-0005). Shrink it, or justify raising the budget in review",
                 b.image
+            ));
+        }
+        let floats = float_helpers(&elf)?;
+        if !floats.is_empty() && FLOAT_ALLOWED.iter().all(|(i, _)| *i != b.image) {
+            return Err(format!(
+                "{} links software floating point ({}): the PXA270 has no FPU. Use fixed point, or fold it at compile time, or add the image to FLOAT_ALLOWED with a reason",
+                b.image,
+                floats.join(", ")
             ));
         }
     }
@@ -634,5 +709,75 @@ mod tests {
         assert_eq!(on_device("rp-probe"), Some(OnDevice::Returns));
         assert_eq!(on_device("rp-loader"), Some(OnDevice::Loader));
         assert_eq!(on_device("nope"), None);
+    }
+
+    /// An ELF32 whose only sections are a symbol table naming `names` and
+    /// its string table.
+    fn elf_with_symbols(names: &[&str]) -> Vec<u8> {
+        let mut strtab = vec![0u8];
+        let mut symtab = vec![0u8; 16];
+        for n in names {
+            let at = strtab.len() as u32;
+            strtab.extend_from_slice(n.as_bytes());
+            strtab.push(0);
+            let mut sym = [0u8; 16];
+            sym[..4].copy_from_slice(&at.to_le_bytes());
+            symtab.extend_from_slice(&sym);
+        }
+        let shoff = 0x40usize;
+        let sym_off = shoff + 3 * 40;
+        let str_off = sym_off + symtab.len();
+        let mut d = vec![0u8; str_off];
+        d[0..5].copy_from_slice(&[0x7F, b'E', b'L', b'F', 1]);
+        d[0x20..0x24].copy_from_slice(&(shoff as u32).to_le_bytes());
+        d[0x2E..0x30].copy_from_slice(&40u16.to_le_bytes());
+        d[0x30..0x32].copy_from_slice(&3u16.to_le_bytes());
+        // Section 1: the symbol table, linked to section 2; 2: strings.
+        for (i, (kind, off, size, link)) in [
+            (SHT_SYMTAB, sym_off, symtab.len(), 2u32),
+            (3, str_off, strtab.len(), 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let sh = shoff + (i + 1) * 40;
+            d[sh + 4..sh + 8].copy_from_slice(&kind.to_le_bytes());
+            d[sh + 16..sh + 20].copy_from_slice(&(off as u32).to_le_bytes());
+            d[sh + 20..sh + 24].copy_from_slice(&(size as u32).to_le_bytes());
+            d[sh + 24..sh + 28].copy_from_slice(&link.to_le_bytes());
+        }
+        d[sym_off..str_off].copy_from_slice(&symtab);
+        d.extend_from_slice(&strtab);
+        d
+    }
+
+    #[test]
+    fn float_helpers_are_found_and_integer_ones_are_not() {
+        let e = elf_with_symbols(&[
+            "__aeabi_memcpy",
+            "__aeabi_uidivmod",
+            "__aeabi_ldivmod",
+            "__aeabi_fmul",
+            "__aeabi_ui2f",
+            "__aeabi_d2iz",
+            "__addsf3",
+            "__floatsisf",
+            "main",
+        ]);
+        assert_eq!(
+            float_helpers(&e).unwrap(),
+            [
+                "__aeabi_fmul",
+                "__aeabi_ui2f",
+                "__aeabi_d2iz",
+                "__addsf3",
+                "__floatsisf"
+            ]
+        );
+        assert!(
+            float_helpers(&elf_with_symbols(&["__aeabi_memset", "main"]))
+                .unwrap()
+                .is_empty()
+        );
     }
 }
