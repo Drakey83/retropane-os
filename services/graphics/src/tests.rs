@@ -359,3 +359,16 @@ fn compressed_textures_count_at_their_size() {
         Err(Error::Quota)
     );
 }
+
+#[test]
+fn mipmapped_textures_count_their_levels() {
+    let mut r = rig();
+    let c = r.g.client(172).unwrap();
+    r.g.upload_mipmapped(c, 0, format::RGB565, &texels())
+        .unwrap();
+    assert_eq!(r.g.used(c), 128 + 32 + 8 + 4);
+    assert_eq!(
+        r.g.upload_mipmapped(c, 0, format::RGB565, &texels()),
+        Err(Error::Quota)
+    );
+}

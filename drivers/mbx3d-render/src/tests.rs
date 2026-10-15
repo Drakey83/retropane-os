@@ -453,6 +453,7 @@ fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
         u_mode: 0,
         v_mode: 0,
         linear: false,
+        levels: 1,
     };
     let paints = [
         Paint::Flat(RED),
@@ -965,4 +966,81 @@ fn render_done_raises_the_interrupt_only_when_switched_on() {
     g.frame();
     assert_eq!(g.gpu.irqs, 1, "off again");
     assert_eq!(g.gpu.read32(MBX + reg::ENABLE) & 0x8000, 0);
+}
+
+#[test]
+fn mipmaps_as_measured() {
+    // rp-mbx3d run 25, T12b, layout B: a 64 x 64 texture, levels in
+    // colours (64 red, 32 green, 16 blue, 8 yellow, smaller cyan), the
+    // base first; a 16 px quad drew the 16 level, an 8 px quad the 8
+    // level. Without levels (version 24's TEX0 bits 12-9 = 0): the base.
+    let mut g = rig(480, 640);
+    let mut t = Texture {
+        levels: 7,
+        ..upload(&mut g.pool, &mut g.mem, 3, format::RGB565, &[0; 4096]).unwrap()
+    };
+    let at = g.pool.alloc(t.bytes(), 128).unwrap();
+    t.at = at;
+    let colours: [u16; 7] = [0xF800, 0x07E0, 0x001F, 0xFFE0, 0x07FF, 0x07FF, 0x07FF];
+    let mut off = 0;
+    for (k, &c) in colours.iter().enumerate() {
+        let side = 64u32 >> k;
+        let n = (side * side).div_ceil(2) as usize;
+        let w = u32::from(c) | u32::from(c) << 16;
+        g.mem.store((at + off) as usize, &std::vec![w; n]);
+        off += side * side * 2;
+    }
+    assert_eq!(
+        t.words()[0] >> 9 & 15,
+        6,
+        "TEX0 bits 12-9: the highest level"
+    );
+    assert_eq!(t.words()[1] & 0xE000_0000, 0x2000_0000, "nearest mipmap");
+    for (size, want) in [
+        (64, 0xFFFF_0000u32),
+        (32, 0xFF00_FF00),
+        (16, 0xFF00_00FF),
+        (8, 0xFFFF_FF00),
+    ] {
+        g.set(0, Some(square(200, 200, size, Paint::texture(t))));
+        g.frame();
+        let c = 200 + size as u32 / 2;
+        assert_eq!(g.px(c, c), want, "{size} px");
+    }
+    let base_only = Texture { levels: 1, ..t };
+    g.set(0, Some(square(200, 200, 8, Paint::texture(base_only))));
+    g.frame();
+    assert_eq!(g.px(204, 204), 0xFFFF_0000);
+}
+
+#[test]
+fn mip_levels_are_made_by_averaging() {
+    // The checker (red/white) averaged 2 x 2: RGB565 (31, 32, 16).
+    let mut g = rig(480, 640);
+    let texels: Vec<u16> = (0..64)
+        .map(|i| {
+            if (i % 8 + i / 8) % 2 == 0 {
+                0xF800
+            } else {
+                0xFFFF
+            }
+        })
+        .collect();
+    let t = upload_mipmapped(&mut g.pool, &mut g.mem, 0, format::RGB565, &texels).unwrap();
+    assert_eq!(t.levels, 4, "8 x 8 down to 1 x 1");
+    assert_eq!(
+        t.bytes(),
+        128 + 32 + 8 + 4,
+        "a 1 x 1 level takes a whole word"
+    );
+    g.set(0, Some(square(100, 100, 4, Paint::texture(t))));
+    g.frame();
+    assert_eq!(
+        g.px(101, 101),
+        0xFFFF_8284,
+        "level 1: red and white averaged"
+    );
+    // Too large or not 16-bit: refused.
+    assert!(upload_mipmapped(&mut g.pool, &mut g.mem, 8, format::RGB565, &texels).is_none());
+    assert!(upload_mipmapped(&mut g.pool, &mut g.mem, 0, format::ARGB8888, &texels).is_none());
 }

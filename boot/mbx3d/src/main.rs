@@ -4,7 +4,8 @@
 //! renders with the GLES driver's full register set (`0x648` and `0x6D0`
 //! 1 and its other extras; `n` 16 and 2400); T12b mipmaps with TEX0 bits
 //! 12-9 set (the GLES upload puts `0xB` there without levels, the level
-//! value with; version 24 left them 0); T13b PVRTC's block order (last).
+//! value with; version 24 left them 0: run last, the riskiest); T13b
+//! PVRTC's block order.
 //! T10-T13 are done (version 24: interrupt, bilinear, 32-bit, PVRTC).
 //! Version 24 (ADR-0026 T10-T13, from static
 //! reading 2026-10-15): T10 render done on GPIO85 with `0x130` bit 15 (Dell
@@ -693,7 +694,7 @@ mod image {
         }
     }
 
-    /// T13b (last: a hang here costs nothing): PVRTC's block order. A 16 x
+    /// T13b: PVRTC's block order (a proven format: low risk). A 16 x
     /// 16 texture of 4 x 4 blocks, block `k` (as stored) a colour of its
     /// own; each block's centre sampled, in rows: twiddled storage puts
     /// block 1 right of block 0 and block 2 below it, row order block 1
@@ -925,16 +926,18 @@ mod image {
         }
 
         // T11b-T13b (ADR-0026 follow-ups of version 24): depth stored
-        // with the GLES driver's full set, mipmaps with TEX0 bits 12-9,
-        // PVRTC's block order (last).
+        // with the GLES driver's full set, PVRTC's block order, then
+        // mipmaps with TEX0 bits 12-9 (the riskiest, last).
         if drew {
             let (t, n) = table(level);
             log!("T11b: depth stored across renders with 0x648, 0x6D0 and the GLES extras");
             t11b(&mut e, vram, &t[..n]);
-            log!("T12b: mipmaps with TEX0 bits 12-9 (the level value)");
-            t12b(&mut e, vram, &t[..n]);
             log!("T13b: PVRTC's block order");
             t13b(&mut e, vram, &t[..n]);
+            // Last: unexplored TEX0/TEX1 bits (TEX1 bit 30 hung the core in
+            // version 24); a hang here costs nothing.
+            log!("T12b: mipmaps with TEX0 bits 12-9 (the level value)");
+            t12b(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);

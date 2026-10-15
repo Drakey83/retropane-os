@@ -166,6 +166,9 @@ pub struct Texture {
     /// Bilinear filtering (TEX1 bit 31, `rp-mbx3d` version 24), or point
     /// sampling.
     pub linear: bool,
+    /// Mip levels, the base included (1: none). Each level follows the
+    /// larger one, the base first (version 25).
+    pub levels: u8,
 }
 
 impl Texture {
@@ -175,16 +178,29 @@ impl Texture {
         8 << self.code
     }
 
-    /// Bytes it takes.
+    /// Bytes it takes, its mip levels included.
     #[must_use]
     pub const fn bytes(&self) -> u32 {
-        let texels = self.side() * self.side();
-        match self.format as u32 {
-            tex::ARGB8888 => texels * 4,
-            tex::PVRTC4 => texels / 2,
-            tex::PVRTC2 => texels / 4,
-            _ => texels * 2,
+        let mut total = 0;
+        let mut k = 0;
+        let levels = if self.levels == 0 {
+            1
+        } else {
+            self.levels as u32
+        };
+        while k < levels {
+            let side = self.side() >> k;
+            let texels = side * side;
+            total += match self.format as u32 {
+                tex::ARGB8888 => texels * 4,
+                tex::PVRTC4 => texels / 2,
+                tex::PVRTC2 => texels / 4,
+                _ => texels * 2,
+            };
+            k += 1;
         }
+        // Whole words: a 1 x 1 level is half a word.
+        (total + 3) & !3
     }
 
     /// The same texture filtered bilinearly (`true`) or point sampled.
@@ -209,15 +225,25 @@ impl Texture {
         matches!(self.format as u32, tex::ARGB1555 | tex::ARGB4444)
     }
 
-    /// TEX0, TEX1 and TEX2.
+    /// TEX0, TEX1 and TEX2. A mipmapped texture: TEX0 bits 12-9 its
+    /// highest level index (version 25: 0 drew only the base, 3-11 the
+    /// right level), TEX1 the nearest level (bit 29; bit 30 hung the core,
+    /// bilinear with levels untested: point within the level).
     #[must_use]
     pub fn words(&self) -> [u32; 3] {
-        let tex0 = tex::with_address(
+        let mut tex0 = tex::with_address(
             tex::tex0(self.code as u32, self.format as u32),
             self.u_mode as u32,
             self.v_mode as u32,
         );
-        let filter = if self.linear { tex::TEX1_LINEAR } else { 0 };
+        let filter = if self.levels > 1 {
+            tex0 |= (u32::from(self.levels) - 1) << 9;
+            tex::TEX1_MIP_NEAREST
+        } else if self.linear {
+            tex::TEX1_LINEAR
+        } else {
+            0
+        };
         let tex1 = tex::tex1(self.at, tex::TEX1_LOD, filter);
         let tex2 = if self.has_alpha() {
             TEX2_ALPHA
@@ -619,6 +645,7 @@ const fn texture(code: u8, format: u32) -> Texture {
         u_mode: tex::CLAMP as u8,
         v_mode: tex::CLAMP as u8,
         linear: false,
+        levels: 1,
     }
 }
 
@@ -664,6 +691,115 @@ pub fn upload<M: LocalMem>(
         m += n;
     }
     mem.sync();
+    Some(Texture { at, ..t })
+}
+
+/// The bits of a 16-bit texel's channels (alpha, red, green, blue), from
+/// the bottom: RGB332 in the low byte.
+const fn channel_bits(format: u32) -> [u32; 4] {
+    match format {
+        tex::RGB565 => [0, 5, 6, 5],
+        tex::ARGB1555 => [1, 5, 5, 5],
+        tex::ARGB4444 => [4, 4, 4, 4],
+        _ => [0, 3, 3, 2],
+    }
+}
+
+/// The average of four 16-bit texels, channel by channel (rounded).
+fn average4(format: u32, t: [u16; 4]) -> u16 {
+    let bits = channel_bits(format);
+    let mut out = 0u32;
+    let mut shift = 0;
+    for &b in bits.iter().rev() {
+        let mask = (1 << b) - 1;
+        let sum: u32 = t.iter().map(|&v| (u32::from(v) >> shift) & mask).sum();
+        out |= ((sum + 2) / 4) << shift;
+        shift += b;
+    }
+    out as u16
+}
+
+/// Uploads a square texture of 16-bit texels with its mip levels down to
+/// 1 x 1, each made from the larger one by averaging 2 x 2 texels (on the
+/// CPU, integer only): the base first, each level after the larger one,
+/// each twiddled on its own (`rp-mbx3d` version 25: the 16 and 8 px quads
+/// of a 64 x 64 texture drew the 16 and 8 levels). A third more memory
+/// than the base alone; scaled-down pictures stop shimmering.
+pub fn upload_mipmapped<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    format: u32,
+    texels: &[u16],
+) -> Option<Texture> {
+    if code > 7
+        || !matches!(
+            format,
+            tex::ARGB1555 | tex::RGB565 | tex::ARGB4444 | tex::RGB332
+        )
+    {
+        return None;
+    }
+    let side = 8u32 << code;
+    if texels.len() != (side * side) as usize {
+        return None;
+    }
+    let levels = code + 4; // 8 << code down to 1
+    let t = Texture {
+        levels,
+        ..texture(code, format)
+    };
+    let at = pool.alloc(t.bytes(), 128)?;
+    // Each level in a scratch row of at most 1024 texels: the base is read
+    // from `texels`, smaller levels from the level above (kept in 2700G
+    // memory and read back, so no level-sized buffer on the stack).
+    let mut offset = 0u32;
+    for k in 0..u32::from(levels) {
+        let s = side >> k;
+        let texel = |mem: &M, x: u32, y: u32| -> u16 {
+            if k == 0 {
+                return texels[(y * side + x) as usize];
+            }
+            // The level above, twiddled, 2 x 2 averaged.
+            let above = offset - (2 * s) * (2 * s) * 2;
+            let read = |x: u32, y: u32| {
+                let a = at + above + 2 * tex::twiddle(x, y);
+                let w = mem.load((a & !3) as usize).unwrap_or(0);
+                (if a & 2 == 0 { w } else { w >> 16 }) as u16
+            };
+            average4(
+                format,
+                [
+                    read(2 * x, 2 * y),
+                    read(2 * x + 1, 2 * y),
+                    read(2 * x, 2 * y + 1),
+                    read(2 * x + 1, 2 * y + 1),
+                ],
+            )
+        };
+        if s == 1 {
+            // One texel: half a word (the next half is padding).
+            let w = u32::from(texel(mem, 0, 0));
+            mem.store((at + offset) as usize, &[w]);
+        } else {
+            let mut buf = [0u32; 32];
+            let words = s * s / 2;
+            let mut m = 0;
+            while m < words {
+                let n = (words - m).min(32);
+                for (j, w) in buf[..n as usize].iter_mut().enumerate() {
+                    let i = 2 * (m + j as u32);
+                    let (x0, y0) = untwiddle(i);
+                    let (x1, y1) = untwiddle(i + 1);
+                    *w = u32::from(texel(mem, x0, y0)) | u32::from(texel(mem, x1, y1)) << 16;
+                }
+                mem.store((at + offset + 4 * m) as usize, &buf[..n as usize]);
+                m += n;
+            }
+        }
+        mem.sync();
+        offset += s * s * 2;
+    }
     Some(Texture { at, ..t })
 }
 

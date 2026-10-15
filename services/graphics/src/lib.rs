@@ -294,8 +294,23 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         format: u32,
         texels: &[u16],
     ) -> Result<Handle, Error> {
-        self.upload_with(c, code, format, |pool, mem| {
+        self.upload_with(c, code, format, 1, |pool, mem| {
             r3d::upload(pool, mem, code, format, texels)
+        })
+    }
+
+    /// Uploads a texture of 16-bit texels with its mip levels made on the
+    /// CPU (see `rp_mbx3d_render::upload_mipmapped`) for client `c`: a
+    /// third more against its quota.
+    pub fn upload_mipmapped(
+        &mut self,
+        c: ClientId,
+        code: u8,
+        format: u32,
+        texels: &[u16],
+    ) -> Result<Handle, Error> {
+        self.upload_with(c, code, format, code.min(7) + 4, |pool, mem| {
+            r3d::upload_mipmapped(pool, mem, code, format, texels)
         })
     }
 
@@ -306,7 +321,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         code: u8,
         texels: &[u32],
     ) -> Result<Handle, Error> {
-        self.upload_with(c, code, r3d::format::ARGB8888, |pool, mem| {
+        self.upload_with(c, code, r3d::format::ARGB8888, 1, |pool, mem| {
             r3d::upload32(pool, mem, code, texels)
         })
     }
@@ -321,7 +336,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         format: u32,
         blocks: &[u32],
     ) -> Result<Handle, Error> {
-        self.upload_with(c, code, format, |pool, mem| {
+        self.upload_with(c, code, format, 1, |pool, mem| {
             r3d::upload_pvrtc(pool, mem, code, format, blocks)
         })
     }
@@ -333,6 +348,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         c: ClientId,
         code: u8,
         format: u32,
+        levels: u8,
         up: impl FnOnce(&mut Pool, &mut M) -> Option<Texture>,
     ) -> Result<Handle, Error> {
         let rec = self.rec(c)?;
@@ -343,6 +359,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             u_mode: 0,
             v_mode: 0,
             linear: false,
+            levels,
         }
         .bytes();
         if rec.used.saturating_add(bytes) > rec.quota {
