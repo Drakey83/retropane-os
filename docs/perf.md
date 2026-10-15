@@ -286,6 +286,16 @@ after drew it all again: the picture drawn into is two frames old.
   and the first tap after start-up (the second full-screen frame after
   the background is built: 14.7 ms of CPU, 23.7 of engine), which a
   full-screen copy forward would also cover.
+- **Fix 2: an area cache** (1.17 MiB of 2700G memory, approved): an
+  area of 16K px or more is kept the second time it's drawn and copied
+  in when its look (background, commands, text, dither: hashed) is the
+  same; and the frame after a whole one copies the screen forward. On
+  the PC: the menu opening or closing from the third time, 127 words
+  instead of ~1,840. On the device (log `local/rp-today-menu-cache.txt`,
+  the menu opened and closed 5-6 times): 3 slow frames, all before the
+  cache held the menu, none after; the first tap after start-up not slow;
+  touch to flush median **13.0 ms**, worst **42** (fix 1: 19.0 and 54;
+  before: 20.4 and 101).
 
 ## Interface layer flush (2026-10-12, emulator)
 
