@@ -516,6 +516,9 @@ mod image {
     /// The PXA's GPIO block: GPIO85 is bit 21 of the third bank.
     const GPLR2: usize = 0x008;
     const GPDR2: usize = 0x014;
+    const GRER2: usize = 0x038;
+    const GFER2: usize = 0x044;
+    const GEDR2: usize = 0x050;
     const PIN85: u32 = 1 << 21;
     /// The 2700G's system interrupt enable (write-only: never read) and
     /// the display's event status and enable.
@@ -534,13 +537,15 @@ mod image {
             log!("T10: no GPIO block");
             return;
         };
-        let dir0 = gpio.read32(GPDR2);
+        // GPIO85's edges are only latched (GRER/GFER) and polled (GEDR):
+        // its interrupt stays masked at the PXA, so a line stuck active
+        // can't flood the CPU.
+        let (dir0, rer0, fer0) = (gpio.read32(GPDR2), gpio.read32(GRER2), gpio.read32(GFER2));
         gpio.write32(GPDR2, dir0 & !PIN85);
-        let Some(mut line) = rt::take_gpio_irq(85, rt::Edge::Both) else {
-            log!("T10: GPIO85's interrupt unavailable");
-            gpio.write32(GPDR2, dir0);
-            return;
-        };
+        gpio.write32(GRER2, rer0 | PIN85);
+        gpio.write32(GFER2, fer0 | PIN85);
+        let latched = |g: &mut Mmio| g.read32(GEDR2) & PIN85 != 0;
+        let unlatch = |g: &mut Mmio| g.write32(GEDR2, PIN85);
         let en0 = e.regs.read32(ENABLE);
         let dintre0 = e.regs.read32(DINTRE);
         let quiet = |e: &mut Engine<Mmio>| {
@@ -552,11 +557,12 @@ mod image {
         quiet(e);
         e.regs.write32(MINTENABLE, 0x800F);
         rt::delay_us(1_000);
-        let _ = line.take();
-        line.done();
+        let was = latched(&mut gpio);
+        unlatch(&mut gpio);
         log!(
-            "T10: line quiet: GPIO85 {} (1 = idle, likely), status 0x{:08x}",
+            "T10: line quiet: GPIO85 {} (1 = idle, likely), edge latched before {}, status 0x{:08x}",
             u32::from(gpio.read32(GPLR2) & PIN85 != 0),
+            u32::from(was),
             e.regs.read32(STATUS)
         );
         let bg = background(0xFF20_2020, 0.0);
@@ -579,8 +585,7 @@ mod image {
             quiet(e);
             e.regs.write32(MINTENABLE, mint);
             load(vram, &[(&bg, p)], |_, _| true);
-            let _ = line.take();
-            line.done();
+            unlatch(&mut gpio);
             e.regs.write32(ENABLE, en);
             let lvl0 = gpio.read32(GPLR2) & PIN85 != 0;
             let t0 = rt::ticks();
@@ -596,30 +601,32 @@ mod image {
                 if fell.is_none() && (gpio.read32(GPLR2) & PIN85 != 0) != lvl0 {
                     fell = Some(now);
                 }
-                if line.take() {
+                if latched(&mut gpio) {
                     edges += 1;
                     edge.get_or_insert(now);
-                    line.done();
+                    unlatch(&mut gpio);
                 }
                 if done.is_some() && now > done.unwrap_or(0) + 2_000 {
                     break;
                 }
             }
             let held = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
+            let gedr_before = u32::from(latched(&mut gpio));
             // Cleared as Dell clears it (bits 2 and 3).
             e.regs.write32(CLEAR, 0x0C);
             rt::delay_us(100);
             let after = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
-            if line.take() {
+            let gedr_after = u32::from(latched(&mut gpio));
+            if gedr_after != 0 {
                 edges += 1;
-                line.done();
+                unlatch(&mut gpio);
             }
             e.regs.write32(ENABLE, 0);
             if mint == 0x800F && en == 0x8004 {
                 edged_8004 = edges > 0;
             }
             log!(
-                "  T10 MINTENABLE 0x{mint:04x}, 0x130 0x{en:04x}: done at {done:?} us; GPIO85 {} -> {held} (changed at {fell:?} us), {after} after the clear; edges {edges} (first at {edge:?} us)",
+                "  T10 MINTENABLE 0x{mint:04x}, 0x130 0x{en:04x}: done at {done:?} us; GPIO85 {} -> {held} (changed at {fell:?} us), {after} after the clear; GEDR before/after the clear {gedr_before}/{gedr_after}; edges {edges} (first at {edge:?} us)",
                 u32::from(lvl0)
             );
         }
@@ -627,6 +634,9 @@ mod image {
         e.regs.write32(MINTENABLE, 0x800F);
         e.regs.write32(ENABLE, en0);
         e.regs.write32(DINTRE, dintre0);
+        gpio.write32(GRER2, rer0);
+        gpio.write32(GFER2, fer0);
+        unlatch(&mut gpio);
         gpio.write32(GPDR2, dir0);
     }
 
@@ -668,11 +678,8 @@ mod image {
             let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
             let changed = (0..16 * 512 / 4).filter(|&k| w(k) != 0xAAAA_AAAA).count();
             log!(
-                "  T11 {name}: render A (red z 0.5, store) done {a}; depth buffer words changed {changed} of 2048, first 0x{:08x} 0x{:08x} 0x{:08x} 0x{:08x}, tile 0 word 64 0x{:08x}",
-                w(0),
-                w(1),
-                w(2),
-                w(3),
+                "  T11 {name}: render A (red z 0.5, store) done {a}; depth buffer words changed {changed} of 2048; first 8 (raw, a float's bits if floats: 0.5 = 0x3f000000) {:08x?}; tile 0 word 64 0x{:08x}",
+                [w(0), w(1), w(2), w(3), w(4), w(5), w(6), w(7)],
                 w(64)
             );
             let n = with(table, 15 << 7 | 2 | load_bit, 0, &mut buf);
