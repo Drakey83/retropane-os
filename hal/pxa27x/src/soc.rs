@@ -336,11 +336,14 @@ impl Dispatch {
 pub struct SlowClock<B>(pub B);
 
 impl<B: RegisterBus> SlowClock<B> {
-    /// Starts the counter at 0, one count per 1/32768 s.
+    /// Starts the counter at 0, one count per 1/32768 s. The resolution
+    /// first, then the counter: on the X51v (2026-10-15, `rp-noise` run 1)
+    /// the counter written before `OMCR5` never moved; the write to
+    /// `OSCR5` is what starts it (the run limit's channel 4 is set the
+    /// same way round).
     pub fn start(&mut self) {
-        self.0.write32(ost_reg::OMCR5, 0);
-        self.0.write32(ost_reg::OSCR5, 0);
         self.0.write32(ost_reg::OMCR5, 1 << 7 | 1);
+        self.0.write32(ost_reg::OSCR5, 0);
     }
 
     /// The count now.

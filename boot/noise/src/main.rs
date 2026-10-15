@@ -235,15 +235,19 @@ mod image {
     const WALK_BYTES: usize = 64 * 1024;
     const RESTART_AT: usize = WALK_AT + WALK_BYTES;
     const RESTART_BYTES: usize = RESTART_ROW * RESTART_ROWS;
-    const _: () = assert!(RESTART_AT + RESTART_BYTES <= devices::SCRATCH_SIZE);
+    /// The summary for `noise.txt` (in scratch, not on the 16 KiB stack:
+    /// run 1 used 13.5 KiB of it with the summary there).
+    const TEXT_AT: usize = RESTART_AT + RESTART_BYTES;
+    const TEXT_BYTES: usize = 4096;
+    const _: () = assert!(TEXT_AT + TEXT_BYTES <= devices::SCRATCH_SIZE);
 
     /// The summary for `noise.txt`, written alongside the run log.
-    struct Text {
-        buf: [u8; 4096],
+    struct Text<'a> {
+        buf: &'a mut [u8],
         len: usize,
     }
 
-    impl Write for Text {
+    impl Write for Text<'_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             let n = s.len().min(self.buf.len() - self.len);
             self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
@@ -270,12 +274,13 @@ mod image {
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let mut out = Text {
-            buf: [0; 4096],
-            len: 0,
-        };
         let Some(scratch) = devices::take_scratch() else {
             crash(format_args!("no scratch memory"))
+        };
+        let (scratch, text) = scratch.split_at_mut(TEXT_AT);
+        let mut out = Text {
+            buf: &mut text[..TEXT_BYTES],
+            len: 0,
         };
         let _ = writeln!(
             out,
@@ -333,7 +338,7 @@ mod image {
             .unwrap_or_else(|| crash(format_args!("scratch not aligned")));
         let (fat, rest) = rest.split_at_mut(WALK_AT - FAT_AT);
         let (walk, rest) = rest.split_at_mut(WALK_BYTES);
-        let restart = &mut rest[..RESTART_BYTES];
+        let restart = rest;
 
         // 2. A: two-crystal jitter.
         let Some(mut slow) = rt::take_slow_clock() else {
@@ -472,7 +477,7 @@ mod image {
     }
 
     /// One source's line: what it is, how long it took, its first look.
-    fn report(out: &mut Text, name: &str, s: &Summary, ticks: u32, over: &str) {
+    fn report(out: &mut Text<'_>, name: &str, s: &Summary, ticks: u32, over: &str) {
         let ms = u64::from(ticks) * 1000 / u64::from(rt::TICK_HZ);
         let _ = writeln!(
             out,
@@ -518,7 +523,7 @@ mod image {
 
     /// Writes the samples as little-endian 16-bit values (the CPU's own
     /// order, so the buffer goes as it is).
-    fn save(out: &mut Text, sd: Option<&mut Sd>, name: &str, samples: &[u16], fat: &mut [u8]) {
+    fn save(out: &mut Text<'_>, sd: Option<&mut Sd>, name: &str, samples: &[u16], fat: &mut [u8]) {
         let Some(sd) = sd else { return };
         let bytes = rp_hal_mem::pixels_as_bytes(samples);
         let ok = mount(sd).and_then(|mut v| v.put(name, bytes, fat).map_err(|_| "write failed"));
@@ -528,7 +533,7 @@ mod image {
     /// Appends this run's first [`RESTART_ROW`] samples of A (low bytes) to
     /// `noise-r.bin`, the restart test's rows, up to [`RESTART_ROWS`].
     fn save_restart_row(
-        out: &mut Text,
+        out: &mut Text<'_>,
         sd: Option<&mut Sd>,
         a: &[u16],
         rows: &mut [u8],
