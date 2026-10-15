@@ -27,6 +27,35 @@ work not feeding the watchdog) before the class was fixed: never again.
 flaky test so far ("USER preempted") was a real scheduler bug: a quantum
 lost when the timer fired inside a system call.
 
+## One device run at a time
+
+There is one docked Axim and several sessions or scripts that may want it.
+Two runs at once lose a load, drop the USB link until the Axim is reseated,
+and can leave a hung device in Dell's factory-restore prompt. So the tool
+enforces it, not a convention: a "pause file" whose existence means busy
+was deleted in passing on 2026-10-15 and two runs overlapped.
+
+- **Every command that talks to the Axim holds the machine-wide lock**
+  (`%LOCALAPPDATA%\RetroPane\axim.lock`, an OS file lock, so a killed or
+  crashed holder releases it). It is taken at the first contact with the
+  port (`usb::powershell`, the only way xtask reaches the device) and held
+  until the command ends: a `load` keeps it across the send, the device's
+  reconnect and the run log, but not across the build before it.
+- **A second caller waits**, printing `device busy: <command> (pid, checkout)
+  since <time>, waiting`; `--no-wait` (or `RP_AXIM_NO_WAIT=1`) fails at once
+  instead. `RP_AXIM_WHO=<label>` names a loop in that line.
+- **`cargo xtask axim`** says who holds it, if anyone.
+- **Never talk to the port any other way.** A loop or script goes through
+  `cargo xtask` commands; nothing spawns its own serial or PowerShell port
+  code. `xtask/scripts/usb-restart.ps1` is only for the scheduled task a
+  locked `load` runs; don't run it by hand while the Axim is busy. A unit
+  test fails if any xtask file other than `usb.rs` spawns PowerShell or
+  opens a serial port, or if `usb::powershell` stops taking the lock (both
+  have mutants).
+- **A loop releases the lock between runs**, so other sessions can take
+  turns. Pausing someone else's loop is a message to that session, never a
+  file.
+
 ## Mutants: proving the tests bite
 
 `cargo xtask mutants` applies deliberate bugs, one at a time, from the list

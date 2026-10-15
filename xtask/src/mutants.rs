@@ -48,6 +48,23 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "xtask: a port script run without the Axim lock (two runs overlapped)",
+        file: "xtask/src/usb.rs",
+        from: "    crate::devlock::ensure_held()?;
+",
+        to: "",
+        check: Check::Host(&["-p", "xtask", "only_usb_powershell_reaches_the_device"]),
+    },
+    Mutant {
+        name: "xtask: a busy Axim lock taken as free",
+        file: "xtask/src/devlock.rs",
+        from: "            Err(std::fs::TryLockError::WouldBlock) => {}
+",
+        to: "            Err(std::fs::TryLockError::WouldBlock) => break,
+",
+        check: Check::Host(&["-p", "xtask", "second_caller_waits_until_the_first_is_done"]),
+    },
+    Mutant {
         name: "today: an idle sleep past the run limit (the watchdog reset the device)",
         file: "shell/today/src/main.rs",
         from: "            let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);",
