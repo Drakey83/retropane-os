@@ -1,5 +1,16 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 25 (ADR-0026, version 24's open
+//! 3D core, under the loader. Version 26 (ADR-0026, the GPU's clock and a
+//! 16-bit target, from static reading 2026-10-15): S26a the MBX clock's
+//! divider (Windows Mobile's `MBXCLK` `0x5` is divide-by-2: Dell's driver
+//! picks the smallest divider keeping the cores at or under 75 MHz) at 2,
+//! 3 and 4, a full-screen and a 600-tile render and a full-screen 2D fill
+//! timed at each (divide-by-1 is over Dell's cap: compiled out until the
+//! owner decides); S26b (T4) a 16-bit target, `0x650` 1 or 3 and `0x660`
+//! in pixels or words, colours, extent and time; S26c (last) the PLLs and
+//! clock registers read (never read before), for the system clock.
+//! T11b-T13b are done (version 25: mipmaps work, PVRTC's blocks twiddled,
+//! depth storage parked).
+//! Version 25 (ADR-0026, version 24's open
 //! questions, from static reading 2026-10-15): T11b depth stored across
 //! renders with the GLES driver's full register set (`0x648` and `0x6D0`
 //! 1 and its other extras; `n` 16 and 2400); T12b mipmaps with TEX0 bits
@@ -240,7 +251,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 25;
+    const VERSION: u32 = 26;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -422,27 +433,6 @@ mod image {
         )
     }
 
-    /// A scene of `objs` in the parameter memory, the region array listing
-    /// the tiles `keep` says, rendered with `table`. True if it finished;
-    /// a hang resets the core and sets the memory manager up again.
-    #[inline(never)]
-    fn scene_in(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        table: &[(usize, u32)],
-        objs: &[(&[u32], u32)],
-        keep: fn(u32, u32) -> bool,
-    ) -> bool {
-        load(vram, objs, keep);
-        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
-        if !done {
-            e.reset(rt::delay_us);
-            let ok = pm_init(e, vram);
-            log!("  (timed out: core reset, memory manager ready again: {ok})");
-        }
-        done
-    }
-
     /// `objs` into the parameter memory (one list, at its start) and the
     /// region array for the tiles `keep` says.
     fn load(vram: &mut [u8], objs: &[(&[u32], u32)], keep: fn(u32, u32) -> bool) {
@@ -458,284 +448,171 @@ mod image {
         regions(vram, keep);
     }
 
-    /// A textured square from `(x0, y0)` to `(x1, y1)`, texture coordinates
-    /// 0 to `uv` both ways, white vertices.
-    fn tex_square(
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        uv: f32,
-        texw: [u32; 3],
-    ) -> [[u32; m3::tex::WORDS]; 2] {
-        let v = |x, y, u, v| m3::tex::Vertex {
-            x,
-            y,
-            z: 0.0,
-            rhw: 1.0,
-            argb: 0xFFFF_FFFF,
-            u,
-            v,
-        };
-        let tsp = m3::ta::TSP_DELL_TEXTURED;
-        [
-            m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[v(x0, y0, 0.0, 0.0), v(x1, y0, uv, 0.0), v(x0, y1, 0.0, uv)],
-            ),
-            m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[v(x1, y0, uv, 0.0), v(x1, y1, uv, uv), v(x0, y1, 0.0, uv)],
-            ),
-        ]
-    }
+    // Version 26's 2700G memory: a 16-bit picture (480 x 640, not shown).
+    const PIC16: usize = 0x00A0_0000;
+    const PIC16_STRIDE: usize = 480 * 2;
+    /// The core and display PLLs' control registers (system block, Linux
+    /// mbxfb's names: `(13 MHz x M) / (N x 2^P)`, M bits 12-7, N 6-4, P 3-1,
+    /// enable 0). Windows Mobile's boot code sets them; never read before:
+    /// read last.
+    const COREPLL: usize = 0x038;
+    const DISPPLL: usize = 0x03C;
+    const SYSCLKSRC: usize = 0x02C;
+    const MEMCLK: usize = 0x04C;
+    const M24CLK: usize = 0x050;
+    /// `MBXCLK` divide-by-1 runs the MBX cores above the 75 MHz Dell's
+    /// driver caps them at (`0x02120724`): off until the owner decides.
+    const TRY_DIVIDE_BY_1: bool = false;
 
-    /// The texture words for a square texture at `at`: side code, format,
-    /// TEX1's filter and level-of-detail value; Dell's opaque combine word.
-    fn texw(at: usize, code: u32, format: u32, filter: u32, lod: u32) -> [u32; 3] {
-        [
-            m3::tex::tex0(code, format),
-            m3::tex::tex1(at as u32, lod, filter),
-            0xD688_6610,
-        ]
-    }
-
-    /// Fills `n` 16-bit texels at `at` with `c`.
-    fn fill16(vram: &mut [u8], at: usize, n: usize, c: u16) {
-        let w = u32::from(c) | u32::from(c) << 16;
-        for k in 0..n / 2 {
-            let _ = store32_volatile(vram, at + 4 * k, w);
-        }
-    }
-
-    // Version 25's 2700G memory: the depth buffer for the whole screen
-    // (2400 tiles x 512 bytes), the mip chain and the PVRTC blocks.
-    const DEPTH: usize = 0x00A0_0000;
-    const DEPTH_BYTES: usize = 2400 * 512;
-    const MIPS: usize = 0x00E2_0000;
-    const PVR: usize = 0x00E4_0000;
-
-    /// `table` with the GLES driver's per-frame extras (`0x022616dc`:
-    /// `0x648` 1, `0x6D0` 1, `0x614`/`0x618` `0x1E3CE508`, `0x61C`
-    /// `0x00020007`, `0x64C` 0, `0x860` the grid), a depth buffer (`0x674`)
-    /// with `0x610` and `0x6DC` as given; the start last.
-    fn with_depth(
+    /// `table` with `with` replacing (or, if absent, added before the
+    /// start) the pairs named.
+    fn patched(
         table: &[(usize, u32)],
-        r610: u32,
-        r6dc: u32,
+        with: &[(usize, u32)],
         buf: &mut [(usize, u32); 40],
     ) -> usize {
         let mut n = 0;
-        let mut put = |p: (usize, u32), buf: &mut [(usize, u32); 40]| {
-            buf[n] = p;
-            n += 1;
-        };
         for &(off, v) in &table[..table.len() - 1] {
-            match off {
-                0x610 | 0x6DC | 0x648 | 0x614 | 0x618 | 0x61C => {}
-                _ => put((off, v), buf),
+            buf[n] = with
+                .iter()
+                .find(|p| p.0 == off)
+                .copied()
+                .unwrap_or((off, v));
+            n += 1;
+        }
+        for &p in with {
+            if !table.iter().any(|q| q.0 == p.0) {
+                buf[n] = p;
+                n += 1;
             }
         }
-        for p in [
-            (0x648, 1),
-            (0x6D0, 1),
-            (0x614, 0x1E3C_E508),
-            (0x618, 0x1E3C_E508),
-            (0x61C, 0x0002_0007),
-            (0x64C, 0),
-            (0x860, m3::frame::tile_grid(COLS, ROWS)),
-            (0x674, DEPTH as u32),
-            (0x610, r610),
-            (0x6DC, r6dc),
-            table[table.len() - 1],
-        ] {
-            put(p, buf);
-        }
-        n
+        buf[n] = table[table.len() - 1];
+        n + 1
     }
 
-    /// T11b (ADR-0026): depth stored across renders with the GLES driver's
-    /// full register set (version 24's `0x674`/`0x610` alone stored
-    /// nothing). Render A: red z 0.5 "always" with writes on the left half
-    /// of a 4 x 4 tile block, `0x610 = (n - 1) << 7 | 2` (store), `0x6DC`
-    /// 0.0 with bit 0 (clear); render B: blue z 0.3 "greater" over the
-    /// block, `| 1` (load). `n` as the block's 16 tiles and as the
-    /// screen's 2400.
-    #[inline(never)]
-    fn t11b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let block = |x: u32, y: u32| x < 4 && y < 4;
-        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
-        let red = square(0.0, 0.0, 16.0, 64.0, 0xFFFF_0000, 0.5, 7 << 29, tsp(7));
-        let blue = square(0.0, 0.0, 32.0, 64.0, 0xFF00_00FF, 0.3, 4 << 29, tsp(4));
-        let p = m3::STRIP_ONE_TRIANGLE;
-        for (name, tiles) in [("n 16 (the block)", 16u32), ("n 2400 (the screen)", 2400)] {
-            for load_bit in [1u32, 0] {
-                rt::check_in();
-                for k in 0..DEPTH_BYTES / 4 {
-                    let _ = store32_volatile(vram, DEPTH + 4 * k, 0xAAAA_AAAA);
-                }
-                cpu::drain_write_buffer();
-                let mut buf = [(0usize, 0u32); 40];
-                let n = with_depth(table, (tiles - 1) << 7 | 2, 1, &mut buf);
-                let a = scene_in(e, vram, &buf[..n], &[(&red[0], p), (&red[1], p)], block);
-                let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
-                let changed = (0..DEPTH_BYTES / 4)
-                    .filter(|&k| w(k) != 0xAAAA_AAAA)
-                    .count();
-                let first = (0..DEPTH_BYTES / 4).find(|&k| w(k) != 0xAAAA_AAAA);
-                let at = first.unwrap_or(0);
-                log!(
-                    "  T11b {name}, load bit {load_bit}: render A (red z 0.5, store) done {a}; buffer words changed {changed}, first at word {first:?}: {:08x?}",
-                    [
-                        w(at),
-                        w(at + 1),
-                        w(at + 2),
-                        w(at + 3),
-                        w(at + 4),
-                        w(at + 5),
-                        w(at + 6),
-                        w(at + 7)
-                    ]
-                );
-                let n = with_depth(table, (tiles - 1) << 7 | 2 | load_bit, 0, &mut buf);
-                let b = scene_in(e, vram, &buf[..n], &[(&blue[0], p), (&blue[1], p)], block);
-                log!(
-                    "  T11b {name}, load bit {load_bit}: render B (blue z 0.3 greater) done {b}; where red was (8,32) 0x{:08x}, beside it (24,32) 0x{:08x}",
-                    px(vram, 8, 32),
-                    px(vram, 24, 32)
-                );
-            }
-        }
+    /// The MBX clock's divider (`MBXCLK` bits 3-2: Windows Mobile's `0x5` is
+    /// divide-by-2, 2D only) set to `div`, 3D on; the core reset and the
+    /// memory manager set up again (a clock change while running is
+    /// untested).
+    fn set_divider(e: &mut Engine<Mmio>, vram: &mut [u8], clk0: u32, div: u32) -> u32 {
+        let v = (clk0 & !0xF) | (div - 1) << 2 | 2;
+        e.regs.write32(MBXCLK, v);
+        rt::delay_us(1_000);
+        e.reset(rt::delay_us);
+        let _ = pm_init(e, vram);
+        e.regs.read32(MBXCLK)
     }
 
-    /// T12b: mipmaps with TEX0 bits 12-9 set (the GLES driver's upload,
-    /// `0x0226576c`: `0xB` there for a texture without levels, its level
-    /// value for one with: version 24 left them 0, and no level drew).
-    /// 64 red, 32 green, 16 blue, 8 yellow, 4-1 cyan; layouts A (smallest
-    /// first, the PowerVR2's offsets) and B (the base first); TEX1
-    /// nearest-mipmap-nearest; quads 16 and 8 px.
+    /// S26a: does the 3D (and 2D) core's speed follow `MBXCLK`'s divider?
+    /// Windows Mobile runs it at divide-by-2 (Dell's driver: the smallest
+    /// divider keeping it at or under 75 MHz); a full-screen render, a
+    /// 600-tile band and a full-screen 2D fill timed at divide-by-2, 3, 4.
     #[inline(never)]
-    fn t12b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFF00_0000, 0.0);
+    fn s26a(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)], clk0: u32) {
+        let bg = background(0xFFFF_0000, 0.0);
         let p = m3::STRIP_ONE_TRIANGLE;
-        let t = m3::tex::STRIP_GAME;
-        let colours: [(u32, u16); 7] = [
-            (64, 0xF800),
-            (32, 0x07E0),
-            (16, 0x001F),
-            (8, 0xFFE0),
-            (4, 0x07FF),
-            (2, 0x07FF),
-            (1, 0x07FF),
+        let n = if TRY_DIVIDE_BY_1 { 4 } else { 3 };
+        for &div in &[2u32, 3, 4, 1][..n] {
+            rt::check_in();
+            let clk = set_divider(e, vram, clk0, div);
+            load(vram, &[(&bg, p)], |_, _| true);
+            let full = run(e, vram, table, RENDER_DONE, None, 200_000).0;
+            load(vram, &[(&bg, p)], |_, y| (15..25).contains(&y));
+            let band = run(e, vram, table, RENDER_DONE, None, 200_000).0;
+            let t0 = rt::ticks();
+            let filled = clear(e, vram, GREY);
+            let fill = us_since(t0);
+            log!(
+                "  S26a MBXCLK 0x{clk:x} (divide by {div}): 3D 2400 tiles done at {full:?} us, 600 tiles at {band:?} us; 2D full-screen fill {fill} us (finished {filled})"
+            );
+        }
+        let clk = set_divider(e, vram, clk0, 2);
+        log!("  S26a back to divide by 2: MBXCLK 0x{clk:x}");
+    }
+
+    /// A pixel of the 16-bit picture.
+    fn p16(vram: &[u8], x: usize, y: usize) -> u32 {
+        let a = PIC16 + y * PIC16_STRIDE + 2 * x;
+        let w = load32_volatile(vram, a & !3).unwrap_or(0xDEAD_BEEF);
+        if a & 2 == 0 { w & 0xFFFF } else { w >> 16 }
+    }
+
+    /// S26b (T4): a 16-bit target. The GLES driver writes `0x650` 6 for a
+    /// 32-bit target, 1 or 3 for two other formats; `0x660` is the stride
+    /// in pixels or in words. A 4 x 4 tile block (red, green, blue, white
+    /// quarters of 32 x 64 px) over a picture filled with `0xAAAA`: the
+    /// colours, the drawn extent (are tiles still 8 x 16?), the time.
+    #[inline(never)]
+    fn s26b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let tsp = TSP_DELL;
+        let q = [
+            square(0.0, 0.0, 16.0, 32.0, 0xFFFF_0000, 0.0, ISP_ALWAYS, tsp),
+            square(16.0, 0.0, 32.0, 32.0, 0xFF00_FF00, 0.0, ISP_ALWAYS, tsp),
+            square(0.0, 32.0, 16.0, 64.0, 0xFF00_00FF, 0.0, ISP_ALWAYS, tsp),
+            square(16.0, 32.0, 32.0, 64.0, 0xFFFF_FFFF, 0.0, ISP_ALWAYS, tsp),
         ];
-        let a = [0xAB0usize, 0x2B0, 0xB0, 0x30, 0x10, 0x8, 0x6];
-        let mut b = [0usize; 7];
-        let mut off = 0;
-        for (k, &(side, _)) in colours.iter().enumerate() {
-            b[k] = off;
-            off += (side * side * 2) as usize;
-        }
-        for (layout, offs) in [("A", a), ("B", b)] {
-            for k in 0..0x3000 / 4 {
-                let _ = store32_volatile(vram, MIPS + 4 * k, 0);
-            }
-            for (k, &(side, c)) in colours.iter().enumerate() {
-                if side == 1 {
-                    let at = MIPS + offs[k];
-                    let w = load32_volatile(vram, at & !3).unwrap_or(0);
-                    let c = u32::from(c);
-                    let w = if at & 2 == 0 {
-                        (w & 0xFFFF_0000) | c
-                    } else {
-                        (w & 0xFFFF) | c << 16
-                    };
-                    let _ = store32_volatile(vram, at & !3, w);
-                } else {
-                    fill16(vram, MIPS + offs[k], (side * side) as usize, c);
-                }
+        let p = m3::STRIP_ONE_TRIANGLE;
+        let objs: [(&[u32], u32); 8] = [
+            (&q[0][0], p),
+            (&q[0][1], p),
+            (&q[1][0], p),
+            (&q[1][1], p),
+            (&q[2][0], p),
+            (&q[2][1], p),
+            (&q[3][0], p),
+            (&q[3][1], p),
+        ];
+        for (format, stride) in [(1u32, 480u32), (1, 240), (3, 480), (3, 240)] {
+            rt::check_in();
+            for k in 0..PIC16_STRIDE * 640 / 4 {
+                let _ = store32_volatile(vram, PIC16 + 4 * k, 0xAAAA_AAAA);
             }
             cpu::drain_write_buffer();
-            for levels in [0xBu32, 3, 6, 7] {
-                let mut centre = [0u32; 2];
-                for (k, (end, size)) in [(216.0f32, 16u32), (208.0, 8)].into_iter().enumerate() {
-                    rt::check_in();
-                    let mut w = texw(
-                        MIPS,
-                        3,
-                        m3::tex::RGB565,
-                        m3::tex::TEX1_MIP_NEAREST,
-                        m3::tex::TEX1_LOD,
-                    );
-                    w[0] |= levels << 9;
-                    let sq = tex_square(200.0, 200.0, end, end, 1.0, w);
-                    let done = scene_in(
-                        e,
-                        vram,
-                        table,
-                        &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                        |_, _| true,
-                    );
-                    centre[k] = if done {
-                        px(vram, 200 + size / 2, 200 + size / 2)
-                    } else {
-                        0xDEAD_DEAD
-                    };
-                }
-                log!(
-                    "  T12b layout {layout}, TEX0 bits 12-9 = {levels}: centre of the 16 px quad 0x{:08x}, of the 8 px quad 0x{:08x}",
-                    centre[0],
-                    centre[1]
-                );
-            }
+            let mut buf = [(0usize, 0u32); 40];
+            let n = patched(
+                table,
+                &[(0x650, format), (0x660, stride), (0x65C, PIC16 as u32)],
+                &mut buf,
+            );
+            load(vram, &objs, |x, y| x < 4 && y < 4);
+            let t = run(e, vram, &buf[..n], RENDER_DONE, None, 200_000).0;
+            let across = (0..128).find(|&x| p16(vram, x, 2) == 0xAAAA);
+            let down = (0..128).find(|&y| p16(vram, 2, y) == 0xAAAA);
+            log!(
+                "  S26b 0x650 {format}, 0x660 {stride}: done at {t:?} us; (2,2) 0x{:04x} (18,2) 0x{:04x} (2,34) 0x{:04x} (18,34) 0x{:04x}; drawn to x {across:?} on row 2, y {down:?} on column 2; row 2 x 30-33 {:04x?}",
+                p16(vram, 2, 2),
+                p16(vram, 18, 2),
+                p16(vram, 2, 34),
+                p16(vram, 18, 34),
+                [
+                    p16(vram, 30, 2),
+                    p16(vram, 31, 2),
+                    p16(vram, 32, 2),
+                    p16(vram, 33, 2)
+                ]
+            );
         }
     }
 
-    /// T13b: PVRTC's block order (a proven format: low risk). A 16 x
-    /// 16 texture of 4 x 4 blocks, block `k` (as stored) a colour of its
-    /// own; each block's centre sampled, in rows: twiddled storage puts
-    /// block 1 right of block 0 and block 2 below it, row order block 1
-    /// right and block 4 below.
+    /// S26c (last: never read before): the clock registers, to compute the
+    /// system clock the MBX divider divides.
     #[inline(never)]
-    fn t13b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFF00_0000, 0.0);
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let t = m3::tex::STRIP_GAME;
-        // Opaque RGB555 colour B and RGB554 colour A of one colour: block k
-        // gets red k * 2, green 31 - k * 2, blue 0 (A's blue is 4 bits).
-        for k in 0..16u32 {
-            let (r, g) = (2 * k, 31 - 2 * k);
-            let a = 1 << 15 | r << 10 | g << 5;
-            let bc = 1 << 15 | r << 10 | g << 5;
-            let _ = store32_volatile(vram, PVR + 8 * k as usize, 0);
-            let _ = store32_volatile(vram, PVR + 8 * k as usize + 4, bc << 16 | a);
-        }
-        cpu::drain_write_buffer();
-        rt::check_in();
-        // 64 px for 16 texels: a block every 16 px, its centre at 8.
-        let sq = tex_square(
-            100.0,
-            100.0,
-            164.0,
-            164.0,
-            1.0,
-            texw(PVR, 1, m3::tex::PVRTC4, 0, m3::tex::TEX1_LOD),
-        );
-        let done = scene_in(
-            e,
-            vram,
-            table,
-            &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-            |_, _| true,
-        );
-        let red = |x: u32, y: u32| (px(vram, 100 + 16 * x + 8, 100 + 16 * y + 8) >> 16) & 0xFF;
-        let grid: [[u32; 4]; 4] =
-            core::array::from_fn(|y| core::array::from_fn(|x| red(x as u32, y as u32)));
+    fn s26c(e: &mut Engine<Mmio>) {
+        let core = e.regs.read32(COREPLL);
+        let disp = e.regs.read32(DISPPLL);
+        let khz = |v: u32| {
+            let (m, n, p) = ((v >> 7) & 63, (v >> 4) & 7, (v >> 1) & 7);
+            if n == 0 { 0 } else { 13_000 * m / (n << p) }
+        };
         log!(
-            "  T13b PVRTC 4 bpp, block k red 2k (of 31): done {done}; red at each block's centre, rows: {grid:02x?} (stored k: twiddled as texels, x in the odd bits: row 0 = blocks 0 2 8 10; x in the even bits: 0 1 4 5; row order: 0 1 2 3)"
+            "  S26c COREPLL 0x{core:08x} ({} kHz by mbxfb's formula), DISPPLL 0x{disp:08x} ({} kHz), PLLSTAT 0x{:x}, SYSCLKSRC 0x{:x}, MEMCLK 0x{:x}, M24CLK 0x{:x}, MBXCLK 0x{:x}",
+            khz(core),
+            khz(disp),
+            e.regs.read32(PLLSTAT),
+            e.regs.read32(SYSCLKSRC),
+            e.regs.read32(MEMCLK),
+            e.regs.read32(M24CLK),
+            e.regs.read32(MBXCLK)
         );
     }
 
@@ -925,19 +802,16 @@ mod image {
             );
         }
 
-        // T11b-T13b (ADR-0026 follow-ups of version 24): depth stored
-        // with the GLES driver's full set, PVRTC's block order, then
-        // mipmaps with TEX0 bits 12-9 (the riskiest, last).
+        // S26 (ADR-0026, the GPU's clock and a 16-bit target): the MBX
+        // divider's effect, T4, then the PLLs read (last: never read).
         if drew {
             let (t, n) = table(level);
-            log!("T11b: depth stored across renders with 0x648, 0x6D0 and the GLES extras");
-            t11b(&mut e, vram, &t[..n]);
-            log!("T13b: PVRTC's block order");
-            t13b(&mut e, vram, &t[..n]);
-            // Last: unexplored TEX0/TEX1 bits (TEX1 bit 30 hung the core in
-            // version 24); a hang here costs nothing.
-            log!("T12b: mipmaps with TEX0 bits 12-9 (the level value)");
-            t12b(&mut e, vram, &t[..n]);
+            log!("S26a: the MBX clock divider (MBXCLK bits 3-2) against render and fill times");
+            s26a(&mut e, vram, &t[..n], clk0);
+            log!("S26b (T4): a 16-bit target (0x650 1 or 3, 0x660 in pixels or words)");
+            s26b(&mut e, vram, &t[..n]);
+            log!("S26c: the PLLs and clock registers");
+            s26c(&mut e);
         }
 
         let saved = show_target(&mut e.regs);

@@ -354,10 +354,11 @@ pub const BUDGETS: &[Budget] = &[
     // alpha-source and filtering sweeps), 33.1 KiB measured; then 36 -> 42
     // KiB for version 24 (T10-T13: the interrupt line, depth across
     // renders, filtering and mipmaps, 32-bit and PVRTC textures), 39.3 KiB
-    // measured, + ~7%.
+    // measured, + ~7%; tightened 42 -> 35 KiB for version 26 (the clock
+    // and 16-bit target stages; texture helpers gone), 31.2 KiB measured.
     Budget {
         image: "rp-mbx3d",
-        max_load: 42 * 1024,
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
