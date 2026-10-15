@@ -258,6 +258,14 @@ pub struct Mbx2dRenderer<R, M> {
     glyphs_top: usize,
     /// Runs just before the flip.
     pub flip_wait: Option<fn()>,
+    /// Holds a finished frame's flip until [`Self::flip`]: the graphics
+    /// service draws its 3D areas into the picture first (ADR-0030 G1).
+    pub hold: bool,
+    /// A finished frame held for [`Self::flip`]: its picture.
+    landed: Option<usize>,
+    /// The rectangles the last frame drew afresh (not copied forward).
+    drawn: [Rect; MAX_DIRTY],
+    drawn_n: usize,
     /// Frames the engine didn't finish (each reset it and redraws whole).
     pub stalls: u32,
     /// Dither each redrawn rectangle (on; tests against the CPU renderer
@@ -316,6 +324,10 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             atlases: [None; ATLASES],
             glyphs_top: 0,
             flip_wait: None,
+            hold: false,
+            landed: None,
+            drawn: [Rect::new(0, 0, 0, 0); MAX_DIRTY],
+            drawn_n: 0,
             stalls: 0,
             dither: true,
             last: FrameStats::default(),
@@ -342,6 +354,76 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         let n = px.len().min(usize::from(W));
         self.mem
             .store(self.l.wallpaper + usize::from(y) * STRIDE, &px[..n]);
+    }
+
+    /// A finished frame held for [`Self::flip`] ([`Self::hold`]): the
+    /// address of its picture.
+    #[must_use]
+    pub fn landed(&self) -> Option<usize> {
+        self.landed.map(|k| self.l.screens[k])
+    }
+
+    /// Draws the whole screen afresh on the next two frames (an area that
+    /// was another engine's comes back).
+    pub fn invalidate_all(&mut self) {
+        self.fresh = 2;
+    }
+
+    /// Shows the frame held by [`Self::hold`].
+    pub fn flip(&mut self) {
+        if let Some(k) = self.landed.take() {
+            self.show_picture(k);
+        }
+    }
+
+    /// With no frame queued or held, the picture not on screen: the two
+    /// pictures then hold the same frame (the last two frames are drawn
+    /// into both), so drawing into it (3D) and [`Self::flip_back`]ing is
+    /// a whole frame. Waits for scan-out to leave it first.
+    pub fn back(&mut self) -> Option<usize> {
+        if self.pending.is_some() || self.landed.is_some() || self.prev_n != 0 {
+            return None;
+        }
+        self.wait_scanout();
+        Some(self.l.screens[1 - self.front])
+    }
+
+    /// Shows the picture [`Self::back`] gave.
+    pub fn flip_back(&mut self) {
+        if self.pending.is_none() && self.landed.is_none() {
+            self.show_picture(1 - self.front);
+        }
+    }
+
+    /// The rectangles the last frame drew afresh (the whole screen for a
+    /// whole frame), not those copied forward.
+    #[must_use]
+    pub fn drawn(&self) -> &[Rect] {
+        &self.drawn[..self.drawn_n]
+    }
+
+    /// Waits (40 ms at most) for scan-out to leave the picture not on
+    /// screen, after a flip.
+    fn wait_scanout(&mut self) {
+        if self.vsync_due {
+            let t = (self.now)();
+            while self.e.regs.read32(rp_drv_mbx_display::reg::DINTRS)
+                & rp_drv_mbx_display::event::VEVENT0
+                == 0
+                && self.us_since(t) < 40_000
+            {}
+            self.vsync_due = false;
+        }
+    }
+
+    fn show_picture(&mut self, k: usize) {
+        if let Some(w) = self.flip_wait {
+            w();
+        }
+        self.present(k);
+        // From now the old picture scans out until the frame's end.
+        rp_drv_mbx_display::ack_events(&mut self.e.regs, rp_drv_mbx_display::event::VEVENT0);
+        self.vsync_due = true;
     }
 
     /// The register window and memory (the image's own use).
@@ -878,6 +960,8 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // into; usually long done by the time anything changes.
         let t0 = (self.now)();
         self.last = FrameStats::default();
+        // A held frame nobody flipped: show it now.
+        self.flip();
         while !self.poll() {
             if self.us_since(t0) > 200_000 {
                 self.stalls += 1;
@@ -888,15 +972,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 break;
             }
         }
-        if self.vsync_due {
-            let t = (self.now)();
-            while self.e.regs.read32(rp_drv_mbx_display::reg::DINTRS)
-                & rp_drv_mbx_display::event::VEVENT0
-                == 0
-                && self.us_since(t) < 40_000
-            {}
-            self.vsync_due = false;
-        }
+        self.wait_scanout();
         self.last.wait_us = self.us_since(t0);
         let t0 = (self.now)();
         let stalls0 = self.stalls;
@@ -989,6 +1065,8 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.prev_n = frame.dirty().len().min(MAX_DIRTY);
         self.prev[..self.prev_n].copy_from_slice(&frame.dirty()[..self.prev_n]);
+        self.drawn_n = n;
+        self.drawn[..n].copy_from_slice(&rects[..n]);
         if n == 0 && nf == 0 {
             return drawn;
         }
@@ -1045,6 +1123,9 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
 
     #[inline(never)]
     fn poll(&mut self) -> bool {
+        if self.landed.is_some() {
+            return false;
+        }
         let Some((back, n, queued)) = self.pending else {
             return true;
         };
@@ -1055,13 +1136,11 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         self.last.engine_us = self.us_since(queued);
         self.fresh = self.fresh.saturating_sub(1);
         self.front_whole = self.pending_whole;
-        if let Some(w) = self.flip_wait {
-            w();
+        if self.hold {
+            self.landed = Some(back);
+            return false;
         }
-        self.present(back);
-        // From now the old picture scans out until the frame's end.
-        rp_drv_mbx_display::ack_events(&mut self.e.regs, rp_drv_mbx_display::event::VEVENT0);
-        self.vsync_due = true;
+        self.show_picture(back);
         true
     }
 }

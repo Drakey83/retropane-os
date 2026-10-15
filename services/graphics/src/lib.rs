@@ -11,10 +11,12 @@
 //!   quads name them by handle, so a client can only ever point the GPU at
 //!   its own memory. Refusals are reported, nothing is evicted.
 //! - **One 3D scene** (a renderer drives the core at a time), owned by one
-//!   client.
-//!
-//! Who draws where when 2D and 3D share a picture (G1) waits for the
-//! owner's vote; until then the caller gives each 3D render its target.
+//!   client, with **its own area of the screen** (G1, option A, the
+//!   owner's vote): each frame, 2D draws into the picture not on screen,
+//!   the scene renders its area into the same picture (the tiles 2D drew
+//!   over included), then the picture is shown; a frame with only 3D
+//!   changes renders into the other picture (it holds the same 2D frame)
+//!   and shows it. Nothing half-drawn or stale reaches the screen.
 //!
 //! A library now (G4), used in one process; the display driver host's once
 //! IPC can move pages (ADR-0016).
@@ -22,10 +24,12 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
-use rp_draw::{Drawn, Frame, Renderer as _};
+use rp_draw::{Frame, Renderer as _};
 use rp_hal_api::RegisterBus;
 use rp_mbx_render::{LocalMem, Mbx2dRenderer};
-use rp_mbx3d_render::{self as r3d, Clock, Depth, Draw, Paint, Point, Poll, Target, Texture};
+use rp_mbx3d_render::{
+    self as r3d, Clock, Depth, Draw, Paint, Picture, Point, Poll, Target, Texture,
+};
 use rp_vram_map::Pool;
 
 /// Clients at once.
@@ -151,27 +155,69 @@ const NO_BLOCK: Block = Block {
     tex: None,
 };
 
+/// The 3D scene: its owner, its renderer, its area of the screen.
+struct Scene {
+    owner: u8,
+    r: r3d::Renderer,
+    x: u16,
+    y: u16,
+    /// Its renderer's core resets already passed on to the 2D engine.
+    resets: u32,
+}
+
+/// The job in flight (one at a time, G2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Job {
+    None,
+    /// A 2D frame, its flip held for the 3D area.
+    TwoD,
+    /// The 3D area rendering; then the held frame (or the back picture)
+    /// is shown.
+    ThreeD {
+        back: bool,
+    },
+}
+
+/// What [`Graphics::poll`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// Nothing in flight.
+    Idle,
+    /// Not done: poll again at this time (microseconds, the clock's).
+    Wait(u32),
+    /// The frame is on screen.
+    Shown,
+    /// The frame is on screen, but the 3D render hung and was recovered:
+    /// its area is stale until the next frame (which redraws it all).
+    Recovered,
+}
+
+/// How long to wait before looking at the 2D engine again (it has no
+/// prediction; a full-screen 2D frame takes milliseconds).
+const TWO_D_POLL_US: u32 = 200;
+
 /// The owner of the 2D engine and the 3D core.
 pub struct Graphics<R, M> {
     two_d: Mbx2dRenderer<R, M>,
-    scene: Option<(u8, r3d::Renderer)>,
+    scene: Option<Scene>,
     pool: Pool,
     clients: [ClientRec; CLIENTS],
     blocks: [Block; BLOCKS],
-    resets: u32,
+    job: Job,
 }
 
 impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
     /// The service over the 2D renderer (which holds the register window
-    /// and memory) and the pool.
-    pub fn new(two_d: Mbx2dRenderer<R, M>, pool: Pool) -> Self {
+    /// and memory, its flips held for the 3D area) and the pool.
+    pub fn new(mut two_d: Mbx2dRenderer<R, M>, pool: Pool) -> Self {
+        two_d.hold = true;
         Self {
             two_d,
             scene: None,
             pool,
             clients: [ClientRec::default(); CLIENTS],
             blocks: [NO_BLOCK; BLOCKS],
-            resets: 0,
+            job: Job::None,
         }
     }
 
@@ -205,11 +251,15 @@ impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
         self.rec(c).map_or(0, |r| r.used)
     }
 
-    /// Ends a client: its blocks go back to the pool, its scene closes.
+    /// Ends a client (with nothing in flight): its blocks go back to the
+    /// pool, its scene closes.
     pub fn close(&mut self, c: ClientId) -> Result<(), Error> {
         self.rec(c)?;
-        if self.scene.as_ref().is_some_and(|s| s.0 == c.0) {
+        if self.scene.as_ref().is_some_and(|s| s.owner == c.0) {
             self.close_scene(c)?;
+        }
+        if self.job != Job::None {
+            return Err(Error::Busy);
         }
         for k in 0..BLOCKS {
             if self.blocks[k].tex.is_some() && self.blocks[k].owner == c.0 {
@@ -271,62 +321,74 @@ impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
         }
     }
 
-    /// Gives a texture back. Refused while client `c`'s scene may still
-    /// draw it: the caller empties the quads using it first.
+    /// Gives a texture back (with nothing in flight). The caller empties
+    /// the quads using it first.
     pub fn free(&mut self, c: ClientId, h: Handle) -> Result<(), Error> {
         self.rec(c)?;
         self.texture(c, h)?;
-        if self.scene.as_ref().is_some_and(|s| s.1.busy()) {
+        if self.job != Job::None {
             return Err(Error::Busy);
         }
         self.drop_block(usize::from(h.slot));
         Ok(())
     }
 
-    /// Opens the 3D scene for client `c`, `w` x `h` pixels (whole tiles).
-    pub fn open_scene(&mut self, c: ClientId, w: u16, h: u16) -> Result<(), Error> {
+    /// Opens the 3D scene for client `c`: the area `w` x `h` at `(x, y)`
+    /// (whole 8 x 16 tiles) belongs to 3D from now on (G1, option A):
+    /// whatever 2D draws there is drawn over by the scene before each
+    /// flip.
+    pub fn open_scene(&mut self, c: ClientId, x: u16, y: u16, w: u16, h: u16) -> Result<(), Error> {
         self.rec(c)?;
-        if self.scene.is_some() {
+        if self.scene.is_some() || self.job != Job::None {
             return Err(Error::Busy);
         }
+        let pic = Picture::screen(0);
+        if u32::from(x) + u32::from(w) > u32::from(pic.w)
+            || u32::from(y) + u32::from(h) > u32::from(pic.h)
+        {
+            return Err(Error::Scene(r3d::Error::BadTarget));
+        }
         let r = r3d::Renderer::new(&mut self.pool, w, h).ok_or(Error::NoMemory)?;
-        self.scene = Some((c.0, r));
+        self.scene = Some(Scene {
+            owner: c.0,
+            r,
+            x,
+            y,
+            resets: 0,
+        });
         Ok(())
     }
 
-    /// Closes client `c`'s scene (when no render is in flight).
+    /// Closes client `c`'s scene (with nothing in flight); its area goes
+    /// back to 2D, redrawn whole on the next frame.
     pub fn close_scene(&mut self, c: ClientId) -> Result<(), Error> {
-        match self.scene.take() {
-            Some((o, r)) if o == c.0 && !r.busy() => {
-                let _ = r.release(&mut self.pool);
-                Ok(())
-            }
-            other => {
-                let busy = other.as_ref().is_some_and(|s| s.0 == c.0);
-                self.scene = other;
-                Err(if busy {
-                    Error::Busy
-                } else {
-                    Error::NotYourScene
-                })
-            }
+        if !self.scene.as_ref().is_some_and(|s| s.owner == c.0) {
+            return Err(Error::NotYourScene);
         }
+        if self.job != Job::None {
+            return Err(Error::Busy);
+        }
+        if let Some(s) = self.scene.take() {
+            let _ = s.r.release(&mut self.pool);
+        }
+        self.two_d.invalidate_all();
+        Ok(())
     }
 
-    fn scene(&mut self, c: ClientId) -> Result<&mut r3d::Renderer, Error> {
+    fn scene(&mut self, c: ClientId) -> Result<&mut Scene, Error> {
         match &mut self.scene {
-            Some((o, r)) if *o == c.0 => Ok(r),
+            Some(s) if s.owner == c.0 => Ok(s),
             _ => Err(Error::NotYourScene),
         }
     }
 
     /// Client `c`'s scene background (see `Renderer::set_background`).
     pub fn set_background(&mut self, c: ClientId, argb: Option<u32>) -> Result<(), Error> {
-        self.scene(c)?.set_background(argb).map_err(Error::Scene)
+        self.scene(c)?.r.set_background(argb).map_err(Error::Scene)
     }
 
     /// Puts `q` in slot `slot` of client `c`'s scene (or empties it); its
-    /// texture must be one of `c`'s.
+    /// texture must be one of `c`'s. Positions are the area's.
     pub fn set(&mut self, c: ClientId, slot: usize, q: Option<&Quad>) -> Result<(), Error> {
         let draw = match q {
             None => None,
@@ -354,78 +416,150 @@ impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
                 })
             }
         };
-        let r = match &mut self.scene {
-            Some((o, r)) if *o == c.0 => r,
+        if self.job != Job::None {
+            return Err(Error::Busy);
+        }
+        let s = match &mut self.scene {
+            Some(s) if s.owner == c.0 => s,
             _ => return Err(Error::NotYourScene),
         };
         let (_, mem) = self.two_d.parts();
-        r.set(mem, slot, draw.as_ref()).map_err(Error::Scene)
+        s.r.set(mem, slot, draw.as_ref()).map_err(Error::Scene)
     }
 
-    /// Queues a 2D frame (refused while a 3D render is in flight).
-    pub fn draw2d(&mut self, frame: &Frame) -> Result<Drawn, Error> {
-        if self.scene.as_ref().is_some_and(|s| s.1.busy()) {
+    /// Starts a frame: the 2D `frame`, then the 3D area over it in the
+    /// same picture, then the flip ([`Self::poll`] drives it). A frame with
+    /// no 2D change still shows the scene's changes.
+    pub fn frame<C: Clock>(&mut self, frame: &Frame, clock: &mut C) -> Result<Step, Error> {
+        if self.job != Job::None {
             return Err(Error::Busy);
         }
-        Ok(self.two_d.draw(frame))
-    }
-
-    /// Puts a finished 2D frame on screen; true when none is pending.
-    pub fn poll2d(&mut self) -> bool {
-        self.two_d.poll()
-    }
-
-    /// Starts rendering client `c`'s scene into `target` once the 2D
-    /// engine is idle. Returns when to poll, or `None` if nothing changed.
-    pub fn render3d<C: Clock>(
-        &mut self,
-        c: ClientId,
-        clock: &mut C,
-        target: Target,
-    ) -> Result<Option<u32>, Error> {
-        if !self.two_d.poll() {
-            return Err(Error::Busy);
+        self.two_d.draw(frame);
+        if self.two_d.landed().is_some() || !self.two_d.poll() {
+            self.job = Job::TwoD;
+            return Ok(self.poll(clock));
         }
-        let r = match &mut self.scene {
-            Some((o, r)) if *o == c.0 => r,
-            _ => return Err(Error::NotYourScene),
+        // No 2D change: both pictures hold the same 2D frame, so the scene
+        // renders into the one not on screen, which is then shown. Nothing
+        // changed in the scene either: nothing to do (the picture not on
+        // screen catches up on the next frame drawn into it).
+        if self.scene.as_ref().is_none_or(|s| s.r.dirty() == 0) {
+            return Ok(Step::Idle);
+        }
+        let Some(back) = self.two_d.back() else {
+            return Ok(Step::Idle);
         };
-        let (e, mem) = self.two_d.parts();
-        let res = r.render(&mut e.regs, mem, clock, target);
-        self.after_3d();
-        res.map_err(Error::Scene)
+        match self.start_3d(back, clock) {
+            Some(due) => {
+                self.job = Job::ThreeD { back: true };
+                Ok(Step::Wait(due))
+            }
+            None => Ok(Step::Idle),
+        }
     }
 
-    /// Checks on the 3D render in flight.
-    pub fn poll3d<C: Clock>(&mut self, clock: &mut C) -> Poll {
-        let Some((_, r)) = &mut self.scene else {
-            return Poll::Idle;
+    /// Renders the scene into its area of the picture at `at`: when to
+    /// poll, or `None` if there's nothing to render (or no scene).
+    fn start_3d<C: Clock>(&mut self, at: usize, clock: &mut C) -> Option<u32> {
+        let s = self.scene.as_mut()?;
+        let target = Target {
+            picture: Picture {
+                at: at as u32,
+                ..Picture::screen(0)
+            },
+            x: s.x,
+            y: s.y,
         };
         let (e, mem) = self.two_d.parts();
-        let p = r.poll(&mut e.regs, mem, clock);
+        let res = s.r.render(&mut e.regs, mem, clock, target);
         self.after_3d();
-        p
+        res.ok().flatten()
+    }
+
+    /// Drives the frame in flight.
+    pub fn poll<C: Clock>(&mut self, clock: &mut C) -> Step {
+        match self.job {
+            Job::None => Step::Idle,
+            Job::TwoD => {
+                let Some(at) = self.two_d.landed() else {
+                    let _ = self.two_d.poll();
+                    return if self.two_d.landed().is_some() {
+                        self.poll(clock)
+                    } else {
+                        Step::Wait(clock.now_us().wrapping_add(TWO_D_POLL_US))
+                    };
+                };
+                // What 2D drew afresh over the area: the scene draws it
+                // again before the flip.
+                if let Some(s) = &mut self.scene {
+                    for r in self.two_d.drawn() {
+                        s.r.invalidate(
+                            i32::from(r.x) - i32::from(s.x),
+                            i32::from(r.y) - i32::from(s.y),
+                            i32::from(r.w),
+                            i32::from(r.h),
+                        );
+                    }
+                }
+                match self.start_3d(at, clock) {
+                    Some(due) => {
+                        self.job = Job::ThreeD { back: false };
+                        Step::Wait(due)
+                    }
+                    None => {
+                        self.two_d.flip();
+                        self.job = Job::None;
+                        Step::Shown
+                    }
+                }
+            }
+            Job::ThreeD { back } => {
+                let p = match &mut self.scene {
+                    Some(s) => {
+                        let (e, mem) = self.two_d.parts();
+                        s.r.poll(&mut e.regs, mem, clock)
+                    }
+                    None => Poll::Idle,
+                };
+                self.after_3d();
+                let shown = match p {
+                    Poll::Wait(t) => return Step::Wait(t),
+                    Poll::Recovered => Step::Recovered,
+                    Poll::Done(_) | Poll::Idle => Step::Shown,
+                };
+                if back {
+                    self.two_d.flip_back();
+                } else {
+                    self.two_d.flip();
+                }
+                self.job = Job::None;
+                shown
+            }
+        }
     }
 
     /// The 2D engine's stream restarts after a reset the 3D renderer made
     /// (the reset is the whole MBX's).
     fn after_3d(&mut self) {
-        let Some((_, r)) = &self.scene else {
+        let Some(s) = &mut self.scene else {
             return;
         };
-        if r.core_resets() != self.resets {
-            self.resets = r.core_resets();
+        if s.r.core_resets() != s.resets {
+            s.resets = s.r.core_resets();
             self.two_d.parts().0.after_core_reset();
         }
     }
 
     /// When idle at `now_us`: the 3D clock off once unused for a while.
     pub fn idle(&mut self, now_us: u32) -> bool {
-        let Some((_, r)) = &mut self.scene else {
+        if self.job != Job::None {
+            return false;
+        }
+        let Some(s) = &mut self.scene else {
             return false;
         };
         let (e, _) = self.two_d.parts();
-        r.idle(&mut e.regs, now_us)
+        s.r.idle(&mut e.regs, now_us)
     }
 }
 

@@ -59,6 +59,7 @@ fn now() -> u32 {
 
 const GREY: u32 = 0xFF20_2020;
 const BLUE: u32 = 0xFF00_00FF;
+const WHITE: u32 = 0xFFFF_FFFF;
 
 struct Rig {
     g: Graphics<Both, m2::Mem>,
@@ -94,27 +95,77 @@ impl Rig {
         u32::from_le_bytes(m[a..a + 4].try_into().unwrap())
     }
 
-    fn render(&mut self, c: ClientId, t: Target) {
-        let due = self.g.render3d(c, &mut self.clock, t).unwrap().unwrap();
-        self.clock.set(due);
-        loop {
-            match self.g.poll3d(&mut self.clock) {
-                Poll::Done(_) => return,
-                Poll::Wait(t) => self.clock.set(t),
-                p => panic!("{p:?}"),
-            }
+    /// The picture on screen.
+    fn shown(&mut self) -> Picture {
+        let scadr = self
+            .g
+            .two_d()
+            .parts()
+            .0
+            .regs
+            .two
+            .reg(rp_drv_mbx_display::reg::GSCADR);
+        Picture {
+            at: (scadr & 0x7F_FFFF) * 16,
+            ..Picture::screen(0)
         }
     }
 
-    fn frame2d(&mut self, f: &Frame) {
-        self.g.draw2d(f).unwrap();
-        while !self.g.poll2d() {}
+    /// A pixel of the picture on screen (colour only).
+    fn on_screen(&mut self, x: u32, y: u32) -> u32 {
+        let pic = self.shown();
+        self.px(pic, x, y) & 0xFF_FFFF
+    }
+
+    /// Runs a frame to its end.
+    fn frame(&mut self, f: &Frame) -> Step {
+        let mut step = self.g.frame(f, &mut self.clock).unwrap();
+        for _ in 0..10_000 {
+            match step {
+                Step::Wait(t) => {
+                    self.clock.set(t);
+                    step = self.g.poll(&mut self.clock);
+                }
+                s => return s,
+            }
+        }
+        panic!("never finished");
     }
 }
 
 fn texels() -> [u16; 64] {
     [0x001F; 64]
 }
+
+/// A 2D frame: a fill over `r`, damaged.
+fn fill(r: Rect, c: u32) -> Frame {
+    let mut f = Frame::new();
+    f.damage(r);
+    f.push(Cmd::Fill { r, color: c });
+    f
+}
+
+/// The shell's frames carry the whole scene, `damage` only what changed:
+/// a white bar, then a green band across the 3D area.
+fn scene_2d(green: bool, damage: Option<Rect>) -> Frame {
+    let mut f = Frame::new();
+    if let Some(r) = damage {
+        f.damage(r);
+    }
+    f.push(Cmd::Fill {
+        r: Rect::new(0, 0, 480, 32),
+        color: WHITE,
+    });
+    if green {
+        f.push(Cmd::Fill {
+            r: Rect::new(0, 300, 480, 80),
+            color: 0xFF00_FF00,
+        });
+    }
+    f
+}
+
+const AREA: (u16, u16, u16, u16) = (200, 304, 64, 64);
 
 #[test]
 fn clients_reach_only_their_own_memory_within_their_quota() {
@@ -136,18 +187,18 @@ fn clients_reach_only_their_own_memory_within_their_quota() {
         "256 used"
     );
     // B can't name A's texture, in a quad or to free it.
-    r.g.open_scene(b, 480, 640).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(b, x, y, w, h).unwrap();
     let q = Quad::rect(0, 0, 8, 16, Fill::texture(ta));
     assert_eq!(r.g.set(b, 0, Some(&q)), Err(Error::BadHandle));
     assert_eq!(r.g.free(b, ta), Err(Error::BadHandle));
-    // Nor A B's scene.
+    // Nor A B's scene; one scene at a time.
     assert_eq!(r.g.set(a, 0, None), Err(Error::NotYourScene));
-    assert_eq!(r.g.open_scene(a, 480, 640), Err(Error::Busy), "one scene");
+    assert_eq!(r.g.open_scene(a, x, y, w, h), Err(Error::Busy));
     // A freed handle is dead, even if its slot is reused.
     r.g.free(a, ta).unwrap();
     assert_eq!(r.g.free(a, ta), Err(Error::BadHandle));
     let tb = r.g.upload_texture(b, 0, format::RGB565, &texels()).unwrap();
-    assert_eq!(r.g.set(a, 0, None), Err(Error::NotYourScene));
     assert_eq!(r.g.free(a, tb), Err(Error::BadHandle), "slot reused by B");
     // Closing gives everything back.
     r.g.close(a).unwrap();
@@ -161,115 +212,120 @@ fn clients_reach_only_their_own_memory_within_their_quota() {
 }
 
 #[test]
-fn one_queue_and_both_engines_on_one_picture() {
+fn the_scene_owns_its_area_and_nothing_half_drawn_reaches_the_screen() {
     let mut r = rig();
     let c = r.g.client(64 * 1024).unwrap();
-    r.g.open_scene(c, 64, 64).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
     r.g.set_background(c, Some(BLUE)).unwrap();
     let tex =
         r.g.upload_texture(c, 0, format::RGB565, &[0xF800; 64])
             .unwrap();
     r.g.set(c, 0, Some(&Quad::rect(16, 16, 32, 32, Fill::texture(tex))))
         .unwrap();
-    // A 2D frame: a white bar across the top.
-    let mut f = Frame::new();
-    f.damage(Rect::new(0, 0, 480, 640));
-    f.push(Cmd::Fill {
-        r: Rect::new(0, 0, 480, 32),
-        color: 0xFFFF_FFFF,
-    });
-    r.frame2d(&f);
-    // The picture on screen, and the 3D scene drawn into a 64 x 64 area
-    // of it (G1 pending: the caller picks the area).
-    let scadr =
-        r.g.two_d()
-            .parts()
-            .0
-            .regs
-            .two
-            .reg(rp_drv_mbx_display::reg::GSCADR);
-    let pic = Picture {
-        at: (scadr & 0x7F_FFFF) * 16,
-        ..Picture::screen(0)
-    };
-    let t = Target {
-        picture: pic,
-        x: 200,
-        y: 304,
-    };
-    let due = r.g.render3d(c, &mut r.clock, t).unwrap().unwrap();
-    // A 2D frame waits for the 3D render in flight.
-    assert_eq!(r.g.draw2d(&f).err(), Some(Error::Busy));
-    r.clock.set(due);
-    while !matches!(r.g.poll3d(&mut r.clock), Poll::Done(_)) {}
-    assert_eq!(r.px(pic, 5, 5) & 0xFF_FFFF, 0xFF_FFFF, "the 2D bar");
-    assert_eq!(r.px(pic, 210, 310), BLUE, "the scene's background");
-    assert_eq!(r.px(pic, 232, 336), 0xFFFF_0000, "the textured quad");
+    // The first frame: 2D's white bar and its wallpaper, the scene's area.
     assert_eq!(
-        r.px(pic, 199, 310) & 0xFF_FFFF,
-        GREY & 0xFF_FFFF,
-        "beside the area: 2D's"
+        r.frame(&scene_2d(false, Some(Rect::new(0, 0, 480, 32)))),
+        Step::Shown
     );
-    assert_eq!(r.px(pic, 264, 310) & 0xFF_FFFF, GREY & 0xFF_FFFF);
+    let check = |r: &mut Rig, quad_at: u32| {
+        assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF, "2D's bar");
+        assert_eq!(
+            r.on_screen(210, 310),
+            BLUE & 0xFF_FFFF,
+            "the scene's background"
+        );
+        assert_eq!(r.on_screen(quad_at, 336), 0xFF_0000, "the textured quad");
+        assert_eq!(
+            r.on_screen(199, 310),
+            GREY & 0xFF_FFFF,
+            "left of the area: 2D's"
+        );
+        assert_eq!(r.on_screen(264, 310), GREY & 0xFF_FFFF, "right of it");
+    };
+    check(&mut r, 232);
+    // 2D draws a fill right across the area: the area stays the scene's,
+    // in this frame and the next (both pictures).
+    for _ in 0..2 {
+        assert_eq!(
+            r.frame(&scene_2d(true, Some(Rect::new(0, 300, 480, 80)))),
+            Step::Shown
+        );
+        assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF);
+        assert_eq!(r.on_screen(5, 310), 0x00_FF00, "2D's fill beside it");
+    }
+    // A change in the scene only: shown with no 2D frame, 2D intact.
+    r.g.set(c, 0, Some(&Quad::rect(24, 16, 32, 32, Fill::texture(tex))))
+        .unwrap();
+    let pic0 = r.shown();
+    assert_eq!(r.frame(&scene_2d(true, None)), Step::Shown);
+    assert_ne!(r.shown(), pic0, "flipped to the other picture");
+    assert_eq!(r.on_screen(240, 336), 0xFF_0000);
+    assert_eq!(r.on_screen(218, 336), BLUE & 0xFF_FFFF, "where it was");
+    assert_eq!(
+        r.on_screen(5, 310),
+        0x00_FF00,
+        "2D's frame in that picture too"
+    );
+    assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF);
+    // Nothing changed: nothing to do.
+    assert_eq!(r.frame(&scene_2d(true, None)), Step::Idle);
+    assert_eq!(r.frame(&scene_2d(true, None)), Step::Idle);
+}
+
+#[test]
+fn one_job_at_a_time() {
+    let mut r = rig();
+    let c = r.g.client(0).unwrap();
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    let step =
+        r.g.frame(&fill(Rect::new(0, 0, 480, 32), WHITE), &mut r.clock);
+    assert!(matches!(step, Ok(Step::Wait(_))), "{step:?}");
+    assert_eq!(r.g.frame(&Frame::new(), &mut r.clock), Err(Error::Busy));
+    assert_eq!(r.g.set(c, 0, None), Err(Error::Busy));
+    assert_eq!(r.g.close_scene(c), Err(Error::Busy));
+    assert!(!r.g.idle(u32::MAX / 2));
 }
 
 #[test]
 fn a_3d_hang_resets_the_mbx_and_the_2d_engine_carries_on() {
     let mut r = rig();
     let c = r.g.client(0).unwrap();
-    r.g.open_scene(c, 32, 32).unwrap();
-    let t = Target {
-        picture: Picture::screen(1),
-        x: 0,
-        y: 0,
-    };
-    r.render(c, t);
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    assert_eq!(r.frame(&Frame::new()), Step::Shown);
     r.g.set(c, 0, Some(&Quad::rect(0, 0, 8, 16, Fill::Flat(BLUE))))
         .unwrap();
     r.g.two_d().parts().0.regs.three.hang_next = true;
-    let due = r.g.render3d(c, &mut r.clock, t).unwrap().unwrap();
-    r.clock.set(due);
-    let mut recovered = false;
-    for _ in 0..5000 {
-        match r.g.poll3d(&mut r.clock) {
-            Poll::Wait(at) => r.clock.set(at),
-            Poll::Recovered => {
-                recovered = true;
-                break;
-            }
-            p => panic!("{p:?}"),
-        }
-    }
-    assert!(recovered);
-    // The 2D engine works after the shared reset.
-    let mut f = Frame::new();
-    f.damage(Rect::new(0, 0, 480, 640));
-    f.push(Cmd::Fill {
-        r: Rect::new(0, 600, 480, 40),
-        color: 0xFF00_FF00,
-    });
-    r.frame2d(&f);
-    // And the 3D core again, everything redrawn.
-    r.render(c, t);
-    assert_eq!(r.px(Picture::screen(1), 2, 2), BLUE);
+    assert_eq!(r.frame(&Frame::new()), Step::Recovered);
+    // The 2D engine works after the shared reset, and the scene comes
+    // back whole.
+    assert_eq!(
+        r.frame(&fill(Rect::new(0, 600, 480, 40), 0xFF00_FF00)),
+        Step::Shown
+    );
+    assert_eq!(r.on_screen(5, 610), 0x00_FF00);
+    assert_eq!(r.on_screen(202, 306), BLUE & 0xFF_FFFF);
 }
 
 #[test]
-fn closing_a_client_closes_its_scene_and_the_clock_goes_off_when_idle() {
+fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
     let mut r = rig();
     let c = r.g.client(0).unwrap();
     assert!(!r.g.idle(0), "no scene");
-    r.g.open_scene(c, 32, 32).unwrap();
-    let t = Target {
-        picture: Picture::screen(0),
-        x: 0,
-        y: 0,
-    };
-    r.render(c, t);
+    let (x, y, w, h) = AREA;
+    r.g.open_scene(c, x, y, w, h).unwrap();
+    r.g.set_background(c, Some(BLUE)).unwrap();
+    assert_eq!(r.frame(&Frame::new()), Step::Shown);
+    assert_eq!(r.on_screen(210, 310), BLUE & 0xFF_FFFF);
     let later = r.clock.0.get() + 200_000;
     assert!(r.g.idle(later));
     assert_eq!(r.g.two_d().parts().0.regs.read32(MBXCLK) & 3, 1, "2D only");
     r.g.close(c).unwrap();
+    // The next frames redraw the area as 2D's.
+    assert_eq!(r.frame(&Frame::new()), Step::Shown);
+    assert_eq!(r.on_screen(210, 310), GREY & 0xFF_FFFF);
     let d = r.g.client(0).unwrap();
-    r.g.open_scene(d, 32, 32).unwrap();
+    r.g.open_scene(d, x, y, w, h).unwrap();
 }
