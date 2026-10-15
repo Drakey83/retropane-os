@@ -88,6 +88,19 @@ report; device runs only with the owner's go.
    Registers: only `MBXCLK` and the core's status, both read by Dell's
    driver. The copies are analysed on the PC; nothing is copied into
    RetroPane but facts.
+
+   **First captures (2026-10-14, versions 1-4 on the device):** version 1
+   found 4 MiB of RAM free with DoomGLES running (nothing copied) and froze
+   the game by drawing when done; version 2 wrote to the card with the game
+   suspended and hung (a suspended thread can hold a lock the card needs),
+   and had picked the wrong program; version 3's process list came back
+   empty; **version 4 works**: `doomgles.exe` (3 threads, window class
+   `GLHereticWindowClass`) suspended only while a 1.5 MiB slice is copied
+   to RAM. About 5 s a slice: 0x000000-0xBFFFFF saved before the owner
+   left. In it: Dell's clear scene at 0x130000 (80 x 40 region entries,
+   all to one empty list at 0x12a068) and textures filling
+   0x2F0000-0xAEFFFF. The game's own frame is likely above 0xC00000:
+   next, a capture of that part first.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
