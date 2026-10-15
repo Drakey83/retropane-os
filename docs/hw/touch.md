@@ -81,6 +81,82 @@ from ~195 at the top to ~3207 at the bottom (the earlier 99..2741 came
 from corner taps that weren't at the edges), the Y channel ~3696 at the
 left to ~330 at the right, with a slight skew.
 
+**Tap to press (R, replay of the recordings, 2026-10-14).** The GPU Today
+screen's log split a tap's 35.5 ms (median, runs 3-4) as landing to the
+filter's verdict 22.2 ms, CPU 0.8 ms, engine to flip 7.1 ms. From the `R`
+lines of six sessions (230 touches, `drivers/touch-cal/tests/data/`):
+
+- While the pen is down the loop runs every **11 ms** (median of 3,562
+  gaps): the 5 ms sleep plus ~6 ms of loop, almost all of it the sample's
+  329 conversions (X settles for 256 and averages 8, Y 32 + 8, Z1 16 + 8,
+  Z2 1; three polled SPI bytes each). When the loop slept 1 ms (a frame
+  with the engine) the gaps were 7 ms.
+- The rule of 2026-10-13 pressed on the **third** sample (pressure steady
+  twice) in 188 of 225 taps (the rest later): two periods, 22 ms. That
+  is the log's "landing to verdict": it is stamped before the first sample's
+  conversions and before the deciding sample's, so the deciding sample's
+  own ~5.4 ms shows only in the total (35.5 - 22.2 - 0.8 - 7.1).
+- The interrupt found every touch (38, 38 and 25 in runs 2-4; the 50 ms
+  idle check none). The time from the pen's edge to the first sample is
+  not in the log (waking from idle takes microseconds; a frame being
+  drawn can delay it).
+
+Scored by replaying every recording through each rule (time from the
+first sample with pressure to the press; "far" = pressed more than 20 px,
+the larger axis, from where the stylus was released; five of the touches
+are deliberate drags, so 5 is the floor):
+
+| Rule | Median | p90 | Worst | New taps | Lost | Far |
+|---|---|---|---|---|---|---|
+| 2026-10-13: pressure steady on two samples in a row | 22 ms | 33 | 44 | - | - | 5 |
+| **pressure steady and the position where the previous sample was (within 20 raw), else as before** | **11 ms** | **23** | **44** | **0** | **0** | **5** |
+| the same within 12 raw | 22 | 23 | 44 | 0 | 0 | 5 |
+| the same within 30 raw | 11 | 23 | 44 | 0 | 0 | 6 |
+| the same, and pressure not falling | 22 | 23 | 44 | 0 | 0 | 5 |
+| pressure steady once (no position check) | 11 | 22 | 33 | 2 | 0 | 13 |
+| the first sample with pressure | 0 | 0 | 0 | 5 | 0 | 40 |
+
+**Adopted: the second row** (`rp_touch_cal::Filter`). Most landings are
+in place by the second sample; the ones still sliding (X creeping
+~24-190 raw a sample, a pressure dip as the stylus bounces) fail the
+position check and are pressed by the old rule a sample later. No press
+moved more than 19 px from where the old rule put it, and the two that
+moved most are better: the old rule took them on a pressure spike or
+while pressure was already falling. Expected on the device: the median
+landing to verdict 22 -> 11 ms, a tap answered in ~24.5 ms instead of
+35.5 (not yet measured there). `tests/replay.rs` replays all six
+sessions and fails if the median passes 11 ms, p90 23, worst 44, if a
+tap appears or is lost, or if more presses land far.
+
+Rejected:
+
+- *Show the press on the first sample, confirm or move it later.* The
+  first sample is more than 20 px from where the old rule pressed in 34 of 225
+  taps (15%): about one tap in seven would light a neighbouring button
+  first, and a press outside an open menu closes it, so the mistake would
+  act, not just flicker.
+- *Pressure steady once, no position check.* 2 brushes become taps and
+  13 presses land far (a landing still sliding, up to 37 px).
+- *Sample faster while landing* (sleep 1 ms until the press, ~7 ms
+  periods). Not replayable: the recordings are at 11 ms, and the rule's
+  pressure and position thresholds are per sample, so they mean something
+  else at another rate (a creep of 24 raw per 11 ms is ~15 per 7 ms and
+  would pass the 20 raw check while still sliding). 1 ms sleeps were
+  "much worse" in the build of 2026-10-13. Needs a recording at that rate
+  first.
+- *Cheaper samples* (fewer X settling conversions, ~80% of each sample's
+  time): would shorten the period and the deciding sample's ~5.4 ms. Not
+  replayable: the log keeps only the settled value, not the curve; 64
+  conversions "with faster sampling" was worse on 2026-10-13, with two
+  changes at once. Needs a recording of X at 64, 128 and 256 conversions.
+
+**The recorder's gap (fixed 2026-10-14).** A sample with no pressure was
+logged only when it ended a reported touch, so a touch that lifted before
+its press ran on into the next one in the log. `rp-today` now logs the
+sample that ends any touch. The older recordings are replayed with a gap
+of more than 30 ms before any report taken as that lift; with it the
+2026-10-13 rule reproduces the device's own verdicts on runs 2-4 exactly.
+
 ## TSC2046 protocol (D)
 
 SPI mode 0. A conversion takes 24 clocks; with 8-bit frames that's three transfers:
