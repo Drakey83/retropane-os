@@ -103,6 +103,8 @@ commands:
   emu-noise the RNG noise-source measurement (rp-noise, ADR-0029: every
             source collected and saved to the card; plumbing only, the
             emulator's timing is the PC's): run it before `load rp-noise`
+  emu-hang  only the watchdog check (an image that hangs with the cycle
+            counter on is reset and the loader reports it)
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
@@ -127,9 +129,9 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-noise" | "emu-today"
-        | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize" | "emu-usb"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-noise" | "emu-hang"
+        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
+        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -316,6 +318,7 @@ fn run_step(step: &str) -> Result {
         "emu-mbx-blend" => cross().and_then(|()| emu::boot_loader_mbx_blend(&workspace_root())),
         "emu-mbx3d" => cross().and_then(|()| emu::boot_loader_mbx3d(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
+        "emu-hang" => cross().and_then(|()| emu::boot_loader_hang(&workspace_root())),
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),

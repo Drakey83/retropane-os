@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.13.0";
+pub const QEMU_RELEASE: &str = "rp-v0.14.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -759,15 +759,22 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
 /// loader starts again and reports that the run didn't return. The emulator
 /// restarts the loader itself; on the device Windows Mobile's StartUp
 /// folder does (docs: SD kit README, loader/). A 1 s limit keeps the
-/// backstop at 31 s.
+/// backstop at 31 s. The image starts the cycle counter first (`PMNC` bit 0,
+/// as rp-noise leaves it): emulator releases before rp-v0.14.0 aborted on
+/// the reset with the counter running instead of rebooting as the device does.
 pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
-    let loader = root.join("target/emu/rp-loader.bin");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
         &loader,
     )?;
     let mut hang = rp_loadproto::control_frame("limit 1");
-    hang.extend(rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes()));
+    // mov r0, #1; mcr p14, 0, r0, c0, c1, 0 (PMNC: count); b .
+    let words = [0xE3A0_0001u32, 0xEE00_0E11, 0xEAFF_FFFE];
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    hang.extend(rp_loadproto::frame(&code));
     let output = boot(
         root,
         &Boot {
@@ -1310,6 +1317,52 @@ fn strip_tail(v: &str) -> String {
 /// already there, and return. The emulator's timing comes from the PC, so
 /// its numbers say nothing about the Axim's noise (docs/hw/emulator.md):
 /// this checks the plumbing only.
+/// The ways rp-noise tries to run an OS timer channel on the 32 kHz clock
+/// must count as they did on the X51v (rp-noise run 3, docs/hw/entropy.md):
+/// only channel 5 with `OMCR5` bit 6 (`0xC1`). Channel 11 with `0x81` isn't
+/// checked: it counted in run 3 and not in run 4. An emulator that counts
+/// every way (rp-v0.13.0 and older) fails here.
+fn noise_timer_ways(log: &str) -> Result<(), String> {
+    const WAYS: &[(&str, bool)] = &[
+        ("channel 5 OMCR 0x81 mode first", false),
+        ("channel 5 OMCR 0x81 counter first", false),
+        ("channel 5 OMCR 0x01 mode first", false),
+        ("channel 5 OMCR 0xc1 mode first", true),
+        ("channel 5 OMCR 0x82 mode first", false),
+        ("channel 5 OMCR 0x84 mode first", false),
+        ("channel 6 OMCR 0x81 mode first", false),
+        ("channel 8 OMCR 0x81 mode first", false),
+    ];
+    for &(way, counts) in WAYS {
+        let prefix = format!("timer: {way}:");
+        let line = log
+            .lines()
+            .find(|l| l.trim_start().starts_with(&prefix))
+            .ok_or_else(|| format!("noise: the run log has no `{prefix}`:{log}"))?;
+        // "... count {c0} -> {c1} in 2 ms ..."
+        let counted = line
+            .split_once(", count ")
+            .and_then(|(_, r)| r.split_once(" in "))
+            .and_then(|(r, _)| r.split_once(" -> "))
+            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+            .map(|(c0, c1)| c1.wrapping_sub(c0))
+            .ok_or_else(|| format!("noise: can't read the counts in `{line}`"))?;
+        // 32,768 Hz is ~65 counts in 2 ms; the device's other ways stayed at 0 (runs 3 and 4).
+        let ok = if counts {
+            (40..=100).contains(&counted)
+        } else {
+            counted == 0
+        };
+        if !ok {
+            return Err(format!(
+                "noise: {way} counted {counted} in 2 ms; on the X51v it {} (rp-noise run 3): `{line}`",
+                if counts { "counts ~65" } else { "never counts" }
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -1361,8 +1414,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "clocks: OSCC",
         "clocks: core measured",
         "card: ready",
-        "timer: channel 5 OMCR 0x81 mode first",
-        "timer: sampling with channel 5, OMCR 0x81",
+        "timer: sampling with channel 5, OMCR 0xc1",
         "A interrupt (cycles between 32 kHz tick interrupts): 1000000 samples",
         "A spaced (cycles across 16 tick interrupts, low 16 bits): 100000 samples",
         "ticks missed and resynchronised:",
@@ -1380,6 +1432,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             return Err(format!("noise: the run log has no `{want}`:{log}"));
         }
     }
+    noise_timer_ways(log)?;
     let spaced = card_file(&sd, "noise-as.bin")?;
     if spaced.len() != 200_000 {
         return Err(format!(
