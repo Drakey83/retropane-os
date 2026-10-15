@@ -96,18 +96,19 @@ pub const TEX2_OPAQUE: u32 = 0xD688_6610;
 /// 23: an ARGB4444 texture at alpha 8/15 blended exactly).
 pub const TEX2_ALPHA: u32 = 0x8608_4610;
 
-/// What the renderer redoes when the 3D clock comes back on (ADR-0026 D8,
-/// device test T9: whether the core keeps its state across the clock off
-/// is what `rp-mbx3d-api` stage S9 measures).
+/// What the renderer redoes when the 3D clock comes back on (ADR-0026 D8).
+/// Device test T9 (`rp-mbx3d-api` run 4, S9): the core keeps its registers
+/// and the memory manager's set-up across `MBXCLK` 2 -> 1 -> 2 (1 ms and
+/// 300 ms off), so nothing is redone by default: a clock-on frame's render
+/// call took ~1.0 ms instead of ~5.6 ms with the set-up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ClockPolicy {
-    /// A core reset and the memory manager's set-up (~4.5 ms; safe).
-    #[default]
+    /// A core reset and the memory manager's set-up (~4.6 ms).
     SetUpAgain,
-    /// Every state register written again on the next frame (the memory
-    /// manager's set-up assumed kept).
+    /// Every state register written again on the next frame.
     RewriteRegisters,
-    /// Nothing (registers and set-up assumed kept).
+    /// Nothing: the core keeps its state (T9, measured).
+    #[default]
     KeepAll,
 }
 
@@ -734,7 +735,7 @@ impl Renderer {
             pending: None,
             mem_words: 0,
             resets: 0,
-            clock_policy: ClockPolicy::SetUpAgain,
+            clock_policy: ClockPolicy::KeepAll,
         })
     }
 

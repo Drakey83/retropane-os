@@ -205,7 +205,7 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality (version 21, on a hand-written textured object) |
 | T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | **passed within a render** (version 23: TSP bits 11-9 mode, bit 7 no-write; larger z nearer); storing depth across renders (`0x674`) still open |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
-| T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
+| T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: **kept** (`rp-mbx3d-api` run 4: nothing redone, 1 ms and 300 ms off, drew right); the renderer redoes nothing (`ClockPolicy::KeepAll`), a clock-on frame ~1.0 ms instead of ~5.6 ms |
 
 **Version 21 on the device (2026-10-15, `local/rp-mbx3d-run21.txt`):**
 
