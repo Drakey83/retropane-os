@@ -1,9 +1,11 @@
 # ADR-0026: Our own MBX 3D renderer
 
-- **Status:** Proposed (2026-10-15). Written overnight at the owner's
-  request; **nothing in it is built yet**. Decisions D1-D8 below wait for
-  the owner's vote; the device tests in "Before building" need the owner's
-  go, one run at a time.
+- **Status:** Accepted (2026-10-15, by the owner's review: D1-D8 all as
+  recommended: both scene paths, dirty tiles, interrupt waits with the
+  timer fallback, register shadow with diff-only writes, 3D straight into
+  the ADR-0023 picture, one GPU owner, GLES scoped to games, the 3D clock
+  gate). D2 stays gated on device test T1 and D5 on T3. The device tests
+  in "Before building" each need the owner's go.
 - **Date:** 2026-10-15
 
 ## In plain words

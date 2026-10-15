@@ -10,6 +10,11 @@
 //! picture.
 //!
 //! Pure: no hardware access, no allocation.
+//!
+//! Watch item (ADR-0027): the pool is shared by textures, 3D buffers, depth
+//! and video frames; a 3D game and video at once will press on it, so the
+//! graphics service arbitrates (quotas, refusals reported, no silent
+//! eviction).
 
 #![no_std]
 #![forbid(unsafe_code)]
