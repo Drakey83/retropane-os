@@ -76,7 +76,7 @@ engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
 | Background (wallpaper plus the glass, drawn once) | 0x6C0000 | 1.17 MiB |
 | Dither pattern (4 rows) | 0x800000 | 7.5 KiB |
 | Fence word | 0xFFF000 | 4 bytes |
-| Area cache (finished areas reused: an opened menu is one copy; 8 areas; 2026-10-14, **proposed, awaiting the owner's approval**) | 0x810000 | 1.17 MiB |
+| Area cache (finished areas reused: an opened menu is one copy; 8 areas; approved by the owner 2026-10-14) | 0x810000 | 1.17 MiB |
 | Free for program surfaces (ADR-0022 decision 2) | 0x940000 up | ~6.8 MiB |
 
 The SVC stack is 16 KiB in every image unless it sizes its own (`rp-today`: 24 KiB); each now reports its deepest use
