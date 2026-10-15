@@ -1,0 +1,18 @@
+[package]
+name = "rp-cs3bus"
+description = "Test image: steps the 2700G's chip-select timing (MSC1, CS3) from Windows Mobile's value toward the PXA's VLIO minimum, verifying 2700G memory and timing flushes at each step; stops at the first mismatch and puts Windows Mobile's value back"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+
+[lints]
+workspace = true

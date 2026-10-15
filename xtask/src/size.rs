@@ -296,6 +296,14 @@ pub const BUDGETS: &[Budget] = &[
     // scene through `rp-gfx` (layer, glyph masks, dirty flushes: ~4 KiB of
     // the library, ~4 KiB of scene code) and times each stage's drawing;
     // 29.7 KiB measured, + ~14%.
+    // Test image (item 68): steps the 2700G's chip-select timing and
+    // verifies 2700G memory at each step. Budget set from the first build.
+    Budget {
+        image: "rp-cs3bus",
+        max_load: 16 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-blend",
         max_load: 34 * 1024,
