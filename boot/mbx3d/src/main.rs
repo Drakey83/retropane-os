@@ -1,5 +1,10 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 22: version 21 found the blend
+//! 3D core, under the loader. Version 23: the GLES driver's own forms,
+//! read statically: blending sets TSP bit 13, a texture with alpha takes a
+//! combine word (TEX2) with bit 13 clear, and depth compare and write mask
+//! sit in the TSP's low bits (Dell's `0x0E80`: always, no write). T5c tries
+//! alpha that way, T7b depth with writes on.
+//! Version 22: version 21 found the blend
 //! factors (additive drew) but vertex alpha acted as 1, the hand-written
 //! textured path drawing, clamping by default, and TSP bit 16 hanging the
 //! core (T7 void). Now every timed-out render resets the core and sets the
@@ -218,7 +223,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 22;
+    const VERSION: u32 = 23;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -416,6 +421,11 @@ mod image {
 
     /// The full-screen background triangle in `argb` at depth `z`.
     fn background(argb: u32, z: f32) -> [u32; m3::TRIANGLE_WORDS] {
+        background_tsp(argb, z, TSP_DELL)
+    }
+
+    /// The background with its own TSP word.
+    fn background_tsp(argb: u32, z: f32, tsp: u32) -> [u32; m3::TRIANGLE_WORDS] {
         let v = |x, y| Vertex {
             x,
             y,
@@ -425,28 +435,27 @@ mod image {
         };
         m3::triangle(
             ISP_ALWAYS,
-            TSP_DELL,
+            tsp,
             &[v(0.0, 0.0), v(2048.0, 0.0), v(0.0, 2048.0)],
         )
     }
 
-    /// T5b: where alpha comes from. Blend factors work (version 21:
-    /// additive drew) but a flat square's vertex alpha (`0x80`) acted as 1.
-    /// Source alpha / inverse (4/5) with other TSP bits: Gouraud (22),
-    /// bit 21 cleared, bit 19, bits 20 and 22; then a textured square whose
-    /// ARGB4444 texels carry alpha 8 (about half), over red.
+    /// T5c: the GLES driver's blending form (`0x02267700`): factors in
+    /// TSP bits 31-26 plus **TSP bit 13**, and for a texture with alpha a
+    /// combine word with **TEX2 bit 13 clear** (its table `0x0225D3A0`: RGBA
+    /// rows `0x86084610`, RGB rows `0x86086610`; Dell's `0xD6886610` says
+    /// "no alpha"). Source alpha / inverse (4/5), over red.
     #[inline(never)]
     fn t5(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         let bg = background(0xFFFF_0000, 0.0);
         let blend = 4u32 << 29 | 5 << 26;
-        let base = TSP_DELL & 0x03FF_FFFF;
         let p = m3::STRIP_ONE_TRIANGLE;
         for (name, tsp) in [
-            ("base", blend | base),
-            ("+ Gouraud (22)", blend | base | TSP_GOURAUD),
-            ("- bit 21", blend | (base & !(1 << 21))),
-            ("+ bit 19", blend | base | 1 << 19),
-            ("+ bits 20, 22", blend | base | 1 << 20 | TSP_GOURAUD),
+            ("flat, bit 13", blend | (TSP_DELL & 0x03FF_FFFF) | 1 << 13),
+            (
+                "flat, Gouraud + bit 13",
+                blend | (TSP_DELL & 0x03FF_FFFF) | TSP_GOURAUD | 1 << 13,
+            ),
         ] {
             rt::check_in();
             let sq = square(
@@ -461,7 +470,7 @@ mod image {
             );
             let done = scene(e, vram, table, &[(&bg, p), (&sq[0], p), (&sq[1], p)]);
             log!(
-                "  T5 flat {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
+                "  T5 {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
                 px(vram, 200, 200)
             );
         }
@@ -470,8 +479,6 @@ mod image {
             let _ = store32_volatile(vram, TEX + 4 * k, 0x800F_800F);
         }
         cpu::drain_write_buffer();
-        let mut texw = m3::ta::dell_texture(TEX as u32);
-        texw[0] = m3::tex::tex0(0, m3::tex::ARGB4444);
         let v = |x, y, u, v| m3::tex::Vertex {
             x,
             y,
@@ -481,15 +488,20 @@ mod image {
             u,
             v,
         };
-        for (name, tsp) in [
-            ("opaque", m3::ta::TSP_DELL_TEXTURED),
-            ("4/5", blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF)),
+        let tsp_t = blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF) | 1 << 13;
+        for (name, tex2, tsp) in [
             (
-                "4/5 + bit 20",
-                blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF) | 1 << 20,
+                "TEX2 RGBA modulate 0x86084610, TSP bit 13",
+                0x8608_4610u32,
+                tsp_t,
             ),
+            ("TEX2 Dell's minus bit 13, TSP bit 13", 0xD688_4610, tsp_t),
+            ("TEX2 RGBA, no TSP bit 13", 0x8608_4610, tsp_t & !(1 << 13)),
         ] {
             rt::check_in();
+            let mut texw = m3::ta::dell_texture(TEX as u32);
+            texw[0] = m3::tex::tex0(0, m3::tex::ARGB4444);
+            texw[2] = tex2;
             let a = m3::tex::triangle(
                 ISP_ALWAYS,
                 texw,
@@ -513,92 +525,22 @@ mod image {
             let t = m3::tex::STRIP_GAME;
             let done = scene(e, vram, table, &[(&bg, p), (&a, t), (&b, t)]);
             log!(
-                "  T5 textured ARGB4444 alpha 8 {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
+                "  T5 textured ARGB4444 alpha 8, {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
                 px(vram, 200, 200)
             );
         }
     }
 
-    /// T6b: TEX0 bits 31-28 (version 18: some values changed sampling)
-    /// on the magnified 8 x 8 red/white checker (texel (7,0) green), u 0-1
-    /// then 0-2. TSP bits 16-18 left alone (bit 16 hung the core).
-    #[inline(never)]
-    fn t6(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        for y in 0..8u32 {
-            for x in 0..8u32 {
-                let c: u32 = if (x, y) == (7, 0) {
-                    0x07E0
-                } else if (x + y) & 1 == 1 {
-                    0xFFFF
-                } else {
-                    0xF800
-                };
-                let at = TEX + 2 * m3::tex::twiddle(x, y) as usize;
-                let w = load32_volatile(vram, at & !3).unwrap_or(0);
-                let shift = 8 * (at & 2) as u32;
-                let _ = store32_volatile(vram, at & !3, (w & !(0xFFFF << shift)) | c << shift);
-            }
-        }
-        cpu::drain_write_buffer();
-        let bg = background(0xFF00_0000, 0.0);
-        for (umax, label, high) in [
-            (1.0f32, 1u32, 0xAu32),
-            (1.0, 1, 0x0),
-            (1.0, 1, 0x4),
-            (1.0, 1, 0x8),
-            (1.0, 1, 0xC),
-            (1.0, 1, 0xE),
-            (2.0, 2, 0xA),
-            (2.0, 2, 0x2),
-            (2.0, 2, 0x6),
-        ] {
-            rt::check_in();
-            let mut texw = m3::ta::dell_texture(TEX as u32);
-            texw[0] = (m3::tex::tex0(0, m3::tex::RGB565) & 0x0FFF_FFFF) | high << 28;
-            let v = |x, y, u, v| m3::tex::Vertex {
-                x,
-                y,
-                z: 0.0,
-                rhw: 1.0,
-                argb: 0xFFFF_FFFF,
-                u,
-                v,
-            };
-            let tri = m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                m3::ta::TSP_DELL_TEXTURED,
-                &[
-                    v(40.0, 40.0, 0.0, 0.0),
-                    v(440.0, 40.0, umax, 0.0),
-                    v(40.0, 600.0, 0.0, 1.0),
-                ],
-            );
-            let done = scene(
-                e,
-                vram,
-                table,
-                &[(&bg, m3::STRIP_ONE_TRIANGLE), (&tri, m3::tex::STRIP_GAME)],
-            );
-            let _ = write!(
-                RunLog,
-                "  T6 u 0-{label} TEX0 0x{:08x}: done {done}; y=75 at x 45 65 80 88 90 92 100 115 250 300 350 400:",
-                texw[0]
-            );
-            for x in [45, 65, 80, 88, 90, 92, 100, 115, 250, 300, 350, 400] {
-                let _ = write!(RunLog, " {:08x}", px(vram, x, 75));
-            }
-            log!("");
-        }
-    }
-
-    /// T7: ISP bits 31-29 as the PowerVR2's depth compare (1 less, 3 less
-    /// or equal, 4 greater, 6 greater or equal, 7 always): a red square at
-    /// z 0.5 (always), then an overlapping blue one at z 0.3 or 0.8 with
-    /// each mode, over a background at z 0.1.
+    /// T7b: depth with writes on, as the GLES driver forms it
+    /// (`glDepthFunc` stores (mode << 9), `glDepthMask(false)` bit 7, both
+    /// into the TSP's low bits: Dell's `0x0E80` = always, no write). Every
+    /// object: ISP bits 31-29 and TSP bits 11-9 the same mode, TSP bit 7
+    /// clear. Background z 0.1 and red z 0.5 "always"; blue z 0.3 or 0.8
+    /// with each mode.
     #[inline(never)]
     fn t7(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFF20_2020, 0.1);
+        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
+        let bg = background_tsp(0xFF20_2020, 0.1, tsp(7));
         let a = square(
             100.0,
             100.0,
@@ -607,14 +549,22 @@ mod image {
             0xFFFF_0000,
             0.5,
             ISP_ALWAYS,
-            TSP_DELL,
+            tsp(7),
         );
         let p = m3::STRIP_ONE_TRIANGLE;
         for (zb, tenths) in [(0.3f32, 3u32), (0.8, 8)] {
-            for mode in [1u32, 3, 4, 6] {
+            for mode in [1u32, 4, 6] {
                 rt::check_in();
-                let isp = mode << 29;
-                let b = square(200.0, 200.0, 400.0, 400.0, 0xFF00_00FF, zb, isp, TSP_DELL);
+                let b = square(
+                    200.0,
+                    200.0,
+                    400.0,
+                    400.0,
+                    0xFF00_00FF,
+                    zb,
+                    mode << 29,
+                    tsp(mode),
+                );
                 let done = scene(
                     e,
                     vram,
@@ -622,7 +572,8 @@ mod image {
                     &[(&bg, p), (&a[0], p), (&a[1], p), (&b[0], p), (&b[1], p)],
                 );
                 log!(
-                    "  T7 blue z 0.{tenths} ISP 0x{isp:08x}: done {done}; overlap (250,250) 0x{:08x}, blue alone (350,350) 0x{:08x}, red alone (150,150) 0x{:08x}",
+                    "  T7 blue z 0.{tenths} mode {mode}, TSP 0x{:08x}: done {done}; overlap (250,250) 0x{:08x}, blue alone (350,350) 0x{:08x}, red alone (150,150) 0x{:08x}",
+                    tsp(mode),
                     px(vram, 250, 250),
                     px(vram, 350, 350),
                     px(vram, 150, 150)
@@ -822,15 +773,11 @@ mod image {
         if drew {
             let (t, n) = table(level);
             log!(
-                "T5b: where alpha comes from (blend 4/5), flat and ARGB4444-textured squares over red"
+                "T5c: alpha as the GLES driver forms it (TSP bit 13; TEX2 bit 13 clear), blend 4/5 over red"
             );
             t5(&mut e, vram, &t[..n]);
             log!(
-                "T6b: TEX0 bits 31-28 on the hand-written textured 8 x 8 checker (red/white, texel (7,0) green), 50 x 70 px a texel at u 0-1"
-            );
-            t6(&mut e, vram, &t[..n]);
-            log!(
-                "T7: depth: red square z 0.5 (always), blue square z 0.3/0.8 with each compare mode, background z 0.1"
+                "T7b: depth with writes on (TSP bits 11-9 mode, bit 7 clear), red z 0.5, blue z 0.3/0.8"
             );
             t7(&mut e, vram, &t[..n]);
         }
