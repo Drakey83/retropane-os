@@ -92,6 +92,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-cab"
+version = "0.0.0"
+
+[[package]]
+name = "rp-ce-setup"
+version = "0.0.0"
+dependencies = [
+ "rp-cab",
+]
+
+[[package]]
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [
@@ -367,6 +378,14 @@ version = "0.0.0"
 [[package]]
 name = "rp-kernel-trace"
 version = "0.0.0"
+
+[[package]]
+name = "rp-legacysync"
+version = "0.0.0"
+dependencies = [
+ "rp-cab",
+ "rp-ce-setup",
+]
 
 [[package]]
 name = "rp-light"

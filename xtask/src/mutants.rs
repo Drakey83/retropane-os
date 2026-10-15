@@ -277,8 +277,69 @@ pub const MUTANTS: &[Mutant] = &[
         to: "            self.powered = false;",
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
+    Mutant {
+        name: "cab: a DEFLATE match reaching before the window is followed",
+        file: "personality/ce/cab/src/inflate.rs",
+        from: "            if distance > *pos || *pos + len > end {",
+        to: "            if *pos + len > end {",
+        check: Check::Host(&[
+            "-p",
+            "rp-cab",
+            "a_match_into_the_history_works_and_before_it_fails",
+        ]),
+    },
+    Mutant {
+        name: "cab: data block checksums ignored",
+        file: "personality/ce/cab/src/lib.rs",
+        from: "            if csum != 0 && checksum(&h[4..8], checksum(data, 0)) != csum {",
+        to: "            if csum != 0 && checksum(&h[4..8], checksum(data, 0)) != csum && false {",
+        check: Check::Host(&["-p", "rp-cab", "a_changed_byte_fails_the_checksum"]),
+    },
+    Mutant {
+        name: "cab: a file running past its folder's end accepted short",
+        file: "personality/ce/cab/src/lib.rs",
+        from: "        if done < end {
+            Err(Error::Truncated)
+        } else {
+            Ok(())
+        }",
+        to: "        Ok(())",
+        check: Check::Host(&["-p", "rp-cab", "a_file_past_its_folder_end_is_truncated"]),
+    },
+    Mutant {
+        name: "ce-setup: `..` accepted in an install path",
+        file: "personality/ce/setup/src/lib.rs",
+        from: "        let dots = names && (piece == b\".\" || piece == b\"..\");",
+        to: "        let dots = false;",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "bad_references_and_paths_are_refused_up_front",
+        ]),
+    },
+    Mutant {
+        name: "ce-setup: a script accepted before its whole plan is checked",
+        file: "personality/ce/setup/src/lib.rs",
+        from: "        script.plan(|_| Ok(()))?;\n        Ok(script)",
+        to: "        Ok(script)",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "bad_references_and_paths_are_refused_up_front",
+        ]),
+    },
+    Mutant {
+        name: "ce-setup: a DOCTYPE in _setup.xml skipped instead of refused",
+        file: "personality/ce/setup/src/xml.rs",
+        from: "                // DOCTYPE, ENTITY, CDATA: refused.\n                return Err(Error::BadXml);",
+        to: "                self.i = self.find(at + 2, b\">\")? + 1;",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "setup_xml_outside_the_subset_is_refused",
+        ]),
+    },
 ];
-
 /// Puts a file back when dropped.
 struct Restore {
     path: PathBuf,
