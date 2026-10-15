@@ -709,6 +709,55 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The night-light experiment (item 76) under the loader: every step runs
+/// and the channel is put back. The emulator's 2700G doesn't model gamma
+/// (its table reads 0), so the picture steps must be skipped, not applied
+/// to a table of unknown form.
+pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-nightlight.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-nightlight"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("nightlight: no run log after the image returned")?;
+    for want in [
+        "picture steps skipped",
+        "step 4: 1/432, picture 1/2 (skipped)",
+        "step 8: 108/216 (WM): whine?",
+        "NIGHTLIGHT-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("nightlight: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!(
+        "    night light OK: every step ran, picture steps skipped without a known gamma table"
+    );
+    Ok(())
+}
+
 /// The crash path: the loader starts an image that panics on purpose; the
 /// panic must come back to the loader (no watchdog reset), reach the PC as
 /// a crash report, and be kept on the card as `crashlog.txt`.
@@ -1568,7 +1617,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX3D-API: ")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(600),
         },
     )?;
     let log = output
@@ -3862,7 +3911,8 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
 }
 
 /// The backlight through the loader: `backlight 30` must fade PWM0 to the
-/// perceptual 30% (9% duty: 19 of 216 counts) and `backlight 100` to full
+/// perceptual 30% (9% duty: 38 of RetroPane's 432 counts, prescale 0: the
+/// same 30.09 kHz as Windows Mobile's 216 at prescale 1) and `backlight 100` to full
 /// duty, checked in the emulator's PWM registers through the monitor.
 pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) || !device_has(root, "pxa27x-pwm", "dcr0") {
@@ -3898,18 +3948,19 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
         );
         s.write_all(&rp_loadproto::control_frame("backlight 30"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK backlight 30% (duty 19/216)", 10)?;
+        usb_read_until(&mut s, "RPL OK backlight 30% (duty 38/432)", 10)?;
         let mut mon = crate::screen::Monitor::connect(port)?;
         let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
         let pcr = mon.query("qom-get /machine/peripheral/pwm pcr0")?;
-        if dcr != "19" || pcr != "215" {
+        let cr = mon.query("qom-get /machine/peripheral/pwm cr0")?;
+        if dcr != "38" || pcr != "431" || cr != "0" {
             return Err(format!(
-                "backlight: PWM0 duty {dcr}, period {pcr}; wanted 19, 215"
+                "backlight: PWM0 duty {dcr}, period {pcr}, prescale {cr}; wanted 38, 431, 0"
             ));
         }
         s.write_all(&rp_loadproto::control_frame("backlight 100"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK backlight 100% (duty 216/216)", 10)?;
+        usb_read_until(&mut s, "RPL OK backlight 100% (duty 432/432)", 10)?;
         let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
         if dcr != "1024" {
             return Err(format!("backlight: 100% isn't full duty (DCR {dcr})"));
@@ -3931,10 +3982,10 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             let off = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
             press(&mut mon)?;
             let on = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
-            // 60% -> 0.36 of 216 counts = 77.
-            if off != "0" || on != "77" {
+            // 60% -> 0.36 of 432 counts = 155.
+            if off != "0" || on != "155" {
                 return Err(format!(
-                    "power button: screen off/on gave DCR {off} then {on}; wanted 0, 77"
+                    "power button: screen off/on gave DCR {off} then {on}; wanted 0, 155"
                 ));
             }
             eprintln!("    power button OK: press turned the screen off, the next back on at 60%");

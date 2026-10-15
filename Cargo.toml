@@ -42,6 +42,7 @@ members = [
     "boot/hello",
     "boot/light",
     "boot/handover",
+    "boot/nightlight",
     "boot/crash",
     "boot/hang",
     "boot/mbx",

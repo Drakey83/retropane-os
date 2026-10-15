@@ -1446,7 +1446,12 @@ comes before the UI and GDI designs, which are written GPU-first.
     MULTIPLE, the card's interrupt, DMA from the socket window.
 76. **Touch and light feel:** oversampled, filtered touch with pressure, a
     calibration screen, SSP DMA; backlight low steps by temporal
-    dithering of the duty.
+    dithering of the duty. **Backlight 2026-10-15:** not dithering (a CPU
+    timer thousands of times a second, audible modulation) but prescale 0
+    and 432 counts (same 30.09 kHz, half-size steps) and, below one count,
+    the picture dimmed by the display's gamma table (backlight.md "Finer
+    and lower steps"). Pending: `rp-nightlight` with the owner, then the
+    gamma stage once its format is read.
 77. **CPLD shadow from WM's** (its shadow copies in RAM from `0xA8001320`)
     at hand-over, and the remaining slots mapped. **Shadow done
     2026-10-15** (cpld.md "Shadow at hand-over"): adopted with checks, then

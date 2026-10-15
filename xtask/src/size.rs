@@ -403,6 +403,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Diagnostics only: the night-light experiment (item 76), for the
+    // owner's eyes and ears. Set at its first build on 2026-10-15: 19.6 KiB
+    // measured, +~10%.
+    Budget {
+        image: "rp-nightlight",
+        max_load: 22 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
 ];
 
 /// The device's RAM (docs/memory-budget.md).
