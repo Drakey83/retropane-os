@@ -150,6 +150,20 @@ Rejected:
   conversions "with faster sampling" was worse on 2026-10-13, with two
   changes at once. Needs a recording of X at 64, 128 and 256 conversions.
 
+**On the device (P, 2026-10-14, log `local/rp-today-touch-merge.txt`,
+now the seventh recording `owner-2026-10-14-merge.txt`).** The owner: "it
+feels great". The log: landing to verdict median **22 ms** (worst 44), no
+faster. Only 6 of 31 taps pressed on the second sample: in this session
+the second sample was within 20 raw of the first in 9 of 31 landings (29%;
+the six earlier sessions 129 of 226, 57%), the stylus sliding 20-70 raw
+(~3-10 px) between them, many on the alignment crosshairs (two alignments
+this run). No tap was lost or added and none pressed far. The replay of
+all seven sessions: median 12 ms, p90 23, worst 45 (the guard's numbers
+now). Touch to flush median 55 ms is not comparable with run 4's 35.5:
+the two alignments rebuilt the background 27 times (run 4: once).
+Next: the sliding landings, and faster samples (both need a recording
+at the new rate first).
+
 **The recorder's gap (fixed 2026-10-14).** A sample with no pressure was
 logged only when it ended a reported touch, so a touch that lifted before
 its press ran on into the next one in the log. `rp-today` now logs the
