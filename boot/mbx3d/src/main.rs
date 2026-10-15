@@ -5,10 +5,13 @@
 //! drew, nothing moved, nothing hung. Dell's driver does three things first
 //! that it skipped (docs/hw/2700g.md, "The scene bytes"):
 //!
-//! 1. **the 3D core's clock on source 2**: Dell's submit routine votes
-//!    `MBXCLK` (system block `0x054`) to `((divider - 1) << 2) | 2` before
-//!    3D work; Windows Mobile leaves `0x5` (source 1). Tried as found
-//!    first, then source 2 if step 2 doesn't answer;
+//! 1. **the 3D core's clock on**: `MBXCLK` (system block `0x054`) bits 1-0
+//!    are an enable (Linux mbxfb: 0 none, 1 2D only, 2 2D and 3D);
+//!    Windows Mobile leaves `0x5` (2D only) and Dell's submit routine
+//!    writes `((divider - 1) << 2) | 2` before 3D work. Version 2 read it
+//!    as a clock source and its check misread `PLLSTAT 0x5` (both PLLs
+//!    locked) as a PLL off: the 3D clock was never on. Tried as found
+//!    first (the control), then with 3D on;
 //! 2. **the parameter memory manager**: six pairs (`0x824`-`0x83C`, `0x6D8`,
 //!    then `0x838 = 1`) with status bit 6 enabled in `0x130`, then a wait
 //!    for that bit in `0x12c` ("ready"), cleared through `0x134`;
@@ -47,9 +50,12 @@ pub fn tile_size(reach: u32, tiles: u32, screen: u32) -> Option<u32> {
     (size.is_power_of_two() && size * tiles == reach).then_some(size)
 }
 
-/// `MBXCLK` with the same divider on clock source 2 (Dell's 3D vote).
+/// `MBXCLK` with the same divider and the 3D core's clock on too: bits
+/// 1-0 are the enable (0 none, 1 2D only, 2 2D and 3D; Linux mbxfb's
+/// `MBXCLK_EN`), bits 3-2 the divider. Windows Mobile leaves `0x5` (2D
+/// only); Dell's driver writes 2 there before 3D work.
 #[must_use]
-pub const fn source2(mbxclk: u32) -> u32 {
+pub const fn with_3d(mbxclk: u32) -> u32 {
     (mbxclk & !3) | 2
 }
 
@@ -67,7 +73,7 @@ mod image {
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
 
-    use super::{MARKER, source2, tile_size};
+    use super::{MARKER, tile_size, with_3d};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -108,7 +114,8 @@ mod image {
     const R804: usize = MBX + 0x804;
     /// The 3D core's clock (system block, read fine under WM).
     const MBXCLK: usize = 0x054;
-    /// The PLLs' lock bits (system block; `0x7`, all locked, under WM).
+    /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
+    /// the display PLL locked (Linux mbxfb).
     const PLLSTAT: usize = 0x040;
 
     const GREY: u32 = 0xFF20_2020;
@@ -291,15 +298,14 @@ mod image {
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
 
-        // 1-2: the parameter memory, clock as found, then on source 2.
+        // 1-2: the parameter memory, clock as found, then with the 3D clock on.
         let mut ready = false;
-        for (name, clk) in [("as found", clk0), ("source 2", source2(clk0))] {
+        for (name, clk) in [("as found", clk0), ("3D clock on", with_3d(clk0))] {
             rt::check_in();
-            if clk != clk0 && e.regs.read32(PLLSTAT) & 7 != 7 {
-                // A clock source that isn't running would stop the core,
-                // and reading a stopped core might hang the bus.
+            if clk != clk0 && e.regs.read32(PLLSTAT) & 4 == 0 {
+                // The core PLL feeds the MBX: not locked, not tried.
                 log!(
-                    "P: PLLSTAT 0x{:x}: not every PLL locked, source 2 not tried",
+                    "P: PLLSTAT 0x{:x}: the core PLL isn't locked, the 3D clock not tried",
                     e.regs.read32(PLLSTAT)
                 );
                 break;
@@ -490,7 +496,7 @@ fn main() {}
 
 #[cfg(test)]
 mod tests {
-    use super::{source2, tile_size};
+    use super::{tile_size, with_3d};
 
     #[test]
     fn tile_size_from_the_red_reach() {
@@ -503,9 +509,9 @@ mod tests {
     }
 
     #[test]
-    fn mbxclk_source_2_keeps_the_divider() {
-        // WM's 0x5: divider 2, source 1; Dell's 3D vote: source 2.
-        assert_eq!(source2(0x5), 0x6);
-        assert_eq!(source2(0x9), 0xA);
+    fn the_3d_clock_keeps_the_divider() {
+        // WM's 0x5: divider 2, 2D only; Dell's vote: 2D and 3D.
+        assert_eq!(with_3d(0x5), 0x6);
+        assert_eq!(with_3d(0x9), 0xA);
     }
 }
