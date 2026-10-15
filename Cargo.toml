@@ -47,6 +47,8 @@ members = [
     "boot/mbx-blend",
     "boot/mbx3d",
     "boot/mbx3d-api",
+    "boot/cftime",
+    "boot/sdtime",
     "boot/picture",
     "boot/blend",
     "boot/cs3bus",
