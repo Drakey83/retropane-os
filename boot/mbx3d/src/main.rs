@@ -1,5 +1,11 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 20: T1 passed in version 19 (unlisted
+//! 3D core, under the loader. Version 21 (ADR-0026 device tests T5-T7,
+//! word layouts guessed from the PowerVR2's): T5 blending (TSP bits 31-26
+//! as source/destination factors, bit 20 "use alpha"), T6 texture
+//! filtering and clamping on a hand-written textured triangle with Dell's
+//! TSP (bits 14-13, 15-18), T7 depth compare (ISP bits 31-29). T1-T3 are
+//! done (versions 19-20) and gone.
+//! Version 20: T1 passed in version 19 (unlisted
 //! tiles untouched, 5.2 us a tile) and runs again; then T2 (does render
 //! done, status bit 2, edge GPIO85, the 2700G's interrupt line?) and T3
 //! (the target `0x65C` moved inside the picture, stride kept: does a 4 x 4
@@ -205,7 +211,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 20;
+    const VERSION: u32 = 21;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -341,103 +347,223 @@ mod image {
         n
     }
 
-    /// The 2700G's interrupt enable (system block, write-only: never
-    /// read; WM's value `0x800F`, bit 15 likely the master enable).
-    const MINTENABLE: usize = 0x018;
-    /// Display interrupt enable (kept 0 here: display events off).
-    const DINTRE: usize = 0x217C;
-    /// GPIO85 (the 2700G's interrupt line): GPDR2 bit 21.
-    const PIN85: u32 = 1 << 21;
-    const GPDR2: usize = 0x014;
+    /// Where stage T6 keeps its 8 x 8 texture (free 2700G memory).
+    const TEX: usize = 0x00E0_0000;
 
-    /// T2 (ADR-0026 D3): does the 3D core's render done (status bit 2)
-    /// reach the PXA on GPIO85? A full-screen render with bit 2 enabled in
-    /// `0x130`, then with it not enabled (control); GPIO85's edges counted
-    /// during the render and after the bit is cleared.
+    /// A scene of `objs` (each its words and list pointer flags) in the
+    /// parameter memory, in that order, every tile listing them all;
+    /// rendered with `table`. True if it finished.
     #[inline(never)]
-    fn t2(e: &mut Engine<Mmio>, table: &[(usize, u32)]) {
-        let irq = rt::take_gpio().and_then(|mut g| {
-            let d = g.read32(GPDR2);
-            g.write32(GPDR2, d & !PIN85);
-            rt::take_gpio_irq(85, rt::Edge::Both)
-        });
-        let Some(mut irq) = irq else {
-            log!("T2: GPIO85's interrupt unavailable: not tried");
-            return;
+    fn scene(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        table: &[(usize, u32)],
+        objs: &[(&[u32], u32)],
+    ) -> bool {
+        let mut at = OBJECT;
+        let mut list = [m3::END; 16];
+        let n = objs.len().min(15);
+        for (k, (w, flags)) in objs[..n].iter().enumerate() {
+            store(vram, at, w);
+            list[k] = flags | ((at - PARAMS) / 4) as u32;
+            at += 4 * w.len();
+        }
+        store(vram, PARAMS, &list[..=n]);
+        regions(vram, |_, _| true);
+        run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some()
+    }
+
+    /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
+    #[allow(clippy::too_many_arguments)]
+    fn square(
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        argb: u32,
+        z: f32,
+        isp: u32,
+        tsp: u32,
+    ) -> [[u32; m3::TRIANGLE_WORDS]; 2] {
+        let v = |x, y| Vertex {
+            x,
+            y,
+            z,
+            rhw: 1.0,
+            argb,
         };
-        e.regs.write32(MINTENABLE, 0x800F);
-        e.regs.write32(DINTRE, 0);
-        for (name, enable) in [("bit 2 enabled", RENDER_DONE), ("control, not enabled", 0)] {
+        [
+            m3::triangle(isp, tsp, &[v(x0, y0), v(x1, y0), v(x0, y1)]),
+            m3::triangle(isp, tsp, &[v(x1, y0), v(x1, y1), v(x0, y1)]),
+        ]
+    }
+
+    /// The full-screen background triangle in `argb` at depth `z`.
+    fn background(argb: u32, z: f32) -> [u32; m3::TRIANGLE_WORDS] {
+        let v = |x, y| Vertex {
+            x,
+            y,
+            z,
+            rhw: 1.0,
+            argb,
+        };
+        m3::triangle(
+            ISP_ALWAYS,
+            TSP_DELL,
+            &[v(0.0, 0.0), v(2048.0, 0.0), v(0.0, 2048.0)],
+        )
+    }
+
+    /// T5: TSP bits 31-26 as the PowerVR2's blend factors (source 31-29,
+    /// destination 28-26: 0 zero, 1 one, 4 source alpha, 5 its inverse),
+    /// bit 20 as its "use alpha": a half-transparent blue square (alpha
+    /// 0x80) over red.
+    #[inline(never)]
+    fn t5(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let bg = background(0xFFFF_0000, 0.0);
+        let base = TSP_DELL & 0x03FF_FFFF;
+        let p = m3::STRIP_ONE_TRIANGLE;
+        for (src, dst, alpha) in [
+            (1u32, 0u32, false),
+            (4, 5, false),
+            (4, 5, true),
+            (1, 1, false),
+            (1, 1, true),
+            (5, 4, true),
+        ] {
             rt::check_in();
-            let en0 = e.regs.read32(ENABLE);
-            e.regs.write32(CLEAR, RENDER_DONE);
-            e.regs.write32(ENABLE, (en0 & !RENDER_DONE) | enable);
-            let _ = irq.take();
-            irq.done();
-            let (mut edges, mut first, mut bit_at, mut cleared_at) = (0u32, None, None, None);
-            let t0 = rt::ticks();
-            for &(off, v) in table {
-                e.regs.write32(MBX + off, v);
-            }
-            while us_since(t0) < 40_000 {
-                let now = us_since(t0);
-                if irq.take() {
-                    edges += 1;
-                    first.get_or_insert(now);
-                    irq.done();
-                }
-                if bit_at.is_none() && e.regs.read32(STATUS) & RENDER_DONE != 0 {
-                    bit_at = Some(now);
-                }
-                // 5 ms after the bit: clear it (the line should drop).
-                if let (Some(b), None) = (bit_at, cleared_at) {
-                    if now > b + 5_000 {
-                        e.regs.write32(CLEAR, RENDER_DONE);
-                        cleared_at = Some(now);
-                    }
-                }
-            }
-            e.regs.write32(CLEAR, RENDER_DONE);
-            e.regs.write32(ENABLE, en0);
+            let tsp = src << 29 | dst << 26 | base | u32::from(alpha) << 20;
+            let sq = square(
+                100.0,
+                100.0,
+                300.0,
+                300.0,
+                0x8000_00FF,
+                0.0,
+                ISP_ALWAYS,
+                tsp,
+            );
+            let done = scene(e, vram, table, &[(&bg, p), (&sq[0], p), (&sq[1], p)]);
             log!(
-                "  T2 {name}: status bit 2 at {bit_at:?} us, cleared at {cleared_at:?} us; GPIO85 edges {edges}, first at {first:?} us"
+                "  T5 TSP 0x{tsp:08x} (src {src}, dst {dst}, bit 20 {alpha}): done {done}; square (200,200) 0x{:08x}, red outside (50,50) 0x{:08x}",
+                px(vram, 200, 200),
+                px(vram, 50, 50)
             );
         }
     }
 
-    /// T3 (ADR-0026 D5): the 3D core drawing into a sub-rectangle of the
-    /// screen picture: the target (`0x65C`) moved to (x, y) of the picture,
-    /// the stride kept; a 4 x 4 tile block (32 x 64 px) listed. Where does
-    /// the blue land?
+    /// T6: a hand-written textured triangle (the direct path, Dell's TSP),
+    /// an 8 x 8 RGB565 texture (texel (x, y) red or white by (x + y) & 1,
+    /// texel (7, 0) green), TSP bits 14-13 (filter) and 15-18 (clamp,
+    /// flip) set one at a time, u over 0-1, then 0-2.
     #[inline(never)]
-    fn t3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
-        let (mut t, n) = table(1);
-        let at = |x: u32, y: u32| (TARGET + y as usize * STRIDE + 4 * x as usize) as u32;
-        for (x, y) in [(0u32, 0u32), (0, 100), (64, 100), (8, 100), (1, 100)] {
-            rt::check_in();
-            let _ = clear(e, vram, GREY);
-            for p in &mut t[..n] {
-                if p.0 == 0x65C {
-                    p.1 = at(x, y);
-                }
+    fn t6(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let c: u32 = if (x, y) == (7, 0) {
+                    0x07E0
+                } else if (x + y) & 1 == 1 {
+                    0xFFFF
+                } else {
+                    0xF800
+                };
+                let at = TEX + 2 * m3::tex::twiddle(x, y) as usize;
+                let w = load32_volatile(vram, at & !3).unwrap_or(0);
+                let shift = 8 * (at & 2) as u32;
+                let _ = store32_volatile(vram, at & !3, (w & !(0xFFFF << shift)) | c << shift);
             }
-            let listed = regions(vram, |x, y| x < 4 && y < 4);
-            let (done, _) = run(e, vram, &t[..n], RENDER_DONE, None, 200_000);
-            log!(
-                "  T3 target at ({x},{y}) = 0x{:08x}: {listed} tiles, done {done:?}; expected corners ({x},{y}) 0x{:08x} ({},{}) 0x{:08x}; just outside ({},{}) 0x{:08x} ({},{}) 0x{:08x}; origin (0,0) 0x{:08x}",
-                at(x, y),
-                px(vram, x, y),
-                x + 31,
-                y + 63,
-                px(vram, x + 31, y + 63),
-                x + 32,
-                y,
-                px(vram, x + 32, y),
+        }
+        cpu::drain_write_buffer();
+        let mut texw = m3::ta::dell_texture(TEX as u32);
+        texw[0] = m3::tex::tex0(0, m3::tex::RGB565);
+        let bg = background(0xFF00_0000, 0.0);
+        let base = m3::ta::TSP_DELL_TEXTURED;
+        // u's top as a float and as a label (formatting a float would pull
+        // in ~20 KiB of float code).
+        for (umax, label, bits) in [
+            (1.0f32, 1u32, 0u32),
+            (1.0, 1, 1 << 13),
+            (1.0, 1, 2 << 13),
+            (2.0, 2, 0),
+            (2.0, 2, 1 << 15),
+            (2.0, 2, 1 << 16),
+            (2.0, 2, 1 << 17),
+            (2.0, 2, 1 << 18),
+        ] {
+            rt::check_in();
+            let v = |x, y, u, v| m3::tex::Vertex {
                 x,
-                y + 64,
-                px(vram, x, y + 64),
-                px(vram, 0, 0)
+                y,
+                z: 0.0,
+                rhw: 1.0,
+                argb: 0xFFFF_FFFF,
+                u,
+                v,
+            };
+            let tri = m3::tex::triangle(
+                ISP_ALWAYS,
+                texw,
+                base | bits,
+                &[
+                    v(40.0, 40.0, 0.0, 0.0),
+                    v(440.0, 40.0, umax, 0.0),
+                    v(40.0, 600.0, 0.0, 1.0),
+                ],
             );
+            let done = scene(
+                e,
+                vram,
+                table,
+                &[(&bg, m3::STRIP_ONE_TRIANGLE), (&tri, m3::tex::STRIP_GAME)],
+            );
+            let _ = write!(
+                RunLog,
+                "  T6 u 0-{label} TSP 0x{:08x}: done {done}; y=75 at x 45 65 80 88 90 92 100 115 250 300 350 400:",
+                base | bits
+            );
+            for x in [45, 65, 80, 88, 90, 92, 100, 115, 250, 300, 350, 400] {
+                let _ = write!(RunLog, " {:08x}", px(vram, x, 75));
+            }
+            log!("");
+        }
+    }
+
+    /// T7: ISP bits 31-29 as the PowerVR2's depth compare (1 less, 3 less
+    /// or equal, 4 greater, 6 greater or equal, 7 always): a red square at
+    /// z 0.5 (always), then an overlapping blue one at z 0.3 or 0.8 with
+    /// each mode, over a background at z 0.1.
+    #[inline(never)]
+    fn t7(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        let bg = background(0xFF20_2020, 0.1);
+        let a = square(
+            100.0,
+            100.0,
+            300.0,
+            300.0,
+            0xFFFF_0000,
+            0.5,
+            ISP_ALWAYS,
+            TSP_DELL,
+        );
+        let p = m3::STRIP_ONE_TRIANGLE;
+        for (zb, tenths) in [(0.3f32, 3u32), (0.8, 8)] {
+            for mode in [1u32, 3, 4, 6] {
+                rt::check_in();
+                let isp = mode << 29;
+                let b = square(200.0, 200.0, 400.0, 400.0, 0xFF00_00FF, zb, isp, TSP_DELL);
+                let done = scene(
+                    e,
+                    vram,
+                    table,
+                    &[(&bg, p), (&a[0], p), (&a[1], p), (&b[0], p), (&b[1], p)],
+                );
+                log!(
+                    "  T7 blue z 0.{tenths} ISP 0x{isp:08x}: done {done}; overlap (250,250) 0x{:08x}, blue alone (350,350) 0x{:08x}, red alone (150,150) 0x{:08x}",
+                    px(vram, 250, 250),
+                    px(vram, 350, 350),
+                    px(vram, 150, 150)
+                );
+            }
         }
     }
 
@@ -627,61 +753,20 @@ mod image {
             );
         }
 
-        // T1 (ADR-0026 D2): a full-screen object rendered with the region
-        // array listing only some tiles: are the others left untouched, and
-        // how does the time scale with the tiles listed?
+        // T5-T7 (ADR-0026): blending, texture filtering and clamping (and
+        // the hand-written textured path), depth compare.
         if drew {
             let (t, n) = table(level);
-            let blue = [
-                Vertex::flat(0.0, 0.0, 0xFF00_00FF),
-                Vertex::flat(2048.0, 0.0, 0xFF00_00FF),
-                Vertex::flat(0.0, 2048.0, 0xFF00_00FF),
-            ];
-            store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &blue));
-            store(
-                vram,
-                PARAMS,
-                &m3::one_triangle_list((OBJECT - PARAMS) as u32),
-            );
+            log!("T5: blending: a blue square, alpha 0x80, over red");
+            t5(&mut e, vram, &t[..n]);
             log!(
-                "T1: blue full-screen object over grey, the region array listing only some tiles; tile (20,20) is pixels 160-167 x 320-335"
+                "T6: hand-written textured triangle, 8 x 8 RGB565 checker (red/white, texel (7,0) green), 50 x 70 px a texel at u 0-1"
             );
-            let sets: [(&str, fn(u32, u32) -> bool); 4] = [
-                ("all", |_, _| true),
-                ("only (20,20)", |x, y| x == 20 && y == 20),
-                ("10 x 10 from (15,15)", |x, y| {
-                    (15..25).contains(&x) && (15..25).contains(&y)
-                }),
-                ("rows 15-24", |_, y| (15..25).contains(&y)),
-            ];
-            for (name, keep) in sets {
-                rt::check_in();
-                let _ = clear(&mut e, vram, GREY);
-                let listed = regions(vram, keep);
-                let (done, _) = run(&mut e, vram, &t[..n], RENDER_DONE, None, 200_000);
-                log!(
-                    "  T1 {name}: {listed} tiles listed, done at {done:?} us; tile (20,20) middle 0x{:08x} corners 0x{:08x} 0x{:08x}; neighbours (168,328) 0x{:08x} (164,336) 0x{:08x}; far (300,500) 0x{:08x} (5,5) 0x{:08x}",
-                    px(vram, 164, 328),
-                    px(vram, 160, 320),
-                    px(vram, 167, 335),
-                    px(vram, 168, 328),
-                    px(vram, 164, 336),
-                    px(vram, 300, 500),
-                    px(vram, 5, 5)
-                );
-            }
-        }
-
-        // T2 and T3 (ADR-0026 D3, D5).
-        if drew {
-            let (t, n) = table(level);
-            regions(vram, |_, _| true);
-            log!("T2: does render done (status bit 2) edge GPIO85?");
-            t2(&mut e, &t[..n]);
+            t6(&mut e, vram, &t[..n]);
             log!(
-                "T3: the 3D target moved inside the picture (stride kept), a 4 x 4 tile block (blue over grey)"
+                "T7: depth: red square z 0.5 (always), blue square z 0.3/0.8 with each compare mode, background z 0.1"
             );
-            t3(&mut e, vram);
+            t7(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);
