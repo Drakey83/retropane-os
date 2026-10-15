@@ -907,7 +907,8 @@ fn texels_of_32_bits_and_pvrtc_as_measured() {
             g.px(156, 156),
         ]
     };
-    assert_eq!(quad(&g)[..3], [0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF]);
+    // The white texel's alpha 0x80 comes out 0xFF: TEX2's opaque word.
+    assert_eq!(quad(&g), [0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF, 0xFFFF_FFFF]);
     // PVRTC 4 bpp, 16 x 16: 16 blocks (modulation word, colour word).
     const RED: u32 = 0xFC00_FC00;
     const GREEN: u32 = 0x83E0_83E0;
