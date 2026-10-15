@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 12: version 11's `0x61C` changed
+//! 3D core, under the loader. Version 13: version 12's frame state drew no
+//! textured object either. One register the game renders with is left:
+//! `0x6D8`. The GLES driver never writes it, so in the game it keeps the
+//! parameter memory set-up's `0x09000000` (bit 27); Dell's start table,
+//! which ours copies, writes `0x01000000` (Dell's own scenes are flat).
+//! The flat control, the game's object and our square with it, alone and
+//! with version 12's levers, then the game's object without (control).
+//! Version 12: version 11's `0x61C` changed
 //! nothing. Read since (static, 2026-10-15): DoomGLES's frames set bit 29
 //! on every region header (ours never), the GLES driver writes `0x6DC` =
 //! the clear depth as a float with bit 0 (`0x3F800001`; ours 0 or 1, a
@@ -169,7 +176,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 12;
+    const VERSION: u32 = 13;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -286,6 +293,7 @@ mod image {
     /// The region array, every tile on the list at the parameter
     /// buffer's start, `flags` ORed into each header. Straight into 2700G
     /// memory (19 KiB: too big for the stack).
+    #[inline(never)]
     fn regions(vram: &mut [u8], flags: u32) {
         let n = COLS * ROWS;
         for k in 0..n {
@@ -311,10 +319,15 @@ mod image {
         /// The GLES table's other values (`0x614`/`0x618`, `0x648`,
         /// `0x6D0`, `0x63C`, `0x64C`, `0x65C`).
         gles: bool,
+        /// `0x6D8` left as the parameter memory set-up writes it
+        /// ([`m3::PM_6D8`], bit 27 set) instead of Dell's table's
+        /// `0x01000000`: the GLES driver never writes it.
+        pm: bool,
     }
 
     /// Table 3 with `l`'s registers (start last), and the region headers
     /// rewritten for `l.r29`.
+    #[inline(never)]
     fn levered(vram: &mut [u8], l: Levers) -> ([(usize, u32); 24], usize) {
         regions(vram, if l.r29 { m3::frame::REGION_GAME } else { 0 });
         let (mut t, mut n) = table(3);
@@ -327,6 +340,7 @@ mod image {
                 0x610 if l.gles => p.1 = 0x0003_0001,
                 0x614 | 0x618 if l.gles => p.1 = 0x1E3C_E508,
                 0x648 if l.gles => p.1 = 1,
+                0x6D8 if l.pm => p.1 = m3::PM_6D8,
                 _ => {}
             }
         }
@@ -403,6 +417,7 @@ mod image {
     /// colour) drawn as `c` with TEX0 `tex0`; true if the render finished.
     /// Version 7 drew the square alone in white vertex colour: drawn or
     /// not, the samples were the core's white tile fill.
+    #[inline(never)]
     fn draw_textured(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
@@ -498,6 +513,7 @@ mod image {
     /// `libGLES_CL.dll` `0x0226175c`), 4 that and the extras and the GLES
     /// table's `0x610 = 0x30001` (no scene pointer), `0x64C = 0`. The start
     /// stays last.
+    #[inline(never)]
     fn table(level: u8) -> ([(usize, u32); 24], usize) {
         let dell = m3::start_table(REGIONS as u32, PARAMS as u32, W, H, STRIDE as u32);
         let mut t = [(0usize, 0u32); 24];
@@ -713,6 +729,7 @@ mod image {
                 depth: false,
                 grid: false,
                 gles: false,
+                pm: false,
             };
             const ALL: Levers = Levers {
                 r29: true,
@@ -720,6 +737,7 @@ mod image {
                 depth: true,
                 grid: true,
                 gles: true,
+                pm: false,
             };
             let rc = Levers {
                 r29: true,
@@ -743,17 +761,17 @@ mod image {
                 flat: true,
                 ..square
             };
+            // Version 12 (all off but `pm`): the frame state didn't draw
+            // a textured object; version 13 adds `0x6D8` as the game has it.
+            let pm = Levers { pm: true, ..OFF };
             let tries = [
-                (ALL, flat),
-                (Levers { r29: true, ..OFF }, game),
-                (Levers { clear: true, ..OFF }, game),
-                (rc, game),
-                (Levers { grid: true, ..rc }, game),
-                (Levers { depth: true, ..rc }, game),
-                (ALL, game),
-                (Levers { r29: false, ..ALL }, game),
-                (rc, square),
-                (ALL, square),
+                (pm, flat),
+                (pm, game),
+                (Levers { pm: true, ..ALL }, game),
+                (Levers { pm: true, ..rc }, game),
+                (pm, square),
+                (Levers { pm: true, ..ALL }, square),
+                (OFF, game),
             ];
             for (k, &(l, c)) in tries.iter().enumerate() {
                 rt::check_in();
@@ -765,12 +783,13 @@ mod image {
                 let (mx, my) = if c.game { (55, 100) } else { (144, 144) };
                 let (mid, out) = (px(vram, mx, my), px(vram, 300, 300));
                 log!(
-                    "  T1.{k} r29 {} clear {} depth {} grid {} gles {}, flat {}, game {}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}, zbuf {:08x}",
+                    "  T1.{k} r29 {} clear {} depth {} grid {} gles {} pm {}, flat {}, game {}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}, zbuf {:08x}",
                     l.r29,
                     l.clear,
                     l.depth,
                     l.grid,
                     l.gles,
+                    l.pm,
                     c.flat,
                     c.game,
                     px(vram, 67, 200),
