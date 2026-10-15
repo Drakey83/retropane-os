@@ -93,6 +93,14 @@ for the driver's set-up.
 | `MCATT0`, `MCATT1` | `0x00020E08` | SET 8, ASST 28, HOLD 8 |
 | `MCIO0`, `MCIO1` | `0x00020510` | SET 16, ASST 10, HOLD 8 |
 
+In time at CLK_MEM 208 MHz (decode calibrated on the device,
+docs/research/storage-speed.md): common memory 260 ns a cycle (444 ns a
+CPU access), attribute 519 ns, I/O 298 ns. The owner's card rates its
+common memory at 80 ns (CIS device speed, IDENTIFY word 164). GPIO84
+follows the card's RDY/-BSY in memory mode (low while it prepares a
+sector), and the common-memory window 0x400-0x7FF reads the data register
+at every address (32-bit loads and DMA from it work: measured).
+
 ## Card side (CF)
 
 - Attribute memory holds the Card Information Structure: tuples from
