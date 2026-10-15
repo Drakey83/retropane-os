@@ -115,6 +115,17 @@ with the performance monitor built first to measure everything else).
   flush's speed), the CF socket's timings (below).
 - **Verdict:** 🔧 **item 68** (bounded: device runs with a fallback; a
   watchdog-guarded test that steps timings and verifies memory).
+- **Investigated 2026-10-15** (docs/research/memory-timing.md, report
+  only, nothing changed). The SDRAM clock is already at the PXA270's
+  104 MHz maximum. Dell uses CL3/tRCD 3/tRP 3; the likely chips (Infineon
+  HYB25L256160AC-7.5, confirmed on the X50) allow CL2/2/2 with only 1.2%
+  margin, worth ~3-8% on memory-bound work. Refresh is within 4% of the
+  rated interval. The 2700G's bus (`MSC1` CS3) is ~2x slower than the
+  PXA's legal minimum: flushes might go ~41 to 60-75 MB/s if the 2700G
+  doesn't stretch cycles with RDY. That needs one measured run.
+  Recommendation: keep SDRAM as is; a bounded `MSC1` experiment if the
+  owner agrees; PASR in sleep goes to item 67; DRI must be rewritten on
+  any memory-clock change (item 67).
 
 ### Display and drawing (2700G)
 
@@ -364,7 +375,7 @@ more found the same day: docs/hw/2700g.md's "WM draws 2D on the CPU"
 | 1 | 67 Own the clocks and power states | Every other number improves with it; battery |
 | 2 | 69 MBX bring-up (clear the screen), then triangle, texture, blend | Opens GPU drawing and composition |
 | 3 | 70 DMA flush, double buffering at vsync, hardware scroll | Tear-free, CPU free, no MBX needed |
-| 4 | 68 Memory and bus timings | Every memory access and every flush |
+| 4 | 68 Memory and bus timings (investigated 2026-10-15: SDRAM near its limits, keep; the 2700G bus is the one real lead) | Every memory access and every flush |
 | 5 | 73 Interrupts and DMA in every OS driver | CPU sleeps; latency; battery |
 | 6 | 74 USB double buffering and DMA | The development loop's speed, and the OS's |
 | 7 | 76 Touch quality (and backlight low steps) | How the device *feels* |
