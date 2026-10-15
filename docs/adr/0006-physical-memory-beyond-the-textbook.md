@@ -36,6 +36,13 @@ after on real hardware.
    (ADR-0003) needs only one 16 KiB L1 table. It goes in SRAM, along with the
    hottest L2 tables, so TLB refills read on-chip memory instead of SDRAM. The
    exception stacks and the scheduler's run queues go there as well.
+   *Status (2026-10-15):* the kernel's first-level table is in SRAM: built
+   in SDRAM, moved after the switch to the kernel map
+   (`rp_hal_pxa27x::diag::move_l1_table_at`; the SRAM is reached through
+   its window only under that map), the SDRAM copy freed; `emu-kernel`
+   passes every VM, IPC and driver-host check with it there. Device
+   measurement (the kernel on the X51v) and the L2 tables, stacks and run
+   queues are still to do.
 2. **Large mappings wherever possible, to make the 32-entry TLBs go further.**
    The kernel is mapped with 1 MiB sections. Code and read-only data of
    executables and shared DLLs are mapped with 64 KiB large pages whenever the

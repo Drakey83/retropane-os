@@ -76,7 +76,7 @@ mod image {
         self, SYS_CALL, SYS_DONE, SYS_EXIT, SYS_GRANT, SYS_RETURN, SYS_SPAWN,
     };
     use rp_hal_pxa27x::user::{self, Frame};
-    use rp_hal_pxa27x::{Mmio, cpu, devmap, thread};
+    use rp_hal_pxa27x::{Mmio, cpu, devmap, diag, thread};
     use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
     use rp_hal_x51v::devices::take_trace_area;
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
@@ -178,6 +178,8 @@ mod image {
     struct Mem<'a> {
         pool: &'a mut [u32],
         l1: u32,
+        /// The first-level table in on-chip SRAM, once moved there.
+        l1_sram: Option<&'a mut [u32; 4096]>,
     }
 
     fn word(phys: u32) -> usize {
@@ -186,6 +188,9 @@ mod image {
 
     impl PhysMem for Mem<'_> {
         fn l1(&mut self) -> &mut [u32; 4096] {
+            if let Some(t) = self.l1_sram.as_deref_mut() {
+                return t;
+            }
             let i = word(self.l1);
             (&mut self.pool[i..i + 4096])
                 .try_into()
@@ -195,7 +200,14 @@ mod image {
             self.l1
         }
         fn sync(&mut self, phys: u32, len: u32) {
-            cpu::clean_range(phys, len);
+            // RAM is identity mapped; the SRAM has its own window.
+            let sram = diag::SRAM_BASE..diag::SRAM_BASE + diag::SRAM_SIZE as u32;
+            let at = if sram.contains(&phys) {
+                devmap::va(phys as usize) as u32
+            } else {
+                phys
+            };
+            cpu::clean_range(at, len);
         }
         fn l2(&mut self, phys: u32) -> &mut [u32; 256] {
             let i = word(phys);
@@ -487,6 +499,9 @@ mod image {
         file: RamFile,
         pool: Option<&'static mut [u32]>,
         l1: u32,
+        /// The first-level table once it lives in on-chip SRAM (ADR-0006
+        /// rule 1); `l1` is then its physical address there.
+        l1_sram: Option<&'static mut [u32; 4096]>,
         pid: u32,
         faults: u32,
         last: Option<Outcome>,
@@ -541,6 +556,7 @@ mod image {
         },
         pool: None,
         l1: 0,
+        l1_sram: None,
         pid: 0,
         faults: 0,
         last: None,
@@ -559,10 +575,12 @@ mod image {
                         STATE.with(|s| {
                             let mut pool = s.pool.take().unwrap_or_else(|| unreachable!());
                             let mut file = s.file;
+                            let mut l1_sram = s.l1_sram.take();
                             let r = {
                                 let mut mem = Mem {
                                     pool: &mut pool,
                                     l1: s.l1,
+                                    l1_sram: l1_sram.as_deref_mut(),
                                 };
                                 let mut vm = Vm {
                                     tables,
@@ -577,6 +595,7 @@ mod image {
                             };
                             s.file = file;
                             s.pool = Some(pool);
+                            s.l1_sram = l1_sram;
                             r
                         })
                     })
@@ -668,6 +687,7 @@ mod image {
             let mut mem = Mem {
                 pool: &mut *pool,
                 l1,
+                l1_sram: None,
             };
             // RAM (identity, where this code runs) and the vectors from the
             // bring-up map, and every device window at its kernel address
@@ -699,7 +719,7 @@ mod image {
             Ok(frames.free_frames() as u32)
         });
         STATE.with(|s| s.pool = Some(pool));
-        let free_after_setup = match built {
+        let mut free_after_setup = match built {
             Ok(n) => n,
             Err(e) => {
                 let _ = early.write_str("VM tables FAIL ");
@@ -717,6 +737,31 @@ mod image {
             uart,
             "VM tables OK (L1 at {l1:#010x}, {free_after_setup} frames free)"
         );
+        // ADR-0006 rule 1: the first-level table into on-chip SRAM, so TLB
+        // refills read on-chip memory (5.2x cheaper misses measured on the
+        // device, docs/perf.md). Built in SDRAM above (the SRAM is reached
+        // through its window only under the kernel map), moved now.
+        if let Some(words) = diag::take_sram_words() {
+            let (table, _rest) = words.split_at_mut(4096);
+            if let Ok(table) = <&mut [u32; 4096]>::try_from(table) {
+                diag::move_l1_table_at(table, diag::SRAM_BASE);
+                let old = STATE.with(|s| {
+                    let old = s.l1;
+                    s.l1 = diag::SRAM_BASE;
+                    s.l1_sram = Some(table);
+                    old
+                });
+                // The SDRAM copy (an order-2 block, 16 KiB) goes back.
+                FRAMES.with(|f| FrameAlloc::free(f, ((old - BASE) / 4096) as usize));
+                // Setup now ends here: the checks below count from this.
+                free_after_setup = FRAMES.with(|f| f.free_frames() as u32);
+                let _ = writeln!(
+                    uart,
+                    "L1 table moved to on-chip SRAM at {:#010x}",
+                    diag::SRAM_BASE
+                );
+            }
+        }
         // Boot time (docs/design-brief.md): entry to the kernel's own page
         // tables and device map live.
         let _ = writeln!(uart, "BENCH boot_kernel_tables {} 1", rt::since_start());

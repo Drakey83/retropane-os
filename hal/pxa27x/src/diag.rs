@@ -245,6 +245,64 @@ mod target {
         })
     }
 
+    /// The internal SRAM as words, once (shares [`take_sram`]'s flag: one or
+    /// the other), with its clock enabled, at its current virtual address
+    /// (the bring-up map's identity or the kernel map's window, whichever is
+    /// live when taken).
+    pub fn take_sram_words() -> Option<&'static mut [u32]> {
+        let bytes = take_sram()?;
+        let (ptr, len) = (bytes.as_mut_ptr(), bytes.len());
+        // SAFETY: `bytes` is the whole SRAM, handed out once (the flag in
+        // take_sram); its base is 256 KiB aligned, so word aligned, and the
+        // byte slice is consumed here, so this is the only reference.
+        Some(unsafe { core::slice::from_raw_parts_mut(ptr.cast::<u32>(), len / 4) })
+    }
+
+    /// Moves the live first-level page table to `to`, whose physical address
+    /// is `to_phys` (16 KiB aligned), and makes the MMU use it: ADR-0006 rule
+    /// 1 (page tables in on-chip SRAM). Works under either map, as long as
+    /// the live table is readable at its physical address (RAM is identity
+    /// mapped in both). The contents are unchanged, so every mapping stays.
+    ///
+    /// # Panics
+    /// If `to_phys` isn't 16 KiB aligned.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn move_l1_table_at(to: &mut [u32; 4096], to_phys: u32) {
+        assert!(to_phys.is_multiple_of(16 * 1024));
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let from = (ttb & !0x3FFF) as *const u32;
+        // SAFETY: `from` is the live 16 KiB table, readable at its physical
+        // address (identity-mapped RAM); `to` is 16 KiB the caller owns. The
+        // copy is written back (clean D-cache line by line, drain) before
+        // TTB switches, then the TLBs are invalidated, so no walk sees a
+        // partial table. The old table stays valid throughout.
+        unsafe {
+            core::ptr::copy_nonoverlapping(from, to.as_mut_ptr(), 4096);
+            let mut line = to.as_ptr() as u32;
+            let end = line + 16 * 1024;
+            while line < end {
+                core::arch::asm!("mcr p15, 0, {}, c7, c10, 1", in(reg) line, options(nostack));
+                line += 32;
+            }
+            core::arch::asm!(
+                "mov {t}, #0",
+                "mcr p15, 0, {t}, c7, c10, 4",  // drain write buffer
+                "mcr p15, 0, {ttb}, c2, c0, 0", // new table base
+                "mcr p15, 0, {t}, c8, c7, 0",   // invalidate TLBs
+                "mrc p15, 0, {t}, c2, c0, 0",   // CPWAIT
+                "mov {t}, {t}",
+                "sub pc, pc, #4",
+                t = out(reg) _,
+                ttb = in(reg) to_phys,
+                options(nostack),
+            );
+        }
+    }
+
     /// Moves the live first-level page table to `to` (16 KiB aligned, 16 KiB
     /// of memory owned by the caller, e.g. from [`take_sram`]) and makes the
     /// MMU use it: the ADR-0006 rule 1 experiment. The table's contents are
@@ -295,7 +353,9 @@ mod target {
 }
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
-pub use target::{coprocessors, move_l1_table, snapshot, take_sram};
+pub use target::{
+    coprocessors, move_l1_table, move_l1_table_at, snapshot, take_sram, take_sram_words,
+};
 
 #[cfg(test)]
 mod tests {
