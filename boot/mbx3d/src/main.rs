@@ -1,5 +1,14 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 26 (ADR-0026, the GPU's clock and a
+//! 3D core, under the loader. Version 27 (ADR-0026: version 26 found the
+//! MBX cores clock-bound, at half a 99.67 MHz core PLL): S27 the core PLL
+//! stepped to 110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock" is
+//! 133 MHz; the cores at half, under Dell's 75 MHz cap), as Dell's driver
+//! changes it (the system clock on the 13 MHz reference, the PLL written,
+//! its lock awaited); at each step a 256 KiB memory pattern, a 2D fill and
+//! ten 3D renders whose samples must match those at WM's clock, timed. The
+//! first failure, and the end, put WM's PLL back. 149.5 MHz is compiled
+//! out until the owner decides. S26 is done.
+//! Version 26 (ADR-0026, the GPU's clock and a
 //! 16-bit target, from static reading 2026-10-15): S26a the MBX clock's
 //! divider (Windows Mobile's `MBXCLK` `0x5` is divide-by-2: Dell's driver
 //! picks the smallest divider keeping the cores at or under 75 MHz) at 2,
@@ -251,7 +260,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 26;
+    const VERSION: u32 = 27;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -387,31 +396,6 @@ mod image {
         n
     }
 
-    /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
-    #[allow(clippy::too_many_arguments)]
-    fn square(
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        argb: u32,
-        z: f32,
-        isp: u32,
-        tsp: u32,
-    ) -> [[u32; m3::TRIANGLE_WORDS]; 2] {
-        let v = |x, y| Vertex {
-            x,
-            y,
-            z,
-            rhw: 1.0,
-            argb,
-        };
-        [
-            m3::triangle(isp, tsp, &[v(x0, y0), v(x1, y0), v(x0, y1)]),
-            m3::triangle(isp, tsp, &[v(x1, y0), v(x1, y1), v(x0, y1)]),
-        ]
-    }
-
     /// The full-screen background triangle in `argb` at depth `z`.
     fn background(argb: u32, z: f32) -> [u32; m3::TRIANGLE_WORDS] {
         background_tsp(argb, z, TSP_DELL)
@@ -448,171 +432,205 @@ mod image {
         regions(vram, keep);
     }
 
-    // Version 26's 2700G memory: a 16-bit picture (480 x 640, not shown).
-    const PIC16: usize = 0x00A0_0000;
-    const PIC16_STRIDE: usize = 480 * 2;
-    /// The core and display PLLs' control registers (system block, Linux
-    /// mbxfb's names: `(13 MHz x M) / (N x 2^P)`, M bits 12-7, N 6-4, P 3-1,
-    /// enable 0). Windows Mobile's boot code sets them; never read before:
-    /// read last.
+    /// The clock registers (system block; Linux mbxfb's names). The PLLs
+    /// give `13 MHz x M / (N x 2^P)`: M bits 12-7, N 6-4, P 3-1, enable 0.
     const COREPLL: usize = 0x038;
-    const DISPPLL: usize = 0x03C;
     const SYSCLKSRC: usize = 0x02C;
-    const MEMCLK: usize = 0x04C;
-    const M24CLK: usize = 0x050;
-    /// `MBXCLK` divide-by-1 runs the MBX cores above the 75 MHz Dell's
-    /// driver caps them at (`0x02120724`): off until the owner decides.
-    const TRY_DIVIDE_BY_1: bool = false;
+    /// `PLLSTAT` bit 2: the core PLL locked (Dell polls it after a change).
+    const CORE_LOCKED: u32 = 1 << 2;
+    /// Windows Mobile's core PLL: M 23, N 3, P 0 = 99.67 MHz (run 26).
+    const WM_COREPLL: u32 = 0xBB1;
+    /// The steps: (name, M, N), P 0, the PLL's 13 x M / N inside Dell's
+    /// search range (47-168 MHz). 133.25 MHz is Dell's default
+    /// "CoreClock" (133 MHz); all share Dell's bus-timing tier (99 MHz and
+    /// up); the cores run at half (`MBXCLK` divide by 2), at most 66.6 MHz,
+    /// under Dell's 75 MHz cap.
+    const STEPS: [(&str, u32, u32); 3] = [
+        ("110.50 MHz", 17, 2),
+        ("121.33 MHz", 28, 3),
+        ("133.25 MHz", 41, 4),
+    ];
+    /// 149.5 MHz (cores at 74.75 MHz, at Dell's cap; the 2700G's memory
+    /// past Dell's default): off until the owner decides.
+    const TRY_149_5: bool = false;
+    /// Scratch 2700G memory for the pattern test (256 KiB).
+    const SCRATCH: usize = 0x00A0_0000;
+    const SCRATCH_WORDS: usize = 256 * 1024 / 4;
 
-    /// `table` with `with` replacing (or, if absent, added before the
-    /// start) the pairs named.
-    fn patched(
+    const fn pll_word(m: u32, n: u32) -> u32 {
+        m << 7 | n << 4 | 1
+    }
+
+    /// The core PLL set to `word` as Dell's driver does it (`0x0211faf0`,
+    /// `0x02120440`): the system clock on the 13 MHz reference, the PLL
+    /// written, its lock awaited (50 ms at most), the system clock back on
+    /// it. Returns the lock time in microseconds, or `None` (then WM's PLL
+    /// is put back).
+    fn set_core_pll(e: &mut Engine<Mmio>, word: u32) -> Option<u32> {
+        e.regs.write32(SYSCLKSRC, 0);
+        rt::delay_us(250);
+        e.regs.write32(COREPLL, word);
+        let t0 = rt::ticks();
+        let mut locked = None;
+        while us_since(t0) < 50_000 {
+            if e.regs.read32(PLLSTAT) & CORE_LOCKED != 0 {
+                locked = Some(us_since(t0));
+                break;
+            }
+            rt::delay_us(20);
+        }
+        if locked.is_none() {
+            e.regs.write32(COREPLL, WM_COREPLL);
+            let t1 = rt::ticks();
+            while us_since(t1) < 50_000 && e.regs.read32(PLLSTAT) & CORE_LOCKED == 0 {
+                rt::delay_us(20);
+            }
+        }
+        e.regs.write32(SYSCLKSRC, 2);
+        rt::delay_us(250);
+        locked
+    }
+
+    /// One step's checks: a 256 KiB pattern written and read back by the
+    /// CPU (`seed` varies it), a full-screen 2D fill timed and checked, ten
+    /// full-screen 3D renders timed, each one's samples summed against
+    /// `want` (the sum at Windows Mobile's clock; `None`: set it). Returns
+    /// (all good, the sum).
+    fn step_checks(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
         table: &[(usize, u32)],
-        with: &[(usize, u32)],
-        buf: &mut [(usize, u32); 40],
-    ) -> usize {
-        let mut n = 0;
-        for &(off, v) in &table[..table.len() - 1] {
-            buf[n] = with
-                .iter()
-                .find(|p| p.0 == off)
-                .copied()
-                .unwrap_or((off, v));
-            n += 1;
+        seed: u32,
+        want: Option<u32>,
+        name: &str,
+    ) -> (bool, u32) {
+        let pat = |k: usize| (k as u32).wrapping_mul(0x9E37_79B9) ^ seed;
+        for k in 0..SCRATCH_WORDS {
+            let _ = store32_volatile(vram, SCRATCH + 4 * k, pat(k));
         }
-        for &p in with {
-            if !table.iter().any(|q| q.0 == p.0) {
-                buf[n] = p;
-                n += 1;
-            }
-        }
-        buf[n] = table[table.len() - 1];
-        n + 1
-    }
-
-    /// The MBX clock's divider (`MBXCLK` bits 3-2: Windows Mobile's `0x5` is
-    /// divide-by-2, 2D only) set to `div`, 3D on; the core reset and the
-    /// memory manager set up again (a clock change while running is
-    /// untested).
-    fn set_divider(e: &mut Engine<Mmio>, vram: &mut [u8], clk0: u32, div: u32) -> u32 {
-        let v = (clk0 & !0xF) | (div - 1) << 2 | 2;
-        e.regs.write32(MBXCLK, v);
-        rt::delay_us(1_000);
-        e.reset(rt::delay_us);
-        let _ = pm_init(e, vram);
-        e.regs.read32(MBXCLK)
-    }
-
-    /// S26a: does the 3D (and 2D) core's speed follow `MBXCLK`'s divider?
-    /// Windows Mobile runs it at divide-by-2 (Dell's driver: the smallest
-    /// divider keeping it at or under 75 MHz); a full-screen render, a
-    /// 600-tile band and a full-screen 2D fill timed at divide-by-2, 3, 4.
-    #[inline(never)]
-    fn s26a(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)], clk0: u32) {
+        cpu::drain_write_buffer();
+        let bad = (0..SCRATCH_WORDS)
+            .filter(|&k| load32_volatile(vram, SCRATCH + 4 * k) != Some(pat(k)))
+            .count();
+        rt::check_in();
+        let t0 = rt::ticks();
+        let filled = clear(e, vram, GREY);
+        let fill = us_since(t0);
+        let fill_ok = filled && px(vram, 100, 100) == GREY && px(vram, 479, 639) == GREY;
+        // The scene: a red background and a shaded triangle (Gouraud
+        // exercises the core's arithmetic).
         let bg = background(0xFFFF_0000, 0.0);
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let n = if TRY_DIVIDE_BY_1 { 4 } else { 3 };
-        for &div in &[2u32, 3, 4, 1][..n] {
-            rt::check_in();
-            let clk = set_divider(e, vram, clk0, div);
-            load(vram, &[(&bg, p)], |_, _| true);
-            let full = run(e, vram, table, RENDER_DONE, None, 200_000).0;
-            load(vram, &[(&bg, p)], |_, y| (15..25).contains(&y));
-            let band = run(e, vram, table, RENDER_DONE, None, 200_000).0;
-            let t0 = rt::ticks();
-            let filled = clear(e, vram, GREY);
-            let fill = us_since(t0);
-            log!(
-                "  S26a MBXCLK 0x{clk:x} (divide by {div}): 3D 2400 tiles done at {full:?} us, 600 tiles at {band:?} us; 2D full-screen fill {fill} us (finished {filled})"
-            );
-        }
-        let clk = set_divider(e, vram, clk0, 2);
-        log!("  S26a back to divide by 2: MBXCLK 0x{clk:x}");
-    }
-
-    /// A pixel of the 16-bit picture.
-    fn p16(vram: &[u8], x: usize, y: usize) -> u32 {
-        let a = PIC16 + y * PIC16_STRIDE + 2 * x;
-        let w = load32_volatile(vram, a & !3).unwrap_or(0xDEAD_BEEF);
-        if a & 2 == 0 { w & 0xFFFF } else { w >> 16 }
-    }
-
-    /// S26b (T4): a 16-bit target. The GLES driver writes `0x650` 6 for a
-    /// 32-bit target, 1 or 3 for two other formats; `0x660` is the stride
-    /// in pixels or in words. A 4 x 4 tile block (red, green, blue, white
-    /// quarters of 32 x 64 px) over a picture filled with `0xAAAA`: the
-    /// colours, the drawn extent (are tiles still 8 x 16?), the time.
-    #[inline(never)]
-    fn s26b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let tsp = TSP_DELL;
-        let q = [
-            square(0.0, 0.0, 16.0, 32.0, 0xFFFF_0000, 0.0, ISP_ALWAYS, tsp),
-            square(16.0, 0.0, 32.0, 32.0, 0xFF00_FF00, 0.0, ISP_ALWAYS, tsp),
-            square(0.0, 32.0, 16.0, 64.0, 0xFF00_00FF, 0.0, ISP_ALWAYS, tsp),
-            square(16.0, 32.0, 32.0, 64.0, 0xFFFF_FFFF, 0.0, ISP_ALWAYS, tsp),
-        ];
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let objs: [(&[u32], u32); 8] = [
-            (&q[0][0], p),
-            (&q[0][1], p),
-            (&q[1][0], p),
-            (&q[1][1], p),
-            (&q[2][0], p),
-            (&q[2][1], p),
-            (&q[3][0], p),
-            (&q[3][1], p),
-        ];
-        for (format, stride) in [(1u32, 480u32), (1, 240), (3, 480), (3, 240)] {
-            rt::check_in();
-            for k in 0..PIC16_STRIDE * 640 / 4 {
-                let _ = store32_volatile(vram, PIC16 + 4 * k, 0xAAAA_AAAA);
-            }
-            cpu::drain_write_buffer();
-            let mut buf = [(0usize, 0u32); 40];
-            let n = patched(
-                table,
-                &[(0x650, format), (0x660, stride), (0x65C, PIC16 as u32)],
-                &mut buf,
-            );
-            load(vram, &objs, |x, y| x < 4 && y < 4);
-            let t = run(e, vram, &buf[..n], RENDER_DONE, None, 200_000).0;
-            let across = (0..128).find(|&x| p16(vram, x, 2) == 0xAAAA);
-            let down = (0..128).find(|&y| p16(vram, 2, y) == 0xAAAA);
-            log!(
-                "  S26b 0x650 {format}, 0x660 {stride}: done at {t:?} us; (2,2) 0x{:04x} (18,2) 0x{:04x} (2,34) 0x{:04x} (18,34) 0x{:04x}; drawn to x {across:?} on row 2, y {down:?} on column 2; row 2 x 30-33 {:04x?}",
-                p16(vram, 2, 2),
-                p16(vram, 18, 2),
-                p16(vram, 2, 34),
-                p16(vram, 18, 34),
-                [
-                    p16(vram, 30, 2),
-                    p16(vram, 31, 2),
-                    p16(vram, 32, 2),
-                    p16(vram, 33, 2)
-                ]
-            );
-        }
-    }
-
-    /// S26c (last: never read before): the clock registers, to compute the
-    /// system clock the MBX divider divides.
-    #[inline(never)]
-    fn s26c(e: &mut Engine<Mmio>) {
-        let core = e.regs.read32(COREPLL);
-        let disp = e.regs.read32(DISPPLL);
-        let khz = |v: u32| {
-            let (m, n, p) = ((v >> 7) & 63, (v >> 4) & 7, (v >> 1) & 7);
-            if n == 0 { 0 } else { 13_000 * m / (n << p) }
+        let v = |x, y, argb| Vertex {
+            x,
+            y,
+            z: 0.0,
+            rhw: 1.0,
+            argb,
         };
+        let tri = m3::triangle(
+            ISP_ALWAYS,
+            TSP_DELL | TSP_GOURAUD,
+            &[
+                v(240.0, 40.0, 0xFFFF_0000),
+                v(460.0, 600.0, 0xFF00_FF00),
+                v(20.0, 600.0, 0xFF00_00FF),
+            ],
+        );
+        let p = m3::STRIP_ONE_TRIANGLE;
+        let (mut matched, mut sum0, mut worst) = (0u32, 0u32, 0u32);
+        for k in 0..10 {
+            rt::check_in();
+            load(vram, &[(&bg, p), (&tri, p)], |_, _| true);
+            let t = run_quiet(e, table);
+            worst = worst.max(t.unwrap_or(u32::MAX));
+            let mut sum = 0u32;
+            for i in 0..256u32 {
+                let (x, y) = ((i * 37) % 480, (i * 101) % 640);
+                sum = sum.rotate_left(5) ^ px(vram, x, y);
+            }
+            if k == 0 {
+                sum0 = sum;
+            }
+            if want.unwrap_or(sum0) == sum {
+                matched += 1;
+            }
+        }
+        let ok = bad == 0 && fill_ok && matched == 10 && worst != u32::MAX;
         log!(
-            "  S26c COREPLL 0x{core:08x} ({} kHz by mbxfb's formula), DISPPLL 0x{disp:08x} ({} kHz), PLLSTAT 0x{:x}, SYSCLKSRC 0x{:x}, MEMCLK 0x{:x}, M24CLK 0x{:x}, MBXCLK 0x{:x}",
-            khz(core),
-            khz(disp),
+            "  S27 {name}: memory words wrong {bad} of {SCRATCH_WORDS}; 2D fill {fill} us (right {fill_ok}); 3D 2400 tiles, the slowest of 10 {worst} us; sums matching {matched}/10 (0x{sum0:08x}); {}",
+            if ok { "GOOD" } else { "BAD" }
+        );
+        (ok, sum0)
+    }
+
+    /// A render with `table`, timed by polling status bit 2 (no logging):
+    /// microseconds, or `None` after 200 ms (the core reset and set up
+    /// again).
+    fn run_quiet(e: &mut Engine<Mmio>, table: &[(usize, u32)]) -> Option<u32> {
+        let en = e.regs.read32(ENABLE);
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en | RENDER_DONE);
+        let t0 = rt::ticks();
+        for &(off, v) in table {
+            e.regs.write32(MBX + off, v);
+        }
+        let mut done = None;
+        while us_since(t0) < 200_000 {
+            if e.regs.read32(STATUS) & RENDER_DONE != 0 {
+                done = Some(us_since(t0));
+                break;
+            }
+        }
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en);
+        done
+    }
+
+    /// S27: the core PLL stepped up from Windows Mobile's 99.67 MHz (the
+    /// cores at half: `MBXCLK` divide by 2), each step checked; the first
+    /// failure, and the end, put WM's PLL back.
+    #[inline(never)]
+    fn s27(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        log!(
+            "  S27 as found: COREPLL 0x{:x}, PLLSTAT 0x{:x}, SYSCLKSRC 0x{:x}, MBXCLK 0x{:x}",
+            e.regs.read32(COREPLL),
             e.regs.read32(PLLSTAT),
             e.regs.read32(SYSCLKSRC),
-            e.regs.read32(MEMCLK),
-            e.regs.read32(M24CLK),
             e.regs.read32(MBXCLK)
+        );
+        let (ok0, want) = step_checks(e, vram, table, 0, None, "99.67 MHz (WM's)");
+        if !ok0 {
+            log!("  S27 the reference itself failed: no steps");
+            return;
+        }
+        let n = if TRY_149_5 { 4 } else { 3 };
+        let steps = [STEPS[0], STEPS[1], STEPS[2], ("149.50 MHz", 23, 2)];
+        for (k, &(name, m, nn)) in steps[..n].iter().enumerate() {
+            rt::check_in();
+            let lock = set_core_pll(e, pll_word(m, nn));
+            log!(
+                "  S27 {name}: COREPLL 0x{:x} locked after {lock:?} us, PLLSTAT 0x{:x}",
+                e.regs.read32(COREPLL),
+                e.regs.read32(PLLSTAT)
+            );
+            if lock.is_none() {
+                log!("  S27 no lock: WM's PLL back, stepping stopped");
+                break;
+            }
+            let (ok, _) = step_checks(e, vram, table, k as u32 + 1, Some(want), name);
+            if !ok {
+                let back = set_core_pll(e, WM_COREPLL);
+                log!(
+                    "  S27 {name} failed a check: WM's PLL back (locked {back:?} us), stepping stopped"
+                );
+                break;
+            }
+        }
+        let back = set_core_pll(e, WM_COREPLL);
+        let _ = step_checks(e, vram, table, 9, Some(want), "back at 99.67 MHz");
+        log!(
+            "  S27 WM's PLL back: locked {back:?} us, COREPLL 0x{:x}",
+            e.regs.read32(COREPLL)
         );
     }
 
@@ -802,16 +820,13 @@ mod image {
             );
         }
 
-        // S26 (ADR-0026, the GPU's clock and a 16-bit target): the MBX
-        // divider's effect, T4, then the PLLs read (last: never read).
+        // S27 (ADR-0026): the core PLL stepped up, each step checked.
         if drew {
             let (t, n) = table(level);
-            log!("S26a: the MBX clock divider (MBXCLK bits 3-2) against render and fill times");
-            s26a(&mut e, vram, &t[..n], clk0);
-            log!("S26b (T4): a 16-bit target (0x650 1 or 3, 0x660 in pixels or words)");
-            s26b(&mut e, vram, &t[..n]);
-            log!("S26c: the PLLs and clock registers");
-            s26c(&mut e);
+            log!(
+                "S27: the core PLL from 99.67 MHz to 133.25 MHz (Dell's default), checked at each step"
+            );
+            s27(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);
