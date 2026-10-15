@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod devlock;
 mod emu;
 mod mutants;
 mod policy;
@@ -43,6 +44,10 @@ commands:
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
             (--serve: also serve it over Wi-Fi for the device's browser)
+  axim      who is using the docked Axim, if anyone: every command that
+            talks to it holds a machine-wide lock for its whole run, and
+            waits while another holds it (--no-wait, or RP_AXIM_NO_WAIT=1:
+            fail at once instead; RP_AXIM_WHO=<label> names the holder)
   usb       talk to an X51v running the USB link test (target/sdkit/usb) over
             its sync cable: find the COM port, check the banner and echo
   load      send an image (name, e.g. rp-probe, or a .bin) to an X51v running
@@ -119,72 +124,9 @@ commands:
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
-/// Commands that talk to the Axim over the cable.
-const DEVICE_COMMANDS: &[&str] = &[
-    "usb",
-    "load",
-    "put",
-    "drive",
-    "card",
-    "backlight",
-    "ls",
-    "get",
-    "rm",
-    "cf",
-    "log",
-    "cpld",
-    "trace",
-    "wmbench",
-    "reboot-wm",
-    "tone",
-    "device-check",
-    "install",
-];
-
-/// Takes the machine-wide Axim lock for the whole command, waiting while
-/// another `cargo xtask` (any checkout, any session) holds it. Two loads at
-/// once collided on 2026-10-15: one was lost and the USB link dropped
-/// until the Axim was reseated. The OS releases the lock when the process
-/// ends, so a killed command can't leave it held.
-fn axim_lock() -> Result<std::fs::File> {
-    let dir = std::env::var_os("LOCALAPPDATA")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
-        .join("RetroPane");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join("axim.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            eprintln!("    the Axim is busy with another xtask command: waiting for it");
-            file.lock()
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-        }
-        Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
-    }
-    Ok(file)
-}
-
 fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
-    let flag = std::env::args().nth(2).unwrap_or_default();
-    // Held until main returns.
-    let _axim = if DEVICE_COMMANDS.contains(&cmd.as_str()) {
-        match axim_lock() {
-            Ok(f) => Some(f),
-            Err(e) => {
-                eprintln!("xtask: the Axim lock: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
+    let cmd = args().nth(1).unwrap_or_default();
+    let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
@@ -205,6 +147,7 @@ fn main() -> ExitCode {
                     }
                 })
         }
+        "axim" => devlock::status(&devlock::dir()).map(|s| println!("{s}")),
         "usb" => {
             eprintln!("==> usb");
             usb::run()
@@ -216,7 +159,7 @@ fn main() -> ExitCode {
             } else if flag.is_empty() {
                 Err("usage: cargo xtask load <image name | file.bin> | --setup".into())
             } else {
-                let force = std::env::args().skip(3).any(|a| a == "--force");
+                let force = args().skip(3).any(|a| a == "--force");
                 usb::load(&workspace_root(), &flag, force)
             }
         }
@@ -225,7 +168,7 @@ fn main() -> ExitCode {
             if flag.is_empty() {
                 Err("usage: cargo xtask put <file> [name on the card]".into())
             } else {
-                usb::put(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+                usb::put(&workspace_root(), &flag, args().nth(3).as_deref())
             }
         }
         "drive" => {
@@ -239,7 +182,7 @@ fn main() -> ExitCode {
         }
         "card" => {
             // Diagnostics: `cargo xtask card scan <lba> <count>`.
-            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> card {}", rest.join(" "));
             usb::command(&workspace_root(), &format!("card {}", rest.join(" ")))
         }
@@ -256,11 +199,11 @@ fn main() -> ExitCode {
             if flag.is_empty() {
                 Err("usage: cargo xtask get <file on the card> [local name]".into())
             } else {
-                usb::get(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+                usb::get(&workspace_root(), &flag, args().nth(3).as_deref())
             }
         }
         "rm" => {
-            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> rm {}", rest.join(" "));
             if rest.is_empty() {
                 Err("usage: cargo xtask rm <file or empty folder on the card>".into())
@@ -271,7 +214,7 @@ fn main() -> ExitCode {
         "cf" => {
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
-            let cmd = match std::env::args().nth(2).as_deref() {
+            let cmd = match args().nth(2).as_deref() {
                 Some("soft") => "cf soft",
                 Some("log") => "cf log",
                 _ => "cf",
@@ -322,7 +265,7 @@ fn main() -> ExitCode {
             usb::command(&workspace_root(), "reboot wm")
         }
         "tone" => {
-            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> tone {}", rest.join(" "));
             usb::command(&workspace_root(), &format!("tone {}", rest.join(" ")))
         }
@@ -358,6 +301,12 @@ fn main() -> ExitCode {
 
 type Result<T = ()> = std::result::Result<T, String>;
 
+/// The command line without `--no-wait` (devlock reads that one itself),
+/// so it can go anywhere without shifting the positional arguments.
+fn args() -> impl Iterator<Item = String> {
+    std::env::args().filter(|a| a != devlock::NO_WAIT_FLAG)
+}
+
 fn run_step(step: &str) -> Result {
     eprintln!("==> {step}");
     match step {
@@ -386,7 +335,7 @@ fn run_step(step: &str) -> Result {
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
-        "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
+        "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
