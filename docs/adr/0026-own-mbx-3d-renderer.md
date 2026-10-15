@@ -359,6 +359,19 @@ needs only "greater". S8 is removed; S5 checks the refusal.
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.
 
+## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
+
+The GPU facts that shape the OS's design, before any interface design
+(owner, 2026-10-15). One `rp-mbx3d` version (24) runs them all, on the
+owner's go:
+
+| Test | Question | Decides |
+|---|---|---|
+| T10 | Render done on GPIO85 with `0x130` bit 15 set (Dell's `0x87F5`; T2 had bit 2 alone after a reset), every other source masked and cleared first; which `MINTENABLE` bit 0-3 routes the MBX core | D3: sleeping waits instead of the timer |
+| T11 | Depth kept across renders: `0x674` a buffer, `0x610 = (tiles - 1) << 7 \| 2` (store), then `\| 1` (load) on the next render | depth for partial renders and games |
+| T12 | Bilinear filtering (TEX1 bit 31) and mipmaps (TEX1 bits 30-29, LOD bits 28-25), the level layout (smallest or largest first) | interface image quality when scaled |
+| T13 | PVRTC 4 bpp (TEX0 code 28) and 2 bpp (code 16) from known blocks; 32-bit texels (code 12) | the 64 MB budget: 4-8x less texture memory |
+
 ## The four lenses
 
 | Lens | Effect |
