@@ -478,7 +478,22 @@ impl Obj {
                     // texel's alpha 1 (version 23: texture alpha blended
                     // only with it clear; version 24: a 32-bit texel at
                     // alpha 0x80 and a black PVRTC block drew alpha 0xFF).
-                    let mut t = sample(m, tw, u, vv);
+                    let level = mip_level(
+                        tw,
+                        |px, py| {
+                            let w = [0, 1, 2].map(|i| {
+                                let (a, b) = (v[(i + 1) % 3], v[(i + 2) % 3]);
+                                e(a, b, px, py) / area
+                            });
+                            (
+                                w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u,
+                                w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v,
+                            )
+                        },
+                        x,
+                        y,
+                    );
+                    let mut t = sample(m, tw, u, vv, level);
                     if tw[2] & (1 << 13) != 0 {
                         t |= 0xFF00_0000;
                     }
@@ -496,10 +511,10 @@ impl Obj {
 /// The texture's colour at `(u, v)` (0 to 1 across it), ARGB8888: point
 /// sampled, or bilinear with TEX1 bit 31 (version 24: weights from the
 /// texel centres, each channel truncated).
-fn sample(m: &[u8], tw: [u32; 3], u: f64, v: f64) -> u32 {
+fn sample(m: &[u8], tw: [u32; 3], u: f64, v: f64, level: u32) -> u32 {
     let tex0 = tw[0];
-    let side_u = 8i64 << ((tex0 >> 24) & 15);
-    let side_v = 8i64 << ((tex0 >> 20) & 15);
+    let side_u = (8i64 << ((tex0 >> 24) & 15)) >> level;
+    let side_v = (8i64 << ((tex0 >> 20) & 15)) >> level;
     let wrap = |i: i64, side: i64, mode: u32| match mode {
         tex::WRAP => i.rem_euclid(side),
         tex::MIRROR => {
@@ -514,6 +529,7 @@ fn sample(m: &[u8], tw: [u32; 3], u: f64, v: f64) -> u32 {
         texel(
             m,
             tw,
+            level,
             wrap(x, side_u, mu) as u32,
             wrap(y, side_v, mv) as u32,
         )
@@ -543,9 +559,41 @@ fn sample(m: &[u8], tw: [u32; 3], u: f64, v: f64) -> u32 {
         .fold(0, |a, b| a | b)
 }
 
-/// Texel `(x, y)` of the texture, ARGB8888.
-fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], x: u32, y: u32) -> u32 {
-    let base = ((tex1 & 0x01FF_FFFF) << 7) as usize;
+/// The mip level a pixel at `(x, y)` samples: with TEX1 bits 30-29 = 1
+/// (the nearest level), the one whose texels match the pixels (the larger
+/// of the steps in texels across and down: `rp-mbx3d` version 25, a 64 x
+/// 64 texture over 16 and 8 px drew levels 2 and 3), up to TEX0 bits 12-9
+/// (0: the base only, version 24). Between powers of two the nearest in
+/// log2 is assumed. `uv` gives the texture coordinates at a point.
+fn mip_level(tw: [u32; 3], uv: impl Fn(f64, f64) -> (f64, f64), x: f64, y: f64) -> u32 {
+    if tw[1] & 0x6000_0000 != tex::TEX1_MIP_NEAREST {
+        return 0;
+    }
+    let size = f64::from(8u32 << ((tw[0] >> 24) & 15));
+    let (u0, v0) = uv(x, y);
+    let (u1, v1) = uv(x + 1.0, y);
+    let (u2, v2) = uv(x, y + 1.0);
+    let step = ((u1 - u0).hypot(v1 - v0)).max((u2 - u0).hypot(v2 - v0)) * size;
+    let top = ((tw[0] >> 9) & 15).min(((tw[0] >> 24) & 15) + 3);
+    if step <= 1.0 {
+        return 0;
+    }
+    (step.log2().round() as u32).min(top)
+}
+
+/// Texel `(x, y)` of mip level `level` of the texture, ARGB8888 (levels
+/// after the base, each after the larger one: version 25).
+fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], level: u32, x: u32, y: u32) -> u32 {
+    let side = 8usize << ((tex0 >> 24) & 15);
+    let texel_bytes = if (tex0 >> tex::FORMAT_SHIFT) & 0x1F == tex::ARGB8888 {
+        4
+    } else {
+        2
+    };
+    let base = ((tex1 & 0x01FF_FFFF) << 7) as usize
+        + (0..level as usize)
+            .map(|k| (side >> k) * (side >> k) * texel_bytes)
+            .sum::<usize>();
     let word = |a: usize| u32::from_le_bytes([m[a], m[a + 1], m[a + 2], m[a + 3]]);
     let wide = |c: u32, bits: u32| match bits {
         5 => c << 3 | c >> 2,
