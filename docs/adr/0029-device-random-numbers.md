@@ -367,10 +367,16 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
 1. Is the X51v's 32.768 kHz clock its own crystal (`OSCC`)? Everything in
    R1 leans on it. **Likely yes** (found 2026-10-15 in the probe's
    2026-10-11 run: `OSCC = 0x0F`, the oscillator on and stable;
-   docs/hw/entropy.md); `rp-noise` reads it again.
+   docs/hw/entropy.md); `rp-noise` reads it again. **Confirmed**
+   2026-10-15 (runs 1-3). But sampled by polling a 32 kHz timer channel,
+   the jitter shows in 504-cycle steps and the sequence is almost all a
+   predictable beat: at most ~0.02 bit a sample (run 3). Finer sampling
+   (an interrupt timestamp, spaced samples) is the next measurement.
 2. Are the TSC2046's `VBAT` and `AUX` inputs wired to anything on the X51v?
 3. The measured entropy per sample of each source, and so the real time to
-   "ready".
+   "ready". Runs 1-3 (2026-10-15): B (SDRAM timing) at most 0.2 bit with a
+   32-sample period, the TSC2046's inputs weak (`VBAT` unwired, the
+   temperatures drifting), A as polled ~0.02 bit. None creditable yet.
 4. Whether the PXA270 in the X51v has Intel's trusted module.
 5. Where the device's long-term private key lives at stage 2 (device-link
    K3); shares R5's answer at stage 3.

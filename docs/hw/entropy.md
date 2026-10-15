@@ -15,33 +15,49 @@ can't make keys from it.
 | The 32.768 kHz oscillator is on and stable under Windows Mobile | `OSCC = 0x0000000F`: bit 0 OOK (stable) and bit 1 OON (on) set | likely (bit names as we read the manual; `rp-noise` reads it again) | (P) probe 2026-10-11, `probe-2026-10-11.md` |
 | So the 32 kHz clock is its own crystal, independent of the 13 MHz one that makes the core clock and OSCR0 | follows from OON | likely | (M), (P) |
 | The 32.768 kHz oscillator is on under RetroPane too, and the core runs at 624 MHz under the loader | `OSCC = 0x0F`; `CCCR 0x02000310`, `CCSR 0x30000310`, `CLKCFG 0xB`; the cycle counter measured 624.001 MHz against the 3.25 MHz timer | confirmed | (P) `rp-noise` run 1, 2026-10-15 |
-| OS timer channel 5 on the 32.768 kHz clock: `OMCR5 = 0x81` (as the manual reads) **never counted**, with `OSCR5` written before (run 1) or after (run 2) | the counter stayed 0 for 10 ms both times | confirmed (twice) | (P) runs 1 and 2; the emulator counts either way (emulator.md). Run 3 tries nine ways (other channels, bits, resolutions) and logs which counts |
+| **OS timer channel 5 counts the 32.768 kHz clock only with `OMCR5` bit 6 set (`0xC1`)**; `0x81` (as the manual reads), `0x01`, `0x82` (1 ms) and `0x84` (1 us) never counted, whichever register was written first. **Channel 11 counts with `0x81`**; channels 6 and 8 with `0x81` don't | `0xC1` and channel 11: 66 counts in 2 ms (32.8 kHz); the rest 0 | confirmed (runs 1-3) | (P) run 3, 2026-10-15, nine ways tried; the emulator counts every one (emulator.md) |
 | The cycle counter `CCNT` is CP14 c1, c1 (`PMNC` c0, c1; bit 0 enable, bit 2 reset, bit 3 count every 64th cycle) | | confirmed (run 1 counted at the core clock) | (M); the emulator fork models the same encoding |
-| OS timer channel 5 can count the 32.768 kHz clock on its own counter | `OMCR5 = 0x81` (resolution 1/32768 s, bit 7 own counter) | **doubtful** (runs 1-2) | (M) |
 | TSC2046 single-ended inputs: `TEMP0` 0, `VBAT` 2, `AUX` 6, `TEMP1` 7 (SER = 1, reference on with PD = 11) | | confirmed (datasheet) | (D); whether Dell wired `VBAT`/`AUX` is unknown |
 
 ## Measurements
 
-Run 1 (2026-10-15, under the loader, interrupts off, 624 MHz; run 2
-the same day agreed within a few percent, except `TEMP0` 0.51 and `TEMP1`
-0.86 bit: both drift between runs): the
+Runs 1-3 (2026-10-15, under the loader, interrupts off, 624 MHz; B and
+T agreed between runs within a few percent, except `TEMP0` (0.98, 0.51,
+0.46 bit) and `TEMP1` (0.02, 0.86, 0.48): both drift between runs): the
 on-device first look (SP 800-90B's most-common-value estimate). NIST's
 full tool hasn't been run yet; its estimate can only be lower (it takes
 the lowest of ten), so these are ceilings.
 
 | Source | Samples | What it showed | MCV estimate (ceiling) | Verdict so far |
 |---|---|---|---|---|
-| A two-crystal jitter | none | Skipped in runs 1 and 2: the 32 kHz counter never started | | Run 3 |
+| A two-crystal jitter (run 3: core cycles between 32 kHz ticks, polled) | 1,000,000 in 30.5 s | Almost only two values, 19,176 and 18,672 cycles (mean 19,043 = 624 MHz / 32,768): the **504-cycle step is one poll of the timer register** (~0.8 us), and which value comes is a near-regular beat between the two crystals (a short sample every 3-4). A predictor trained on the first half guesses the second half 94% right from 3 samples back, 98.4% from 48 (and still improving); LZMA packs the low bytes to 0.07 bit a sample | 0.44 bit | **At most ~0.02 bit a sample as sampled**: the crystals' real jitter is far finer than the 504-cycle poll. Not creditable this way; see "What next for A" |
 | B one-clock jitter (cycles for 64 SDRAM reads, low byte) | 1,000,000 in 15.6 s | 9 values (9,662-10,553 cycles); 87% are 9,726; 9,738 occurs **31,250 times, 99% of them exactly 32 samples apart**: a fixed pattern, SDRAM refresh most likely; 78% of samples equal the one before | 0.19 bit | Weak and partly periodic: mixed only, as ADR-0029 planned |
 | T `TEMP0` (12-bit) | 1,000,000 in 18.5 s | 878-882, 5 values; 67% equal the one before (slowly moving) | 0.98 bit | Some noise, strongly correlated: the full tool will be well below this |
 | T `VBAT` | 1,000,000 | 0-4, 93% read 1 | 0.11 bit | **Not wired to the battery** on the X51v (reads near 0) |
 | T `AUX` | 1,000,000 | 3,834-4,095, 262 values, 58% read 3,837; rare excursions to full scale | 0.78 bit | Near full scale (tied high or a divider); some noise, correlated |
 | T `TEMP1` | 1,000,000 | 1,058-1,059, 98% one value | 0.02 bit | Dead for this purpose |
-| Restart test (A) | | Waits for A | | Run 2 |
+| Restart test (A) | 1 row (run 3) | Needs many runs | | Later, with a better sampler |
 
-So far, as ADR-0029 expected, everything rides on source A. The touch
-controller and SDRAM timing are not good enough to carry the generator
-alone; at most they are mixed in.
+So far nothing sampled this way is good enough to carry the generator:
+ADR-0029's rule (credit only after measurement) did its job. The touch
+controller and SDRAM timing stay mixed only.
+
+### What next for A (for the owner's choice)
+
+The noise between two crystals is real but tiny per tick (a crystal's
+jitter is picoseconds; one core cycle is 1.6 ns); polling a slow timer
+register only sees it in 504-cycle steps. Ways to see it finer, each a
+test-image change measured the same way:
+
+1. **Timestamp the timer's interrupt** instead of polling: arm a match
+   on the 32 kHz channel and read `CCNT` first thing in the handler. The
+   step becomes the interrupt path's few cycles, and the path's own
+   variation (crossing from the 32 kHz domain into the core's) adds noise.
+2. **Space the samples out**: phase noise adds up over time (a random
+   walk), so one sample every N ticks holds more unpredictable phase;
+   fewer samples per second, more entropy each.
+3. **Wake from idle on the tick** and timestamp the wake-up: the core
+   restarting its clock is another crossing.
 
 ## How to measure (`rp-noise`)
 
