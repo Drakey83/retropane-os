@@ -196,9 +196,12 @@ pub enum Step {
 /// prediction; a full-screen 2D frame takes milliseconds).
 const TWO_D_POLL_US: u32 = 200;
 
-/// The owner of the 2D engine and the 3D core.
-pub struct Graphics<R, M> {
-    two_d: Mbx2dRenderer<R, M>,
+/// The owner of the 2D engine and the 3D core. It borrows the 2D renderer
+/// (5-6 KiB) rather than holding it: moving one into the other put both on
+/// a test image's stack at once and overflowed it (`rp-today` in the
+/// emulator, 2026-10-15); a test keeps this struct small.
+pub struct Graphics<'a, R, M> {
+    two_d: &'a mut Mbx2dRenderer<R, M>,
     scene: Option<Scene>,
     pool: Pool,
     clients: [ClientRec; CLIENTS],
@@ -206,10 +209,10 @@ pub struct Graphics<R, M> {
     job: Job,
 }
 
-impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
+impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// The service over the 2D renderer (which holds the register window
     /// and memory, its flips held for the 3D area) and the pool.
-    pub fn new(mut two_d: Mbx2dRenderer<R, M>, pool: Pool) -> Self {
+    pub fn new(two_d: &'a mut Mbx2dRenderer<R, M>, pool: Pool) -> Self {
         two_d.hold = true;
         Self {
             two_d,
@@ -224,7 +227,7 @@ impl<R: RegisterBus, M: LocalMem> Graphics<R, M> {
     /// The 2D renderer (wallpaper, showing the picture: the service's own
     /// set-up).
     pub fn two_d(&mut self) -> &mut Mbx2dRenderer<R, M> {
-        &mut self.two_d
+        self.two_d
     }
 
     /// A new client allowed `quota` bytes of 2700G memory.

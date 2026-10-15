@@ -62,7 +62,7 @@ const BLUE: u32 = 0xFF00_00FF;
 const WHITE: u32 = 0xFFFF_FFFF;
 
 struct Rig {
-    g: Graphics<Both, m2::Mem>,
+    g: Graphics<'static, Both, m2::Mem>,
     mem: m2::Shared,
     clock: SimClock,
 }
@@ -82,7 +82,11 @@ fn rig() -> Rig {
     two.show(|_| {});
     two.dither = false; // exact colours to compare
     Rig {
-        g: Graphics::new(two, Pool::new(POOL)),
+        // Leaked: a test's renderer lives as long as the test process.
+        g: Graphics::new(
+            std::boxed::Box::leak(std::boxed::Box::new(two)),
+            Pool::new(POOL),
+        ),
         mem,
         clock,
     }
@@ -328,4 +332,13 @@ fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
     assert_eq!(r.on_screen(210, 310), GREY & 0xFF_FFFF);
     let d = r.g.client(0).unwrap();
     r.g.open_scene(d, x, y, w, h).unwrap();
+}
+
+#[test]
+fn the_service_stays_small() {
+    // It lives on an image's stack next to the 2D renderer and a frame
+    // (rp-today overflowed its 24 KiB when the service held the renderer:
+    // 11 KiB here then). Host sizes (64-bit) bound the device's.
+    let size = core::mem::size_of::<Graphics<'static, Both, m2::Mem>>();
+    assert!(size <= 6 * 1024, "{size} bytes");
 }
