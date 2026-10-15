@@ -475,6 +475,15 @@ and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
   bus traffic of every picture; the 2D engine's blends onto 565 need
   their own device check).
 
+**Next: `rp-mbx3d` version 27:** the core PLL stepped from 99.67 MHz to
+110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock"; the cores at
+half, at most 66.6 MHz, under Dell's 75 MHz cap; Dell's bus-timing tier
+unchanged), changed as Dell's driver does it (system clock on the 13 MHz
+reference, PLL written, lock awaited), each step checked (a 256 KiB
+memory pattern, a 2D fill, ten 3D renders matching WM's pixels) and
+timed; WM's PLL back on any failure and at the end. 149.5 MHz waits for
+the owner.
+
 ## The four lenses
 
 | Lens | Effect |
