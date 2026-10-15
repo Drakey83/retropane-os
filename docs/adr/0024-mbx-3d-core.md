@@ -128,6 +128,27 @@ report; device runs only with the owner's go.
    Region arrays at 0x130000 and 0x188000 (80 x 40, one empty list) are
    templates, not the frame's. Next: the list pointers' format and
    parameter base, the three words, then a textured triangle.
+
+   **Decoded overnight (2026-10-14/15, the PC):** the three words are the
+   GLES context's per-unit texture words (`0x02267434`): TEX0
+   format/size (one per texture; the nibbles in bits 27-20 vary with it),
+   TEX1 `(lod bits << 25) | address / 128` (`0xCE003060` -> 0x183000,
+   inside the capture), TEX2 the combine word (from a table by texture
+   mode). The game's textures are PVRTC (8-byte blocks). The list pointer
+   for its objects: `0x41000000 | offset/4` (also `0x41600000`,
+   `0x49600000` for the same objects) from parameter base 0x2B4000.
+
+   **`rp-mbx3d` versions 7-10 on the device (unattended, owner's offer):**
+   lists draw past their first object (a flat square after the dark
+   background drew with `0x40800000`); the flags must match the object (a
+   flat one with `0x41000000` didn't draw); the textured square in every
+   form tried (ISP ours or the game's, both corner orders, flags
+   `0x41000000` / `0x41600000` / `0x40800000`, Dell's table or with the
+   GLES extras) never drew, and **neither did DoomGLES's own object, word
+   for word** (only TEX1 pointed at our texture). So textures need state
+   outside the object: likely the GLES 3D table's computed values (`0x61C`
+   "low bits 7" where Dell's is `0x00020004`, `0x674`, `0x610`), set at
+   `0x02261700`-`0x02261848`. Next: read those, then version 11.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
