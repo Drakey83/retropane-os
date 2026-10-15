@@ -161,8 +161,8 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | Test | Question | Decides |
 |---|---|---|
 | T1 | A region array listing only some tiles: are the rest left untouched? Render time vs tiles listed | D2: **passed** (version 19: untouched; 5.2 us a tile) |
-| T2 | Do status bits 2 and 4 raise GPIO85? | D3 |
-| T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5 |
+| T2 | Do status bits 2 and 4 raise GPIO85? | D3 (version 20 tries bit 2) |
+| T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5 (version 20: row, 256-, 32- and 4-byte offsets) |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
 | T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D |
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality |

@@ -1,5 +1,10 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 19 (ADR-0026 device test T1): after
+//! 3D core, under the loader. Version 20: T1 passed in version 19 (unlisted
+//! tiles untouched, 5.2 us a tile) and runs again; then T2 (does render
+//! done, status bit 2, edge GPIO85, the 2700G's interrupt line?) and T3
+//! (the target `0x65C` moved inside the picture, stride kept: does a 4 x 4
+//! tile block land there, at row, 256-, 32- and 4-byte offsets?).
+//! Version 19 (ADR-0026 device test T1): after
 //! the proven red triangle and shaded triangle, a blue full-screen object
 //! over grey rendered with the region array listing all tiles, one tile,
 //! a 10 x 10 block and a 600-tile band: are unlisted tiles left untouched,
@@ -200,7 +205,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 19;
+    const VERSION: u32 = 20;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -334,6 +339,106 @@ mod image {
         }
         cpu::drain_write_buffer();
         n
+    }
+
+    /// The 2700G's interrupt enable (system block, write-only: never
+    /// read; WM's value `0x800F`, bit 15 likely the master enable).
+    const MINTENABLE: usize = 0x018;
+    /// Display interrupt enable (kept 0 here: display events off).
+    const DINTRE: usize = 0x217C;
+    /// GPIO85 (the 2700G's interrupt line): GPDR2 bit 21.
+    const PIN85: u32 = 1 << 21;
+    const GPDR2: usize = 0x014;
+
+    /// T2 (ADR-0026 D3): does the 3D core's render done (status bit 2)
+    /// reach the PXA on GPIO85? A full-screen render with bit 2 enabled in
+    /// `0x130`, then with it not enabled (control); GPIO85's edges counted
+    /// during the render and after the bit is cleared.
+    #[inline(never)]
+    fn t2(e: &mut Engine<Mmio>, table: &[(usize, u32)]) {
+        let irq = rt::take_gpio().and_then(|mut g| {
+            let d = g.read32(GPDR2);
+            g.write32(GPDR2, d & !PIN85);
+            rt::take_gpio_irq(85, rt::Edge::Both)
+        });
+        let Some(mut irq) = irq else {
+            log!("T2: GPIO85's interrupt unavailable: not tried");
+            return;
+        };
+        e.regs.write32(MINTENABLE, 0x800F);
+        e.regs.write32(DINTRE, 0);
+        for (name, enable) in [("bit 2 enabled", RENDER_DONE), ("control, not enabled", 0)] {
+            rt::check_in();
+            let en0 = e.regs.read32(ENABLE);
+            e.regs.write32(CLEAR, RENDER_DONE);
+            e.regs.write32(ENABLE, (en0 & !RENDER_DONE) | enable);
+            let _ = irq.take();
+            irq.done();
+            let (mut edges, mut first, mut bit_at, mut cleared_at) = (0u32, None, None, None);
+            let t0 = rt::ticks();
+            for &(off, v) in table {
+                e.regs.write32(MBX + off, v);
+            }
+            while us_since(t0) < 40_000 {
+                let now = us_since(t0);
+                if irq.take() {
+                    edges += 1;
+                    first.get_or_insert(now);
+                    irq.done();
+                }
+                if bit_at.is_none() && e.regs.read32(STATUS) & RENDER_DONE != 0 {
+                    bit_at = Some(now);
+                }
+                // 5 ms after the bit: clear it (the line should drop).
+                if let (Some(b), None) = (bit_at, cleared_at) {
+                    if now > b + 5_000 {
+                        e.regs.write32(CLEAR, RENDER_DONE);
+                        cleared_at = Some(now);
+                    }
+                }
+            }
+            e.regs.write32(CLEAR, RENDER_DONE);
+            e.regs.write32(ENABLE, en0);
+            log!(
+                "  T2 {name}: status bit 2 at {bit_at:?} us, cleared at {cleared_at:?} us; GPIO85 edges {edges}, first at {first:?} us"
+            );
+        }
+    }
+
+    /// T3 (ADR-0026 D5): the 3D core drawing into a sub-rectangle of the
+    /// screen picture: the target (`0x65C`) moved to (x, y) of the picture,
+    /// the stride kept; a 4 x 4 tile block (32 x 64 px) listed. Where does
+    /// the blue land?
+    #[inline(never)]
+    fn t3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        let (mut t, n) = table(1);
+        let at = |x: u32, y: u32| (TARGET + y as usize * STRIDE + 4 * x as usize) as u32;
+        for (x, y) in [(0u32, 0u32), (0, 100), (64, 100), (8, 100), (1, 100)] {
+            rt::check_in();
+            let _ = clear(e, vram, GREY);
+            for p in &mut t[..n] {
+                if p.0 == 0x65C {
+                    p.1 = at(x, y);
+                }
+            }
+            let listed = regions(vram, |x, y| x < 4 && y < 4);
+            let (done, _) = run(e, vram, &t[..n], RENDER_DONE, None, 200_000);
+            log!(
+                "  T3 target at ({x},{y}) = 0x{:08x}: {listed} tiles, done {done:?}; expected corners ({x},{y}) 0x{:08x} ({},{}) 0x{:08x}; just outside ({},{}) 0x{:08x} ({},{}) 0x{:08x}; origin (0,0) 0x{:08x}",
+                at(x, y),
+                px(vram, x, y),
+                x + 31,
+                y + 63,
+                px(vram, x + 31, y + 63),
+                x + 32,
+                y,
+                px(vram, x + 32, y),
+                x,
+                y + 64,
+                px(vram, x, y + 64),
+                px(vram, 0, 0)
+            );
+        }
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -565,6 +670,18 @@ mod image {
                     px(vram, 5, 5)
                 );
             }
+        }
+
+        // T2 and T3 (ADR-0026 D3, D5).
+        if drew {
+            let (t, n) = table(level);
+            regions(vram, |_, _| true);
+            log!("T2: does render done (status bit 2) edge GPIO85?");
+            t2(&mut e, &t[..n]);
+            log!(
+                "T3: the 3D target moved inside the picture (stride kept), a 4 x 4 tile block (blue over grey)"
+            );
+            t3(&mut e, vram);
         }
 
         let saved = show_target(&mut e.regs);
