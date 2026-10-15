@@ -198,6 +198,25 @@ report; device runs only with the owner's go.
    the textured object's own path (the list pointer forms the game's
    lists also use, `0x09600000` and `0x61200000`, untried) or in memory
    the TSP reads that we don't set up.
+
+   **The list pointer read (static, 2026-10-15):** bits 30-25 are a
+   triangle mask (as the PowerVR2's strip mask), bits 24-21 the vertex
+   format and count: `0x41000000` one textured triangle (26 words),
+   `0x61200000` a 4-vertex strip drawing triangles 0 and 1, `0x41600000`
+   / `0x09600000` a 6-vertex strip (47 words = 5 + 6 x 7) drawing
+   triangle 0 or 3. Our textured object and pointer are the game's form.
+   Each tile's list sits in a 64-byte block whose first word is a flat
+   object (`0x408CE000`), the region entry pointing past it; `0xE0000000
+   | address` links blocks. The one render register left differing was
+   `0x6D8`: the GLES driver never writes it, so the game renders with the
+   parameter memory set-up's `0x09000000`, where Dell's table (ours)
+   writes `0x01000000`. **Version 13 on the device**
+   (`local/rp-mbx3d-run13.txt`): flat control drew; with `0x6D8 =
+   0x09000000`, alone or with version 12's levers, no textured object
+   drew. Every register the game's 3D stage writes now matches ours, so
+   the difference is in memory: what the core reads beside the object
+   (the texture itself, or state the tile accelerator writes and we
+   don't), or the textured object reaching the core only through the TA.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
