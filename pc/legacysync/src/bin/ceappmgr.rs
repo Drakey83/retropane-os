@@ -11,9 +11,15 @@
 //!
 //! ```text
 //! CeAppMgr.exe --out <folder> "Game.ini"   stage into <folder>
-//! CeAppMgr.exe --print-registration        the .reg that would make
-//!                                           installers find this program
+//! CeAppMgr.exe --print-registration        the take-over .reg (both lookups,
+//!                                           both registry views)
+//! CeAppMgr.exe --print-backup              the current values as a .reg that
+//!                                           restores them (the uninstaller's)
+//! CeAppMgr.exe --check-registration        do old installers reach this program?
 //! ```
+//!
+//! None of these writes the registry: LegacySync's installer applies the
+//! files, elevated (docs/legacysync/ceappmgr-standin.md).
 //!
 //! Every call is logged (ADR-0028: every installer tried is logged with
 //! what it called) in `%LOCALAPPDATA%\RetroPane\LegacySync\legacysync.log`.
@@ -24,6 +30,11 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rp_legacysync::{registration, select, stage};
+
+/// This program's full path.
+fn this_exe() -> PathBuf {
+    std::env::current_exe().unwrap_or_else(|_| PathBuf::from("ceappmgr.exe"))
+}
 
 /// LegacySync's data folder.
 fn data_dir() -> PathBuf {
@@ -76,8 +87,11 @@ fn usage() -> &'static str {
      \n\
      CeAppMgr.exe [/report] \"Game.ini\" [...]   stage each INI's CAB for the device\n\
      CeAppMgr.exe --out <folder> \"Game.ini\"     stage into <folder>\n\
-     CeAppMgr.exe --print-registration          show the registry values that let\n\
-     \x20                                          installers find this program (writes nothing)\n"
+     CeAppMgr.exe --print-registration          the .reg that points old installers here\n\
+     CeAppMgr.exe --print-backup                the current values, as a .reg restoring them\n\
+     CeAppMgr.exe --check-registration          whether old installers reach this program\n\
+     \n\
+     None of these writes the registry.\n"
 }
 
 fn main() -> ExitCode {
@@ -93,9 +107,39 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--print-registration" => {
-                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("CeAppMgr.exe"));
-                print!("{}", registration::reg_file(&exe));
+                print!("{}", registration::reg_file(&this_exe()));
                 return ExitCode::SUCCESS;
+            }
+            "--print-backup" => {
+                let r = registration::read_all()
+                    .and_then(|s| registration::backup_for_install(&s, &this_exe()));
+                return match r {
+                    Ok(t) => {
+                        print!("{t}");
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                };
+            }
+            "--check-registration" => {
+                let exe = this_exe();
+                return match registration::read_all() {
+                    Ok(s) => {
+                        println!("{}", registration::check(&s, &exe));
+                        if registration::points_at(&s, &exe) {
+                            ExitCode::SUCCESS
+                        } else {
+                            ExitCode::FAILURE
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        ExitCode::FAILURE
+                    }
+                };
             }
             "--out" => match it.next() {
                 Some(dir) => out = Some(PathBuf::from(dir)),

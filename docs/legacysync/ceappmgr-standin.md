@@ -1,8 +1,9 @@
 # LegacySync's `CeAppMgr.exe` stand-in
 
-ADR-0028 L2, milestone 3. Status: **built as a command-line program,
-not registered.** Registration changes the owner's registry, so it waits
-for the owner's choice below.
+ADR-0028 L2, milestone 3. Status: **built as a command-line program;
+registration designed (option A, the owner's choice, 2026-10-15) but not
+applied.** The pieces the installer needs exist and only read the
+registry; nothing has written the owner's registry.
 
 ## In plain words
 
@@ -20,8 +21,13 @@ point at it.
 ```
 ceappmgr.exe [/report] "C:\...\Game.ini" [...]   what installers call
 ceappmgr.exe --out <folder> "Game.ini"           stage into <folder>
-ceappmgr.exe --print-registration                show the .reg (writes nothing)
+ceappmgr.exe --print-registration                the take-over .reg
+ceappmgr.exe --print-backup                      the current values as a .reg restoring them
+ceappmgr.exe --check-registration                do old installers reach this program?
 ```
+
+The last three only read the registry (`reg export` to a temporary file,
+`reg query`); none writes it.
 
 For each INI, for each component in it:
 
@@ -62,7 +68,7 @@ the installers are 32-bit and read `WOW6432Node`):
 Writing `HKLM` needs administrator rights once, at install time
 (LegacySync's installer, not the stand-in itself).
 
-## The decision: coexisting with WMDC (for the owner's vote)
+## The decision: coexisting with WMDC (decided: A, by the owner, 2026-10-15)
 
 The owner's PC has Microsoft's WMDC 6.1 installed today, and its
 `CeAppMgr.exe` owns both keys (`C:\Windows\WindowsMobile`). Five Dell
@@ -76,15 +82,52 @@ installers already went through it this morning.
 | Risk | Two programs wanting the same keys; WMDC repair or reinstall would take them back (LegacySync checks on start and offers to re-take them) | On most Windows 11 PCs (no WMDC) the same as A; on the owner's PC no benefit | None, but the point of L2 is lost |
 | Effort | Small: the backup/restore and the start-up check | Small | None |
 
-**Recommended: A**, because on Windows 11 WMDC can't reach RetroPane
+**Chosen: A** (recommended), because on Windows 11 WMDC can't reach RetroPane
 anyway, and the backup makes it fully reversible. A refinement for later:
 LegacySync could hand an install to WMDC when the docked device is a real
 Windows Mobile device rather than RetroPane, so one PC can serve both.
 
-Not done without the owner's OK: writing these keys on the owner's PC,
-including for a test. Until then the stand-in is tested by running it
-directly (`--out`), which is how its tests and the six real installers
-were checked.
+Still not done without the owner's OK: writing these keys on the owner's
+PC, including for a test. Until then the stand-in is tested by running it
+directly (`--out`), and the registration pieces by their tests and by
+reading the owner's registry (read-only).
+
+## The installer and uninstaller (option A)
+
+LegacySync's installer runs elevated once. In order:
+
+1. **Copy LegacySync** to `%ProgramFiles%\RetroPane\LegacySync`. Only
+   administrators can write there, which matters: the registry will tell
+   every old installer to run the `ceappmgr.exe` in that folder, so a
+   folder the user (or malware running as the user) could write would let
+   them swap the program.
+2. **Back up**, unless a backup is already there (an upgrade or reinstall
+   keeps the first one): `ceappmgr.exe --print-backup >
+   registration-backup.reg`. The backup holds each replaced value exactly
+   as `reg export` wrote it (any type, any language of Windows), a
+   deletion for each value that didn't exist, and a key deletion for each
+   key that didn't exist. It refuses to run when the lookups already point
+   at this LegacySync, so the uninstaller can never "restore" LegacySync
+   itself. On the owner's PC today it holds WMDC's values (checked, both
+   views).
+3. **Take over**: import `ceappmgr.exe --print-registration`'s file with
+   `reg import <file> /reg:64` (the file names both views explicitly).
+4. **Verify**: `ceappmgr.exe --check-registration` must succeed; if not,
+   import the backup and fail the install, so a half-registered state
+   never stays.
+
+The uninstaller, also elevated: import `registration-backup.reg`, check
+the lookups no longer point at LegacySync, then remove the files, the
+backup last. On the owner's PC that hands both lookups back to WMDC as
+they were; on a PC without WMDC it deletes the keys LegacySync made.
+
+**At start-up** (the desktop version): run the check; if WMDC's repair or
+reinstall took the lookups back, say so and offer to take them again (an
+elevation prompt; the first backup is kept, so uninstalling still returns
+WMDC's values).
+
+Open for the installer's own build: MSI (WiX) or a small Rust installer,
+signed in CI (ADR-0028); either runs the steps above.
 
 ## Open items
 
@@ -96,8 +139,11 @@ were checked.
   then deletes its INI and CABs, staging first (copying the CAB) already
   covers it. Not seen yet; every call is logged so it will show.
 - **AppMgr records** (`AppMgr\Apps\<Provider App>`,
-  activesync-interfaces.md §4): written at the same time as the keys
-  (same decision), so installers that check "already installed?" behave.
+  activesync-interfaces.md §4): written by `ceappmgr.exe` per install
+  once registered, so installers that check "already installed?" behave.
+  Records of apps LegacySync installed stay after uninstall when WMDC's
+  key existed (they are harmless there); the backup only names the
+  values LegacySync replaced.
 - **Signing**: ADR-0028 wants the Windows program signed so SmartScreen
   doesn't block it; a release question, not a stand-in one.
 

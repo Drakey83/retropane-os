@@ -118,9 +118,11 @@ permissions (install, files, sync, pass-through).
   and `_setup.xml` to a validated install plan).
 - **L2's PC half**: `pc/legacysync`'s `ceappmgr.exe` stages the right CAB
   and a readable plan for all six of the owner's real installers with
-  INIs ([ceappmgr-standin.md](../legacysync/ceappmgr-standin.md)). Not
-  registered: the owner's vote on coexisting with the installed WMDC is
-  in that note.
+  INIs ([ceappmgr-standin.md](../legacysync/ceappmgr-standin.md)).
+  Registration: option A (the owner, 2026-10-15): LegacySync's installer
+  backs up the lookups' current values (WMDC's, on the owner's PC), takes
+  them over, and its uninstaller restores them. The backup, take-over and
+  check exist (read-only); not applied to the owner's registry yet.
 - **Device link**: designed, for review
   ([device-link.md](../legacysync/device-link.md)): its own USB interface,
   a Noise handshake with a code on both screens, encrypted frames,
