@@ -445,6 +445,36 @@ and 2400); T12b mipmaps with TEX0 bits 12-9 set; T13b PVRTC's block order.
 and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
 `0x660` in pixels or words), S26c the PLLs read (last).
 
+**`rp-mbx3d` version 26 on the device (2026-10-15,
+`local/rp-mbx3d-run26.txt`).**
+
+- **S26a, the cores are clock-bound.** At `MBXCLK` divide by 2, 3 and 4:
+  2400 tiles 12,484 / 18,724 / 24,968 us, 600 tiles 3,132 / 4,692 / 6,256
+  us, a full-screen 2D fill 6,180 / 9,268 / 12,360 us: **exactly in
+  proportion to the divider**, 3D and 2D alike. Every MHz of the cores'
+  clock is speed.
+- **S26c, the clocks:** `COREPLL` `0xBB1` = 13 MHz x 23 / 3 = **99.67 MHz**
+  (mbxfb's own "100 MHz" setting), `DISPPLL` `0xEC5` = 23.56 MHz (the
+  pixel clock), `PLLSTAT` 7 (both locked), `SYSCLKSRC` 2, `MEMCLK` 1,
+  `M24CLK` 2. So **Windows Mobile runs the MBX cores at 49.8 MHz**, a
+  third under the 75 MHz Dell's driver allows them; **Dell's default
+  "CoreClock" is 133 MHz** (`0x021220f4`), which at divide by 2 gives 66.5
+  MHz. Dell's driver sets the PXA's bus timing (`MSC1`) for the 2700G by
+  the same clock: one setting for 99 MHz and up, which 133 MHz shares.
+  Next: the core PLL stepped up, `rp-mbx3d` version 27.
+- **S26b (T4), a 16-bit target: works.** `0x650` 1 wrote RGB565 (red
+  `0xF800`, green `0x07E0`, blue `0x001F`, white `0xFFFF`), 3 wrote
+  ARGB1555 with the alpha bit set (`0xFC00`, `0x83E0`, `0x801F`); tiles
+  stay 8 x 16; **`0x660` is the stride in bytes / 4** in every format (240
+  for 960 bytes; 480 skipped every other line). The 16-tile block took 120
+  us, no faster than 32 bits as measured (a cost per tile, not per
+  byte). Built: `PixelFormat` on the renderer's `Picture` (both models
+  write 16-bit targets as measured). The interface's screen pictures stay
+  32-bit (ADR-0023's choice, for exact 2D blending and dithering); making
+  them RGB565 is an ADR-0023 change for the owner (half the memory and
+  bus traffic of every picture; the 2D engine's blends onto 565 need
+  their own device check).
+
 ## The four lenses
 
 | Lens | Effect |
