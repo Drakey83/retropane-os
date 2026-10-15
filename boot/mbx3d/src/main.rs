@@ -1,5 +1,14 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 13: version 12's frame state drew no
+//! 3D core, under the loader. Version 14 (ADR-0024 M5): hand-written
+//! textured objects never drew with every register as the game has them
+//! (versions 7-13), so this draws the way the game does, through the tile
+//! accelerator: the GLES driver's own clear, word for word, streamed into
+//! the TA's window (`0x0FFF4000`), the end word into `0x0FFF6000`, the TA
+//! started with the GLES driver's table; what the TA wrote is logged, then
+//! the 3D stage renders the TA's region array. The texture tries are gone.
+//! The scene ends as the GLES driver's flush ends it: `0x85C` bit 7 set,
+//! `0xF0000000` into the TA window, then a wait for TA done (bit 4).
+//! Version 13: version 12's frame state drew no
 //! textured object either. One register the game renders with is left:
 //! `0x6D8`. The GLES driver never writes it, so in the game it keeps the
 //! parameter memory set-up's `0x09000000` (bit 27); Dell's start table,
@@ -149,21 +158,13 @@ mod image {
     const PARAMS: usize = PM;
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
-    /// Version 12's depth buffer (`0x674`): 2 MiB free here, more than
-    /// any 60 x 40 tile layout of 32-bit depths needs.
-    const ZBUF: usize = 0x0040_0000;
-    /// Written at the depth buffer's start before each try: a store
-    /// changes it.
-    const ZMARK: u32 = 0xA5A5_A5A5;
     const FENCE: usize = 0x00FF_F000;
-    /// The texture for stage T: 256 x 256 16-bit texels (128 KiB),
-    /// texel k holding k.
-    const TEXTURE: usize = 0x00E0_0000;
-    /// Stage T's square: its top left on screen and its side (pixels).
-    const SQ: (f32, f32, f32) = (16.0, 16.0, 256.0);
-    /// Stage T's background and the square's vertex colour.
-    const DARK: u32 = 0xFF20_2020;
-    const TINT: u32 = 0xFFFF_C080;
+    /// Stage X (the tile accelerator): its per-tile buffer (`0x840`,
+    /// 128 KiB aligned, zeroed; Dell sizes it 4 bytes a tile in Morton
+    /// order, under 16 KiB here) and the region array it writes.
+    const TAIL: usize = 0x00A0_0000;
+    const TAIL_SIZE: usize = 0x1_0000;
+    const TA_REGIONS: usize = 0x00A2_0000;
     /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -176,7 +177,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 13;
+    const VERSION: u32 = 14;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -304,207 +305,78 @@ mod image {
         cpu::drain_write_buffer();
     }
 
-    /// Version 12's frame state, each a lever on top of table 3 (Dell's
-    /// with the GLES driver's `0x61C`).
-    #[derive(Clone, Copy)]
-    struct Levers {
-        /// Bit 29 on every region header.
-        r29: bool,
-        /// `0x6DC` = clear depth 1.0 with bit 0.
-        clear: bool,
-        /// A depth buffer: `0x674` and `0x610`.
-        depth: bool,
-        /// `0x860` = the tile grid.
-        grid: bool,
-        /// The GLES table's other values (`0x614`/`0x618`, `0x648`,
-        /// `0x6D0`, `0x63C`, `0x64C`, `0x65C`).
-        gles: bool,
-        /// `0x6D8` left as the parameter memory set-up writes it
-        /// ([`m3::PM_6D8`], bit 27 set) instead of Dell's table's
-        /// `0x01000000`: the GLES driver never writes it.
-        pm: bool,
-    }
-
-    /// Table 3 with `l`'s registers (start last), and the region headers
-    /// rewritten for `l.r29`.
-    #[inline(never)]
-    fn levered(vram: &mut [u8], l: Levers) -> ([(usize, u32); 24], usize) {
-        regions(vram, if l.r29 { m3::frame::REGION_GAME } else { 0 });
-        let (mut t, mut n) = table(3);
-        let start = t[n - 1];
-        n -= 1;
-        for p in &mut t[..n] {
-            match p.0 {
-                0x6DC if l.clear => p.1 = m3::frame::clear_depth(1.0),
-                0x610 if l.depth => p.1 = m3::frame::depth_setup(COLS * ROWS, false),
-                0x610 if l.gles => p.1 = 0x0003_0001,
-                0x614 | 0x618 if l.gles => p.1 = 0x1E3C_E508,
-                0x648 if l.gles => p.1 = 1,
-                0x6D8 if l.pm => p.1 = m3::PM_6D8,
-                _ => {}
+    /// Logs `n` words from 2700G memory at `at` (nothing if out of range).
+    fn dump(vram: &[u8], what: &str, at: usize, n: usize) {
+        let _ = write!(RunLog, "  {what} @0x{at:06x}:");
+        for k in 0..n {
+            match load32_volatile(vram, at + 4 * k) {
+                Some(w) => {
+                    let _ = write!(RunLog, " {w:08x}");
+                }
+                None => break,
             }
         }
-        let mut add = |p: (usize, u32)| {
-            t[n] = p;
-            n += 1;
-        };
-        if l.depth {
-            add((0x674, ZBUF as u32));
-        }
-        if l.grid {
-            add((0x860, m3::frame::tile_grid(COLS, ROWS)));
-        }
-        if l.gles {
-            add((0x6D0, 1));
-            add((0x63C, 0));
-            add((0x64C, 0));
-            add((0x65C, TARGET as u32));
-        }
-        add(start);
-        (t, n)
+        log!("");
     }
 
-    /// How stage T draws its square: the ISP word, the corner order
-    /// (clockwise on screen or not) and the list pointer's flag bits.
-    #[derive(Clone, Copy)]
-    struct Combo {
-        isp: u32,
-        clockwise: bool,
-        strip: u32,
-        /// Control: the square's triangles in the flat 17-word form (does
-        /// a list draw more than its first object?).
-        flat: bool,
-        /// DoomGLES's own first object instead of the square (only its
-        /// TEX1 pointed at our texture, its TEX0 and ISP as given).
-        game: bool,
-    }
-
-    /// DoomGLES's first textured object as captured on the device (capture
-    /// version 6, 0x2B5000): a thin triangle from (79.25, 292.69) up to
-    /// (33.81, 0) and (51.06, 0). Numbers only (a triangle's description),
-    /// no game data.
-    const GAME_OBJECT: [u32; m3::tex::WORDS] = [
-        0xEC80_0000,
-        0x0333_9600,
-        0xCE00_3060,
-        0x8608_6610,
-        0x2264_0200,
-        0x429E_8000,
-        0x4392_5800,
-        0x4207_4000,
-        0x0000_0000,
-        0x424C_4000,
-        0x0000_0000,
-        0x3F7F_9100,
-        0x3F7F_4100,
-        0x3F7F_6000,
-        0x3B03_0000,
-        0x3B54_0000,
-        0x3B35_0000,
-        0xFF57_5757,
-        0x4202_0000,
-        0x0000_0000,
-        0xFF57_5757,
-        0x41DF_6270,
-        0x3F5F_2E00,
-        0xFF57_5757,
-        0x41E1_3098,
-        0x3FF7_8A00,
-    ];
-
-    /// Stage T: a dark full-screen flat triangle (the proven form), then a
-    /// textured square (two triangles, u and v 0 to 1, a tinted vertex
-    /// colour) drawn as `c` with TEX0 `tex0`; true if the render finished.
-    /// Version 7 drew the square alone in white vertex colour: drawn or
-    /// not, the samples were the core's white tile fill.
+    /// Stage X: the TA's buffers zeroed, its start table, the GLES clear
+    /// streamed into the TA's window, then `1` into the end window (all
+    /// as one write list); wait for TA done (status bit 4) and log what
+    /// the TA wrote; if it finished, the 3D stage on the TA's region array
+    /// (Dell's table `level`). True if the middle pixel changed.
     #[inline(never)]
-    fn draw_textured(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        c: Combo,
-        tex0: u32,
-        table: &[(usize, u32)],
-    ) -> bool {
-        let (x0, y0, s) = SQ;
-        let v = |x: f32, y: f32| m3::tex::Vertex {
-            x: x0 + x * s,
-            y: y0 + y * s,
-            z: 1.0,
-            rhw: 1.0,
-            argb: TINT,
-            u: x,
-            v: y,
-        };
-        let texw = [
-            tex0,
-            m3::tex::address(TEXTURE as u32),
-            m3::tex::COMBINE_GAME,
-        ];
-        // Clockwise on screen (y down): top left, top right, bottom left.
-        let (mut a, mut b) = (
-            [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)],
-            [v(1.0, 0.0), v(1.0, 1.0), v(0.0, 1.0)],
-        );
-        if !c.clockwise {
-            a.swap(1, 2);
-            b.swap(1, 2);
+    fn through_ta(e: &mut Engine<Mmio>, vram: &mut [u8], level: u8) -> bool {
+        for k in 0..TAIL_SIZE / 4 {
+            let _ = store32_volatile(vram, TAIL + 4 * k, 0);
         }
-        let back = [
-            Vertex::flat(0.0, 0.0, DARK),
-            Vertex::flat(2048.0, 0.0, DARK),
-            Vertex::flat(0.0, 2048.0, DARK),
-        ];
-        let ta = OBJECT + 4 * m3::TRIANGLE_WORDS;
-        let tb = ta + 4 * m3::tex::WORDS;
-        store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &back));
-        if c.game {
-            let mut g = GAME_OBJECT;
-            g[0] = c.isp;
-            g[1] = tex0;
-            g[2] = m3::tex::address(TEXTURE as u32);
-            store(vram, ta, &g);
-            let off = |at: usize| ((at - PARAMS) / 4) as u32;
-            store(
-                vram,
-                PARAMS,
-                &[
-                    m3::STRIP_ONE_TRIANGLE | off(OBJECT),
-                    c.strip | off(ta),
-                    m3::END,
-                ],
-            );
-            cpu::drain_write_buffer();
-            return run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
+        for k in 0..2 * (COLS * ROWS + 1) as usize {
+            let _ = store32_volatile(vram, TA_REGIONS + 4 * k, 0);
         }
-        if c.flat {
-            let f = |t: &[m3::tex::Vertex; 3]| t.map(|p| Vertex::flat(p.x, p.y, TINT));
-            store(vram, ta, &m3::triangle(c.isp, TSP_DELL, &f(&a)));
-            store(vram, tb, &m3::triangle(c.isp, TSP_DELL, &f(&b)));
-        } else {
-            store(
-                vram,
-                ta,
-                &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &a),
-            );
-            store(
-                vram,
-                tb,
-                &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &b),
-            );
-        }
-        let off = |at: usize| ((at - PARAMS) / 4) as u32;
-        store(
-            vram,
-            PARAMS,
-            &[
-                m3::STRIP_ONE_TRIANGLE | off(OBJECT),
-                c.strip | off(ta),
-                c.strip | off(tb),
-                m3::END,
-            ],
-        );
         cpu::drain_write_buffer();
-        run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some()
+        let t = m3::ta::start_table(TAIL as u32, TA_REGIONS as u32, W, H, COLS, ROWS);
+        let stream = m3::ta::clear_stream(W, H);
+        // `run` writes at the MBX block's offsets: the windows are below it.
+        // Then the scene's end as the GLES driver's flush sends it
+        // (`0x0226fdc0`): `0x85C` bit 7, `0xF0000000` into the TA window.
+        let mut w = [(0usize, 0u32); 9 + 15 + 3];
+        w[..9].copy_from_slice(&t);
+        for (k, &v) in stream.iter().enumerate() {
+            w[9 + k] = (m3::ta::PORT - MBX + 4 * k, v);
+        }
+        w[24] = (m3::ta::END_PORT - MBX, 1);
+        let r85c = t[7];
+        w[25] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
+        w[26] = (m3::ta::PORT - MBX + 4 * stream.len(), m3::END);
+        log!(
+            "X: the GLES clear through the TA; FIFO {} bytes free",
+            cmd::free_bytes(e.regs.read32(STATUS))
+        );
+        let done = run(e, vram, &w, m3::ta::DONE, None, 200_000).0.is_some();
+        e.regs.write32(MBX + r85c.0, r85c.1);
+        dump(vram, "regions", TA_REGIONS, 6);
+        dump(vram, "tail", TAIL, 4);
+        let list = load32_volatile(vram, TA_REGIONS + 4).unwrap_or(0) as usize;
+        dump(vram, "first list", list & m3::ADDR_MASK as usize, 8);
+        let ptr = load32_volatile(vram, list & m3::ADDR_MASK as usize).unwrap_or(0);
+        dump(
+            vram,
+            "its object",
+            PARAMS + 4 * (ptr & 0x001F_FFFF) as usize,
+            17,
+        );
+        if !done {
+            log!("  the TA never said done: no 3D render");
+            return false;
+        }
+        let (mut t3, n) = table(level);
+        for p in &mut t3[..n] {
+            if p.0 == 0x608 {
+                p.1 = TA_REGIONS as u32;
+            }
+        }
+        run(e, vram, &t3[..n], RENDER_DONE, Some((240, 320)), 200_000)
+            .1
+            .is_some()
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -693,137 +565,21 @@ mod image {
             );
         }
 
-        // T: the textured square, once per format field value.
+        // X: the GLES clear through the tile accelerator (ADR-0024 M5).
         if drew {
-            for k in 0..256 * 256 / 2 {
-                // Two texels a word, texel k holding k.
-                let t = 2 * k as u32;
-                let _ = store32_volatile(vram, TEXTURE + 4 * k, t | (t + 1) << 16);
-            }
-            cpu::drain_write_buffer();
-            // Texels 0, 1, 2, 3 across, 1 and 2 down, the diagonal, then
-            // further out; offsets from the square's top left.
-            const AT: [(u32, u32); 12] = [
-                (0, 0),
-                (1, 0),
-                (2, 0),
-                (3, 0),
-                (0, 1),
-                (0, 2),
-                (1, 1),
-                (4, 4),
-                (16, 0),
-                (0, 16),
-                (100, 37),
-                (255, 255),
-            ];
+            rt::check_in();
+            let _ = clear(&mut e, vram, GREY);
+            let ta = through_ta(&mut e, vram, level);
             log!(
-                "T: dark background, then a textured square at (16,16), 256 px, tint 0x{TINT:08x}, texel k = k"
+                "X: {}; (240,320) 0x{:08x}, (5,5) 0x{:08x}",
+                if ta {
+                    "the 3D stage drew the TA's scene"
+                } else {
+                    "nothing drawn from the TA"
+                },
+                px(vram, 240, 320),
+                px(vram, 5, 5)
             );
-            // 1. A flat control with every lever (does it still draw?),
-            // then the game's object and our square with each lever.
-            let mut found = None;
-            const OFF: Levers = Levers {
-                r29: false,
-                clear: false,
-                depth: false,
-                grid: false,
-                gles: false,
-                pm: false,
-            };
-            const ALL: Levers = Levers {
-                r29: true,
-                clear: true,
-                depth: true,
-                grid: true,
-                gles: true,
-                pm: false,
-            };
-            let rc = Levers {
-                r29: true,
-                clear: true,
-                ..OFF
-            };
-            let game = Combo {
-                isp: m3::tex::ISP_GAME,
-                clockwise: true,
-                strip: m3::tex::STRIP_GAME,
-                flat: false,
-                game: true,
-            };
-            let square = Combo {
-                game: false,
-                ..game
-            };
-            let flat = Combo {
-                isp: ISP_ALWAYS,
-                strip: m3::STRIP_ONE_TRIANGLE,
-                flat: true,
-                ..square
-            };
-            // Version 12 (all off but `pm`): the frame state didn't draw
-            // a textured object; version 13 adds `0x6D8` as the game has it.
-            let pm = Levers { pm: true, ..OFF };
-            let tries = [
-                (pm, flat),
-                (pm, game),
-                (Levers { pm: true, ..ALL }, game),
-                (Levers { pm: true, ..rc }, game),
-                (pm, square),
-                (Levers { pm: true, ..ALL }, square),
-                (OFF, game),
-            ];
-            for (k, &(l, c)) in tries.iter().enumerate() {
-                rt::check_in();
-                let _ = store32_volatile(vram, ZBUF, ZMARK);
-                let (t, n) = levered(vram, l);
-                let _ = clear(&mut e, vram, GREY);
-                let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
-                // Inside the square, or inside the game's thin triangle.
-                let (mx, my) = if c.game { (55, 100) } else { (144, 144) };
-                let (mid, out) = (px(vram, mx, my), px(vram, 300, 300));
-                log!(
-                    "  T1.{k} r29 {} clear {} depth {} grid {} gles {} pm {}, flat {}, game {}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}, zbuf {:08x}",
-                    l.r29,
-                    l.clear,
-                    l.depth,
-                    l.grid,
-                    l.gles,
-                    l.pm,
-                    c.flat,
-                    c.game,
-                    px(vram, 67, 200),
-                    load32_volatile(vram, ZBUF).unwrap_or(0)
-                );
-                if found.is_none() && !c.flat && done && mid != out && mid != 0xFFFF_FFFF {
-                    found = Some((l, square));
-                }
-            }
-            // 2. With it, every value of the format field.
-            if let Some((l, c)) = found {
-                let (t, n) = levered(vram, l);
-                log!(
-                    "T2: samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
-                );
-                for f in 0..16u32 {
-                    rt::check_in();
-                    let _ = clear(&mut e, vram, GREY);
-                    let tex0 = m3::tex::FORMAT_GAME & !(0xF << m3::tex::FORMAT_SHIFT)
-                        | f << m3::tex::FORMAT_SHIFT;
-                    let done = draw_textured(&mut e, vram, c, tex0, &t[..n]);
-                    // Word by word: formatting the array as a whole costs ~6 KiB.
-                    let _ = write!(RunLog, "  T2.{f:x} TEX0 0x{tex0:08x}: done {done}, pixels");
-                    for &(dx, dy) in &AT {
-                        let _ = write!(RunLog, " {:08x}", px(vram, 16 + dx, 16 + dy));
-                    }
-                    log!(", outside {:08x}", px(vram, 300, 300));
-                }
-                // On screen at the end: the game's format.
-                let _ = clear(&mut e, vram, GREY);
-                let _ = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
-            } else {
-                log!("T2: no form drew the square: no format sweep");
-            }
         }
 
         let saved = show_target(&mut e.regs);

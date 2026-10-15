@@ -232,3 +232,30 @@ fn the_frame_state_matches_the_gles_drivers_values() {
     let last = region_entry(59, 39, 0, true)[0] | frame::REGION_GAME;
     assert_eq!(last, 0xA000_273B);
 }
+
+#[test]
+fn the_ta_table_matches_the_gles_drivers_words() {
+    let t = ta::start_table(0x00A0_0000, 0x00A2_0000, 480, 640, 60, 40);
+    assert_eq!(t[0], (0x840, 0x00A0_0000));
+    assert_eq!(t[1], (0x844, 0x00A2_0000));
+    assert_eq!(t[3], (0x84C, 480 << 16));
+    assert_eq!(t[4], (0x850, 640 << 16));
+    // 1.0e-5.
+    assert!((f32::from_bits(t[5].1) - 1.0e-5).abs() < 1.0e-9);
+    // rows - 1 = 39 in bits 10 up, (cols - 1) & 0xFE = 58 above it.
+    assert_eq!(t[7], (0x85C, 0x0004_00E1 | (39 | 58 << 9) << 10));
+    assert_eq!(t[8], (ta::START, 1));
+}
+
+#[test]
+fn the_clear_stream_is_the_gles_drivers() {
+    let s = ta::clear_stream(480, 640);
+    assert_eq!(
+        s[..6],
+        [0x1000_0053, 0x2220_6F80, ISP_ALWAYS, 0, 0, ta::STRIP]
+    );
+    // (0, 0, 1), (960, 0, 1), (0, 1280, 1).
+    assert_eq!(s[6..9], [0, 0, 0x3F80_0000]);
+    assert_eq!(s[9..12], [0x4470_0000, 0, 0x3F80_0000]);
+    assert_eq!(s[12..15], [0, 0x44A0_0000, 0x3F80_0000]);
+}
