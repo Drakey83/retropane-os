@@ -160,7 +160,12 @@ report; device runs only with the owner's go.
    `(0x680, 1)`. **Version 11** (`0x61C = 0x20007`, then also `0x610 =
    0x30001`, `0x64C = 0` and the extras): still no textured object, the
    game's included. Left: `0x674`, `0x860` and state set once at start-up
-   (Dell's escapes), read next.
+   (Dell's escapes), read next. `0x674`: context `+0x794` is the current
+   draw surface (stored by `eglMakeCurrent`, `0x0225e124`); `[surface+4]`
+   is likely its depth buffer, and `0x674` that buffer's address (else 0),
+   with `0x610`'s `(n - 1) << 7` from it. Our objects don't write depth
+   (ISP bit 26), so likely not the blocker; a version with a depth buffer
+   is a cheap test.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
