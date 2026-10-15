@@ -81,7 +81,7 @@ pub const CLOCK_IDLE_US: u32 = 100_000;
 
 /// Texel formats (TEX0 bits 15-13, version 18).
 pub mod format {
-    pub use rp_drv_mbx3d::tex::{ARGB1555, ARGB4444, RGB332, RGB565};
+    pub use rp_drv_mbx3d::tex::{ARGB1555, ARGB4444, ARGB8888, PVRTC2, PVRTC4, RGB332, RGB565};
 }
 /// What a texture coordinate past the texture does (TEX0 bits 31-28,
 /// version 22).
@@ -111,6 +111,16 @@ pub enum ClockPolicy {
     #[default]
     KeepAll,
 }
+
+/// `0x130` bit 15: the MBX core's interrupts on (Dell's `0x87F5`; version
+/// 24: without it render done never reached GPIO85).
+pub const IRQ_MASTER: u32 = 1 << 15;
+/// The 2700G's system interrupt enable (write-only: never read).
+pub const MINTENABLE: usize = 0x018;
+/// `MINTENABLE` as Dell writes it: bit 15 the master, bit 2 routes the MBX
+/// core (version 24: 0x8004 and 0x800F edged GPIO85, 0x8001/2/8 and 0x000F
+/// didn't), bits 0, 1, 3 the display's.
+pub const MINTENABLE_DELL: u32 = 0x800F;
 
 /// Time and waiting, in microseconds (any wrapping clock).
 pub trait Clock {
@@ -153,6 +163,9 @@ pub struct Texture {
     pub u_mode: u8,
     /// Down: one of [`address`].
     pub v_mode: u8,
+    /// Bilinear filtering (TEX1 bit 31, `rp-mbx3d` version 24), or point
+    /// sampling.
+    pub linear: bool,
 }
 
 impl Texture {
@@ -165,7 +178,19 @@ impl Texture {
     /// Bytes it takes.
     #[must_use]
     pub const fn bytes(&self) -> u32 {
-        self.side() * self.side() * 2
+        let texels = self.side() * self.side();
+        match self.format as u32 {
+            tex::ARGB8888 => texels * 4,
+            tex::PVRTC4 => texels / 2,
+            tex::PVRTC2 => texels / 4,
+            _ => texels * 2,
+        }
+    }
+
+    /// The same texture filtered bilinearly (`true`) or point sampled.
+    #[must_use]
+    pub const fn with_linear(self, linear: bool) -> Self {
+        Self { linear, ..self }
     }
 
     /// The same texture with other address modes.
@@ -192,7 +217,8 @@ impl Texture {
             self.u_mode as u32,
             self.v_mode as u32,
         );
-        let tex1 = m3::ta::dell_texture(self.at)[1];
+        let filter = if self.linear { tex::TEX1_LINEAR } else { 0 };
+        let tex1 = tex::tex1(self.at, tex::TEX1_LOD, filter);
         let tex2 = if self.has_alpha() {
             TEX2_ALPHA
         } else {
@@ -584,9 +610,22 @@ pub const fn untwiddle(i: u32) -> (u32, u32) {
     (x, y)
 }
 
+/// A texture of side `8 << code` in `format`, not yet placed.
+const fn texture(code: u8, format: u32) -> Texture {
+    Texture {
+        at: 0,
+        code,
+        format: format as u8,
+        u_mode: tex::CLAMP as u8,
+        v_mode: tex::CLAMP as u8,
+        linear: false,
+    }
+}
+
 /// Uploads a square texture of side `8 << code` (`texels` in rows, 16 bits
-/// each, `format` one of [`format`]) into a block from `pool`, twiddled.
-/// Clamped at both edges (Dell's); see [`Texture::with_modes`].
+/// each, `format` one of [`format`]'s 16-bit ones) into a block from
+/// `pool`, twiddled. Clamped at both edges (Dell's), point sampled; see
+/// [`Texture::with_modes`] and [`Texture::with_linear`].
 pub fn upload<M: LocalMem>(
     pool: &mut Pool,
     mem: &mut M,
@@ -602,13 +641,7 @@ pub fn upload<M: LocalMem>(
     {
         return None;
     }
-    let t = Texture {
-        at: 0,
-        code,
-        format: format as u8,
-        u_mode: tex::CLAMP as u8,
-        v_mode: tex::CLAMP as u8,
-    };
+    let t = texture(code, format);
     let side = t.side();
     if texels.len() != (side * side) as usize {
         return None;
@@ -630,6 +663,64 @@ pub fn upload<M: LocalMem>(
         mem.store((at + 4 * m) as usize, &buf[..n as usize]);
         m += n;
     }
+    mem.sync();
+    Some(Texture { at, ..t })
+}
+
+/// Uploads a square texture of 32-bit texels, `0xAARRGGBB` (TEX0 code 12:
+/// `rp-mbx3d` version 24 decoded red, green and blue exactly; its alpha in
+/// blending is untested, so it's drawn opaque), in rows, twiddled.
+pub fn upload32<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    texels: &[u32],
+) -> Option<Texture> {
+    let t = texture(code, tex::ARGB8888);
+    let side = t.side();
+    if code > 7 || texels.len() != (side * side) as usize {
+        return None;
+    }
+    let at = pool.alloc(t.bytes(), 128)?;
+    let mut buf = [0u32; 32];
+    let words = side * side;
+    let mut m = 0;
+    while m < words {
+        let n = (words - m).min(32);
+        for (k, w) in buf[..n as usize].iter_mut().enumerate() {
+            let (x, y) = untwiddle(m + k as u32);
+            *w = texels[(y * side + x) as usize];
+        }
+        mem.store((at + 4 * m) as usize, &buf[..n as usize]);
+        m += n;
+    }
+    mem.sync();
+    Some(Texture { at, ..t })
+}
+
+/// Uploads a PVRTC texture (`format` [`format::PVRTC4`] or
+/// [`format::PVRTC2`]) of side `8 << code` as compressed on the PC: its
+/// 64-bit blocks as pairs of words, the modulation word first (version 24:
+/// the other way round drew black), in the order the encoder writes them
+/// (PVRTC's twiddled block order; the device test couldn't tell it from
+/// row order). 4 or 2 bits a texel: a 256 x 256 picture in 32 or 16 KiB
+/// instead of 128.
+pub fn upload_pvrtc<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    format: u32,
+    blocks: &[u32],
+) -> Option<Texture> {
+    if code > 7 || !matches!(format, tex::PVRTC4 | tex::PVRTC2) {
+        return None;
+    }
+    let t = texture(code, format);
+    if blocks.len() * 4 != t.bytes() as usize {
+        return None;
+    }
+    let at = pool.alloc(t.bytes(), 128)?;
+    mem.store(at as usize, blocks);
     mem.sync();
     Some(Texture { at, ..t })
 }
@@ -675,6 +766,10 @@ pub struct Renderer {
     mem_words: u32,
     resets: u32,
     clock_policy: ClockPolicy,
+    /// Render done raises the 2700G's interrupt (GPIO85).
+    irq: bool,
+    /// `irq` changed since the enables were last written.
+    irq_stale: bool,
 }
 
 impl Renderer {
@@ -736,6 +831,8 @@ impl Renderer {
             mem_words: 0,
             resets: 0,
             clock_policy: ClockPolicy::KeepAll,
+            irq: false,
+            irq_stale: false,
         })
     }
 
@@ -762,6 +859,20 @@ impl Renderer {
     #[must_use]
     pub const fn core_resets(&self) -> u32 {
         self.resets
+    }
+
+    /// Render done raises the 2700G's interrupt line, GPIO85 (`rp-mbx3d`
+    /// version 24: an edge the moment status bit 2 sets, with `0x130` bits
+    /// 15 and 2 and `MINTENABLE` bits 15 and 2). The caller then sleeps
+    /// until the interrupt instead of the predicted time, and calls
+    /// [`Self::poll`] (one status read, which also clears it). The line
+    /// also carries the display's events: a wake-up without render done
+    /// polls `Wait`. Off by default.
+    pub fn set_interrupt(&mut self, on: bool) {
+        if on != self.irq {
+            self.irq = on;
+            self.irq_stale = true;
+        }
     }
 
     /// What to redo when the 3D clock comes back on ([`ClockPolicy`]).
@@ -945,6 +1056,9 @@ impl Renderer {
         if self.bg_stale {
             self.write_background(mem);
         }
+        if self.irq_stale {
+            self.write_irq_enables(bus);
+        }
         if self.arena - ARENA_AT > (self.params.size - ARENA_AT) / 2 {
             // Lists are referenced only by the frame being built: reclaim
             // them all between frames before space runs short.
@@ -1086,8 +1200,24 @@ impl Renderer {
         };
         bus.write32(MBX + reg::CLEAR, m3::PM_READY);
         bus.write32(MBX + reg::ENABLE, en | m3::RENDER_DONE);
+        self.write_irq_enables(bus);
         self.ready = ok;
         if ok { Ok(()) } else { Err(Error::NoCore) }
+    }
+
+    /// `0x130` bit 15 (the MBX core's master enable) and `MINTENABLE`
+    /// as Dell writes it (`0x800F`: bit 15 the master, bit 2 the MBX core,
+    /// bits 0, 1, 3 the display's) when interrupts are on; bit 15 off when
+    /// not (render done still sets the status bit).
+    fn write_irq_enables<B: RegisterBus>(&mut self, bus: &mut B) {
+        let en = bus.read32(MBX + reg::ENABLE);
+        if self.irq {
+            bus.write32(MBX + reg::ENABLE, en | IRQ_MASTER | m3::RENDER_DONE);
+            bus.write32(MINTENABLE, MINTENABLE_DELL);
+        } else {
+            bus.write32(MBX + reg::ENABLE, en & !IRQ_MASTER);
+        }
+        self.irq_stale = false;
     }
 
     fn write_background<M: LocalMem>(&mut self, mem: &mut M) {

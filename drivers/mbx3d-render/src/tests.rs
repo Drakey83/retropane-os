@@ -452,6 +452,7 @@ fn no_quad_sets_a_tsp_bit_that_hangs_the_core() {
         format: format::ARGB4444 as u8,
         u_mode: 0,
         v_mode: 0,
+        linear: false,
     };
     let paints = [
         Paint::Flat(RED),
@@ -822,4 +823,142 @@ fn clock_policies_redo_what_they_say() {
         assert_eq!(g.px(0, 0), BLUE, "{policy:?}");
         assert_eq!(g.gpu.read32(MBXCLK), 0x6);
     }
+}
+
+/// The checker of version 21/24: 8 x 8 red/white, texel (x, y) red when
+/// x + y is even.
+fn checker(g: &mut Rig) -> Texture {
+    let texels: Vec<u16> = (0..64)
+        .map(|i| {
+            if (i % 8 + i / 8) % 2 == 0 {
+                0xF800
+            } else {
+                0xFFFF
+            }
+        })
+        .collect();
+    upload(&mut g.pool, &mut g.mem, 0, format::RGB565, &texels).unwrap()
+}
+
+#[test]
+fn bilinear_filtering_as_measured() {
+    // rp-mbx3d run 24, T12: the checker over 64 px at (100,100), y 104,
+    // x 100-114 step 2: point steps at 108, linear ramps.
+    for (linear, want) in [
+        (
+            false,
+            [
+                0xFFFF_0000u32,
+                0xFFFF_0000,
+                0xFFFF_0000,
+                0xFFFF_0000,
+                0xFFFF_FFFF,
+                0xFFFF_FFFF,
+                0xFFFF_FFFF,
+                0xFFFF_FFFF,
+            ],
+        ),
+        (
+            true,
+            [
+                0xFFFF_0000,
+                0xFFFF_0000,
+                0xFFFF_0000,
+                0xFFFF_3F3F,
+                0xFFFF_7F7F,
+                0xFFFF_BFBF,
+                0xFFFF_FFFF,
+                0xFFFF_BFBF,
+            ],
+        ),
+    ] {
+        let mut g = rig(480, 640);
+        let tex = checker(&mut g).with_linear(linear);
+        assert_eq!(tex.words()[1] >> 31, u32::from(linear));
+        g.set(0, Some(square(100, 100, 64, Paint::texture(tex))));
+        g.frame();
+        let row: Vec<u32> = (0..8).map(|k| g.px(100 + 2 * k, 104)).collect();
+        assert_eq!(row, want, "linear {linear}");
+    }
+}
+
+#[test]
+fn texels_of_32_bits_and_pvrtc_as_measured() {
+    // Run 24, T13: quadrants red/green/blue/white (alpha 0x80, drawn
+    // opaque) and PVRTC solid and half-and-half blocks.
+    let mut g = rig(480, 640);
+    let q32: Vec<u32> = (0..64)
+        .map(|i| match (i % 8 < 4, i / 8 < 4) {
+            (true, true) => 0xFFFF_0000,
+            (false, true) => 0xFF00_FF00,
+            (true, false) => 0xFF00_00FF,
+            (false, false) => 0x80FF_FFFF,
+        })
+        .collect();
+    let t = upload32(&mut g.pool, &mut g.mem, 0, &q32).unwrap();
+    assert_eq!(t.bytes(), 256);
+    g.set(0, Some(square(100, 100, 64, Paint::texture(t))));
+    g.frame();
+    let quad = |g: &Rig| {
+        [
+            g.px(108, 108),
+            g.px(156, 108),
+            g.px(108, 156),
+            g.px(156, 156),
+        ]
+    };
+    assert_eq!(quad(&g)[..3], [0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF]);
+    // PVRTC 4 bpp, 16 x 16: 16 blocks (modulation word, colour word).
+    const RED: u32 = 0xFC00_FC00;
+    const GREEN: u32 = 0x83E0_83E0;
+    let solid: Vec<u32> = (0..32).map(|k| if k % 2 == 0 { 0 } else { RED }).collect();
+    let p4 = upload_pvrtc(&mut g.pool, &mut g.mem, 1, format::PVRTC4, &solid).unwrap();
+    assert_eq!(p4.bytes(), 128);
+    g.set(0, Some(square(100, 100, 64, Paint::texture(p4))));
+    g.frame();
+    assert_eq!(quad(&g), [0xFFFF_0000; 4]);
+    // 2 bpp: 8 blocks of 8 x 4.
+    let p2 = upload_pvrtc(&mut g.pool, &mut g.mem, 1, format::PVRTC2, &solid[..16]).unwrap();
+    g.set(0, Some(square(100, 100, 64, Paint::texture(p2))));
+    g.frame();
+    assert_eq!(quad(&g), [0xFFFF_0000; 4]);
+    // Blocks 0-1 of each 4 red, 2-3 green.
+    let half: Vec<u32> = (0..32)
+        .map(|w| match (w % 2, (w / 2) % 4 < 2) {
+            (0, _) => 0,
+            (_, true) => RED,
+            _ => GREEN,
+        })
+        .collect();
+    let ph = upload_pvrtc(&mut g.pool, &mut g.mem, 1, format::PVRTC4, &half).unwrap();
+    g.set(0, Some(square(100, 100, 64, Paint::texture(ph))));
+    g.frame();
+    assert_eq!(
+        quad(&g),
+        [0xFFFF_0000, 0xFF00_FF00, 0xFFFF_0000, 0xFF00_FF00]
+    );
+    // Wrong sizes are refused.
+    assert!(upload_pvrtc(&mut g.pool, &mut g.mem, 1, format::PVRTC4, &solid[..30]).is_none());
+    assert!(upload_pvrtc(&mut g.pool, &mut g.mem, 1, format::RGB565, &solid).is_none());
+    assert!(upload32(&mut g.pool, &mut g.mem, 0, &q32[..60]).is_none());
+}
+
+#[test]
+fn render_done_raises_the_interrupt_only_when_switched_on() {
+    // Run 24, T10: 0x130 bits 15 and 2 and MINTENABLE 0x800F: one edge on
+    // GPIO85 at render done; bit 2 alone: none.
+    let mut g = rig(480, 640);
+    g.frame();
+    assert_eq!(g.gpu.irqs, 0, "off by default");
+    g.r.set_interrupt(true);
+    g.set(0, Some(square(0, 0, 8, Paint::Flat(BLUE))));
+    g.frame();
+    assert_eq!(g.gpu.irqs, 1);
+    assert_eq!(g.gpu.read32(MBX + reg::ENABLE) & 0x8004, 0x8004);
+    assert_eq!(g.gpu.read32(crate::MINTENABLE), crate::MINTENABLE_DELL);
+    g.r.set_interrupt(false);
+    g.set(0, Some(square(8, 0, 8, Paint::Flat(BLUE))));
+    g.frame();
+    assert_eq!(g.gpu.irqs, 1, "off again");
+    assert_eq!(g.gpu.read32(MBX + reg::ENABLE) & 0x8000, 0);
 }
