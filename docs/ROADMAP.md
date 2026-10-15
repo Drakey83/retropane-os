@@ -153,7 +153,9 @@ Personality's drawing (Phase 4) are designed:
 - [x] Research: ActiveSync's PC-side interfaces, from the owner's discs and PC (docs/legacysync/activesync-interfaces.md)
 - [x] Shared CAB and setup-script parsers, device and PC (`rp-cab`, `rp-ce-setup`)
 - [x] `ceappmgr.exe` stand-in: checks, chooses and stages the CAB with its plan (registration: option A chosen, backup/take-over/check built, not yet applied; docs/legacysync/ceappmgr-standin.md)
-- [ ] Device link session: design for review (docs/legacysync/device-link.md), then X25519/ChaCha20-Poly1305 in `rp-crypto`, frames, pairing
+- [x] Device link session design, accepted 2026-10-15 (docs/legacysync/device-link.md: own WinUSB interface, Noise XX pairing with a 6-digit code then KK, signed partnership list on the card)
+- [ ] **Device random number source** (docs/security.md principle 4): not started, no code yet. Gates every key the device makes, so the link's device side waits for it. Needs its own design (entropy sources on the X51v measured)
+- [ ] X25519, ChaCha20-Poly1305 and list signing in `rp-crypto`; the transport-agnostic frame codec and Noise handshakes (no RNG needed)
 - [ ] Sending to the device and installing (needs Phase 4's CAB installer)
 - [ ] RAPI (L3), time, Explore, backup; then sync and pass-through
 

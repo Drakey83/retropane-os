@@ -92,7 +92,7 @@ from a new PC needs the device's approval (a partnership, L5).
 | Time sync | yes, on connect (cheap; fixes the RTC drift TOTP and TLS care about) |
 | Backup and restore | yes: the device's files and settings to a file on the PC, restorable, encrypted with a key the user chooses |
 | Contacts, calendar, tasks | yes, **modernized**: sync with Outlook *and* with modern services (CardDAV/CalDAV: Google, iCloud, Nextcloud), not only desktop Outlook as ActiveSync did; the device keeps the Pocket Outlook formats legacy apps read |
-| Email | through the device's own mail (Phase 8) rather than Outlook's Inbox sync; LegacySync can still copy Outlook's folders for users who want that |
+| Email | through the device's own mail (Phase 8) rather than Outlook's Inbox sync; LegacySync can still copy Outlook's folders for users who want that. Exchange push mail (Exchange ActiveSync) is the device talking to the server, not desktop ActiveSync: not LegacySync's job; whether the Phase 8 mail app speaks it is an open decision (docs/legacysync/device-link.md, Scope) |
 | Pass-through | yes, **off by default**: the device online through the PC (useful before Wi-Fi works, and on networks that refuse 802.11b), only when the user turns it on in LegacySync |
 | File conversion | no: modern formats instead (the device opens .docx/.xlsx-lite or plain text); revisit if users ask |
 
