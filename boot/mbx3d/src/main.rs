@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 16: version 15 drew the GLES clear
+//! 3D core, under the loader. Version 17: version 16's textured triangle
+//! went through the TA but landed in no tile (every header bit 25, no
+//! list); the vertex order is confirmed by the GLES driver's own textured
+//! draw (`0x0226eae4`: x, y, z, 1/w, colour, u, v). Now with the state
+//! words as that draw sends them: the clip word (full screen) and Dell's
+//! texture words (TSP `0x22220E80`), the game's words with the clip, and
+//! the game's TSP with Dell's texture words.
+//! Version 16: version 15 drew the GLES clear
 //! through the TA (black over grey; the TA's flat object: TSP, x/y x3,
 //! z x3). Now the clear again (control), then a textured triangle through
 //! the TA, as the GLES driver sends one: the state block with texture
@@ -194,7 +201,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 16;
+    const VERSION: u32 = 17;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -634,11 +641,24 @@ mod image {
                 m3::tex::address(TEXTURE as u32),
                 m3::tex::COMBINE_GAME,
             ];
-            for (name, isp) in [("X2", ISP_ALWAYS), ("X3", m3::tex::ISP_GAME)] {
+            let dell = m3::ta::dell_texture(TEXTURE as u32);
+            let clip = m3::ta::clip(W, H);
+            // Version 16: the game's words with clip 0 drew nothing (every
+            // tile empty, header bit 25).
+            for (name, tsp, isp, tex) in [
+                ("X2", m3::ta::TSP_DELL_TEXTURED, ISP_ALWAYS, dell),
+                ("X3", m3::tex::TSP_GAME, m3::tex::ISP_GAME, texw),
+                ("X4", m3::tex::TSP_GAME, ISP_ALWAYS, dell),
+            ] {
                 rt::check_in();
                 let _ = clear(&mut e, vram, GREY);
-                log!("{name}: a textured triangle through the TA, ISP 0x{isp:08x}");
-                let s = m3::ta::textured_stream(m3::tex::TSP_GAME, isp, texw, &tri);
+                log!(
+                    "{name}: a textured triangle through the TA, TSP 0x{tsp:08x} ISP 0x{isp:08x} TEX 0x{:08x} 0x{:08x} 0x{:08x}",
+                    tex[0],
+                    tex[1],
+                    tex[2]
+                );
+                let s = m3::ta::textured_stream(tsp, isp, tex, clip, &tri);
                 let ok = through_ta(&mut e, vram, level, &s, 26, (120, 160));
                 log!(
                     "{name}: {}; inside (120,160) 0x{:08x} (60,60) 0x{:08x} (200,100) 0x{:08x}, outside (300,500) 0x{:08x}",

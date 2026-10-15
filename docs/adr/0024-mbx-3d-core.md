@@ -316,6 +316,21 @@ report; device runs only with the owner's go.
    likely). **Version 16** sends the clear (control), then a textured
    triangle that way, with ISP "always" and with the game's.
 
+   **Version 16 on the device (`local/rp-mbx3d-run16.txt`):** the clear
+   drew again; the textured triangle (both ISP words) went through the TA
+   (done in 1.2 ms) but landed in no tile: every region header
+   `0x22000000 | tile` (bit 25 new: an empty tile, likely), no lists. The
+   GLES driver's own textured draw (`0x0226eae4`, a full-screen copy)
+   confirms the vertex order (x, y, z, 1/w, colour, u, v) and header
+   `0x10000057`, and shows the two state words left: the **clip word**
+   (mask bit 4, `0x0226deb4`): `1 << 29 | xmin << 21 | xmax << 14 | ymin
+   << 7 | ymax` in 16-pixel units (`0x20074027` full screen; the clear's
+   0 means no clipping) and **Dell's texture words** (TEX0 `0xA8800000`,
+   TEX1 `0x0E000000 | address / 128`, TEX2 `0xD6886610`, TSP
+   `0x22220E80`, the same as Dell's object in capture 4). **Version 17**
+   tries that draw's words with the full-screen clip, the game's words
+   with it, and the game's TSP with Dell's texture words.
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.

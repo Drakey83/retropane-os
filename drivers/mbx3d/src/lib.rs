@@ -398,6 +398,32 @@ pub mod ta {
     /// triangle list), the polygon offset 0.
     pub const STRIP: u32 = 0x4000_0000;
 
+    /// The state block's clip word (mask bit 4; `libGLES_CL.dll`
+    /// `0x0226deb4`): a rectangle in 16-pixel units, `1 << 29 | xmin << 21
+    /// | xmax << 14 | ymin << 7 | ymax` (max inclusive); the clear sends 0
+    /// (no clipping, it seems: version 15 drew the whole screen).
+    #[must_use]
+    pub fn clip(width: u32, height: u32) -> u32 {
+        let last = |n: u32| (n.div_ceil(16).saturating_sub(1)) & 127;
+        1 << 29 | last(width) << 14 | last(height)
+    }
+
+    /// The texture words of the GLES driver's own textured draw
+    /// (`0x0226eae4`), the same as Dell's object in capture 4 (`0x12A000`):
+    /// TEX0 `0xA8800000` (size and format low bits from context `+0x134`),
+    /// TEX1 `0x0E000000 | address / 128` (likely, from `+0x138`), TEX2
+    /// `0xD6886610`; its TSP `0x22220E80`.
+    #[must_use]
+    pub fn dell_texture(addr: u32) -> [u32; 3] {
+        [
+            0xA880_0000,
+            0x0E00_0000 | (addr >> 7) & 0x01FF_FFFF,
+            0xD688_6610,
+        ]
+    }
+    /// The TSP word of that draw.
+    pub const TSP_DELL_TEXTURED: u32 = 0x2222_0E80;
+
     /// Words in a textured, coloured vertex the GLES driver's transform
     /// stage sends (`0x02272064`: 16 bytes, + 4 with a colour, + 8 per
     /// texture unit; the 7-word emitter `0x02274644`): x, y, z, 1/w,
@@ -405,8 +431,9 @@ pub mod ta {
     pub const TEX_VERTEX_WORDS: usize = 7;
 
     /// One textured triangle as a strip: the state block (mask
-    /// `0x10000057`: TSP, ISP, texture unit 0's three words, two more
-    /// words, the clear's form with bit 2 added), the strip word, then
+    /// `0x10000057`: TSP, ISP, texture unit 0's three words, the clip
+    /// word, the bit 6 word; the GLES driver's own textured draw
+    /// `0x0226eae4` has this form), the strip word, then
     /// three [`TEX_VERTEX_WORDS`]-word vertices. Then a `1` goes to
     /// [`END_PORT`].
     #[must_use]
@@ -414,11 +441,12 @@ pub mod ta {
         tsp: u32,
         isp: u32,
         tex: [u32; 3],
+        clip: u32,
         v: &[super::tex::Vertex; 3],
     ) -> [u32; 9 + 3 * TEX_VERTEX_WORDS] {
         let mut s = [0u32; 9 + 3 * TEX_VERTEX_WORDS];
-        s[..6].copy_from_slice(&[0x1000_0057, tsp, isp, tex[0], tex[1], tex[2]]);
-        // s[6], s[7]: the two more words, 0 as in the clear.
+        s[..7].copy_from_slice(&[0x1000_0057, tsp, isp, tex[0], tex[1], tex[2], clip]);
+        // s[7]: the bit 6 word, 0 as in the GLES driver's draws.
         s[8] = STRIP;
         for (k, p) in v.iter().enumerate() {
             let at = 9 + k * TEX_VERTEX_WORDS;
