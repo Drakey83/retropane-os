@@ -274,6 +274,18 @@ report; device runs only with the owner's go.
    region array. If the TA path draws, the textured object goes through
    it next and its output is compared with ours word by word.
 
+   **Version 14 on the device (2026-10-15, `local/rp-mbx3d-run14.txt`):
+   the TA works.** Done (status bit 4) 1.9 ms after the start; it wrote
+   the region array in the game's form (`0x20000000 | tile`, bit 29 as in
+   DoomGLES's frames; list blocks 64 bytes apart) and a list (`0x400B71AD`
+   then `0xF0000000`). But it wrote the list at `0x6DC6DC`, 4 MiB below
+   the parameter memory we gave (12 MiB): `0xEDC6DC` with bit 23 dropped.
+   **The parameter memory manager reaches only 8 MiB** (11-bit page
+   numbers, likely); the game's is below it (`0x2B4000`). The 3D stage,
+   reading at 12 MiB, found zeros and drew white tiles. **Version 15**
+   moves the parameter memory to 6 MiB and logs the words around the
+   first list.
+
 **Time box:** M1 and M2 two working sessions each. If M2 can't produce a
 candidate scene format in that time, stop and bring the owner what's
 known before going on. Each milestone is small enough to show on its own.

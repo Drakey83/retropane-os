@@ -276,6 +276,12 @@ pub const PM_READY: u32 = 1 << 6;
 /// with this; Dell's start table writes `0x01000000` (bit 27 clear) for
 /// its flat scenes.
 pub const PM_6D8: u32 = 0x0900_0000;
+/// How far the parameter memory manager reaches: its pages must lie below
+/// 8 MiB of 2700G memory (`rp-mbx3d` version 14, 2026-10-15: with the
+/// parameter memory at 12 MiB, the tile accelerator wrote its lists 4 MiB
+/// lower, `0xEDC6DC` as `0x6DC6DC`: 11-bit page numbers, likely).
+/// DoomGLES's parameter memory is below it too (`0x2B4000`).
+pub const PM_REACH: usize = 0x80_0000;
 /// Status bit: the 3D stage finished a render.
 pub const RENDER_DONE: u32 = 1 << 2;
 

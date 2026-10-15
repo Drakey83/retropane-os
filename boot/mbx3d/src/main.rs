@@ -1,5 +1,10 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 14 (ADR-0024 M5): hand-written
+//! 3D core, under the loader. Version 15: version 14's TA ran (done in
+//! 1.9 ms, a region array in the game's form) but wrote its lists 4 MiB
+//! low (`0xEDC6DC` as `0x6DC6DC`): the parameter memory manager reaches
+//! only 8 MiB (11-bit page numbers), so the parameter memory moves from
+//! 12 MiB to 6 MiB; the words around the first list are logged too.
+//! Version 14 (ADR-0024 M5): hand-written
 //! textured objects never drew with every register as the game has them
 //! (versions 7-13), so this draws the way the game does, through the tile
 //! accelerator: the GLES driver's own clear, word for word, streamed into
@@ -144,17 +149,19 @@ mod image {
     }
 
     // 2700G local memory: the 32 bpp target (2 MiB in, clear of the
-    // loader's plane below 1 MiB); the parameter memory (1 MiB at 12 MiB,
-    // 4 KiB aligned; our lists in its first 4 KiB, where Dell keeps its
-    // own); the manager's 16 KiB block (16 KiB aligned); the region array;
+    // loader's plane below 1 MiB); the parameter memory (1 MiB at 6 MiB,
+    // 4 KiB aligned, below the manager's 8 MiB reach (version 14); our
+    // lists in its first 4 KiB, where Dell keeps its own); the manager's
+    // 16 KiB block (16 KiB aligned); the region array;
     // the 2D engine's fence.
     const TARGET: usize = 0x0020_0000;
     const W: u32 = 480;
     const H: u32 = 640;
     const STRIDE: usize = 480 * 4;
-    const PM: usize = 0x00C0_0000;
+    const PM: usize = 0x0060_0000;
     const PM_SIZE: u32 = 0x0010_0000;
-    const PM_TABLE: usize = 0x00D0_0000;
+    const PM_TABLE: usize = 0x0070_0000;
+    const _: () = assert!(PM + PM_SIZE as usize <= m3::PM_REACH);
     const PARAMS: usize = PM;
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
@@ -177,7 +184,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 14;
+    const VERSION: u32 = 15;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -357,6 +364,12 @@ mod image {
         dump(vram, "tail", TAIL, 4);
         let list = load32_volatile(vram, TA_REGIONS + 4).unwrap_or(0) as usize;
         dump(vram, "first list", list & m3::ADDR_MASK as usize, 8);
+        dump(
+            vram,
+            "around it",
+            (list & m3::ADDR_MASK as usize).saturating_sub(0x40),
+            24,
+        );
         let ptr = load32_volatile(vram, list & m3::ADDR_MASK as usize).unwrap_or(0);
         dump(
             vram,
