@@ -148,7 +148,19 @@ report; device runs only with the owner's go.
    for word** (only TEX1 pointed at our texture). So textures need state
    outside the object: likely the GLES 3D table's computed values (`0x61C`
    "low bits 7" where Dell's is `0x00020004`, `0x674`, `0x610`), set at
-   `0x02261700`-`0x02261848`. Next: read those, then version 11.
+   `0x02261700`-`0x02261848`.
+
+   **The GLES 3D table, read (`0x022616dc`-`0x02261848`):** pairs at
+   context `+0x54`: `0x610` (`(n - 1) << 7`, or `0x30001` with no scene),
+   `0x614` and `0x618` `0x1E3CE508`, **`0x61C = 0x00020007`** (Dell's
+   `0x00020004`), `0x644 = 0`, `0x648 = 1`, `0x64C = 0`, `0x650` the format
+   (1, 3 or 6), `0x654`/`0x658` size, `0x65C` the target, `0x660` stride/4,
+   **`0x674` = a word loaded from a structure** (`[[ctx+0x794]+4]+8`, or 0),
+   `0x6D0 = 1`, `0x6DC = 1`, **`0x860`** an argument, `0x60C`, then
+   `(0x680, 1)`. **Version 11** (`0x61C = 0x20007`, then also `0x610 =
+   0x30001`, `0x64C = 0` and the extras): still no textured object, the
+   game's included. Left: `0x674`, `0x860` and state set once at start-up
+   (Dell's escapes), read next.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
