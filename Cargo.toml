@@ -43,6 +43,7 @@ members = [
     "boot/hang",
     "boot/mbx",
     "boot/mbx-blend",
+    "boot/mbx3d",
     "boot/picture",
     "boot/blend",
     "boot/usb",

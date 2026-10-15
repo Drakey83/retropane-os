@@ -1304,6 +1304,67 @@ fn strip_tail(v: &str) -> String {
 /// emulator that models the blend and the display's events (`mbx-blend`,
 /// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
 /// device's run (docs/hw/emulator.md).
+/// The MBX 3D core's first-triangle test (rp-mbx3d, ADR-0024 M4): runs
+/// under the loader, every try timed out (no 3D model), back on a button.
+pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    mbx3d: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-mbx3d.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-mbx3d"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.command("sendkey ret")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX3D: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx3d: never came back to the loader after the button press")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("mbx3d: didn't return cleanly:{log}"));
+    }
+    // The fork doesn't model the 3D core (docs/hw/emulator.md): the image
+    // must try both size encodings, draw nothing, and come back.
+    for want in [
+        "core ID 0x01020000",
+        "A: red screen-covering triangle, 15 x 20 grid of 32 px, sizes in pixels",
+        "A: red screen-covering triangle, 15 x 20 grid of 32 px, sizes in tiles",
+        "RETROPANE-MBX3D: nothing drawn",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx3d: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!(
+        "    mbx3d OK: ran every try safely (the 3D core isn't modelled), back at the loader on a button press"
+    );
+    Ok(())
+}
+
 pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");

@@ -340,6 +340,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0024 M4): the MBX 3D core's first triangle. 19.9 KiB
+    // measured (2026-10-14), + ~10%.
+    Budget {
+        image: "rp-mbx3d",
+        max_load: 22 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
