@@ -60,6 +60,7 @@ members = [
     "shell/core",
     "shell/today",
     "personality/ce/cab",
+    "personality/ce/setup",
     "tools/romdump",
     "tools/apiscan",
     "xtask",

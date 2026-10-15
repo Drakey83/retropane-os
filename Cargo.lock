@@ -96,6 +96,13 @@ name = "rp-cab"
 version = "0.0.0"
 
 [[package]]
+name = "rp-ce-setup"
+version = "0.0.0"
+dependencies = [
+ "rp-cab",
+]
+
+[[package]]
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [

@@ -306,6 +306,39 @@ pub const MUTANTS: &[Mutant] = &[
         to: "        Ok(())",
         check: Check::Host(&["-p", "rp-cab", "a_file_past_its_folder_end_is_truncated"]),
     },
+    Mutant {
+        name: "ce-setup: `..` accepted in an install path",
+        file: "personality/ce/setup/src/lib.rs",
+        from: "        let dots = names && (piece == b\".\" || piece == b\"..\");",
+        to: "        let dots = false;",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "bad_references_and_paths_are_refused_up_front",
+        ]),
+    },
+    Mutant {
+        name: "ce-setup: a script accepted before its whole plan is checked",
+        file: "personality/ce/setup/src/lib.rs",
+        from: "        script.plan(|_| Ok(()))?;\n        Ok(script)",
+        to: "        Ok(script)",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "bad_references_and_paths_are_refused_up_front",
+        ]),
+    },
+    Mutant {
+        name: "ce-setup: a DOCTYPE in _setup.xml skipped instead of refused",
+        file: "personality/ce/setup/src/xml.rs",
+        from: "                // DOCTYPE, ENTITY, CDATA: refused.\n                return Err(Error::BadXml);",
+        to: "                self.i = self.find(at + 2, b\">\")? + 1;",
+        check: Check::Host(&[
+            "-p",
+            "rp-ce-setup",
+            "setup_xml_outside_the_subset_is_refused",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
