@@ -1417,6 +1417,9 @@ comes before the UI and GDI designs, which are written GPU-first.
     (`MDCNFG`, `MDREFR`, the "alternate memory clock" bit) and
     static-memory timings (`MSC1`: the 2700G's bus, framebuffer writes at
     ~41 MB/s), with a watchdog-guarded step-and-verify test.
+    **Investigated 2026-10-15, report only** (docs/research/memory-timing.md):
+    SDRAM is at the PXA's clock limit with 1.2%-margin CL2 headroom (keep);
+    the `MSC1` experiment and the owner's chip markings are the open steps.
 69. **MBX core bring-up, GPU-first.** From Dell's 3D drivers, step by step
     on the device: power the core, clear the screen with it, then a
     triangle, a textured quad, blending; each measured against the CPU.
