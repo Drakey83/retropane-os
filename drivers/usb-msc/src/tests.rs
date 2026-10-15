@@ -462,6 +462,8 @@ fn a_device_side_change_takes_the_medium_away_until_the_host_notices() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    // The host has seen the medium (it may have cached the volume).
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
     msc.medium_changed(0);
     assert!(msc.away(0));
     // INQUIRY works whatever the state.
@@ -493,14 +495,47 @@ fn a_device_side_change_takes_the_medium_away_until_the_host_notices() {
     assert_eq!(sense(&mut msc, &mut disk), (0x02, 0x3A, 0x00));
     msc.medium_changed(0);
     assert!(!msc.ejected(0));
-    assert_eq!(tur_at(&mut msc, &mut disk, 5000).0, 1, "away first");
-    assert_eq!(tur_at(&mut msc, &mut disk, 5100).0, 1);
+    // The host saw it ejected (nothing cached): no away time, the change
+    // is reported at once.
+    assert!(!msc.away(0));
     assert_eq!(
-        tur_at(&mut msc, &mut disk, 5000 + AWAY_MIN_MS),
+        tur_at(&mut msc, &mut disk, 5000),
         (1, (0x06, 0x28, 0x00)),
-        "then unit attention"
+        "unit attention at once"
     );
-    assert_eq!(tur_at(&mut msc, &mut disk, 5000 + AWAY_MIN_MS).0, 0);
+    assert_eq!(tur_at(&mut msc, &mut disk, 5000).0, 0);
+}
+
+/// The CF card class (owner, 2026-10-15: "USB Drive (J:)" with no size, a
+/// broken icon for minutes): a unit the host only ever saw empty, or never
+/// asked about, gets its medium at once when one arrives (a card attached
+/// after enumeration, inserted, or a retry after a failure), never seconds
+/// of extra "no medium" it doesn't need: it has nothing cached to drop.
+#[test]
+fn a_medium_arriving_where_the_host_saw_none_is_offered_at_once() {
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(16);
+    // Never asked: no away.
+    msc.medium_changed(0);
+    assert!(!msc.away(0));
+    assert_eq!(tur_at(&mut msc, &mut disk, 0), (1, (0x06, 0x28, 0x00)));
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
+    // Seen empty, then a card arrives: unit attention, then ready.
+    disk.present = false;
+    assert_eq!(tur_at(&mut msc, &mut disk, 100), (1, (0x02, 0x3A, 0x00)));
+    disk.present = true;
+    msc.medium_changed(0);
+    assert!(!msc.away(0));
+    assert_eq!(tur_at(&mut msc, &mut disk, 200), (1, (0x06, 0x28, 0x00)));
+    assert_eq!(tur_at(&mut msc, &mut disk, 200).0, 0);
+    // Seen present, then changed: away as before (the host's cache).
+    msc.medium_changed(0);
+    assert!(msc.away(0));
+    // A second change while away keeps it away (still unseen).
+    assert_eq!(tur_at(&mut msc, &mut disk, 300).0, 1);
+    msc.medium_changed(0);
+    assert!(msc.away(0));
 }
 
 /// A host that isn't polling still gets the medium back, after
@@ -511,6 +546,7 @@ fn a_changed_medium_comes_back_only_once_the_host_noticed_or_after_the_ceiling()
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
     msc.medium_changed(0);
     // The away time starts at the first poll after the change.
     assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 1);
