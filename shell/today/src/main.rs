@@ -55,8 +55,15 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// OS timer ticks per millisecond.
     const TICKS_MS: u32 = 3250;
-    /// Samples the recorder keeps (~22 bytes each, in the 64 KiB run log).
-    const RECORD: u32 = 2500;
+    /// Samples the recorder keeps (~47 bytes each with the early settling
+    /// values, in the 64 KiB run log: ~8 s of pen-down at ~7 ms a sample).
+    const RECORD: u32 = 1150;
+    /// The sleep between samples while a touch is in progress. The
+    /// recording run of 2026-10-14: 1 ms (~7 ms a sample instead of 11), to
+    /// record landings at a finer rate (docs/hw/touch.md, "Faster
+    /// samples"); the filter's thresholds are per sample and were tuned at
+    /// 11 ms, so this run may feel different.
+    const PEN_DOWN_SLEEP_MS: u32 = 1;
 
     static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
 
@@ -264,9 +271,17 @@ mod image {
                     Pen::Up(..) => 'U',
                 };
                 let ms = (now_ms & 0xFFFF_FFFF) as u32;
-                match raw {
-                    Some(s) => {
-                        let _ = writeln!(RunLog, "R {ms} {} {} {} {} {what}", s.x, s.y, s.z1, s.z2);
+                match traced {
+                    // Then X had it settled 16, 32, 64 and 128 conversions
+                    // (256 kept), and Y 16 (32 kept): how short a sample
+                    // could be, decided on these recordings.
+                    Some((s, t)) => {
+                        let [x16, x32, x64, x128] = t.x.early;
+                        let _ = writeln!(
+                            RunLog,
+                            "R {ms} {} {} {} {} {what} {x16} {x32} {x64} {x128} {}",
+                            s.x, s.y, s.z1, s.z2, t.y.early[0]
+                        );
                     }
                     None => {
                         let _ = writeln!(RunLog, "R {ms} - - - - {what}");
@@ -404,9 +419,10 @@ mod image {
             // Never a loop without a pause (2026-10-13: sampling back to
             // back while the pen-detect line read "down" hung touch on the
             // device; sampling holds that line low, so it never recovered).
-            // While a touch is in progress, or the line says so: every 5 ms
-            // (the build the owner called "much better"; 1 ms was much
-            // worse). Pressure decides whether a touch is in progress.
+            // While a touch is in progress, or the line says so: every
+            // PEN_DOWN_SLEEP_MS (5 ms was the build the owner called "much
+            // better" on 2026-10-13, 1 ms "much worse" with the filter of
+            // then). Pressure decides whether a touch is in progress.
             if !filter.down() && raw.is_none() && touch.pen_down() {
                 phantom = phantom.saturating_add(1);
             }
@@ -414,7 +430,7 @@ mod image {
                 // A frame is with the engine: flip it as soon as it's done.
                 1
             } else if filter.down() || touch.pen_down() {
-                5
+                PEN_DOWN_SLEEP_MS
             } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20
             } else if shell.notice().is_some() {
