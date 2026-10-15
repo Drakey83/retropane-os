@@ -1,5 +1,9 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 9: version 8 drew the dark
+//! 3D core, under the loader. Version 10: version 9's flat control
+//! drew (a list draws past its first object; the flags must match the
+//! object: 0x41000000 dropped a flat one), its textured square never: now
+//! DoomGLES's own first object, word for word, only its TEX1 pointed at
+//! our texture, with each flag its lists used. Version 9: version 8 drew the dark
 //! background but never the square: first two controls (the square flat,
 //! after the background: does a list draw past its first object?), then
 //! the textured forms with Dell's table and with the GLES table's extras.
@@ -147,7 +151,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 9;
+    const VERSION: u32 = 10;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -277,7 +281,43 @@ mod image {
         /// Control: the square's triangles in the flat 17-word form (does
         /// a list draw more than its first object?).
         flat: bool,
+        /// DoomGLES's own first object instead of the square (only its
+        /// TEX1 pointed at our texture, its TEX0 and ISP as given).
+        game: bool,
     }
+
+    /// DoomGLES's first textured object as captured on the device (capture
+    /// version 6, 0x2B5000): a thin triangle from (79.25, 292.69) up to
+    /// (33.81, 0) and (51.06, 0). Numbers only (a triangle's description),
+    /// no game data.
+    const GAME_OBJECT: [u32; m3::tex::WORDS] = [
+        0xEC80_0000,
+        0x0333_9600,
+        0xCE00_3060,
+        0x8608_6610,
+        0x2264_0200,
+        0x429E_8000,
+        0x4392_5800,
+        0x4207_4000,
+        0x0000_0000,
+        0x424C_4000,
+        0x0000_0000,
+        0x3F7F_9100,
+        0x3F7F_4100,
+        0x3F7F_6000,
+        0x3B03_0000,
+        0x3B54_0000,
+        0x3B35_0000,
+        0xFF57_5757,
+        0x4202_0000,
+        0x0000_0000,
+        0xFF57_5757,
+        0x41DF_6270,
+        0x3F5F_2E00,
+        0xFF57_5757,
+        0x41E1_3098,
+        0x3FF7_8A00,
+    ];
 
     /// Stage T: a dark full-screen flat triangle (the proven form), then a
     /// textured square (two triangles, u and v 0 to 1, a tinted vertex
@@ -323,6 +363,25 @@ mod image {
         let ta = OBJECT + 4 * m3::TRIANGLE_WORDS;
         let tb = ta + 4 * m3::tex::WORDS;
         store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &back));
+        if c.game {
+            let mut g = GAME_OBJECT;
+            g[0] = c.isp;
+            g[1] = tex0;
+            g[2] = m3::tex::address(TEXTURE as u32);
+            store(vram, ta, &g);
+            let off = |at: usize| ((at - PARAMS) / 4) as u32;
+            store(
+                vram,
+                PARAMS,
+                &[
+                    m3::STRIP_ONE_TRIANGLE | off(OBJECT),
+                    c.strip | off(ta),
+                    m3::END,
+                ],
+            );
+            cpu::drain_write_buffer();
+            return run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
+        }
         if c.flat {
             let f = |t: &[m3::tex::Vertex; 3]| t.map(|p| Vertex::flat(p.x, p.y, TINT));
             store(vram, ta, &m3::triangle(c.isp, TSP_DELL, &f(&a)));
@@ -555,28 +614,30 @@ mod image {
             let mut k = 0;
             let mut tries = [None; 16];
             let mut nt = 0;
-            for strip in [m3::STRIP_ONE_TRIANGLE, m3::tex::STRIP_GAME] {
-                tries[nt] = Some((
-                    0u8,
-                    Combo {
-                        isp: ISP_ALWAYS,
-                        clockwise: true,
-                        strip,
-                        flat: true,
-                    },
-                ));
-                nt += 1;
-            }
+            tries[nt] = Some((
+                0u8,
+                Combo {
+                    isp: ISP_ALWAYS,
+                    clockwise: true,
+                    strip: m3::STRIP_ONE_TRIANGLE,
+                    flat: true,
+                    game: false,
+                },
+            ));
+            nt += 1;
+            // Version 9: the square in the textured form never drew; now the
+            // game's own object, with the flags its lists pointed at it with.
             for lv in [0u8, 2] {
-                for strip in [m3::tex::STRIP_GAME, 0x4160_0000, m3::STRIP_ONE_TRIANGLE] {
-                    for clockwise in [true, false] {
+                for strip in [0x4100_0000, 0x4160_0000, 0x4960_0000] {
+                    for isp in [m3::tex::ISP_GAME, ISP_ALWAYS] {
                         tries[nt] = Some((
                             lv,
                             Combo {
-                                isp: m3::tex::ISP_GAME,
-                                clockwise,
+                                isp,
+                                clockwise: true,
                                 strip,
                                 flat: false,
+                                game: true,
                             },
                         ));
                         nt += 1;
@@ -588,14 +649,16 @@ mod image {
                 let (t, n) = table(lv);
                 let _ = clear(&mut e, vram, GREY);
                 let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
-                let (mid, out) = (px(vram, 144, 144), px(vram, 300, 300));
+                // Inside the square, or inside the game's thin triangle.
+                let (mx, my) = if c.game { (55, 100) } else { (144, 144) };
+                let (mid, out) = (px(vram, mx, my), px(vram, 300, 300));
                 log!(
-                    "  T1.{k} table {lv}, flat {}, ISP 0x{:08x}, clockwise {}, strip 0x{:08x}: done {done}, middle {mid:08x}, (40,20) {:08x}, outside {out:08x}",
+                    "  T1.{k} table {lv}, flat {}, game {}, ISP 0x{:08x}, strip 0x{:08x}: done {done}, middle {mid:08x}, (67,200) {:08x}, outside {out:08x}",
                     c.flat,
+                    c.game,
                     c.isp,
-                    c.clockwise,
                     c.strip,
-                    px(vram, 40, 20)
+                    px(vram, 67, 200)
                 );
                 k += 1;
                 if found.is_none() && !c.flat && done && mid != out && mid != 0xFFFF_FFFF {
