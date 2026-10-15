@@ -1,5 +1,11 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 18: version 17 drew the first
+//! 3D core, under the loader. Version 19 (ADR-0026 device test T1): after
+//! the proven red triangle and shaded triangle, a blue full-screen object
+//! over grey rendered with the region array listing all tiles, one tile,
+//! a 10 x 10 block and a 600-tile band: are unlisted tiles left untouched,
+//! and how does the render time scale with the tiles listed? The tile
+//! accelerator stage (versions 14-18, done) is gone.
+//! Version 18: version 17 drew the first
 //! textured triangle (through the TA, with the GLES driver's own draw's
 //! words; the game's TSP `0x22640200` never draws). Now that triangle with
 //! the TA's object logged from the first tile it reached, then TEX0's
@@ -182,15 +188,6 @@ mod image {
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
     const FENCE: usize = 0x00FF_F000;
-    /// Stage X (the tile accelerator): its per-tile buffer (`0x840`,
-    /// 128 KiB aligned, zeroed; Dell sizes it 4 bytes a tile in Morton
-    /// order, under 16 KiB here) and the region array it writes.
-    const TAIL: usize = 0x00A0_0000;
-    const TAIL_SIZE: usize = 0x1_0000;
-    const TA_REGIONS: usize = 0x00A2_0000;
-    /// Stage X's texture: 256 x 256 16-bit texels (128 KiB), texel k
-    /// holding k (any format decodes it to something visible).
-    const TEXTURE: usize = 0x00E0_0000;
     /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -203,7 +200,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 18;
+    const VERSION: u32 = 19;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -311,114 +308,32 @@ mod image {
             PARAMS,
             &m3::one_triangle_list((OBJECT - PARAMS) as u32),
         );
-        regions(vram, 0);
+        regions(vram, |_, _| true);
         run(e, vram, table, RENDER_DONE, Some(probe), 200_000)
             .1
             .is_some()
     }
 
-    /// The region array, every tile on the list at the parameter
-    /// buffer's start, `flags` ORed into each header. Straight into 2700G
-    /// memory (19 KiB: too big for the stack).
+    /// The region array listing only the tiles `keep` says (x, y), in rows,
+    /// each on the list at the parameter buffer's start, the last marked.
+    /// Straight into 2700G memory (19 KiB: too big for the stack). Returns
+    /// how many it listed.
     #[inline(never)]
-    fn regions(vram: &mut [u8], flags: u32) {
-        let n = COLS * ROWS;
-        for k in 0..n {
-            let mut entry = m3::region_entry(k % COLS, k / COLS, PARAMS as u32, k + 1 == n);
-            entry[0] |= flags;
-            store(vram, REGIONS + 8 * k as usize, &entry);
-        }
-        cpu::drain_write_buffer();
-    }
-
-    /// Logs `n` words from 2700G memory at `at` (nothing if out of range).
-    fn dump(vram: &[u8], what: &str, at: usize, n: usize) {
-        let _ = write!(RunLog, "  {what} @0x{at:06x}:");
-        for k in 0..n {
-            match load32_volatile(vram, at + 4 * k) {
-                Some(w) => {
-                    let _ = write!(RunLog, " {w:08x}");
-                }
-                None => break,
+    fn regions(vram: &mut [u8], keep: fn(u32, u32) -> bool) -> u32 {
+        let total = (0..COLS * ROWS)
+            .filter(|k| keep(k % COLS, k / COLS))
+            .count() as u32;
+        let mut n = 0;
+        for k in 0..COLS * ROWS {
+            let (x, y) = (k % COLS, k / COLS);
+            if keep(x, y) {
+                n += 1;
+                let entry = m3::region_entry(x, y, PARAMS as u32, n == total);
+                store(vram, REGIONS + 8 * (n - 1) as usize, &entry);
             }
         }
-        log!("");
-    }
-
-    /// Stage X: the TA's buffers zeroed, its start table, `stream` into
-    /// the TA's window, `1` into the end window, then the scene's end as
-    /// the GLES driver's flush sends it (`0x0226fdc0`: `0x85C` bit 7,
-    /// `0xF0000000` into the TA window), all as one write list; wait for
-    /// TA done (status bit 4) and log what the TA wrote (`words` of the
-    /// first object); if it finished, the 3D stage on the TA's region
-    /// array (Dell's table `level`). True if `probe` changed.
-    #[inline(never)]
-    fn through_ta(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        level: u8,
-        stream: &[u32],
-        words: usize,
-        probe: (u32, u32),
-    ) -> bool {
-        for k in 0..TAIL_SIZE / 4 {
-            let _ = store32_volatile(vram, TAIL + 4 * k, 0);
-        }
-        for k in 0..2 * (COLS * ROWS + 1) as usize {
-            let _ = store32_volatile(vram, TA_REGIONS + 4 * k, 0);
-        }
         cpu::drain_write_buffer();
-        let t = m3::ta::start_table(TAIL as u32, TA_REGIONS as u32, W, H, COLS, ROWS);
-        // `run` writes at the MBX block's offsets: the windows are below it.
-        let n = stream.len().min(32);
-        let mut w = [(0usize, 0u32); 9 + 32 + 3];
-        w[..9].copy_from_slice(&t);
-        for (k, &v) in stream[..n].iter().enumerate() {
-            w[9 + k] = (m3::ta::PORT - MBX + 4 * k, v);
-        }
-        let r85c = t[7];
-        w[9 + n] = (m3::ta::END_PORT - MBX, 1);
-        w[10 + n] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
-        w[11 + n] = (m3::ta::PORT - MBX + 4 * n, m3::END);
-        log!(
-            "  TA: {n} words, FIFO {} bytes free",
-            cmd::free_bytes(e.regs.read32(STATUS))
-        );
-        let done = run(e, vram, &w[..12 + n], m3::ta::DONE, None, 200_000)
-            .0
-            .is_some();
-        e.regs.write32(MBX + r85c.0, r85c.1);
-        if words > 0 {
-            dump(vram, "regions", TA_REGIONS, 6);
-            // The first tile the TA put something in.
-            let at = (0..(COLS * ROWS) as usize)
-                .map(|k| TA_REGIONS + 8 * k)
-                .find(|&a| load32_volatile(vram, a + 4).unwrap_or(0) != 0)
-                .unwrap_or(TA_REGIONS);
-            dump(vram, "first used region", at, 2);
-            let list = load32_volatile(vram, at + 4).unwrap_or(0) as usize & m3::ADDR_MASK as usize;
-            dump(vram, "its list", list, 8);
-            let ptr = load32_volatile(vram, list).unwrap_or(0);
-            dump(
-                vram,
-                "its object",
-                PARAMS + 4 * (ptr & 0x001F_FFFF) as usize,
-                words,
-            );
-        }
-        if !done {
-            log!("  the TA never said done: no 3D render");
-            return false;
-        }
-        let (mut t3, n) = table(level);
-        for p in &mut t3[..n] {
-            if p.0 == 0x608 {
-                p.1 = TA_REGIONS as u32;
-            }
-        }
-        run(e, vram, &t3[..n], RENDER_DONE, Some(probe), 200_000)
-            .1
-            .is_some()
+        n
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -607,112 +522,49 @@ mod image {
             );
         }
 
-        // X: through the tile accelerator (ADR-0024 M5): the GLES clear
-        // (version 15 drew it), then a textured triangle.
+        // T1 (ADR-0026 D2): a full-screen object rendered with the region
+        // array listing only some tiles: are the others left untouched, and
+        // how does the time scale with the tiles listed?
         if drew {
-            rt::check_in();
-            let _ = clear(&mut e, vram, GREY);
-            log!("X1: the GLES clear through the TA");
-            let ok = through_ta(
-                &mut e,
+            let (t, n) = table(level);
+            let blue = [
+                Vertex::flat(0.0, 0.0, 0xFF00_00FF),
+                Vertex::flat(2048.0, 0.0, 0xFF00_00FF),
+                Vertex::flat(0.0, 2048.0, 0xFF00_00FF),
+            ];
+            store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &blue));
+            store(
                 vram,
-                level,
-                &m3::ta::clear_stream(W, H),
-                10,
-                (240, 320),
+                PARAMS,
+                &m3::one_triangle_list((OBJECT - PARAMS) as u32),
             );
             log!(
-                "X1: {}; (240,320) 0x{:08x}",
-                if ok { "drawn" } else { "nothing drawn" },
-                px(vram, 240, 320)
+                "T1: blue full-screen object over grey, the region array listing only some tiles; tile (20,20) is pixels 160-167 x 320-335"
             );
-            for k in 0..256 * 256 / 2 {
-                // Two texels a word, texel k holding k.
-                let t = 2 * k as u32;
-                let _ = store32_volatile(vram, TEXTURE + 4 * k, t | (t + 1) << 16);
-            }
-            cpu::drain_write_buffer();
-            let v = |x: f32, y: f32, u: f32, v: f32| m3::tex::Vertex {
-                x,
-                y,
-                z: 1.0,
-                rhw: 1.0,
-                argb: 0xFFFF_C080,
-                u,
-                v,
-            };
-            let tri = [
-                v(40.0, 40.0, 0.0, 0.0),
-                v(440.0, 40.0, 1.0, 0.0),
-                v(40.0, 600.0, 0.0, 1.0),
+            let sets: [(&str, fn(u32, u32) -> bool); 4] = [
+                ("all", |_, _| true),
+                ("only (20,20)", |x, y| x == 20 && y == 20),
+                ("10 x 10 from (15,15)", |x, y| {
+                    (15..25).contains(&x) && (15..25).contains(&y)
+                }),
+                ("rows 15-24", |_, y| (15..25).contains(&y)),
             ];
-            let dell = m3::ta::dell_texture(TEXTURE as u32);
-            let clip = m3::ta::clip(W, H);
-            // Version 17: these words drew it textured; the game's TSP
-            // (`0x22640200`) never did.
-            rt::check_in();
-            let _ = clear(&mut e, vram, GREY);
-            log!(
-                "X2: a textured triangle through the TA, TSP 0x{:08x} TEX 0x{:08x} 0x{:08x} 0x{:08x}",
-                m3::ta::TSP_DELL_TEXTURED,
-                dell[0],
-                dell[1],
-                dell[2]
-            );
-            let draw = |e: &mut Engine<Mmio>, vram: &mut [u8], tex: [u32; 3], words: usize| {
-                let s =
-                    m3::ta::textured_stream(m3::ta::TSP_DELL_TEXTURED, ISP_ALWAYS, tex, clip, &tri);
-                through_ta(e, vram, level, &s, words, (120, 160))
-            };
-            let ok = draw(&mut e, vram, dell, 30);
-            log!(
-                "X2: {}; inside (120,160) 0x{:08x} (60,60) 0x{:08x} (200,100) 0x{:08x}, outside (300,500) 0x{:08x}",
-                if ok { "drawn" } else { "nothing drawn" },
-                px(vram, 120, 160),
-                px(vram, 60, 60),
-                px(vram, 200, 100),
-                px(vram, 300, 500)
-            );
-            // F: TEX0's fields against the texel ramp (texel k = k): bits
-            // 15-12, then bits 31-28, each of 16 values; pixels along the
-            // top edge (u from 0, v 0) and down the left edge.
-            const AT: [(u32, u32); 12] = [
-                (41, 41),
-                (43, 41),
-                (45, 41),
-                (47, 41),
-                (49, 41),
-                (57, 41),
-                (73, 41),
-                (105, 41),
-                (169, 41),
-                (297, 41),
-                (41, 100),
-                (41, 300),
-            ];
-            log!(
-                "F: samples at (41,41) (43,41) (45,41) (47,41) (49,41) (57,41) (73,41) (105,41) (169,41) (297,41) (41,100) (41,300)"
-            );
-            for k in 0..32u32 {
+            for (name, keep) in sets {
                 rt::check_in();
-                let f = k & 15;
-                let tex0 = if k < 16 {
-                    dell[0] & !(0xF << 12) | f << 12
-                } else {
-                    dell[0] & !(0xF << 28) | f << 28
-                };
                 let _ = clear(&mut e, vram, GREY);
-                let ok = draw(&mut e, vram, [tex0, dell[1], dell[2]], 0);
-                // Word by word: formatting the array as a whole costs ~6 KiB.
-                let _ = write!(RunLog, "  F{k:02} TEX0 0x{tex0:08x} {ok}:");
-                for &(x, y) in &AT {
-                    let _ = write!(RunLog, " {:08x}", px(vram, x, y));
-                }
-                log!("");
+                let listed = regions(vram, keep);
+                let (done, _) = run(&mut e, vram, &t[..n], RENDER_DONE, None, 200_000);
+                log!(
+                    "  T1 {name}: {listed} tiles listed, done at {done:?} us; tile (20,20) middle 0x{:08x} corners 0x{:08x} 0x{:08x}; neighbours (168,328) 0x{:08x} (164,336) 0x{:08x}; far (300,500) 0x{:08x} (5,5) 0x{:08x}",
+                    px(vram, 164, 328),
+                    px(vram, 160, 320),
+                    px(vram, 167, 335),
+                    px(vram, 168, 328),
+                    px(vram, 164, 336),
+                    px(vram, 300, 500),
+                    px(vram, 5, 5)
+                );
             }
-            // On screen at the end: Dell's words.
-            let _ = clear(&mut e, vram, GREY);
-            let _ = draw(&mut e, vram, dell, 0);
         }
 
         let saved = show_target(&mut e.regs);
