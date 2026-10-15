@@ -58,12 +58,13 @@ mod image {
     /// Samples the recorder keeps (~47 bytes each with the early settling
     /// values, in the 64 KiB run log: ~8 s of pen-down at ~7 ms a sample).
     const RECORD: u32 = 1150;
-    /// The sleep between samples while a touch is in progress. The
-    /// recording run of 2026-10-14: 1 ms (~7 ms a sample instead of 11), to
-    /// record landings at a finer rate (docs/hw/touch.md, "Faster
-    /// samples"); the filter's thresholds are per sample and were tuned at
-    /// 11 ms, so this run may feel different.
-    const PEN_DOWN_SLEEP_MS: u32 = 1;
+    /// The sleep between samples while a touch is in progress: 5 ms, with
+    /// ~2 ms samples (X settles 32 conversions, not 256) a sample every ~7
+    /// ms, the rate the filter's per-sample thresholds were proven at on
+    /// the device (2026-10-14: 1 ms sleeps and ~6 ms samples; no tap
+    /// pressed far). Shorter samples first, a faster rate only once the
+    /// filter is checked at it (docs/hw/touch.md, "Faster samples").
+    const PEN_DOWN_SLEEP_MS: u32 = 5;
 
     static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
 
@@ -283,9 +284,9 @@ mod image {
                 };
                 let ms = (now_ms & 0xFFFF_FFFF) as u32;
                 match traced {
-                    // Then X had it settled 16, 32, 64 and 128 conversions
-                    // (256 kept), and Y 16 (32 kept): how short a sample
-                    // could be, decided on these recordings.
+                    // Then X and Y had they settled 16 conversions (32
+                    // kept; X's 32/64/128 columns 0 now that it settles
+                    // 32): how short a sample could be, from recordings.
                     Some((s, t)) => {
                         let [x16, x32, x64, x128] = t.x.early;
                         let _ = writeln!(
