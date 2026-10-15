@@ -1,5 +1,9 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 7: after the shaded triangle (TSP
+//! 3D core, under the loader. Version 8: version 7's square never showed
+//! (every sample the core's white tile fill, drawn or not: a flaw of the
+//! test), so first a dark background and a tinted square in 8 forms (ISP
+//! word, corner order for culling, list flags), then the format sweep with
+//! the first form that draws. Version 7: after the shaded triangle (TSP
 //! bit 22, Gouraud, proven by version 6), a textured square in DoomGLES's
 //! object form (ADR-0024 M3, capture version 6), once for each of the 16
 //! values of the texture format field: the texture holds its own texel
@@ -124,6 +128,9 @@ mod image {
     const TEXTURE: usize = 0x00E0_0000;
     /// Stage T's square: its top left on screen and its side (pixels).
     const SQ: (f32, f32, f32) = (16.0, 16.0, 256.0);
+    /// Stage T's background and the square's vertex colour.
+    const DARK: u32 = 0xFF20_2020;
+    const TINT: u32 = 0xFFFF_C080;
     /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -136,7 +143,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 7;
+    const VERSION: u32 = 8;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -256,54 +263,79 @@ mod image {
             .is_some()
     }
 
-    /// Stage T: a textured square (two triangles, u and v 0 to 1) with TEX0
-    /// `tex0`; true if the render finished.
+    /// How stage T draws its square: the ISP word, the corner order
+    /// (clockwise on screen or not) and the list pointer's flag bits.
+    #[derive(Clone, Copy)]
+    struct Combo {
+        isp: u32,
+        clockwise: bool,
+        strip: u32,
+    }
+
+    /// Stage T: a dark full-screen flat triangle (the proven form), then a
+    /// textured square (two triangles, u and v 0 to 1, a tinted vertex
+    /// colour) drawn as `c` with TEX0 `tex0`; true if the render finished.
+    /// Version 7 drew the square alone in white vertex colour: drawn or
+    /// not, the samples were the core's white tile fill.
     fn draw_textured(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
+        c: Combo,
         tex0: u32,
         table: &[(usize, u32)],
     ) -> bool {
         let (x0, y0, s) = SQ;
-        let v = |x: f32, y: f32, u: f32, w: f32| m3::tex::Vertex {
+        let v = |x: f32, y: f32| m3::tex::Vertex {
             x: x0 + x * s,
             y: y0 + y * s,
             z: 1.0,
             rhw: 1.0,
-            argb: 0xFFFF_FFFF,
-            u,
-            v: w,
+            argb: TINT,
+            u: x,
+            v: y,
         };
         let texw = [
             tex0,
             m3::tex::address(TEXTURE as u32),
             m3::tex::COMBINE_GAME,
         ];
-        let a = [
-            v(0.0, 0.0, 0.0, 0.0),
-            v(1.0, 0.0, 1.0, 0.0),
-            v(0.0, 1.0, 0.0, 1.0),
+        // Clockwise on screen (y down): top left, top right, bottom left.
+        let (mut a, mut b) = (
+            [v(0.0, 0.0), v(1.0, 0.0), v(0.0, 1.0)],
+            [v(1.0, 0.0), v(1.0, 1.0), v(0.0, 1.0)],
+        );
+        if !c.clockwise {
+            a.swap(1, 2);
+            b.swap(1, 2);
+        }
+        let back = [
+            Vertex::flat(0.0, 0.0, DARK),
+            Vertex::flat(2048.0, 0.0, DARK),
+            Vertex::flat(0.0, 2048.0, DARK),
         ];
-        let b = [
-            v(1.0, 0.0, 1.0, 0.0),
-            v(1.0, 1.0, 1.0, 1.0),
-            v(0.0, 1.0, 0.0, 1.0),
-        ];
-        let second = OBJECT + 4 * m3::tex::WORDS;
+        let ta = OBJECT + 4 * m3::TRIANGLE_WORDS;
+        let tb = ta + 4 * m3::tex::WORDS;
+        store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, TSP_DELL, &back));
         store(
             vram,
-            OBJECT,
-            &m3::tex::triangle(m3::tex::ISP_GAME, texw, m3::tex::TSP_GAME, &a),
+            ta,
+            &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &a),
         );
         store(
             vram,
-            second,
-            &m3::tex::triangle(m3::tex::ISP_GAME, texw, m3::tex::TSP_GAME, &b),
+            tb,
+            &m3::tex::triangle(c.isp, texw, m3::tex::TSP_GAME, &b),
         );
+        let off = |at: usize| ((at - PARAMS) / 4) as u32;
         store(
             vram,
             PARAMS,
-            &m3::tex::list([(OBJECT - PARAMS) as u32, (second - PARAMS) as u32]),
+            &[
+                m3::STRIP_ONE_TRIANGLE | off(OBJECT),
+                c.strip | off(ta),
+                c.strip | off(tb),
+                m3::END,
+            ],
         );
         cpu::drain_write_buffer();
         run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some()
@@ -502,25 +534,58 @@ mod image {
                 (255, 255),
             ];
             log!(
-                "T: textured square at (16,16), 256 px, texel k = k; samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
+                "T: dark background, then a textured square at (16,16), 256 px, tint 0x{TINT:08x}, texel k = k"
             );
-            for f in 0..16u32 {
-                rt::check_in();
-                let _ = clear(&mut e, vram, GREY);
-                let tex0 = m3::tex::FORMAT_GAME & !(0xF << m3::tex::FORMAT_SHIFT)
-                    | f << m3::tex::FORMAT_SHIFT;
-                let done = draw_textured(&mut e, vram, tex0, &t[..n]);
-                // Word by word: formatting the array as a whole costs ~6 KiB.
-                let _ = write!(RunLog, "  T{f:x} TEX0 0x{tex0:08x}: done {done}, pixels");
-                for &(dx, dy) in &AT {
-                    let _ = write!(RunLog, " {:08x}", px(vram, 16 + dx, 16 + dy));
+            // 1. Which form draws at all (format 9, the game's).
+            let mut found = None;
+            let mut k = 0;
+            for isp in [ISP_ALWAYS, m3::tex::ISP_GAME] {
+                for clockwise in [true, false] {
+                    for strip in [m3::tex::STRIP_GAME, m3::STRIP_ONE_TRIANGLE] {
+                        rt::check_in();
+                        let c = Combo {
+                            isp,
+                            clockwise,
+                            strip,
+                        };
+                        let _ = clear(&mut e, vram, GREY);
+                        let done = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
+                        let (mid, out) = (px(vram, 144, 144), px(vram, 300, 300));
+                        log!(
+                            "  T1.{k} ISP 0x{isp:08x}, clockwise {clockwise}, strip 0x{strip:08x}: done {done}, middle {mid:08x}, (40,20) {:08x}, outside {out:08x}",
+                            px(vram, 40, 20)
+                        );
+                        k += 1;
+                        if found.is_none() && done && mid != out && mid != 0xFFFF_FFFF {
+                            found = Some(c);
+                        }
+                    }
                 }
-                log!(", outside {:08x}", px(vram, 300, 300));
             }
-            // The game's own format word, last: what stays on screen.
-            let _ = clear(&mut e, vram, GREY);
-            let done = draw_textured(&mut e, vram, 0x0333_5600, &t[..n]);
-            log!("  T last: TEX0 0x03335600 (format 5, as the GLES default word): done {done}");
+            // 2. With it, every value of the format field.
+            if let Some(c) = found {
+                log!(
+                    "T2: samples at (0,0) (1,0) (2,0) (3,0) (0,1) (0,2) (1,1) (4,4) (16,0) (0,16) (100,37) (255,255)"
+                );
+                for f in 0..16u32 {
+                    rt::check_in();
+                    let _ = clear(&mut e, vram, GREY);
+                    let tex0 = m3::tex::FORMAT_GAME & !(0xF << m3::tex::FORMAT_SHIFT)
+                        | f << m3::tex::FORMAT_SHIFT;
+                    let done = draw_textured(&mut e, vram, c, tex0, &t[..n]);
+                    // Word by word: formatting the array as a whole costs ~6 KiB.
+                    let _ = write!(RunLog, "  T2.{f:x} TEX0 0x{tex0:08x}: done {done}, pixels");
+                    for &(dx, dy) in &AT {
+                        let _ = write!(RunLog, " {:08x}", px(vram, 16 + dx, 16 + dy));
+                    }
+                    log!(", outside {:08x}", px(vram, 300, 300));
+                }
+                // On screen at the end: the game's format.
+                let _ = clear(&mut e, vram, GREY);
+                let _ = draw_textured(&mut e, vram, c, m3::tex::FORMAT_GAME, &t[..n]);
+            } else {
+                log!("T2: no form drew the square: no format sweep");
+            }
         }
 
         let saved = show_target(&mut e.regs);
