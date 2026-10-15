@@ -238,7 +238,10 @@ fn main() -> ExitCode {
                          -o target/wmbench/rp-wmbench.exe tools/wmbench/rp-wmbench.c && \
                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
-                         -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c &&                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1                          -o target/wmbench/rp-wm3d.exe tools/wmbench/rp-wm3d.c",
+                         -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c && \
+                         ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
+                         -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
+                         -o target/wmbench/rp-wm3d.exe tools/wmbench/rp-wm3d.c -ltoolhelp",
                         emu::to_wsl_path(&workspace_root())
                     ))
                 })
