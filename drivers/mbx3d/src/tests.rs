@@ -316,3 +316,16 @@ fn the_clip_word_covers_the_screen_in_16_pixel_units() {
         [0xA880_0000, 0x0E01_C000, 0xD688_6610]
     );
 }
+
+#[test]
+fn texture_words_and_twiddling_match_version_18() {
+    // Dell's TEX0 is size code 8, format 0.
+    assert_eq!(tex::tex0(8, tex::ARGB1555), 0xA880_0000);
+    assert_eq!(tex::tex0(8, tex::ARGB4444), 0xA880_8000);
+    // The game's format field: ARGB4444.
+    assert_eq!(tex::FORMAT_GAME >> tex::FORMAT_SHIFT & 7, tex::ARGB4444);
+    // Pixel (41,41) of the 2048-texel ramp sampled texel (5, 3): 39 (0x27).
+    assert_eq!(tex::twiddle(5, 3), 39);
+    // (43,41): texel (15, 3): 175 (0xAF).
+    assert_eq!(tex::twiddle(15, 3), 175);
+}
