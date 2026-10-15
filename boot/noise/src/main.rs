@@ -6,9 +6,10 @@
 //!    on and stable?), `CCCR`/`CCSR`/`CLKCFG`, and the core clock measured
 //!    with the cycle counter against the 3.25 MHz OS timer.
 //! 2. **A, two-crystal jitter**: 1,000,000 samples of the core cycles
-//!    between one 32.768 kHz tick and the next (OS timer channel 5 on the
-//!    slow oscillator, the XScale's `CCNT`). Its first 1,000 low bytes are
-//!    appended to `noise-r.bin` as one row of SP 800-90B's restart test
+//!    between one 32.768 kHz tick and the next (an OS timer channel on the
+//!    slow oscillator, the XScale's `CCNT`; how to start a channel on the
+//!    32 kHz clock is found first, each way tried for 2 ms and logged).
+//!    Its first 1,000 low bytes are appended to `noise-r.bin` as one row of SP 800-90B's restart test
 //!    (each run one row, up to 1,000).
 //! 3. **B, one-clock jitter**: 1,000,000 timings (cycles) of 64 reads that
 //!    all miss the data cache (one cache set, 64 lines for 32 ways), so
@@ -224,6 +225,22 @@ mod image {
     const CCCR: usize = 0x4130_0000;
     const OSCC: usize = 0x4130_0008;
     const CCSR: usize = 0x4130_000C;
+    /// Ways to run an OS timer channel on the 32.768 kHz oscillator, tried in
+    /// order: (channel, `OMCRx`, counter written before the mode). `OMCRx`
+    /// bits 2-0 the resolution (1: 1/32768 s, 2: 1 ms, 4: 1 us), bit 7 its
+    /// own counter, bits 6 and 3 as the manual names them (periodic, reset
+    /// on match).
+    const TIMER_TRIES: &[(u8, u32, bool)] = &[
+        (5, 0x81, false),
+        (5, 0x81, true),
+        (5, 0x01, false),
+        (5, 0xC1, false),
+        (5, 0x82, false),
+        (5, 0x84, false),
+        (6, 0x81, false),
+        (8, 0x81, false),
+        (11, 0x81, false),
+    ];
     /// Check in with the loader's deadlines every this many samples.
     const CHECK_IN: usize = 4096;
 
@@ -340,32 +357,63 @@ mod image {
         let (walk, rest) = rest.split_at_mut(WALK_BYTES);
         let restart = rest;
 
-        // 2. A: two-crystal jitter.
-        let Some(mut slow) = rt::take_slow_clock() else {
-            crash(format_args!("no slow clock"))
+        // 2. A: two-crystal jitter. First find how a channel counts the
+        // 32 kHz oscillator on the X51v: runs 1 and 2 set channel 5 as the
+        // manual reads (`OMCR5 = 0x81`, counter before or after) and it
+        // never moved. Each way is tried for 2 ms; the first that counts at
+        // 1/32768 s is used.
+        let Some(mut ost) = rt::take_ost_channels() else {
+            crash(format_args!("no OS timer channels"))
         };
-        slow.start();
-        let begin = rt::ticks();
-        while slow.now() == 0 {
-            if rt::ticks().wrapping_sub(begin) > rt::TICK_HZ / 100 {
-                break;
+        let mut found = None;
+        for &(ch, mode, count_first) in TIMER_TRIES {
+            ost.set_mode(ch, 0);
+            if count_first {
+                ost.set_count(ch, 0);
+                ost.set_mode(ch, mode);
+            } else {
+                ost.set_mode(ch, mode);
+                ost.set_count(ch, 0);
             }
-        }
-        if slow.now() == 0 {
+            let read = ost.mode(ch);
+            let c0 = ost.count(ch);
+            rt::delay_us(2_000);
+            let c1 = ost.count(ch);
+            ost.set_mode(ch, 0);
+            let hz = c1.wrapping_sub(c0).saturating_mul(500);
             let _ = writeln!(
                 out,
-                "A two-crystal: the 32 kHz counter never moved: skipped"
+                "timer: channel {ch} OMCR {mode:#04x} {}: OMCR reads {read:#x}, count {c0} -> {c1} in 2 ms (~{hz} Hz)",
+                if count_first {
+                    "counter first"
+                } else {
+                    "mode first"
+                },
             );
-        } else {
+            // 32,768 Hz is ~65 counts in 2 ms.
+            if found.is_none() && mode & 7 == 1 && (40..=100).contains(&c1.wrapping_sub(c0)) {
+                found = Some((ch, mode, count_first));
+            }
+        }
+        ost.stop_all();
+        if let Some((ch, mode, count_first)) = found {
+            if count_first {
+                ost.set_count(ch, 0);
+                ost.set_mode(ch, mode);
+            } else {
+                ost.set_mode(ch, mode);
+                ost.set_count(ch, 0);
+            }
+            let _ = writeln!(out, "timer: sampling with channel {ch}, OMCR {mode:#04x}");
             let start = rt::ticks();
-            let mut last = slow.now();
-            while slow.now() == last {}
-            last = slow.now();
+            let mut last = ost.count(ch);
+            while ost.count(ch) == last {}
+            last = ost.count(ch);
             let mut prev = rt::cycles();
             for (i, s) in samples.iter_mut().enumerate() {
-                let mut now = slow.now();
+                let mut now = ost.count(ch);
                 while now == last {
-                    now = slow.now();
+                    now = ost.count(ch);
                 }
                 let c = rt::cycles();
                 last = now;
@@ -386,8 +434,13 @@ mod image {
             );
             save(&mut out, card.as_mut(), "noise-a.bin", samples, fat);
             save_restart_row(&mut out, card.as_mut(), samples, restart, fat);
+        } else {
+            let _ = writeln!(
+                out,
+                "A two-crystal: no channel counted at 1/32768 s: skipped"
+            );
         }
-        slow.stop();
+        ost.stop_all();
 
         // 3. B: one-clock jitter, 64 reads that all miss the cache. The
         // D-cache is 32 KiB, 32 ways of 32-byte lines: 32 sets, so a 1 KiB

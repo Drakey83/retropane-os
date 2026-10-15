@@ -580,20 +580,19 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     }))
 }
 
-static mut SLOW_CLOCK_TAKEN: bool = false;
+static mut OST_CHANNELS_TAKEN: bool = false;
 
-/// Hands out OS timer channel 5 once, as a 32.768 kHz counter
-/// ([`crate::soc::SlowClock`]).
-pub fn take_slow_clock() -> Option<crate::soc::SlowClock<Mmio>> {
+/// Hands out OS timer channels 5-11 once ([`crate::soc::OstChannels`]).
+pub fn take_ost_channels() -> Option<crate::soc::OstChannels<Mmio>> {
     // SAFETY: single core; called during setup.
-    let taken = unsafe { core::ptr::addr_of_mut!(SLOW_CLOCK_TAKEN).replace(true) };
+    let taken = unsafe { core::ptr::addr_of_mut!(OST_CHANNELS_TAKEN).replace(true) };
     if taken {
         return None;
     }
-    // SAFETY: the OS timer's register window. The slow clock touches only
-    // channel 5's counter and match control, which nothing else uses (the
-    // run limit is channel 4, the alarm 1, the spare 2, the watchdog 3).
-    Some(crate::soc::SlowClock(unsafe {
+    // SAFETY: the OS timer's register window. `OstChannels` touches only
+    // channels 5-11's counters and match controls, which nothing else uses
+    // (the run limit is channel 4, the alarm 1, the spare 2, the watchdog 3).
+    Some(crate::soc::OstChannels(unsafe {
         Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0xE0)
     }))
 }

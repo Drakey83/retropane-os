@@ -1361,6 +1361,8 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "clocks: OSCC",
         "clocks: core measured",
         "card: ready",
+        "timer: channel 5 OMCR 0x81 mode first",
+        "timer: sampling with channel 5, OMCR 0x81",
         "A two-crystal (cycles a 32 kHz tick): 1000000 samples",
         "B one-clock (cycles for 64 SDRAM reads): 1000000 samples",
         "T TEMP0: 1000000 samples",

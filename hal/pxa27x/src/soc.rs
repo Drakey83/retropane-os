@@ -75,11 +75,6 @@ pub mod ost_reg {
     pub const OSMR4: usize = 0x80;
     /// Match control 4: bits 2-0 the resolution (2: 1 ms ticks).
     pub const OMCR4: usize = 0xC0;
-    /// Counter 5 (its own when `OMCR5` bit 7 is set, else OSCR4's).
-    pub const OSCR5: usize = 0x44;
-    /// Match control 5: bits 2-0 the resolution (1: 1/32768 s, from the
-    /// 32.768 kHz oscillator), bit 7 "count with OSCR5, not OSCR4".
-    pub const OMCR5: usize = 0xC4;
 }
 
 /// The interrupt controller.
@@ -329,31 +324,59 @@ impl Dispatch {
     }
 }
 
-/// OS timer channel 5 counting the 32.768 kHz oscillator's ticks on its own
-/// counter (no match, no interrupt): a clock from a different crystal than
-/// the core's and OSCR0's 13 MHz, for measuring jitter between the two
-/// (ADR-0029, `rp-noise`).
-pub struct SlowClock<B>(pub B);
+/// OS timer channels 5-11 (counter `OSCRx` at `0x40 + 4x`, match control
+/// `OMCRx` at `0xC0 + 4x`, x = 4..11), raw, for finding how to run one on
+/// the 32.768 kHz oscillator: a clock from a different crystal than the
+/// core's and OSCR0's 13 MHz, for measuring jitter between the two
+/// (ADR-0029, `rp-noise`). Channel 4 is the run limit's and is refused.
+/// On the X51v, `OMCR5 = 0x81` with `OSCR5` written before or after it
+/// never counted (2026-10-15, `rp-noise` runs 1 and 2); the emulator
+/// counts with either.
+pub struct OstChannels<B>(pub B);
 
-impl<B: RegisterBus> SlowClock<B> {
-    /// Starts the counter at 0, one count per 1/32768 s. The resolution
-    /// first, then the counter: on the X51v (2026-10-15, `rp-noise` run 1)
-    /// the counter written before `OMCR5` never moved; the write to
-    /// `OSCR5` is what starts it (the run limit's channel 4 is set the
-    /// same way round).
-    pub fn start(&mut self) {
-        self.0.write32(ost_reg::OMCR5, 1 << 7 | 1);
-        self.0.write32(ost_reg::OSCR5, 0);
+impl<B: RegisterBus> OstChannels<B> {
+    fn ok(ch: u8) -> bool {
+        (5..=11).contains(&ch)
     }
 
-    /// The count now.
-    pub fn now(&mut self) -> u32 {
-        self.0.read32(ost_reg::OSCR5)
+    /// Writes `OMCRx` (ignored for channels outside 5-11).
+    pub fn set_mode(&mut self, ch: u8, value: u32) {
+        if Self::ok(ch) {
+            self.0.write32(0xC0 + 4 * usize::from(ch - 4), value);
+        }
     }
 
-    /// Stops the counter (the channel as the loader found it).
-    pub fn stop(&mut self) {
-        self.0.write32(ost_reg::OMCR5, 0);
+    /// Reads `OMCRx` back (0 outside 5-11).
+    pub fn mode(&mut self, ch: u8) -> u32 {
+        if Self::ok(ch) {
+            self.0.read32(0xC0 + 4 * usize::from(ch - 4))
+        } else {
+            0
+        }
+    }
+
+    /// Writes `OSCRx` (ignored outside 5-11).
+    pub fn set_count(&mut self, ch: u8, value: u32) {
+        if Self::ok(ch) {
+            self.0
+                .write32(ost_reg::OSCR4 + 4 * usize::from(ch - 4), value);
+        }
+    }
+
+    /// Reads `OSCRx` (0 outside 5-11).
+    pub fn count(&mut self, ch: u8) -> u32 {
+        if Self::ok(ch) {
+            self.0.read32(ost_reg::OSCR4 + 4 * usize::from(ch - 4))
+        } else {
+            0
+        }
+    }
+
+    /// Stops channels 5-11 (as the loader leaves them).
+    pub fn stop_all(&mut self) {
+        for ch in 5..=11 {
+            self.set_mode(ch, 0);
+        }
     }
 }
 

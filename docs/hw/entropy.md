@@ -15,21 +15,23 @@ can't make keys from it.
 | The 32.768 kHz oscillator is on and stable under Windows Mobile | `OSCC = 0x0000000F`: bit 0 OOK (stable) and bit 1 OON (on) set | likely (bit names as we read the manual; `rp-noise` reads it again) | (P) probe 2026-10-11, `probe-2026-10-11.md` |
 | So the 32 kHz clock is its own crystal, independent of the 13 MHz one that makes the core clock and OSCR0 | follows from OON | likely | (M), (P) |
 | The 32.768 kHz oscillator is on under RetroPane too, and the core runs at 624 MHz under the loader | `OSCC = 0x0F`; `CCCR 0x02000310`, `CCSR 0x30000310`, `CLKCFG 0xB`; the cycle counter measured 624.001 MHz against the 3.25 MHz timer | confirmed | (P) `rp-noise` run 1, 2026-10-15 |
-| **OS timer channels 4-11 start counting on the write to their counter (`OSCRx`), not on the write to `OMCRx`** | channel 5 set as `OSCR5 = 0` then `OMCR5 = 0x81` never moved in 10 ms; the run limit (channel 4) always wrote `OMCR4` first | likely (one run; run 2 checks the fixed order) | (P) run 1; the emulator starts them on the `OMCR` write (emulator.md) |
+| OS timer channel 5 on the 32.768 kHz clock: `OMCR5 = 0x81` (as the manual reads) **never counted**, with `OSCR5` written before (run 1) or after (run 2) | the counter stayed 0 for 10 ms both times | confirmed (twice) | (P) runs 1 and 2; the emulator counts either way (emulator.md). Run 3 tries nine ways (other channels, bits, resolutions) and logs which counts |
 | The cycle counter `CCNT` is CP14 c1, c1 (`PMNC` c0, c1; bit 0 enable, bit 2 reset, bit 3 count every 64th cycle) | | confirmed (run 1 counted at the core clock) | (M); the emulator fork models the same encoding |
-| OS timer channel 5 can count the 32.768 kHz clock on its own counter | `OMCR5 = 0x81` (resolution 1/32768 s, bit 7 own counter) | likely | (M) |
+| OS timer channel 5 can count the 32.768 kHz clock on its own counter | `OMCR5 = 0x81` (resolution 1/32768 s, bit 7 own counter) | **doubtful** (runs 1-2) | (M) |
 | TSC2046 single-ended inputs: `TEMP0` 0, `VBAT` 2, `AUX` 6, `TEMP1` 7 (SER = 1, reference on with PD = 11) | | confirmed (datasheet) | (D); whether Dell wired `VBAT`/`AUX` is unknown |
 
 ## Measurements
 
-Run 1 (2026-10-15, under the loader, interrupts off, 624 MHz): the
+Run 1 (2026-10-15, under the loader, interrupts off, 624 MHz; run 2
+the same day agreed within a few percent, except `TEMP0` 0.51 and `TEMP1`
+0.86 bit: both drift between runs): the
 on-device first look (SP 800-90B's most-common-value estimate). NIST's
 full tool hasn't been run yet; its estimate can only be lower (it takes
 the lowest of ten), so these are ceilings.
 
 | Source | Samples | What it showed | MCV estimate (ceiling) | Verdict so far |
 |---|---|---|---|---|
-| A two-crystal jitter | none | Skipped: the 32 kHz counter never started (the start order above) | | Run 2 |
+| A two-crystal jitter | none | Skipped in runs 1 and 2: the 32 kHz counter never started | | Run 3 |
 | B one-clock jitter (cycles for 64 SDRAM reads, low byte) | 1,000,000 in 15.6 s | 9 values (9,662-10,553 cycles); 87% are 9,726; 9,738 occurs **31,250 times, 99% of them exactly 32 samples apart**: a fixed pattern, SDRAM refresh most likely; 78% of samples equal the one before | 0.19 bit | Weak and partly periodic: mixed only, as ADR-0029 planned |
 | T `TEMP0` (12-bit) | 1,000,000 in 18.5 s | 878-882, 5 values; 67% equal the one before (slowly moving) | 0.98 bit | Some noise, strongly correlated: the full tool will be well below this |
 | T `VBAT` | 1,000,000 | 0-4, 93% read 1 | 0.11 bit | **Not wired to the battery** on the X51v (reads near 0) |
