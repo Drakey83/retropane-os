@@ -125,6 +125,9 @@ mod image {
     const CLEAR: usize = MBX + reg::CLEAR;
     const R804: usize = MBX + 0x804;
     /// The 3D core's clock (system block, read fine under WM).
+    /// This image's version, in its first log line (kept here so the
+    /// banner can't fall behind the module notes again).
+    const VERSION: u32 = 6;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -302,7 +305,7 @@ mod image {
         let regs = display.into_inner();
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         let clk0 = e.regs.read32(MBXCLK);
-        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4, version 4)");
+        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4, version {VERSION})");
         log!(
             "core ID 0x{:08x}, MBXCLK 0x{clk0:x}, PLLSTAT 0x{:x}, status 0x{:08x}, enable 0x{:08x}, 0x804 0x{:08x}",
             e.regs.read32(MBX + reg::ID),
@@ -421,11 +424,11 @@ mod image {
             "nothing drawn (see the log)"
         };
         log!(
-            "{MARKER}: {verdict} - {} until a button",
+            "{MARKER}: {verdict} - {} shown until a button",
             if shown {
-                "the shaded triangle is"
+                "the shaded triangle"
             } else {
-                "the target is"
+                "the target"
             }
         );
         if let Some(bus) = rt::take_ffuart() {
