@@ -84,7 +84,9 @@ commands:
             lost on the way back; `load` asks for it by itself)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
-  trace     the last program's trace ring (thread switches, faults,
+  handoff   what the loader's start found running (DMA, USB), how long
+            it waited for it to stop, and its boot time
+  trace    the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)
   wmbench   build the stock Windows Mobile baseline program (tools/wmbench:
             run by hand under WM; it writes rp-wm-baseline.txt next to itself)
@@ -114,6 +116,9 @@ commands:
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
   emu-usb   only the loader-over-USB check (image in, run log out)
+  emu-loader only the loader's boot check (boot time, an image's round trip)
+  emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
+            wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
@@ -134,7 +139,7 @@ fn main() -> ExitCode {
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-usb" | "emu-loader" | "emu-handover" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -229,6 +234,10 @@ fn main() -> ExitCode {
         "cpld" => {
             eprintln!("==> cpld");
             usb::command(&workspace_root(), "cpld")
+        }
+        "handoff" => {
+            eprintln!("==> handoff");
+            usb::command(&workspace_root(), "handoff")
         }
         "trace" => {
             eprintln!("==> trace");
@@ -335,6 +344,8 @@ fn run_step(step: &str) -> Result {
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
+        "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
+        "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -354,6 +365,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
+            .and_then(|()| emu::boot_loader_handover(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_trace(&workspace_root()))

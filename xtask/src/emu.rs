@@ -567,11 +567,12 @@ const LOADER_MARKER: &str = "RPLOAD1 READY";
 /// are loose: they catch a regression of many times, not 10%. The device's
 /// numbers are what count, and go in docs/perf.md.
 const BOOT_BUDGETS_MS: &[(&str, f64)] = &[
-    // The loader: 500 ms of it is the display's settle time after the
-    // hand-off (an unexplained hang on the device, `devices::take_mbx`);
-    // GPIO, the card, the DMA self-test and the USB detach run inside it.
-    // Was 742 ms before (a 16 MiB beacon fill, then everything in turn).
-    ("boot_loader_ready", 560.0),
+    // The loader: 200 ms of it is the USB detach (the PC must see the
+    // device leave); GPIO, the card and the DMA self-test run inside it.
+    // Was 742 ms (a 16 MiB beacon fill, then everything in turn), then
+    // 504 ms (a fixed 500 ms 2700G settle, replaced by waiting for the
+    // hand-off's DMA to stop: `devices::take_mbx`): 204 ms in the emulator.
+    ("boot_loader_ready", 260.0),
     // The kernel's frame allocator, page tables and device map.
     ("boot_kernel_tables", 100.0),
 ];
@@ -647,6 +648,63 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
         "    loader OK: moved itself home, took a {} byte image over serial, CRC checked, \
          started it, and sent its run log back when it returned",
         payload.len()
+    );
+    Ok(())
+}
+
+/// Hand-over facts (items 72 and 77): `rp-handover` under the loader, with
+/// Windows Mobile's CPLD shadow table in RAM as at HaRET's hand-off. The
+/// loader adopts the table first (its start), so the image finds
+/// RetroPane's table with Windows Mobile's bits in it; the hand-off record
+/// shows no DMA left running (the loader stops its own) and the 2700G
+/// handed out with no fixed wait.
+pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-handover.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-handover"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let args = wm_cpld_table_args();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("handover: no run log after the image returned")?;
+    for want in [
+        "handoff: DMA running 00000000, UDC off",
+        "table @A8001320: 53435052",
+        "shadow from RetroPane's table:",
+        " 10=8000",
+        " 18=000D",
+        " 1E=0003",
+        "HANDOVER-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("handover: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprint!("    run log:{log}");
+    eprintln!(
+        "    hand-over OK: no fixed wait for the 2700G; the CPLD shadow adopted from Windows Mobile's table by the loader, then shared with the image"
     );
     Ok(())
 }
@@ -2540,6 +2598,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     args.extend(msc_args(3));
     args.push("-drive".into());
     args.push(drive_arg(root, "ide", &cf)?);
+    args.extend(wm_cpld_table_args());
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let via_drive: Vec<u8> = (0..4096u32).map(|i| (i * 29 + 3) as u8).collect();
     let check = || -> Result<(), String> {
@@ -2590,6 +2649,34 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             let lit = mon.query("qom-get /machine/peripheral/mbx2700g backlight")?;
             if lit != "true" {
                 return Err(format!("CF: the backlight went off ({lit})"));
+            }
+        }
+        // The shadow came from Windows Mobile's table, and the bits it had
+        // on in the registers the CF attach wrote are still on (item 77).
+        s.write_all(&rp_loadproto::control_frame("cpld"))
+            .map_err(|e| e.to_string())?;
+        let mut reply = usb_read_until(&mut s, "shadow from", 10)?;
+        if !reply.rsplit("shadow from").next().is_some_and(|t| {
+            t.contains(
+                "
+",
+            )
+        }) {
+            reply += &usb_read_until(
+                &mut s, "
+", 10,
+            )?;
+        }
+        for want in [
+            "shadow from WM's table:",
+            " 10=9000",
+            " 18=000d",
+            " 1e=0003",
+        ] {
+            if !reply.contains(want) {
+                return Err(format!(
+                    "CF: the CPLD's shadow isn't Windows Mobile's table with its bits kept (no {want:?}): {reply:?}"
+                ));
             }
         }
         let r = bot.command(&[0x12, 0, 0, 0, 36, 0], 36, true, &[])?;
@@ -2700,6 +2787,33 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         "    CF card OK: attached on its own from an unpowered slot before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
+}
+
+/// Windows Mobile's shared CPLD shadow table as it is in RAM at HaRET's
+/// hand-off (docs/hw/cpld.md "Shadow at hand-over"; slots in Windows
+/// Mobile's order: 0x02, 0x10, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E,
+/// 0x08), as QEMU arguments that put it there before the loader starts:
+/// the emulator otherwise starts from reset, with nothing in RAM. Shaped
+/// like the device's (backlight on, the guessed serial and display bits
+/// in 0x18, a notification bit in 0x10, battery bits in 0x1E); the CF slot
+/// off, as the emulated slot starts.
+fn wm_cpld_table_args() -> Vec<String> {
+    const TABLE: u32 = 0xA800_1320;
+    const SLOTS: [u32; 10] = [0, 0x8000, 0, 0x0008, 0, 0x000D, 0, 0, 0x0003, 0];
+    SLOTS
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != 0)
+        .flat_map(|(i, v)| {
+            [
+                "-device".to_string(),
+                format!(
+                    "loader,addr={:#x},data={v:#x},data-len=4",
+                    TABLE + 4 * i as u32
+                ),
+            ]
+        })
+        .collect()
 }
 
 /// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S fed by a DMA ring),

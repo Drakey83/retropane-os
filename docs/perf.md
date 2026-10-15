@@ -109,6 +109,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-12 | Pixel paths: full-screen alpha blend, one multiply for three channels vs per channel | `gfx_blend_fill_vga` vs `gfx_blend_reference_vga` (emulator) | 7,987,231 | 3,079,077 |
 | 2026-10-12 | Loader boot time, first measured: the bring-up beacon filled all 16 MiB of 2700G memory four times (now 1 MiB, where a plane lies); GPIO, card, DMA self-test and USB detach moved inside the 500 ms display settle. Emulator real time | `boot_loader_ready` | 742 ms | 504 ms |
 | 2026-10-12 | Kernel: entry to its own page tables and device map. Emulator real time | `boot_kernel_tables` | — | 2-3 ms |
+| 2026-10-15 | The 2700G's fixed 500 ms settle after a hand-off replaced by waiting for the DMA channels the previous owner left running to stop (the hang it guarded against was that DMA, found the same day it went in; docs/hw/2700g.md "After the hand-off"). The loader is now held by its 200 ms USB detach; every image the loader starts reaches the 2700G at once. Budget 560 -> 260 ms. Emulator real time; device numbers below when measured | `boot_loader_ready` / an image's 2700G (`rp-handover`) | 504 ms / ≥ 500 ms | 204 ms / 0.25 ms |
 | 2026-10-12 | **Measured on the device**: SD DMA self-test passed on the real X51v (reads on, 120 transfers); drive 7,377 blocks read, 0 errors, 0 retries | SD DMA on device | pending | passed |
 | 2026-10-12 | **Measured on the device**, the owner's new 32 GB SDHC card (FAT32, 32 KiB clusters) against the old 4 GB card: the first SDHC card on the real X51v, 4-bit bus. Single-block commands much faster; through the file layer both cards are at ~1.4-1.9 MB/s, so our driver (no DMA writes yet, small commands) is the limit, not the card | `sd_read_block` / `sd_read_4_blocks` per block / put `haret.exe` 143 KB write, read back | 3.90 ms / 1.16 ms / 85 ms (once 811 ms), 83 ms | 0.89 ms / 0.42 ms / 100 ms (twice), 83 ms; `sd_read_64_blocks` 0.27 ms per block |
 | 2026-10-12 | Plane blending (item 60): the glass-over-wallpaper look mixed by the 2700G during scan-out instead of by the CPU. `rp-blend` test image budget 22 KiB (test image rule: measured + ~10%); its three 480 × 640 test scenes are generated on the device, not stored | `rp-blend` loaded size; CPU work per frame for the glass look | — | 19,624 B; 0 (the display does it); the wallpaper as 4:2:0 YUV is 450 KiB vs 600 KiB as RGB565 |
@@ -203,9 +204,11 @@ What stands out (leads, not conclusions yet; one run):
 - **LZ4**: a 4 KiB heap page decompresses in 180 µs (~23 MB/s), so a
   compressed-RAM fault costs ~0.2 ms. Acceptable, but the decoder is the first
   thing to optimise on real hardware.
-- **Open question:** the probe hung before drawing anything until the startup
-  colours (about 1 s of extra delay) were added. Cause unknown; possibly
-  something that needs time to settle after HaRET. Revisit with a serial link.
+- **Answered (2026-10-15):** the probe hung before drawing anything until the
+  startup colours (about 1 s of extra delay) were added. The cause was
+  Windows Mobile's DMA still running after HaRET's hand-off (stopped by
+  `_start` since 2026-10-11); the 500 ms settle that stayed in its place is
+  gone (docs/hw/2700g.md "After the hand-off").
 
 ### Threads on the real X51v (2026-10-12, `cargo xtask load rp-threads`)
 

@@ -108,7 +108,7 @@ mod image {
             rt::init_mmu();
             let _ = writeln!(out, "\nRetroPane 26 on the Axim X51v");
             let _ = writeln!(out, "CPU ID: {:#010x}", rt::cpu_id());
-            let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
+            let mut cpld = rp_hal_x51v::devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
             let vga = match cpld.as_mut() {
                 Some(cpld) => {
                     let panel = cpld.panel(&mut TimerDelay);

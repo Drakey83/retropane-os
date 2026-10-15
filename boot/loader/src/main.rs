@@ -31,7 +31,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_cf::CfCard;
-    use rp_drv_cpld::Cpld;
+    use rp_drv_cpld::{Cpld, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::crash;
@@ -54,6 +54,9 @@ mod image {
     use rp_usb_msc::{BulkPipe, Msc, Storage};
 
     rp_hal_pxa27x::entry!(main);
+
+    /// The CPLD, with the shadow table every program shares.
+    type BoardCpld = Cpld<Mmio, handover::Table<'static>>;
 
     /// D+ pull-up and cable detect (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
@@ -395,33 +398,29 @@ mod image {
         Option<Sd>,
         Option<PxaMmc<Mmio, Dma>>,
         [u16; 16],
-        Option<Cpld<Mmio>>,
+        Option<(BoardCpld, handover::Source)>,
     ) {
-        let Some(mut cpld) = devices::take_cpld() else {
+        let Some((mut cpld, table)) = devices::take_cpld() else {
             return (None, None, [0; 16], None);
         };
         let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
-            return (None, None, [0; 16], Some(Cpld::new(cpld)));
+            return (None, None, [0; 16], Some(Cpld::adopt(cpld, table)));
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
         // Mobile left them, read before our first write. Reads only; whether
         // they read back at all is one of the questions (docs/hw/cpld.md).
         let found: [u16; 16] =
             core::array::from_fn(|k| rp_hal_api::RegisterBus16::read16(&mut cpld, k * 2));
-        // One CPLD for the loader's whole life: its shadow is what keeps
-        // the SD card's, the CF slot's and the Wi-Fi's bits in shared
-        // registers from undoing each other.
-        let mut cpld = Cpld::new(cpld);
-        // The CPLD doesn't read back: bits Windows Mobile left on in a
-        // register we write must be set here first. The backlight's enable
-        // shares 0x18 with the CF reset (a CF attach once turned the
-        // backlight off); setting it also brings it back after that.
-        cpld.set_backlight_enable(true);
+        // One CPLD for the loader's whole life, its shadow seeded from the
+        // table every program shares (Windows Mobile's at HaRET's hand-off):
+        // it keeps the backlight's, the SD card's, the CF slot's and the
+        // Wi-Fi's bits in shared registers from undoing each other.
+        let (mut cpld, source) = Cpld::adopt(cpld, table);
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None, found, Some(cpld)),
-            Err((_, host)) => (None, Some(host), found, Some(cpld)),
+            Ok(card) => (Some(card), None, found, Some((cpld, source))),
+            Err((_, host)) => (None, Some(host), found, Some((cpld, source))),
         }
     }
 
@@ -937,7 +936,7 @@ mod image {
     /// reset"): RESET is CPLD `0x18` bit 1, READY / slot power GPIO84.
     struct CfSocketLines<'a> {
         gpio: &'a mut Gpio<Mmio>,
-        cpld: &'a mut Cpld<Mmio>,
+        cpld: &'a mut BoardCpld,
     }
 
     impl rp_drv_cf::CfLines for CfSocketLines<'_> {
@@ -964,7 +963,7 @@ mod image {
     /// reset this should bring Windows Mobile back without Dell's factory
     /// prompt (item 64; not yet tried on the device). Returns only if
     /// nothing reset within 1 s, with GPIO99 back low.
-    fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut Cpld<Mmio>>) {
+    fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) {
         if let Some(cpld) = cpld {
             cpld.set(rp_drv_cpld::reg::CTL08, 0x0002);
         }
@@ -1003,7 +1002,7 @@ mod image {
     /// Powers the CF slot from off, as Windows Mobile's socket driver does
     /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
     /// is then reset by `CfCard::init` through the RESET line.
-    fn cf_power_cycle(cpld: &mut Cpld<Mmio>) {
+    fn cf_power_cycle(cpld: &mut BoardCpld) {
         cpld.set_cf_power(false, &mut BusyWait);
         rt::delay_us(308_000);
         cpld.set_cf_power(true, &mut BusyWait);
@@ -1112,7 +1111,7 @@ mod image {
         /// attach, the power we switched on goes off (CPLD `0x10` bit 12,
         /// 10 ms, `0x16` bit 1). Checked every loop pass, so every way of
         /// letting the card go is covered; `true` when it switched off now.
-        fn power_down_if_unused(&mut self, cpld: Option<&mut Cpld<Mmio>>) -> bool {
+        fn power_down_if_unused(&mut self, cpld: Option<&mut BoardCpld>) -> bool {
             if !self.powered || matches!(self.slot, CfSlot::Card(_)) {
                 return false;
             }
@@ -1183,7 +1182,7 @@ mod image {
     fn cf_attach(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut Cpld<Mmio>>,
+        cpld: Option<&mut BoardCpld>,
         soft: bool,
     ) -> Option<rp_drv_cf::ResetSeen> {
         let slot = &mut lun.slot;
@@ -1228,7 +1227,7 @@ mod image {
     fn cf_command(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut Cpld<Mmio>>,
+        cpld: Option<&mut BoardCpld>,
         soft: bool,
         out: &mut Line,
     ) {
@@ -1505,6 +1504,36 @@ mod image {
         let _ = write!(out, "RPL OK backlight {level}% (duty {on}/{counts})\r\n");
     }
 
+    /// `handoff`: what `_start` found running at this loader's start, how
+    /// long its DMA took to stop, and when the 2700G and the loader were
+    /// ready (milliseconds since the start).
+    fn handoff_command(ready_at: u32, out: &mut Line) {
+        let ms = |t: u32| t / (TICK_1S / 1000);
+        match devices::mbx_handoff() {
+            Some(h) => {
+                let _ = write!(
+                    out,
+                    "RPL OK handoff: dma running {:08x}, udc {}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
+",
+                    h.found.dma_running,
+                    if h.found.udc_on { "on" } else { "off" },
+                    h.stopped.waited * 4 / 13,
+                    h.stopped.stuck,
+                    ms(h.at),
+                    ms(ready_at),
+                );
+            }
+            None => {
+                let _ = write!(
+                    out,
+                    "RPL OK handoff: 2700G not taken, ready at {} ms
+",
+                    ms(ready_at)
+                );
+            }
+        }
+    }
+
     /// A decimal number from a command's argument (spaces ignored).
     fn parse_number(args: &[u8]) -> Option<u32> {
         args.iter()
@@ -1770,7 +1799,11 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare, cpld_found, mut cpld) = open_card();
+        let (card, spare, cpld_found, cpld) = open_card();
+        let (mut cpld, cpld_source) = match cpld {
+            Some((c, s)) => (Some(c), Some(s)),
+            None => (None, None),
+        };
         // The trace region: started afresh with each program, sent to the
         // PC on `trace` (the last program's, even after a hang and reset).
         let mut trace_area = devices::take_trace_area();
@@ -1949,7 +1982,8 @@ mod image {
         // Boot time (docs/design-brief.md): entry to the waiting loop, every
         // driver set up that the loop needs now (audio and CF start later,
         // on first use).
-        let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
+        let ready_at = rt::since_start();
+        let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
         loop {
@@ -2173,13 +2207,30 @@ mod image {
                             None => "RPL ERR log: no image has run since the loader started\r\n",
                         },
                         Ok(b"cpld") => {
-                            // The CPLD as found at start-up (read-only
-                            // diagnostics; offsets 0x00..0x1E).
+                            // The CPLD as read at start-up (diagnostics;
+                            // offsets 0x00..0x1E), then the shadow of its
+                            // latches now and where it came from (non-zero
+                            // registers only: the reply is one line).
                             let _ = status.write_str("RPL OK cpld:");
                             for (k, v) in cpld_found.iter().enumerate() {
                                 let _ = write!(status, " {:02x}={v:04x}", k * 2);
                             }
+                            if let (Some(c), Some(src)) = (cpld.as_ref(), cpld_source) {
+                                let _ = write!(status, "; shadow from {}:", src.name());
+                                for k in (0..rp_drv_cpld::REGS).filter(|&k| c.shadow(k * 2) != 0) {
+                                    let _ =
+                                        write!(status, " {:02x}={:04x}", k * 2, c.shadow(k * 2));
+                                }
+                            }
                             let _ = status.write_str("\r\n");
+                            status.as_str()
+                        }
+                        Ok(b"handoff") => {
+                            // What this start found and waited for: the
+                            // previous owner's DMA and USB (HaRET's hand-off
+                            // from Windows Mobile, or an image's return), and
+                            // the boot time it cost.
+                            handoff_command(ready_at, &mut status);
                             status.as_str()
                         }
                         Ok(b"reboot wm") => {

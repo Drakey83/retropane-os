@@ -223,11 +223,44 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
     Mutant {
-        name: "backlight enable not set before the CPLD's 0x18 is written (CF reset darkens the screen)",
-        file: "boot/loader/src/main.rs",
-        from: "        cpld.set_backlight_enable(true);",
-        to: "",
+        name: "CPLD shadow not seeded from Windows Mobile's table (a CF reset darkens the screen)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        Ok(v) => (v, Source::Adopted),",
+        to: "        Ok(_) => ([0; REGS], Source::Adopted),",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "bits_windows_mobile_left_on_survive_our_writes",
+        ]),
+    },
+    Mutant {
+        name: "the loader's CPLD shadow not seeded from Windows Mobile's table in RAM",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        Ok(v) => (v, Source::Adopted),",
+        to: "        Ok(_) => (DEFAULTS, Source::Adopted),",
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "CPLD defaults without the backlight enable (no table: a CF reset darkens the screen)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "    v[reg::CTL18 / 2] = crate::BACKLIGHT_ENABLE;",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "defaults_keep_the_backlight_through_a_cf_reset",
+        ]),
+    },
+    Mutant {
+        name: "CPLD shadow changes not written through to the shared table (the next program loses them)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        *self.words = encode(&self.values);",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "adopting_takes_the_table_over_and_writes_changes_through",
+        ]),
     },
     Mutant {
         name: "medium change reported as a unit attention only (Windows keeps its stale view)",
