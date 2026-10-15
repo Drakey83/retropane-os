@@ -183,9 +183,9 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T2 | Do status bits 2 and 4 raise GPIO85? | D3: **no, as tried** (version 20: bit 2 enabled in `0x130`, `MINTENABLE` `0x800F`: 0 edges); timer fallback |
 | T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5: **passed** (version 20: any pixel offset, even 4 bytes) |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
-| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D |
-| T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality |
-| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games |
+| T5 | TSP bits: blend (bits 31-26, as the PowerVR2 has them?), alpha, Gouraud with texture | the interface's glass and fades on 3D (version 21) |
+| T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality (version 21, on a hand-written textured object) |
+| T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | games (version 21: compare modes within one render) |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
 | T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
 
