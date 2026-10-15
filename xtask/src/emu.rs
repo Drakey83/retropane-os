@@ -183,7 +183,7 @@ pub fn build_wsl(root: &Path) -> Result<(), String> {
 /// Downloads the pinned emulator release if necessary.
 fn download_release(root: &Path) -> Result<PathBuf, String> {
     let p = platform();
-    let cache = root.join("target").join("emulator").join(QEMU_RELEASE);
+    let cache = emulator_dir(root).join(QEMU_RELEASE);
     let exe = cache.join(p.dir).join(p.exe);
     if exe.exists() {
         return Ok(exe);
@@ -336,6 +336,43 @@ fn write_sd_test_image(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+/// The checks' scratch folder (screenshots, card images, recordings) and
+/// the emulator release's cache.
+fn emulator_dir(root: &Path) -> PathBuf {
+    root.join("target").join("emulator")
+}
+
+/// `name` in the scratch folder, which is created here: QEMU writes some of
+/// these files itself and can't make the folder, and a fresh checkout has
+/// none (only downloading the release made one, which hid this from the
+/// release path). Every check's scratch file goes through here; a test
+/// keeps it that way.
+fn scratch(root: &Path, name: &str) -> Result<PathBuf, String> {
+    let dir = emulator_dir(root);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir.join(name))
+}
+
+/// The raw-binary folder (`target/emu`), created here.
+fn emu_dir(root: &Path) -> Result<PathBuf, String> {
+    let dir = root.join("target").join("emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
+/// The release build's `image` as a raw binary in `target/emu`, made here:
+/// every check stands alone, never relying on a file an earlier check left.
+fn raw_image(root: &Path, image: &str) -> Result<PathBuf, String> {
+    let out = emu_dir(root)?.join(format!("{image}.bin"));
+    crate::sdkit::raw_binary(
+        &root
+            .join("target/armv5te-x51v-none-eabi/release")
+            .join(image),
+        &out,
+    )?;
+    Ok(out)
+}
+
 /// Screen size of the emulated X51v, for converting taps to absolute pointer units.
 const SCREEN: (u32, u32) = (480, 640);
 
@@ -344,11 +381,8 @@ const SCREEN: (u32, u32) = (480, 640);
 /// presses buttons and checks the image reports them.
 pub fn boot_hello(root: &Path) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
-    let shot = root
-        .join("target")
-        .join("emulator")
-        .join("hello-screen.ppm");
-    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-test.img"))?;
+    let shot = scratch(root, "hello-screen.ppm")?;
+    let sd = write_sd_test_image(&scratch(root, "sd-test.img")?)?;
     let output = boot(
         root,
         &Boot {
@@ -663,8 +697,7 @@ fn check_boot(output: &str, names: &[&str]) -> Result<(), String> {
 /// CRC check and the hand-off, end to end.
 pub fn boot_loader(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let light = dir.join("rp-light.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -1542,8 +1575,7 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
 /// a crash report, and be kept on the card as `crashlog.txt`.
 pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let crash = dir.join("rp-crash.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -1557,15 +1589,14 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
         ballast: 0,
     });
-    let sd = root.join("target/emulator/sd-crash.img");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let sd = scratch(root, "sd-crash.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     // First the image's own crash box, on the plane actually on screen:
     // rp-crash moved it to offset 0 (where Windows Mobile leaves it), so a
     // box drawn at the conventional 0x60000 never shows. Then, once the
     // loader is back, its crash screen: a red band at the top of its log
     // area (below the 96-pixel status lines) and the log's end.
-    let shot = root.join("target/emulator/crash-screen.ppm");
+    let shot = scratch(root, "crash-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -1679,13 +1710,7 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
 /// as rp-noise leaves it): emulator releases before rp-v0.14.0 aborted on
 /// the reset with the counter running instead of rebooting as the device does.
 pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let loader = dir.join("rp-loader.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
-        &loader,
-    )?;
+    let loader = raw_image(root, "rp-loader")?;
     let mut hang = rp_loadproto::control_frame("limit 1");
     // mov r0, #1; mcr p14, 0, r0, c0, c1, 0 (PMNC: count); b .
     let words = [0xE3A0_0001u32, 0xEE00_0E11, 0xEAFF_FFFE];
@@ -1779,8 +1804,7 @@ pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
 /// Dell's factory-restore prompt). A 2 s limit keeps the test short.
 pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let hang = dir.join("rp-hang.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -1832,15 +1856,14 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
 /// device.
 pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-picture.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     crate::sdkit::raw_binary(&release.join("rp-picture"), &bin)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let want = expected_picture(root)?;
-    let shot = root.join("target/emulator/picture-screen.ppm");
+    let shot = scratch(root, "picture-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -1938,8 +1961,7 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
 pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::blendtest::{self, Stage};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-blend.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -1949,7 +1971,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     // Kept per stage (target/emulator/blend-A.ppm ...) for a look by eye.
     let dump = |name: char| -> Result<Vec<u8>, String> {
-        let shot = root.join(format!("target/emulator/blend-{name}.ppm"));
+        let shot = scratch(root, &format!("blend-{name}.ppm"))?;
         let guest = if wsl {
             to_wsl_path(&shot)
         } else {
@@ -2068,14 +2090,13 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     crate::sdkit::raw_binary(&release.join("rp-mbx"), &bin)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
-    let shot = root.join("target/emulator/mbx-screen.ppm");
+    let shot = scratch(root, "mbx-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -2576,8 +2597,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx3d.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -2816,8 +2836,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx3d-api.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -2968,8 +2987,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx-blend.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -3218,6 +3236,13 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
         .count()
 }
 
+/// How long emu-today waits for the image to answer a press on screen: a
+/// backstop only, never a timing (the press waits for the answer).
+const PRESS_ANSWER: Duration = Duration::from_secs(60);
+/// A tap the image answers on the lift, held this long in its own time
+/// (its pen filter lands a press in ~30 ms of samples).
+const TAP_GUEST_MS: u32 = 150;
+
 /// The shell's Today screen (ADR-0021) under the loader: pixel-exact
 /// against the reference (clocks masked), still there after 40 s untouched
 /// (past the run limit: idle sleeps must check in), a stylus tap on Start opens the
@@ -3226,8 +3251,7 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
 pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     use rp_shell::Input;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-today.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -3246,7 +3270,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let bare = compare_screens(&wall);
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let dump = |name: &str| -> Result<Vec<u8>, String> {
-        let shot = root.join(format!("target/emulator/today-{name}.ppm"));
+        let shot = scratch(root, &format!("today-{name}.ppm"))?;
         let guest = if wsl {
             to_wsl_path(&shot)
         } else {
@@ -3280,10 +3304,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
                 )
                 .into_bytes();
                 ppm.extend_from_slice(want);
-                let _ = std::fs::write(
-                    root.join(format!("target/emulator/today-{name}-want.ppm")),
-                    ppm,
-                );
+                let _ = std::fs::write(scratch(root, &format!("today-{name}-want.ppm"))?, ppm);
                 return Err(format!(
                     "today: the {name} screen differs from the reference in {n} pixels (target/emulator/today-{name}.ppm, expected today-{name}-want.ppm)"
                 ));
@@ -3298,32 +3319,89 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         std::thread::sleep(Duration::from_secs(40));
         until("idle", &want[0])?;
         let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
-        let tap = |qmp: &mut crate::screen::Qmp, x: u16, y: u16| -> Result<(), String> {
-            touch(qmp, &Action::TouchDown(x, y))?;
-            std::thread::sleep(Duration::from_millis(300));
-            touch(qmp, &Action::TouchUp)?;
+        // Every press is held until the image answers it on screen, never
+        // for a fixed time: the image samples the pen in its own time, and
+        // a busy host gives it few samples per wall-clock second (with
+        // every core busy a 700 ms hold fell short of the align screen's
+        // HOLD samples and the menu-aligned check failed by 234960 px).
+        let changed = |name: &str, from: &[u8]| -> Result<Vec<u8>, String> {
+            let deadline = Instant::now() + PRESS_ANSWER;
+            loop {
+                let now = dump(name)?;
+                if today_differ(&now, from) > 0 {
+                    return Ok(now);
+                }
+                if Instant::now() > deadline {
+                    return Err(format!("today: no answer on screen to the {name}"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        };
+        // Guest time: held until the image's own timer (OSCR0, 3.25 MHz,
+        // read through the monitor) has moved `ms` on, for presses the
+        // image answers only on the lift (the bare wallpaper's depth flip).
+        let guest_hold = |ms: u32| -> Result<(), String> {
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            let oscr = |mon: &mut crate::screen::Monitor| -> Result<u32, String> {
+                let out = mon.query("xp /1wx 0x40a00010")?;
+                let hex = out
+                    .rsplit("0x")
+                    .next()
+                    .map(|h| h.trim().trim_end_matches(|c: char| !c.is_ascii_hexdigit()))
+                    .unwrap_or("");
+                u32::from_str_radix(hex, 16).map_err(|_| format!("today: OSCR0 read: {out}"))
+            };
+            let from = oscr(&mut mon)?;
+            let deadline = Instant::now() + PRESS_ANSWER;
+            while oscr(&mut mon)?.wrapping_sub(from) < ms * 3_250 {
+                if Instant::now() > deadline {
+                    return Err("today: the image's clock didn't move".into());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             Ok(())
         };
-        tap(&mut qmp, sx, sy)?;
+        // Down until the screen shows the press (a pressed target, the
+        // align target turning green), or for `guest_ms` of the image's
+        // time when it answers only on the lift; then up; returns the
+        // screen while held.
+        let press =
+            |qmp: &mut crate::screen::Qmp, name: &str, x: u16, y: u16, guest_ms: Option<u32>| {
+                let before = dump(name)?;
+                touch(qmp, &Action::TouchDown(x, y))?;
+                let held = match guest_ms {
+                    None => changed(&format!("{name}-down"), &before),
+                    Some(ms) => guest_hold(ms).map(|()| before),
+                };
+                touch(qmp, &Action::TouchUp)?;
+                held
+            };
+        press(&mut qmp, "start", sx, sy, None)?;
         until("menu", &want[2])?;
         // The align screen (the test image's second-to-last entry): hold
         // each target, then the check dot, as the owner would.
         let entries = rp_shell::Shell::menu_entries(true);
         let align = rp_shell::Shell::menu_entry(entries - 2);
-        tap(&mut qmp, align.x + align.w / 2, align.y + align.h / 2)?;
-        std::thread::sleep(Duration::from_millis(500));
-        for &(x, y) in rp_shell::align::TARGETS
+        let held = press(
+            &mut qmp,
+            "align",
+            align.x + align.w / 2,
+            align.y + align.h / 2,
+            None,
+        )?;
+        changed("align-up", &held)?;
+        for (i, &(x, y)) in rp_shell::align::TARGETS
             .iter()
             .chain([&rp_shell::align::CHECK])
+            .enumerate()
         {
-            touch(&mut qmp, &Action::TouchDown(x, y))?;
-            std::thread::sleep(Duration::from_millis(700));
-            touch(&mut qmp, &Action::TouchUp)?;
-            std::thread::sleep(Duration::from_millis(400));
+            // The lift moves on (the next target, or the Today screen).
+            let held = press(&mut qmp, &format!("target{i}"), x, y, None)?;
+            changed(&format!("target{i}-up"), &held)?;
         }
         // Calibrated: Start must open the same menu, pixel for pixel (the
         // taps land where they should through the new calibration).
-        tap(&mut qmp, sx, sy)?;
+        press(&mut qmp, "start-aligned", sx, sy, None)?;
         until("menu-aligned", &want[2])?;
         // The wallpaper comparison (the owner's 16-bit check, the third
         // entry from the end): the wallpaper alone, pixel-exact at full
@@ -3331,23 +3409,31 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         // depth, Home goes back. Ends at full depth, so the menu below
         // matches as before.
         let compare = rp_shell::Shell::menu_entry(entries - 3);
-        tap(
+        press(
             &mut qmp,
+            "compare",
             compare.x + compare.w / 2,
             compare.y + compare.h / 2,
+            None,
         )?;
         until("bare-32", &bare[0])?;
-        tap(&mut qmp, 240, 320)?;
+        press(&mut qmp, "flip-16", 240, 320, Some(TAP_GUEST_MS))?;
         until("bare-16", &bare[1])?;
-        tap(&mut qmp, 240, 320)?;
+        press(&mut qmp, "flip-32", 240, 320, Some(TAP_GUEST_MS))?;
         until("bare-32-again", &bare[0])?;
         crate::screen::Monitor::connect(monitor_port())?.command("sendkey f4")?;
         std::thread::sleep(Duration::from_millis(500));
-        tap(&mut qmp, sx, sy)?;
+        press(&mut qmp, "start-after-compare", sx, sy, None)?;
         until("menu-after-compare", &want[2])?;
         // The last menu entry is "Back to loader" (test images only).
         let back = rp_shell::Shell::menu_entry(entries - 1);
-        tap(&mut qmp, back.x + back.w / 2, back.y + back.h / 2)?;
+        press(
+            &mut qmp,
+            "back",
+            back.x + back.w / 2,
+            back.y + back.h / 2,
+            None,
+        )?;
         // Back at the loader: the wallpaper between the clock and weather
         // panels (rows 210-217, nothing drawn over it) is gone. Polled, so
         // the run log has been sent when the emulator stops.
@@ -3371,7 +3457,12 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             screenshot: None,
             sd_image: None,
             steps: &[],
-            extra: &[],
+            // Guest time from instructions, not the host clock: with every
+            // core busy the starved guest saw its time jump past the
+            // loader's 30 s run limit mid-hold ("FAULT RunLimit", checking
+            // in every 5 ms of its own time; 2026-10-15). The idle wait
+            // stays in real time, which a mostly sleeping guest follows.
+            extra: &["-icount", "shift=0"],
             input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
             during: Some(&check),
             then: Some("RPL END"),
@@ -3750,8 +3841,8 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         eprintln!("    loader over USB: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
-    let light = root.join("target/emu/rp-light.bin");
+    let loader = raw_image(root, "rp-loader")?;
+    let light = raw_image(root, "rp-light")?;
     let payload = std::fs::read(&light).map_err(|e| format!("{}: {e}", light.display()))?;
     let frame = rp_loadproto::frame(&payload);
     let args = usb_args(1);
@@ -3826,8 +3917,7 @@ pub fn boot_loader_trace(root: &Path) -> Result<(), String> {
         eprintln!("    trace: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &dir.join("rp-loader.bin"))?;
     let threads = dir.join("rp-threads.bin");
@@ -3942,8 +4032,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
         eprintln!("    full-size cards: skipped (no USB or mass storage model)");
         return Ok(());
     }
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
@@ -3956,7 +4045,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
         let sectors = (bytes / 512) as u32;
         let cluster = u64::from(spc) * 512;
         let ballast = bytes * 9 / 10 / cluster * cluster;
-        let image = root.join(format!("target/emulator/full-{gib}g.img"));
+        let image = scratch(root, &format!("full-{gib}g.img"))?;
         sparse_card(
             &image,
             &rp_fat::format::Image {
@@ -4248,7 +4337,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         eprintln!("    CF card: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let image = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 32 * 1024, // 16 MiB
         sectors_per_cluster: 8,
@@ -4259,7 +4348,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
         ballast: 0,
     });
-    let cf = root.join("target/emulator/cf.img");
+    let cf = scratch(root, "cf.img")?;
     std::fs::write(&cf, image).map_err(|e| format!("{}: {e}", cf.display()))?;
     let mut args: Vec<String> = usb_args(2).into();
     args.extend(msc_args(3));
@@ -4543,16 +4632,11 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         eprintln!("    tone: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let loader = dir.join("rp-loader.bin");
-    let image = dir.join("rp-tone.bin");
-    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
-    crate::sdkit::raw_binary(&release.join("rp-tone"), &image)?;
+    let loader = raw_image(root, "rp-loader")?;
+    let image = raw_image(root, "rp-tone")?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
-    let wav = root.join("target/emulator/tone.wav");
+    let wav = scratch(root, "tone.wav")?;
     let _ = std::fs::remove_file(&wav);
     let wav_path = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&wav),
@@ -4683,7 +4767,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         eprintln!("    exFAT put: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let old: Vec<u8> = (0..3000u32).map(|i| (i * 3) as u8).collect();
     let new: Vec<u8> = (0..70_000u32).map(|i| (i * 17 + 1) as u8).collect();
     let created: Vec<u8> = (0..9000u32).map(|i| (i * 7 + 2) as u8).collect();
@@ -4704,7 +4788,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
             },
         ],
     );
-    let sd = root.join("target/emulator/sd-exfat.img");
+    let sd = scratch(root, "sd-exfat.img")?;
     std::fs::write(&sd, image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let args = usb_args(2);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -4794,7 +4878,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         eprintln!("    file to card: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let old: Vec<u8> = (0..3000u32).map(|i| (i * 7) as u8).collect();
     let new: Vec<u8> = (0..70_000u32).map(|i| (i * 13 + 5) as u8).collect();
     let script = b"set ramaddr 0xa8000000\r\n".to_vec();
@@ -4816,7 +4900,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         blocked_clusters: &taken,
         ballast: 0,
     });
-    let sd = root.join("target/emulator/sd-put.img");
+    let sd = scratch(root, "sd-put.img")?;
     // A damaged first-FAT sector in a free region (sector 20: clusters
     // 2560-2687, all free): invalid entries, as on the owner's card. The
     // loader's `card repair` must restore it from the second FAT.
@@ -5416,7 +5500,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         eprintln!("    drive: skipped (this emulator's USB model has no mass storage bridge)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let old: Vec<u8> = (0..5000u32).map(|i| (i * 3) as u8).collect();
     let script = b"set ramaddr 0xa8000000\r\n".to_vec();
     let image = rp_fat::format::build(&rp_fat::format::Image {
@@ -5436,7 +5520,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         ballast: 0,
     });
     let blocks = (image.len() / 512) as u32;
-    let sd = root.join("target/emulator/sd-drive.img");
+    let sd = scratch(root, "sd-drive.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let via_drive = b"written through the USB drive\r\n".to_vec();
     let via_serial: Vec<u8> = (0..9000u32).map(|i| (i * 11 + 1) as u8).collect();
@@ -5691,7 +5775,7 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
         );
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let mut args: Vec<String> = usb_args(7).to_vec();
     args.extend(["-global".into(), "pxa27x-udc.accept-composite=off".into()]);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -5731,7 +5815,7 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
         eprintln!("    locked card: skipped (no USB model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let image = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 32 * 1024,
         sectors_per_cluster: 8,
@@ -5742,7 +5826,7 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
         ballast: 0,
     });
-    let sd = root.join("target/emulator/sd-locked.img");
+    let sd = scratch(root, "sd-locked.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     if !device_has(root, "pxa2xx-mmci", "locked") {
         eprintln!("    locked card: skipped (this emulator has no SD lock switch)");
@@ -5793,7 +5877,7 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
         eprintln!("    backlight: skipped (no USB or PWM model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let loader = raw_image(root, "rp-loader")?;
     let args = usb_args(9);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let port = monitor_port();
@@ -5876,17 +5960,27 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             s.write_all(&rp_loadproto::control_frame("backlight 60"))
                 .map_err(|e| e.to_string())?;
             usb_read_until(&mut s, "RPL OK backlight 60%", 10)?;
-            let press = |mon: &mut crate::screen::Monitor| -> Result<(), String> {
+            // Held until the duty reads `want` (the loader fades on the
+            // press), never for a fixed time: a busy host gives the loader
+            // few polls per second, as emu-today's taps showed. The gap
+            // after the release is the loader's to see it (no debounce on
+            // a release; nothing to watch for).
+            let press = |mon: &mut crate::screen::Monitor, want: &str| -> Result<String, String> {
                 mon.query("qom-set /machine/peripheral/power pressed true")?;
-                std::thread::sleep(Duration::from_millis(400));
+                let deadline = Instant::now() + Duration::from_secs(20);
+                let got = loop {
+                    let got = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+                    if got == want || Instant::now() > deadline {
+                        break got;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                };
                 mon.query("qom-set /machine/peripheral/power pressed false")?;
                 std::thread::sleep(Duration::from_millis(800));
-                Ok(())
+                Ok(got)
             };
-            press(&mut mon)?;
-            let off = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
-            press(&mut mon)?;
-            let on = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
+            let off = press(&mut mon, "0")?;
+            let on = press(&mut mon, "155")?;
             // 60% -> 0.36 of 432 counts = 155.
             if off != "0" || on != "155" {
                 return Err(format!(
@@ -5977,10 +6071,7 @@ const PROBE_EXPECT: &[&str] = &[
 /// line's checksum, that the report is complete, and that it's on screen.
 pub fn boot_probe(root: &Path) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-probe");
-    let shot = root
-        .join("target")
-        .join("emulator")
-        .join("probe-screen.ppm");
+    let shot = scratch(root, "probe-screen.ppm")?;
     let bin: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
     let exfat = rp_fat::exfat::format::build(
         (SD_IMAGE_BYTES / 512) as u32,
@@ -5991,7 +6082,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
             fragment: false,
         }],
     );
-    let sd = root.join("target/emulator/sd-probe-exfat.img");
+    let sd = scratch(root, "sd-probe-exfat.img")?;
     std::fs::write(&sd, exfat).map_err(|e| format!("{}: {e}", sd.display()))?;
     // The report may still be drawing when its last serial line goes out
     // (seen on a busy CI runner): screenshot until it is complete, for up
@@ -6136,7 +6227,7 @@ pub fn parse_bench(output: &str) -> Vec<BenchResult> {
 /// emulator, compared with `bench/baseline-emulator.json`.
 pub fn bench(root: &Path, update: bool) -> Result<(), String> {
     let image = root.join("target/armv5te-x51v-none-eabi/release/rp-bench");
-    let sd = write_sd_test_image(&root.join("target").join("emulator").join("sd-bench.img"))?;
+    let sd = write_sd_test_image(&scratch(root, "sd-bench.img")?)?;
     let output = boot(
         root,
         &Boot {
@@ -6357,6 +6448,15 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let qmp = format!("tcp:127.0.0.1:{},server,nowait", port + 1);
     let emu = emulator(root)?;
     let wsl = matches!(emu, Emulator::Wsl);
+    let _load = match std::env::var_os(LOAD_ENV) {
+        Some(_) if wsl => Some(start_load(timeout + Duration::from_secs(30))?),
+        Some(_) => {
+            return Err(format!(
+                "{LOAD_ENV}: the load runs in WSL, with the WSL emulator"
+            ));
+        }
+        None => None,
+    };
     let mut cmd = match emu {
         Emulator::Native(exe) => {
             eprintln!("    emulator: {}", exe.display());
@@ -6457,6 +6557,60 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     match result.and_then(|()| check_stack(&serial.output).map(|_| ())) {
         Ok(()) => Ok(serial.output),
         Err(e) => Err(format!("{e}. Serial output so far:\n{}", serial.output)),
+    }
+}
+
+/// `RETROPANE_EMU_LOAD=1`: every check runs with all of WSL's cores busy,
+/// to prove it waits on the image and not on the wall clock (emu-today
+/// passed on an idle PC and failed on a busy one, 2026-10-15).
+const LOAD_ENV: &str = "RETROPANE_EMU_LOAD";
+
+/// Marks the load's processes, for `stop_load`.
+const LOAD_TAG: &str = "rp-emu-load";
+
+/// The load script: one spinner per core, a fixed count, each ended by
+/// `timeout` after `secs` even if nothing stops it (an unbounded spawn
+/// loop once froze WSL). It waits for them: WSL ends them with it.
+fn load_script(secs: u64) -> String {
+    format!(
+        "for i in $(seq $(nproc)); do timeout {secs} bash -c ': {LOAD_TAG}; while :; do :; done' & done; wait
+"
+    )
+}
+
+/// Starts the load in WSL (see [`LOAD_ENV`]); it lasts until the returned
+/// guard drops (or its limit). The script goes on stdin: `wsl.exe` passes a command line
+/// through a shell, which would expand its `$(...)` early.
+fn start_load(limit: Duration) -> Result<Load, String> {
+    eprintln!(
+        "    load: one spinner per WSL core for at most {} s",
+        limit.as_secs()
+    );
+    let mut child = Command::new("wsl")
+        .args(["-d", &wsl_distro(), "--", "bash", "-s"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("starting the load: {e}"))?;
+    child
+        .stdin
+        .take()
+        .expect("piped")
+        .write_all(load_script(limit.as_secs()).as_bytes())
+        .map_err(|e| format!("starting the load: {e}"))?;
+    Ok(Load(child))
+}
+
+/// The running load; dropping it ends it, on every way out of `boot`.
+struct Load(std::process::Child);
+
+impl Drop for Load {
+    fn drop(&mut self) {
+        // The pattern doesn't match its own shell's command line.
+        let (head, last) = LOAD_TAG.split_at(LOAD_TAG.len() - 1);
+        let _ = wsl_bash(&format!("pkill -f '{head}[{last}]'; true")).status();
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -6612,6 +6766,65 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Every scratch file and raw binary goes through the helpers that
+    /// create their folders: a check that built a path by hand failed in
+    /// any fresh checkout ("no screenshot at ...ppm", QEMU can't make the
+    /// folder), or relied on a file an earlier check left in target/emu.
+    #[test]
+    fn emulator_files_go_through_the_helpers() {
+        let src = include_str!("emu.rs");
+        let code = src.split("#[cfg(test)]\nmod tests").next().expect("code");
+        let code: String = code
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for (needle, allowed) in [
+            ("\"target/emu", 0),
+            ("join(\"emulator\")", 1), // emulator_dir
+            ("join(\"emu\")", 1),      // emu_dir
+        ] {
+            assert_eq!(
+                code.matches(needle).count(),
+                allowed,
+                "`{needle}` outside emulator_dir/emu_dir: use scratch(), emu_dir() or raw_image()"
+            );
+        }
+    }
+
+    /// The load is bounded twice over: a fixed number of spinners, each
+    /// ended by `timeout`.
+    #[test]
+    fn the_load_is_bounded() {
+        let s = super::load_script(90);
+        assert!(s.starts_with("for i in $(seq $(nproc)); do "), "{s}");
+        assert!(s.contains("timeout 90 bash"), "{s}");
+        assert!(s.contains(super::LOAD_TAG), "{s}");
+        assert_eq!(s.matches("while").count(), 1, "{s}");
+    }
+
+    /// emu-today holds every press until the screen answers it: no stylus
+    /// action with a fixed sleep (a busy host starved the align screen of
+    /// samples in a 700 ms hold); and its guest keeps instruction time, so
+    /// a starved guest can't overrun the run limit.
+    #[test]
+    fn today_presses_wait_for_the_screen() {
+        let src = include_str!("emu.rs");
+        let start = src.find("pub fn boot_loader_today").expect("today");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("end")];
+        assert_eq!(
+            body.matches("Action::TouchDown").count(),
+            1,
+            "only in press"
+        );
+        assert_eq!(body.matches("Action::TouchUp").count(), 1, "only in press");
+        let press = &body[body.find("let press =").expect("press")..];
+        let press = &press[..press.find("};").expect("press end")];
+        assert!(!press.contains("sleep"), "press must wait on the screen");
+        assert!(body.contains("\"-icount\""), "guest time from instructions");
+    }
+
     #[test]
     fn the_stack_check_passes_80_percent_and_fails_above() {
         use super::check_stack;
@@ -6635,12 +6848,7 @@ mod tests {
         use super::{MBX_BLEND_DEVICE, mbx_blend_mismatches};
         let log: String = MBX_BLEND_DEVICE
             .lines()
-            .map(|l| {
-                format!(
-                    "      {l}
-"
-                )
-            })
+            .map(|l| format!("      {l}\n"))
             .collect();
         assert_eq!(
             mbx_blend_mismatches(&log, MBX_BLEND_DEVICE),

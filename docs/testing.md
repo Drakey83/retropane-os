@@ -64,6 +64,25 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
   emulator port is an offset from `monitor_port()`; a test fails if a USB
   chardev number reaches past the block (it found `msc_args(13)` doing so
   the day it landed). `RETROPANE_MONITOR_PORT` still pins the ports by hand.
+- **Emulator checks wait on the image, never on the wall clock.** A busy
+  host gives the guest few instructions per second while its timers keep
+  real time, so a fixed hold or sleep that is plenty on an idle PC falls
+  short on a busy one: emu-today's 700 ms stylus holds gave the align
+  screen too few samples with every core busy (234960 px off, 2026-10-15,
+  on two emulator releases alike). Waits are on serial markers, the screen
+  or device registers; a test keeps emu-today's presses that way. The
+  guest's own deadlines suffer the same: QEMU's timers follow the host
+  clock, so a starved guest saw its time jump past the loader's 30 s run
+  limit while checking in every 5 ms of its own time. emu-today runs under
+  `-icount` (guest time from instructions), as the cycle-exact checks do.
+  `RETROPANE_EMU_LOAD=1` runs any check with one spinner per WSL core
+  (a fixed count, each ended by `timeout`), to prove it.
+- **Every check stands alone in a fresh checkout.** Scratch files go
+  through `scratch()` and raw binaries through `raw_image()`, which create
+  their folders and build what they need; screendump makes its folder and
+  reports QEMU's own complaint. A check once assumed `target/emulator`,
+  which only the release download created, and several reused an earlier
+  check's `rp-loader.bin`; a test fails on a hand-built path.
 
 ## Mutants: proving the tests bite
 

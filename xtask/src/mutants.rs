@@ -220,7 +220,7 @@ pub const MUTANTS: &[Mutant] = &[
         file: "boot/loader/src/main.rs",
         from: "        cpld.set_cf_power(true, &mut BusyWait);",
         to: "",
-        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+        check: Check::Emu(crate::emu::boot_loader_cf),
     },
     Mutant {
         name: "CPLD shadow not seeded from Windows Mobile's table (a CF reset darkens the screen)",
@@ -363,14 +363,14 @@ pub const MUTANTS: &[Mutant] = &[
         file: "boot/loader/src/main.rs",
         from: "                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);",
         to: "",
-        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+        check: Check::Emu(crate::emu::boot_loader_cf),
     },
     Mutant {
         name: "CF card in at start-up attached only after the drive is offered (the PC's \"USB Drive\" with no size)",
         file: "boot/loader/src/main.rs",
         from: "        if cf_in {\n            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);\n        }\n",
         to: "",
-        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+        check: Check::Emu(crate::emu::boot_loader_cf),
     },
     Mutant {
         name: "a medium arriving where the host saw none is kept away for seconds",
@@ -402,7 +402,7 @@ pub const MUTANTS: &[Mutant] = &[
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",
         to: "            self.powered = false;",
-        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+        check: Check::Emu(crate::emu::boot_loader_cf),
     },
     Mutant {
         name: "cab: a DEFLATE match reaching before the window is followed",

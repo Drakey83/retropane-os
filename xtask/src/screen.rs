@@ -102,9 +102,19 @@ impl Monitor {
     }
 
     /// Screenshots the 2700G console to `guest_path` (as QEMU sees it) and
-    /// waits for the file to appear completely at `host_path`.
+    /// waits for the file to appear completely at `host_path`, whose folder
+    /// is created first (QEMU can't). QEMU's own complaint, if it has one,
+    /// is the error: it used to be dropped, leaving only "no screenshot".
     pub fn screendump(&mut self, guest_path: &str, host_path: &Path) -> Result<(), String> {
-        self.command(&format!("screendump {guest_path} mbx2700g"))?;
+        if let Some(dir) = host_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        // A monitor too busy to answer in time (a loaded host) isn't an
+        // error by itself: the file below decides.
+        let answer = self.query(&format!("screendump {guest_path} mbx2700g"));
+        if let Some(complaint) = answer.as_deref().ok().and_then(screendump_error) {
+            return Err(format!("QEMU screendump {guest_path}: {complaint}"));
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if let Ok(meta) = std::fs::metadata(host_path)
@@ -118,8 +128,57 @@ impl Monitor {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        Err(format!("no screenshot at {}", host_path.display()))
+        Err(match answer {
+            Ok(_) => format!("no screenshot at {}", host_path.display()),
+            Err(e) => format!("no screenshot at {} ({e})", host_path.display()),
+        })
     }
+}
+
+/// QEMU's reply to `screendump`: nothing when it worked, else its
+/// complaint (a folder it can't write, an unknown device).
+fn screendump_error(answer: &str) -> Option<&str> {
+    let answer = answer.trim();
+    (!answer.is_empty()).then_some(answer)
+}
+
+/// Against a stand-in monitor that refuses, as QEMU does for a folder it
+/// can't write: the folder is made first, and QEMU's words are the error.
+#[test]
+fn screendump_makes_the_folder_and_reports_qemu() {
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let fake = std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().expect("accept");
+        s.write_all(b"QEMU 10 monitor\r\n(qemu) ").expect("banner");
+        let mut line = Vec::new();
+        let mut b = [0u8; 1];
+        while s.read(&mut b).is_ok_and(|n| n == 1) && b[0] != b'\n' {
+            line.push(b[0]);
+        }
+        let cmd = String::from_utf8_lossy(&line).trim().to_string();
+        let reply = format!("{cmd}\r\nCould not open 'x.ppm': Permission denied\r\n(qemu) ");
+        s.write_all(reply.as_bytes()).expect("reply");
+        std::thread::sleep(Duration::from_millis(500));
+    });
+    let dir = std::env::temp_dir().join(format!("rp-screendump-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let shot = dir.join("deeper").join("x.ppm");
+    let mut mon = Monitor::connect(port).expect("connect");
+    let err = mon.screendump("x.ppm", &shot).expect_err("refused");
+    assert!(err.contains("Permission denied"), "{err}");
+    assert!(shot.parent().expect("dir").is_dir());
+    fake.join().expect("fake monitor");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn screendump_complaints_are_errors() {
+    assert_eq!(screendump_error(""), None);
+    assert_eq!(screendump_error("\n"), None);
+    let e = "Could not open '/mnt/c/x/target/emulator/a.ppm': No such file or directory";
+    assert_eq!(screendump_error(&format!("{e}\n")), Some(e));
 }
 
 /// A connection to QEMU's machine protocol (QMP), for absolute pointer input.
