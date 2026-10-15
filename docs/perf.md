@@ -24,7 +24,9 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
   compile time. `cargo xtask cross` fails any image whose symbol table names
   a software float helper (`__aeabi_fmul`, `__addsf3`...) unless it is listed
   in `FLOAT_ALLOWED` (`xtask/src/size.rs`) with a reason. On the day the
-  check went in, no image linked one.
+  check went in, no image linked one. It also fails float formatting (`{}` of an `f32`
+  pulls in ~20 KiB of `core::fmt` code; found in `rp-mbx3d` version 21):
+  log floats as integers or labels.
 
 ## Log
 
