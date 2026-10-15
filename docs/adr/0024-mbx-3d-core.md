@@ -188,6 +188,16 @@ report; device runs only with the owner's go.
    already), and its flush path's `0x848 = 0x7FFF` and `0x85C | 8` around
    a render. **Version 12** tries bit 29, the clear depth, a depth buffer
    and `0x860`, alone and together.
+
+   **Version 12 on the device (2026-10-15, `local/rp-mbx3d-run12.txt`):**
+   the flat control with all of them drew (none breaks a render); no
+   textured try drew, the game's object or our square, alone or
+   together; every render finished in 12.48 ms as before; the depth
+   buffer's first word kept its marker (no depth store at `0x674`, or not
+   at its start). So the frame state is ruled out: what's missing is in
+   the textured object's own path (the list pointer forms the game's
+   lists also use, `0x09600000` and `0x61200000`, untried) or in memory
+   the TSP reads that we don't set up.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
