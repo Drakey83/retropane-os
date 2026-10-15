@@ -17,6 +17,12 @@
  * copy is due) while a slice is copied, 50 ms after, for the core to finish
  * what it has.
  *
+ * Version 6 (2026-10-14): 0x100000-0x2FFFFF, three times, 20 s apart, in
+ * one 2 MiB piece if the RAM allows (one frame, not torn): version 5's top
+ * 4 MiB was only textures; version 4's low part had a region array at
+ * 0x130000, a likely textured object at 0x12A000, and most of its
+ * float-like words in 0x140000-0x2FFFFF.
+ *
  * Version 5 (2026-10-14): only the top 4 MiB (0xC00000-0xFFFFFF), twice,
  * 30 s apart: version 4 saved 0x000000-0xBFFFFF (textures, Dell's clear
  * scene) before the owner left, ~5 s a 1.5 MiB slice; the game's frame is
@@ -51,16 +57,17 @@ BOOL VirtualCopy(LPVOID dest, LPVOID src, DWORD size, DWORD protect);
 
 #define MEM_PHYS 0x0C000000UL
 #define MEM_SIZE (16UL << 20)
-/* The part copied: the top 4 MiB. */
-#define CAP_FROM (12UL << 20)
-#define CAP_SIZE (4UL << 20)
+/* The part copied: where the scene seems to be. */
+#define CAP_FROM 0x100000UL
+#define CAP_SIZE 0x200000UL
+#define CAPTURES 3
 #define REGS_PHYS 0x0FFE0000UL
 #define REGS_SIZE 0x5000UL
 #define MBXCLK 0x0054UL
 #define MBX_STATUS 0x412cUL
 
 /* Seconds before each copy: time to start the game and get playing. */
-static const DWORD AT_S[2] = {60, 30};
+static const DWORD AT_S[CAPTURES] = {60, 20, 20};
 
 static LARGE_INTEGER freq;
 static HANDLE logf_ = INVALID_HANDLE_VALUE;
@@ -195,7 +202,7 @@ static int suspend_all(DWORD pid, int resume, DWORD *ids, int n)
  * suspended only while a slice is copied to RAM, never during file work. */
 static void capture(int k, volatile unsigned long *mem, volatile unsigned long *regs)
 {
-    DWORD ids[MAX_THREADS], pid = 0, mine = GetCurrentProcessId(), slice = 3UL << 20;
+    DWORD ids[MAX_THREADS], pid = 0, mine = GetCurrentProcessId(), slice = CAP_SIZE;
     DWORD at, i, w, worst_us = 0;
     MEMORYSTATUS ms;
     HWND fg = GetForegroundWindow();
@@ -330,9 +337,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         Sleep(5000);
         return 1;
     }
-    say(L"Start DoomGLES now; keep it on 3 minutes.", L"Short hitches at 1 and 2 minutes.");
+    say(L"Start DoomGLES now; play 2.5 minutes.", L"Short hitches from 1 minute.");
     MessageBeep(MB_OK);
-    for (k = 0; k < 2; k++) {
+    for (k = 0; k < CAPTURES; k++) {
         Sleep(AT_S[k] * 1000);
         capture(k + 1, mem, regs);
     }
