@@ -1404,6 +1404,36 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
             return Err(format!("mbx3d: the run log has no `{want}`:{log}"));
         }
     }
+    // With the fork's render-done interrupt and texel model (mbx-3d-irq,
+    // rp-v0.16.0): what version 24 saw on the device.
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            ("MINTENABLE 0x800f, 0x130 0x0004:", "edges 0"),
+            ("MINTENABLE 0x800f, 0x130 0x8004:", "edges 1"),
+            ("MINTENABLE 0x8001, 0x130 0x8004:", "edges 0"),
+            ("MINTENABLE 0x8004, 0x130 0x8004:", "edges 1"),
+            (
+                "T12 TEX1 bit 31 (linear)",
+                "ffff3f3f, ffff7f7f, ffffbfbf, ffffffff, ffffbfbf",
+            ),
+            (
+                "T13 PVRTC 4 bpp (code 28), red",
+                "[ffff0000, ffff0000, ffff0000, ffff0000]",
+            ),
+            (
+                "T13 PVRTC 4 bpp, words swapped",
+                "[ff000000, ff000000, ff000000, ff000000]",
+            ),
+            ("T13 32-bit texels", "[ffff0000, ff00ff00, ff0000ff"),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
     eprintln!(
         "    mbx3d OK: {}, back at the loader on a button press",
         if modelled {

@@ -86,6 +86,8 @@ pub enum Fill {
         u_mode: u32,
         /// Down.
         v_mode: u32,
+        /// Bilinear filtering (smooth when scaled), or point sampling.
+        linear: bool,
     },
 }
 
@@ -104,6 +106,7 @@ impl Fill {
             tint: 0xFFFF_FFFF,
             u_mode: r3d::address::CLAMP,
             v_mode: r3d::address::CLAMP,
+            linear: false,
         }
     }
 }
@@ -282,8 +285,8 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         }
     }
 
-    /// Uploads a texture for client `c` (see `rp_mbx3d_render::upload`),
-    /// within its quota.
+    /// Uploads a texture of 16-bit texels for client `c` (see
+    /// `rp_mbx3d_render::upload`), within its quota.
     pub fn upload_texture(
         &mut self,
         c: ClientId,
@@ -291,8 +294,57 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         format: u32,
         texels: &[u16],
     ) -> Result<Handle, Error> {
+        self.upload_with(c, code, format, |pool, mem| {
+            r3d::upload(pool, mem, code, format, texels)
+        })
+    }
+
+    /// Uploads a texture of 32-bit texels (`0xAARRGGBB`) for client `c`.
+    pub fn upload_texture32(
+        &mut self,
+        c: ClientId,
+        code: u8,
+        texels: &[u32],
+    ) -> Result<Handle, Error> {
+        self.upload_with(c, code, r3d::format::ARGB8888, |pool, mem| {
+            r3d::upload32(pool, mem, code, texels)
+        })
+    }
+
+    /// Uploads a PVRTC texture compressed on the PC (see
+    /// `rp_mbx3d_render::upload_pvrtc`) for client `c`: 4 or 2 bits a
+    /// texel against its quota.
+    pub fn upload_pvrtc(
+        &mut self,
+        c: ClientId,
+        code: u8,
+        format: u32,
+        blocks: &[u32],
+    ) -> Result<Handle, Error> {
+        self.upload_with(c, code, format, |pool, mem| {
+            r3d::upload_pvrtc(pool, mem, code, format, blocks)
+        })
+    }
+
+    /// A texture uploaded by `up` for client `c`, checked against its
+    /// quota first (by the format's size).
+    fn upload_with(
+        &mut self,
+        c: ClientId,
+        code: u8,
+        format: u32,
+        up: impl FnOnce(&mut Pool, &mut M) -> Option<Texture>,
+    ) -> Result<Handle, Error> {
         let rec = self.rec(c)?;
-        let bytes = (8u32 << code.min(7)).pow(2) * 2;
+        let bytes = Texture {
+            at: 0,
+            code: code.min(7),
+            format: format as u8,
+            u_mode: 0,
+            v_mode: 0,
+            linear: false,
+        }
+        .bytes();
         if rec.used.saturating_add(bytes) > rec.quota {
             return Err(Error::Quota);
         }
@@ -302,7 +354,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             .position(|b| b.tex.is_none())
             .ok_or(Error::NoMemory)?;
         let (_, mem) = self.two_d.parts();
-        let t = r3d::upload(&mut self.pool, mem, code, format, texels).ok_or(Error::NoMemory)?;
+        let t = up(&mut self.pool, mem).ok_or(Error::NoMemory)?;
         self.blocks[k].owner = c.0;
         self.blocks[k].tex = Some(t);
         self.clients[usize::from(c.0)].used += t.bytes();
@@ -405,8 +457,12 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                         tint,
                         u_mode,
                         v_mode,
+                        linear,
                     } => Paint::Texture {
-                        tex: self.texture(c, tex)?.with_modes(u_mode, v_mode),
+                        tex: self
+                            .texture(c, tex)?
+                            .with_modes(u_mode, v_mode)
+                            .with_linear(linear),
                         uv,
                         tint,
                     },
