@@ -1347,32 +1347,52 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
         return Err(format!("mbx3d: didn't return cleanly:{log}"));
     }
-    // The fork doesn't model the 3D core (docs/hw/emulator.md): the image
-    // must try the parameter memory set-up without and with the 3D clock, get no "ready",
-    // try no render, and come back.
-    for want in [
-        "core ID 0x01020000",
-        "P: parameter memory set-up, MBXCLK",
-        "(3D clock on)",
-        "the parameter memory never said ready: no render tried",
-        "RETROPANE-MBX3D: nothing drawn",
-    ] {
+    let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    // Without the fork's 3D model (before rp-v0.14.0) the image must try
+    // the parameter memory set-up without and with the 3D clock, get no
+    // "ready", try no render, and come back. With it: the memory manager
+    // is ready only with the 3D clock on (as on the device), and the red
+    // triangle draws with the target register set (try A' or B).
+    let want: &[&str] = if modelled {
+        &[
+            "core ID 0x01020000",
+            "(3D clock on)",
+            "drawn 480 px across, 640 down",
+            "RETROPANE-MBX3D: DREW",
+        ]
+    } else {
+        &[
+            "core ID 0x01020000",
+            "P: parameter memory set-up, MBXCLK",
+            "(3D clock on)",
+            "the parameter memory never said ready: no render tried",
+            "RETROPANE-MBX3D: nothing drawn",
+        ]
+    };
+    for want in want {
         if !log.contains(want) {
             return Err(format!("mbx3d: the run log has no `{want}`:{log}"));
         }
     }
     eprintln!(
-        "    mbx3d OK: ran every try safely (the 3D core isn't modelled), back at the loader on a button press"
+        "    mbx3d OK: {}, back at the loader on a button press",
+        if modelled {
+            "the red triangle drawn by the modelled 3D core"
+        } else {
+            "ran every try safely (the 3D core isn't modelled)"
+        }
     );
     Ok(())
 }
 
 /// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
-/// runs under the loader; the fork doesn't model the 3D core, so the
-/// renderer's set-up never hears "ready" and every frame is refused
-/// (`NoCore`) without a fault; the clock, plane and core are put back and
-/// it returns on a button. The 3D results themselves are checked by the
-/// host model (`cargo test -p rp-mbx3d-render`).
+/// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.14.0)
+/// every counted check must pass, as on the device (run 3: 0 BAD), and
+/// every T9 try draw right (the model keeps the core's state across the
+/// clock: an assumption until run 4). Without it, the renderer's set-up
+/// never hears "ready" and every frame is refused (`NoCore`) without a
+/// fault. Either way the clock, plane and core are put back and it returns
+/// on a button.
 pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx3d-api: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -1414,19 +1434,43 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
         return Err(format!("mbx3d-api: didn't return cleanly:{log}"));
     }
-    for want in [
-        "S1 (T1)",
-        "whole screen: NoCore",
-        "S7: the 3D clock gate",
-        "everything given back: true",
-        "RETROPANE-MBX3D-API: ",
-    ] {
+    let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    let want: &[&str] = if modelled {
+        &[
+            "S1 (T1)",
+            "S9 (T9)",
+            "everything given back: true",
+            " checks, 0 BAD",
+        ]
+    } else {
+        &[
+            "S1 (T1)",
+            "whole screen: NoCore",
+            "S7: the 3D clock gate",
+            "everything given back: true",
+            "RETROPANE-MBX3D-API: ",
+        ]
+    };
+    for want in want {
         if !log.contains(want) {
             return Err(format!("mbx3d-api: the run log has no `{want}`:{log}"));
         }
     }
+    if modelled {
+        let tries = log.matches("    T9 ").count();
+        if tries != 6 || log.contains("WRONG") || log.contains("    BAD ") {
+            return Err(format!(
+                "mbx3d-api: {tries} T9 tries, every one must draw right, no check BAD:{log}"
+            ));
+        }
+    }
     eprintln!(
-        "    mbx3d-api OK: every stage ran, every frame refused safely (the 3D core isn't modelled), back at the loader on a button press"
+        "    mbx3d-api OK: {}, back at the loader on a button press",
+        if modelled {
+            "every check passed on the modelled 3D core, as on the device"
+        } else {
+            "every stage ran, every frame refused safely (the 3D core isn't modelled)"
+        }
     );
     Ok(())
 }
