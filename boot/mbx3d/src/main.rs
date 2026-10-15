@@ -1,5 +1,11 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 2.
+//! 3D core, under the loader. Version 4.
+//!
+//! Version 3 drew (2026-10-14): the 3D clock was the missing piece; each
+//! region entry covered 8 x 16 pixels. Version 4 sizes the grid to that
+//! (60 x 40, written straight into 2700G memory), learns whether `0x65C`
+//! is needed (Dell's table alone first), and draws the shaded triangle
+//! inside the grid. Version 2's notes follow.
 //!
 //! Version 1 (2026-10-14) sent only Dell's 15-pair start table: nothing
 //! drew, nothing moved, nothing hung. Dell's driver does three things first
@@ -102,10 +108,9 @@ mod image {
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
     const FENCE: usize = 0x00FF_F000;
-    /// The tile size assumed for the grid.
-    const TILE: u32 = 32;
-    const COLS: u32 = W / TILE;
-    const ROWS: u32 = H / TILE;
+    /// The grid: one region entry per 8 x 16 pixels (measured, version 3).
+    const COLS: u32 = W / m3::TILE_W;
+    const ROWS: u32 = H / m3::TILE_H;
 
     /// MBX registers (all ones Dell's driver touches).
     const STATUS: usize = MBX + reg::STATUS;
@@ -219,20 +224,21 @@ mod image {
             PARAMS,
             &m3::one_triangle_list((OBJECT - PARAMS) as u32),
         );
-        let mut regions = [0u32; 2 * 15 * 20];
-        let Some(n) = m3::region_array(&mut regions, COLS, ROWS, PARAMS as u32) else {
-            return false;
-        };
-        store(vram, REGIONS, &regions[..n]);
+        // Straight into 2700G memory (19 KiB: too big for the stack).
+        let n = COLS * ROWS;
+        for k in 0..n {
+            let entry = m3::region_entry(k % COLS, k / COLS, PARAMS as u32, k + 1 == n);
+            store(vram, REGIONS + 8 * k as usize, &entry);
+        }
         cpu::drain_write_buffer();
         run(e, vram, table, RENDER_DONE, Some(probe), 200_000)
             .1
             .is_some()
     }
 
-    /// Dell's start table with the likely target register, and optionally
-    /// the GLES table's extras; the start stays last.
-    fn table(extras: bool) -> ([(usize, u32); 21], usize) {
+    /// Dell's start table (level 0), with the likely target register (1),
+    /// and with the GLES table's extras too (2); the start stays last.
+    fn table(level: u8) -> ([(usize, u32); 21], usize) {
         let dell = m3::start_table(REGIONS as u32, PARAMS as u32, W, H, STRIDE as u32);
         let mut t = [(0usize, 0u32); 21];
         let mut n = 0;
@@ -240,7 +246,9 @@ mod image {
             t[n] = p;
             n += 1;
         }
-        let more: &[(usize, u32)] = if extras {
+        let more: &[(usize, u32)] = if level == 0 {
+            &[]
+        } else if level == 2 {
             &[
                 (0x65C, TARGET as u32),
                 (0x6D0, 1),
@@ -286,7 +294,7 @@ mod image {
         let regs = display.into_inner();
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         let clk0 = e.regs.read32(MBXCLK);
-        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4, version 2)");
+        log!("{MARKER}: the MBX 3D core's first triangle (ADR-0024 M4, version 4)");
         log!(
             "core ID 0x{:08x}, MBXCLK 0x{clk0:x}, PLLSTAT 0x{:x}, status 0x{:08x}, enable 0x{:08x}, 0x804 0x{:08x}",
             e.regs.read32(MBX + reg::ID),
@@ -327,11 +335,12 @@ mod image {
             Vertex::flat(0.0, 2048.0, 0xFFFF_0000),
         ];
         let mut drew = false;
-        let mut extras = false;
+        let mut level = 0;
         if ready {
             for (name, x) in [
-                ("A: Dell's table + 0x65C", false),
-                ("B: + the GLES extras", true),
+                ("A: Dell's table alone", 0),
+                ("A': Dell's table + 0x65C", 1),
+                ("B: + the GLES extras", 2),
             ] {
                 rt::check_in();
                 if !clear(&mut e, vram, GREY) {
@@ -339,10 +348,10 @@ mod image {
                     break;
                 }
                 let (t, n) = table(x);
-                log!("{name}: red screen-covering triangle, {COLS} x {ROWS} grid of {TILE} px");
+                log!("{name}: red screen-covering triangle, {COLS} x {ROWS} grid of 8 x 16 px");
                 drew = draw(&mut e, vram, &background, &t[..n], (8, 8));
                 if drew {
-                    extras = x;
+                    level = x;
                     let (across, down) = reach(vram, GREY);
                     log!(
                         "  drawn {across} px across, {down} down; (8,8) 0x{:08x}, (240,320) 0x{:08x}, (470,630) 0x{:08x}",
@@ -372,7 +381,7 @@ mod image {
                 Vertex::flat(420.0, 560.0, 0xFF00_FF00),
                 Vertex::flat(60.0, 560.0, 0xFF00_00FF),
             ];
-            let (t, n) = table(extras);
+            let (t, n) = table(level);
             log!("C: red/green/blue triangle (240,80) (420,560) (60,560)");
             shown = draw(&mut e, vram, &tri, &t[..n], (240, 400));
             log!(

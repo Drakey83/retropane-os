@@ -103,6 +103,23 @@ pub fn one_triangle_list(params_offset: u32) -> [u32; 2] {
     ]
 }
 
+/// A region (tile) as the core covers it on the X51v at 32 bpp, measured
+/// 2026-10-14: 8 pixels wide, 16 tall.
+pub const TILE_W: u32 = 8;
+/// See [`TILE_W`].
+pub const TILE_H: u32 = 16;
+
+/// One region array entry: tile `(x, y)`, its object list at `list_addr`,
+/// `last` on the final entry.
+#[must_use]
+pub fn region_entry(x: u32, y: u32, list_addr: u32, last: bool) -> [u32; 2] {
+    let w = (x & 127) | (y & 127) << 8;
+    [
+        if last { w | LAST_REGION } else { w },
+        list_addr & ADDR_MASK,
+    ]
+}
+
 /// Fills `out` with the region array for a `cols` x `rows` tile grid,
 /// rows outer, every tile pointing at the object list at `list_addr`.
 /// Returns the words written (`2 * cols * rows`), or `None` if `out` is
