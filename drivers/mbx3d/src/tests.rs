@@ -352,3 +352,25 @@ fn blend_and_depth_words_match_version_23() {
     assert_eq!(depth_test(TSP_DELL, depth::GREATER, true), 0x2220_0800);
     assert_eq!(depth_test(TSP_DELL, depth::LESS, true), 0x2220_0200);
 }
+
+#[test]
+fn tex1_fields_as_the_gles_driver_writes_them() {
+    // Dell's point-sampled TEX1 and DoomGLES's linear-mipmap-linear one.
+    assert_eq!(
+        tex::tex1(0x0012_3400, tex::TEX1_LOD, 0),
+        super::ta::dell_texture(0x0012_3400)[1]
+    );
+    assert_eq!(
+        tex::tex1(0, tex::TEX1_LOD, tex::TEX1_LINEAR | tex::TEX1_MIP_LINEAR),
+        tex::ADDRESS_GAME
+    );
+    // The GLES driver's min filter words.
+    assert_eq!(tex::TEX1_MIP_NEAREST, 0x2000_0000);
+    assert_eq!(tex::TEX1_LINEAR | tex::TEX1_MIP_NEAREST, 0xA000_0000);
+    assert_eq!(tex::TEX1_MIP_LINEAR, 0x4000_0000);
+    // The format field reaches bit 17: the GLES driver's table words.
+    assert_eq!(tex::tex0(0, tex::PVRTC4) & 0x3_E000, 0x3_8000);
+    assert_eq!(tex::tex0(0, tex::PVRTC2) & 0x3_E000, 0x2_0000);
+    assert_eq!(tex::tex0(0, tex::ARGB8888) & 0x3_E000, 0x1_8000);
+    assert_eq!(tex::tex0(0, tex::RGB565) & 0x3_E000, 0x4000);
+}
