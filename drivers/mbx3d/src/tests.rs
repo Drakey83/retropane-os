@@ -119,3 +119,17 @@ fn start_table_is_dells() {
     let regs: [usize; 15] = t.map(|(r, _)| r);
     assert!(regs[..14].iter().all(|&r| r != START));
 }
+
+/// Dell's order and arithmetic (`0x021179a8`): the table address, the
+/// first page after the 4 KiB header, the last page, the base, then start.
+#[test]
+fn pm_init_is_dells() {
+    // 1 MiB at 12 MiB, the table at 13 MiB.
+    let t = pm_init_table(0x00C0_0000, 0x0010_0000, 0x00D0_0000);
+    assert_eq!(t[0], (0x824, 0x00D0_0000));
+    assert_eq!(t[1], (0x828, 0xC01));
+    assert_eq!(t[2], (0x82C, 0xC01 + 255 - 1));
+    assert_eq!(t[3], (0x83C, 0x00C0_0000));
+    assert_eq!(t[4], (0x6D8, 0x0900_0000));
+    assert_eq!(t[5], (0x838, 1), "start last");
+}
