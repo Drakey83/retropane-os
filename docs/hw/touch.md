@@ -188,6 +188,23 @@ alignment):
   touches (282 light-pressure samples before landings); now counted once
   a touch.
 
+**Shorter samples (P, 2026-10-14, log `local/rp-today-touch-short.txt`).**
+X settles 32 conversions instead of 256 (~2 ms samples), 5 ms sleeps: a
+sample every **7 ms** (p10 and p90 7). 40 touches, 3 of them drags:
+
+- Touch to flush median **15.0 ms** (the 1 ms-sleep run 20.4, run 4
+  35.5). Worst 101 ms: the slow frame every run has (CPU queueing worst
+  54 ms, 54 in run 4), not touch.
+- Landing to verdict median **7.0 ms**, worst **14** (27 before): 19 of
+  36 taps pressed on the second sample, 17 on the third.
+- Held still, X changes less sample to sample than with 256 conversions
+  (median 4 raw, p90 10; was 5 and 14): a shorter sample has less time
+  for the stylus to move within it. Y median 1, p90 5.
+- Only the three drags pressed more than 20 px from where they ended.
+
+**Adopted:** X and Y 32 conversions, Z1 16; 5 ms sleeps while the pen is
+down.
+
 **The recorder's gap (fixed 2026-10-14).** A sample with no pressure was
 logged only when it ended a reported touch, so a touch that lifted before
 its press ran on into the next one in the log. `rp-today` now logs the
