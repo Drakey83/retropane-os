@@ -53,15 +53,17 @@ pub const fn command_pd(ch: u8, pd: u8) -> u8 {
 /// settling time, then an average, doesn't depend on the curve's shape.
 pub const SETTLE_CONVERSIONS: u16 = 128;
 
-/// Settling per channel (2026-10-13): Y holds its value after 16
-/// conversions; X gets 256, the setting of the build the owner called
-/// "much better" (64 with faster sampling was much worse; recordings of
-/// real taps will settle the question rather than more guesses).
+/// Settling per channel. X and Y 32 conversions, the rest 16: recorded on
+/// the device (2026-10-14, 586 pairs of held samples, docs/hw/touch.md),
+/// X settled 16 or 32 conversions is as steady sample to sample as X
+/// settled 256 (median change 5 raw, p90 13-14), and Y at 16 as at 32.
+/// X had 256 since 2026-10-13 (64, "with faster sampling", was much worse:
+/// two changes at once, with the filter of then). A sample is ~105
+/// conversions (~2 ms) instead of ~329 (~6 ms).
 #[must_use]
 pub const fn settle_for(ch: u8) -> u16 {
     match ch {
-        channel::X => 2 * SETTLE_CONVERSIONS,
-        channel::Y => SETTLE_CONVERSIONS / 4,
+        channel::X | channel::Y => SETTLE_CONVERSIONS / 4,
         _ => SETTLE_CONVERSIONS / 8,
     }
 }
@@ -347,23 +349,26 @@ mod tests {
         let s = ts.settle(channel::X);
         assert_eq!(s.value, 2000);
         assert_eq!(s.curve[0], 195);
-        assert!(s.curve[1] < s.curve[2] && s.curve[4] < s.curve[5]);
+        // The curve's points past the settling aren't reached.
+        assert!(s.curve[1] < s.curve[2] && s.curve[2] < s.curve[3]);
+        assert_eq!(s.curve[4..], [0, 0]);
         // Settled for less, the value would have been further off.
         let early_x = |k: usize| {
             let at = usize::from(EARLY_AT[k]);
             let sum: u32 = ramp[at..at + 8].iter().map(|&v| u32::from(v)).sum();
             ((sum + 4) / 8) as u16
         };
-        assert_eq!(s.early, [early_x(0), early_x(1), early_x(2), early_x(3)]);
-        assert!(s.early[0] < s.early[1] && s.early[3] < s.value);
+        // X settles 32: only the 16-conversion value fits.
+        assert_eq!(s.early, [early_x(0), 0, 0, 0]);
+        assert!(s.early[0] < s.value);
     }
 
     #[test]
     fn early_values_only_inside_the_settling() {
         let c = chip([0, 1111, 0, 600, 2000, 3333, 0, 0]);
         let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
-        assert_eq!(ts.settle(channel::X).early, [3333; 4]);
-        // Y settles 32: only the 16-conversion value fits.
+        // X and Y settle 32: only the 16-conversion value fits.
+        assert_eq!(ts.settle(channel::X).early, [3333, 0, 0, 0]);
         assert_eq!(ts.settle(channel::Y).early, [1111, 0, 0, 0]);
     }
 
