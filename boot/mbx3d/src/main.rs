@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 21 (ADR-0026 device tests T5-T7,
+//! 3D core, under the loader. Version 22: version 21 found the blend
+//! factors (additive drew) but vertex alpha acted as 1, the hand-written
+//! textured path drawing, clamping by default, and TSP bit 16 hanging the
+//! core (T7 void). Now every timed-out render resets the core and sets the
+//! memory manager up again; T5b looks for the alpha source (TSP bits, an
+//! ARGB4444 texture's alpha), T6b tries TEX0 bits 31-28 for filtering,
+//! T7 (depth) runs again.
+//! Version 21 (ADR-0026 device tests T5-T7,
 //! word layouts guessed from the PowerVR2's): T5 blending (TSP bits 31-26
 //! as source/destination factors, bit 20 "use alpha"), T6 texture
 //! filtering and clamping on a hand-written textured triangle with Dell's
@@ -211,7 +218,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 21;
+    const VERSION: u32 = 22;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -370,7 +377,16 @@ mod image {
         }
         store(vram, PARAMS, &list[..=n]);
         regions(vram, |_, _| true);
-        run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some()
+        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
+        if !done {
+            // A bad word can hang the core (version 21: TSP bit 16 voided
+            // every render after it): reset it and set the memory manager
+            // up again, so the next try starts clean.
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("  (timed out: core reset, memory manager ready again: {ok})");
+        }
+        done
     }
 
     /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
@@ -414,25 +430,25 @@ mod image {
         )
     }
 
-    /// T5: TSP bits 31-26 as the PowerVR2's blend factors (source 31-29,
-    /// destination 28-26: 0 zero, 1 one, 4 source alpha, 5 its inverse),
-    /// bit 20 as its "use alpha": a half-transparent blue square (alpha
-    /// 0x80) over red.
+    /// T5b: where alpha comes from. Blend factors work (version 21:
+    /// additive drew) but a flat square's vertex alpha (`0x80`) acted as 1.
+    /// Source alpha / inverse (4/5) with other TSP bits: Gouraud (22),
+    /// bit 21 cleared, bit 19, bits 20 and 22; then a textured square whose
+    /// ARGB4444 texels carry alpha 8 (about half), over red.
     #[inline(never)]
     fn t5(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         let bg = background(0xFFFF_0000, 0.0);
+        let blend = 4u32 << 29 | 5 << 26;
         let base = TSP_DELL & 0x03FF_FFFF;
         let p = m3::STRIP_ONE_TRIANGLE;
-        for (src, dst, alpha) in [
-            (1u32, 0u32, false),
-            (4, 5, false),
-            (4, 5, true),
-            (1, 1, false),
-            (1, 1, true),
-            (5, 4, true),
+        for (name, tsp) in [
+            ("base", blend | base),
+            ("+ Gouraud (22)", blend | base | TSP_GOURAUD),
+            ("- bit 21", blend | (base & !(1 << 21))),
+            ("+ bit 19", blend | base | 1 << 19),
+            ("+ bits 20, 22", blend | base | 1 << 20 | TSP_GOURAUD),
         ] {
             rt::check_in();
-            let tsp = src << 29 | dst << 26 | base | u32::from(alpha) << 20;
             let sq = square(
                 100.0,
                 100.0,
@@ -445,17 +461,67 @@ mod image {
             );
             let done = scene(e, vram, table, &[(&bg, p), (&sq[0], p), (&sq[1], p)]);
             log!(
-                "  T5 TSP 0x{tsp:08x} (src {src}, dst {dst}, bit 20 {alpha}): done {done}; square (200,200) 0x{:08x}, red outside (50,50) 0x{:08x}",
-                px(vram, 200, 200),
-                px(vram, 50, 50)
+                "  T5 flat {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
+                px(vram, 200, 200)
+            );
+        }
+        // An 8 x 8 ARGB4444 texture, every texel blue with alpha 8.
+        for k in 0..32 {
+            let _ = store32_volatile(vram, TEX + 4 * k, 0x800F_800F);
+        }
+        cpu::drain_write_buffer();
+        let mut texw = m3::ta::dell_texture(TEX as u32);
+        texw[0] = m3::tex::tex0(0, m3::tex::ARGB4444);
+        let v = |x, y, u, v| m3::tex::Vertex {
+            x,
+            y,
+            z: 0.0,
+            rhw: 1.0,
+            argb: 0xFFFF_FFFF,
+            u,
+            v,
+        };
+        for (name, tsp) in [
+            ("opaque", m3::ta::TSP_DELL_TEXTURED),
+            ("4/5", blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF)),
+            (
+                "4/5 + bit 20",
+                blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF) | 1 << 20,
+            ),
+        ] {
+            rt::check_in();
+            let a = m3::tex::triangle(
+                ISP_ALWAYS,
+                texw,
+                tsp,
+                &[
+                    v(100.0, 100.0, 0.0, 0.0),
+                    v(300.0, 100.0, 1.0, 0.0),
+                    v(100.0, 300.0, 0.0, 1.0),
+                ],
+            );
+            let b = m3::tex::triangle(
+                ISP_ALWAYS,
+                texw,
+                tsp,
+                &[
+                    v(300.0, 100.0, 1.0, 0.0),
+                    v(300.0, 300.0, 1.0, 1.0),
+                    v(100.0, 300.0, 0.0, 1.0),
+                ],
+            );
+            let t = m3::tex::STRIP_GAME;
+            let done = scene(e, vram, table, &[(&bg, p), (&a, t), (&b, t)]);
+            log!(
+                "  T5 textured ARGB4444 alpha 8 {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
+                px(vram, 200, 200)
             );
         }
     }
 
-    /// T6: a hand-written textured triangle (the direct path, Dell's TSP),
-    /// an 8 x 8 RGB565 texture (texel (x, y) red or white by (x + y) & 1,
-    /// texel (7, 0) green), TSP bits 14-13 (filter) and 15-18 (clamp,
-    /// flip) set one at a time, u over 0-1, then 0-2.
+    /// T6b: TEX0 bits 31-28 (version 18: some values changed sampling)
+    /// on the magnified 8 x 8 red/white checker (texel (7,0) green), u 0-1
+    /// then 0-2. TSP bits 16-18 left alone (bit 16 hung the core).
     #[inline(never)]
     fn t6(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         for y in 0..8u32 {
@@ -474,23 +540,21 @@ mod image {
             }
         }
         cpu::drain_write_buffer();
-        let mut texw = m3::ta::dell_texture(TEX as u32);
-        texw[0] = m3::tex::tex0(0, m3::tex::RGB565);
         let bg = background(0xFF00_0000, 0.0);
-        let base = m3::ta::TSP_DELL_TEXTURED;
-        // u's top as a float and as a label (formatting a float would pull
-        // in ~20 KiB of float code).
-        for (umax, label, bits) in [
-            (1.0f32, 1u32, 0u32),
-            (1.0, 1, 1 << 13),
-            (1.0, 1, 2 << 13),
-            (2.0, 2, 0),
-            (2.0, 2, 1 << 15),
-            (2.0, 2, 1 << 16),
-            (2.0, 2, 1 << 17),
-            (2.0, 2, 1 << 18),
+        for (umax, label, high) in [
+            (1.0f32, 1u32, 0xAu32),
+            (1.0, 1, 0x0),
+            (1.0, 1, 0x4),
+            (1.0, 1, 0x8),
+            (1.0, 1, 0xC),
+            (1.0, 1, 0xE),
+            (2.0, 2, 0xA),
+            (2.0, 2, 0x2),
+            (2.0, 2, 0x6),
         ] {
             rt::check_in();
+            let mut texw = m3::ta::dell_texture(TEX as u32);
+            texw[0] = (m3::tex::tex0(0, m3::tex::RGB565) & 0x0FFF_FFFF) | high << 28;
             let v = |x, y, u, v| m3::tex::Vertex {
                 x,
                 y,
@@ -503,7 +567,7 @@ mod image {
             let tri = m3::tex::triangle(
                 ISP_ALWAYS,
                 texw,
-                base | bits,
+                m3::ta::TSP_DELL_TEXTURED,
                 &[
                     v(40.0, 40.0, 0.0, 0.0),
                     v(440.0, 40.0, umax, 0.0),
@@ -518,8 +582,8 @@ mod image {
             );
             let _ = write!(
                 RunLog,
-                "  T6 u 0-{label} TSP 0x{:08x}: done {done}; y=75 at x 45 65 80 88 90 92 100 115 250 300 350 400:",
-                base | bits
+                "  T6 u 0-{label} TEX0 0x{:08x}: done {done}; y=75 at x 45 65 80 88 90 92 100 115 250 300 350 400:",
+                texw[0]
             );
             for x in [45, 65, 80, 88, 90, 92, 100, 115, 250, 300, 350, 400] {
                 let _ = write!(RunLog, " {:08x}", px(vram, x, 75));
@@ -757,10 +821,12 @@ mod image {
         // the hand-written textured path), depth compare.
         if drew {
             let (t, n) = table(level);
-            log!("T5: blending: a blue square, alpha 0x80, over red");
+            log!(
+                "T5b: where alpha comes from (blend 4/5), flat and ARGB4444-textured squares over red"
+            );
             t5(&mut e, vram, &t[..n]);
             log!(
-                "T6: hand-written textured triangle, 8 x 8 RGB565 checker (red/white, texel (7,0) green), 50 x 70 px a texel at u 0-1"
+                "T6b: TEX0 bits 31-28 on the hand-written textured 8 x 8 checker (red/white, texel (7,0) green), 50 x 70 px a texel at u 0-1"
             );
             t6(&mut e, vram, &t[..n]);
             log!(
