@@ -140,7 +140,8 @@ mod image {
         let t0 = rt::ticks();
         rp_today::show_gpu(&mut two_d, WALLPAPER, rt::delay_us);
         // The graphics service (ADR-0030) owns the engines from here.
-        let mut gfx = Graphics::new(two_d, Pool::new(POOL));
+        // It borrows the renderer: both by value overflowed the stack.
+        let mut gfx = Graphics::new(&mut two_d, Pool::new(POOL));
         let mut gclock = TickClock {
             last: rt::ticks(),
             us: 0,
