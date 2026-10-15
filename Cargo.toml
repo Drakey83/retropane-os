@@ -63,6 +63,7 @@ members = [
     "personality/ce/setup",
     "tools/romdump",
     "tools/apiscan",
+    "pc/legacysync",
     "xtask",
 ]
 

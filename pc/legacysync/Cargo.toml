@@ -1,0 +1,20 @@
+[package]
+name = "rp-legacysync"
+description = "LegacySync, the Windows companion doing ActiveSync's jobs for RetroPane: first, the CeAppMgr.exe stand-in for old Pocket PC installers (ADR-0028)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+# Lower case, as WMDC ships it; Windows finds it as CeAppMgr.exe too.
+name = "ceappmgr"
+path = "src/bin/ceappmgr.rs"
+
+[dependencies]
+rp-cab = { path = "../../personality/ce/cab" }
+rp-ce-setup = { path = "../../personality/ce/setup" }
+
+[lints]
+workspace = true
