@@ -166,6 +166,28 @@ report; device runs only with the owner's go.
    with `0x610`'s `(n - 1) << 7` from it. Our objects don't write depth
    (ISP bit 26), so likely not the blocker; a version with a depth buffer
    is a cheap test.
+
+   **Read further (static, 2026-10-15).** The table above is patched per
+   frame by the scene routine (`0x0225e5c4`, context `+0x4C` = the full
+   table from `0x608`): it adds `0x608` (the region array) and **`0x63C`**
+   (from context `+0x588`, set by `glFog` `GL_FOG_COLOR`: the fog
+   colour), and sets **`0x6DC` = the clear depth as a float with bit 0**
+   (`glClear` stores the clear depth at `+0x6F0`; DoomGLES: `0x3F800001`;
+   Dell's table and ours: 0 or 1, a clear depth near 0). `0x610` and
+   `0x674` are set only when the surface has a depth buffer: `0x610 =
+   (tiles - 1) << 7` (the multiply at `0x02261708` llvm couldn't decode:
+   `mulne r3, r2, r3`, columns x rows) `| 2`, bit 0 cleared when the
+   frame clears depth; `0x674` the depth buffer's address. **`0x860` =
+   `(cols - 1) | (rows - 1) << 16`**, the tile grid. The game's real frame
+   region arrays (capture 4 at `0x265000`, capture 6 at `0x191000`): 2400
+   entries, 60 x 40 like ours, per-tile lists 64 bytes apart, and **bit 29
+   on every header** (ours never; Dell's flush path `0x02118af4` sets it
+   on a list's tiles). Dell's one-time start-up writes hold nothing else
+   for the 3D stage: its power-up is the `0x80 = 0x111` reset pulse and
+   interrupt masks (ours already), the parameter memory's six pairs (ours
+   already), and its flush path's `0x848 = 0x7FFF` and `0x85C | 8` around
+   a render. **Version 12** tries bit 29, the clear depth, a depth buffer
+   and `0x860`, alone and together.
 4. **M4, device under the loader: `rp-mbx3d`.** Reset the core, build one
    flat-coloured triangle with M2's encoder, start it, wait (status bit 2
    or the `0x804` write, both timed), read pixels back; then a
