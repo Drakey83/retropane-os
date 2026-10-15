@@ -10,7 +10,7 @@ use core::ptr::NonNull;
 
 use rp_hal_api::{RegisterBus, RegisterBus8, RegisterBus16};
 
-pub mod clock;
+pub mod clocks;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod cpu;
 pub mod devmap;
@@ -19,6 +19,7 @@ pub mod diag;
 pub mod dma;
 pub mod dma_map;
 pub mod dmachain;
+pub mod elapsed;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod handoff;
 #[cfg(all(target_arch = "arm", target_os = "none"))]

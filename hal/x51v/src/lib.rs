@@ -8,6 +8,7 @@
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod devices;
+pub mod vcore;
 
 /// How sure we are of a hardware fact.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

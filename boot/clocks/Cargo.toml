@@ -1,0 +1,20 @@
+[package]
+name = "rp-clocks"
+description = "Test image (ADR-0031): the PXA270's clocks as found, every operating point the starting voltage allows (core clock by the cycle counter, memory kept across refresh changes, benchmarks), turbo and relock switch times, then the clocks put back"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-bench-suite = { path = "../suite" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+
+[lints]
+workspace = true

@@ -75,6 +75,12 @@ impl<B: RegisterBus> Gpio<B> {
         self.regs.write32(off, bit);
     }
 
+    /// Whether `pin` is set as an output.
+    pub fn is_output(&mut self, pin: u8) -> bool {
+        let (off, bit) = reg(Kind::Direction, pin);
+        self.regs.read32(off) & bit != 0
+    }
+
     /// Reads a pin's level.
     pub fn read(&mut self, pin: u8) -> bool {
         let (off, bit) = reg(Kind::Level, pin);

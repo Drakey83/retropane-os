@@ -127,6 +127,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-clocks"
+version = "0.0.0"
+dependencies = [
+ "rp-bench-suite",
+ "rp-drv-pxa-gpio",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [

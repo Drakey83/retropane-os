@@ -473,6 +473,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (ADR-0031, audit item 67): the PXA270's clocks taken,
+    // every operating point measured, turbo and relock costs. 28.7 KiB
+    // measured (2026-10-15), + ~10%.
+    Budget {
+        image: "rp-clocks",
+        max_load: 32 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",

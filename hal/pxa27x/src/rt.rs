@@ -235,7 +235,7 @@ macro_rules! entry {
 static mut START: u32 = 0;
 
 /// Time since the image started, past the OS timer's wrap ([`uptime_ms`]).
-static mut UPTIME: crate::clock::Elapsed = crate::clock::Elapsed::starting_at(0);
+static mut UPTIME: crate::elapsed::Elapsed = crate::elapsed::Elapsed::starting_at(0);
 
 /// DMA channels found running at the image's first instruction (one bit
 /// each), recorded by `_start` before it stopped them.
@@ -317,7 +317,7 @@ pub fn mark_start() {
     unsafe {
         let now = ticks();
         core::ptr::addr_of_mut!(START).write(now);
-        core::ptr::addr_of_mut!(UPTIME).write(crate::clock::Elapsed::starting_at(now));
+        core::ptr::addr_of_mut!(UPTIME).write(crate::elapsed::Elapsed::starting_at(now));
     }
 }
 
@@ -414,13 +414,13 @@ const OSCR0: usize = 0x40A0_0010;
 const OSCR_TICKS_PER_US_X4: u32 = 13;
 
 /// OS timer frequency.
-pub const TICK_HZ: u32 = crate::clock::TICK_HZ;
+pub const TICK_HZ: u32 = crate::elapsed::TICK_HZ;
 
-pub use crate::clock::Elapsed;
+pub use crate::elapsed::Elapsed;
 
 impl Elapsed {
     /// Starts counting now. For any span that can exceed a few minutes:
-    /// `ticks().wrapping_sub(t0)` wraps after 22 minutes (see [`crate::clock`]).
+    /// `ticks().wrapping_sub(t0)` wraps after 22 minutes (see [`crate::elapsed`]).
     #[must_use]
     pub fn start() -> Self {
         Self::starting_at(ticks())

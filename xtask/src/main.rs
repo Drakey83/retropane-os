@@ -127,6 +127,8 @@ commands:
             run it before `load rp-mbx3d-api`
   emu-mved  the video decoder's first test (rp-mved: runs, times out
             safely, returns; the decoder isn't modelled): before `load rp-mved`
+  emu-clocks the clocks test (rp-clocks: every operating point visited,
+            the clocks and voltage put back): run it before `load rp-clocks`
   emu-today the shell's Today screen (ADR-0021): pixel-exact, a tap on
             Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
@@ -192,13 +194,12 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
-        | "emu-mved" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum"
-        | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
-        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-refresh"
-        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => {
-            run_step(&cmd)
-        }
+        | "emu-mved" | "emu-clocks" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel"
+        | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb"
+        | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast" | "emu-loader"
+        | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal" | "emu-looks"
+        | "emu-tone" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -459,6 +460,7 @@ fn run_step(step: &str) -> Result {
         "emu-unplug" => cross().and_then(|()| emu::boot_loader_unplug(&workspace_root())),
         "emu-mbx3d-api" => cross().and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root())),
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
+        "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
@@ -517,6 +519,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_mbx3d(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
             .and_then(|()| emu::boot_loader_mved(&workspace_root()))
+            .and_then(|()| emu::boot_loader_clocks(&workspace_root()))
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_loader_handover(&workspace_root()))

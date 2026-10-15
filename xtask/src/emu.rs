@@ -2510,6 +2510,52 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The clocks test image (rp-clocks, ADR-0031): runs under the loader and
+/// returns by itself. Every operating point is visited and the starting
+/// clocks and voltage code put back; the image must come back without a
+/// fault and print its verdict. Which checks the emulator can pass depends
+/// on what the fork models (docs/hw/emulator.md, "PXA270 clocks"): the
+/// log is shown for reading, and a fault, a panic or no verdict fail.
+pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-clocks.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-clocks"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-CLOCKS: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("clocks: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("clocks: didn't return cleanly:{log}"));
+    }
+    for want in ["C1 as found", "C2 624 MHz", "end: CCCR", " checks, "] {
+        if !log.contains(want) {
+            return Err(format!("clocks: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    clocks: returned cleanly; run log:{log}");
+    Ok(())
+}
+
 /// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
 /// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.15.0)
 /// every counted check must pass, as on the device (run 3: 0 BAD), and

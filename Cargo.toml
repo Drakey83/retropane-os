@@ -60,6 +60,7 @@ members = [
     "boot/sdtime",
     "boot/storfast",
     "boot/mved",
+    "boot/clocks",
     "boot/picture",
     "boot/blend",
     "boot/cs3bus",
