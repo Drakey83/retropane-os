@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 17: version 16's textured triangle
+//! 3D core, under the loader. Version 18: version 17 drew the first
+//! textured triangle (through the TA, with the GLES driver's own draw's
+//! words; the game's TSP `0x22640200` never draws). Now that triangle with
+//! the TA's object logged from the first tile it reached, then TEX0's
+//! fields swept (bits 15-12, then 31-28) against the texel ramp, 12
+//! pixels logged each, to decode the texture formats. Left on screen: the
+//! triangle with Dell's words.
+//! Version 17: version 16's textured triangle
 //! went through the TA but landed in no tile (every header bit 25, no
 //! list); the vertex order is confirmed by the GLES driver's own textured
 //! draw (`0x0226eae4`: x, y, z, 1/w, colour, u, v). Now with the state
@@ -201,7 +208,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 17;
+    const VERSION: u32 = 18;
     const MBXCLK: usize = 0x054;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -386,16 +393,24 @@ mod image {
             .0
             .is_some();
         e.regs.write32(MBX + r85c.0, r85c.1);
-        dump(vram, "regions", TA_REGIONS, 6);
-        let list = load32_volatile(vram, TA_REGIONS + 4).unwrap_or(0) as usize;
-        dump(vram, "first list", list & m3::ADDR_MASK as usize, 8);
-        let ptr = load32_volatile(vram, list & m3::ADDR_MASK as usize).unwrap_or(0);
-        dump(
-            vram,
-            "its object",
-            PARAMS + 4 * (ptr & 0x001F_FFFF) as usize,
-            words,
-        );
+        if words > 0 {
+            dump(vram, "regions", TA_REGIONS, 6);
+            // The first tile the TA put something in.
+            let at = (0..(COLS * ROWS) as usize)
+                .map(|k| TA_REGIONS + 8 * k)
+                .find(|&a| load32_volatile(vram, a + 4).unwrap_or(0) != 0)
+                .unwrap_or(TA_REGIONS);
+            dump(vram, "first used region", at, 2);
+            let list = load32_volatile(vram, at + 4).unwrap_or(0) as usize & m3::ADDR_MASK as usize;
+            dump(vram, "its list", list, 8);
+            let ptr = load32_volatile(vram, list).unwrap_or(0);
+            dump(
+                vram,
+                "its object",
+                PARAMS + 4 * (ptr & 0x001F_FFFF) as usize,
+                words,
+            );
+        }
         if !done {
             log!("  the TA never said done: no 3D render");
             return false;
@@ -636,39 +651,73 @@ mod image {
                 v(440.0, 40.0, 1.0, 0.0),
                 v(40.0, 600.0, 0.0, 1.0),
             ];
-            let texw = [
-                m3::tex::FORMAT_GAME,
-                m3::tex::address(TEXTURE as u32),
-                m3::tex::COMBINE_GAME,
-            ];
             let dell = m3::ta::dell_texture(TEXTURE as u32);
             let clip = m3::ta::clip(W, H);
-            // Version 16: the game's words with clip 0 drew nothing (every
-            // tile empty, header bit 25).
-            for (name, tsp, isp, tex) in [
-                ("X2", m3::ta::TSP_DELL_TEXTURED, ISP_ALWAYS, dell),
-                ("X3", m3::tex::TSP_GAME, m3::tex::ISP_GAME, texw),
-                ("X4", m3::tex::TSP_GAME, ISP_ALWAYS, dell),
-            ] {
+            // Version 17: these words drew it textured; the game's TSP
+            // (`0x22640200`) never did.
+            rt::check_in();
+            let _ = clear(&mut e, vram, GREY);
+            log!(
+                "X2: a textured triangle through the TA, TSP 0x{:08x} TEX 0x{:08x} 0x{:08x} 0x{:08x}",
+                m3::ta::TSP_DELL_TEXTURED,
+                dell[0],
+                dell[1],
+                dell[2]
+            );
+            let draw = |e: &mut Engine<Mmio>, vram: &mut [u8], tex: [u32; 3], words: usize| {
+                let s =
+                    m3::ta::textured_stream(m3::ta::TSP_DELL_TEXTURED, ISP_ALWAYS, tex, clip, &tri);
+                through_ta(e, vram, level, &s, words, (120, 160))
+            };
+            let ok = draw(&mut e, vram, dell, 30);
+            log!(
+                "X2: {}; inside (120,160) 0x{:08x} (60,60) 0x{:08x} (200,100) 0x{:08x}, outside (300,500) 0x{:08x}",
+                if ok { "drawn" } else { "nothing drawn" },
+                px(vram, 120, 160),
+                px(vram, 60, 60),
+                px(vram, 200, 100),
+                px(vram, 300, 500)
+            );
+            // F: TEX0's fields against the texel ramp (texel k = k): bits
+            // 15-12, then bits 31-28, each of 16 values; pixels along the
+            // top edge (u from 0, v 0) and down the left edge.
+            const AT: [(u32, u32); 12] = [
+                (41, 41),
+                (43, 41),
+                (45, 41),
+                (47, 41),
+                (49, 41),
+                (57, 41),
+                (73, 41),
+                (105, 41),
+                (169, 41),
+                (297, 41),
+                (41, 100),
+                (41, 300),
+            ];
+            log!(
+                "F: samples at (41,41) (43,41) (45,41) (47,41) (49,41) (57,41) (73,41) (105,41) (169,41) (297,41) (41,100) (41,300)"
+            );
+            for k in 0..32u32 {
                 rt::check_in();
+                let f = k & 15;
+                let tex0 = if k < 16 {
+                    dell[0] & !(0xF << 12) | f << 12
+                } else {
+                    dell[0] & !(0xF << 28) | f << 28
+                };
                 let _ = clear(&mut e, vram, GREY);
-                log!(
-                    "{name}: a textured triangle through the TA, TSP 0x{tsp:08x} ISP 0x{isp:08x} TEX 0x{:08x} 0x{:08x} 0x{:08x}",
-                    tex[0],
-                    tex[1],
-                    tex[2]
-                );
-                let s = m3::ta::textured_stream(tsp, isp, tex, clip, &tri);
-                let ok = through_ta(&mut e, vram, level, &s, 26, (120, 160));
-                log!(
-                    "{name}: {}; inside (120,160) 0x{:08x} (60,60) 0x{:08x} (200,100) 0x{:08x}, outside (300,500) 0x{:08x}",
-                    if ok { "drawn" } else { "nothing drawn" },
-                    px(vram, 120, 160),
-                    px(vram, 60, 60),
-                    px(vram, 200, 100),
-                    px(vram, 300, 500)
-                );
+                let ok = draw(&mut e, vram, [tex0, dell[1], dell[2]], 0);
+                // Word by word: formatting the array as a whole costs ~6 KiB.
+                let _ = write!(RunLog, "  F{k:02} TEX0 0x{tex0:08x} {ok}:");
+                for &(x, y) in &AT {
+                    let _ = write!(RunLog, " {:08x}", px(vram, x, y));
+                }
+                log!("");
             }
+            // On screen at the end: Dell's words.
+            let _ = clear(&mut e, vram, GREY);
+            let _ = draw(&mut e, vram, dell, 0);
         }
 
         let saved = show_target(&mut e.regs);
