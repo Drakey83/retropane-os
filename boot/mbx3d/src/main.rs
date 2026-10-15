@@ -1,5 +1,12 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 24 (ADR-0026 T10-T13, from static
+//! 3D core, under the loader. Version 25 (ADR-0026, version 24's open
+//! questions, from static reading 2026-10-15): T11b depth stored across
+//! renders with the GLES driver's full register set (`0x648` and `0x6D0`
+//! 1 and its other extras; `n` 16 and 2400); T12b mipmaps with TEX0 bits
+//! 12-9 set (the GLES upload puts `0xB` there without levels, the level
+//! value with; version 24 left them 0); T13b PVRTC's block order (last).
+//! T10-T13 are done (version 24: interrupt, bilinear, 32-bit, PVRTC).
+//! Version 24 (ADR-0026 T10-T13, from static
 //! reading 2026-10-15): T10 render done on GPIO85 with `0x130` bit 15 (Dell
 //! enables `0x87F5`; T2 had bit 2 alone after a reset), the line quieted
 //! first, then which `MINTENABLE` bit routes the MBX core; T11 depth kept
@@ -232,7 +239,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 24;
+    const VERSION: u32 = 25;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -367,9 +374,6 @@ mod image {
         cpu::drain_write_buffer();
         n
     }
-
-    /// Where stage T6 keeps its 8 x 8 texture (free 2700G memory).
-    const TEX: usize = 0x00E0_0000;
 
     /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
     #[allow(clippy::too_many_arguments)]
@@ -507,245 +511,117 @@ mod image {
         }
     }
 
-    // T10-T13's 2700G memory (free above the version 21 texture).
-    const DEPTH: usize = 0x00E8_0000;
+    // Version 25's 2700G memory: the depth buffer for the whole screen
+    // (2400 tiles x 512 bytes), the mip chain and the PVRTC blocks.
+    const DEPTH: usize = 0x00A0_0000;
+    const DEPTH_BYTES: usize = 2400 * 512;
     const MIPS: usize = 0x00E2_0000;
     const PVR: usize = 0x00E4_0000;
-    const T32: usize = 0x00E6_0000;
 
-    /// The PXA's GPIO block: GPIO85 is bit 21 of the third bank.
-    const GPLR2: usize = 0x008;
-    const GPDR2: usize = 0x014;
-    const GRER2: usize = 0x038;
-    const GFER2: usize = 0x044;
-    const GEDR2: usize = 0x050;
-    const PIN85: u32 = 1 << 21;
-    /// The 2700G's system interrupt enable (write-only: never read) and
-    /// the display's event status and enable.
-    const MINTENABLE: usize = 0x018;
-    const DINTRS: usize = 0x2178;
-    const DINTRE: usize = 0x217C;
-
-    /// T10 (ADR-0026): does render done reach GPIO85 with `0x130` bit 15
-    /// (Dell's `0x87F5`; T2 had bit 2 alone, after a reset)? The line is
-    /// quieted first (every MBX source masked and cleared, the display's
-    /// events off), then a full-screen render per enable, GPIO85's level
-    /// and edges timed against status bit 2.
-    #[inline(never)]
-    fn t10(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let Some(mut gpio) = rt::take_gpio() else {
-            log!("T10: no GPIO block");
-            return;
+    /// `table` with the GLES driver's per-frame extras (`0x022616dc`:
+    /// `0x648` 1, `0x6D0` 1, `0x614`/`0x618` `0x1E3CE508`, `0x61C`
+    /// `0x00020007`, `0x64C` 0, `0x860` the grid), a depth buffer (`0x674`)
+    /// with `0x610` and `0x6DC` as given; the start last.
+    fn with_depth(
+        table: &[(usize, u32)],
+        r610: u32,
+        r6dc: u32,
+        buf: &mut [(usize, u32); 40],
+    ) -> usize {
+        let mut n = 0;
+        let mut put = |p: (usize, u32), buf: &mut [(usize, u32); 40]| {
+            buf[n] = p;
+            n += 1;
         };
-        // GPIO85's edges are only latched (GRER/GFER) and polled (GEDR):
-        // its interrupt stays masked at the PXA, so a line stuck active
-        // can't flood the CPU.
-        let (dir0, rer0, fer0) = (gpio.read32(GPDR2), gpio.read32(GRER2), gpio.read32(GFER2));
-        gpio.write32(GPDR2, dir0 & !PIN85);
-        gpio.write32(GRER2, rer0 | PIN85);
-        gpio.write32(GFER2, fer0 | PIN85);
-        let latched = |g: &mut Mmio| g.read32(GEDR2) & PIN85 != 0;
-        let unlatch = |g: &mut Mmio| g.write32(GEDR2, PIN85);
-        let en0 = e.regs.read32(ENABLE);
-        let dintre0 = e.regs.read32(DINTRE);
-        let quiet = |e: &mut Engine<Mmio>| {
-            e.regs.write32(ENABLE, 0);
-            e.regs.write32(CLEAR, 0xFFFF);
-            e.regs.write32(DINTRE, 0);
-            e.regs.write32(DINTRS, 0);
-        };
-        quiet(e);
-        e.regs.write32(MINTENABLE, 0x800F);
-        rt::delay_us(1_000);
-        let was = latched(&mut gpio);
-        unlatch(&mut gpio);
-        log!(
-            "T10: line quiet: GPIO85 {} (1 = idle, likely), edge latched before {}, status 0x{:08x}",
-            u32::from(gpio.read32(GPLR2) & PIN85 != 0),
-            u32::from(was),
-            e.regs.read32(STATUS)
-        );
-        let bg = background(0xFF20_2020, 0.0);
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let mut edged_8004 = false;
-        for (mint, en) in [
-            (0x800F, 0x0004u32),
-            (0x800F, 0x8004),
-            (0x800F, 0x87F5),
-            (0x8001, 0x8004),
-            (0x8002, 0x8004),
-            (0x8004, 0x8004),
-            (0x8008, 0x8004),
-            (0x000F, 0x8004),
-        ] {
-            if en == 0x8004 && mint != 0x800F && !edged_8004 {
-                break; // the routing sweep only if 0x8004 edged
+        for &(off, v) in &table[..table.len() - 1] {
+            match off {
+                0x610 | 0x6DC | 0x648 | 0x614 | 0x618 | 0x61C => {}
+                _ => put((off, v), buf),
             }
-            rt::check_in();
-            quiet(e);
-            e.regs.write32(MINTENABLE, mint);
-            load(vram, &[(&bg, p)], |_, _| true);
-            unlatch(&mut gpio);
-            e.regs.write32(ENABLE, en);
-            let lvl0 = gpio.read32(GPLR2) & PIN85 != 0;
-            let t0 = rt::ticks();
-            for &(off, v) in table {
-                e.regs.write32(MBX + off, v);
-            }
-            let (mut done, mut fell, mut edge, mut edges) = (None, None, None, 0u32);
-            while us_since(t0) < 40_000 {
-                let now = us_since(t0);
-                if done.is_none() && e.regs.read32(STATUS) & RENDER_DONE != 0 {
-                    done = Some(now);
-                }
-                if fell.is_none() && (gpio.read32(GPLR2) & PIN85 != 0) != lvl0 {
-                    fell = Some(now);
-                }
-                if latched(&mut gpio) {
-                    edges += 1;
-                    edge.get_or_insert(now);
-                    unlatch(&mut gpio);
-                }
-                if done.is_some() && now > done.unwrap_or(0) + 2_000 {
-                    break;
-                }
-            }
-            let held = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
-            let gedr_before = u32::from(latched(&mut gpio));
-            // Cleared as Dell clears it (bits 2 and 3).
-            e.regs.write32(CLEAR, 0x0C);
-            rt::delay_us(100);
-            let after = u32::from(gpio.read32(GPLR2) & PIN85 != 0);
-            let gedr_after = u32::from(latched(&mut gpio));
-            if gedr_after != 0 {
-                edges += 1;
-                unlatch(&mut gpio);
-            }
-            e.regs.write32(ENABLE, 0);
-            if mint == 0x800F && en == 0x8004 {
-                edged_8004 = edges > 0;
-            }
-            log!(
-                "  T10 MINTENABLE 0x{mint:04x}, 0x130 0x{en:04x}: done at {done:?} us; GPIO85 {} -> {held} (changed at {fell:?} us), {after} after the clear; GEDR before/after the clear {gedr_before}/{gedr_after}; edges {edges} (first at {edge:?} us)",
-                u32::from(lvl0)
-            );
         }
-        quiet(e);
-        e.regs.write32(MINTENABLE, 0x800F);
-        e.regs.write32(ENABLE, en0);
-        e.regs.write32(DINTRE, dintre0);
-        gpio.write32(GRER2, rer0);
-        gpio.write32(GFER2, fer0);
-        unlatch(&mut gpio);
-        gpio.write32(GPDR2, dir0);
+        for p in [
+            (0x648, 1),
+            (0x6D0, 1),
+            (0x614, 0x1E3C_E508),
+            (0x618, 0x1E3C_E508),
+            (0x61C, 0x0002_0007),
+            (0x64C, 0),
+            (0x860, m3::frame::tile_grid(COLS, ROWS)),
+            (0x674, DEPTH as u32),
+            (0x610, r610),
+            (0x6DC, r6dc),
+            table[table.len() - 1],
+        ] {
+            put(p, buf);
+        }
+        n
     }
 
-    /// T11: depth kept across renders. A 4 x 4 tile block; render A stores
-    /// its depth in a buffer (`0x674`, `0x610` bit 1), render B loads it
-    /// (bit 0) and draws blue "greater" at z 0.3 over where red stood at
-    /// 0.5 (left half). Colour isn't loaded: where blue fails, the tile's
-    /// own fill (white) shows.
+    /// T11b (ADR-0026): depth stored across renders with the GLES driver's
+    /// full register set (version 24's `0x674`/`0x610` alone stored
+    /// nothing). Render A: red z 0.5 "always" with writes on the left half
+    /// of a 4 x 4 tile block, `0x610 = (n - 1) << 7 | 2` (store), `0x6DC`
+    /// 0.0 with bit 0 (clear); render B: blue z 0.3 "greater" over the
+    /// block, `| 1` (load). `n` as the block's 16 tiles and as the
+    /// screen's 2400.
     #[inline(never)]
-    fn t11(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+    fn t11b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         let block = |x: u32, y: u32| x < 4 && y < 4;
-        let with = |table: &[(usize, u32)], r610: u32, r6dc: u32, buf: &mut [(usize, u32); 32]| {
-            let mut n = 0;
-            for &(off, v) in &table[..table.len() - 1] {
-                buf[n] = match off {
-                    0x610 => (0x610, r610),
-                    0x6DC => (0x6DC, r6dc),
-                    _ => (off, v),
-                };
-                n += 1;
-            }
-            buf[n] = (0x674, DEPTH as u32);
-            buf[n + 1] = table[table.len() - 1];
-            n + 2
-        };
         let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
         let red = square(0.0, 0.0, 16.0, 64.0, 0xFFFF_0000, 0.5, 7 << 29, tsp(7));
         let blue = square(0.0, 0.0, 32.0, 64.0, 0xFF00_00FF, 0.3, 4 << 29, tsp(4));
         let p = m3::STRIP_ONE_TRIANGLE;
-        for (name, load_bit) in [("B loads the depth", 1u32), ("control: B doesn't load", 0)] {
-            rt::check_in();
-            for k in 0..16 * 512 / 4 {
-                let _ = store32_volatile(vram, DEPTH + 4 * k, 0xAAAA_AAAA);
+        for (name, tiles) in [("n 16 (the block)", 16u32), ("n 2400 (the screen)", 2400)] {
+            for load_bit in [1u32, 0] {
+                rt::check_in();
+                for k in 0..DEPTH_BYTES / 4 {
+                    let _ = store32_volatile(vram, DEPTH + 4 * k, 0xAAAA_AAAA);
+                }
+                cpu::drain_write_buffer();
+                let mut buf = [(0usize, 0u32); 40];
+                let n = with_depth(table, (tiles - 1) << 7 | 2, 1, &mut buf);
+                let a = scene_in(e, vram, &buf[..n], &[(&red[0], p), (&red[1], p)], block);
+                let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
+                let changed = (0..DEPTH_BYTES / 4)
+                    .filter(|&k| w(k) != 0xAAAA_AAAA)
+                    .count();
+                let first = (0..DEPTH_BYTES / 4).find(|&k| w(k) != 0xAAAA_AAAA);
+                let at = first.unwrap_or(0);
+                log!(
+                    "  T11b {name}, load bit {load_bit}: render A (red z 0.5, store) done {a}; buffer words changed {changed}, first at word {first:?}: {:08x?}",
+                    [
+                        w(at),
+                        w(at + 1),
+                        w(at + 2),
+                        w(at + 3),
+                        w(at + 4),
+                        w(at + 5),
+                        w(at + 6),
+                        w(at + 7)
+                    ]
+                );
+                let n = with_depth(table, (tiles - 1) << 7 | 2 | load_bit, 0, &mut buf);
+                let b = scene_in(e, vram, &buf[..n], &[(&blue[0], p), (&blue[1], p)], block);
+                log!(
+                    "  T11b {name}, load bit {load_bit}: render B (blue z 0.3 greater) done {b}; where red was (8,32) 0x{:08x}, beside it (24,32) 0x{:08x}",
+                    px(vram, 8, 32),
+                    px(vram, 24, 32)
+                );
             }
-            cpu::drain_write_buffer();
-            let mut buf = [(0usize, 0u32); 32];
-            let n = with(table, 15 << 7 | 2, 1, &mut buf);
-            let a = scene_in(e, vram, &buf[..n], &[(&red[0], p), (&red[1], p)], block);
-            let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
-            let changed = (0..16 * 512 / 4).filter(|&k| w(k) != 0xAAAA_AAAA).count();
-            log!(
-                "  T11 {name}: render A (red z 0.5, store) done {a}; depth buffer words changed {changed} of 2048; first 8 (raw, a float's bits if floats: 0.5 = 0x3f000000) {:08x?}; tile 0 word 64 0x{:08x}",
-                [w(0), w(1), w(2), w(3), w(4), w(5), w(6), w(7)],
-                w(64)
-            );
-            let n = with(table, 15 << 7 | 2 | load_bit, 0, &mut buf);
-            let b = scene_in(e, vram, &buf[..n], &[(&blue[0], p), (&blue[1], p)], block);
-            log!(
-                "  T11 {name}: render B (blue z 0.3 greater) done {b}; where red was (8,32) 0x{:08x}, beside it (24,32) 0x{:08x}",
-                px(vram, 8, 32),
-                px(vram, 24, 32)
-            );
         }
     }
 
-    /// T12: bilinear filtering (TEX1 bit 31) and mipmaps (bits 30-29, the
-    /// level layout unknown: smallest first as the PowerVR2 has it, or the
-    /// base first).
+    /// T12b: mipmaps with TEX0 bits 12-9 set (the GLES driver's upload,
+    /// `0x0226576c`: `0xB` there for a texture without levels, its level
+    /// value for one with: version 24 left them 0, and no level drew).
+    /// 64 red, 32 green, 16 blue, 8 yellow, 4-1 cyan; layouts A (smallest
+    /// first, the PowerVR2's offsets) and B (the base first); TEX1
+    /// nearest-mipmap-nearest; quads 16 and 8 px.
     #[inline(never)]
-    fn t12(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+    fn t12b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         let bg = background(0xFF00_0000, 0.0);
         let p = m3::STRIP_ONE_TRIANGLE;
         let t = m3::tex::STRIP_GAME;
-        // The 8 x 8 red/white checker, 8 px a texel.
-        for i in 0..64u32 {
-            let (x, y) = (i % 8, i / 8);
-            let c: u32 = if (x + y) % 2 == 0 { 0xF800 } else { 0xFFFF };
-            let at = TEX + 2 * m3::tex::twiddle(x, y) as usize;
-            let w = load32_volatile(vram, at & !3).unwrap_or(0);
-            let w = if at & 2 == 0 {
-                (w & 0xFFFF_0000) | c
-            } else {
-                (w & 0xFFFF) | c << 16
-            };
-            let _ = store32_volatile(vram, at & !3, w);
-        }
-        cpu::drain_write_buffer();
-        for (name, filter) in [
-            ("point", 0u32),
-            ("TEX1 bit 31 (linear)", m3::tex::TEX1_LINEAR),
-            (
-                "TEX1 bit 29 (mipmap nearest, no levels)",
-                m3::tex::TEX1_MIP_NEAREST,
-            ),
-            (
-                "TEX1 bit 30 (mipmap linear, no levels)",
-                m3::tex::TEX1_MIP_LINEAR,
-            ),
-        ] {
-            rt::check_in();
-            let sq = tex_square(
-                100.0,
-                100.0,
-                164.0,
-                164.0,
-                1.0,
-                texw(TEX, 0, m3::tex::RGB565, filter, m3::tex::TEX1_LOD),
-            );
-            let done = scene_in(
-                e,
-                vram,
-                table,
-                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                |_, _| true,
-            );
-            let row: [u32; 8] = core::array::from_fn(|k| px(vram, 100 + 2 * k as u32, 104));
-            log!("  T12 {name}: done {done}; y 104, x 100-114 step 2: {row:08x?}");
-        }
-        // Mipmaps: 64 red, 32 green, 16 blue, 8 yellow, 4-1 cyan.
         let colours: [(u32, u16); 7] = [
             (64, 0xF800),
             (32, 0x07E0),
@@ -755,9 +631,6 @@ mod image {
             (2, 0x07FF),
             (1, 0x07FF),
         ];
-        // A: the PowerVR2's layout (16 bpp, twiddled): 1 x 1 at byte 6,
-        // 2 x 2 at 8, 4 x 4 at 0x10, 8 x 8 at 0x30, then 0xB0, 0x2B0, 0xAB0.
-        // B: the base first, each level after the larger one.
         let a = [0xAB0usize, 0x2B0, 0xB0, 0x30, 0x10, 0x8, 0x6];
         let mut b = [0usize; 7];
         let mut off = 0;
@@ -765,13 +638,12 @@ mod image {
             b[k] = off;
             off += (side * side * 2) as usize;
         }
-        for (layout, offs) in [("A (smallest first)", a), ("B (base first)", b)] {
+        for (layout, offs) in [("A", a), ("B", b)] {
             for k in 0..0x3000 / 4 {
                 let _ = store32_volatile(vram, MIPS + 4 * k, 0);
             }
             for (k, &(side, c)) in colours.iter().enumerate() {
                 if side == 1 {
-                    // One texel, maybe not word aligned: by halves.
                     let at = MIPS + offs[k];
                     let w = load32_volatile(vram, at & !3).unwrap_or(0);
                     let c = u32::from(c);
@@ -786,154 +658,84 @@ mod image {
                 }
             }
             cpu::drain_write_buffer();
-            // (the far corner, the size): literals, no float arithmetic.
-            for (end, size) in [(264.0f32, 64u32), (232.0, 32), (216.0, 16), (208.0, 8)] {
-                rt::check_in();
-                let sq = tex_square(
-                    200.0,
-                    200.0,
-                    end,
-                    end,
-                    1.0,
-                    texw(
+            for levels in [0xBu32, 3, 6, 7] {
+                let mut centre = [0u32; 2];
+                for (k, (end, size)) in [(216.0f32, 16u32), (208.0, 8)].into_iter().enumerate() {
+                    rt::check_in();
+                    let mut w = texw(
                         MIPS,
                         3,
                         m3::tex::RGB565,
                         m3::tex::TEX1_MIP_NEAREST,
                         m3::tex::TEX1_LOD,
-                    ),
-                );
-                let done = scene_in(
-                    e,
-                    vram,
-                    table,
-                    &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                    |_, _| true,
-                );
+                    );
+                    w[0] |= levels << 9;
+                    let sq = tex_square(200.0, 200.0, end, end, 1.0, w);
+                    let done = scene_in(
+                        e,
+                        vram,
+                        table,
+                        &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+                        |_, _| true,
+                    );
+                    centre[k] = if done {
+                        px(vram, 200 + size / 2, 200 + size / 2)
+                    } else {
+                        0xDEAD_DEAD
+                    };
+                }
                 log!(
-                    "  T12 mipmaps, layout {layout}, quad {size} px: done {done}; centre 0x{:08x}",
-                    px(vram, 200 + size / 2, 200 + size / 2)
+                    "  T12b layout {layout}, TEX0 bits 12-9 = {levels}: centre of the 16 px quad 0x{:08x}, of the 8 px quad 0x{:08x}",
+                    centre[0],
+                    centre[1]
                 );
             }
         }
-        // The level-of-detail value on a 16 px quad, layout B left in place.
-        let mut by_lod = [0u32; 16];
-        for (lod, out) in by_lod.iter_mut().enumerate() {
-            rt::check_in();
-            let sq = tex_square(
-                200.0,
-                200.0,
-                216.0,
-                216.0,
-                1.0,
-                texw(
-                    MIPS,
-                    3,
-                    m3::tex::RGB565,
-                    m3::tex::TEX1_MIP_NEAREST,
-                    lod as u32,
-                ),
-            );
-            let done = scene_in(
-                e,
-                vram,
-                table,
-                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                |_, _| true,
-            );
-            *out = if done {
-                px(vram, 208, 208)
-            } else {
-                0xDEAD_DEAD
-            };
-        }
-        log!("  T12 LOD 0-15, 16 px quad, layout B: {by_lod:08x?}");
     }
 
-    /// T13: 32-bit texels (code 12) and PVRTC 4 bpp (code 28) and 2 bpp
-    /// (code 16) from hand-made blocks (colour A = colour B, modulation 0).
+    /// T13b (last: a hang here costs nothing): PVRTC's block order. A 16 x
+    /// 16 texture of 4 x 4 blocks, block `k` (as stored) a colour of its
+    /// own; each block's centre sampled, in rows: twiddled storage puts
+    /// block 1 right of block 0 and block 2 below it, row order block 1
+    /// right and block 4 below.
     #[inline(never)]
-    fn t13(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+    fn t13b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
         let bg = background(0xFF00_0000, 0.0);
         let p = m3::STRIP_ONE_TRIANGLE;
         let t = m3::tex::STRIP_GAME;
-        let draw = |e: &mut Engine<Mmio>, vram: &mut [u8], texw: [u32; 3]| {
-            let sq = tex_square(100.0, 100.0, 164.0, 164.0, 1.0, texw);
-            let done = scene_in(
-                e,
-                vram,
-                table,
-                &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                |_, _| true,
-            );
-            (
-                done,
-                [
-                    px(vram, 108, 108),
-                    px(vram, 156, 108),
-                    px(vram, 108, 156),
-                    px(vram, 156, 156),
-                ],
-            )
-        };
-        // 32-bit: quadrants red, green, blue, white-at-half-alpha.
-        for i in 0..64u32 {
-            let (x, y) = (i % 8, i / 8);
-            let c = match (x < 4, y < 4) {
-                (true, true) => 0xFFFF_0000u32,
-                (false, true) => 0xFF00_FF00,
-                (true, false) => 0xFF00_00FF,
-                (false, false) => 0x80FF_FFFF,
-            };
-            let _ = store32_volatile(vram, T32 + 4 * m3::tex::twiddle(x, y) as usize, c);
+        // Opaque RGB555 colour B and RGB554 colour A of one colour: block k
+        // gets red k * 2, green 31 - k * 2, blue 0 (A's blue is 4 bits).
+        for k in 0..16u32 {
+            let (r, g) = (2 * k, 31 - 2 * k);
+            let a = 1 << 15 | r << 10 | g << 5;
+            let bc = 1 << 15 | r << 10 | g << 5;
+            let _ = store32_volatile(vram, PVR + 8 * k as usize, 0);
+            let _ = store32_volatile(vram, PVR + 8 * k as usize + 4, bc << 16 | a);
         }
         cpu::drain_write_buffer();
         rt::check_in();
-        let (done, q) = draw(
+        // 64 px for 16 texels: a block every 16 px, its centre at 8.
+        let sq = tex_square(
+            100.0,
+            100.0,
+            164.0,
+            164.0,
+            1.0,
+            texw(PVR, 1, m3::tex::PVRTC4, 0, m3::tex::TEX1_LOD),
+        );
+        let done = scene_in(
             e,
             vram,
-            texw(T32, 0, m3::tex::ARGB8888, 0, m3::tex::TEX1_LOD),
+            table,
+            &[(&bg, p), (&sq[0], t), (&sq[1], t)],
+            |_, _| true,
         );
+        let red = |x: u32, y: u32| (px(vram, 100 + 16 * x + 8, 100 + 16 * y + 8) >> 16) & 0xFF;
+        let grid: [[u32; 4]; 4] =
+            core::array::from_fn(|y| core::array::from_fn(|x| red(x as u32, y as u32)));
         log!(
-            "  T13 32-bit texels (code 12), quadrants red/green/blue/white a 0x80: done {done}; {q:08x?}"
+            "  T13b PVRTC 4 bpp, block k red 2k (of 31): done {done}; red at each block's centre, rows: {grid:02x?} (stored k: twiddled as texels, x in the odd bits: row 0 = blocks 0 2 8 10; x in the even bits: 0 1 4 5; row order: 0 1 2 3)"
         );
-        // PVRTC blocks: (modulation word, colour word); colours opaque,
-        // A (RGB554) = B (RGB555).
-        const RED: u32 = 0xFC00_FC00;
-        const GREEN: u32 = 0x83E0_83E0;
-        for (name, format, blocks, word_order_swapped) in [
-            (
-                "PVRTC 4 bpp (code 28), red",
-                m3::tex::PVRTC4,
-                16usize,
-                false,
-            ),
-            ("PVRTC 4 bpp, words swapped", m3::tex::PVRTC4, 16, true),
-            ("PVRTC 2 bpp (code 16), red", m3::tex::PVRTC2, 8, false),
-        ] {
-            rt::check_in();
-            for k in 0..blocks {
-                let (m, c) = (0u32, RED);
-                let (w0, w1) = if word_order_swapped { (c, m) } else { (m, c) };
-                let _ = store32_volatile(vram, PVR + 8 * k, w0);
-                let _ = store32_volatile(vram, PVR + 8 * k + 4, w1);
-            }
-            cpu::drain_write_buffer();
-            // 16 x 16 texels (code 1).
-            let (done, q) = draw(e, vram, texw(PVR, 1, format, 0, m3::tex::TEX1_LOD));
-            log!("  T13 {name}: done {done}; {q:08x?}");
-        }
-        // Half and half: the left blocks red, the right green (4 bpp, 16 x
-        // 16 = 4 x 4 blocks; the block order is the question).
-        for k in 0..16usize {
-            let c = if k % 4 < 2 { RED } else { GREEN };
-            let _ = store32_volatile(vram, PVR + 8 * k, 0);
-            let _ = store32_volatile(vram, PVR + 8 * k + 4, c);
-        }
-        cpu::drain_write_buffer();
-        rt::check_in();
-        let (done, q) = draw(e, vram, texw(PVR, 1, m3::tex::PVRTC4, 0, m3::tex::TEX1_LOD));
-        log!("  T13 PVRTC 4 bpp, blocks 0-1 of each 4 red, 2-3 green: done {done}; {q:08x?}");
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -1122,18 +924,17 @@ mod image {
             );
         }
 
-        // T10-T13 (ADR-0026): the render-done interrupt, depth across
-        // renders, filtering and mipmaps, 32-bit and compressed textures.
+        // T11b-T13b (ADR-0026 follow-ups of version 24): depth stored
+        // with the GLES driver's full set, mipmaps with TEX0 bits 12-9,
+        // PVRTC's block order (last).
         if drew {
             let (t, n) = table(level);
-            log!("T10: render done on GPIO85, 0x130 bit 15 (Dell's 0x87F5)");
-            t10(&mut e, vram, &t[..n]);
-            log!("T11: depth kept across renders (0x674, 0x610 store/load)");
-            t11(&mut e, vram, &t[..n]);
-            log!("T12: TEX1 filtering (bit 31) and mipmaps (bits 30-29, LOD 28-25)");
-            t12(&mut e, vram, &t[..n]);
-            log!("T13: 32-bit texels (code 12), PVRTC 4 bpp (28) and 2 bpp (16)");
-            t13(&mut e, vram, &t[..n]);
+            log!("T11b: depth stored across renders with 0x648, 0x6D0 and the GLES extras");
+            t11b(&mut e, vram, &t[..n]);
+            log!("T12b: mipmaps with TEX0 bits 12-9 (the level value)");
+            t12b(&mut e, vram, &t[..n]);
+            log!("T13b: PVRTC's block order");
+            t13b(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);

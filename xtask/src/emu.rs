@@ -1406,7 +1406,8 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     }
     // With the fork's render-done interrupt and texel model (mbx-3d-irq,
     // rp-v0.16.0): what version 24 saw on the device.
-    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") {
+    // (Version 24's stages only: later versions ask other questions.)
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("T10 MINTENABLE") {
         let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
         for (key, want) in [
             ("MINTENABLE 0x800f, 0x130 0x0004:", "edges 0"),
