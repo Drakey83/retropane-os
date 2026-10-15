@@ -58,7 +58,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 24 -> 26 KiB on 2026-10-12 (test image): the crash box
         // reads the 2700G's registers to draw on the plane actually on
         // screen (Windows Mobile's, at offset 0); 24.2 KiB measured, +~8%.
-        max_load: 26 * 1024,
+        // Ratcheted 26 -> 29 KiB on 2026-10-15 (test image): the CPLD's
+        // shadow adopted from the shared table (Windows Mobile's at hand-
+        // over, checked; item 77); 26.9 KiB measured, +~8%.
+        max_load: 29 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -383,9 +386,20 @@ pub const BUDGETS: &[Budget] = &[
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     // Ratcheted 16 -> 18 KiB on 2026-10-12: the shared crash path (crash
     // reports marked for the loader, kept on the card); 16.1 KiB measured.
+    // 18 -> 21 KiB on 2026-10-15: the hand-off line (what the 2700G waited
+    // for, item 72) and the CPLD shadow adopted from the shared table (item
+    // 77); 19.0 KiB measured, +~10%.
     Budget {
         image: "rp-light",
-        max_load: 18 * 1024,
+        max_load: 21 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Diagnostics only: hand-over facts (items 72 and 77). Set at its first
+    // build on 2026-10-15: 18.8 KiB measured, +~10%.
+    Budget {
+        image: "rp-handover",
+        max_load: 21 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

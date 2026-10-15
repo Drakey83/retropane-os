@@ -231,7 +231,7 @@ mod image {
             let _ = writeln!(log, "RetroPane 26 probe {}", super::BUILD);
             let _ = writeln!(log, "display: {display_note}");
 
-            let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
+            let mut cpld = rp_hal_x51v::devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
             if let Some(c) = cpld.as_mut() {
                 panel_name = c.panel(&mut TimerDelay).name();
             }

@@ -2,13 +2,16 @@
 //!
 //! Written from `docs/hw/cpld.md`. The registers are 16 bits wide on a 2-byte
 //! stride. They don't read back (measured, docs/hw/cpld.md: the latches are
-//! write-only), so the driver keeps a shadow copy of everything it writes
-//! and never relies on reading power bits.
+//! write-only), so the driver keeps a shadow copy of everything in them
+//! and never relies on reading power bits. The shadow is never assumed to
+//! start at zero: it comes from what is latched ([`handover`]).
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
 use rp_hal_api::RegisterBus16;
+
+pub mod handover;
 
 /// Register offsets.
 pub mod reg {
@@ -34,7 +37,8 @@ pub mod reg {
     pub const LCD_ID: usize = 0x1E;
 }
 
-const REGS: usize = 16;
+/// Registers in the window (offsets `0x00`-`0x1E`).
+pub const REGS: usize = 16;
 const LCD_ID_ENABLE: u16 = 0x0008;
 
 /// The panel fitted, as the CPLD reports it.
@@ -85,6 +89,11 @@ const CF_POWER_1: u16 = 0x0002;
 const CF_POWER_2: u16 = 0x1000;
 const CF_RESET: u16 = 0x0002;
 const BACKLIGHT_ENABLE: u16 = 0x0004;
+const SD_POWER: u16 = 0x0001;
+/// From setting the LCD-type readout's enable to reading it. Dell's driver
+/// waits ~1 ms (a 1 ms sleep), AxDroid 1 ms before and 1 ms after: copied,
+/// not measured (open: the device's shortest working wait).
+const PANEL_ID_SETTLE_US: u32 = 1000;
 /// Between the two power stages.
 const CF_POWER_STEP_US: u32 = 10_000;
 
@@ -94,51 +103,91 @@ pub trait Delay {
     fn delay_us(&mut self, us: u32);
 }
 
-/// The board CPLD.
-#[derive(Debug)]
-pub struct Cpld<B> {
-    bus: B,
-    shadow: [u16; REGS],
+/// What is latched in the CPLD, by register offset: the driver's only
+/// knowledge of it, since the latches don't read back.
+pub trait Shadow {
+    /// What register `offset` holds.
+    fn get(&self, offset: usize) -> u16;
+    /// Records that `value` was written to register `offset`.
+    fn put(&mut self, offset: usize, value: u16);
 }
 
-impl<B: RegisterBus16> Cpld<B> {
-    /// Takes the CPLD register window. The shadow starts at zero.
-    pub fn new(bus: B) -> Self {
-        Self {
-            bus,
-            shadow: [0; REGS],
-        }
+/// A shadow kept by one driver alone: for a single owner of the CPLD (the
+/// flash-installed OS's driver, seeded from [`handover::DEFAULTS`] after it
+/// writes them) and host tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Own(pub [u16; REGS]);
+
+impl Shadow for Own {
+    fn get(&self, offset: usize) -> u16 {
+        self.0[offset / 2]
+    }
+
+    fn put(&mut self, offset: usize, value: u16) {
+        self.0[offset / 2] = value;
+    }
+}
+
+/// The board CPLD.
+#[derive(Debug)]
+pub struct Cpld<B, S> {
+    bus: B,
+    shadow: S,
+}
+
+impl<'a, B: RegisterBus16> Cpld<B, handover::Table<'a>> {
+    /// Takes the register window with the shared table of what is latched
+    /// in it ([`handover::Table::adopt`]): how every program on the device
+    /// takes the CPLD. Says where the shadow came from.
+    pub fn adopt(bus: B, table: &'a mut [u32; handover::WORDS]) -> (Self, handover::Source) {
+        let (shadow, source) = handover::Table::adopt(table);
+        (Self::new(bus, shadow), source)
+    }
+}
+
+impl<B: RegisterBus16, S: Shadow> Cpld<B, S> {
+    /// Takes the CPLD register window, with `shadow` saying what is
+    /// latched in it (on the device: [`handover::Table`]).
+    pub fn new(bus: B, shadow: S) -> Self {
+        Self { bus, shadow }
     }
 
     fn write(&mut self, offset: usize, value: u16) {
-        self.shadow[offset / 2] = value;
+        self.shadow.put(offset, value);
         self.bus.write16(offset, value);
     }
 
     /// Sets bits in a register (via the shadow copy).
     pub fn set(&mut self, offset: usize, bits: u16) {
-        let v = self.shadow[offset / 2] | bits;
+        let v = self.shadow.get(offset) | bits;
         self.write(offset, v);
     }
 
     /// Clears bits in a register (via the shadow copy).
     pub fn clear(&mut self, offset: usize, bits: u16) {
-        let v = self.shadow[offset / 2] & !bits;
+        let v = self.shadow.get(offset) & !bits;
         self.write(offset, v);
     }
 
-    /// The last value written to a register.
-    #[must_use]
-    pub fn shadow(&self, offset: usize) -> u16 {
-        self.shadow[offset / 2]
+    /// Reads a register as the bus returns it: status inputs, never what
+    /// was written (diagnostics; the latches are the shadow's).
+    pub fn read(&mut self, offset: usize) -> u16 {
+        self.bus.read16(offset)
     }
 
-    /// Reads the fitted panel type (sequence in docs/hw/cpld.md).
+    /// What a register holds, as far as the shadow knows.
+    #[must_use]
+    pub fn shadow(&self, offset: usize) -> u16 {
+        self.shadow.get(offset)
+    }
+
+    /// Reads the fitted panel type (sequence in docs/hw/cpld.md): the
+    /// readout's enable on, a wait, the read, the enable off. The other
+    /// bits in `0x1E` (battery and charger, docs/hw/cpld.md) are kept.
     pub fn panel(&mut self, delay: &mut impl Delay) -> Panel {
         self.set(reg::LCD_ID, LCD_ID_ENABLE);
-        delay.delay_us(1000);
+        delay.delay_us(PANEL_ID_SETTLE_US);
         let id = self.bus.read16(reg::LCD_ID);
-        delay.delay_us(1000);
         self.clear(reg::LCD_ID, LCD_ID_ENABLE);
         Panel::from_id(id)
     }
@@ -146,9 +195,9 @@ impl<B: RegisterBus16> Cpld<B> {
     /// Switches SD card power.
     pub fn set_sd_power(&mut self, on: bool) {
         if on {
-            self.set(reg::PWR16, 0x0001);
+            self.set(reg::PWR16, SD_POWER);
         } else {
-            self.clear(reg::PWR16, 0x0001);
+            self.clear(reg::PWR16, SD_POWER);
         }
     }
 
@@ -173,8 +222,7 @@ impl<B: RegisterBus16> Cpld<B> {
 
     /// Switches the backlight's enable (with the PWM's duty, docs/hw/
     /// backlight.md, it is what lights the panel). Windows Mobile leaves it
-    /// on; the registers don't read back, so whoever writes `0x18` first
-    /// must set it or the backlight goes off (found on the device).
+    /// on, and the shadow knows it from the hand-over ([`handover`]).
     pub fn set_backlight_enable(&mut self, on: bool) {
         if on {
             self.set(reg::CTL18, BACKLIGHT_ENABLE);
@@ -196,12 +244,23 @@ impl<B: RegisterBus16> Cpld<B> {
     pub fn into_inner(self) -> B {
         self.bus
     }
+
+    /// Gives the register window and the shadow back.
+    pub fn into_parts(self) -> (B, S) {
+        (self.bus, self.shadow)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    /// A shadow of all zeros: what the old driver assumed, for tests that
+    /// only follow one register's bits.
+    fn zero() -> Own {
+        Own([0; REGS])
+    }
 
     #[derive(Default)]
     struct Recorder(Vec<u32>);
@@ -226,10 +285,10 @@ mod tests {
     fn panel_detection_follows_the_sequence() {
         let mut bus = MockBus::new();
         bus.script_reads(reg::LCD_ID, &[0x000A]); // enable bit echoed + Samsung
-        let mut cpld = Cpld::new(bus);
+        let mut cpld = Cpld::new(bus, zero());
         let mut delay = Recorder::default();
         assert_eq!(cpld.panel(&mut delay), Panel::Samsung37Vga);
-        assert_eq!(delay.0, [1000, 1000]);
+        assert_eq!(delay.0, [PANEL_ID_SETTLE_US], "one wait, before the read");
         let bus = cpld.into_inner();
         assert_eq!(bus.writes(), [(reg::LCD_ID, 0x0008), (reg::LCD_ID, 0x0000)]);
     }
@@ -238,7 +297,7 @@ mod tests {
     /// SD card's and the Wi-Fi's bits in the same registers alone.
     #[test]
     fn cf_power_is_two_stages_and_keeps_other_bits() {
-        let mut cpld = Cpld::new(MockBus::new());
+        let mut cpld = Cpld::new(MockBus::new(), zero());
         let mut delay = Recorder::default();
         cpld.set_sd_power(true);
         cpld.set(reg::PWR10, 0x2008); // Wi-Fi
@@ -265,22 +324,53 @@ mod tests {
         );
     }
 
-    /// The device's bug: resetting the CF card wrote 0x18 whole and the
-    /// backlight went off. With the enable set first, the reset keeps it.
+    /// The device's bug (2026-10-12): resetting the CF card wrote 0x18
+    /// whole from a shadow that started at zero, and the backlight went
+    /// off. The class: any bit Windows Mobile left on in a register we
+    /// write. Seeded from its table, every such bit survives, with nothing
+    /// set by hand first.
     #[test]
-    fn cf_reset_keeps_the_backlight_on() {
-        let mut cpld = Cpld::new(MockBus::new());
-        cpld.set_backlight_enable(true);
+    fn bits_windows_mobile_left_on_survive_our_writes() {
+        let mut wm = [0u32; handover::WORDS];
+        wm[1] = 0x8004; // 0x10: notification + serial guesses
+        wm[3] = 0x0008; // 0x14: display
+        wm[5] = 0x000D; // 0x18: serial, backlight, display
+        wm[8] = 0x0003; // 0x1E: battery bits
+        let (shadow, src) = handover::Table::adopt(&mut wm);
+        assert_eq!(src, handover::Source::Adopted);
+        let mut bus = MockBus::new();
+        bus.script_reads(reg::LCD_ID, &[0x0008]);
+        let mut cpld = Cpld::new(bus, shadow);
         cpld.set_cf_reset(true);
         cpld.set_cf_reset(false);
+        cpld.set_cf_power(true, &mut Recorder::default());
+        assert_eq!(cpld.panel(&mut Recorder::default()), Panel::Sharp37Vga);
         let bus = cpld.into_inner();
         assert_eq!(
             bus.writes(),
             [
-                (reg::CTL18, 0x0004),
-                (reg::CTL18, 0x0006),
-                (reg::CTL18, 0x0004)
+                (reg::CTL18, 0x000F),
+                (reg::CTL18, 0x000D),
+                (reg::PWR16, 0x0002),
+                (reg::PWR10, 0x9004),
+                (reg::LCD_ID, 0x000B),
+                (reg::LCD_ID, 0x0003),
             ]
+        );
+    }
+
+    /// With no table to adopt (the emulator, and the flash-installed OS
+    /// before its drivers run) the backlight is still known to be on.
+    #[test]
+    fn defaults_keep_the_backlight_through_a_cf_reset() {
+        let mut nothing = [0u32; handover::WORDS];
+        let (shadow, _) = handover::Table::adopt(&mut nothing);
+        let mut cpld = Cpld::new(MockBus::new(), shadow);
+        cpld.set_cf_reset(true);
+        cpld.set_cf_reset(false);
+        assert_eq!(
+            cpld.into_inner().writes(),
+            [(reg::CTL18, 0x0006), (reg::CTL18, 0x0004)]
         );
     }
 
@@ -288,7 +378,7 @@ mod tests {
     fn cf_presence_is_status_bit_1_clear() {
         let mut bus = MockBus::new();
         bus.script_reads(reg::STATUS04, &[0x00A0, 0x00A2]);
-        let mut cpld = Cpld::new(bus);
+        let mut cpld = Cpld::new(bus, zero());
         assert!(cpld.cf_present());
         assert!(!cpld.cf_present());
     }
@@ -297,7 +387,7 @@ mod tests {
     fn set_and_clear_use_the_shadow_not_reads() {
         let mut bus = MockBus::new();
         bus.preset(reg::PWR16, 0xFFFF); // whatever the hardware reads as
-        let mut cpld = Cpld::new(bus);
+        let mut cpld = Cpld::new(bus, zero());
         cpld.set(reg::PWR16, 0x0004);
         cpld.set_sd_power(true);
         cpld.clear(reg::PWR16, 0x0004);
@@ -316,7 +406,7 @@ mod tests {
 
     #[test]
     fn sd_power_off() {
-        let mut cpld = Cpld::new(MockBus::new());
+        let mut cpld = Cpld::new(MockBus::new(), zero());
         cpld.set_sd_power(true);
         cpld.set_sd_power(false);
         assert_eq!(cpld.shadow(reg::PWR16), 0);

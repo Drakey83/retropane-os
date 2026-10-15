@@ -37,7 +37,9 @@ the PXA27x developer's manual memory map.
 ## Consequences for RetroPane
 
 - **SDRAM layout used by RetroPane's bare-metal images** (until the kernel
-  owns memory): `0xA8000100` HaRET's boot tags; `0xA8004000` bring-up page
+  owns memory): `0xA8000100` HaRET's boot tags; `0xA8001320` the CPLD's
+  shared shadow table (40 bytes: Windows Mobile's at hand-over, RetroPane's
+  after, cpld.md "Shadow at hand-over"); `0xA8004000` bring-up page
   table (16 KiB); `0xA8008000`–`0xA80F0000` the image; `0xA80F0000` vector
   page; `0xA80F1000` the KData page and `0xA80F2000` the top MiB's
   second-level table (1 KiB), once an image splits that MiB into pages

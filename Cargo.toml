@@ -41,6 +41,7 @@ members = [
     "kernel/trace",
     "boot/hello",
     "boot/light",
+    "boot/handover",
     "boot/crash",
     "boot/hang",
     "boot/mbx",

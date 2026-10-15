@@ -25,7 +25,7 @@ pub const MARKER: &str = "RETROPANE-RECONNECT-DONE";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_cpld::Cpld;
+    use rp_drv_cpld::{Cpld, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_pxa_gpio::Gpio;
@@ -52,7 +52,7 @@ mod image {
     struct Rig {
         gpio: Gpio<Mmio>,
         udc: Udc<Mmio>,
-        cpld: Cpld<Mmio>,
+        cpld: Cpld<Mmio, handover::Table<'static>>,
     }
 
     enum Act {
@@ -167,11 +167,11 @@ mod image {
         let mut rig = Rig {
             gpio: Gpio::new(gpio_bus),
             udc: Udc::new(udc_bus),
-            cpld: Cpld::new(cpld_bus),
+            cpld: Cpld::adopt(cpld_bus.0, cpld_bus.1).0,
         };
         rig.gpio.make_output(USB_PULLUP, true);
-        // The CPLD is write-only as far as we know: start from what AxDroid
-        // sets (boot bits + USB bit), so clearing the USB bit keeps the rest.
+        // AxDroid's boot bits + USB bit, on top of what the shared shadow
+        // says is latched (`handover`), so clearing the USB bit keeps the rest.
         rig.cpld.set(CPLD_USB_REG, CPLD_BOOT_BITS | CPLD_USB_BIT);
         if rig.udc.enable().is_err() {
             let _ = writeln!(out, "UDC enable failed");

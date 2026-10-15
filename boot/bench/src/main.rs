@@ -95,7 +95,7 @@ mod image {
             rt::take_mmc(),
             rt::take_dma(0),
         ) {
-            Cpld::new(cpld).set_sd_power(true);
+            Cpld::adopt(cpld.0, cpld.1).0.set_sd_power(true);
             rt::delay_us(10_000);
             match SdCard::init(PxaMmc::with_dma(mmc, dma)) {
                 Ok(mut card) => suite::sd(&mut r, &mut card, sd_buf),

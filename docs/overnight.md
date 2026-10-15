@@ -1429,7 +1429,13 @@ comes before the UI and GDI designs, which are written GPU-first.
     plane as a free small overlay.
 71. **iWMMXt pixel paths:** blend, dither, tint, `memcpy`/`memset`.
 72. **Own the display set-up** (PLL, timings, plane) instead of adopting
-    WM's; find the cause of the 2700G's 500 ms "settle".
+    WM's; find the cause of the 2700G's 500 ms "settle". **Settle done
+    2026-10-15:** its cause was Windows Mobile's leftover DMA (stopped by
+    `_start` since 2026-10-11); replaced by waiting for those channels to
+    report stopped (bounded 10 ms), recorded per start (`cargo xtask
+    handoff`); loader 504 -> 204 ms in the emulator, images reach the 2700G
+    at once (docs/hw/2700g.md "After the hand-off"). Device check of the
+    HaRET path pending. The display set-up itself remains.
 73. **Interrupts and DMA in every OS driver** (DESIGN §11's own rule):
     completion interrupts, the CPU asleep during transfers, memory-to-
     memory DMA for page pre-zeroing; an emulator check that the CPU idles
@@ -1442,7 +1448,11 @@ comes before the UI and GDI designs, which are written GPU-first.
     calibration screen, SSP DMA; backlight low steps by temporal
     dithering of the duty.
 77. **CPLD shadow from WM's** (its shadow copies in RAM from `0xA8001320`)
-    at hand-over, and the remaining slots mapped.
+    at hand-over, and the remaining slots mapped. **Shadow done
+    2026-10-15** (cpld.md "Shadow at hand-over"): adopted with checks, then
+    one shared table for the loader and every image, defaults for the
+    flash build; the CTL18 workaround removed. Pending: the device's table
+    values (`rp-handover`); the guessed slots still to map.
 78. **ADR-0006's measured wins** (page tables and hot data in SRAM: 5.2x
     cheaper TLB misses measured; DMA pre-zeroing; large pages), and the
     CE5 layout limits re-examined with data (31 processes: CE's shared-file

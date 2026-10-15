@@ -140,8 +140,10 @@ with the performance monitor built first to measure everything else).
   5. **The cursor plane as a free small overlay** (a spinner, a drag
      handle) that never touches the main plane.
   6. **iWMMXt** for the CPU paths that remain (blend, dither, tint).
-  7. **Own the display set-up** (PLL, timings) instead of adopting WM's,
-     which also removes the unexplained 500 ms settle.
+  7. **Own the display set-up** (PLL, timings) instead of adopting WM's.
+     The 500 ms settle is already gone (2026-10-15): its cause was Windows
+     Mobile's leftover DMA, and the 2700G now waits only for those
+     channels to stop.
 - **Verdict:** 🔧 **items 69 (MBX bring-up: clear), 70 (DMA flush +
   double buffering at vsync + hardware scroll), 71 (iWMMXt pixel paths),
   72 (own the display set-up; find the settle cause)**. ✅ plane
@@ -246,7 +248,12 @@ with the performance monitor built first to measure everything else).
 
 ### CPLD
 
-- **Today:** our shadow starts at zero and sets the bits we know.
+- **Today (2026-10-15):** the shadow is seeded from Windows Mobile's own
+  table at hand-over (checked: 16-bit slots, backlight on, no momentary
+  bit), then shared by every RetroPane program as RetroPane's table; with
+  no table, RetroPane's own known-good defaults (the flash-installed OS's
+  path). Remaining: the device's table values (`rp-handover`), and the
+  guessed slots mapped.
 - **Better ways:** start from Windows Mobile's own shadow copies at hand-
   over (found in item 64: RAM from `0xA8001320`), so nothing WM left on is
   switched off by accident, and map the remaining slots.

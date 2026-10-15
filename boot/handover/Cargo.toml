@@ -1,0 +1,18 @@
+[package]
+name = "rp-handover"
+description = "Hand-over diagnostics for the real X51v: what the previous owner left running, Windows Mobile's CPLD shadow table, the LCD-type readout's timing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+
+[lints]
+workspace = true
