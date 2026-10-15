@@ -117,6 +117,17 @@ name = "rp-crypto"
 version = "0.0.0"
 
 [[package]]
+name = "rp-cs3bus"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-display-host"
 version = "0.0.0"
 dependencies = [
