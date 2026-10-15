@@ -12,6 +12,7 @@ members = [
     "drivers/blit2d",
     "drivers/mbx-render",
     "drivers/mbx3d",
+    "drivers/mbx3d-render",
     "drivers/vram-map",
     "drivers/cpld",
     "drivers/gfx",

@@ -489,6 +489,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-mbx3d-render"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-drv-mbx3d",
+ "rp-hal-api",
+ "rp-hal-mock",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-picture"
 version = "0.0.0"
 dependencies = [

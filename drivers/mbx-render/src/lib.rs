@@ -133,16 +133,9 @@ impl Layout {
     };
 }
 
-/// 2700G local memory as the CPU sees it.
-pub trait LocalMem {
-    /// Stores `words` from byte offset `at`.
-    fn store(&mut self, at: usize, words: &[u32]);
-    /// The word at byte offset `at`.
-    fn load(&self, at: usize) -> Option<u32>;
-    /// Makes every store so far visible to the engine (drains the CPU's
-    /// write buffer on the device).
-    fn sync(&mut self);
-}
+/// 2700G local memory as the CPU sees it (one definition, in the memory
+/// map's crate: the 3D renderer uses it too).
+pub use rp_vram_map::LocalMem;
 
 /// `(x + 127) / 255`: the CPU renderer's glyph alpha.
 const fn div255(x: u32) -> u32 {
