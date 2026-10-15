@@ -275,6 +275,47 @@ driver (`0x02267700` builds the TSP; `glBlendFunc`, `glDepthFunc`,
   the same mode here; which of the two fields the core obeys is a detail
   for the renderer's tests.
 
+## Implementation (2026-10-15, milestones 1-2: `drivers/mbx3d-render`)
+
+`rp-mbx3d-render` builds D1 (the direct path; the TA path for games comes
+later), D2, D3 (the timer fallback), D4, D5 and D8, host-tested against a
+model of the 3D core (its `model` feature, every behaviour above that the
+device showed; anything unmeasured panics):
+
+- **A retained scene of up to 64 quads** (flat, Gouraud, textured in the
+  four decoded formats with wrap/mirror/clamp, blended with bit 13, depth),
+  each written into the parameter memory only when its words change (a
+  hash per slot); slot order is draw order.
+- **Per-tile lists, shared:** each rendered tile's list holds the
+  background object and only the quads touching it; tiles with the same
+  quads share one list, kept across frames (128 kept; a quad changing
+  kind drops the lists naming it; the space is reclaimed between frames,
+  when nothing references it). A full screen of large quads needs a
+  handful of lists, not 2400.
+- **Buffer age:** a frame into the picture rendered two frames ago adds
+  the tiles it missed; an unknown picture gets everything.
+- **Costs (host model):** a frame after the first is the start write, one
+  status read at the predicted time and its clear; a moved 200 x 200 square
+  costs 34 quad words and 2 words a tile (351 tiles), no new lists.
+- **No floats:** positions in 1/16 pixel, depth and texture coordinates
+  fixed point, the core's float words built with integer operations,
+  rounded exactly as a conversion would (checked against it).
+- **Rules the code keeps:** a rendered tile is written whole, so the scene
+  has a background (on by default) or must cover what it renders; one
+  renderer drives the core at a time (a new one resets the core first); its
+  resets reset the whole MBX, so the 2D engine is idle then and restarts
+  its stream (`Engine::after_core_reset`, `core_resets()`).
+
+New on the device with the first run of `rp-mbx3d-api` (owner's go):
+tiles pointing at different lists, objects and lists beyond the parameter
+memory's first 4 KiB, the ADR-0027 placements (parameter memory at 1 MiB,
+the manager's block at `0xFC000`, the region array and textures in the
+pool), and the 3D clock off and on again between renders.
+
+**Open, found while modelling:** "less" never passed on the device, not
+even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
+should have; "greater" behaved exactly. The model keeps it as measured.
+
 ## The four lenses
 
 | Lens | Effect |

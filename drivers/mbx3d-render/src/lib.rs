@@ -588,6 +588,13 @@ pub fn release(pool: &mut Pool, t: Texture) -> bool {
 
 /// The renderer: a retained scene of quads, rendered tile by tile into
 /// targets of one size.
+///
+/// **One renderer drives the core at a time** (the graphics service owns
+/// it, D6): its register shadow assumes nothing else writes the 3D
+/// registers. A new renderer resets the core on its first render, so
+/// renderers used one after another are safe; two used in turn are not.
+/// Its resets reset the whole MBX: the 2D engine must be idle then, and its
+/// stream restarts ([`Self::core_resets`]).
 pub struct Renderer {
     params: Region,
     pm_table: Region,
@@ -613,6 +620,7 @@ pub struct Renderer {
     arena: u32,
     pending: Option<Pending>,
     mem_words: u32,
+    resets: u32,
 }
 
 impl Renderer {
@@ -672,6 +680,7 @@ impl Renderer {
             arena: ARENA_AT,
             pending: None,
             mem_words: 0,
+            resets: 0,
         })
     }
 
@@ -690,6 +699,14 @@ impl Renderer {
     #[must_use]
     pub const fn grid(&self) -> (u32, u32) {
         (self.cols, self.rows)
+    }
+
+    /// How many times it has reset the MBX core (set-up, the clock back on,
+    /// recovery): when it changes, the 2D engine's stream restarts
+    /// (`Engine::after_core_reset`).
+    #[must_use]
+    pub const fn core_resets(&self) -> u32 {
+        self.resets
     }
 
     /// Whether a render is in flight.
@@ -972,6 +989,7 @@ impl Renderer {
     ) -> Result<(), Error> {
         self.ready = false;
         reset_core(bus, |us| clock.delay_us(us));
+        self.resets += 1;
         self.shadow.forget();
         let zeros = [0u32; 64];
         for k in 0..self.pm_table.size / 256 {

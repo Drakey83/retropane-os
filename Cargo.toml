@@ -46,6 +46,7 @@ members = [
     "boot/mbx",
     "boot/mbx-blend",
     "boot/mbx3d",
+    "boot/mbx3d-api",
     "boot/picture",
     "boot/blend",
     "boot/usb",
