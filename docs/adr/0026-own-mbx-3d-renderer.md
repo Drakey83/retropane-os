@@ -83,6 +83,22 @@ entirely, unlisted ones untouched). First device test (T1 below).
 Alternative: always render everything (Dell's way): simple, 12.5 ms per
 frame, the 2D renderer (ADR-0023) would still beat it for the interface.
 
+**T1 on the device (2026-10-15, `rp-mbx3d` version 19,
+`local/rp-mbx3d-run19.txt`): passed, D2 is no longer gated.** A blue
+full-screen object over grey, the region array listing:
+
+| Tiles listed | Render done | Unlisted tiles |
+|---|---|---|
+| 2400 (all) | 12,484 us | (none) |
+| 600 (rows 15-24) | 3,128 us | untouched (grey) |
+| 100 (10 x 10) | 528 us | untouched |
+| 1 | 16 us | untouched, its neighbours too |
+
+Linear at **~5.2 us per tile**; tile edges exact (all four corners of the
+listed tile blue, the next pixel right and below grey). A button of ~8
+tiles renders in ~40 us where Dell's driver renders the whole screen
+(12.5 ms) every frame.
+
 ### D3. Waiting for the GPU
 
 | | A: poll status with a timer (today's test images) | **B: interrupt (recommended)** |
@@ -144,7 +160,7 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 
 | Test | Question | Decides |
 |---|---|---|
-| T1 | A region array listing only some tiles: are the rest left untouched? Render time vs tiles listed | D2 |
+| T1 | A region array listing only some tiles: are the rest left untouched? Render time vs tiles listed | D2: **passed** (version 19: untouched; 5.2 us a tile) |
 | T2 | Do status bits 2 and 4 raise GPIO85? | D3 |
 | T3 | Target at an offset with the screen's stride: does a sub-rectangle render in place? | D5 |
 | T4 | 16 bpp target: render time (half the bytes) | target format for games |
