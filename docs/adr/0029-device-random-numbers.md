@@ -370,8 +370,12 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
    docs/hw/entropy.md); `rp-noise` reads it again. **Confirmed**
    2026-10-15 (runs 1-3). But sampled by polling a 32 kHz timer channel,
    the jitter shows in 504-cycle steps and the sequence is almost all a
-   predictable beat: at most ~0.02 bit a sample (run 3). Finer sampling
-   (an interrupt timestamp, spaced samples) is the next measurement.
+   predictable beat: at most ~0.02 bit a sample (run 3). Taken as an
+   interrupt and timestamped on entry (run 4), ~0.06 bit a sample (upper
+   estimate), ~2,000 bits a second: the first candidate to carry the
+   generator, pending NIST's tool and the restart test. Spacing samples out
+   added nothing (the noise is per interrupt, not drift), so the collector
+   takes every tick.
 2. Are the TSC2046's `VBAT` and `AUX` inputs wired to anything on the X51v?
 3. The measured entropy per sample of each source, and so the real time to
    "ready". Runs 1-3 (2026-10-15): B (SDRAM timing) at most 0.2 bit with a
