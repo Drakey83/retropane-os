@@ -133,3 +133,13 @@ fn pm_init_is_dells() {
     assert_eq!(t[4], (0x6D8, 0x0900_0000));
     assert_eq!(t[5], (0x838, 1), "start last");
 }
+
+#[test]
+fn region_entry_matches_region_array() {
+    let mut out = [0u32; 12];
+    region_array(&mut out, 3, 2, 0x0080_0100).unwrap();
+    for k in 0..6u32 {
+        let e = region_entry(k % 3, k / 3, 0x0080_0100, k == 5);
+        assert_eq!(e, [out[2 * k as usize], out[2 * k as usize + 1]]);
+    }
+}
