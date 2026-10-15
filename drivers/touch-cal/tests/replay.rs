@@ -182,7 +182,10 @@ fn all_samples() -> Vec<(&'static str, u32, Option<Sample>, char)> {
     let files = [
         ("scripted", include_str!("data/owner-2026-10-13.txt")),
         ("free", include_str!("data/owner-2026-10-13-free.txt")),
-        ("session3", include_str!("data/owner-2026-10-13-session3.txt")),
+        (
+            "session3",
+            include_str!("data/owner-2026-10-13-session3.txt"),
+        ),
         ("gpu2", include_str!("data/owner-2026-10-14-gpu2.txt")),
         ("gpu3", include_str!("data/owner-2026-10-14-gpu3.txt")),
         ("gpu4", include_str!("data/owner-2026-10-14-gpu4.txt")),
@@ -294,5 +297,8 @@ fn every_recorded_touch_is_pressed_promptly_and_in_place() {
         })
         .filter(|j| j.2 > 20)
         .collect();
-    assert!(jumps.len() <= 5, "pressed more than 20 px from release: {jumps:?}");
+    assert!(
+        jumps.len() <= 5,
+        "pressed more than 20 px from release: {jumps:?}"
+    );
 }
