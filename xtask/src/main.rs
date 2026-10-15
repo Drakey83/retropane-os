@@ -119,6 +119,7 @@ commands:
   emu-loader only the loader's boot check (boot time, an image's round trip)
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
+  emu-nightlight only the night-light experiment's check (rp-nightlight)
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
@@ -139,7 +140,9 @@ fn main() -> ExitCode {
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "emu-loader" | "emu-handover" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-usb" | "emu-loader" | "emu-handover" | "emu-nightlight" | "mutants" | "qemu" => {
+            run_step(&cmd)
+        }
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -346,6 +349,7 @@ fn run_step(step: &str) -> Result {
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
+        "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
@@ -366,6 +370,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_loader_handover(&workspace_root()))
+            .and_then(|()| emu::boot_loader_nightlight(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_trace(&workspace_root()))

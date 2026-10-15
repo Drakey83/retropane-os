@@ -227,7 +227,12 @@ with the performance monitor built first to measure everything else).
   frequency; check whether a *shorter* period (higher frequency) is
   clean.
 - **Verdict:** 🔧 small, folded into **item 76's** device session (input
-  and light feel), measured on the device.
+  and light feel), measured on the device. **Built 2026-10-15:** prescale 0
+  and 432 counts (Windows Mobile's 30.09 kHz, steps half the size), then
+  the picture dimmed through the display's gamma table below the light's
+  floor (no CPU, no flicker, nothing new to hear) instead of CPU dithering;
+  `rp-nightlight` for the owner's eyes and ears; the gamma stage waits for
+  the table's format from the device.
 
 ### Keypad and buttons
 
