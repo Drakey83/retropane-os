@@ -1,8 +1,10 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 5: the shaded triangle sets ISP
-//! bit 23 (Gouraud in the PowerVR2); version 4 drew it flat.
+//! 3D core, under the loader. Version 6: the shaded triangle sets TSP
+//! bit 22 (where `libGLES_CL.dll` puts `glShadeModel(GL_SMOOTH)`); version
+//! 5's ISP bit 23 (the PowerVR2's place) changed nothing.
 //!
-//! Version 4:
+//! Version 4 drew the whole screen (Dell's table alone, 8 x 16 px regions) but
+//! the shaded triangle flat; version 5 tried ISP bit 23.
 //!
 //! Version 3 drew (2026-10-14): the 3D clock was the missing piece; each
 //! region entry covered 8 x 16 pixels. Version 4 sizes the grid to that
@@ -75,7 +77,7 @@ mod image {
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
     use rp_drv_mbx3d::{
-        self as m3, ISP_ALWAYS, ISP_GOURAUD, PM_READY, RENDER_DONE, TSP_DELL, Vertex,
+        self as m3, ISP_ALWAYS, PM_READY, RENDER_DONE, TSP_DELL, TSP_GOURAUD, Vertex,
     };
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_drv_pxa_uart::PxaUart;
@@ -219,12 +221,12 @@ mod image {
     fn draw(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
-        isp: u32,
+        tsp: u32,
         v: &[Vertex; 3],
         table: &[(usize, u32)],
         probe: (u32, u32),
     ) -> bool {
-        store(vram, OBJECT, &m3::triangle(isp, TSP_DELL, v));
+        store(vram, OBJECT, &m3::triangle(ISP_ALWAYS, tsp, v));
         store(
             vram,
             PARAMS,
@@ -355,7 +357,7 @@ mod image {
                 }
                 let (t, n) = table(x);
                 log!("{name}: red screen-covering triangle, {COLS} x {ROWS} grid of 8 x 16 px");
-                drew = draw(&mut e, vram, ISP_ALWAYS, &background, &t[..n], (8, 8));
+                drew = draw(&mut e, vram, TSP_DELL, &background, &t[..n], (8, 8));
                 if drew {
                     level = x;
                     let (across, down) = reach(vram, GREY);
@@ -389,12 +391,12 @@ mod image {
             ];
             let (t, n) = table(level);
             log!(
-                "C: red/green/blue triangle (240,80) (420,560) (60,560), ISP bit 23 (Gouraud) set"
+                "C: red/green/blue triangle (240,80) (420,560) (60,560), TSP bit 22 (Gouraud) set"
             );
             shown = draw(
                 &mut e,
                 vram,
-                ISP_ALWAYS | ISP_GOURAUD,
+                TSP_DELL | TSP_GOURAUD,
                 &tri,
                 &t[..n],
                 (240, 400),

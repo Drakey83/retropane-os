@@ -26,10 +26,14 @@
 /// ISP word "depth compare always" (bits 31-29 = 7), as Dell's driver
 /// writes it for its background and minimal objects.
 pub const ISP_ALWAYS: u32 = 0xE000_0000;
-/// ISP word bit 23: Gouraud shading, colours blended between the vertices
-/// (the PowerVR2's bit; Dell's objects leave it clear and draw flat, the
-/// first vertex's colour: measured 2026-10-14). Being checked on the X51v.
-pub const ISP_GOURAUD: u32 = 1 << 23;
+/// TSP word bit 22: Gouraud shading, colours blended between the vertices.
+/// `libGLES_CL.dll`'s `glShadeModel(GL_SMOOTH)` sets bit 22 of its state
+/// word, whose bits 16-23 go straight into the TSP word it builds
+/// (`0x02267724`; untextured, it ORs in `0x0E80`, Dell's TSP word's low
+/// bits). Dell's `0x22200E80` has it clear: drawn flat, the first
+/// vertex's colour (measured 2026-10-14; ISP bit 23, the PowerVR2's place
+/// for it, changed nothing).
+pub const TSP_GOURAUD: u32 = 1 << 22;
 /// The TSP word Dell's driver writes with [`ISP_ALWAYS`] (bits not yet
 /// decoded; Gouraud-shaded, opaque as far as the objects that use it go).
 pub const TSP_DELL: u32 = 0x2220_0E80;
