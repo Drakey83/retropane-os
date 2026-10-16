@@ -1,7 +1,9 @@
 # The 31-process limit: where it comes from and how to raise it
 
-**Status: for the owner's vote. Nothing here is built.** (Item 78,
-docs/research/imitation-audit.md, "Memory model".) 2026-10-15.
+**Status: decided and built (2026-10-15).** The owner's vote: option 1,
+"RetroPane's services above 2 GB, old programs keep CE's 31 slots", and
+yes to 255 threads. See "As built" at the end. (Item 78,
+docs/research/imitation-audit.md, "Memory model".)
 
 ## In plain words
 
@@ -224,3 +226,76 @@ Which way for the process limit?
 
 Separately: raise the thread limit from 128 to 255 (+3 KB), yes or not
 yet?
+
+## As built (2026-10-15, branch `claude/native-slots`)
+
+**Better than option C as written: the kernel didn't have to move.**
+Option C assumed the kernel used all of `0x80000000` up. Reading the
+kernel image's map showed it uses only the device windows
+(`0x90000000`-`0x9C1FFFFF`), RAM at its own address
+(`0xA8000000`-`0xABFFFFFF`) and the top MiB (vectors, KData). So:
+
+- **Native slots 96-126 sit at `0xC0000000`-`0xFDFFFFFF`**, empty until
+  now: 31 more processes, 62 in all, with nothing relinked or moved and
+  FCSE switching as before. (Option C's 32 would have needed the move;
+  31 needs nothing.)
+- **CE's slots 2-32 and the whole shared area are untouched**, so
+  Windows Mobile programs see exactly CE5's layout.
+- `layout::DIRECT_MAP_BASE` now says what the kernel does (RAM at its
+  physical address), not the `0x80000000` it never used.
+- **What runs where:** RetroPane's own processes take native slots: the
+  service manager (96), the supervised host (97), the display host (98),
+  and everything the manager starts. CE-slot test clients call them.
+
+**Handle tables grow on demand (option E):**
+
+- 8 handles sit inline in each process's record (32 bytes; every service
+  so far needs one or two).
+- Past that, the table takes 4 KiB pages of 1,024 handles from the frame
+  allocator, the same source as region lists, up to 4 pages (4,104
+  handles).
+- A new page is cleared when taken and wiped when it goes back, which
+  happens when the process exits.
+- Handles are 16 bits now. Out of memory refuses the handle and changes
+  nothing.
+
+**255 threads:** the scheduler, the HAL's contexts and IPC's per-thread
+table all cover every 8-bit thread number but 0. The kernel image checks
+at build time that the three agree, and that IPC's slot ranges match the
+layout's.
+
+**Found and fixed on the way (each class, with a guard test):**
+
+- **A native slot was taken for the shared area.**
+  `AddressSpace::is_shared_area` tested `lo >= 0x42000000`. That would
+  have let a native process map a writable shared file page in its own
+  slot: the VIVT aliasing ADR-0008 rule 6 forbids. It now tests the
+  shared area's real range; test `policy_w_x_and_shared_writes`.
+- **IPC's per-thread table refused thread 128.** It had 128 entries
+  indexed by thread number (1-128) and rejected `tid >= 128`. It is now
+  sized and checked by number; test `every_thread_number_can_call`.
+- **System-call arguments were truncated.** A handle or slot number from
+  user mode was cut with `as u8`, so `0x105` named slot 5. Values past
+  their width are now refused.
+- **A kernel table indexed by slot number** (calls inside each server)
+  was sized for CE's slots. All per-slot tables now go through
+  `layout::slot_index`.
+
+**Cost**, measured against main:
+
+- `rp-kernel` +3.2 KiB code (inside its budget, no raise) and +3.3 KiB
+  zeroed RAM, mostly the 127 more thread records;
+- the IPC handle tables shrank, 3.9 KB → 2.9 KB for twice the slots;
+- an out-of-line trampoline keeps the VM and IPC locking in one copy
+  (one per call site had cost ~650 B each).
+
+**Tests:**
+
+- host: layout (dense slot indexes, ranges, FCSE reach), domains across
+  both kinds, IPC (growth, the quota, out of memory, native tables,
+  thread 255, random hostile operations over all 128 slot numbers and
+  16-bit handles), scheduler (thread 255 queues, waits and wakes);
+- emulator, `rp-kernel`: `IPC native slots OK` (the manager's code is
+  mapped above `0xC0000000`) and `IPC handle pages OK` (a ninth handle
+  costs exactly one frame, and exit gives it back), plus every earlier
+  check with the services in native slots.

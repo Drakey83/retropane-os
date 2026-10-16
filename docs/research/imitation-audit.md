@@ -330,7 +330,10 @@ with the performance monitor built first to measure everything else).
   kept a touch waiting up to 102 ms behind a busy program. Replaced by a
   20 ms quantum and a 1 ms wake slice (touch 5.1 ms worst; ADR-0010
   amendment). The 31-process limit: design note
-  docs/research/process-limit.md, for the owner's vote.
+  docs/research/process-limit.md; by the owner's vote, RetroPane's own
+  processes now use native slots 96-126 above the kernel (62 processes,
+  CE's layout untouched), handle tables grow on demand, and 255 threads
+  (built 2026-10-15).
 
 ### IPC, processes, driver hosts (ADR-0016, item 46)
 

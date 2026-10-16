@@ -80,7 +80,7 @@ mod image {
     use rp_hal_user::{SYS_IRQ_WAIT, SYS_REPORT};
     use rp_hal_x51v::devices::take_trace_area;
     use rp_hal_x51v::devices::{RAM_POOL_BASE, RAM_POOL_SIZE, take_ram_pool};
-    use rp_kernel_ipc::{Error as IpcError, Handle, Ipc, PortId, Rights};
+    use rp_kernel_ipc::{Error as IpcError, Handle, HandlePages, Ipc, PortId, Rights};
     use rp_kernel_mm::arm::{self, Ap, Attrs, Cache};
     use rp_kernel_mm::domains::{self, Domains};
     use rp_kernel_mm::frames::Frames;
@@ -316,9 +316,11 @@ mod image {
     /// A call that was inside a server when it faulted: whatever the broken
     /// instance would have answered is dropped.
     const ERR_RESTARTED: u32 = ERR | 0xFC;
-    /// The supervised host (the server's code) and its supervisor.
-    const HOST_SLOT: u32 = 7;
-    const MANAGER_SLOT: u32 = 8;
+    /// The supervised host (the server's code) and its supervisor: the OS's
+    /// own processes, so in native slots (above the kernel, `layout`),
+    /// leaving CE's 31 to Windows Mobile programs.
+    const HOST_SLOT: u32 = layout::FIRST_NATIVE_SLOT + 1;
+    const MANAGER_SLOT: u32 = layout::FIRST_NATIVE_SLOT;
     /// Process records: reused as processes start and end (each ~1.6 KB),
     /// so memory follows the processes running, not the 31 slots.
     const MAX_PROCS: usize = 7;
@@ -326,10 +328,10 @@ mod image {
     const SPAWN_STACKS: usize = 2;
     /// A system call only the service manager may make.
     const ERR_DENIED: u32 = ERR | 0xFB;
-    /// The display+input host (item 46) and the test's client of it: both
-    /// run the host's image, a compiled program packaged by `cargo xtask`
-    /// and embedded here.
-    const DISPLAY_SLOT: u32 = 9;
+    /// The display+input host (item 46), a native process, and the test's
+    /// client of it, a CE-slot process: both run the host's image, a
+    /// compiled program packaged by `cargo xtask` and embedded here.
+    const DISPLAY_SLOT: u32 = layout::FIRST_NATIVE_SLOT + 2;
     const DISPLAY_CLIENT_SLOT: u32 = 10;
     static DISPLAY_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/rp-display-host.pe"));
     const HOST_OBJECT: u32 = 3;
@@ -344,11 +346,65 @@ mod image {
     const ROLE_TEST_FAULT: u32 = 2;
     /// The level the display client sets.
     const DISPLAY_LEVEL: u32 = 30;
-    // The IPC tables hold one handle table per process slot of the layout.
+    // The IPC tables hold one handle table per process slot of the layout,
+    // CE's and the native ones; every per-thread table covers every thread
+    // the scheduler can number.
     const _: () = assert!(
         rp_kernel_ipc::FIRST_SLOT as u32 == layout::FIRST_PROCESS_SLOT
             && rp_kernel_ipc::LAST_SLOT as u32 == layout::LAST_PROCESS_SLOT
+            && rp_kernel_ipc::FIRST_NATIVE_SLOT as u32 == layout::FIRST_NATIVE_SLOT
+            && rp_kernel_ipc::LAST_NATIVE_SLOT as u32 == layout::LAST_NATIVE_SLOT
+            && rp_kernel_ipc::MAX_SLOTS == layout::PROCESS_SLOTS
+            && rp_kernel_ipc::MAX_THREADS == rp_kernel_sched::MAX_THREADS
+            && thread::MAX_THREADS == rp_kernel_sched::MAX_THREADS
     );
+
+    /// A process slot's index in per-slot tables (`layout::slot_index`);
+    /// anything else maps to the spare last entry, never out of bounds.
+    fn slot_ix(slot: u8) -> usize {
+        layout::slot_index(u32::from(slot)).unwrap_or(layout::PROCESS_SLOTS)
+    }
+
+    /// Handle pages for the IPC tables: kernel pages from the same frame
+    /// allocator as region lists (ADR-0019's pattern).
+    struct IpcPages<'a, P>(&'a mut P);
+
+    impl<P: RegionPages> HandlePages for IpcPages<'_, P> {
+        fn alloc_page(&mut self) -> Option<u32> {
+            self.0.alloc_page()
+        }
+        fn free_page(&mut self, page: u32) {
+            self.0.free_page(page);
+        }
+        fn page(&mut self, page: u32) -> &mut [u8; 4096] {
+            self.0.page(page)
+        }
+    }
+
+    /// Runs `f` on the IPC tables with their pages at hand.
+    fn with_ipc<R>(f: impl FnOnce(&mut IpcState, &mut dyn HandlePages) -> R) -> R {
+        let mut f = Some(f);
+        let mut r = None;
+        ipc_and_pages(&mut |i, hp| r = f.take().map(|f| f(i, hp)));
+        r.unwrap_or_else(|| unreachable!("ipc_and_pages runs its closure once"))
+    }
+
+    /// [`with_ipc`]'s one copy of the VM and IPC locking: each caller's
+    /// closure is called through it, not given its own copy (one per call
+    /// site was ~650 bytes each).
+    #[inline(never)]
+    fn ipc_and_pages(f: &mut dyn FnMut(&mut IpcState, &mut dyn HandlePages)) {
+        with_vm(|vm, _| {
+            let mut rp = vm.region_pages();
+            IPC.with(|i| f(i, &mut IpcPages(&mut rp)));
+        });
+    }
+
+    /// A handle number from a system call: anything past 16 bits is no
+    /// handle (refused, never truncated onto a real one).
+    fn handle_arg(v: u32) -> Handle {
+        Handle(u16::try_from(v).unwrap_or(u16::MAX))
+    }
 
     struct IpcState {
         ipc: Ipc,
@@ -394,8 +450,9 @@ mod image {
         finished: usize,
         /// Thread switches away from a thread that was inside a call.
         in_call_switches: u32,
-        /// Threads inside each slot as a server, now.
-        inside: [u8; 33],
+        /// Threads inside each process slot as a server, now (by
+        /// [`slot_ix`]: CE's and the native slots).
+        inside: [u8; layout::PROCESS_SLOTS + 1],
         /// Bit `slot`: that server faulted and restarts when it empties.
         restarting: u64,
         /// Supervised ports: (port, server slot, supervisor slot).
@@ -449,7 +506,7 @@ mod image {
         results: [[0; 7]; CLIENTS],
         finished: 0,
         in_call_switches: 0,
-        inside: [0; 33],
+        inside: [0; layout::PROCESS_SLOTS + 1],
         restarting: 0,
         supervised: [None, None],
         restarts: 0,
@@ -1129,28 +1186,35 @@ mod image {
         // Ports: the server's (unsupervised); the host's, supervised by the
         // manager, which holds it with every right (its handle 0); the
         // manager's own, which clients hold (their handle 1).
-        let client_handle = IPC.with(|i| -> Option<Handle> {
+        let client_handle = with_ipc(|i, hp| -> Option<Handle> {
             let server = LOAD_BASE + TEXT_RVA + programs.server;
-            let (port, _) = i.ipc.open(SERVER_SLOT as u8, server).ok()?;
-            let h = i.ipc.install(PROC_SLOT as u8, port, Rights::CALL).ok()?;
-            let (host, _) = i.ipc.open(HOST_SLOT as u8, server).ok()?;
-            i.ipc.install(MANAGER_SLOT as u8, host, Rights::ALL).ok()?;
+            let (port, _) = i.ipc.open(hp, SERVER_SLOT as u8, server).ok()?;
+            let h = i
+                .ipc
+                .install(hp, PROC_SLOT as u8, port, Rights::CALL)
+                .ok()?;
+            let (host, _) = i.ipc.open(hp, HOST_SLOT as u8, server).ok()?;
+            i.ipc
+                .install(hp, MANAGER_SLOT as u8, host, Rights::ALL)
+                .ok()?;
             let manager = LOAD_BASE + TEXT_RVA + programs.manager;
-            let (mport, _) = i.ipc.open(MANAGER_SLOT as u8, manager).ok()?;
-            i.ipc.install(PROC_SLOT as u8, mport, Rights::CALL).ok()?;
+            let (mport, _) = i.ipc.open(hp, MANAGER_SLOT as u8, manager).ok()?;
+            i.ipc
+                .install(hp, PROC_SLOT as u8, mport, Rights::CALL)
+                .ok()?;
             // The display host's port: the manager's handle 2 (every right;
             // its handle 1 is its own port), the display client's handle 0;
             // the manager's port is the client's handle 1.
             let entry = RUN.with(|r| r.display_entry);
-            let (display, _) = i.ipc.open(DISPLAY_SLOT as u8, entry).ok()?;
+            let (display, _) = i.ipc.open(hp, DISPLAY_SLOT as u8, entry).ok()?;
             i.ipc
-                .install(MANAGER_SLOT as u8, display, Rights::ALL)
+                .install(hp, MANAGER_SLOT as u8, display, Rights::ALL)
                 .ok()?;
             i.ipc
-                .install(DISPLAY_CLIENT_SLOT as u8, display, Rights::CALL)
+                .install(hp, DISPLAY_CLIENT_SLOT as u8, display, Rights::CALL)
                 .ok()?;
             i.ipc
-                .install(DISPLAY_CLIENT_SLOT as u8, mport, Rights::CALL)
+                .install(hp, DISPLAY_CLIENT_SLOT as u8, mport, Rights::CALL)
                 .ok()?;
             RUN.with(|r| {
                 r.supervised = [
@@ -1203,7 +1267,8 @@ mod image {
         RUN.with(|r| {
             r.done = done;
             r.entry = LOAD_BASE + TEXT_RVA + programs.client;
-            r.handle = h.0;
+            // The test programs take it in r0's low byte (an inline handle).
+            r.handle = u8::try_from(h.0).unwrap_or(u8::MAX);
             r.code_len = programs.code.len() as u32 * 4;
         });
         SPARE_STACKS.with(|st| {
@@ -1468,7 +1533,8 @@ mod image {
             r.spawned += 1;
         });
         let slot = with_vm(|vm, s| -> Option<u32> {
-            let slot = (MANAGER_SLOT + 1..=layout::LAST_PROCESS_SLOT)
+            // Started by the service manager: the OS's own, so a native slot.
+            let slot = (layout::FIRST_NATIVE_SLOT..=layout::LAST_NATIVE_SLOT)
                 .find(|&n| s.procs.iter().all(|p| p.slot != n))?;
             let i = s.procs.iter().position(|p| p.slot == 0)?;
             let a = s.domains.activate(slot);
@@ -1484,9 +1550,9 @@ mod image {
             return Err(ERR | IpcError::Full as u32);
         };
         // Its one handle: the manager's port (CALL).
-        let handle = IPC.with(|i| {
+        let handle = with_ipc(|i, hp| {
             let manager = RUN.with(|r| r.manager_port)?;
-            i.ipc.install(slot as u8, manager, Rights::CALL).ok()
+            i.ipc.install(hp, slot as u8, manager, Rights::CALL).ok()
         });
         let t = SCHED.with(|s| s.create(slot as u8, 100).ok());
         let (Some(h), Some(t)) = (handle, t) else {
@@ -1520,7 +1586,7 @@ mod image {
     fn exit_process(me: Tid, code: u32) -> ! {
         let slot = RUN.with(|r| r.slots[me.index()]);
         trace(Kind::Exit, u32::from(slot), code);
-        let _ = IPC.with(|i| i.ipc.exit(slot));
+        let _ = with_ipc(|i, hp| i.ipc.exit(hp, slot));
         with_vm(|vm, s| {
             let base = layout::slot_base(u32::from(slot));
             if let Some(p) = s.procs.iter_mut().find(|p| p.slot == u32::from(slot)) {
@@ -1532,7 +1598,7 @@ mod image {
             }
             s.domains.release(u32::from(slot));
         });
-        let left = IPC.with(|i| (i.ipc.handle_count(slot), i.ipc.ports_of(slot)));
+        let left = with_ipc(|i, hp| (i.ipc.handle_count(hp, slot), i.ipc.ports_of(slot)));
         let free = FRAMES.with(|f| f.free_frames() as u32);
         RUN.with(|r| {
             r.slots[me.index()] = 0;
@@ -1573,7 +1639,7 @@ mod image {
                     .is_ok()
             })
         });
-        let renewed = IPC.with(|i| i.ipc.restart(port, Some(supervisor))).is_ok();
+        let renewed = with_ipc(|i, hp| i.ipc.restart(hp, port, Some(supervisor))).is_ok();
         // Its data page reads zero again (a fresh demand-zero page).
         let back = STATE.with(|s| s.pid);
         switch_to(u32::from(slot));
@@ -1713,12 +1779,12 @@ mod image {
         match f.number() {
             SYS_CALL => {
                 let slot = STATE.with(|s| s.pid) as u8;
-                let r = IPC.with(|i| {
+                let r = with_ipc(|i, hp| {
                     if i.calls == 0 {
                         i.first_call = rt::ticks();
                     }
                     i.calls += 1;
-                    i.ipc.call(me.0, slot, Handle(f.arg(0) as u8))
+                    i.ipc.call(hp, me.0, slot, handle_arg(f.arg(0)))
                 });
                 match r {
                     Ok(_) if r.is_ok_and(|e| restarting(e.slot)) => {
@@ -1734,7 +1800,7 @@ mod image {
                         // The server is told who called: the kernel's word,
                         // not the caller's.
                         enter_slot(me, e.slot);
-                        RUN.with(|r| r.inside[usize::from(e.slot)] += 1);
+                        RUN.with(|r| r.inside[slot_ix(e.slot)] += 1);
                         trace(Kind::Call, u32::from(e.slot), e.depth as u32);
                         let mut result = user::call_user(
                             me.index(),
@@ -1745,8 +1811,8 @@ mod image {
                         enter_slot(me, slot);
                         trace(Kind::Return, u32::from(slot), result);
                         let left = RUN.with(|r| {
-                            r.inside[usize::from(e.slot)] -= 1;
-                            r.inside[usize::from(e.slot)]
+                            r.inside[slot_ix(e.slot)] -= 1;
+                            r.inside[slot_ix(e.slot)]
                         });
                         if restarting(e.slot) {
                             if result != ERR_FAULT {
@@ -1769,11 +1835,13 @@ mod image {
                 // A copy of a handle this process holds (with GRANT), into
                 // another's table, with the same rights or fewer.
                 let from = STATE.with(|s| s.pid) as u8;
-                let to = f.arg(1) as u8;
+                // A slot number past 8 bits names no slot (never truncated
+                // onto a real one).
+                let to = u8::try_from(f.arg(1)).unwrap_or(0);
                 let rights = Rights::from_bits(f.arg(2));
-                let live = STATE.with(|s| space_of(s, u32::from(to)).is_some());
+                let live = to != 0 && STATE.with(|s| space_of(s, u32::from(to)).is_some());
                 let r = if live {
-                    IPC.with(|i| i.ipc.grant(from, Handle(f.arg(0) as u8), to, rights))
+                    with_ipc(|i, hp| i.ipc.grant(hp, from, handle_arg(f.arg(0)), to, rights))
                 } else {
                     Err(IpcError::Range)
                 };
@@ -1854,7 +1922,7 @@ mod image {
     /// thread of it ends.
     fn own_thread_fault(f: &mut Frame, me: Tid, slot: u8) {
         trace(Kind::Mark, u32::from(slot), f.pc);
-        if RUN.with(|r| r.inside[usize::from(slot)]) == 0 {
+        if RUN.with(|r| r.inside[slot_ix(slot)]) == 0 {
             restart_server(slot);
         }
         if RUN.with(|r| r.display_thread) == Some(me) {
@@ -2105,9 +2173,49 @@ mod image {
             && spawned[0] > MANAGER_SLOT
             && clean;
         ok &= report_ipc(uart, "spawn and exit", lifecycle, exits[1]);
+        // RetroPane's own processes (the manager, the hosts, what the
+        // manager starts) live in native slots above the kernel, so CE's 31
+        // stay for Windows Mobile programs; the manager's code, which has
+        // run, is really mapped there (0xC0000000 up).
+        let native = layout::is_native_slot(spawned[0])
+            && [MANAGER_SLOT, HOST_SLOT, DISPLAY_SLOT]
+                .iter()
+                .all(|&s| layout::is_native_slot(s))
+            && with_vm(|vm, _| {
+                let code = layout::slot_base(MANAGER_SLOT) + LOAD_BASE + TEXT_RVA;
+                code >= layout::NATIVE_BASE && vm.tables.translate(vm.mem, code).is_some()
+            });
+        ok &= report_ipc(uart, "native slots", native, spawned[0]);
+        ok &= check_handle_pages(uart);
         ok &= check_trace(uart);
         let _ = writeln!(uart, "BENCH ipc_call_roundtrip {ticks} {calls}");
         ok
+    }
+
+    /// A handle table grows into a page only when its inline handles are
+    /// taken, and the page goes back when the process exits: one handle
+    /// past the inline ones into an empty slot's table costs one frame.
+    fn check_handle_pages(uart: &mut PxaUart<Mmio>) -> bool {
+        const EMPTY_SLOT: u8 = 20;
+        let free = || FRAMES.with(|f| f.free_frames() as u32);
+        let before = free();
+        let grew = with_ipc(|i, hp| -> Option<(usize, usize)> {
+            let port = RUN.with(|r| r.manager_port)?;
+            for _ in 0..=rp_kernel_ipc::INLINE_HANDLES {
+                i.ipc.install(hp, EMPTY_SLOT, port, Rights::CALL).ok()?;
+            }
+            Some((
+                i.ipc.handle_pages(EMPTY_SLOT),
+                i.ipc.handle_count(hp, EMPTY_SLOT),
+            ))
+        });
+        let during = free();
+        let _ = with_ipc(|i, hp| i.ipc.exit(hp, EMPTY_SLOT));
+        let after = free();
+        let pass = grew == Some((1, rp_kernel_ipc::INLINE_HANDLES + 1))
+            && before - during == 1
+            && after == before;
+        report_ipc(uart, "handle pages", pass, before.wrapping_sub(during))
     }
 
     /// The trace ring after the run: it wrapped many times and kept the

@@ -1365,6 +1365,36 @@ pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
     Some(page)
 }
 
+/// Maps the 1 MiB at `virt` to SDRAM at `phys` in the bring-up map (normal
+/// memory, as the RAM sections), for self-tests of addresses no bring-up
+/// region covers: the native process slots (`0xC0000000`-`0xFDFFFFFF`,
+/// `rp_kernel_mm::layout`). Refuses (false) anything but a MiB-aligned
+/// `virt` in that range that maps nothing yet, and a MiB of SDRAM. The
+/// caller keeps its view coherent: the same frame at two virtual addresses
+/// in the VIVT cache (clean before reading through the other).
+pub fn map_test_section(virt: u32, phys: u32) -> bool {
+    const MIB: u32 = 1 << 20;
+    let native = (0xC000_0000..0xFE00_0000).contains(&virt);
+    let ram = (0xA800_0000..0xAC00_0000).contains(&phys);
+    if !native || !ram || virt % MIB != 0 || phys % MIB != 0 {
+        return false;
+    }
+    let index = (virt >> 20) as usize;
+    // SAFETY: L1_TABLE is the bring-up table (reserved SDRAM, identity
+    // mapped, boot/link.x); one word of it, for an address the bring-up
+    // map leaves unmapped (checked), so nothing that runs moves.
+    unsafe {
+        let entry = (crate::mmu::L1_TABLE as *mut u32).add(index);
+        if entry.read_volatile() != 0 {
+            return false;
+        }
+        entry.write_volatile(crate::mmu::section(phys, crate::mmu::Memory::Normal));
+        crate::cpu::clean_range(entry as u32, 4);
+    }
+    crate::cpu::invalidate_tlb_all();
+    true
+}
+
 core::arch::global_asm!(
     r#"
     .section .text.rp_mmu, "ax"

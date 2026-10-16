@@ -413,6 +413,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    "IPC native slots OK",
+    "IPC handle pages OK",
     // A real driver in a host (item 46): the compiled display host runs the
     // backlight on its granted PWM window, restarts after a fault in a
     // call and in its own thread, and keeps the level the hardware shows.
@@ -494,6 +496,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
     "USER KData OK",
+    "THREADS FCSE native slot OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -525,7 +528,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData, FCSE in a native slot"
     );
     Ok(())
 }
