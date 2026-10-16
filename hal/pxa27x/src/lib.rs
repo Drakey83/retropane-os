@@ -16,6 +16,7 @@ pub mod devmap;
 pub mod diag;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod dma;
+pub mod dma_map;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod handoff;
 #[cfg(all(target_arch = "arm", target_os = "none"))]

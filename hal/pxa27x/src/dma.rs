@@ -1,7 +1,7 @@
 //! The PXA27x DMA controller, for device FIFOs (PXA27x Developer's Manual,
 //! DMA controller chapter).
 //!
-//! Channels 0 and 1, each through [`rp_hal_api::DmaEngine`] (a transfer
+//! The channels `dma_map` lists, each through [`rp_hal_api::DmaEngine`] (a transfer
 //! between a device FIFO and a memory buffer, paced by the device's request
 //! line, in descriptor mode: 4 KiB per descriptor, up to 128 KiB) or
 //! [`rp_hal_api::DmaRing`] (a buffer looped into a device without end, for
@@ -56,22 +56,15 @@ fn width(w: Width) -> u32 {
     }
 }
 
-/// Channels handed out ([`crate::rt::take_dma`]): each has its own chain.
-pub const CHANNELS: u32 = 2;
-
-/// Bytes per descriptor (under the 8,191 the length field holds).
-const CHUNK: usize = 4096;
-/// Descriptors per channel: up to 128 KiB per transfer (the largest any
-/// caller moves is 64 KiB; bigger ones are refused and go by the FIFO).
-const DESCRIPTORS: usize = 32;
+use crate::dma_map::{self, CHUNK};
 
 #[repr(C, align(16))]
-struct Chain([[u32; 4]; DESCRIPTORS]);
+struct Descriptors([[u32; 4]; dma_map::TOTAL]);
 
-/// A descriptor chain per channel (the flags in `rt` hand each channel out
-/// once, so each chain has one user).
-static mut CHAINS: [Chain; CHANNELS as usize] =
-    [const { Chain([[0; 4]; DESCRIPTORS]) }; CHANNELS as usize];
+/// Every channel's descriptor chain, each sized by the channel map
+/// (`dma_map`); the flags in `rt` hand each channel out once, so each chain
+/// has one user.
+static mut CHAINS: Descriptors = Descriptors([[0; 4]; dma_map::TOTAL]);
 
 /// The DMA channel handed out by [`crate::rt::take_dma`].
 pub struct Dma {
@@ -109,12 +102,22 @@ impl Dma {
         }
     }
 
-    /// This channel's descriptor chain.
-    fn chain(&mut self) -> &'static mut Chain {
-        // SAFETY: each channel's chain is touched only by its one `Dma`
-        // (handed out once by `rt::take_dma`), and never while the
-        // controller reads it (callers check `armed` and `ring` first).
-        unsafe { &mut (*core::ptr::addr_of_mut!(CHAINS))[self.ch as usize] }
+    /// This channel's descriptor chain (its slice of the shared array).
+    fn chain(&mut self) -> &'static mut [[u32; 4]] {
+        let (at, n) = (dma_map::first(self.ch), dma_map::descriptors(self.ch));
+        // SAFETY: each channel's slice is touched only by its one `Dma`
+        // (handed out once by `rt::take_dma`, only for listed channels:
+        // slices don't overlap), and never while the controller reads it
+        // (callers check `armed` and `ring` first).
+        unsafe {
+            let all: &'static mut Descriptors = &mut *core::ptr::addr_of_mut!(CHAINS);
+            &mut all.0[at..at + n]
+        }
+    }
+
+    /// Descriptors in this channel's chain.
+    fn descriptors(&self) -> usize {
+        dma_map::descriptors(self.ch)
     }
 
     /// Fills the chain for `len` bytes at `addr` and starts the channel;
@@ -122,8 +125,8 @@ impl Dma {
     fn program(&mut self, port: Port, addr: u32, len: usize, to_device: bool, looped: bool) {
         let chain = self.chain();
         let n = len.div_ceil(CHUNK);
-        let base = chain.0.as_ptr() as u32;
-        for (i, d) in chain.0.iter_mut().take(n).enumerate() {
+        let base = chain.as_ptr() as u32;
+        for (i, d) in chain.iter_mut().take(n).enumerate() {
             let at = addr + (i * CHUNK) as u32;
             let piece = (len - i * CHUNK).min(CHUNK) as u32;
             d[0] = if i + 1 < n {
@@ -163,7 +166,7 @@ impl Dma {
             || self.ring.is_some()
             || !lines
             || len == 0
-            || len > CHUNK * DESCRIPTORS
+            || len > CHUNK * self.descriptors()
         {
             return false;
         }
@@ -188,7 +191,7 @@ impl Dma {
             || (addr | len as u32) & (cpu::LINE - 1) != 0
             || dst & 3 != 0
             || len == 0
-            || len > CHUNK * DESCRIPTORS
+            || len > CHUNK * self.descriptors()
         {
             return false;
         }
@@ -196,8 +199,8 @@ impl Dma {
         cpu::clean_range(addr, len as u32);
         let chain = self.chain();
         let n = len.div_ceil(CHUNK);
-        let base = chain.0.as_ptr() as u32;
-        for (i, d) in chain.0.iter_mut().take(n).enumerate() {
+        let base = chain.as_ptr() as u32;
+        for (i, d) in chain.iter_mut().take(n).enumerate() {
             let piece = (len - i * CHUNK).min(CHUNK) as u32;
             d[0] = if i + 1 < n {
                 base + 16 * (i as u32 + 1)
@@ -215,6 +218,16 @@ impl Dma {
         self.paced = false;
         self.armed = Some((addr, len as u32, true));
         true
+    }
+
+    /// Bytes the armed transfer has moved so far (diagnostics: where a
+    /// paced transfer stalled), from the channel's current memory address;
+    /// `None` if nothing is armed.
+    pub fn moved(&mut self) -> Option<u32> {
+        let (addr, len, to_device) = self.armed?;
+        // DSADR (to a device) or DTADR (from one): the memory side.
+        let at = read(ddadr(self.ch) + if to_device { 4 } else { 8 });
+        Some(at.wrapping_sub(addr).min(len))
     }
 
     /// Starts a memory-to-memory copy into `dst` (SDRAM, whole cache lines)
@@ -236,7 +249,7 @@ impl Dma {
             || window > CHUNK
             || len == 0
             || !len.is_multiple_of(window)
-            || len / window > DESCRIPTORS
+            || len / window > self.descriptors()
         {
             return false;
         }
@@ -244,8 +257,8 @@ impl Dma {
         cpu::clean_invalidate_range(addr, len as u32);
         let chain = self.chain();
         let n = len / window;
-        let base = chain.0.as_ptr() as u32;
-        for (i, d) in chain.0.iter_mut().take(n).enumerate() {
+        let base = chain.as_ptr() as u32;
+        for (i, d) in chain.iter_mut().take(n).enumerate() {
             d[0] = if i + 1 < n {
                 base + 16 * (i as u32 + 1)
             } else {
@@ -313,7 +326,7 @@ impl DmaRing for Dma {
         let (addr, len) = (ring.as_ptr() as u32, ring.len());
         // At least two descriptors, all whole: the engine can be reading
         // one part while the CPU refills another.
-        let ok = len >= 2 * CHUNK && len.is_multiple_of(CHUNK) && len <= CHUNK * DESCRIPTORS;
+        let ok = len >= 2 * CHUNK && len.is_multiple_of(CHUNK) && len <= CHUNK * self.descriptors();
         if self.armed.is_some() || self.ring.is_some() || !ok || addr & (cpu::LINE - 1) != 0 {
             return false;
         }
