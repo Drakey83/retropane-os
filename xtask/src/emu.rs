@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.16.0";
+pub const QEMU_RELEASE: &str = "rp-v0.17.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -2108,12 +2108,32 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
 fn emulator_accepts_global(root: &Path, setting: &str) -> bool {
     let args = format!("-M x51v -display none -S -monitor stdio -serial null -global {setting}");
     let child = match emulator(root) {
-        Ok(Emulator::Native(exe)) => Command::new(exe)
-            .args(args.split(' '))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn(),
+        Ok(Emulator::Native(exe)) => {
+            // Windows QEMU never reads a stdin pipe (item 61), so `quit`
+            // can't end it: it waited forever (2026-10-16, emu-cf on the
+            // rp-v0.17.0 Windows release). A rejected setting ends QEMU at
+            // once with an error; one still paused after the wait was taken.
+            let native = args.replace("-monitor stdio", "-monitor none");
+            let Ok(mut child) = Command::new(exe)
+                .args(native.split(' '))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                return false;
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok(Some(status)) = child.try_wait() {
+                    return status.success();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return true;
+        }
         Ok(Emulator::Wsl) => wsl_bash(&format!("echo quit | {} {args}", wsl_qemu()))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -2836,11 +2856,11 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         // `cf` reports the card the loader attached, without taking it again.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "model", 20)?;
+        let reply = usb_read_line(&mut s, "RPL ", 20)?;
         // Reads come by DMA from the card's data window once IDENTIFY read
         // through it matched the 16-bit port (docs/research/storage-speed.md):
         // on a fork modelling the PXA's two card cycles per 32-bit access
-        // (rp-v0.16.0's `word-cycles`). On one that doesn't, the window
+        // (rp-v0.17.0's `word-cycles`). On one that doesn't, the window
         // reads wrong and the driver must keep the port: the check is the
         // guard, so a wrong window never reaches a sector.
         let path = if emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on") {
@@ -3005,7 +3025,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&rp_loadproto::control_frame("tone 440 500"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "\n", 20)?;
+        let reply = usb_read_line(&mut s, "RPL ", 20)?;
         if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames")
             || !reply.contains("by DMA")
             || !reply.contains("to speaker")
@@ -3111,8 +3131,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&rp_loadproto::file_frame("retropane.bin", &new))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         let line = reply
             .lines()
             .find(|l| l.starts_with("RPL "))
@@ -3133,8 +3152,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPL OK 1 bytes", 20)?;
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check clean") || !reply.contains(" 0 lost") {
             return Err(format!("exFAT card check after the writes: {reply:?}"));
         }
@@ -3263,8 +3281,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "writes on", 20)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         let line = reply
             .lines()
             .find(|l| l.starts_with("RPL "))
@@ -3309,8 +3326,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         }
         s.write_all(&rp_loadproto::control_frame("get retropane.bin"))
             .map_err(|e| e.to_string())?;
-        let text = usb_read_until(&mut s, "RPL OK 70000 bytes crc", 40)?;
-        let text = usb_read_until(&mut s, "\n", 10).map(|t| text + &t)?;
+        let text = usb_read_line(&mut s, "RPL OK 70000 bytes crc", 40)?;
         let (lines, reply) = crate::usb::parse_query(&text, "get")?;
         if crate::usb::decode_file(&lines, &reply)? != new {
             return Err("get: the file fetched isn't the one put".into());
@@ -3321,8 +3337,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         // The check finds the FAT sector this card was given damaged.
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check PROBLEMS") || !reply.contains("FAT copies differ 1,") {
             return Err(format!(
                 "card check didn't find the damaged FAT sector: {reply:?}"
@@ -3367,8 +3382,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         // Repaired, and after every write: clean.
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check clean") {
             return Err(format!("card check after the repair: {reply:?}"));
         }
