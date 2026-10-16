@@ -370,6 +370,13 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "CF card detected by GPIO13 again (it sticks at no card after a removal: a re-inserted card is never seen)",
+        file: "boot/loader/src/main.rs",
+        from: "            Some(c) => c.cf_present(),",
+        to: "            Some(_) => !gpio.read(CF_DETECT),",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",
