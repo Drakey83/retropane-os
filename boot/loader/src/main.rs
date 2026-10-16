@@ -196,7 +196,10 @@ mod image {
 
     /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
     const SD_DETECT: u8 = 12;
-    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
+    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot,
+    /// but only while the slot is powered: unpowered, it sticks at "no card"
+    /// after a removal (`rp-cfdetect`, 2026-10-16). The fallback when there's
+    /// no CPLD; [`cf_card_in`] reads the CPLD's status bit instead.
     const CF_DETECT: u8 = 13;
     /// CompactFlash slot power / READY (docs/hw/cf.md): high while the
     /// slot is powered (CPLD `0x16` bit 1 + `0x10` bit 12). The card's
@@ -1112,10 +1115,11 @@ mod image {
             }
         }
 
-        /// Follows the detect line; `true` when the card came or went (the
-        /// caller attaches a card that came, and tells the PC).
-        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
-            let now = !gpio.read(CF_DETECT);
+        /// Follows the card's presence ([`cf_card_in`]); `true` when the
+        /// card came or went (the caller attaches a card that came, and tells
+        /// the PC).
+        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+            let now = cf_card_in(gpio, cpld);
             let stable = now == self.seen;
             self.seen = now;
             if !stable || now == self.inserted {
@@ -1265,16 +1269,27 @@ mod image {
     /// partition. An attached card is only reported. The socket is touched
     /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
     /// for docs/hw/cf.md) skips the hardware reset.
+    /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
+    /// follows the card both ways with the slot powered or not (`rp-cfdetect`
+    /// on the device, 2026-10-16), so a card pushed back in after the slot
+    /// was switched off is seen; GPIO13 only without a CPLD.
+    fn cf_card_in(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+        match cpld {
+            Some(c) => c.cf_present(),
+            None => !gpio.read(CF_DETECT),
+        }
+    }
+
     #[inline(never)]
     fn cf_command(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut BoardCpld>,
+        mut cpld: Option<&mut BoardCpld>,
         soft: bool,
         out: &mut Line,
     ) {
-        if gpio.read(CF_DETECT) {
-            let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
+        if !cf_card_in(gpio, cpld.as_deref_mut()) {
+            let _ = write!(out, "RPL ERR cf: no card\r\n");
             return;
         }
         // What the slot looked like before this command (diagnostics).
@@ -1798,7 +1813,7 @@ mod image {
         // and the attach stalled the PC's requests meanwhile; Explorer drew
         // the drive empty and its icon only minutes later. Now the PC finds
         // it ready from its first question, as the SD card.
-        let cf_in = !gpio.read(CF_DETECT);
+        let cf_in = cf_card_in(&mut gpio, cpld.as_mut());
         let mut cf = CfLun {
             slot: CfSlot::Untried,
             inserted: cf_in,
@@ -2469,7 +2484,8 @@ mod image {
                     if on { "on" } else { "off" }
                 );
             }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {
+            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio, cpld.as_mut())
+            {
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
