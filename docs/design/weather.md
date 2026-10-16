@@ -96,6 +96,19 @@ a pack shipped in this public repository, the artist's permission is wanted
 (asked, no answer yet), or the name comes out of the prompt and the pack is
 judged on its own. The pack's licence note records which.
 
+**Getting real transparency (tested 2026-10-16):** the image generators the
+owner used cannot output a transparent PNG (the an image generator app paints a
+checkerboard instead), and fal.ai lists no text-to-image model with native
+transparency. What works: generate the icon on a plain background, then run
+it through fal's **Ideogram Remove Background** (about $0.01 an image). The
+test sun came back as a true alpha PNG, 816 x 816, with the glow and rays
+fading smoothly on dark glass, on the lake wallpaper and on magenta. Not
+yet tested the same way: thin rain streaks and the translucent glass of the
+Frosted pack. Other fal removers worth trying if Ideogram falters on those:
+BiRefNet v2 (matting mode) and Rembg Enhance. Bria RMBG 2.0 is avoided
+because its licence is unclear for a product that might be sold. Check
+Ideogram's terms for use of its outputs before a pack ships.
+
 **Method:** generate the style block and one icon first (`03`, partly
 cloudy, day); regenerate until it's right, then use it as the style
 reference for every other icon so the set matches.
