@@ -16,6 +16,7 @@ rp-bench-suite = { path = "../suite" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 
 [lints]
 workspace = true

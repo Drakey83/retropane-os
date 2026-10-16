@@ -475,10 +475,12 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image (ADR-0031, audit item 67): the PXA270's clocks taken,
     // every operating point measured, turbo and relock costs. 28.7 KiB
-    // measured (2026-10-15), + ~10%.
+    // measured (2026-10-15), + ~10%; then 32 -> 36 KiB for version 3
+    // (breadcrumbs on screen and in 2700G memory after run 1 never
+    // returned), 31.9 KiB measured, + ~12%.
     Budget {
         image: "rp-clocks",
-        max_load: 32 * 1024,
+        max_load: 36 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

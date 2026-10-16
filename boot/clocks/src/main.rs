@@ -5,8 +5,15 @@
 //!   power manager's set-up (voltage sequencer, power I2C, sleep, wake-up),
 //!   the point decoded, and the core clock really running, counted by the
 //!   CP14 cycle counter against the OS timer.
-//! - **C2, every operating point** (`rp_hal_pxa27x::clocks::POINTS`),
-//!   slowest first. The core voltage code (GPIO3/4/38, `rp_hal_x51v::vcore`)
+//! - **C2, the operating points that keep the memory clock at 208 MHz**,
+//!   lowest risk first (run 1 never returned: the likeliest stop is its
+//!   first step, 520 -> 104 MHz, the one that also halves the memory
+//!   clock): turbo off (no relock), 416, 312 and 208 MHz (relocks, memory
+//!   clock unchanged), 520 again, then 624 MHz. The memory-clock changes
+//!   (104, 156 and the manual's 624) wait for later runs, one a run. Each
+//!   step first paints a stripe on the screen and writes a breadcrumb into
+//!   2700G memory (`RPCK`, the step, the `CCCR` aimed at), so a run that
+//!   never returns still shows where it stopped. The core voltage code (GPIO3/4/38, `rp_hal_x51v::vcore`)
 //!   is never lowered here; a point needing a higher code than the one
 //!   found gets it raised first (then the settle wait), only if all three
 //!   pins are plain GPIO outputs: switched to, the core clock counted,
@@ -15,11 +22,9 @@
 //!   (refresh kept through every change) and 256 KiB written and checked
 //!   at the point, then benchmarks: `memcpy`/`memset`, SDRAM and SRAM
 //!   pointer chases, 256 KiB written to the 2700G.
-//! - **C2b, 624 MHz as the manual lists it** (`CCCR` A = 0: memory clock
-//!   104 MHz) beside the 624 MHz point WM runs (A = 1, 208 MHz), measured
-//!   the same way: the manual's table 3-7 lists only the first.
 //! - **C3, switch costs:** turbo off/on at the top allowed point (no PLL
-//!   relock) and a full relock change, each timed over many switches.
+//!   relock) and a relock to 208 MHz (memory clock unchanged), each timed
+//!   over many switches.
 //! - The starting clocks put back exactly (and on any fault before the
 //!   crash report), checked, then the starting voltage code (after the
 //!   clock, as any slow-down; a fault leaves the higher code: safe).
@@ -36,6 +41,7 @@ mod image {
     use core::hint::black_box;
 
     use rp_bench_suite as suite;
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::Mmio;
@@ -56,6 +62,40 @@ mod image {
     const KEEP: usize = 3 * 1024 * 1024;
     /// Bytes written and checked at each point.
     const FRESH: usize = 256 * 1024;
+
+    /// Breadcrumb magic in 2700G memory: `RPCK`.
+    const CRUMB_MAGIC: u32 = u32::from_le_bytes(*b"RPCK");
+
+    /// Where each step is shown and recorded, even if the run never returns:
+    /// a stripe on the screen (RGB565 plane) and three words at the end of
+    /// the 2700G pool (2700G memory isn't cleared between images; whether a
+    /// watchdog reset clears it is itself worth knowing).
+    struct Crumbs<'a> {
+        screen: Option<(&'a mut [u8], usize)>,
+        word: &'a mut [u8],
+    }
+
+    impl Crumbs<'_> {
+        fn mark(&mut self, step: u32, cccr: u32) {
+            for (k, w) in [CRUMB_MAGIC, step, cccr].into_iter().enumerate() {
+                self.word[4 * k..4 * k + 4].copy_from_slice(&w.to_le_bytes());
+            }
+            const COLOURS: [u16; 8] = [
+                0xF800, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xF81F, 0xFFFF, 0xFC00,
+            ];
+            if let Some((px, stride)) = self.screen.as_mut() {
+                let c = COLOURS[step as usize % COLOURS.len()].to_le_bytes();
+                let top = 40 * step as usize + 8;
+                for y in top..top + 24 {
+                    if let Some(row) = px.get_mut(y * *stride..y * *stride + 480 * 2) {
+                        for p in row.chunks_exact_mut(2) {
+                            p.copy_from_slice(&c);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     /// Benchmark results to the run log, tagged with the point.
     struct Sink(&'static str);
@@ -200,14 +240,14 @@ mod image {
         rt::init_mmu();
         let start = clocks::save();
         let sp = start.point();
-        log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 2");
+        log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 3");
         // The banner and the verdict also go to the serial port (the
         // emulator's check waits for them there; on the device a bounded
         // write to an unclocked UART).
         let mut uart = rt::take_ffuart().map(|bus| {
             let mut u = PxaUart::new(bus);
             u.init(115_200);
-            let _ = writeln!(u, "{MARKER}: version 2");
+            let _ = writeln!(u, "{MARKER}: version 3");
             u
         });
         log_raw("C1 as found", start);
@@ -239,20 +279,54 @@ mod image {
             crash(format_args!("no scratch"))
         };
         let mut sram = diag::take_sram();
-        let mut vram = rp_hal_x51v::devices::take_mbx()
-            .map(|(_, v)| &mut v[rp_vram_map::POOL.at as usize..][..FRESH]);
+        let Some((regs, v)) = rp_hal_x51v::devices::take_mbx() else {
+            crash(format_args!("no 2700G"))
+        };
+        let (plane, kept): (Plane, bool) = Display::new(regs).adopt(v.len());
+        let (low, high) = v.split_at_mut(rp_vram_map::POOL.at as usize);
+        let (pool, rest) = high.split_at_mut(FRESH);
+        let crumb_at = rest.len() - 16;
+        let screen_end = plane.offset + plane.stride * usize::from(plane.height);
+        let mut crumbs = Crumbs {
+            screen: (plane.format == PixelFormat::Rgb565 && screen_end <= low.len())
+                .then(|| (&mut low[plane.offset..screen_end], plane.stride)),
+            word: &mut rest[crumb_at..],
+        };
+        log!(
+            "  screen plane {} at 0x{:x} ({}); breadcrumbs at 2700G 0x{:x}",
+            if kept { "kept" } else { "set up" },
+            plane.offset,
+            if crumbs.screen.is_some() {
+                "stripes"
+            } else {
+                "no stripes"
+            },
+            rp_vram_map::POOL.at as usize + FRESH + crumb_at
+        );
+        crumbs.mark(0, start.cccr);
+        let mut vram = Some(pool);
         let (work, keep) = scratch.split_at_mut(scratch.len() - KEEP);
         fill(keep, 0x5EED_0001);
         benches("start", work, sram.as_deref_mut(), vram.as_deref_mut());
 
-        // C2: every point, then 624 MHz as the manual lists it (A = 0).
-        let mut pts = [("", POINTS[0].1); POINTS.len() + 1];
-        pts[..POINTS.len()].copy_from_slice(&POINTS);
-        pts[POINTS.len()] = ("624m", clocks::P624_MANUAL);
+        // C2: the points that keep the memory clock, lowest risk first.
+        let pts = [
+            ("turbo off", sp.with_turbo(false)),
+            ("416", POINTS[4].1),
+            ("312", POINTS[3].1),
+            ("208", POINTS[2].1),
+            ("520", POINTS[5].1),
+            ("624", POINTS[6].1),
+        ];
         let mut top = None;
         for (i, (name, p)) in pts.iter().enumerate() {
             rt::check_in();
             log!("C2 {name} MHz");
+            if p.mem_khz() != sp.mem_khz() {
+                log!("  skipped (changes the memory clock: a later run)");
+                continue;
+            }
+            crumbs.mark(i as u32 + 1, p.cccr(start.cccr));
             let need = Code::for_turbo_khz(p.turbo_khz());
             if !code.covers(need) {
                 if !ours {
@@ -291,7 +365,7 @@ mod image {
                 verify(&work[..FRESH], seed) == 0,
             );
             benches(name, work, sram.as_deref_mut(), vram.as_deref_mut());
-            if i < POINTS.len() {
+            if p.turbo {
                 top = Some(*p);
             }
         }
@@ -314,7 +388,8 @@ mod image {
                 "turbo back on after the switches",
                 khz.abs_diff(t.core_khz()) <= t.core_khz() / 50,
             );
-            let low = POINTS[0].1;
+            crumbs.mark(7, POINTS[2].1.cccr(start.cccr));
+            let low = POINTS[2].1;
             let n = 100;
             let ticks = time_switches(t, low, n);
             log!(
@@ -329,6 +404,7 @@ mod image {
 
         // Back as found.
         rt::check_in();
+        crumbs.mark(8, start.cccr);
         g.expect("put back", clocks::restore(start));
         if code != code0 {
             set_vcode(&mut gpio, code0);

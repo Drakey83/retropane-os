@@ -131,6 +131,7 @@ name = "rp-clocks"
 version = "0.0.0"
 dependencies = [
  "rp-bench-suite",
+ "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
