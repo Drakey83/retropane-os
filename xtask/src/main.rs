@@ -113,6 +113,8 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-quantum the time-slice policies' touch, frame and switch-cost tests
+            (rp-quantum: all run; numbers printed): run it before `load rp-quantum`
   emu-usb   only the loader-over-USB check (image in, run log out)
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
@@ -133,8 +135,8 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
-        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-trace"
+        | "emu-fullsize" | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -332,6 +334,7 @@ fn run_step(step: &str) -> Result {
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
+        "emu-quantum" => cross().and_then(|()| emu::boot_quantum(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
@@ -341,6 +344,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_probe(&workspace_root()))
             .and_then(|()| emu::boot_kernel(&workspace_root()))
             .and_then(|()| emu::boot_threads(&workspace_root()))
+            .and_then(|()| emu::boot_quantum(&workspace_root()))
             .and_then(|()| emu::boot_light(&workspace_root()))
             .and_then(|()| emu::boot_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader(&workspace_root()))
@@ -385,6 +389,8 @@ fn run_step(step: &str) -> Result {
             "rp-kernel",
             "--exclude",
             "rp-threads",
+            "--exclude",
+            "rp-quantum",
             // CLI glue; its logic lives in the tested romdump library.
             "--ignore-filename-regex",
             r"romdump.src.main\.rs",
