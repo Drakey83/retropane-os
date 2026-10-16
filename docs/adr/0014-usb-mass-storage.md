@@ -75,7 +75,18 @@ model with a built-in host that enumerates like Windows.
      is pulled from a reader and pushed back. Windows drops its cached view
      only once it has seen the medium gone: a unit attention alone left
      Explorer showing the old root (item 65, 2026-10-12; amended
-     2026-10-13);
+     2026-10-13). A unit the host last saw empty, or never asked about,
+     skips the away time (nothing cached): the unit attention alone
+     (2026-10-15, the CF card's flaky drive);
+   - changes made while the loader isn't running (an image writing the
+     card, the crash report the loader keeps on return, Windows Mobile):
+     the X51v's pull-up is hard-wired, so Windows can re-attach without
+     noticing the device went and keep its cached FAT and directories;
+     writing them back lost a file (noise-ri.bin, 2026-10-15). So each
+     unit's first poll, read or write after the loader starts that doesn't
+     follow a READ CAPACITY (which every fresh mount sends first) is
+     answered "no medium" and the medium goes away as above, with the card
+     untouched; a fresh mount sees no delay (amended 2026-10-15);
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
