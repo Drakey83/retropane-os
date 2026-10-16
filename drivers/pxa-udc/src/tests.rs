@@ -39,6 +39,7 @@ struct SimUdc {
     up2ocr: u32,
     up2ocr_writes: u32,
     isr0: u32,
+    icr0: u32,
 }
 
 /// A bulk endpoint: one packet buffer, or two with `UDCCRx.DE`.
@@ -96,6 +97,7 @@ impl SimUdc {
         if let Some(p) = b.queue.pop_front() {
             b.sent.push_back(p.into_iter().collect());
             b.pc = true;
+            self.isr0 |= reg::packet_irq(slot);
         }
     }
 
@@ -108,6 +110,7 @@ impl SimUdc {
         self.bulk[slot]
             .queue
             .push_back(packet.iter().copied().collect());
+        self.isr0 |= reg::packet_irq(slot);
         true
     }
 
@@ -235,6 +238,7 @@ impl RegisterBus for SimUdc {
                 }
             }
             reg::UDCICR1 => self.icr1 = v,
+            reg::UDCICR0 => self.icr0 = v,
             reg::UP2OCR => {
                 assert_eq!(
                     self.udccr & reg::UDE,
@@ -845,43 +849,10 @@ fn random_setup_packets_never_panic_or_overrun() {
     }
 }
 
-/// Double buffering: two full IN packets are queued before the host takes
-/// either (no gap between them on the bus), and nothing goes in behind a
-/// short packet that ends a transfer until it has gone.
-#[test]
-fn bulk_in_queues_both_buffers_and_holds_behind_a_short_packet() {
-    let mut h = Host::new();
-    h.enumerate();
-    h.udc.set_in_streaming(true);
-    let data: Vec<u8> = (0..=199u8).collect();
-    assert_eq!(h.udc.write(&data[..140]), 140);
-    h.poll(1);
-    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 2, "both buffers queued");
-    h.sim().host_in_bulk();
-    h.poll(1);
-    // The 12-byte tail went in as a short packet behind the full one.
-    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 2);
-    h.udc.write(&data[140..]);
-    h.sim().host_in_bulk();
-    h.poll(1);
-    // One buffer is free, but the short packet still waits: hold.
-    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 1);
-    for _ in 0..6 {
-        h.sim().host_in_bulk();
-        h.poll(1);
-    }
-    let sent: Vec<Vec<u8>> = h.sim().bulk[SLOT_IN].sent.drain(..).collect();
-    assert_eq!(
-        sent.iter().map(Vec::len).collect::<Vec<_>>(),
-        [64, 64, 12, 60]
-    );
-    assert_eq!(sent.concat(), data);
-}
-
-/// By default bulk IN keeps one packet in flight (two buffers or not): the
+/// The CPU keeps one bulk IN packet in flight (two buffers or not): the
 /// next only after the previous one's packet-complete.
 #[test]
-fn bulk_in_keeps_one_packet_in_flight_by_default() {
+fn bulk_in_keeps_one_packet_in_flight() {
     let mut h = Host::new();
     h.enumerate();
     let data: Vec<u8> = (0..=199u8).collect();
@@ -897,19 +868,6 @@ fn bulk_in_keeps_one_packet_in_flight_by_default() {
     }
     let sent: Vec<Vec<u8>> = h.sim().bulk[SLOT_IN].sent.drain(..).collect();
     assert_eq!(sent.concat(), data);
-}
-
-/// The probe leaves the endpoint empty and the driver able to send.
-#[test]
-fn the_in_buffer_probe_cleans_up() {
-    let mut h = Host::new();
-    h.enumerate();
-    let p = h.udc.probe_in_buffers();
-    // Two full packets fill both buffers: "not full" clear.
-    assert_eq!(p[2] & reg::BNF, 0);
-    assert_eq!(p[1] & reg::BNF, reg::BNF);
-    assert!(h.sim().bulk[SLOT_MSC_IN].queue.is_empty());
-    assert!(h.udc.msc_can_write());
 }
 
 /// With the ring empty, `read` takes packets straight from both buffers.
@@ -1068,4 +1026,45 @@ fn an_endpoint_under_dma_is_left_to_the_dma_controller() {
     assert!(h.sim().csr_writes.is_empty(), "whole packets need no SP");
     h.udc.set_dma(super::Bulk::StorageIn, false);
     assert!(h.sim().csr_writes.iter().all(|&(_, v)| v & reg::DME == 0));
+}
+
+impl SimUdc {
+    /// Whether the USB client line is raised (an enabled event pending).
+    fn line(&self) -> bool {
+        self.isr0 & self.icr0 != 0 || self.isr1 & self.icr1 != 0
+    }
+}
+
+/// Interrupt-driven (ADR-0007): packets raise the line, one poll serves
+/// them and lowers it, so the owner can sleep until the next one; polled,
+/// bulk packets don't raise it. Endpoint 0's event survives a poll while
+/// its state machine still waits on it.
+#[test]
+fn interrupts_raise_the_line_until_a_poll_serves_them() {
+    let mut h = Host::new();
+    h.enumerate();
+    h.poll(2);
+    assert!(!h.sim().line(), "quiet after enumeration");
+    assert!(h.sim().host_out(b"polled"));
+    assert!(!h.sim().line(), "bulk events are off while polled");
+    h.poll(1);
+    let mut buf = [0u8; 64];
+    assert_eq!(h.udc.read(&mut buf), 6);
+    h.udc.set_interrupts(true);
+    assert!(h.sim().host_out(b"hello"));
+    assert!(h.sim().line(), "an OUT packet raises the line");
+    h.poll(1);
+    assert!(!h.sim().line(), "the poll served it");
+    assert_eq!(h.udc.read(&mut buf), 5);
+    h.udc.write(b"reply");
+    h.poll(1);
+    h.sim().host_in_bulk();
+    assert!(h.sim().line(), "a packet taken raises the line");
+    h.poll(1);
+    assert!(!h.sim().line());
+    // A descriptor read longer than one 16-byte packet still completes.
+    let d = h.control_in([0x80, 6, 0, 1, 0, 0, 18, 0]).unwrap();
+    assert_eq!(d.len(), 18);
+    h.udc.disable();
+    assert!(!h.sim().line(), "disabled: no events enabled");
 }

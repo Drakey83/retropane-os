@@ -216,8 +216,9 @@ fn drive_once(_root: &Path, _data: &[u8]) -> Result<(u128, u128), String> {
 
 /// `cargo xtask usbbench trial <image> [runs]`: a new loader tried from
 /// RAM, the old one still on the card, in one hold of the Axim lock: the
-/// card's loader is copied aside, `image` loaded, `udc probe` asked, both
-/// benches run, and the card's loader loaded back from RAM, so no other
+/// card's loader is copied aside, `image` loaded, the latency and both
+/// throughput benches run, `udc stats` asked, and the card's loader loaded
+/// back from RAM, so no other
 /// session's run lands on the build under test (even if a step fails).
 pub fn trial(root: &Path, image: &str, runs: usize) -> Result<(), String> {
     crate::devlock::ensure_held()?;
@@ -236,11 +237,10 @@ pub fn trial(root: &Path, image: &str, runs: usize) -> Result<(), String> {
 /// The trial's steps on the loader under test (the caller puts the card's
 /// loader back whatever they return).
 fn trial_steps(root: &Path, runs: usize) -> Result<(), String> {
-    match super::usb::command_reply(root, "udc probe") {
-        Ok(p) => println!("trial: udc probe: {p}"),
-        Err(e) => println!("trial: udc probe: {e}"),
+    if let Err(e) = drivers() {
+        println!("trial: {e}");
     }
-    if let Err(e) = dma(root) {
+    if let Err(e) = latency(root) {
         println!("trial: {e}");
     }
     let r = run(root, "all", runs);
@@ -251,133 +251,108 @@ fn trial_steps(root: &Path, runs: usize) -> Result<(), String> {
     r
 }
 
-/// The pattern the loader's `udc dma-in` sends.
-#[must_use]
-pub fn dma_pattern(len: usize) -> Vec<u8> {
-    (0..len)
-        .map(|i| ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8)
-        .collect()
-}
-
-fn dma_script(command: &Path, data: &Path, recv: &Path, to_host: bool, n: usize) -> String {
-    let q = |p: &Path| p.display().to_string().replace('\'', "''");
-    let (command, data, recv) = (q(command), q(data), q(recv));
-    let mode = if to_host { "in" } else { "out" };
+fn latency_script(frame: &Path, rounds: usize) -> String {
+    let path = frame.display().to_string().replace('\'', "''");
     super::usb::open_port_script()
         + &format!(
-            r#"$cmd = [System.IO.File]::ReadAllBytes('{command}')
+            r#"$cmd = [System.IO.File]::ReadAllBytes('{path}')
 $sp.DtrEnable = $true
 $sp.RtsEnable = $true
-$sp.ReadTimeout = 8000
-$sp.WriteTimeout = 20000
+$sp.ReadTimeout = 3000
 $sp.NewLine = "`r`n"
 Open-Port
 Start-Sleep -Milliseconds 300
 $null = $sp.ReadExisting()
-$sp.Write($cmd, 0, $cmd.Length)
-$ready = $false
-while (-not $ready) {{
-    try {{ $l = $sp.ReadLine() }} catch {{ 'NOTARMED'; break }}
-    if ('{mode}' -eq 'out' -and $l -like 'RPL OK armed*') {{ $ready = $true }}
-    elseif ('{mode}' -eq 'in' -and $l -like 'RPL OK dma-in*') {{ $ready = $true }}
-    elseif ($l -like 'RPL ERR*') {{ 'REPLY ' + $l; break }}
-}}
-if ($ready) {{
+for ($i = 0; $i -lt {rounds}; $i++) {{
+    Start-Sleep -Milliseconds 300
+    $null = $sp.ReadExisting()
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    if ('{mode}' -eq 'out') {{
-        $d = [System.IO.File]::ReadAllBytes('{data}')
-        $sp.Write($d, 0, $d.Length)
-    }} else {{
-        $buf = New-Object byte[] {n}
-        $got = 0
-        try {{
-            while ($got -lt {n}) {{ $got += $sp.Read($buf, $got, {n} - $got) }}
-        }} catch {{ }}
-        [System.IO.File]::WriteAllBytes('{recv}', $buf[0..([Math]::Max($got, 1) - 1)])
-        'GOT ' + $got
-    }}
-    'HOSTMS ' + $sw.ElapsedMilliseconds
+    $sp.Write($cmd, 0, $cmd.Length)
     try {{
         while ($true) {{
             $l = $sp.ReadLine()
-            if ($l -match '^RPL (OK|ERR)') {{ 'REPLY ' + $l; break }}
+            if ($l -match '^RPL (OK|ERR)') {{ break }}
         }}
-    }} catch {{ 'NOREPLY' }}
+        'LAT ' + [int]($sw.Elapsed.TotalMilliseconds * 1000)
+    }} catch {{ 'LOST' }}
 }}
 try {{ $sp.Close() }} catch {{ }}
 "#
         )
 }
 
-/// `cargo xtask usbbench dma`: the loader's `udc dma-out` / `dma-in`
-/// experiments (item 74) at a few sizes, each checked: the device's CRC of
-/// what it received against the PC's, and every byte the PC received
-/// against the pattern.
-pub fn dma(root: &Path) -> Result<(), String> {
+/// `cargo xtask usbbench latency`: 20 round trips of a one-packet command
+/// (one the loader refuses, so any loader answers it at once), each after
+/// 300 ms of quiet so the loader is asleep: how fast it wakes for the PC.
+/// Prints the minimum, median and maximum in microseconds.
+pub fn latency(root: &Path) -> Result<(), String> {
     crate::devlock::ensure_held()?;
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let (cmd, data, recv) = (
-        out.join("dma-command.frame"),
-        out.join("dma-data.bin"),
-        out.join("dma-recv.bin"),
+    let frame = out.join("latency.frame");
+    std::fs::write(&frame, rp_loadproto::control_frame("ping")).map_err(|e| e.to_string())?;
+    let o = super::usb::powershell(&latency_script(&frame, 20))?;
+    let text = String::from_utf8_lossy(&o.stdout);
+    let mut us: Vec<u32> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("LAT ")?.trim().parse().ok())
+        .collect();
+    let lost = text.lines().filter(|l| *l == "LOST").count();
+    if us.is_empty() {
+        return Err(format!("no round trips:\n{text}"));
+    }
+    us.sort_unstable();
+    println!(
+        "latency: {} round trips, min {} us, median {} us, max {} us, {lost} lost",
+        us.len(),
+        us[0],
+        us[us.len() / 2],
+        us[us.len() - 1]
     );
-    let mut failed = false;
-    for n in [128usize, 4096, 65536] {
-        for to_host in [false, true] {
-            let what = if to_host { "dma-in" } else { "dma-out" };
-            std::fs::write(
-                &cmd,
-                rp_loadproto::control_frame(&format!("udc {what} {n}")),
-            )
-            .map_err(|e| e.to_string())?;
-            let sent = pattern(n, 0xD3A0 + n as u32);
-            std::fs::write(&data, &sent).map_err(|e| e.to_string())?;
-            let _ = std::fs::remove_file(&recv);
-            let o = super::usb::powershell(&dma_script(&cmd, &data, &recv, to_host, n))?;
-            let text = String::from_utf8_lossy(&o.stdout).into_owned();
-            let reply = text
-                .lines()
-                .find_map(|l| l.strip_prefix("REPLY "))
-                .unwrap_or("(no reply)")
-                .to_string();
-            let mut verdict = String::new();
-            if to_host {
-                let got = std::fs::read(&recv).unwrap_or_default();
-                let want = dma_pattern(n);
-                verdict = if got == want {
-                    format!("all {n} bytes as sent")
-                } else {
-                    failed = true;
-                    let at = got.iter().zip(&want).position(|(a, b)| a != b);
-                    format!("received {} bytes, first difference at {at:?}", got.len())
-                };
-            } else if let Some(c) = reply.split("crc ").nth(1) {
-                let want = format!("{:08x}", rp_loadproto::crc32(&sent));
-                verdict = if c.starts_with(&want) {
-                    "CRC matches".into()
-                } else {
-                    failed = true;
-                    format!("CRC differs (PC {want})")
-                };
-            } else {
-                failed = true;
-            }
-            let host_ms = text
-                .lines()
-                .find_map(|l| l.strip_prefix("HOSTMS "))
-                .unwrap_or("?");
-            println!("{what} {n}: {reply} | PC {host_ms} ms | {verdict}");
-            if reply == "(no reply)" {
-                println!("    PC side saw: {}", text.replace('\n', " / "));
-            }
-        }
+    Ok(())
+}
+
+/// Lists every present device under RetroPane's USB IDs (and the disks
+/// behind them) with its driver service and INF: `INF name service device`.
+const DRIVERS_SCRIPT: &str = r#"$ErrorActionPreference = 'SilentlyContinue'
+$ids = Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\VID_1209&PID_0001*' -or $_.FriendlyName -like 'RetroPan*' }
+foreach ($d in $ids) {
+    $inf = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName DEVPKEY_Device_DriverInfPath).Data
+    $svc = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName DEVPKEY_Device_Service).Data
+    "INF $inf $svc $($d.FriendlyName)"
+}
+"#;
+
+/// Whether every driver is one Windows ships (no `oem*.inf`): the device
+/// must stay driverless (ADR-0012). Returns the lines for the report.
+pub fn parse_drivers(text: &str) -> Result<Vec<String>, String> {
+    let lines: Vec<String> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("INF "))
+        .map(str::to_string)
+        .collect();
+    if lines.is_empty() {
+        return Err("no RetroPane USB devices found".into());
     }
-    if failed {
-        Err("a DMA experiment failed (above)".into())
-    } else {
-        Ok(())
+    if let Some(bad) = lines.iter().find(|l| {
+        l.split(' ')
+            .next()
+            .is_none_or(|inf| inf.is_empty() || inf.starts_with("oem"))
+    }) {
+        return Err(format!("not an inbox driver: {bad}"));
     }
+    Ok(lines)
+}
+
+/// `cargo xtask usbbench drivers`: the device's functions on Windows' own
+/// drivers.
+pub fn drivers() -> Result<(), String> {
+    let o = super::usb::powershell(DRIVERS_SCRIPT)?;
+    for l in parse_drivers(&String::from_utf8_lossy(&o.stdout))? {
+        println!("driver: {l}");
+    }
+    println!("driverless: every function on Windows' own drivers");
+    Ok(())
 }
 
 /// `cargo xtask usbbench [serial|drive] [runs]`.
@@ -438,6 +413,15 @@ mod tests {
         let (_, r) = rp_loadproto::feed_slice(&mut rx, &f, &mut dest);
         assert_eq!(r, Some(Err(rp_loadproto::LoadError::BadCrc)));
         assert_eq!(&dest[..1000], &p[..]);
+    }
+
+    #[test]
+    fn third_party_drivers_are_caught() {
+        let ok = "INF usb.inf usbccgp USB Composite Device\nINF usbser.inf usbser USB Serial Device (COM4)\nINF disk.inf disk RetroPan SD card USB Device\n";
+        assert_eq!(parse_drivers(ok).unwrap().len(), 3);
+        assert!(parse_drivers("INF oem42.inf foo X\n").is_err());
+        assert!(parse_drivers("INF  usbser X\n").is_err());
+        assert!(parse_drivers("").is_err());
     }
 
     #[test]
