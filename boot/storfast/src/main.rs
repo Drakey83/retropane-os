@@ -814,16 +814,16 @@ mod image {
         None
     }
 
-    /// S3: the card taken out and put back, then the lock switch.
-    fn swap_and_lock(
+    /// One swap: the owner takes the card out (doing `what` to it, if
+    /// anything) and puts it back; the card is set up again. `None` (the
+    /// test stops, files stay) if no card came back or it won't start.
+    fn reinsert(
         screen: &mut Screen<'_>,
         gpio: &mut Gpio<Mmio>,
         card: Card,
-        lba: u32,
-        pool: &mut [u8],
-        recent: &mut Recent,
+        what: &str,
     ) -> Option<Card> {
-        screen.say(format_args!("\nTAKE THE SD CARD OUT now."));
+        screen.say(format_args!("\nTAKE THE SD CARD OUT{what}."));
         let mut host = card.into_inner();
         match wait_for(gpio, SD_DETECT, true) {
             Some(t) => log!("S3 card out after {t} ms"),
@@ -858,36 +858,40 @@ mod image {
         };
         screen.say(format_args!("Card back. Checking..."));
         card.host_mut().set_dma(true, true);
+        Some(card)
+    }
+
+    /// S3: the card taken out and put back, then locked and unlocked. The
+    /// lock tab can't be reached with the card in the X51v's slot (the first
+    /// device run asked for that, 2026-10-16), so each lock change is a swap.
+    fn swap_and_lock(
+        screen: &mut Screen<'_>,
+        gpio: &mut Gpio<Mmio>,
+        card: Card,
+        lba: u32,
+        pool: &mut [u8],
+        recent: &mut Recent,
+    ) -> Option<Card> {
+        let mut card = reinsert(screen, gpio, card, " now")?;
         let (checked, bad) = recent.verify(&mut card, lba, pool);
         log!("S3 after the swap: {checked} of the last writes read back, {bad} blocks differ");
         soak(&mut card, lba, pool, 1, recent);
-        screen.say(format_args!(
-            "\nSLIDE THE SD CARD'S LOCK SWITCH ON (locked), card stays in."
-        ));
-        match wait_for(gpio, SD_LOCK, true) {
-            Some(t) => {
-                log!("S3 lock on after {t} ms (GPIO27 high)");
-                // Locked: reads only (the lock is the owner's: nothing writes).
-                let (checked, bad) = recent.verify(&mut card, lba, pool);
-                log!(
-                    "S3 while locked, {checked} of the last writes read by DMA: {bad} blocks differ"
-                );
-                screen.say(format_args!("Now SLIDE THE LOCK SWITCH OFF again."));
-                if wait_for(gpio, SD_LOCK, false).is_none() {
-                    screen.say(format_args!("Still locked: stopping (files stay)."));
-                    log!(
-                        "S3 still locked after {} s: the test files are left in {DIR}",
-                        prompt_secs()
-                    );
-                    return None;
-                }
-                log!("S3 lock off");
-            }
-            None => {
-                screen.say(format_args!("No lock seen (GPIO27 stayed low): skipped."));
-                log!("S3 GPIO27 never read high in {} s", prompt_secs());
-            }
+        let mut card = reinsert(screen, gpio, card, ", SLIDE ITS LOCK ON (locked)")?;
+        if gpio.read(SD_LOCK) {
+            log!("S3 lock on (GPIO27 high)");
+            // Locked: reads only (the lock is the owner's: nothing writes).
+            let (checked, bad) = recent.verify(&mut card, lba, pool);
+            log!("S3 while locked, {checked} of the last writes read by DMA: {bad} blocks differ");
+        } else {
+            log!("S3 no lock seen (GPIO27 low with the card back): lock check skipped");
         }
+        let mut card = reinsert(screen, gpio, card, ", SLIDE ITS LOCK OFF")?;
+        if gpio.read(SD_LOCK) {
+            screen.say(format_args!("Still locked: stopping (files stay)."));
+            log!("S3 still locked: the test files are left in {DIR}");
+            return None;
+        }
+        log!("S3 lock off");
         screen.say(format_args!("Thank you: last checks..."));
         soak(&mut card, lba, pool, 2, recent);
         Some(card)

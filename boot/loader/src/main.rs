@@ -755,10 +755,10 @@ mod image {
         }
     }
 
-    /// How SD DMA is used: reads once the start-up self-test has shown DMA
-    /// reads match programmed I/O on this hardware; writes only once the
-    /// owner turns them on (`card dma writes`), until a device run has
-    /// proven them (a verified `put`). Nothing unproven touches the card.
+    /// How SD DMA is used: reads and writes once the start-up self-test has
+    /// shown DMA reads match programmed I/O on this hardware. Writes were
+    /// off until a device run proved them: `rp-storfast` wrote and read back
+    /// ~430 MB by DMA with no error, a card swap included (2026-10-16).
     struct DmaPolicy {
         /// The self-test's verdict.
         verdict: &'static str,
@@ -779,7 +779,7 @@ mod image {
                 verdict: "off (no card to test with)",
             };
         };
-        sd.host_mut().set_dma(true, false);
+        sd.host_mut().set_dma(true, true);
         let many = &mut buf[..BLOCKS * rp_drv_sdcard::BLOCK];
         many.fill(0xA5);
         let before = sd.host().dma_transfers();
@@ -1950,7 +1950,7 @@ mod image {
         }
         let _ = writeln!(log, "RetroPane loader at {:#x}", devices::LOADER_BASE);
         let _ = writeln!(log, "USB {}", if usb { "connected" } else { "unavailable" });
-        let _ = writeln!(log, "SD DMA reads {}, writes off", dma.verdict);
+        let _ = writeln!(log, "SD DMA {}", dma.verdict);
         let _ = writeln!(log, "waiting for an image: cargo xtask load");
 
         // The previous run's log (an image this loader started, now back):
