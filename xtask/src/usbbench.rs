@@ -15,6 +15,14 @@
 //!
 //! The Axim lock is held for the whole run: another session's load would
 //! take the drive away mid-file.
+//!
+//! **The card holds other sessions' files.** The drive bench writes only
+//! inside its own folder ([`BENCH_DIR`], [`BenchDir`]: the only code here
+//! that creates or deletes anything, a test keeps it so) and never touches a
+//! file it didn't create. And it first makes Windows drop its cached view of
+//! the card (`drive off`, then `drive on`): images write the card from the
+//! device (rp-noise's rows) without Windows knowing, and a write through a
+//! stale cached FAT and root directory lost such a file on 2026-10-16.
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -23,8 +31,86 @@ use std::time::Instant;
 pub const SERIAL_BYTES: usize = 900 * 1024;
 /// Bytes in the drive file.
 pub const DRIVE_BYTES: usize = 16 * 1024 * 1024;
-/// The drive file's name in the card's root.
-const DRIVE_FILE: &str = "rp-usbbench.tmp";
+/// The drive bench's own folder in the card's root.
+pub const BENCH_DIR: &str = "rp-usbbench";
+/// Its file, inside [`BENCH_DIR`].
+const BENCH_FILE: &str = "bench.tmp";
+
+/// The drive bench's folder: the only place it creates or deletes
+/// anything. Opening it refuses a folder holding anything but its own file
+/// (someone else's), and closing it removes only what it created.
+pub struct BenchDir {
+    dir: PathBuf,
+    created: bool,
+}
+
+impl BenchDir {
+    /// The bench folder under the drive's `root`, created if missing.
+    pub fn open(root: &Path) -> Result<Self, String> {
+        let dir = root.join(BENCH_DIR);
+        if dir.exists() {
+            if !dir.is_dir() {
+                return Err(format!(
+                    "{} exists and is not a folder: not ours",
+                    dir.display()
+                ));
+            }
+            for e in std::fs::read_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+                let e = e.map_err(|e| e.to_string())?;
+                if e.file_name() != BENCH_FILE {
+                    return Err(format!(
+                        "{} holds {:?}, not the bench's: leaving it alone",
+                        dir.display(),
+                        e.file_name()
+                    ));
+                }
+            }
+            return Ok(Self {
+                dir,
+                created: false,
+            });
+        }
+        std::fs::create_dir(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        Ok(Self { dir, created: true })
+    }
+
+    /// The bench's file.
+    #[must_use]
+    pub fn file(&self) -> PathBuf {
+        self.dir.join(BENCH_FILE)
+    }
+
+    /// Creates (or truncates) the bench's file with extra open flags.
+    #[cfg(windows)]
+    fn create_file(&self, flags: u32) -> Result<std::fs::File, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(flags)
+            .open(self.file())
+            .map_err(|e| format!("{}: {e}", self.file().display()))
+    }
+
+    /// Deletes the bench's file (if there).
+    pub fn remove_file(&self) -> Result<(), String> {
+        match std::fs::remove_file(self.file()) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!("remove {}: {e}", self.file().display())),
+        }
+    }
+
+    /// Deletes the bench's file, and the folder if this run created it.
+    pub fn close(self) -> Result<(), String> {
+        self.remove_file()?;
+        if self.created {
+            std::fs::remove_dir(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        }
+        Ok(())
+    }
+}
 
 /// Deterministic random bytes (xorshift32), so a mismatch can be located.
 #[must_use]
@@ -132,6 +218,20 @@ fn drive_root() -> Result<PathBuf, String> {
     }
 }
 
+/// Makes Windows drop its cached view of the SD card before the bench
+/// writes it: `drive off` (no medium), then `drive on` (the medium comes
+/// back changed, and Windows re-reads the volume). Files the device wrote
+/// meanwhile (an image's) are then in Windows' view, so its allocations
+/// can't land on them.
+fn refresh_drive(root: &Path) -> Result<(), String> {
+    super::usb::command_reply(root, "drive off")?;
+    std::thread::sleep(std::time::Duration::from_secs(4));
+    super::usb::command_reply(root, "drive on")?;
+    // The medium stays away until Windows has noticed, then comes back.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    Ok(())
+}
+
 /// A buffer whose bytes start on a 4 KiB boundary (unbuffered I/O needs
 /// sector-aligned memory).
 struct Aligned {
@@ -152,23 +252,17 @@ impl Aligned {
 }
 
 #[cfg(windows)]
-fn drive_once(root: &Path, data: &[u8]) -> Result<(u128, u128), String> {
+fn drive_once(bench: &BenchDir, data: &[u8]) -> Result<(u128, u128), String> {
     use std::io::{Read, Write};
     use std::os::windows::fs::OpenOptionsExt;
     const NO_BUFFERING: u32 = 0x2000_0000;
     const WRITE_THROUGH: u32 = 0x8000_0000;
     const CHUNK: usize = 1024 * 1024;
-    let path = root.join(DRIVE_FILE);
+    let path = bench.file();
     let mut buf = Aligned::new(CHUNK);
     let t = Instant::now();
     {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(NO_BUFFERING | WRITE_THROUGH)
-            .open(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut f = bench.create_file(NO_BUFFERING | WRITE_THROUGH)?;
         for c in data.chunks(CHUNK) {
             buf.get()[..c.len()].copy_from_slice(c);
             f.write_all(&buf.get()[..c.len()])
@@ -196,7 +290,7 @@ fn drive_once(root: &Path, data: &[u8]) -> Result<(u128, u128), String> {
         }
     }
     let read_ms = t.elapsed().as_millis();
-    std::fs::remove_file(&path).map_err(|e| format!("remove {}: {e}", path.display()))?;
+    bench.remove_file()?;
     if back.len() != data.len() {
         return Err(format!("read back {} bytes of {}", back.len(), data.len()));
     }
@@ -210,7 +304,7 @@ fn drive_once(root: &Path, data: &[u8]) -> Result<(u128, u128), String> {
 }
 
 #[cfg(not(windows))]
-fn drive_once(_root: &Path, _data: &[u8]) -> Result<(u128, u128), String> {
+fn drive_once(_bench: &BenchDir, _data: &[u8]) -> Result<(u128, u128), String> {
     Err("the drive bench needs Windows".into())
 }
 
@@ -385,17 +479,27 @@ pub fn run(root: &Path, which: &str, runs: usize) -> Result<(), String> {
         }
     }
     if which != "serial" {
-        let root = drive_root()?;
+        refresh_drive(root)?;
+        let bench = BenchDir::open(&drive_root()?)?;
+        let mut result = Ok(());
         for i in 0..runs {
             let data = pattern(DRIVE_BYTES, 0xD15C + i as u32);
-            let (w, r) = drive_once(&root, &data)?;
-            println!(
-                "drive {}: {DRIVE_BYTES} B write {w} ms = {} KB/s, read {r} ms = {} KB/s, read-back identical",
-                i + 1,
-                kbps(DRIVE_BYTES, w),
-                kbps(DRIVE_BYTES, r)
-            );
+            match drive_once(&bench, &data) {
+                Ok((w, r)) => println!(
+                    "drive {}: {DRIVE_BYTES} B write {w} ms = {} KB/s, read {r} ms = {} KB/s, read-back identical",
+                    i + 1,
+                    kbps(DRIVE_BYTES, w),
+                    kbps(DRIVE_BYTES, r)
+                ),
+                Err(e) => {
+                    result = Err(e);
+                    break;
+                }
+            }
         }
+        let closed = bench.close();
+        result?;
+        closed?;
     }
     Ok(())
 }
@@ -413,6 +517,72 @@ mod tests {
         let (_, r) = rp_loadproto::feed_slice(&mut rx, &f, &mut dest);
         assert_eq!(r, Some(Err(rp_loadproto::LoadError::BadCrc)));
         assert_eq!(&dest[..1000], &p[..]);
+    }
+
+    /// The bench folder never touches what isn't the bench's: a folder
+    /// holding someone else's file is refused, the files beside it survive,
+    /// and closing removes only what the run created.
+    #[test]
+    fn the_bench_folder_keeps_off_other_files() {
+        let root = std::env::temp_dir().join(format!("rp-usbbench-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("noise-ri.bin"), b"keep").unwrap();
+        let b = BenchDir::open(&root).unwrap();
+        assert!(b.file().starts_with(root.join(BENCH_DIR)));
+        std::fs::write(b.file(), b"x").unwrap();
+        b.close().unwrap();
+        assert!(!root.join(BENCH_DIR).exists(), "created folder left behind");
+        assert_eq!(std::fs::read(root.join("noise-ri.bin")).unwrap(), b"keep");
+        // A folder of that name holding something else is not ours.
+        std::fs::create_dir(root.join(BENCH_DIR)).unwrap();
+        std::fs::write(root.join(BENCH_DIR).join("theirs.txt"), b"t").unwrap();
+        assert!(BenchDir::open(&root).is_err());
+        assert!(root.join(BENCH_DIR).join("theirs.txt").exists());
+        // An existing empty folder is used and kept.
+        std::fs::remove_file(root.join(BENCH_DIR).join("theirs.txt")).unwrap();
+        BenchDir::open(&root).unwrap().close().unwrap();
+        assert!(
+            root.join(BENCH_DIR).exists(),
+            "removed a folder it didn't create"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The class guard: nothing in this file creates or deletes files
+    /// except `BenchDir`'s methods, so no bench can write or delete outside
+    /// its folder.
+    #[test]
+    fn only_bench_dir_creates_or_deletes() {
+        let src = include_str!("usbbench.rs");
+        let body_start = src.find("impl BenchDir {").unwrap();
+        let body_end = body_start + src[body_start..].find("\n}\n").unwrap();
+        let tests = src.find("#[cfg(test)]").unwrap();
+        // Card writes come only from the drive's root, handed only to
+        // BenchDir::open.
+        let roots: Vec<usize> = src[..tests]
+            .match_indices("drive_root()")
+            .map(|m| m.0)
+            .collect();
+        // Three: its definition, BenchDir::open, and the trial reading the
+        // card's loader (copied from the card, never to it).
+        assert_eq!(roots.len(), 3, "drive_root used elsewhere: {roots:?}");
+        assert!(src.contains("BenchDir::open(&drive_root()?)"));
+        assert!(src.contains("let card = drive_root()?.join(\"retropane.bin\");"));
+        assert!(src.contains("std::fs::copy(&card, &saved)"));
+        for needle in [
+            "fs::remove_file(",
+            "fs::remove_dir(",
+            "fs::create_dir(",
+            ".create(true)",
+        ] {
+            for (at, _) in src[..tests].match_indices(needle) {
+                assert!(
+                    (body_start..body_end).contains(&at),
+                    "`{needle}` outside BenchDir at byte {at}"
+                );
+            }
+        }
     }
 
     #[test]
