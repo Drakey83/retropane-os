@@ -4395,8 +4395,14 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let _ = child.wait();
     if wsl {
         // Killing wsl.exe may not reach the Linux process at once; make sure
-        // it's gone before the next test binds the same ports.
-        let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+        // it's gone before the next test binds the same ports. Only this
+        // run's emulator, found by its own serial port: other sessions run
+        // emulators at the same time on their own port blocks.
+        let _ = wsl_bash(&format!(
+            "pkill -f -- '-serial tcp:127.0.0.1:{},'; sleep 0.3; true",
+            serial_port()
+        ))
+        .status();
     }
     // Whatever the guest printed while `during` ran is still queued: keep it,
     // so a test can check what happened after its own waiting.
