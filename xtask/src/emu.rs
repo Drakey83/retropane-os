@@ -1554,6 +1554,62 @@ fn strip_tail(v: &str) -> String {
 /// emulator that models the blend and the display's events (`mbx-blend`,
 /// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
 /// device's run (docs/hw/emulator.md).
+/// The USB disconnect hunt (rp-unplug, docs/hw/udc.md T4): every candidate
+/// tried and undone, the host controller's port 2 reached, the run back at
+/// the loader with no fault. The emulator can't say which candidate
+/// disconnects on the device (its pull-up isn't modelled): this only proves
+/// the image is safe to send.
+pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-unplug.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-unplug"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((
+                &rp_loadproto::frame(&payload),
+                "RetroPane 26 USB disconnect hunt",
+            )),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("unplug: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("unplug: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "UDC on, UP2OCR",
+        "UP2OCR was",
+        "host controller SE0 on port 2: resets",
+        "UP2OCR 0 with the UDC off: resets",
+        "CPLD 1C bit 2:",
+        "CPLD 02 bit 7:",
+        "RETROPANE-UNPLUG-DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("unplug: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    unplug OK: every candidate tried and undone, back at the loader");
+    Ok(())
+}
+
 /// The MBX 3D core's first-triangle test (rp-mbx3d, ADR-0024 M4): runs
 /// under the loader, every try timed out (no 3D model), back on a button.
 pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {

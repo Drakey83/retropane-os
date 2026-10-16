@@ -220,8 +220,8 @@ ruled out GPIO2, `UP2OCR` DPPUE/DPPDE, CPLD `0x1C` bit 3 and `UDE`. A PC-side
 port cycle (`IOCTL_USB_HUB_CYCLE_PORT`, `pnputil /restart-device`) works
 too but needs admin each time: a fallback, not the fix.
 
-**T4 design: `rp-unplug`, the disconnect hunt (planned 2026-10-16, not
-built).** A new test image (test images ratchet freely; no loader bytes),
+**T4 design: `rp-unplug`, the disconnect hunt (built 2026-10-16,
+`cargo xtask emu-unplug` passes; not yet run on the device).** A new test image (test images ratchet freely; no loader bytes),
 started by the loader with `cargo xtask load`, built on `rp-reconnect`:
 it enables the UDC itself, then for each candidate applies it for 1 s,
 undoes it, and counts the bus resets and SETUPs in the next 3 s (a real

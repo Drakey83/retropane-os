@@ -57,6 +57,7 @@ members = [
     "boot/cs3bus",
     "boot/usb",
     "boot/reconnect",
+    "boot/unplug",
     "boot/loadproto",
     "boot/loader",
     "boot/bench",

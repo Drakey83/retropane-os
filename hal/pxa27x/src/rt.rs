@@ -534,6 +534,28 @@ static mut UDC_TAKEN: bool = false;
 /// CKEN bit for the USB device controller.
 pub const CKEN_UDC: u32 = 11;
 
+/// Hands out the USB host controller (OHCI, base `0x4C000000`) once, with
+/// its clock enabled. On the X51v its port 2 shares the USB connector's
+/// transceiver with the device controller (`UP2OCR.HXS`, docs/hw/udc.md).
+pub fn take_uhc() -> Option<Mmio> {
+    // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
+    let taken = unsafe { core::ptr::addr_of_mut!(UHC_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    enable_clock(CKEN_UHC);
+    let base = NonNull::new(va(0x4C00_0000) as *mut u32)?;
+    // SAFETY: the USB host controller's register window (PXA27x memory map:
+    // the OHCI registers, then UHCHR at 0x64 and the PXA27x additions up to
+    // 0x6C), identity-mapped; the flag guarantees one owner.
+    Some(unsafe { Mmio::new(base, 0x100) })
+}
+
+/// Single-use guard for the USB host controller.
+static mut UHC_TAKEN: bool = false;
+/// CKEN bit for the USB host controller.
+pub const CKEN_UHC: u32 = 10;
+
 /// Hands out the MMC/SD controller once, with its clock enabled.
 pub fn take_mmc() -> Option<Mmio> {
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
