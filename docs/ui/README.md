@@ -103,7 +103,13 @@ The owner picked VClouds' Rainmeter work (deviantart.com/vclouds: "Glasses", "VC
 - **Type.** Thin geometric sans, big light numerals (`18°`) and spaced capitals for labels and dates (`MON 12`, `OCTOBER`). His skins bundle Century Gothic, which is Monotype's and is never shipped. The concepts use Didact Gothic (SIL OFL) as an open stand-in.
 - **Icons break out of their frames.** Weather icons are large and overhang the top edge of their glass tile.
 - **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
-- **Clean-room.** VClouds' icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping icons will be original work in his volumetric style, unless the artist grants permission, or the Oxygen set (LGPL-3) is the fallback.
+- **Clean-room.** VClouds' icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping weather icons: see "Weather icon packs" below (owner, 2026-10-16); the Oxygen set and Claude-drawn icons are ruled out by the owner.
+
+**Weather icon packs (owner, 2026-10-16).**
+- **One pack in the system** (flash), kept barebones: VClouds' set if the artist grants permission (asked; no answer yet), else the owner's choice.
+- **Five more packs** install onto the SD or CF card when one is present (from the expansion pack, docs/apps-and-packs.md); with no card, the one built-in pack stays the only option.
+- **Bring your own:** users can add their own pack. Packs are pictures keyed by the WMO weather codes, so any pack covering the codes works.
+- **Sources:** artists' packs with a free licence the owner likes (to find), or packs the owner makes with generative AI. Never Claude-drawn icons.
 
 **Owner verdict (2026-10-12): "I LOVE it."** Boards N–R (smoked glass over photo wallpapers) are the chosen direction. The cartoon sky wallpaper is dropped. The candidate wallpapers we'd ship are all free of restrictions, from Wikimedia Commons, cropped to 3:4:
 
