@@ -73,7 +73,7 @@ ruled out by ear. The two-stage design stands; its darkest picture stage
 (1/8) is one step past what was shown (1/4) and is checked by eye when the
 night setting gets its UI.
 
-## The night setting's control (proposal, 2026-10-16: owner's vote pending)
+## The night setting's control (decided 2026-10-16: A and C)
 
 The device runs settled the mechanism (above): the light down to one count
 of 432, then the picture through the gamma table, to 1/4 seen and liked
@@ -95,6 +95,14 @@ step 9). What's left is how the user reaches it. It lives in Settings
   two things to set for one result.
 - **C. On a schedule** (dark after a set time). An extra on top of A or B,
   later; not a substitute.
+
+**Decided (owner, 2026-10-16): A and C.** One brightness slider reaching
+into the night range, and a schedule that moves that same slider: at the
+evening time it slides to the user's night level, in the morning back to
+where it was (one state, so the schedule and a hand on the slider can't
+disagree; a hand change during the night holds until the next scheduled
+time). Built with Settings (ROADMAP); the schedule needs the clock (the
+PXA27x RTC) and two times plus a level stored in settings.
 
 No cost in memory or speed either way: the gamma table is 17 registers
 written once per change, nothing per frame.
