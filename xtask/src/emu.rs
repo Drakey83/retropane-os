@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.17.0";
+pub const QEMU_RELEASE: &str = "rp-v0.18.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -748,9 +748,12 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
         "handoff: DMA running 00000000, stopped",
         "table @A8001320: 53435052",
         "shadow from RetroPane's table:",
-        " 10=8000",
-        " 18=000D",
-        " 1E=0003",
+        " 02=00FD",
+        " 10=1000",
+        " 12=000F",
+        " 16=0003",
+        " 18=0004",
+        " 1C=000C",
         "HANDOVER-OK",
     ] {
         if !log.contains(want) {
@@ -765,10 +768,14 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
 }
 
 /// The night-light experiment (item 76) under the loader: every step runs
-/// and the channel is put back. The emulator's 2700G doesn't model gamma
-/// (its table reads 0), so the picture steps must be skipped, not applied
-/// to a table of unknown form.
+/// and the channel is put back. The emulator's 2700G applies the graphics
+/// gamma table at scan-out (Windows Mobile's grey ramp at reset, gamma off
+/// as on a cold display: the image switches it on), so the picture steps
+/// run: the screen's grey ramp is seen at full, 1/2 and 1/4 through the
+/// table, pixel for pixel as RetroPane's reference (`scanout::gamma` of
+/// `scale_gamma`).
 pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::scanout::{WM_GAMMA, gamma, scale_gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -778,6 +785,53 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-nightlight"), &image)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
+    let shot = root.join("target/emulator/nightlight-screen.ppm");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    // The image's ramp: grey bar `i` (of 16, 30 pixels wide) from y = 400,
+    // in RGB565, then through the table scaled to `picture`/256.
+    let bar = |i: u32, picture: u32| {
+        let g8 = i * 255 / 15;
+        let (r, g) = (((g8 >> 3) << 3) as u8, ((g8 >> 2) << 2) as u8);
+        let t = scale_gamma(&WM_GAMMA, picture);
+        (gamma(&t, r, 16), gamma(&t, g, 8), gamma(&t, r, 0))
+    };
+    let pictures = [256, 128, 64];
+    let check = || -> Result<(), String> {
+        let mut seen = [false; 3];
+        let mut last = None;
+        let until = Instant::now() + Duration::from_secs(120);
+        while !seen.iter().all(|s| *s) {
+            if Instant::now() > until {
+                return Err(format!(
+                    "nightlight: picture steps not all seen through the gamma table (full, 1/2, 1/4: {seen:?}); last bars 15 and 8: {last:?}, want {:?}",
+                    pictures.map(|p| (bar(15, p), bar(8, p)))
+                ));
+            }
+            let _ = std::fs::remove_file(&shot);
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            mon.screendump(&guest, &shot)?;
+            let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+            if img.width >= 480 && img.height >= 640 {
+                let px = |x: u32, y: u32| {
+                    let o = ((y * img.width + x) * 3) as usize;
+                    (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2])
+                };
+                let got = (px(15 * 30 + 15, 520), px(8 * 30 + 15, 520));
+                for (k, p) in pictures.iter().enumerate() {
+                    if got == (bar(15, *p), bar(8, *p)) {
+                        seen[k] = true;
+                    }
+                }
+                last = Some(got);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Ok(())
+    };
     let output = boot(
         root,
         &Boot {
@@ -787,9 +841,9 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
-            input: Some((&frame, "RPL END")),
-            during: None,
-            then: None,
+            input: Some((&frame, "RPL OK")),
+            during: Some(&check),
+            then: Some("RPL END"),
             timeout: Duration::from_secs(600),
         },
     )?;
@@ -798,8 +852,9 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
         .map(|(_, l)| l)
         .ok_or("nightlight: no run log after the image returned")?;
     for want in [
-        "picture steps skipped",
-        "step 4: 1/432, picture 1/2 (skipped)",
+        "gamma: off, switched on for the steps",
+        "step 4: 1/432, picture 1/2",
+        "step 5: 1/432, picture 1/4",
         "step 8: 108/216 (WM): whine?",
         "NIGHTLIGHT-OK",
     ] {
@@ -807,8 +862,11 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
             return Err(format!("nightlight: no {want:?} in the run log:{log}"));
         }
     }
+    if log.contains("skipped") {
+        return Err(format!("nightlight: a step was skipped:{log}"));
+    }
     eprintln!(
-        "    night light OK: every step ran, picture steps skipped without a known gamma table"
+        "    night light OK: every step ran; the picture steps dimmed the screen through Windows Mobile's gamma table (full, 1/2, 1/4), pixel for pixel as the reference"
     );
     Ok(())
 }
@@ -2911,8 +2969,9 @@ pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
 
 /// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1 and
 /// no SD card, so the CF path stands alone. The emulated slot starts
-/// unpowered, as Windows Mobile hands it over; the loader attaches the
-/// card on its own (powered through the CPLD, reset, identified) before it
+/// powered, as Windows Mobile hands it over (its CPLD table, measured);
+/// the loader attaches the card on its own (powered through the CPLD,
+/// reset, identified) before it
 /// offers the drive, so the PC's first question finds the second drive
 /// ready; `cf` reports it (capacity, write cache
 /// off, partition) without taking it again; the CPLD writes leave the
@@ -3010,7 +3069,9 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             }
         }
         // The shadow came from Windows Mobile's table, and the bits it had
-        // on in the registers the CF attach wrote are still on (item 77).
+        // on in the registers the CF attach wrote are still on (item 77):
+        // SD power (0x16 bit 0) and the backlight (0x18 bit 2) beside the
+        // slot's own.
         s.write_all(&rp_loadproto::control_frame("cpld"))
             .map_err(|e| e.to_string())?;
         let mut reply = usb_read_until(&mut s, "shadow from", 10)?;
@@ -3027,9 +3088,12 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         }
         for want in [
             "shadow from WM's table:",
-            " 10=9000",
-            " 18=000d",
-            " 1e=0003",
+            " 02=00fd",
+            " 10=1000",
+            " 12=000f",
+            " 16=0003",
+            " 18=0004",
+            " 1c=000c",
         ] {
             if !reply.contains(want) {
                 return Err(format!(
@@ -3142,7 +3206,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: attached on its own from an unpowered slot before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
+        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }
@@ -3151,13 +3215,15 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
 /// hand-off (docs/hw/cpld.md "Shadow at hand-over"; slots in Windows
 /// Mobile's order: 0x02, 0x10, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E,
 /// 0x08), as QEMU arguments that put it there before the loader starts:
-/// the emulator otherwise starts from reset, with nothing in RAM. Shaped
-/// like the device's (backlight on, the guessed serial and display bits
-/// in 0x18, a notification bit in 0x10, battery bits in 0x1E); the CF slot
-/// off, as the emulated slot starts.
+/// the emulator otherwise starts from reset, with nothing in RAM. The
+/// values measured on the owner's X51v (`rp-handover`, 2026-10-16), the
+/// same the emulated CPLD's latches start with: backlight on, the SD and
+/// CF slots powered.
 fn wm_cpld_table_args() -> Vec<String> {
     const TABLE: u32 = 0xA800_1320;
-    const SLOTS: [u32; 10] = [0, 0x8000, 0, 0x0008, 0, 0x000D, 0, 0, 0x0003, 0];
+    const SLOTS: [u32; 10] = [
+        0x00FD, 0x1000, 0x000F, 0x0008, 0x0003, 0x0004, 0x0006, 0x000C, 0, 0,
+    ];
     SLOTS
         .iter()
         .enumerate()
