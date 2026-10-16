@@ -131,6 +131,8 @@ commands:
   emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
+  emu-stale only the stale-view check (a PC write from before an image's
+            run is refused; the drive goes away; no file lost)
   emu-storfast the storage speed-ups' device test (rp-storfast) under the
             loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
@@ -148,8 +150,8 @@ fn main() -> ExitCode {
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-drive" | "emu-usb-suite"
-        | "emu-storfast" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-usb-suite" | "emu-storfast" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -366,6 +368,7 @@ fn run_step(step: &str) -> Result {
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
+        "emu-stale" => cross().and_then(|()| emu::boot_loader_stale_view_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
         "emu-quantum" => cross().and_then(|()| emu::boot_quantum(&workspace_root())),
         "emu-threads" => cross().and_then(|()| emu::boot_threads(&workspace_root())),
@@ -417,6 +420,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
+            .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))

@@ -232,8 +232,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "medium change reported as a unit attention only (Windows keeps its stale view)",
         file: "drivers/usb-msc/src/lib.rs",
-        from: "            u.away = Some(None);",
-        to: "            u.attention = true;",
+        from: "                u.attention = false;\n                u.away = Some(None);",
+        to: "                u.attention = true;",
         check: Check::Host(&[
             "-p",
             "rp-usb-msc",
@@ -281,6 +281,24 @@ pub const MUTANTS: &[Mutant] = &[
         from: "    pub fn medium_changed(&mut self, lun: usize) {\n        self.ahead = None;",
         to: "    pub fn medium_changed(&mut self, lun: usize) {",
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
+    },
+    Mutant {
+        name: "a host's view from before the drive started is trusted (its old root directory written back)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_view_from_before_the_drive_started_is_sent_away_first",
+        ]),
+    },
+    Mutant {
+        name: "a host's view from before the loader's restart writes over an image's file (emulator)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Emu(crate::emu::boot_loader_stale_view_alone),
     },
     Mutant {
         name: "a write uses the blocks read ahead instead of dropping them",
