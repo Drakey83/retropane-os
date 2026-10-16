@@ -15,7 +15,7 @@ owner's X51v by the item 74 work (`cargo xtask usbbench`, 2026-10-16).
 
 | Signal | Where | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
-| USB cable detect | GPIO14, input (AxDroid's guess) | read **1** on the probe run (docked, as WM left it) but **0** under RetroPane while docked and enumerated. So it is not a plain cable-present level, or needs something WM sets up (a CPLD rail? a comparator?). WM enables both edges on it as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14), so it does matter to WM | open | (A), (D), real X51v (2026-10-11) |
+| USB cable detect | GPIO14, input (AxDroid's guess) | read **1** on the probe run (docked, as WM left it) but **0** under RetroPane while docked and enumerated. So it is not a plain cable-present level, or needs something WM sets up (a CPLD rail? a comparator?). Again 0 on 2026-10-16 with the PC configured (the loader's status line "cable 0 configured yes" after a soft reset): the loader's "cable" label shows this unproven reading, not a fault WM enables both edges on it as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14), so it does matter to WM | open | (A), (D), real X51v (2026-10-11) |
 | D+ pull-up ("connect") | **none found: probably hard-wired.** `rp-reconnect` (2026-10-11) tried, with the UDC enabled and the PC idle: GPIO2 low→high, GPIO2 as input→output high, `UP2OCR` DPPUE off→on, DPPDE on→off, CPLD `0x1C` bit 3 off→on, UDE off→on, and CPLD bit 3 + UDE together. Not one produced a bus reset or a SETUP within 3 s: the PC never saw a disconnect. `UP2OCR` read `0x00020020` with the UDC on (HXOE and bit 5). Next: forcing SE0 through `UP2OCR`'s output override, and a PC-side device restart | open | real X51v |
 | (earlier guess) GPIO2, output, high | the PC enumerated the device with GPIO2 high, but **never noticed a disconnect** when GPIO2 went low (or the UDC was disabled): every run needed a cable replug. So GPIO2 is not (only) the pull-up control; AxDroid's board file left `gpio_pullup` unset too. Candidates: a CPLD bit (docs/hw/cpld.md), `UP2OCR.DPPUE` with the internal transceiver | open | real X51v (2026-10-11) |
 | Transceiver | **port 2's, output enabled: `UP2OCR` = `0x00020000` (HXOE) as WM leaves it** | with HXOE cleared the PC saw the attach (a bus reset) but no SETUP ever arrived; with it set, enumeration worked. The driver sets it | confirmed | real X51v (2026-10-11) |
@@ -135,6 +135,110 @@ buffering either", and no DMA), so none of this came from it.
 | Windows sometimes refuses to reopen the serial port for a moment after a program closed it ("access denied"): xtask's scripts retry the open | likely | (U) the first of several back-to-back commands died right after finding the port |
 
 ## Open questions
+
+### The first enumeration after a hand-over from Windows Mobile (2026-10-16)
+
+**Symptom.** After a soft reset (Windows Mobile boots, HaRET starts the
+card's loader) Windows often doesn't configure the serial + drive device:
+the loader counts resets and SETUPs (2026-10-16: 11 resets, 34 setups;
+2026-10-15 after a watchdog reboot: 27 resets, **0** setups) and after 25 s
+falls back to the serial-only layout, which Windows takes at once. After an
+image runs and returns, the composite device is configured every time.
+
+**Windows' side** (Kernel-PnP and DeviceSetupManager logs, read without
+admin; `Get-PnpDevice` arrival times):
+
+| When | What Windows logged |
+|---|---|
+| 10-16 05:43:36 (a soft reset) | the composite "surprise removed, missing on the bus"; removal of its drive interface (`MI_02`) **vetoed** (open handles) |
+| 05:43:48-05:45:29 | **7 cycles of "Unknown USB Device (Device Descriptor Request Failed)"** (`VID_0000&PID_0002`, Code 43), one every 15-17 s, each "failing" then "missing on the bus"; then nothing for 7 minutes: Windows stopped trying |
+| 10-15 12:34, 12:39, 12:46, 13:04 | the same: the composite gone, then 6-7 descriptor-failure cycles ~15 s apart, then silence |
+| 10-16 07:09:28-07:09:42 | Windows Mobile's own device (`VID_413C&PID_4011`, "Windows Mobile Remote Adapter") arrives and leaves (HaRET) |
+| 07:09:42-07:12:03 | nothing logged: no descriptor-failure device, no RetroPane device (the loader's 11 resets / 34 setups fall in here) |
+| 07:12:03 | serial-only `USB\VID_1209&PID_0001\RP26-0001` (COM3) arrives: the fallback |
+| **07:12:15** | COM3 leaves and the **composite's two drives arrive in the same second**: after a disable/enable of the UDC (most likely `drive on`, which switches back from the fallback), Windows configured the composite at the first try |
+| 07:12:48-07:13:14 | an image runs (the drives fail), the loader returns, the composite is configured again |
+
+So the composite layout itself isn't what Windows rejects (07:12:15, and
+every image return); what fails is the loader's **first** UDC set-up after
+Windows Mobile owned the controller, and the fallback works because it
+**re-enables the controller**, not because of the layout.
+
+**Ranked hypotheses.**
+
+1. **State Windows Mobile leaves in the controller** (lead). Every failure
+   followed Windows Mobile (two soft resets, one watchdog reboot); every
+   success followed a controller the loader itself had set up or turned
+   off (image return, fallback, `drive on`). `Udc::enable` resets only
+   part of the block: it clears `UDE`, writes the endpoint table and adds
+   `HXOE` to `UP2OCR`, but
+   - leaves `UDCISR0`/`UDCISR1` as found: a configuration-change status
+     left pending would make the first `poll` run `config_change` with no
+     request from the host (writes `AREN`, sets `SMAC`), and a stale
+     endpoint 0 packet-complete would let `InData` send its next packet
+     early (the "one packet in flight" row above);
+   - leaves every `UDCCSRx` (A-X) as found: `DME` and `FST` bits that
+     Windows Mobile's own function drivers set;
+   - leaves `UP2OCR`'s other bits: after a full reset (the watchdog case)
+     the register resets to `HXOE | HXS` (`0x00030000`, the host controller
+     selected). If Windows Mobile hadn't set it up again before HaRET ran,
+     the `HXOE` check passes and the device still can't answer: **27 resets
+     and 0 SETUPs is exactly the symptom of the transceiver not driving
+     for the device** (measured 2026-10-11 with `HXOE` off).
+   Same class as the OS timer channel and GPIO edge state that survived
+   earlier hand-overs (`docs/hw/emulator.md`) and as the CF slot ("whatever
+   an earlier owner left is not trusted").
+2. **Windows' retry budget while nothing answers.** The pull-up is
+   hard-wired, so the PC sees a device attached all through Windows
+   Mobile's boot and HaRET, while the UDC is off. Windows tries,
+   fails, retries every ~15 s and gives up after about 7 tries (05:43,
+   10-15 12:34-13:05); a port given up on is only retried after a real
+   reconnect (2026-10-15: a different PC port was needed). It explains the
+   silences and the port change, not why tries that reach a working loader
+   fail; it makes any first-try failure (hypothesis 1) much costlier.
+3. **The old composite device not yet gone.** Windows logs the drive
+   interface's removal as vetoed at almost every hand-over (open handles:
+   Explorer, the indexer). A device instance with the same ID
+   (`5250323630303031`) that hasn't been torn down can block the new one;
+   the serial-only layout has another ID (`RP26-0001`) and isn't blocked.
+   Fits ADR-0014's 2026-10-15 case (Explorer open, ~20 MB written just
+   before, 13 resets / 91 setups); no veto was logged before the 07:09 case.
+4. *Unlikely:* a descriptor the host rejects (the composite was configured
+   at once at 07:12:15); the loop stalling during start-up (the CF slot's
+   408 ms power cycle on a retry would cost one try, not 25 s).
+
+**Test plan** (each step one device run, only on the owner's go; stop at
+the first that settles it):
+
+- **T1, PC side only, no new code.** Trace Windows' USB stack across one
+  soft reset into the card's loader. In an *elevated* terminal:
+  `logman create trace rp-usb -o %TEMP%\rp-usb.etl -ets -p Microsoft-Windows-USB-USBHUB3 0xffffffffffffffff 0xff`,
+  then `logman update trace rp-usb -ets -p Microsoft-Windows-USB-UCX 0xffffffffffffffff 0xff`;
+  soft reset the Axim and wait for the loader's screen to say which layout
+  Windows took; `logman stop rp-usb -ets`. The `.etl` is read without
+  admin (`Get-WinEvent -Path ... -Oldest`). It shows, per reset, which
+  request failed and how (timeout, STALL, short or garbled data) and
+  whether Windows was still trying while the loader was up. Timeouts or bad
+  data while the loader runs → hypothesis 1; no tries reaching the loader
+  until the fallback → 2; enumeration done but no driver → 3.
+- **T2, what Windows Mobile leaves.** Add the UDC to `rp-probe` (it runs
+  from HaRET, as Windows Mobile left the hardware, as on 2026-10-11):
+  `UDCCR`, `UDCISR0/1`, `UDCICR0/1`, `UP2OCR`, every `UDCCSRx` and
+  `UDCCRx`, `DRCMR` 24-47. Once after a soft reset, once after a watchdog
+  reboot. A test image: no loader bytes.
+- **T3, the fix (proposed, not built).** `Udc::enable` takes the block
+  from a known state instead of patching what it finds: `UP2OCR` written
+  whole (`HXOE` only: Windows Mobile's own value), `UDCISR0/1` cleared
+  (write all ones), every endpoint's `UDCCSRx` flushed with `DME` and
+  `FST` off, all before `UDE`. A few dozen bytes in the loader at most
+  (the `UP2OCR` read-and-test goes). Host test: a fake bus preloaded with
+  the state T2 finds, enumeration must succeed; the mutant (old `enable`)
+  must fail. Device proof: five soft resets in a row, the composite
+  configured each time without the fallback, then one watchdog reboot.
+- If T1 points at hypothesis 3 instead: Windows tears the old instance
+  down once the last handle on its drive closes, so the fix is on the
+  drive's side (how the loader lets Windows let go before it comes back);
+  designed only after T1.
 
 - Streaming CPU-written IN packets into both buffers without the OUT race
   (see above): would let command replies go back to back; low value now that
