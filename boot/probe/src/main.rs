@@ -239,9 +239,11 @@ mod image {
 
             let _ = writeln!(log, "SD...");
             let mut card = None;
-            if let (Some(c), Some(mmc), Some(dma)) =
-                (cpld.as_mut(), rt::take_mmc(), rt::take_dma(0))
-            {
+            if let (Some(c), Some(mmc), Some(dma)) = (
+                cpld.as_mut(),
+                rt::take_mmc(),
+                rt::take_dma(rp_hal_pxa27x::dma_map::SD),
+            ) {
                 c.set_sd_power(true);
                 rt::delay_us(10_000);
                 // DMA-capable, but off: every row is first measured through

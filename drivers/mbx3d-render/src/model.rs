@@ -278,11 +278,32 @@ impl Gpu {
                     quads += quad_cost(o.tex.is_some(), o.tsp & m3::TSP_BLEND != 0);
                 }
             }
+            // The target's format (`0x650`, version 26): 6 ARGB8888, 1
+            // RGB565, 3 ARGB1555 (channels truncated; the alpha bit set for
+            // opaque pixels: from bit 7, assumed).
+            let format = self.reg(0x650);
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
-                    let a = (target + (tile.y + py) * stride + 4 * (tile.x + px)) as usize;
                     let c = tile.c[(py * m3::TILE_W + px) as usize];
-                    m[a..a + 4].copy_from_slice(&c.to_le_bytes());
+                    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+                    let x = tile.x + px;
+                    let row = target + (tile.y + py) * stride;
+                    match format {
+                        1 | 3 => {
+                            let v = if format == 1 {
+                                (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+                            } else {
+                                (c >> 31) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3
+                            };
+                            let a = (row + 2 * x) as usize;
+                            m[a..a + 2].copy_from_slice(&(v as u16).to_le_bytes());
+                        }
+                        6 => {
+                            let a = (row + 4 * x) as usize;
+                            m[a..a + 4].copy_from_slice(&c.to_le_bytes());
+                        }
+                        f => panic!("target format 0x650 = {f} never measured"),
+                    }
                 }
             }
             n += 1;

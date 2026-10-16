@@ -149,6 +149,49 @@ impl DmaEngine for NoDma {
     fn abort(&mut self) {}
 }
 
+/// Memory-to-memory DMA out of a device's data window: a register that
+/// answers at every address of a window (a CompactFlash card's data
+/// register, 0x400-0x7FF of its common memory), read `window` bytes at a
+/// time with incrementing addresses. No request line: the driver starts it
+/// only when the device has the data. Two phases, as [`DmaEngine`].
+pub trait WindowDma {
+    /// Arms a copy of `buf.len()` bytes into `buf` from the window at
+    /// physical address `src`, `window` bytes per pass. False if it can't
+    /// (misaligned, busy): the driver then uses the CPU.
+    fn arm_from_window(&mut self, src: u32, window: usize, buf: &mut [u8]) -> bool;
+    /// `None` while it runs; `Some(true)` when done, `Some(false)` on a
+    /// bus error; either way the engine is disarmed.
+    fn done(&mut self) -> Option<bool>;
+    /// Stops the armed copy and disarms.
+    fn abort(&mut self);
+}
+
+/// An engine that may be missing: none refuses, so the driver uses the CPU.
+impl<T: WindowDma> WindowDma for Option<T> {
+    fn arm_from_window(&mut self, src: u32, window: usize, buf: &mut [u8]) -> bool {
+        self.as_mut()
+            .is_some_and(|d| d.arm_from_window(src, window, buf))
+    }
+    fn done(&mut self) -> Option<bool> {
+        self.as_mut().map_or(Some(false), WindowDma::done)
+    }
+    fn abort(&mut self) {
+        if let Some(d) = self {
+            d.abort();
+        }
+    }
+}
+
+impl WindowDma for NoDma {
+    fn arm_from_window(&mut self, _: u32, _: usize, _: &mut [u8]) -> bool {
+        false
+    }
+    fn done(&mut self) -> Option<bool> {
+        Some(false)
+    }
+    fn abort(&mut self) {}
+}
+
 /// Why a block transfer failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockError {

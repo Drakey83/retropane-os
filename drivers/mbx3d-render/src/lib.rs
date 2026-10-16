@@ -367,6 +367,42 @@ pub struct Picture {
     pub w: u16,
     /// Height in pixels.
     pub h: u16,
+    /// Its pixels.
+    pub format: PixelFormat,
+}
+
+/// The pixels a target holds (`0x650`, `rp-mbx3d` version 26: tiles stay
+/// 8 x 16 in every format, `0x660` the stride in bytes / 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// 32-bit `0xAARRGGBB` (`0x650` 6: Dell's).
+    Argb8888,
+    /// 16-bit RGB565 (`0x650` 1: the panel's own depth, half the bytes to
+    /// write and keep).
+    Rgb565,
+    /// 16-bit ARGB1555 (`0x650` 3; opaque pixels with the alpha bit set).
+    Argb1555,
+}
+
+impl PixelFormat {
+    /// `0x650`.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Argb8888 => 6,
+            Self::Rgb565 => 1,
+            Self::Argb1555 => 3,
+        }
+    }
+
+    /// Bytes a pixel.
+    #[must_use]
+    pub const fn bytes(self) -> u32 {
+        match self {
+            Self::Argb8888 => 4,
+            _ => 2,
+        }
+    }
 }
 
 impl Picture {
@@ -378,6 +414,19 @@ impl Picture {
             stride: 480 * 4,
             w: 480,
             h: 640,
+            format: PixelFormat::Argb8888,
+        }
+    }
+
+    /// A `w` x `h` picture of `format` at `at`, its lines packed.
+    #[must_use]
+    pub const fn packed(at: u32, w: u16, h: u16, format: PixelFormat) -> Self {
+        Self {
+            at,
+            stride: w as u32 * format.bytes(),
+            w,
+            h,
+            format,
         }
     }
 }
@@ -398,7 +447,9 @@ impl Target {
     /// The rectangle's first pixel (`0x65C`).
     #[must_use]
     pub const fn addr(&self) -> u32 {
-        self.picture.at + self.y as u32 * self.picture.stride + self.x as u32 * 4
+        self.picture.at
+            + self.y as u32 * self.picture.stride
+            + self.x as u32 * self.picture.format.bytes()
     }
 }
 
@@ -1157,9 +1208,10 @@ impl Renderer {
         let pic = target.picture;
         if u32::from(target.x) + u32::from(self.w) > u32::from(pic.w)
             || u32::from(target.y) + u32::from(self.h) > u32::from(pic.h)
-            || pic.stride < u32::from(pic.w) * 4
+            || pic.stride < u32::from(pic.w) * pic.format.bytes()
             || !pic.stride.is_multiple_of(4)
             || !pic.at.is_multiple_of(4)
+            || !target.addr().is_multiple_of(2)
         {
             return Err(Error::BadTarget);
         }
@@ -1218,6 +1270,7 @@ impl Renderer {
             pic.stride,
         );
         for &(off, v) in &t[..14] {
+            let v = if off == 0x650 { pic.format.code() } else { v };
             self.shadow.write(bus, off, v);
         }
         self.shadow.write(bus, 0x65C, addr);

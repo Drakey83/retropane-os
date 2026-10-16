@@ -13,6 +13,7 @@ mod serve;
 mod size;
 mod trace;
 mod usb;
+mod usbbench;
 mod userimg;
 
 use std::path::{Path, PathBuf};
@@ -54,6 +55,11 @@ commands:
             the resident loader (target/sdkit/loader) over USB
             (--setup: create the admin task that lets it re-find the Axim
             after each run without a cable replug; one UAC prompt, once)
+  usbbench  USB throughput through the loader (docs/perf.md, item 74):
+            `usbbench [serial|drive|all] [runs]`; a bad-CRC image frame and a
+            16 MiB unbuffered file written, read back and compared on the card;
+            `usbbench trial [loader image] [runs]` tries a new loader from RAM
+            (probe + benches), then loads the card's loader back
   put       write a file to the X51v's SD card over USB through the resident
             loader (ADR-0013): cargo xtask put <file> [name on the card]
   install   put the kit's loader, HaRET and scripts on the card the same way
@@ -115,16 +121,26 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-threads only the threads image's check (rp-threads: scheduler, user
+            mode, KData, FCSE in a native slot): run it before `load rp-threads`
+  emu-quantum the time-slice policies' touch, frame and switch-cost tests
+            (rp-quantum: all run; numbers printed): run it before `load rp-quantum`
   emu-usb   only the loader-over-USB check (image in, run log out)
   emu-loader only the loader's boot check (boot time, an image's round trip)
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
+  emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
+  emu-usb-suite every emulator check that goes through the USB controller
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
+  emu-stale only the stale-view check (a PC write from before an image's
+            run is refused; the drive goes away; no file lost)
+  emu-storfast the storage speed-ups' device test (rp-storfast) under the
+            loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
             --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
@@ -139,10 +155,10 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
-        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "emu-loader" | "emu-handover" | "emu-nightlight" | "mutants" | "qemu" => {
-            run_step(&cmd)
-        }
+        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
+        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -169,6 +185,21 @@ fn main() -> ExitCode {
             } else {
                 let force = args().skip(3).any(|a| a == "--force");
                 usb::load(&workspace_root(), &flag, force)
+            }
+        }
+        "usbbench" => {
+            eprintln!("==> usbbench {flag}");
+            if flag == "drivers" {
+                usbbench::drivers()
+            } else if flag == "latency" {
+                usbbench::latency(&workspace_root())
+            } else if flag == "trial" {
+                let image = args().nth(3).unwrap_or_else(|| "rp-loader".into());
+                let runs = args().nth(4).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::trial(&workspace_root(), &image, runs)
+            } else {
+                let runs = args().nth(3).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::run(&workspace_root(), &flag, runs)
             }
         }
         "put" => {
@@ -233,6 +264,11 @@ fn main() -> ExitCode {
         "log" => {
             eprintln!("==> log");
             usb::last_log(&workspace_root())
+        }
+        "udc" => {
+            // Diagnostics: `cargo xtask udc stats` (item 74, docs/hw/udc.md).
+            eprintln!("==> udc {flag}");
+            usb::command(&workspace_root(), &format!("udc {flag}"))
         }
         "cpld" => {
             eprintln!("==> cpld");
@@ -343,19 +379,40 @@ fn run_step(step: &str) -> Result {
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
+        "emu-stale" => cross().and_then(|()| emu::boot_loader_stale_view_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
+        "emu-quantum" => cross().and_then(|()| emu::boot_quantum(&workspace_root())),
+        "emu-threads" => cross().and_then(|()| emu::boot_threads(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
+        "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
+        "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
+        // Every check that goes through the USB controller, in `emu`'s order
+        // (UDC work: the rest of the suite doesn't touch it).
+        "emu-usb-suite" => cross()
+            .and_then(|()| emu::boot_loader(&workspace_root()))
+            .and_then(|()| emu::boot_usb_link(&workspace_root()))
+            .and_then(|()| emu::boot_loader_usb(&workspace_root()))
+            .and_then(|()| emu::boot_loader_trace(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cf(&workspace_root()))
+            .and_then(|()| emu::boot_loader_drive(&workspace_root()))
+            .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
+            .and_then(|()| emu::boot_loader_locked(&workspace_root()))
+            .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
             .and_then(|()| emu::boot_kernel(&workspace_root()))
             .and_then(|()| emu::boot_threads(&workspace_root()))
+            .and_then(|()| emu::boot_quantum(&workspace_root()))
             .and_then(|()| emu::boot_light(&workspace_root()))
             .and_then(|()| emu::boot_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader(&workspace_root()))
@@ -379,6 +436,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
+            .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
@@ -402,6 +460,8 @@ fn run_step(step: &str) -> Result {
             "rp-kernel",
             "--exclude",
             "rp-threads",
+            "--exclude",
+            "rp-quantum",
             // CLI glue; its logic lives in the tested romdump library.
             "--ignore-filename-regex",
             r"romdump.src.main\.rs",
