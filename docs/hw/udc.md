@@ -182,7 +182,47 @@ second set-up never sees is the **pending status in `UDCISR0/1`** (and
 anything the host itself remembers). `UP2OCR` stays the candidate for the
 separate 0-setups case after a watchdog reboot.
 
-**Ranked hypotheses.**
+**T1 result (2026-10-16 08:41-08:51, USB trace on the PC, Axim docked on
+hub port 7).** `cargo xtask reboot-wm` reset the board (its first try on
+the device: it works). Then:
+
+| Time | Port 7 as the PC's hub saw it |
+|---|---|
+| 08:41:40.6 | **disconnect** (port status `0x100`: powered, nothing connected): a board reset takes the D+ pull-up away |
+| 08:41:54.7 | connect (`0x101`); enumeration starts |
+| 08:41:58.0 | enabled (`0x103`); Windows Mobile's "Remote Adapter" (`413C:4011`) configured |
+| ~08:46 | the owner starts the loader from Windows Mobile (HaRET) |
+| 08:46-08:51 | **nothing**: no status change, no reset, no enumeration, no transfer error on port 7. Windows kept listing Windows Mobile's device as present and working; the loader showed 0 resets, 0 setups |
+
+So **Windows never sees HaRET's hand-over**: the pull-up stays (hard-wired),
+and Windows Mobile's device was idle, so no transfer failed and nothing made
+the hub reset the port. The loader is invisible until something on the PC
+talks to the old device and fails (outcome a: the hub's recovery resets
+reach the loader) or the cable is re-plugged (outcome b). A board reset is
+different: it **does** drop the pull-up (14 s disconnect), so the pull-up's
+supply is switchable by something on the board.
+
+Revised reading of outcome (a): the hub's resets are its *recovery of
+Windows Mobile's device*, which re-reads the descriptors and finds a
+different device (`1209:0001` instead of `413C:4011`); a fixed recovery
+script failing the same way each time fits the identical 11 / 34 counts,
+and the serial-only device appearing 12-80 s later, on Windows' schedule,
+fits Windows giving the old device up and enumerating afresh. Not traced
+yet (this run was outcome b).
+
+**Fix direction.** The loader must make the PC see a disconnect at start,
+as a board reset does. Candidates, each checked from the PC's side now
+that T1 gives an observable (port status, or Windows Mobile's device
+leaving): forcing SE0 through `UP2OCR`'s output override (the open item in
+the wiring table), and the board power bits a reset clears (CPLD; GPIOs
+for the USB transceiver's supply). `rp-reconnect` (2026-10-11) already
+ruled out GPIO2, `UP2OCR` DPPUE/DPPDE, CPLD `0x1C` bit 3 and `UDE`. A PC-side
+port cycle (`IOCTL_USB_HUB_CYCLE_PORT`, `pnputil /restart-device`) works
+too but needs admin each time: a fallback, not the fix.
+
+**Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
+the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even
+tried the loader).
 
 1. **State Windows Mobile leaves in the controller** (lead). Every failure
    followed Windows Mobile (two soft resets, one watchdog reboot); every
