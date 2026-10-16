@@ -57,3 +57,20 @@ names the finding, where it is written up, and the emulator's state.
    is the native build contributors download, which the local WSL build and
    Linux CI don't cover; item 61 hid there for two releases).
 3. Add the row here either way.
+
+## Known emulator issues
+
+- **Windows release only: no second enumeration after the loader's
+  reconnect** (rp-v0.15.0 and rp-v0.16.0; Linux CI and the WSL build of the
+  same tag pass). `RETROPANE_QEMU=release cargo xtask emu-usb`: the image goes
+  in over USB (SHA-256 matches), runs, and the loader prints its run log and
+  `RPLOAD1 READY` on the serial line, but nothing arrives on the USB socket.
+  With `-d guest_errors,unimp` the UDC model logs "enumerated and configured"
+  once on Windows and twice on WSL, and logs no "host gave up" on Windows: the
+  host's second attach never runs its script. The loader's reconnect is a
+  plain `UDCCR.UDE` off/on (`drivers/pxa-udc` `disable`/`enable`), which the
+  model turns into `H_IDLE` then `H_ATTACH` plus a `QEMU_CLOCK_VIRTUAL` timer.
+  So on the Windows build either that timer never fires or the UDE write is
+  missed. Next step: a Windows debug build of the fork with a log line in
+  `udc_write`'s UDE path and in `host_step`. The `0x58000000` (IMPMCR) invalid
+  read in the log is `diag`'s register dump and appears on both builds.
