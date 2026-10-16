@@ -84,7 +84,7 @@ commands:
             lost on the way back; `load` asks for it by itself)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
-  handoff   what the loader's start found running (DMA, USB), how long
+  handoff   which DMA channels the loader's start found running, how long
             it waited for it to stop, and its boot time
   trace    the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)

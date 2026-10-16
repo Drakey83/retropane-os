@@ -690,7 +690,7 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
         .map(|(_, l)| l)
         .ok_or("handover: no run log after the image returned")?;
     for want in [
-        "handoff: DMA running 00000000, UDC off",
+        "handoff: DMA running 00000000, stopped",
         "table @A8001320: 53435052",
         "shadow from RetroPane's table:",
         " 10=8000",

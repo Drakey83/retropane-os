@@ -34,10 +34,12 @@ _start:
     @ RUN off), and the USB device controller (its driver's transfers).
     @ On the real X51v, images hung at random early points only while the
     @ Axim was docked with USB active.
-    @ What was running is kept for `rt::handoff` (r4: channels with RUN
-    @ set, r6: UDCCR), read only where the block's clock is on (r5: CKEN
-    @ as found; a block reads nothing useful, or may not answer, without
-    @ it). The writes stay unconditional, as before.
+    @ The channels that were running are kept for `rt::handoff` (r4),
+    @ read only with the DMA clock on (r5: CKEN as found; without it a
+    @ channel can't run). The UDC is only stopped, not read: a read of a
+    @ block that isn't there faults, and nothing catches a fault yet (the
+    @ emulator has no UDC unless asked for one). The writes stay
+    @ unconditional, as before.
     ldr     r0, =0x41300004
     ldr     r5, [r0]
     mov     r4, #0
@@ -53,9 +55,6 @@ _start:
     movs    r2, r2, lsl #1
     bne     0b
     ldr     r0, =0x40600000
-    mov     r6, #0
-    tst     r5, #0x00000800
-    ldrne   r6, [r0]
     str     r1, [r0]
 
     @ Stacks: IRQ, abort (its own when the image sizes one: the kernel
@@ -83,8 +82,6 @@ _start:
     blo     1b
     ldr     r0, =rp_handoff_dma
     str     r4, [r0]
-    ldr     r0, =rp_handoff_udccr
-    str     r6, [r0]
 
     @ Paint the SVC stack below us, so `stack_used` can find how deep it
     @ went (a silent overflow into .bss lost a glyph atlas, 2026-10-14).
@@ -241,9 +238,6 @@ static mut START: u32 = 0;
 /// each), recorded by `_start` before it stopped them.
 #[unsafe(export_name = "rp_handoff_dma")]
 static mut HANDOFF_DMA: u32 = 0;
-/// `UDCCR` as found by `_start` (0 if the UDC's clock was off).
-#[unsafe(export_name = "rp_handoff_udccr")]
-static mut HANDOFF_UDCCR: u32 = 0;
 
 /// What the previous owner of the CPU (Windows Mobile through HaRET, or a
 /// RetroPane image through the loader) left running that writes memory by
@@ -253,8 +247,6 @@ static mut HANDOFF_UDCCR: u32 = 0;
 pub struct Handoff {
     /// DMA channels that were running (bit n = channel n).
     pub dma_running: u32,
-    /// The USB device controller was enabled (`UDCCR.UDE`).
-    pub udc_on: bool,
 }
 
 /// What `_start` found running (see [`Handoff`]).
@@ -264,7 +256,6 @@ pub fn handoff() -> Handoff {
     unsafe {
         Handoff {
             dma_running: core::ptr::addr_of!(HANDOFF_DMA).read(),
-            udc_on: core::ptr::addr_of!(HANDOFF_UDCCR).read() & 1 != 0,
         }
     }
 }

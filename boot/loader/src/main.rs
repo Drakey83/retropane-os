@@ -1513,10 +1513,9 @@ mod image {
             Some(h) => {
                 let _ = write!(
                     out,
-                    "RPL OK handoff: dma running {:08x}, udc {}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
+                    "RPL OK handoff: dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
 ",
                     h.found.dma_running,
-                    if h.found.udc_on { "on" } else { "off" },
                     h.stopped.waited * 4 / 13,
                     h.stopped.stuck,
                     ms(h.at),
@@ -2227,7 +2226,7 @@ mod image {
                         }
                         Ok(b"handoff") => {
                             // What this start found and waited for: the
-                            // previous owner's DMA and USB (HaRET's hand-off
+                            // previous owner's DMA (HaRET's hand-off
                             // from Windows Mobile, or an image's return), and
                             // the boot time it cost.
                             handoff_command(ready_at, &mut status);
