@@ -4,6 +4,9 @@
   implemented and live in `boot/threads` (2026-10-11, see Implementation
   status), moving into the kernel image next
 - **Date:** 2026-10-11
+- **Amended:** 2026-10-15: the time slice, measured on the device: a 20 ms
+  quantum and a 1 ms wake slice replace CE's 100 ms ("Amendment: the
+  time slice")
 - **Last verified:** 2026-10-13 (against commit 3158b26)
 
 > **Correction (note added 2026-10-13):** not every rule is implemented
@@ -57,6 +60,11 @@ Constraints and facts that shape the design:
    highest; apps default to 251). A 256-bit ready bitmap with an 8-bit summary
    finds the highest ready priority in two `CLZ`s; each level is a FIFO for
    round-robin within a priority (CE's default quantum, 100 ms, per thread).
+
+   > **Amended (2026-10-15):** the quantum is 20 ms, and a thread that
+   > wakes gets the CPU within a 1 ms wake slice of a busy peer of its
+   > priority, both measured on the device ("Amendment: the time slice").
+   > Priorities, strict preemption and inheritance are unchanged.
 2. **Tickless.** No periodic tick: the OS timer is programmed for the next
    event (quantum end or earliest sleeper). An idle system sleeps until an
    interrupt or a deadline, which is the dominant power state of a handheld.
@@ -103,7 +111,7 @@ Constraints and facts that shape the design:
 |---|---|
 | 🔁 Iterate | Context-switch, interrupt-to-thread and syscall round-trip benchmarks; kernel stack depth measured to shrink stacks |
 | ✨ Modernize | Tickless timing, lazy FPU-class state, threaded interrupt handlers, checked user pointers |
-| 🗄️ Legacy support | CE priorities and quantum, CE wait semantics, priority inheritance, the KData page for inlined SDK macros |
+| 🗄️ Legacy support | CE priorities and quantum (quantum since amended), CE wait semantics, priority inheritance, the KData page for inlined SDK macros |
 | ⚡ Better / faster | O(1) scheduling in two instructions, no cache or TLB work on any switch, no iWMMXt save for threads that never use it, a CPU that sleeps instead of ticking |
 
 ## Alternatives considered
@@ -200,6 +208,133 @@ Constraints and facts that shape the design:
 > **Correction (note added 2026-10-13):** since checked: all 13
 > `rp-threads` tests, KData included, pass on the device (docs/perf.md,
 > "Threads on the real X51v", 2026-10-12).
+
+## Amendment: the time slice (2026-10-15)
+
+### In plain words
+
+CE gives each thread 100 ms before another thread **of the same
+priority** gets a turn. A touch or a frame tick wakes the program's
+interface thread, but if any other program at the normal priority is busy
+(a sync, a decoder, a game in the background), the interface thread
+waits for the rest of that program's 100 ms. On the X51v that was up to
+**102 ms from touch to screen**, and a 60 Hz animation drew 5 frames of
+35. The 100 ms was copied from CE without measurement
+(docs/research/imitation-audit.md, "Scheduler and system calls").
+
+RetroPane now does two things:
+
+1. **The wake slice.** A thread that wakes doesn't wait out a busy peer's
+   quantum: it goes first, within 1 ms. To stay fair, the busy peer still
+   gets at least as much CPU as the woken thread used in its last burst,
+   so a thread that sleeps often can never take more than an equal share
+   (what CE's round-robin gives). A thread whose last burst was a whole
+   quantum or more is treated as busy and queues as in CE.
+2. **A 20 ms quantum** instead of 100. This matters only for programs
+   that never block (an old game's draw loop): they get the CPU back
+   within 25 ms of a busy peer instead of 105.
+
+Nothing changes between different priorities: a more urgent thread still
+always runs first, priority inheritance is as before, and CE's numbers
+mean what they meant.
+
+### Measured (`rp-quantum`, the X51v, 2026-10-15)
+
+`cargo xtask load rp-quantum`. For each policy, a busy user thread runs
+at the interface thread's priority (251) all along. **Touch:** a timer
+interrupt at 20-80 ms gaps stands in for a touch; a driver thread
+(priority 100) passes it on; the interface thread draws a 5 ms frame
+(calibrated passes over a 16 KiB buffer). **Animation:** a 5 ms frame
+every 60 Hz period, for 600 ms. **Never-blocking loop:** 5 ms frames back
+to back. **Busy pair:** two busy threads (16 KiB each, so together they
+overflow the 32 KiB data cache) against one alone. Times in ms:
+
+| Policy | Touch to screen, median / worst | 60 Hz frames of 35: drawn, on time | Never-blocking loop: worst gap | Busy pair's work |
+|---|---|---|---|---|
+| CE 100 ms (as built until now) | 73.5 / 101.7 | 5, 0 | 105.1 | 99.8% |
+| CE 50 ms | 31.9 / 55.2 | 10, 0 | 55.1 | 99.8% |
+| CE 20 ms | 25.1 / 25.1 | 24, 12 | 25.1 | 99.4% |
+| CE 10 ms | 15.1 / 15.1 | 35, 35 | 15.1 | 98.9% |
+| 100 ms + wake slice 0 | 5.1 / 5.1 | 35, 35 | 105.1 | 99.9% |
+| 100 ms + wake slice 1 ms | 5.1 / 5.1 | 35, 35 (6.1 each) | 105.1 | 99.8% |
+| **20 ms + wake slice 1 ms (chosen)** | **5.1 / 5.1** | **35, 35 (6.1 each)** | **25.1** | **99.5%** |
+| 10 ms + wake slice 1 ms | 5.1 / 5.1 | 35, 35 | 15.1 (half the gaps) | 98.9% |
+
+- With the wake slice, touch to screen is the frame's own 5 ms at every
+  quantum: no waiting at all. The driver thread wakes the interface
+  thread, which goes ahead of the busy one the driver preempted.
+- **What a switch really costs:** the pair loses ~100 µs per quantum at
+  every length (0.5% of 20 ms, 1.1% of 10 ms). The register switch is
+  13 µs of that (`thread_switch`); the rest is the two working sets
+  refilling the data cache and writing back dirty lines. Short quanta
+  cost cache, not scheduler time.
+- **The wake slice's own cost:** `thread_switch` (event ping-pong, 2,000
+  switches) went from 86,708 to 88,868 ticks, 13.3 to 13.7 µs per switch
+  (+0.33 µs; the same in two runs each; an inlined variant was no faster
+  and 600 B bigger). The kernel image grows by 424 B of code and 16 B of
+  RAM: the burst counter is 16 bits in 64-tick units and fills padding in
+  the thread record.
+- **A class fixed on the way.** Tickless, a thread alone at its priority
+  runs on past its quantum's end. When a more urgent thread preempted it,
+  it got a fresh quantum, so the next thread to wake waited the whole of
+  it (CE mode's 73.5 ms median is that worst case; real CE ticks every
+  1 ms and would average about half a quantum, ~55 ms). With the wake
+  slice it now keeps its place with nothing left (found on the device:
+  touch 10.2 ms at 20 ms + 1 ms before the fix, 5.1 after).
+- The emulator runs the same image (`cargo xtask emu-quantum`, also in
+  `cargo xtask emu`) to check that every policy runs. Its timing is the
+  host's and it has no cache model, so its numbers are not the device's.
+
+### Why these numbers
+
+- **Wake slice 1 ms, not 0:** with a busy peer, every wake of an
+  equal-priority thread hands the CPU over. The slice bounds a storm of
+  wakes to ~1,000 hand-overs a second (at ~100 µs each with big working
+  sets, ~10% of the CPU in the worst storm; with no slice it would be
+  unbounded). The price is up to 1 ms on a frame tick (6.1 ms instead of
+  5.1 of a 16.7 ms frame); touches pay nothing (they come through a
+  driver thread).
+- **20 ms, not 10:** both keep touch and animation perfect with the wake
+  slice. They differ only for programs that never block: 10 ms gives a
+  worst gap of 15 ms instead of 25, for twice the switch cost (1.1% vs
+  0.5%), and still leaves half the gaps at 15 ms (5 ms frames split
+  unevenly).
+- **Not a foreground or input-owner boost:** the kernel would need to
+  know the window manager's foreground (coupling) and change a thread's
+  priority (CE semantics), and the wake slice already gets the input
+  owner to the CPU in its frame's own time. A longer quantum for the
+  foreground's never-blocking games is a possible later step once the
+  window manager exists, if a game needs more than half the CPU against
+  a busy peer.
+- **Not a shorter quantum alone:** CE 10 ms gets animation right, but
+  every touch still waits ~10 ms more, and it costs 1.1% always.
+
+### The four lenses
+
+| Lens | Effect |
+|---|---|
+| 🔁 Iterate | `rp-quantum` measures every policy on the device in ~20 s; host tests pin each rule (the wake slice, fairness, the driver path, a lone thread's quantum, CE mode); `thread_switch` tracks the scheduler's own cost |
+| ✨ Modernize | Sleeper-fair wake preemption, as modern schedulers do (Linux's EEVDF lag, Windows' wake boosts), still tickless and O(1) |
+| 🗄️ Legacy support | CE's 256 priorities, strict preemption, inheritance and FIFO order among busy peers are unchanged; `set_wake_slice(None)` restores CE's plain round-robin if a program turns out to need it |
+| ⚡ Better / faster | Touch to screen 102 ms worst → 5.1 ms (the frame itself); 60 Hz animation next to a busy program 0 of 35 frames on time → 35 of 35; never-blocking games' worst gap 105 → 25 ms; for 0.33 µs a switch and 0.3% of a busy pair's work |
+
+### Hardware limit or choice?
+
+- The 100 ms quantum: **CE's choice**, now replaced.
+- ~100 µs per switch with big working sets: **silicon** (32 KiB VIVT data
+  cache, SDRAM line fills). It is why the quantum stays at 20 ms rather
+  than 1-2 ms.
+- The 13 µs register switch: **ours to improve** (ADR-0010's target is
+  under 2 µs; items 67 and 80).
+
+### Not yet
+
+- CE's per-thread quantum (`CeSetThreadQuantum`, 0 = run to completion)
+  isn't built; when the CE personality adds it, a thread with quantum 0
+  must never be cut by the wake slice.
+- Live wherever `kernel/sched` runs with its defaults: the kernel image
+  (`boot/kernel`) and `rp-threads`, whose 13 tests all pass on the device
+  with it.
 
 ## Open questions
 

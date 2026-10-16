@@ -148,6 +148,11 @@ Facts that shape the design:
 - 31 processes (CE5's layout, slots 2-32): taken as enough (CE5 allowed
   32); revisit if a real workload says otherwise.
 
+  > **Note (2026-10-15):** re-examined (item 78):
+  > docs/research/process-limit.md. The OS's own processes take ~11-13
+  > slots, and no third-party program in the owner's corpus depends on
+  > CE's slot layout. The options are with the owner for a vote.
+
 ## Implementation notes (step 3, 2026-10-12)
 
 How decisions 2, 5 and 6 are carried out, within the decision above:
