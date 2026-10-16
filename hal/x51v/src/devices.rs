@@ -446,3 +446,15 @@ pub fn take_ram_pool() -> Option<&'static mut [u32]> {
     // flag guarantees one owner.
     Some(unsafe { core::slice::from_raw_parts_mut(RAM_POOL_BASE as *mut u32, RAM_POOL_SIZE / 4) })
 }
+
+/// [`take_ram_pool`] as bytes, for test images that need large buffers
+/// (storage soaks): the same pool, the same one owner.
+pub fn take_ram_pool_bytes() -> Option<&'static mut [u8]> {
+    take_ram_pool().map(|w| {
+        let len = w.len() * 4;
+        // SAFETY: the pool's own words, reborrowed as bytes (u8 has no
+        // alignment or validity requirement); `w` is consumed, so this is
+        // the one reference.
+        unsafe { core::slice::from_raw_parts_mut(w.as_mut_ptr().cast::<u8>(), len) }
+    })
+}

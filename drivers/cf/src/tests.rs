@@ -703,6 +703,8 @@ fn a_dma_that_misreads_refuses_or_fails_is_handled() {
     dma.corrupt = true;
     let mut cf = cf.with_dma(dma, 0);
     assert_eq!(cf.read_path(), ReadPath::Window32);
+    assert!(!cf.set_read_path(ReadPath::Dma), "an unproven path");
+    assert_eq!(cf.read_path(), ReadPath::Window32);
     assert_eq!(cf.path_mismatches(), 1);
     let mut aligned = Aligned([0; 64 * SECTOR]);
     cf.read_blocks(0, &mut aligned.0).unwrap();
@@ -712,6 +714,12 @@ fn a_dma_that_misreads_refuses_or_fails_is_handled() {
     let cf = init(&c, attr, common).ok().unwrap();
     let mut cf = cf.with_dma(FakeDma::new(&c), 0);
     assert_eq!(cf.read_path(), ReadPath::Dma);
+    // Diagnostics may step down to a slower proven path, never up past one.
+    assert!(cf.set_read_path(ReadPath::Port16));
+    let mut buf = vec![0u8; 2 * SECTOR];
+    cf.read_blocks(9, &mut buf).unwrap();
+    assert_eq!(buf[..], c.borrow().disk[9 * SECTOR..11 * SECTOR]);
+    assert!(cf.set_read_path(ReadPath::Dma));
     // An odd buffer (not whole cache lines): refused, read by the CPU.
     let mut odd = vec![0u8; 4 * SECTOR + 1];
     let at = if (odd.as_ptr() as usize).is_multiple_of(32) {

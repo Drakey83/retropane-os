@@ -401,6 +401,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Device test (docs/research/storage-speed.md items 1-4): CF read paths
+    // and attach cycles, SD reads by size, an SD DMA write soak across a
+    // card swap and the lock switch. Provisional until measured.
+    Budget {
+        image: "rp-storfast",
+        max_load: 96 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
     Budget {
         image: "rp-reconnect",
