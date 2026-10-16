@@ -233,13 +233,15 @@ fn refresh_drive(root: &Path) -> Result<(), String> {
 }
 
 /// A buffer whose bytes start on a 4 KiB boundary (unbuffered I/O needs
-/// sector-aligned memory).
+/// sector-aligned memory). Windows only, as its one user.
+#[cfg(windows)]
 struct Aligned {
     raw: Vec<u8>,
     off: usize,
     len: usize,
 }
 
+#[cfg(windows)]
 impl Aligned {
     fn new(len: usize) -> Self {
         let raw = vec![0u8; len + 4096];
