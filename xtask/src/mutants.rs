@@ -471,6 +471,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
     },
     Mutant {
+        name: "night light: the picture steps leave the gamma table at full (the picture never dims)",
+        file: "boot/nightlight/src/main.rs",
+        from: "                let t = scale_gamma(&table, step.picture);",
+        to: "                let t = scale_gamma(&table, 256);",
+        check: Check::Emu(crate::emu::boot_loader_nightlight),
+    },
+    Mutant {
         name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
         file: "boot/loader/src/main.rs",
         from: "                        devices::log_mark_handover();",

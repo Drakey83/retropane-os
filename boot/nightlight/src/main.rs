@@ -8,6 +8,9 @@
 //! step, the picture itself is dimmed by the display's graphics gamma table
 //! (`GFXGAM0`-`16`, read first; only scaled if its entries look like 8-bit
 //! grey ramps, else those steps are skipped and the raw table is logged).
+//! Gamma found off (`GSCTRL` bit 26: the emulator's cold display; Windows
+//! Mobile leaves it on) is switched on for the steps, with the table as
+//! found, and off again at the end.
 //!
 //! | Step | What | The question |
 //! |---|---|---|
@@ -36,6 +39,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::console::Console;
+    use rp_drv_mbx_display::scanout::scale_gamma;
     use rp_drv_mbx_display::{Display, crash, fill_rect_rgb565};
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
@@ -78,14 +82,6 @@ mod image {
             b[3] == 0 && b[0] == b[1] && b[1] == b[2]
         });
         lanes_equal && t.windows(2).all(|p| p[1] & 0xFF >= p[0] & 0xFF) && t[16] & 0xFF > 0
-    }
-
-    /// Each lane of `t` scaled by `s`/256.
-    fn scaled(t: &[u32; GAMMA_WORDS], s: u32) -> [u32; GAMMA_WORDS] {
-        core::array::from_fn(|i| {
-            let l = (t[i] & 0xFF) * s / 256;
-            l | l << 8 | l << 16
-        })
     }
 
     struct Step {
@@ -193,9 +189,12 @@ mod image {
             let _ = write!(log, " {w:08X}");
         }
         let _ = writeln!(log);
-        let gamma_ok = gsctrl & GSCTRL_GAMMA != 0 && grey_ramps(&table);
+        let gamma_ok = grey_ramps(&table);
         if !gamma_ok {
-            let _ = writeln!(log, "gamma: not grey ramps or off: picture steps skipped");
+            let _ = writeln!(log, "gamma: not grey ramps: picture steps skipped");
+        } else if gsctrl & GSCTRL_GAMMA == 0 {
+            let _ = writeln!(log, "gamma: off, switched on for the steps");
+            display.regs().write32(GSCTRL, gsctrl | GSCTRL_GAMMA);
         }
 
         // The ramp: 16 greys across the lower part of the screen.
@@ -229,7 +228,7 @@ mod image {
             pwm.write32(PCR, step.counts - 1);
             pwm.write32(DCR, step.duty);
             if gamma_ok {
-                let t = scaled(&table, step.picture);
+                let t = scale_gamma(&table, step.picture);
                 for (i, w) in t.iter().enumerate() {
                     display.regs().write32(GFXGAM0 + 4 * i, *w);
                 }
@@ -255,6 +254,7 @@ mod image {
         for (i, w) in table.iter().enumerate() {
             display.regs().write32(GFXGAM0 + 4 * i, *w);
         }
+        display.regs().write32(GSCTRL, gsctrl);
         {
             let mut cap = Console::new(fb, stride, (0, 240), (480, 160), 3, (0xFFFF, 0x0000));
             let _ = write!(cap, "done: put back");

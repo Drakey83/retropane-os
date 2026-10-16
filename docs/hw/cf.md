@@ -194,8 +194,10 @@ Windows Mobile left on in an empty socket is left alone.
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
 CF cards).
 
-The emulator (rp-v0.11.0) models the slot as the device has it: unpowered
-at start, answering only after the CPLD power sequence, reset through
+The emulator (rp-v0.11.0) models the slot as the device has it: as
+Windows Mobile hands it over (powered since rp-v0.18.0, its CPLD table as
+measured by `rp-handover`), answering only while both power bits are set
+and RESET is released, reset through
 `0x18` bit 1, GPIO84 high while powered; `cargo xtask emu-cf` checks
 that the card in the slot at start-up is attached on its own (so the power
 sequence works), `cf` reports it without a remount, the backlight stays

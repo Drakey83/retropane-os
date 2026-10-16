@@ -138,10 +138,10 @@ between steps.
 
 ## Open questions
 
-- What Windows Mobile leaves on at hand-over, register by register: its
-  table's slots are mapped and RetroPane adopts them ("Shadow at
-  hand-over"); the owner's device's values, and whether HaRET leaves the
-  table intact, wait for `rp-handover`'s first run.
+- ~~What Windows Mobile leaves on at hand-over, register by register~~:
+  measured (`rp-handover` 2026-10-16, "Shadow at hand-over"; HaRET leaves
+  the table intact); the emulator's CPLD latches and `emu-cf` /
+  `emu-handover`'s table use those values (rp-v0.18.0).
 - The LCD-type readout's shortest wait (needs a panel whose ID isn't 0).
 - The guessed rows (Bluetooth, audio, display, battery, notification):
   each needs a device experiment before a driver relies on it.
