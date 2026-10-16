@@ -22,9 +22,6 @@ rp-fat = { path = "../../kernel/fat" }
 rp-usb-msc = { path = "../../drivers/usb-msc" }
 rp-drv-pxa-pwm = { path = "../../drivers/pxa-pwm" }
 rp-drv-cf = { path = "../../drivers/cf" }
-rp-drv-pxa-i2c = { path = "../../drivers/pxa-i2c" }
-rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
-rp-drv-wm8750 = { path = "../../drivers/wm8750" }
 rp-loadproto = { path = "../loadproto" }
 rp-crypto = { path = "../../kernel/crypto" }
 rp-kernel-trace = { path = "../../kernel/trace" }

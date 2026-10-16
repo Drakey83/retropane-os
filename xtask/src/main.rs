@@ -98,11 +98,13 @@ commands:
             run by hand under WM; it writes rp-wm-baseline.txt next to itself)
   reboot-wm reset the X51v back into Windows Mobile the way its own
             reboot does (GPIO99; item 64, not yet tried on the device)
-  tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
-            reply names the output and the CPU's busy share)
+  tone     the audio check: loads rp-tone (440 Hz to the speaker or the
+            headphones, then waits 15 s for the jack to change; the run log
+            names the output and the CPU's busy share)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
-            in target/device-check.txt; --with-owner adds CF and a tone
+            in target/device-check.txt; --with-owner adds CF (the tone:
+            `cargo xtask tone`)
   emu-picture  only the rp-picture check (a UI concept on screen, then
             back to the loader): run it before `load rp-picture`
   emu-blend only the rp-blend check (plane blending, three stages
@@ -314,9 +316,8 @@ fn main() -> ExitCode {
             usb::command(&workspace_root(), "reboot wm")
         }
         "tone" => {
-            let rest: Vec<String> = args().skip(2).collect();
-            eprintln!("==> tone {}", rest.join(" "));
-            usb::command(&workspace_root(), &format!("tone {}", rest.join(" ")))
+            eprintln!("==> tone (rp-tone)");
+            usb::load(&workspace_root(), "rp-tone", false)
         }
         "device-check" => {
             eprintln!("==> device-check {flag}");

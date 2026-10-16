@@ -44,6 +44,7 @@ members = [
     "boot/handover",
     "boot/nightlight",
     "boot/cfdetect",
+    "boot/tone",
     "boot/crash",
     "boot/hang",
     "boot/mbx",
