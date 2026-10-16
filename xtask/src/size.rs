@@ -448,6 +448,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Bring-up experiment: the USB disconnect hunt (docs/hw/udc.md T4).
+    // Provisional, as rp-reconnect.
+    Budget {
+        image: "rp-unplug",
+        max_load: 24 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Diagnostics only: the first-light image (14.3 KiB measured, +~10%).
     // Ratcheted 16 -> 18 KiB on 2026-10-12: the shared crash path (crash
     // reports marked for the loader, kept on the card); 16.1 KiB measured.

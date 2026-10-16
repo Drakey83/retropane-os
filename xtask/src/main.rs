@@ -113,6 +113,9 @@ commands:
             every stage runs, state put back): run it before `load rp-mbx-blend`
   emu-mbx3d the 3D core's first-triangle test (rp-mbx3d: runs and returns;
             the 3D core isn't modelled): run it before `load rp-mbx3d`
+  emu-unplug only the USB disconnect hunt's safety check (rp-unplug: every
+            candidate tried and undone, back at the loader): run it before
+            `load rp-unplug`
   emu-mbx3d-api  the 3D renderer's device test (rp-mbx3d-api: every frame
             refused safely, the 3D core isn't modelled; back on a button):
             run it before `load rp-mbx3d-api`
@@ -158,7 +161,7 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-unplug" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -375,6 +378,7 @@ fn run_step(step: &str) -> Result {
         "emu-mbx" => cross().and_then(|()| emu::boot_loader_mbx(&workspace_root())),
         "emu-mbx-blend" => cross().and_then(|()| emu::boot_loader_mbx_blend(&workspace_root())),
         "emu-mbx3d" => cross().and_then(|()| emu::boot_loader_mbx3d(&workspace_root())),
+        "emu-unplug" => cross().and_then(|()| emu::boot_loader_unplug(&workspace_root())),
         "emu-mbx3d-api" => cross().and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root())),
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
