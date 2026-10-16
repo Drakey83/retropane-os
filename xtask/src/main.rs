@@ -119,6 +119,8 @@ commands:
   emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
+  emu-storfast the storage speed-ups' device test (rp-storfast) under the
+            loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
             --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
@@ -134,7 +136,7 @@ fn main() -> ExitCode {
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-usb" | "emu-storfast" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -335,6 +337,7 @@ fn run_step(step: &str) -> Result {
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
+        "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))

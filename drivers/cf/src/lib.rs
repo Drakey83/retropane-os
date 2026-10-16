@@ -211,6 +211,8 @@ pub struct CfCard<A, C, D = NoDma> {
     window_phys: u32,
     /// How sectors are read (chosen at attach, see [`ReadPath`]).
     path: ReadPath,
+    /// The fastest path the attach check proved on this card.
+    proven: ReadPath,
     /// Faster paths that read IDENTIFY differently from the 16-bit port.
     path_mismatches: u8,
     /// Sectors the DMA engine refused (a buffer not in whole cache
@@ -298,6 +300,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             dma: NoDma,
             window_phys: 0,
             path: ReadPath::Port16,
+            proven: ReadPath::Port16,
             path_mismatches: 0,
             dma_refused: 0,
             sectors: 0,
@@ -324,6 +327,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             dma,
             window_phys: common_phys + reg::DATA_WINDOW as u32,
             path: self.path,
+            proven: self.proven,
             path_mismatches: self.path_mismatches,
             dma_refused: 0,
             sectors: self.sectors,
@@ -334,7 +338,10 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
         };
         if !card.dead && card.path == ReadPath::Window32 {
             match card.identify_matches(ReadPath::Dma) {
-                Ok(true) => card.path = ReadPath::Dma,
+                Ok(true) => {
+                    card.path = ReadPath::Dma;
+                    card.proven = ReadPath::Dma;
+                }
                 Ok(false) | Err(CfError::Device(_)) => card.path_mismatches += 1,
                 Err(e) => {
                     let _ = card.failed(e);
@@ -376,7 +383,10 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         // A card that refuses the second IDENTIFY keeps the port; one that
         // stops answering is no use either way.
         match self.identify_matches(ReadPath::Window32) {
-            Ok(true) => self.path = ReadPath::Window32,
+            Ok(true) => {
+                self.path = ReadPath::Window32;
+                self.proven = ReadPath::Window32;
+            }
             Ok(false) | Err(CfError::Device(_)) => self.path_mismatches += 1,
             Err(e) => return Err(e),
         }
@@ -464,6 +474,17 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     #[must_use]
     pub fn read_path(&self) -> ReadPath {
         self.path
+    }
+
+    /// Reads by `path` from now on, if the attach check proved it or a
+    /// faster one (diagnostics: a device test compares the paths). `false`,
+    /// and nothing changed, for an unproven path.
+    pub fn set_read_path(&mut self, path: ReadPath) -> bool {
+        let ok = path <= self.proven;
+        if ok {
+            self.path = path;
+        }
+        ok
     }
 
     /// Faster paths that read IDENTIFY differently from the 16-bit port

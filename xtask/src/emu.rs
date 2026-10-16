@@ -2554,6 +2554,113 @@ fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String
     Ok(format!("if={interface},format=raw,file={p}"))
 }
 
+/// `cargo xtask emu-storfast`: the storage speed-ups' device test
+/// (`rp-storfast`, docs/research/storage-speed.md) started by the loader
+/// with a 128 MiB FAT32 SD card and a CF card, as on the device. The card
+/// swap and lock steps aren't modelled (the image waits for them and
+/// carries on); everything else must pass: CF paths equal, 20 attach
+/// cycles, SD reads of every size class by one DMA transfer, the DMA write
+/// soak exact, the test files removed.
+pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-storfast.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-storfast"), &image)?;
+    let sd = root.join("target/emulator/sd-storfast.img");
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 128 * 2048,
+        sectors_per_cluster: 1,
+        // The quick-run file: the emulated FIFO moves bytes slowly.
+        files: &[
+            rp_fat::format::Entry {
+                name: "retropane.bin",
+                data: b"kit stand-in",
+            },
+            rp_fat::format::Entry {
+                name: "storfast-quick.txt",
+                data: b"short run",
+            },
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let cf = root.join("target/emulator/cf-storfast.img");
+    let cf_data: Vec<u8> = (0..16u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    std::fs::write(&cf, cf_data).map_err(|e| format!("{}: {e}", cf.display()))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let input = rp_loadproto::frame(&payload);
+    let cf_drive = drive_arg(root, "ide", &cf)?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &["-drive", &cf_drive],
+            input: Some((&input, "RPL END")),
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(900),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("storfast: no run log")?;
+    if log.contains("FAULT") || log.contains("PANIC") || !log.contains("RETROPANE-STORFAST: done") {
+        return Err(format!("storfast: didn't finish cleanly:{log}"));
+    }
+    let dma_window = emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on");
+    let mut want = vec![
+        "storfast-quick.txt found",
+        "C3 3 attach cycles: all good",
+        "KiB): all right, one transfer each",
+        "S2 the speed writes read back: 0 blocks differ",
+        "of the last writes read back, 0 blocks differ",
+        "S9 test files and folder removed",
+    ];
+    if dma_window {
+        want.push("reads by DMA from the window (0 paths refused)");
+        want.push("C2 read 1024 KiB by DMA from the window: ");
+    }
+    for w in want {
+        if !log.contains(w) {
+            return Err(format!("storfast: no `{w}` in the run log:{log}"));
+        }
+    }
+    for line in log
+        .lines()
+        .filter(|l| l.starts_with("S3") && l.contains("blocks differ"))
+    {
+        if !line.ends_with(" 0 blocks differ") {
+            return Err(format!("storfast: {line}"));
+        }
+    }
+    for line in log
+        .lines()
+        .filter(|l| l.starts_with("S2 soak") || l.starts_with("C2 read"))
+    {
+        let clean = line.contains(" 0 write errors, 0 read errors, 0 blocks differ")
+            || (line.contains("0 commands failed, 0 sectors differ"));
+        if !clean {
+            return Err(format!("storfast: {line}"));
+        }
+    }
+    eprintln!(
+        "    storfast OK (short run): CF read paths equal, attach cycles good; SD every size class by one DMA transfer; the DMA write soak read back exact; test files removed; run log:{log}"
+    );
+    Ok(())
+}
+
 /// `cargo xtask emu-cf`: the CompactFlash check on its own.
 pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     let dir = root.join("target/emu");
@@ -4408,8 +4515,15 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let _ = child.wait();
     if wsl {
         // Killing wsl.exe may not reach the Linux process at once; make sure
-        // it's gone before the next test binds the same ports.
-        let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+        // it's gone before the next test binds the same ports. Only this
+        // run's emulator, named by its serial port (each run reserves its
+        // own ports): `pkill -x qemu-system-arm` killed every session's
+        // emulator in WSL, so parallel sessions failed each other's checks
+        // at random (2026-10-16: "no `RPL END`" after SIGTERM mid-run).
+        let _ = wsl_bash(&format!(
+            "pkill -f -- '-serial {serial_arg}'; sleep 0.3; true"
+        ))
+        .status();
     }
     // Whatever the guest printed while `during` ran is still queued: keep it,
     // so a test can check what happened after its own waiting.
