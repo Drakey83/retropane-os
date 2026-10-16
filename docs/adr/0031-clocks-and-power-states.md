@@ -1,6 +1,6 @@
 # ADR-0031: RetroPane owns the CPU clocks, voltage and power states
 
-- **Status:** Proposed (votes V1-V4 below are the owner's)
+- **Status:** Accepted (2026-10-15: the owner approved V1-V4 as recommended)
 - **Date:** 2026-10-15
 - **Audit item:** 67 (docs/research/imitation-audit.md, "CPU clock, voltage,
   power states": the highest-value item)
@@ -195,6 +195,16 @@ before the crash report. A fault after a voltage raise leaves the higher
 code, which is safe.
 
 ## Votes
+
+**Decided 2026-10-15 by the owner, as recommended:**
+
+- V1: race to idle ("sprint, then rest");
+- V2: no undervolting; Dell's voltage codes stay for now;
+- V3: 624 MHz while the screen is on;
+- V4: WM's 624 MHz set-up (A = 1) if `rp-clocks` shows it clean and
+  faster, with the manual's (A = 0) as the automatic fallback.
+
+The questions as they were put:
 
 - **V1 (policy):** race to idle with turbo on demand and voltage drops only
   for long idles and declared background work (**recommended**), *or*
