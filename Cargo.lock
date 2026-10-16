@@ -709,7 +709,6 @@ version = "0.0.0"
 name = "rp-unplug"
 version = "0.0.0"
 dependencies = [
- "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-uart",
  "rp-drv-pxa-udc",
