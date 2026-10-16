@@ -326,7 +326,12 @@ The emulator models the hard-wired pull-up and the unplug (retropane-qemu
 branch `udc-unplug`, not yet released): `emu-usb`, `emu-loader`,
 `emu-handover` and `emu-unplug` pass; with the unplug taken out of the
 loader (mutant) `emu-usb` fails, the image's run log never coming back
-over USB. Device proof still to do: five hand-overs from Windows Mobile
+over USB. Step A on the device (2026-10-16 12:01): the new loader sent from RAM
+over the card's one: Windows removed the old device at 12:01:23.4 and had
+the composite back ~2 s later (drive read, `udc stats`: 2 resets), so the
+fix does no harm; it doesn't prove the unplug itself (a hand-over with the
+PC's port open made Windows drop the device before the fix too). Device
+proof still to do: five hand-overs from Windows Mobile
 (`reboot-wm`, then the loader started from Windows Mobile) with the
 composite configured each time, no fallback, no re-plug.
 
