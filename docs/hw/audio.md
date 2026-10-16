@@ -71,3 +71,16 @@ the log names the codec's address (recording it here), the time matches
 500 ms if the clocks are right, and the jack's level for in and out. Then,
 for the speaker, the amplifier lines (GPIO82, CPLD 0x14 bit 3) one at a
 time.
+
+**First device run (P, 2026-10-16, `rp-tone`, `local/rp-tone-run1.txt`):
+no sound.** With headphones plugged in: GPIO83 read **0** ("out"), so
+either the jack reads low when plugged (the assumed polarity is wrong) or
+GPIO83 isn't the jack; and **no codec answered on I2C** at 0x1a or 0x1b.
+The emulator's run passes, so this is something about the board not yet
+modelled. Candidates, to settle in this order: the I2C pins' alternate
+functions (GPIO117/118 as Windows Mobile leaves them, read before ours),
+the I2C unit's clock (CKEN), the codec's power or reset (a CPLD or GPIO
+line Windows Mobile switches on with sound), and the codec's identity and
+address on the X51v. Next step: a read-only probe image that reports the
+pins' functions, CKEN and an I2C address scan, run once with sound playing
+in Windows Mobile just before (HaRET) and once without.
