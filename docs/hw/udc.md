@@ -15,7 +15,7 @@ owner's X51v by the item 74 work (`cargo xtask usbbench`, 2026-10-16).
 
 | Signal | Where | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
-| USB cable detect | GPIO14, input (AxDroid's guess) | read **1** on the probe run (docked, as WM left it) but **0** under RetroPane while docked and enumerated. So it is not a plain cable-present level, or needs something WM sets up (a CPLD rail? a comparator?). Again 0 on 2026-10-16 with the PC configured (the loader's status line "cable 0 configured yes" after a soft reset): the loader's "cable" label shows this unproven reading, not a fault WM enables both edges on it as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14), so it does matter to WM | open | (A), (D), real X51v (2026-10-11) |
+| USB cable detect | GPIO14, input (AxDroid's guess) | read **1** on the probe run (docked, as WM left it) but **0** under RetroPane while docked and enumerated. So it is not a plain cable-present level, or needs something WM sets up (a CPLD rail? a comparator?). Again 0 on 2026-10-16 with the PC configured (the loader's status line "cable 0 configured yes" after a soft reset), and every boot in the cradle since (owner, 2026-10-16): the loader's "cable" label shows this unproven reading, not a fault. WM enables both edges on it as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14), so it does matter to WM | open | (A), (D), real X51v (2026-10-11) |
 | D+ pull-up ("connect") | **none found: probably hard-wired.** `rp-reconnect` (2026-10-11) tried, with the UDC enabled and the PC idle: GPIO2 low→high, GPIO2 as input→output high, `UP2OCR` DPPUE off→on, DPPDE on→off, CPLD `0x1C` bit 3 off→on, UDE off→on, and CPLD bit 3 + UDE together. Not one produced a bus reset or a SETUP within 3 s: the PC never saw a disconnect. `UP2OCR` read `0x00020020` with the UDC on (HXOE and bit 5). Next: forcing SE0 through `UP2OCR`'s output override, and a PC-side device restart | open | real X51v |
 | (earlier guess) GPIO2, output, high | the PC enumerated the device with GPIO2 high, but **never noticed a disconnect** when GPIO2 went low (or the UDC was disabled): every run needed a cable replug. So GPIO2 is not (only) the pull-up control; AxDroid's board file left `gpio_pullup` unset too. Candidates: a CPLD bit (docs/hw/cpld.md), `UP2OCR.DPPUE` with the internal transceiver | open | real X51v (2026-10-11) |
 | Transceiver | **port 2's, output enabled: `UP2OCR` = `0x00020000` (HXOE) as WM leaves it** | with HXOE cleared the PC saw the attach (a bus reset) but no SETUP ever arrived; with it set, enumeration worked. The driver sets it | confirmed | real X51v (2026-10-11) |
@@ -164,6 +164,24 @@ every image return); what fails is the loader's **first** UDC set-up after
 Windows Mobile owned the controller, and the fallback works because it
 **re-enables the controller**, not because of the layout.
 
+**More device evidence (2026-10-16, loader from main 98ae4fa, docked in
+the cradle).** After soft resets, two outcomes. (a) **11 resets, 34 setups,
+identical on two separate boots**, then the serial-only fallback; COM3
+12-80+ s later. Counts that repeat exactly point at a fixed sequence
+failing at a fixed step, not at timing luck. (b) Once: **0 resets, 0
+setups** for 2+ minutes: the PC never touched the device until the owner
+lifted the Axim out and re-docked it (a real disconnect), then COM3 in
+16 s. That is hypothesis 2 below seen directly: Windows had given up on
+the port before the loader came up.
+
+A consequence for hypothesis 1: the fallback's disable/enable cures (a),
+so the culprit can't be state that survives both an `enable` and the
+loop's polling (`UP2OCR`, the `UDCCSRx` bits, `DRCMR`): those would still
+be there at the second `enable`. What the first `poll` clears and the
+second set-up never sees is the **pending status in `UDCISR0/1`** (and
+anything the host itself remembers). `UP2OCR` stays the candidate for the
+separate 0-setups case after a watchdog reboot.
+
 **Ranked hypotheses.**
 
 1. **State Windows Mobile leaves in the controller** (lead). Every failure
@@ -214,7 +232,8 @@ the first that settles it):
   soft reset into the card's loader. In an *elevated* terminal:
   `logman create trace rp-usb -o %TEMP%\rp-usb.etl -ets -p Microsoft-Windows-USB-USBHUB3 0xffffffffffffffff 0xff`,
   then `logman update trace rp-usb -ets -p Microsoft-Windows-USB-UCX 0xffffffffffffffff 0xff`;
-  soft reset the Axim and wait for the loader's screen to say which layout
+  soft reset the Axim (`cargo xtask reboot-wm` instead of the reset hole
+  while docked: also that command's first try on the device) and wait for the loader's screen to say which layout
   Windows took; `logman stop rp-usb -ets`. The `.etl` is read without
   admin (`Get-WinEvent -Path ... -Oldest`). It shows, per reset, which
   request failed and how (timeout, STALL, short or garbled data) and
