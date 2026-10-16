@@ -437,6 +437,13 @@ pub const MUTANTS: &[Mutant] = &[
         to: "                if false {",
         check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
     },
+    Mutant {
+        name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
+        file: "boot/loader/src/main.rs",
+        from: "                        devices::log_mark_handover();",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_usb_alone),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
