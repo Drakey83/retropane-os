@@ -3282,14 +3282,14 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL ERR cf: no card (GPIO13 high)", 20)?;
-        // SD DMA: reads on after the start-up self-test, writes only when
-        // asked; the puts below then write by DMA and are checked in the
-        // image afterwards.
+        // SD DMA: reads and writes on after the start-up self-test (writes
+        // since rp-storfast's device soak); `card dma writes` still answers;
+        // the puts below write by DMA and are checked in the image afterwards.
         s.write_all(&rp_loadproto::control_frame("card dma"))
             .map_err(|e| e.to_string())?;
         usb_read_until(
             &mut s,
-            "RPL OK dma reads on (self-test passed), writes off",
+            "RPL OK dma reads on (self-test passed), writes on",
             20,
         )?;
         s.write_all(&rp_loadproto::control_frame("card dma writes"))
