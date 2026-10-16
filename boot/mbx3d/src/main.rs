@@ -1,5 +1,25 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 25 (ADR-0026, version 24's open
+//! 3D core, under the loader. Version 27 (ADR-0026: version 26 found the
+//! MBX cores clock-bound, at half a 99.67 MHz core PLL): S27 the core PLL
+//! stepped to 110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock" is
+//! 133 MHz; the cores at half, under Dell's 75 MHz cap), as Dell's driver
+//! changes it (the system clock on the 13 MHz reference, the PLL written,
+//! its lock awaited); at each step a 256 KiB memory pattern, a 2D fill and
+//! ten 3D renders whose samples must match those at WM's clock, timed. The
+//! first failure, and the end, put WM's PLL back. 149.5 MHz is compiled
+//! out until the owner decides. S26 is done.
+//! Version 26 (ADR-0026, the GPU's clock and a
+//! 16-bit target, from static reading 2026-10-15): S26a the MBX clock's
+//! divider (Windows Mobile's `MBXCLK` `0x5` is divide-by-2: Dell's driver
+//! picks the smallest divider keeping the cores at or under 75 MHz) at 2,
+//! 3 and 4, a full-screen and a 600-tile render and a full-screen 2D fill
+//! timed at each (divide-by-1 is over Dell's cap: compiled out until the
+//! owner decides); S26b (T4) a 16-bit target, `0x650` 1 or 3 and `0x660`
+//! in pixels or words, colours, extent and time; S26c (last) the PLLs and
+//! clock registers read (never read before), for the system clock.
+//! T11b-T13b are done (version 25: mipmaps work, PVRTC's blocks twiddled,
+//! depth storage parked).
+//! Version 25 (ADR-0026, version 24's open
 //! questions, from static reading 2026-10-15): T11b depth stored across
 //! renders with the GLES driver's full register set (`0x648` and `0x6D0`
 //! 1 and its other extras; `n` 16 and 2400); T12b mipmaps with TEX0 bits
@@ -240,7 +260,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 25;
+    const VERSION: u32 = 27;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -376,31 +396,6 @@ mod image {
         n
     }
 
-    /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
-    #[allow(clippy::too_many_arguments)]
-    fn square(
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        argb: u32,
-        z: f32,
-        isp: u32,
-        tsp: u32,
-    ) -> [[u32; m3::TRIANGLE_WORDS]; 2] {
-        let v = |x, y| Vertex {
-            x,
-            y,
-            z,
-            rhw: 1.0,
-            argb,
-        };
-        [
-            m3::triangle(isp, tsp, &[v(x0, y0), v(x1, y0), v(x0, y1)]),
-            m3::triangle(isp, tsp, &[v(x1, y0), v(x1, y1), v(x0, y1)]),
-        ]
-    }
-
     /// The full-screen background triangle in `argb` at depth `z`.
     fn background(argb: u32, z: f32) -> [u32; m3::TRIANGLE_WORDS] {
         background_tsp(argb, z, TSP_DELL)
@@ -422,27 +417,6 @@ mod image {
         )
     }
 
-    /// A scene of `objs` in the parameter memory, the region array listing
-    /// the tiles `keep` says, rendered with `table`. True if it finished;
-    /// a hang resets the core and sets the memory manager up again.
-    #[inline(never)]
-    fn scene_in(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        table: &[(usize, u32)],
-        objs: &[(&[u32], u32)],
-        keep: fn(u32, u32) -> bool,
-    ) -> bool {
-        load(vram, objs, keep);
-        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
-        if !done {
-            e.reset(rt::delay_us);
-            let ok = pm_init(e, vram);
-            log!("  (timed out: core reset, memory manager ready again: {ok})");
-        }
-        done
-    }
-
     /// `objs` into the parameter memory (one list, at its start) and the
     /// region array for the tiles `keep` says.
     fn load(vram: &mut [u8], objs: &[(&[u32], u32)], keep: fn(u32, u32) -> bool) {
@@ -458,284 +432,205 @@ mod image {
         regions(vram, keep);
     }
 
-    /// A textured square from `(x0, y0)` to `(x1, y1)`, texture coordinates
-    /// 0 to `uv` both ways, white vertices.
-    fn tex_square(
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        uv: f32,
-        texw: [u32; 3],
-    ) -> [[u32; m3::tex::WORDS]; 2] {
-        let v = |x, y, u, v| m3::tex::Vertex {
+    /// The clock registers (system block; Linux mbxfb's names). The PLLs
+    /// give `13 MHz x M / (N x 2^P)`: M bits 12-7, N 6-4, P 3-1, enable 0.
+    const COREPLL: usize = 0x038;
+    const SYSCLKSRC: usize = 0x02C;
+    /// `PLLSTAT` bit 2: the core PLL locked (Dell polls it after a change).
+    const CORE_LOCKED: u32 = 1 << 2;
+    /// Windows Mobile's core PLL: M 23, N 3, P 0 = 99.67 MHz (run 26).
+    const WM_COREPLL: u32 = 0xBB1;
+    /// The steps: (name, M, N), P 0, the PLL's 13 x M / N inside Dell's
+    /// search range (47-168 MHz). 133.25 MHz is Dell's default
+    /// "CoreClock" (133 MHz); all share Dell's bus-timing tier (99 MHz and
+    /// up); the cores run at half (`MBXCLK` divide by 2), at most 66.6 MHz,
+    /// under Dell's 75 MHz cap.
+    const STEPS: [(&str, u32, u32); 3] = [
+        ("110.50 MHz", 17, 2),
+        ("121.33 MHz", 28, 3),
+        ("133.25 MHz", 41, 4),
+    ];
+    /// 149.5 MHz (cores at 74.75 MHz, at Dell's cap; the 2700G's memory
+    /// past Dell's default): off until the owner decides.
+    const TRY_149_5: bool = false;
+    /// Scratch 2700G memory for the pattern test (256 KiB).
+    const SCRATCH: usize = 0x00A0_0000;
+    const SCRATCH_WORDS: usize = 256 * 1024 / 4;
+
+    const fn pll_word(m: u32, n: u32) -> u32 {
+        m << 7 | n << 4 | 1
+    }
+
+    /// The core PLL set to `word` as Dell's driver does it (`0x0211faf0`,
+    /// `0x02120440`): the system clock on the 13 MHz reference, the PLL
+    /// written, its lock awaited (50 ms at most), the system clock back on
+    /// it. Returns the lock time in microseconds, or `None` (then WM's PLL
+    /// is put back).
+    fn set_core_pll(e: &mut Engine<Mmio>, word: u32) -> Option<u32> {
+        e.regs.write32(SYSCLKSRC, 0);
+        rt::delay_us(250);
+        e.regs.write32(COREPLL, word);
+        let t0 = rt::ticks();
+        let mut locked = None;
+        while us_since(t0) < 50_000 {
+            if e.regs.read32(PLLSTAT) & CORE_LOCKED != 0 {
+                locked = Some(us_since(t0));
+                break;
+            }
+            rt::delay_us(20);
+        }
+        if locked.is_none() {
+            e.regs.write32(COREPLL, WM_COREPLL);
+            let t1 = rt::ticks();
+            while us_since(t1) < 50_000 && e.regs.read32(PLLSTAT) & CORE_LOCKED == 0 {
+                rt::delay_us(20);
+            }
+        }
+        e.regs.write32(SYSCLKSRC, 2);
+        rt::delay_us(250);
+        locked
+    }
+
+    /// One step's checks: a 256 KiB pattern written and read back by the
+    /// CPU (`seed` varies it), a full-screen 2D fill timed and checked, ten
+    /// full-screen 3D renders timed, each one's samples summed against
+    /// `want` (the sum at Windows Mobile's clock; `None`: set it). Returns
+    /// (all good, the sum).
+    fn step_checks(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        table: &[(usize, u32)],
+        seed: u32,
+        want: Option<u32>,
+        name: &str,
+    ) -> (bool, u32) {
+        let pat = |k: usize| (k as u32).wrapping_mul(0x9E37_79B9) ^ seed;
+        for k in 0..SCRATCH_WORDS {
+            let _ = store32_volatile(vram, SCRATCH + 4 * k, pat(k));
+        }
+        cpu::drain_write_buffer();
+        let bad = (0..SCRATCH_WORDS)
+            .filter(|&k| load32_volatile(vram, SCRATCH + 4 * k) != Some(pat(k)))
+            .count();
+        rt::check_in();
+        let t0 = rt::ticks();
+        let filled = clear(e, vram, GREY);
+        let fill = us_since(t0);
+        let fill_ok = filled && px(vram, 100, 100) == GREY && px(vram, 479, 639) == GREY;
+        // The scene: a red background and a shaded triangle (Gouraud
+        // exercises the core's arithmetic).
+        let bg = background(0xFFFF_0000, 0.0);
+        let v = |x, y, argb| Vertex {
             x,
             y,
             z: 0.0,
             rhw: 1.0,
-            argb: 0xFFFF_FFFF,
-            u,
-            v,
+            argb,
         };
-        let tsp = m3::ta::TSP_DELL_TEXTURED;
-        [
-            m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[v(x0, y0, 0.0, 0.0), v(x1, y0, uv, 0.0), v(x0, y1, 0.0, uv)],
-            ),
-            m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[v(x1, y0, uv, 0.0), v(x1, y1, uv, uv), v(x0, y1, 0.0, uv)],
-            ),
-        ]
-    }
-
-    /// The texture words for a square texture at `at`: side code, format,
-    /// TEX1's filter and level-of-detail value; Dell's opaque combine word.
-    fn texw(at: usize, code: u32, format: u32, filter: u32, lod: u32) -> [u32; 3] {
-        [
-            m3::tex::tex0(code, format),
-            m3::tex::tex1(at as u32, lod, filter),
-            0xD688_6610,
-        ]
-    }
-
-    /// Fills `n` 16-bit texels at `at` with `c`.
-    fn fill16(vram: &mut [u8], at: usize, n: usize, c: u16) {
-        let w = u32::from(c) | u32::from(c) << 16;
-        for k in 0..n / 2 {
-            let _ = store32_volatile(vram, at + 4 * k, w);
-        }
-    }
-
-    // Version 25's 2700G memory: the depth buffer for the whole screen
-    // (2400 tiles x 512 bytes), the mip chain and the PVRTC blocks.
-    const DEPTH: usize = 0x00A0_0000;
-    const DEPTH_BYTES: usize = 2400 * 512;
-    const MIPS: usize = 0x00E2_0000;
-    const PVR: usize = 0x00E4_0000;
-
-    /// `table` with the GLES driver's per-frame extras (`0x022616dc`:
-    /// `0x648` 1, `0x6D0` 1, `0x614`/`0x618` `0x1E3CE508`, `0x61C`
-    /// `0x00020007`, `0x64C` 0, `0x860` the grid), a depth buffer (`0x674`)
-    /// with `0x610` and `0x6DC` as given; the start last.
-    fn with_depth(
-        table: &[(usize, u32)],
-        r610: u32,
-        r6dc: u32,
-        buf: &mut [(usize, u32); 40],
-    ) -> usize {
-        let mut n = 0;
-        let mut put = |p: (usize, u32), buf: &mut [(usize, u32); 40]| {
-            buf[n] = p;
-            n += 1;
-        };
-        for &(off, v) in &table[..table.len() - 1] {
-            match off {
-                0x610 | 0x6DC | 0x648 | 0x614 | 0x618 | 0x61C => {}
-                _ => put((off, v), buf),
-            }
-        }
-        for p in [
-            (0x648, 1),
-            (0x6D0, 1),
-            (0x614, 0x1E3C_E508),
-            (0x618, 0x1E3C_E508),
-            (0x61C, 0x0002_0007),
-            (0x64C, 0),
-            (0x860, m3::frame::tile_grid(COLS, ROWS)),
-            (0x674, DEPTH as u32),
-            (0x610, r610),
-            (0x6DC, r6dc),
-            table[table.len() - 1],
-        ] {
-            put(p, buf);
-        }
-        n
-    }
-
-    /// T11b (ADR-0026): depth stored across renders with the GLES driver's
-    /// full register set (version 24's `0x674`/`0x610` alone stored
-    /// nothing). Render A: red z 0.5 "always" with writes on the left half
-    /// of a 4 x 4 tile block, `0x610 = (n - 1) << 7 | 2` (store), `0x6DC`
-    /// 0.0 with bit 0 (clear); render B: blue z 0.3 "greater" over the
-    /// block, `| 1` (load). `n` as the block's 16 tiles and as the
-    /// screen's 2400.
-    #[inline(never)]
-    fn t11b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let block = |x: u32, y: u32| x < 4 && y < 4;
-        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
-        let red = square(0.0, 0.0, 16.0, 64.0, 0xFFFF_0000, 0.5, 7 << 29, tsp(7));
-        let blue = square(0.0, 0.0, 32.0, 64.0, 0xFF00_00FF, 0.3, 4 << 29, tsp(4));
-        let p = m3::STRIP_ONE_TRIANGLE;
-        for (name, tiles) in [("n 16 (the block)", 16u32), ("n 2400 (the screen)", 2400)] {
-            for load_bit in [1u32, 0] {
-                rt::check_in();
-                for k in 0..DEPTH_BYTES / 4 {
-                    let _ = store32_volatile(vram, DEPTH + 4 * k, 0xAAAA_AAAA);
-                }
-                cpu::drain_write_buffer();
-                let mut buf = [(0usize, 0u32); 40];
-                let n = with_depth(table, (tiles - 1) << 7 | 2, 1, &mut buf);
-                let a = scene_in(e, vram, &buf[..n], &[(&red[0], p), (&red[1], p)], block);
-                let w = |k: usize| load32_volatile(vram, DEPTH + 4 * k).unwrap_or(0);
-                let changed = (0..DEPTH_BYTES / 4)
-                    .filter(|&k| w(k) != 0xAAAA_AAAA)
-                    .count();
-                let first = (0..DEPTH_BYTES / 4).find(|&k| w(k) != 0xAAAA_AAAA);
-                let at = first.unwrap_or(0);
-                log!(
-                    "  T11b {name}, load bit {load_bit}: render A (red z 0.5, store) done {a}; buffer words changed {changed}, first at word {first:?}: {:08x?}",
-                    [
-                        w(at),
-                        w(at + 1),
-                        w(at + 2),
-                        w(at + 3),
-                        w(at + 4),
-                        w(at + 5),
-                        w(at + 6),
-                        w(at + 7)
-                    ]
-                );
-                let n = with_depth(table, (tiles - 1) << 7 | 2 | load_bit, 0, &mut buf);
-                let b = scene_in(e, vram, &buf[..n], &[(&blue[0], p), (&blue[1], p)], block);
-                log!(
-                    "  T11b {name}, load bit {load_bit}: render B (blue z 0.3 greater) done {b}; where red was (8,32) 0x{:08x}, beside it (24,32) 0x{:08x}",
-                    px(vram, 8, 32),
-                    px(vram, 24, 32)
-                );
-            }
-        }
-    }
-
-    /// T12b: mipmaps with TEX0 bits 12-9 set (the GLES driver's upload,
-    /// `0x0226576c`: `0xB` there for a texture without levels, its level
-    /// value for one with: version 24 left them 0, and no level drew).
-    /// 64 red, 32 green, 16 blue, 8 yellow, 4-1 cyan; layouts A (smallest
-    /// first, the PowerVR2's offsets) and B (the base first); TEX1
-    /// nearest-mipmap-nearest; quads 16 and 8 px.
-    #[inline(never)]
-    fn t12b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFF00_0000, 0.0);
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let t = m3::tex::STRIP_GAME;
-        let colours: [(u32, u16); 7] = [
-            (64, 0xF800),
-            (32, 0x07E0),
-            (16, 0x001F),
-            (8, 0xFFE0),
-            (4, 0x07FF),
-            (2, 0x07FF),
-            (1, 0x07FF),
-        ];
-        let a = [0xAB0usize, 0x2B0, 0xB0, 0x30, 0x10, 0x8, 0x6];
-        let mut b = [0usize; 7];
-        let mut off = 0;
-        for (k, &(side, _)) in colours.iter().enumerate() {
-            b[k] = off;
-            off += (side * side * 2) as usize;
-        }
-        for (layout, offs) in [("A", a), ("B", b)] {
-            for k in 0..0x3000 / 4 {
-                let _ = store32_volatile(vram, MIPS + 4 * k, 0);
-            }
-            for (k, &(side, c)) in colours.iter().enumerate() {
-                if side == 1 {
-                    let at = MIPS + offs[k];
-                    let w = load32_volatile(vram, at & !3).unwrap_or(0);
-                    let c = u32::from(c);
-                    let w = if at & 2 == 0 {
-                        (w & 0xFFFF_0000) | c
-                    } else {
-                        (w & 0xFFFF) | c << 16
-                    };
-                    let _ = store32_volatile(vram, at & !3, w);
-                } else {
-                    fill16(vram, MIPS + offs[k], (side * side) as usize, c);
-                }
-            }
-            cpu::drain_write_buffer();
-            for levels in [0xBu32, 3, 6, 7] {
-                let mut centre = [0u32; 2];
-                for (k, (end, size)) in [(216.0f32, 16u32), (208.0, 8)].into_iter().enumerate() {
-                    rt::check_in();
-                    let mut w = texw(
-                        MIPS,
-                        3,
-                        m3::tex::RGB565,
-                        m3::tex::TEX1_MIP_NEAREST,
-                        m3::tex::TEX1_LOD,
-                    );
-                    w[0] |= levels << 9;
-                    let sq = tex_square(200.0, 200.0, end, end, 1.0, w);
-                    let done = scene_in(
-                        e,
-                        vram,
-                        table,
-                        &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-                        |_, _| true,
-                    );
-                    centre[k] = if done {
-                        px(vram, 200 + size / 2, 200 + size / 2)
-                    } else {
-                        0xDEAD_DEAD
-                    };
-                }
-                log!(
-                    "  T12b layout {layout}, TEX0 bits 12-9 = {levels}: centre of the 16 px quad 0x{:08x}, of the 8 px quad 0x{:08x}",
-                    centre[0],
-                    centre[1]
-                );
-            }
-        }
-    }
-
-    /// T13b: PVRTC's block order (a proven format: low risk). A 16 x
-    /// 16 texture of 4 x 4 blocks, block `k` (as stored) a colour of its
-    /// own; each block's centre sampled, in rows: twiddled storage puts
-    /// block 1 right of block 0 and block 2 below it, row order block 1
-    /// right and block 4 below.
-    #[inline(never)]
-    fn t13b(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFF00_0000, 0.0);
-        let p = m3::STRIP_ONE_TRIANGLE;
-        let t = m3::tex::STRIP_GAME;
-        // Opaque RGB555 colour B and RGB554 colour A of one colour: block k
-        // gets red k * 2, green 31 - k * 2, blue 0 (A's blue is 4 bits).
-        for k in 0..16u32 {
-            let (r, g) = (2 * k, 31 - 2 * k);
-            let a = 1 << 15 | r << 10 | g << 5;
-            let bc = 1 << 15 | r << 10 | g << 5;
-            let _ = store32_volatile(vram, PVR + 8 * k as usize, 0);
-            let _ = store32_volatile(vram, PVR + 8 * k as usize + 4, bc << 16 | a);
-        }
-        cpu::drain_write_buffer();
-        rt::check_in();
-        // 64 px for 16 texels: a block every 16 px, its centre at 8.
-        let sq = tex_square(
-            100.0,
-            100.0,
-            164.0,
-            164.0,
-            1.0,
-            texw(PVR, 1, m3::tex::PVRTC4, 0, m3::tex::TEX1_LOD),
+        let tri = m3::triangle(
+            ISP_ALWAYS,
+            TSP_DELL | TSP_GOURAUD,
+            &[
+                v(240.0, 40.0, 0xFFFF_0000),
+                v(460.0, 600.0, 0xFF00_FF00),
+                v(20.0, 600.0, 0xFF00_00FF),
+            ],
         );
-        let done = scene_in(
-            e,
-            vram,
-            table,
-            &[(&bg, p), (&sq[0], t), (&sq[1], t)],
-            |_, _| true,
-        );
-        let red = |x: u32, y: u32| (px(vram, 100 + 16 * x + 8, 100 + 16 * y + 8) >> 16) & 0xFF;
-        let grid: [[u32; 4]; 4] =
-            core::array::from_fn(|y| core::array::from_fn(|x| red(x as u32, y as u32)));
+        let p = m3::STRIP_ONE_TRIANGLE;
+        let (mut matched, mut sum0, mut worst) = (0u32, 0u32, 0u32);
+        for k in 0..10 {
+            rt::check_in();
+            load(vram, &[(&bg, p), (&tri, p)], |_, _| true);
+            let t = run_quiet(e, table);
+            worst = worst.max(t.unwrap_or(u32::MAX));
+            let mut sum = 0u32;
+            for i in 0..256u32 {
+                let (x, y) = ((i * 37) % 480, (i * 101) % 640);
+                sum = sum.rotate_left(5) ^ px(vram, x, y);
+            }
+            if k == 0 {
+                sum0 = sum;
+            }
+            if want.unwrap_or(sum0) == sum {
+                matched += 1;
+            }
+        }
+        let ok = bad == 0 && fill_ok && matched == 10 && worst != u32::MAX;
         log!(
-            "  T13b PVRTC 4 bpp, block k red 2k (of 31): done {done}; red at each block's centre, rows: {grid:02x?} (stored k: twiddled as texels, x in the odd bits: row 0 = blocks 0 2 8 10; x in the even bits: 0 1 4 5; row order: 0 1 2 3)"
+            "  S27 {name}: memory words wrong {bad} of {SCRATCH_WORDS}; 2D fill {fill} us (right {fill_ok}); 3D 2400 tiles, the slowest of 10 {worst} us; sums matching {matched}/10 (0x{sum0:08x}); {}",
+            if ok { "GOOD" } else { "BAD" }
+        );
+        (ok, sum0)
+    }
+
+    /// A render with `table`, timed by polling status bit 2 (no logging):
+    /// microseconds, or `None` after 200 ms (the core reset and set up
+    /// again).
+    fn run_quiet(e: &mut Engine<Mmio>, table: &[(usize, u32)]) -> Option<u32> {
+        let en = e.regs.read32(ENABLE);
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en | RENDER_DONE);
+        let t0 = rt::ticks();
+        for &(off, v) in table {
+            e.regs.write32(MBX + off, v);
+        }
+        let mut done = None;
+        while us_since(t0) < 200_000 {
+            if e.regs.read32(STATUS) & RENDER_DONE != 0 {
+                done = Some(us_since(t0));
+                break;
+            }
+        }
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en);
+        done
+    }
+
+    /// S27: the core PLL stepped up from Windows Mobile's 99.67 MHz (the
+    /// cores at half: `MBXCLK` divide by 2), each step checked; the first
+    /// failure, and the end, put WM's PLL back.
+    #[inline(never)]
+    fn s27(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        log!(
+            "  S27 as found: COREPLL 0x{:x}, PLLSTAT 0x{:x}, SYSCLKSRC 0x{:x}, MBXCLK 0x{:x}",
+            e.regs.read32(COREPLL),
+            e.regs.read32(PLLSTAT),
+            e.regs.read32(SYSCLKSRC),
+            e.regs.read32(MBXCLK)
+        );
+        let (ok0, want) = step_checks(e, vram, table, 0, None, "99.67 MHz (WM's)");
+        if !ok0 {
+            log!("  S27 the reference itself failed: no steps");
+            return;
+        }
+        let n = if TRY_149_5 { 4 } else { 3 };
+        let steps = [STEPS[0], STEPS[1], STEPS[2], ("149.50 MHz", 23, 2)];
+        for (k, &(name, m, nn)) in steps[..n].iter().enumerate() {
+            rt::check_in();
+            let lock = set_core_pll(e, pll_word(m, nn));
+            log!(
+                "  S27 {name}: COREPLL 0x{:x} locked after {lock:?} us, PLLSTAT 0x{:x}",
+                e.regs.read32(COREPLL),
+                e.regs.read32(PLLSTAT)
+            );
+            if lock.is_none() {
+                log!("  S27 no lock: WM's PLL back, stepping stopped");
+                break;
+            }
+            let (ok, _) = step_checks(e, vram, table, k as u32 + 1, Some(want), name);
+            if !ok {
+                let back = set_core_pll(e, WM_COREPLL);
+                log!(
+                    "  S27 {name} failed a check: WM's PLL back (locked {back:?} us), stepping stopped"
+                );
+                break;
+            }
+        }
+        let back = set_core_pll(e, WM_COREPLL);
+        let _ = step_checks(e, vram, table, 9, Some(want), "back at 99.67 MHz");
+        log!(
+            "  S27 WM's PLL back: locked {back:?} us, COREPLL 0x{:x}",
+            e.regs.read32(COREPLL)
         );
     }
 
@@ -925,19 +820,13 @@ mod image {
             );
         }
 
-        // T11b-T13b (ADR-0026 follow-ups of version 24): depth stored
-        // with the GLES driver's full set, PVRTC's block order, then
-        // mipmaps with TEX0 bits 12-9 (the riskiest, last).
+        // S27 (ADR-0026): the core PLL stepped up, each step checked.
         if drew {
             let (t, n) = table(level);
-            log!("T11b: depth stored across renders with 0x648, 0x6D0 and the GLES extras");
-            t11b(&mut e, vram, &t[..n]);
-            log!("T13b: PVRTC's block order");
-            t13b(&mut e, vram, &t[..n]);
-            // Last: unexplored TEX0/TEX1 bits (TEX1 bit 30 hung the core in
-            // version 24); a hang here costs nothing.
-            log!("T12b: mipmaps with TEX0 bits 12-9 (the level value)");
-            t12b(&mut e, vram, &t[..n]);
+            log!(
+                "S27: the core PLL from 99.67 MHz to 133.25 MHz (Dell's default), checked at each step"
+            );
+            s27(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);
