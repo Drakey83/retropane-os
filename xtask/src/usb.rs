@@ -563,39 +563,24 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                 return Ok(());
             }
             if restarted {
-                return Err(
-                    "the image hung: the watchdog reset the device and the loader came \
-                     back without a run log (the reset cleared it)"
-                        .into(),
-                );
+                // READY before any run log says only that the log didn't come
+                // first: it may have gone out before the PC reopened the port.
+                // The loader knows what happened; ask it (2026-10-15: a
+                // deliberate crash was reported here as a watchdog reset).
+                eprintln!("    the loader is back with no run log first; asking it for the run");
+                let lines = after_restart(query(root, "log").map(|(lines, _)| lines))?;
+                eprintln!("    the run log, from the loader:");
+                for l in &lines {
+                    println!("{l}");
+                }
+                return run_verdict(&lines);
             }
             if returned {
                 eprintln!("    the image returned to the loader; its run log:");
                 for l in &log {
                     println!("{l}");
                 }
-                if log.iter().any(|l| l.contains("did not return")) {
-                    return Err("the image hung: the watchdog reset the device (log above)".into());
-                }
-                if log.iter().any(|l| l.contains("[the image crashed")) {
-                    return Err(
-                        "the image crashed (log above; also on the card as crashlog.txt)".into(),
-                    );
-                }
-                // A probe report: every line's checksum, checked here.
-                let text = log.join("\n");
-                if text.contains("P1|") {
-                    let bad: Vec<&String> = log
-                        .iter()
-                        .filter(|l| l.starts_with('P') && l.contains('|'))
-                        .filter(|l| crate::emu::check_report_line(l).is_err())
-                        .collect();
-                    if bad.is_empty() {
-                        eprintln!("    probe report: every line's checksum is valid");
-                    } else {
-                        return Err(format!("probe report lines with bad checksums: {bad:?}"));
-                    }
-                }
+                run_verdict(&log)?;
             } else {
                 if log.is_empty() {
                     eprintln!("    no run log within {LOG_WAIT_SECS} s; asking the loader for it");
@@ -615,6 +600,50 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
             Ok(())
         }
         Some(r) => Err(format!("the loader refused the image: {r}")),
+    }
+}
+
+/// What a run log says about the run: `Err` for a hang the watchdog reset
+/// (the loader's note), a crash, or a probe report with bad lines.
+fn run_verdict(log: &[String]) -> Result<(), String> {
+    if log.iter().any(|l| l.contains("did not return")) {
+        return Err("the image hung: the watchdog reset the device (log above)".into());
+    }
+    if log.iter().any(|l| l.contains("[the image crashed")) {
+        return Err("the image crashed (log above; also on the card as crashlog.txt)".into());
+    }
+    // A probe report: every line's checksum, checked here.
+    if log.iter().any(|l| l.contains("P1|")) {
+        let bad: Vec<&String> = log
+            .iter()
+            .filter(|l| l.starts_with('P') && l.contains('|'))
+            .filter(|l| crate::emu::check_report_line(l).is_err())
+            .collect();
+        if bad.is_empty() {
+            eprintln!("    probe report: every line's checksum is valid");
+        } else {
+            return Err(format!("probe report lines with bad checksums: {bad:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The run's log after the loader came back with READY first, from the
+/// loader's answer to `log`: its lines, or what the answer says happened.
+/// Only a loader with no record of any run means the device was reset; a
+/// loader that can't be asked proves nothing either way.
+fn after_restart(answer: Result<Vec<String>, String>) -> Result<Vec<String>, String> {
+    match answer {
+        Ok(lines) => Ok(lines),
+        Err(e) if e.contains("no image has run") => Err(
+            "the loader has no record of the run: the device was reset (a hang the \
+             watchdog caught, or power) and the reset cleared the log"
+                .into(),
+        ),
+        Err(e) => Err(format!(
+            "no run log, and the loader couldn't be asked for one ({e}): the device's \
+             screen says what happened; once the PC sees the loader again: cargo xtask log"
+        )),
     }
 }
 
@@ -884,6 +913,35 @@ mod tests {
         // "dir" as UTF-16LE is 64 00 69 00 72 00.
         assert_eq!(encode_command("dir"), "ZABpAHIA");
         assert_eq!(encode_command("ab"), "YQBiAA==");
+    }
+
+    /// READY before the run log is not a hang (2026-10-15: a deliberate
+    /// crash was reported as a watchdog reset): only the loader's own
+    /// record decides.
+    #[test]
+    fn a_restart_is_judged_by_the_loaders_record_not_by_a_missing_log() {
+        let crashed = vec![
+            "PANIC deliberate test panic".to_string(),
+            "[the image crashed: report kept on the card as crashlog.txt]".to_string(),
+        ];
+        let lines = after_restart(Ok(crashed)).unwrap();
+        let verdict = run_verdict(&lines).unwrap_err();
+        assert!(verdict.contains("crashed"), "{verdict}");
+        assert!(!verdict.contains("watchdog"), "{verdict}");
+        assert!(run_verdict(&after_restart(Ok(vec!["all steps OK".into()])).unwrap()).is_ok());
+        let hung = vec!["[the image did not return: it hung and the device was reset]".into()];
+        assert!(run_verdict(&hung).unwrap_err().contains("watchdog"));
+        let reset = after_restart(Err(
+            "the loader refused `log`: RPL ERR log: no image has run since the loader started"
+                .into(),
+        ))
+        .unwrap_err();
+        assert!(reset.contains("device was reset"), "{reset}");
+        let unknown = after_restart(Err("no reply from the loader".into())).unwrap_err();
+        assert!(
+            !unknown.contains("watchdog") && !unknown.contains("hung"),
+            "{unknown}"
+        );
     }
 
     #[test]
