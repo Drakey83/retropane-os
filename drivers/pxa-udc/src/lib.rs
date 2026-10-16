@@ -23,6 +23,7 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod unplug;
 pub mod usb;
 
 use rp_hal_api::{Port, RegisterBus, RegisterBus8, Width};
@@ -448,6 +449,15 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     /// control registers; not for the registers this driver manages).
     pub fn write_reg(&mut self, offset: usize, value: u32) {
         self.bus.write32(offset, value);
+    }
+
+    /// Makes the PC see the device unplugged and plugged back in (the
+    /// X51v's pull-up is hard-wired: [`unplug::unplug`]), the controller
+    /// left off for the caller to [`enable`](Self::enable). `uhc` is the
+    /// USB host controller's register window. Returns port 2's status.
+    pub fn unplug(&mut self, uhc: &mut impl RegisterBus, delay_us: &mut impl FnMut(u32)) -> u32 {
+        self.disable();
+        unplug::unplug(&mut self.bus, uhc, delay_us)
     }
 
     /// Turns the controller off.
