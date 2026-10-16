@@ -759,8 +759,8 @@ pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {
 /// the loader's run limit, and writes a report (target/device-check.txt):
 /// the drive's counters, the SD DMA self-test verdict, the backlight level,
 /// and a scan of the card's blocks not yet scanned, in short chunks. With
-/// `with_owner` (someone at the device: it makes sound and touches the CF
-/// socket): the CF card and a tone.
+/// `with_owner` (someone at the device: it touches the CF socket): the CF
+/// card. The audio check is an image of its own (`cargo xtask tone`).
 pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     let mut steps: Vec<(String, String)> = vec![
         ("drive".into(), "drive status".into()),
@@ -778,7 +778,6 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     }
     if with_owner {
         steps.push(("CF card".into(), "cf".into()));
-        steps.push(("tone".into(), "tone 440 500".into()));
     }
     let mut report = String::new();
     let mut failed = 0;
@@ -800,7 +799,7 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     }
     if !with_owner {
         report.push_str(
-            "(CF and tone skipped: run with --with-owner when someone is at the device)\n",
+            "(CF skipped: run with --with-owner when someone is at the device; the tone: cargo xtask tone)\n",
         );
     }
     let path = root.join("target/device-check.txt");

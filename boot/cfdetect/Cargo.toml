@@ -1,0 +1,19 @@
+[package]
+name = "rp-cfdetect"
+description = "CF card detect with the slot unpowered, on the real X51v: GPIO13 and CPLD 0x04 bit 1 through a pull-out and push-in (the re-insert fix's open question)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+
+[lints]
+workspace = true

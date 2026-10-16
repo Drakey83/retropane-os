@@ -98,11 +98,13 @@ commands:
             run by hand under WM; it writes rp-wm-baseline.txt next to itself)
   reboot-wm reset the X51v back into Windows Mobile the way its own
             reboot does (GPIO99; item 64, not yet tried on the device)
-  tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
-            reply names the output and the CPU's busy share)
+  tone     the audio check: loads rp-tone (440 Hz to the speaker or the
+            headphones, then waits 15 s for the jack to change; the run log
+            names the output and the CPU's busy share)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
-            in target/device-check.txt; --with-owner adds CF and a tone
+            in target/device-check.txt; --with-owner adds CF (the tone:
+            `cargo xtask tone`)
   emu-picture  only the rp-picture check (a UI concept on screen, then
             back to the loader): run it before `load rp-picture`
   emu-blend only the rp-blend check (plane blending, three stages
@@ -133,6 +135,7 @@ commands:
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
+  emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
   emu-usb-suite every emulator check that goes through the USB controller
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
@@ -161,7 +164,7 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-unplug" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-cfdetect" | "emu-unplug" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -316,9 +319,8 @@ fn main() -> ExitCode {
             usb::command(&workspace_root(), "reboot wm")
         }
         "tone" => {
-            let rest: Vec<String> = args().skip(2).collect();
-            eprintln!("==> tone {}", rest.join(" "));
-            usb::command(&workspace_root(), &format!("tone {}", rest.join(" ")))
+            eprintln!("==> tone (rp-tone)");
+            usb::load(&workspace_root(), "rp-tone", false)
         }
         "device-check" => {
             eprintln!("==> device-check {flag}");
@@ -393,6 +395,7 @@ fn run_step(step: &str) -> Result {
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
+        "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order
@@ -432,6 +435,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_loader_handover(&workspace_root()))
             .and_then(|()| emu::boot_loader_nightlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cfdetect(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_trace(&workspace_root()))

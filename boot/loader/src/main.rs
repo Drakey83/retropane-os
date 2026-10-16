@@ -36,14 +36,11 @@ mod image {
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::crash;
     use rp_drv_pxa_gpio::Gpio;
-    use rp_drv_pxa_i2c::PxaI2c;
-    use rp_drv_pxa_i2s::{PxaI2s, Rate, Tone, stream};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Guard, Volume};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
@@ -197,7 +194,10 @@ mod image {
 
     /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
     const SD_DETECT: u8 = 12;
-    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
+    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot,
+    /// but only while the slot is powered: unpowered, it sticks at "no card"
+    /// after a removal (`rp-cfdetect`, 2026-10-16). The fallback when there's
+    /// no CPLD; [`cf_card_in`] reads the CPLD's status bit instead.
     const CF_DETECT: u8 = 13;
     /// CompactFlash slot power / READY (docs/hw/cf.md): high while the
     /// slot is powered (CPLD `0x16` bit 1 + `0x10` bit 12). The card's
@@ -207,36 +207,6 @@ mod image {
     /// Windows Mobile's own reboot, after GPIO15 is driven low.
     const BOARD_RESET: u8 = 99;
     const BOARD_RESET_PREP: u8 = 15;
-    /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
-    /// unconfirmed on the device, so changes are logged with the level).
-    const HP_DETECT: u8 = 83;
-
-    /// The headphone jack, debounced over two one-second polls.
-    struct Jack {
-        plugged: bool,
-        seen: bool,
-    }
-
-    impl Jack {
-        /// The new state when the jack changed.
-        fn poll(&mut self, gpio: &mut Gpio<Mmio>) -> Option<bool> {
-            let now = gpio.read(HP_DETECT);
-            let stable = now == self.seen;
-            self.seen = now;
-            (stable && now != self.plugged).then(|| {
-                self.plugged = now;
-                now
-            })
-        }
-
-        fn output(&self) -> Output {
-            if self.plugged {
-                Output::Headphones
-            } else {
-                Output::Speaker
-            }
-        }
-    }
     const SD_LOCK: u8 = 27;
 
     impl Lun {
@@ -1143,10 +1113,11 @@ mod image {
             }
         }
 
-        /// Follows the detect line; `true` when the card came or went (the
-        /// caller attaches a card that came, and tells the PC).
-        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
-            let now = !gpio.read(CF_DETECT);
+        /// Follows the card's presence ([`cf_card_in`]); `true` when the
+        /// card came or went (the caller attaches a card that came, and tells
+        /// the PC).
+        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+            let now = cf_card_in(gpio, cpld);
             let stable = now == self.seen;
             self.seen = now;
             if !stable || now == self.inserted {
@@ -1296,16 +1267,27 @@ mod image {
     /// partition. An attached card is only reported. The socket is touched
     /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
     /// for docs/hw/cf.md) skips the hardware reset.
+    /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
+    /// follows the card both ways with the slot powered or not (`rp-cfdetect`
+    /// on the device, 2026-10-16), so a card pushed back in after the slot
+    /// was switched off is seen; GPIO13 only without a CPLD.
+    fn cf_card_in(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+        match cpld {
+            Some(c) => c.cf_present(),
+            None => !gpio.read(CF_DETECT),
+        }
+    }
+
     #[inline(never)]
     fn cf_command(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut BoardCpld>,
+        mut cpld: Option<&mut BoardCpld>,
         soft: bool,
         out: &mut Line,
     ) {
-        if gpio.read(CF_DETECT) {
-            let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
+        if !cf_card_in(gpio, cpld.as_deref_mut()) {
+            let _ = write!(out, "RPL ERR cf: no card\r\n");
             return;
         }
         // What the slot looked like before this command (diagnostics).
@@ -1393,107 +1375,6 @@ mod image {
             }
         }
         let _ = out.write_str("\r\n");
-    }
-
-    /// Audio: set up on the first `tone`, so nothing touches the I2C bus or
-    /// the codec unasked.
-    enum Audio {
-        Untried,
-        /// The codec, the I2S, and a DMA channel to stream with if one was
-        /// free.
-        Ready(Wm8750<PxaI2c<Mmio>>, PxaI2s<Mmio>, Option<Dma>),
-        Failed(&'static str),
-    }
-
-    /// `tone <hz> <ms>`: a sine (20-20,000 Hz, up to 5 s) through the
-    /// WM8750 at 48 kHz, streamed by DMA from `ring` (the CPU refills it by
-    /// halves); the reply says how long it really took (the codec's clock
-    /// paces it) and how much of that the CPU was busy (a polled FIFO would
-    /// keep it busy throughout). Headphones: the speaker amplifier
-    /// (GPIO82, CPLD 0x14) is left alone until a device run with the owner
-    /// there.
-    #[inline(never)]
-    fn tone_command(
-        audio: &mut Audio,
-        jack: &Jack,
-        args: &[u8],
-        ring: &mut [u8],
-        feed: &mut dyn FnMut(),
-        out: &mut Line,
-    ) {
-        let mut it = args.split(|&b| b == b' ').filter(|a| !a.is_empty());
-        let (Some(hz), Some(ms)) = (
-            it.next()
-                .and_then(parse_number)
-                .filter(|h| (20..=20_000).contains(h)),
-            it.next()
-                .and_then(parse_number)
-                .filter(|m| (1..=5_000).contains(m)),
-        ) else {
-            let _ = write!(out, "RPL ERR usage: tone <20-20000 Hz> <1-5000 ms>\r\n");
-            return;
-        };
-        if let Audio::Untried = audio {
-            *audio = match (rt::take_i2c(), rt::take_i2s()) {
-                (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
-                    Ok(mut codec) => {
-                        let _ = codec.route(jack.output());
-                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(dma_map::AUDIO))
-                    }
-                    Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
-                },
-                _ => Audio::Failed("I2C or I2S unavailable"),
-            };
-        }
-        let (codec, i2s, dma) = match audio {
-            Audio::Ready(c, i, d) => (c, i, d),
-            Audio::Failed(why) => {
-                let _ = write!(out, "RPL ERR tone: {why}\r\n");
-                return;
-            }
-            Audio::Untried => return,
-        };
-        let rate = Rate::Khz48;
-        let frames = rate.hz() / 1000 * ms;
-        let mut source = Tone::new(hz, rate.hz(), 12_000);
-        let Some(dma) = dma else {
-            let _ = write!(out, "RPL ERR tone: no DMA channel\r\n");
-            return;
-        };
-        i2s.start(rate);
-        let r = stream(
-            dma,
-            ring,
-            &mut source,
-            frames,
-            &mut rt::ticks,
-            TICK_1S / 5,
-            feed,
-        );
-        i2s.stop();
-        match r {
-            Ok(s) => {
-                let _ = write!(
-                    out,
-                    "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}, to {}\r\n",
-                    s.total / (TICK_1S / 1000),
-                    u64::from(s.busy) * 100 / u64::from(s.total.max(1)),
-                    codec.address(),
-                    if codec.output() == Output::Headphones {
-                        "headphones"
-                    } else {
-                        "speaker"
-                    }
-                );
-            }
-            Err(e) => {
-                let why = match e {
-                    rp_drv_pxa_i2s::StreamError::Refused => "refused",
-                    rp_drv_pxa_i2s::StreamError::Stalled => "stalled",
-                };
-                let _ = write!(out, "RPL ERR tone: DMA stream {why}\r\n");
-            }
-        }
     }
 
     /// `card dma` reports the DMA policy; `card dma writes` lets writes use
@@ -1590,14 +1471,23 @@ mod image {
 
     /// `handoff`: what `_start` found running at this loader's start, how
     /// long its DMA took to stop, and when the 2700G and the loader were
-    /// ready (milliseconds since the start).
-    fn handoff_command(ready_at: u32, out: &mut Line) {
+    /// ready (milliseconds since the start), and when each start-up stage
+    /// before the display ended (`stages`: the SD card, its DMA self-test and
+    /// file system checks, the CF slot), to find where the boot time goes.
+    fn handoff_command(ready_at: u32, stages: &[u32; 3], out: &mut Line) {
         let ms = |t: u32| t / (TICK_1S / 1000);
+        let _ = write!(
+            out,
+            "RPL OK handoff: card {} ms, dma+fat {} ms, cf {} ms; ",
+            ms(stages[0]),
+            ms(stages[1]),
+            ms(stages[2]),
+        );
         match devices::mbx_handoff() {
             Some(h) => {
                 let _ = write!(
                     out,
-                    "RPL OK handoff: dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
+                    "dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
 ",
                     h.found.dma_running,
                     h.stopped.waited * 4 / 13,
@@ -1609,7 +1499,7 @@ mod image {
             None => {
                 let _ = write!(
                     out,
-                    "RPL OK handoff: 2700G not taken, ready at {} ms
+                    "2700G not taken, ready at {} ms
 ",
                     ms(ready_at)
                 );
@@ -1880,6 +1770,8 @@ mod image {
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
         let (card, spare, cpld_found, cpld) = open_card();
+        // When each start-up stage ended (`handoff`: boot time on the device).
+        let mut stages = [rt::since_start(), 0, 0];
         let (mut cpld, cpld_source) = match cpld {
             Some((c, s)) => (Some(c), Some(s)),
             None => (None, None),
@@ -1909,13 +1801,14 @@ mod image {
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();
         lun.dirty_found = lun.dirty_flag();
+        stages[1] = rt::since_start();
         // The CF card too, before the pull-up (the owner's flaky "USB Drive
         // (J:)" with no size, 2026-10-15): attached later in the loop, it
         // was "no medium" when the PC enumerated, then away for seconds,
         // and the attach stalled the PC's requests meanwhile; Explorer drew
         // the drive empty and its icon only minutes later. Now the PC finds
         // it ready from its first question, as the SD card.
-        let cf_in = !gpio.read(CF_DETECT);
+        let cf_in = cf_card_in(&mut gpio, cpld.as_mut());
         let mut cf = CfLun {
             slot: CfSlot::Untried,
             inserted: cf_in,
@@ -1934,6 +1827,7 @@ mod image {
         if cf_in {
             cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
         }
+        stages[2] = rt::since_start();
 
         let Some((regs, vram)) = devices::take_mbx() else {
             halt()
@@ -2056,14 +1950,8 @@ mod image {
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
-        let mut audio = Audio::Untried;
         // The USB controller's DMA channel (item 74).
         let mut udc_dma = rt::take_dma(dma_map::UDC);
-        gpio.make_input(HP_DETECT);
-        let mut jack = Jack {
-            plugged: gpio.read(HP_DETECT),
-            seen: gpio.read(HP_DETECT),
-        };
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
         // Layout fallback: if the PC keeps trying (bus resets) but never
@@ -2081,8 +1969,7 @@ mod image {
             if lun.present() { "ready" } else { "none" }
         );
         // Boot time (docs/design-brief.md): entry to the waiting loop, every
-        // driver set up that the loop needs now (audio and CF start later,
-        // on first use).
+        // driver set up that the loop needs now.
         let ready_at = rt::since_start();
         let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
@@ -2308,21 +2195,6 @@ mod image {
                             backlight_command(backlight.as_mut(), &c[9..], &mut status);
                             status.as_str()
                         }
-                        Ok(c) if c.starts_with(b"tone") => {
-                            tone_command(
-                                &mut audio,
-                                &jack,
-                                &c[4..],
-                                &mut fat_scratch[..8192],
-                                &mut || {
-                                    if watchdog.armed() {
-                                        watchdog.feed(RUN_LIMIT);
-                                    }
-                                },
-                                &mut status,
-                            );
-                            status.as_str()
-                        }
                         Ok(c) if c == b"ls" || c.starts_with(b"ls ") => {
                             if msc.host_writing(now_ms()) {
                                 "RPL ERR card busy: the PC is writing\r\n"
@@ -2379,7 +2251,7 @@ mod image {
                             // previous owner's DMA (HaRET's hand-off
                             // from Windows Mobile, or an image's return), and
                             // the boot time it cost.
-                            handoff_command(ready_at, &mut status);
+                            handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
                         Ok(b"reboot wm") => {
@@ -2608,20 +2480,8 @@ mod image {
                     if on { "on" } else { "off" }
                 );
             }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S
-                && let Some(plugged) = jack.poll(&mut gpio)
+            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio, cpld.as_mut())
             {
-                if let Audio::Ready(codec, ..) = &mut audio {
-                    let _ = codec.route(jack.output());
-                }
-                let _ = writeln!(
-                    log,
-                    "headphones {} (GPIO83 {})",
-                    if plugged { "in" } else { "out" },
-                    u8::from(plugged)
-                );
-            }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
