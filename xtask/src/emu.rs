@@ -4482,6 +4482,37 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             "    idle OK: the waiting loader was {idle}% asleep and answered in {} ms",
             took.as_millis()
         );
+        // Boot time by stage (`handoff`): each stage ends after the one
+        // before it, and all before the 2700G is taken and the loader ready.
+        s.write_all(&rp_loadproto::control_frame("handoff"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(
+            &mut s, " ms
+", 10,
+        )?;
+        let after = |key: &str| -> Option<u32> {
+            reply
+                .split(key)
+                .nth(1)?
+                .split(" ms")
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        let times = [
+            after("card "),
+            after("dma+fat "),
+            after("cf "),
+            after("2700G at "),
+            after("ready at "),
+        ];
+        if times.iter().any(Option::is_none) || !times.windows(2).all(|w| w[0] <= w[1]) {
+            return Err(format!(
+                "handoff: stages missing or out of order in {reply:?}"
+            ));
+        }
+        eprintln!("    boot stages OK: {}", reply.trim());
         s.write_all(&rp_loadproto::control_frame("backlight 30"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "RPL OK backlight 30% (duty 38/432)", 10)?;

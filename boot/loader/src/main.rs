@@ -1592,14 +1592,23 @@ mod image {
 
     /// `handoff`: what `_start` found running at this loader's start, how
     /// long its DMA took to stop, and when the 2700G and the loader were
-    /// ready (milliseconds since the start).
-    fn handoff_command(ready_at: u32, out: &mut Line) {
+    /// ready (milliseconds since the start), and when each start-up stage
+    /// before the display ended (`stages`: the SD card, its DMA self-test and
+    /// file system checks, the CF slot), to find where the boot time goes.
+    fn handoff_command(ready_at: u32, stages: &[u32; 3], out: &mut Line) {
         let ms = |t: u32| t / (TICK_1S / 1000);
+        let _ = write!(
+            out,
+            "RPL OK handoff: card {} ms, dma+fat {} ms, cf {} ms; ",
+            ms(stages[0]),
+            ms(stages[1]),
+            ms(stages[2]),
+        );
         match devices::mbx_handoff() {
             Some(h) => {
                 let _ = write!(
                     out,
-                    "RPL OK handoff: dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
+                    "dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
 ",
                     h.found.dma_running,
                     h.stopped.waited * 4 / 13,
@@ -1611,7 +1620,7 @@ mod image {
             None => {
                 let _ = write!(
                     out,
-                    "RPL OK handoff: 2700G not taken, ready at {} ms
+                    "2700G not taken, ready at {} ms
 ",
                     ms(ready_at)
                 );
@@ -1885,6 +1894,8 @@ mod image {
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
         let (card, spare, cpld_found, cpld) = open_card();
+        // When each start-up stage ended (`handoff`: boot time on the device).
+        let mut stages = [rt::since_start(), 0, 0];
         let (mut cpld, cpld_source) = match cpld {
             Some((c, s)) => (Some(c), Some(s)),
             None => (None, None),
@@ -1914,6 +1925,7 @@ mod image {
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();
         lun.dirty_found = lun.dirty_flag();
+        stages[1] = rt::since_start();
         // The CF card too, before the pull-up (the owner's flaky "USB Drive
         // (J:)" with no size, 2026-10-15): attached later in the loop, it
         // was "no medium" when the PC enumerated, then away for seconds,
@@ -1939,6 +1951,7 @@ mod image {
         if cf_in {
             cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
         }
+        stages[2] = rt::since_start();
 
         let Some((regs, vram)) = devices::take_mbx() else {
             halt()
@@ -2382,7 +2395,7 @@ mod image {
                             // previous owner's DMA (HaRET's hand-off
                             // from Windows Mobile, or an image's return), and
                             // the boot time it cost.
-                            handoff_command(ready_at, &mut status);
+                            handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
                         Ok(b"reboot wm") => {
