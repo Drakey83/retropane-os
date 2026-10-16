@@ -220,6 +220,53 @@ ruled out GPIO2, `UP2OCR` DPPUE/DPPDE, CPLD `0x1C` bit 3 and `UDE`. A PC-side
 port cycle (`IOCTL_USB_HUB_CYCLE_PORT`, `pnputil /restart-device`) works
 too but needs admin each time: a fallback, not the fix.
 
+**T4 design: `rp-unplug`, the disconnect hunt (planned 2026-10-16, not
+built).** A new test image (test images ratchet freely; no loader bytes),
+started by the loader with `cargo xtask load`, built on `rp-reconnect`:
+it enables the UDC itself, then for each candidate applies it for 1 s,
+undoes it, and counts the bus resets and SETUPs in the next 3 s (a real
+reconnect makes the PC's hub reset the port within ~0.1 s). Results to the
+screen and the run log; the PC watches the port at the same time
+(Windows' device list once a second, optionally the T1 trace). The image
+feeds the watchdog between candidates (the run takes ~80 s; the default
+limit is 30 s).
+
+Windows Mobile's own USB driver maps only the controller (its registry
+entry: `MemBase` and `IoBase` both `0x40600000`, ROM A08 `default.hv`), so
+a disconnect Windows Mobile could make goes through the controller, the
+port 2 transceiver, or the shared CPLD table. Candidates, safest first,
+each restored before the next:
+
+1. **SE0 from the PXA27x's own host controller.** Port 2's transceiver can
+   be switched to the USB host controller (`UP2OCR.HXS` = 1). With its
+   clock on (`CKEN` bit 10) and port 2 powered, a root-hub port reset
+   (OHCI `HcRhPortStatus[1]`, "set port reset") drives SE0 for ~10 ms,
+   which overpowers the 1.5 kOhm pull-up: the PC's hub reads SE0 for more
+   than 2.5 us as a disconnect. Then `HXS` back to 0 and the UDC enabled
+   afresh. Repeated a few times in the 1 s window. The one candidate that
+   needs no unknown board wiring.
+2. **`UP2OCR`'s other transceiver bits**: the D+/D- pull-up bypass bits
+   (`[7:6]`) and the transceiver output enable off (`HXOE` = 0) while the
+   UDC is off (2026-10-11 tried `HXOE` only with the UDC on).
+3. **CPLD bits Windows Mobile has set at hand-over whose purpose isn't
+   known**, one at a time, cleared for 1 s and set again: `0x1C` bit 2,
+   `0x14` bit 3, `0x1A` bits 1 and 2, `0x02` bits 0, 2-5 and 7. Never the
+   known ones: SD power (`0x16` bit 0), CF (`0x16` bit 1, `0x10` bit 12,
+   `0x18` bit 1), backlight (`0x18` bit 2), display (`0x12`), the reboot
+   bit (`0x08`). A board reset clears them all and does disconnect, so the
+   pull-up's supply may be one of them.
+4. Only if 1-3 find nothing (a separate run, its own plan): GPIO outputs
+   Windows Mobile leaves high in GPIO function, excluding GPIO99 (board
+   reset) and every pin a RetroPane driver uses.
+
+A candidate that switches off something else (the screen, the card) is
+undone 1 s later; the image keeps going and the run log names the step.
+What "found" means: bus resets in the 3 s after the candidate on the
+device **and** the device leaving and coming back on the PC. Then: the
+loader gets that disconnect at start (its `DETACH` window, which today
+does nothing), proven over five hand-overs from Windows Mobile, and the
+emulator models the same switch (the fork's host sees the disconnect).
+
 **Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
 the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even
 tried the loader).
