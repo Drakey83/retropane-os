@@ -442,7 +442,7 @@ mod image {
         // Clear the target so the check below sees what DMA wrote.
         rp_hal_mem::fill32(&mut vram[DMA_DST..DMA_DST + SCREEN_BYTES], 0);
         cpu::drain_write_buffer();
-        let Some(mut dma) = rt::take_dma(0) else {
+        let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::SD) else {
             log!("dma: no channel");
             return true;
         };

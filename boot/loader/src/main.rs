@@ -41,13 +41,13 @@ mod image {
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_pxa_udc::Udc;
+    use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Guard, Volume};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
-    use rp_hal_pxa27x::{Mmio, handoff, rt};
+    use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
@@ -73,6 +73,14 @@ mod image {
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
+    /// A loader started as an image (a new build tried from RAM, the old
+    /// one still on the card) under a run's watchdog stops feeding it if no
+    /// PC program opens its port and no frame arrives within this time: a
+    /// build whose USB doesn't work resets the Axim back to the card's
+    /// loader instead of holding it.
+    const LINK_PATIENCE: u32 = 90 * TICK_1S;
+    /// A frame whose bytes stop arriving for this long is abandoned.
+    const FRAME_PATIENCE: u32 = 2 * TICK_1S;
     /// The end of the image area, kept for searching the FAT for free
     /// clusters and for reading a written file back (the bigger it is, the
     /// fewer card commands each takes).
@@ -82,8 +90,15 @@ mod image {
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
     /// Staging buffer for the drive's block transfers (in the scratch
-    /// area, not the image: 64 sectors per card command).
+    /// area, not the image): two 16 KiB halves, each one card command and
+    /// one USB DMA transfer, the card working on one while the USB link
+    /// moves the other (item 74). Smaller halves shorten a write's two
+    /// ends that can't overlap (the first half's arrival, the last half's
+    /// card write before the status); measured against 32 KiB halves.
     const MSC_BUF: usize = 32 * 1024;
+    // The drive's largest DMA transfer (the whole buffer, for a unit that
+    // doesn't overlap) fits the USB controller's chain.
+    const _: () = assert!(MSC_BUF <= dma_map::max_bytes(dma_map::UDC));
     /// The drive's serial number: the USB serial string (16 hex digits).
     const MSC_SERIAL: &[u8] = b"5250323630303031";
     /// How long the PC may try to enumerate a layout without configuring it
@@ -339,8 +354,9 @@ mod image {
         }
     }
 
-    /// The UDC's mass storage endpoints as the drive's bulk pipe.
-    struct Pipe<'a>(&'a mut Udc<Mmio>);
+    /// The UDC's mass storage endpoints as the drive's bulk pipe, with the
+    /// UDC's DMA channel for whole halves of the drive's buffer (item 74).
+    struct Pipe<'a>(&'a mut Udc<Mmio>, Option<&'a mut Dma>);
 
     impl BulkPipe for Pipe<'_> {
         fn read_packet(&mut self, buf: &mut [u8; 64]) -> Option<usize> {
@@ -354,6 +370,57 @@ mod image {
         }
         fn service(&mut self) {
             self.0.poll();
+        }
+        fn send_dma(&mut self, data: &[u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            // The channel first: the endpoint asks for data once DME is on.
+            let ok = self.0.configured()
+                && d.arm_to_device(Udc::<Mmio>::dma_port(Bulk::StorageIn), data);
+            if ok {
+                self.0.set_dma(Bulk::StorageIn, true);
+            }
+            ok
+        }
+        fn receive_dma(&mut self, buf: &mut [u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            let ok = self.0.configured()
+                && d.arm_from_device(Udc::<Mmio>::dma_port(Bulk::StorageOut), buf);
+            if ok {
+                self.0.set_dma(Bulk::StorageOut, true);
+            }
+            ok
+        }
+        fn dma_done(&mut self) -> Option<bool> {
+            use rp_hal_api::DmaEngine;
+            let d = self.1.as_deref_mut()?;
+            // A bus reset meanwhile handed the endpoints back: the transfer
+            // can't finish (the command is abandoned anyway).
+            let r = if self.0.dma_on(Bulk::StorageIn) || self.0.dma_on(Bulk::StorageOut) {
+                d.done()?
+            } else {
+                d.abort();
+                false
+            };
+            if self.0.dma_on(Bulk::StorageIn) {
+                self.0.dma_in_end(Bulk::StorageIn, 0);
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
+            Some(r)
+        }
+        fn dma_abort(&mut self) {
+            use rp_hal_api::DmaEngine;
+            if let Some(d) = self.1.as_deref_mut() {
+                d.abort();
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
         }
     }
 
@@ -400,7 +467,7 @@ mod image {
         let Some(mut cpld) = devices::take_cpld() else {
             return (None, None, [0; 16], None);
         };
-        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
             return (None, None, [0; 16], Some(Cpld::new(cpld)));
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
@@ -1364,7 +1431,7 @@ mod image {
                 (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
                     Ok(mut codec) => {
                         let _ = codec.route(jack.output());
-                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(1))
+                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(dma_map::AUDIO))
                     }
                     Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
                 },
@@ -1859,6 +1926,13 @@ mod image {
         }
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
+        // The controller's interrupt wakes the waiting loop (item 74).
+        let mut udc_irq = if usb {
+            udc.set_interrupts(true);
+            rt::take_irq(rp_hal_pxa27x::soc::irq::USB_CLIENT)
+        } else {
+            None
+        };
         if usb {
             gpio.write(USB_PULLUP, true);
         }
@@ -1911,6 +1985,10 @@ mod image {
         }
 
         let mut rx = Receiver::new();
+        // When the last byte of a frame in progress arrived: a frame that
+        // stops arriving is abandoned after FRAME_PATIENCE, so a half-sent
+        // frame can't swallow the next one, and the PC hears how far it got.
+        let mut last_byte = rt::ticks();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         // Idling: after QUIET of nothing happening the loop sleeps until the
         // next 1 ms tick instead of spinning (battery and heat), so traffic
@@ -1919,12 +1997,15 @@ mod image {
         let mut active = rt::ticks();
         let mut msc_seen = 0u32;
         let (mut asleep, mut idle_pct) = (0u32, 0u32);
-        let mut buf = [0u8; 64];
+        // Whole packets go straight from the FIFO into it (both buffers).
+        let mut buf = [0u8; 512];
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
         let mut audio = Audio::Untried;
+        // The USB controller's DMA channel (item 74).
+        let mut udc_dma = rt::take_dma(dma_map::UDC);
         gpio.make_input(HP_DETECT);
         let mut jack = Jack {
             plugged: gpio.read(HP_DETECT),
@@ -1952,18 +2033,35 @@ mod image {
         let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
+        let watched = watchdog.armed();
+        let started = rt::ticks();
+        let mut link_proven = false;
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
-            // while waiting.
-            if watchdog.armed() {
+            // while waiting (a loader tried from RAM: once its link works).
+            link_proven |= udc.host_open();
+            if watchdog.armed()
+                && (!watched || link_proven || rt::ticks().wrapping_sub(started) < LINK_PATIENCE)
+            {
                 watchdog.feed(RUN_LIMIT);
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
                 let t = rt::ticks();
-                rt::wait_tick();
+                // Until the next tick, or at once when the PC sends or takes
+                // a USB packet (ADR-0007: the controller's interrupt).
+                if udc_irq.is_some() {
+                    rt::wait_any_signal();
+                } else {
+                    rt::wait_tick();
+                }
                 asleep = asleep.wrapping_add(rt::ticks().wrapping_sub(t));
             }
+            let usb_woke = udc_irq.as_mut().is_some_and(rt::IrqLine::take);
             udc.poll();
+            if usb_woke && let Some(l) = udc_irq.as_mut() {
+                // Served: the line may fire again.
+                l.done();
+            }
             if udc.take_msc_reset() {
                 msc.reset();
             }
@@ -2001,7 +2099,11 @@ mod image {
             if core::mem::take(&mut guard_due) && lun.refresh_guard() {
                 msc.medium_changed(0);
             }
-            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun, &mut cf], now_ms());
+            msc.poll(
+                &mut Pipe(&mut udc, udc_dma.as_mut()),
+                &mut [&mut lun, &mut cf],
+                now_ms(),
+            );
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
                 msc.medium_changed(1);
@@ -2043,6 +2145,25 @@ mod image {
                     used += u;
                     outcome = r;
                 }
+            }
+            link_proven |= outcome.is_some();
+            if heard {
+                last_byte = rt::ticks();
+            } else if let Some((got, len)) = rx.progress()
+                && rt::ticks().wrapping_sub(last_byte) > FRAME_PATIENCE
+            {
+                rx = Receiver::new();
+                let (csr, bcr, ring) = udc.out_state();
+                let s = udc.stats();
+                let mut line = Line::new();
+                let _ = write!(
+                    line,
+                    "RPL ERR timeout: {got} of {len} bytes, then nothing for 2 s (usb rx {} B, count mismatches {}, out csr {csr:x} bcr {bcr:x} ring {ring})
+",
+                    s.rx_bytes, s.count_mismatch
+                );
+                send(&mut uart, &mut udc, line.as_str());
+                let _ = writeln!(log, "{}", line.as_str().trim_ascii_end());
             }
             let msc_now = msc.stats().commands;
             if heard
@@ -2116,6 +2237,17 @@ mod image {
                                 dirty.0,
                                 dirty.1,
                                 idle_pct.min(100),
+                            );
+                            status.as_str()
+                        }
+                        Ok(b"udc stats") => {
+                            let (csr, bcr, ring) = udc.out_state();
+                            let s = udc.stats();
+                            let _ = write!(
+                                status,
+                                "RPL OK udc rx {} tx {} resets {} count mismatches {} (last {:x}) unsettled {} bad CBWs {} drive DMA chunks {} largest transfer {} blocks out csr {csr:x} bcr {bcr:x} ring {ring}
+",
+                                s.rx_bytes, s.tx_bytes, s.resets, s.count_mismatch, s.last_mismatch, s.unsettled, msc.stats().bad_cbw, msc.stats().dma_chunks, msc.stats().max_blocks
                             );
                             status.as_str()
                         }

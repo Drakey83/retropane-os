@@ -15,6 +15,8 @@ pub mod irq {
     pub const GPIO1: u32 = 9;
     /// GPIO 2..120 edge detect.
     pub const GPIO_X: u32 = 10;
+    /// USB client (the device controller, UDC).
+    pub const USB_CLIENT: u32 = 11;
     /// MMC/SD controller.
     pub const MMC: u32 = 23;
     /// SSP1.

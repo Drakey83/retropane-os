@@ -387,6 +387,38 @@ pub const MUTANTS: &[Mutant] = &[
             "setup_xml_outside_the_subset_is_refused",
         ]),
     },
+    Mutant {
+        name: "pxa-udc: a full OUT packet sized by the byte count (lost when it reads short)",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        let count = if csr & reg::SP == 0 {",
+        to: "        let count = if false {",
+        check: Check::Host(&["-p", "rp-drv-pxa-udc", "a_lagging_byte_count_loses_no_data"]),
+    },
+    Mutant {
+        name: "pxa-udc: the CPU takes OUT packets meant for the DMA controller",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        if self.dma[SLOT_OUT] {\n            return;\n        }\n",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "an_endpoint_under_dma_is_left_to_the_dma_controller",
+        ]),
+    },
+    Mutant {
+        name: "usb-msc: a reset leaves the abandoned command's DMA running",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if self.phase == Phase::Command && (self.send_dma || self.recv_dma.is_some()) {",
+        to: "        if false {",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_reset_aborts_the_transfer_in_flight"]),
+    },
+    Mutant {
+        name: "usbbench: a bench folder holding someone else's files used anyway",
+        file: "xtask/src/usbbench.rs",
+        from: "                if e.file_name() != BENCH_FILE {",
+        to: "                if false {",
+        check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

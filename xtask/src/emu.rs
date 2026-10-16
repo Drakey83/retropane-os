@@ -29,7 +29,14 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 
 /// Where `cargo xtask qemu` builds inside WSL.
-const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+const WSL_QEMU_DEFAULT: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+
+/// The WSL emulator binary: `RETROPANE_WSL_QEMU` (a fork branch built in
+/// its own directory, without replacing the shared build other sessions
+/// use), else `cargo xtask qemu`'s.
+fn wsl_qemu() -> String {
+    std::env::var("RETROPANE_WSL_QEMU").unwrap_or_else(|_| WSL_QEMU_DEFAULT.into())
+}
 
 const EMU_ARGS: &str = "-M x51v -display none";
 
@@ -135,7 +142,7 @@ fn wsl_bash(script: &str) -> Command {
 
 fn wsl_build_exists() -> bool {
     cfg!(windows)
-        && wsl_bash(&format!("test -x {WSL_QEMU}"))
+        && wsl_bash(&format!("test -x {}", wsl_qemu()))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -2087,7 +2094,7 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
             .args(["-M", "x51v", "-device", &format!("{device},help")])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device {device},help")).output()
+            wsl_bash(&format!("{} -M x51v -device {device},help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
@@ -2119,7 +2126,7 @@ fn has_usb_model(root: &Path) -> bool {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
@@ -2172,6 +2179,40 @@ fn usb_read_until(s: &mut std::net::TcpStream, want: &str, secs: u64) -> Result<
     ))
 }
 
+/// Reads until `start` and the end of its line: the reply's whole line
+/// (with whatever came before it), however the bytes were split into reads.
+/// (Reading until `start` and then until a newline waited for a second
+/// line whenever the reply arrived in one piece.)
+fn usb_read_line(s: &mut std::net::TcpStream, start: &str, secs: u64) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while Instant::now() < deadline {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got);
+                if let Some(at) = text.find(start)
+                    && text[at..].contains('\n')
+                {
+                    return Ok(text.into_owned());
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!(
+        "no whole `{start}` line on the emulated USB port; got {:?}",
+        String::from_utf8_lossy(&got)
+    ))
+}
+
 /// The USB link test end to end: the emulator's host enumerates rp-usb,
 /// opens the port (the banner arrives) and gets its echo back.
 pub fn boot_usb_link(root: &Path) -> Result<(), String> {
@@ -2213,13 +2254,26 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
 /// port, its run log back the same way.
 /// `cargo xtask emu-usb`: the loader-over-USB check on its own.
 pub fn boot_loader_usb_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_usb(root)
+}
+
+/// `cargo xtask emu-drive`: the drive check alone (item 74: its blocks go
+/// by the UDC's DMA both ways).
+pub fn boot_loader_drive_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_drive(root)
+}
+
+/// The raw images the USB checks send.
+fn usb_images(root: &Path) -> Result<(), String> {
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     for image in ["rp-loader", "rp-light"] {
         crate::sdkit::raw_binary(&release.join(image), &dir.join(format!("{image}.bin")))?;
     }
-    boot_loader_usb(root)
+    Ok(())
 }
 
 pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
@@ -2237,8 +2291,7 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(1)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        let ok = usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
-        let ok = usb_read_until(&mut s, "\n", 10).map(|t| ok + &t)?;
+        let ok = usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         let theirs = ok.rsplit("RPL OK sha256 ").next().unwrap_or("").trim();
         crate::usb::check_digest(theirs, &payload, "image over USB")?;
         // The loader disconnects to run the image and reconnects when it
@@ -3575,8 +3628,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         }
         // The device refuses to write while the PC just wrote...
         serial.write_all(&put).map_err(|e| e.to_string())?;
-        let r = usb_read_until(&mut serial, "RPL ", 20)?;
-        let r = r + &usb_read_until(&mut serial, "\n", 5)?;
+        let r = usb_read_line(&mut serial, "RPL ", 20)?;
         if !r.contains("RPL ERR card busy") {
             return Err(format!("serial put during a drive write: {r:?}"));
         }
@@ -3712,7 +3764,7 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(e) => return Err(e),
     };
@@ -4338,8 +4390,9 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
             let sd = sd_image
                 .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
                 .unwrap_or_default();
+            let wsl_qemu = wsl_qemu();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                "exec timeout {} {wsl_qemu} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 timeout.as_secs() + 10,
                 extra.join(" "),
                 to_wsl_path(image)

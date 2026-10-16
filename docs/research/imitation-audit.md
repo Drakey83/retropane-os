@@ -186,6 +186,18 @@ with the performance monitor built first to measure everything else).
   CF drive measured 0.6 MB/s end to end).
 - **Verdict:** 🔧 **item 74** (with the SD overlap from item 58, the drive
   could reach the USB limit).
+- **Done (2026-10-16, measured on the device; `perf.md`, `udc.md`
+  "Throughput"):** double-buffered bulk endpoints, every waiting packet
+  drained, OUT reads that wait for the controller's status to settle, the
+  drive's blocks by DMA both ways overlapping the card, the UDC interrupt
+  waking the waiting loader. Image loading 514 -> 1,048 KB/s, drive reads
+  765 -> 1,146 KB/s (the USB ceiling), writes 411 -> 856 KB/s (now the
+  card's write time: the first and last half of each 64 KiB command can't
+  overlap), idle round trip 1,170 -> ~300 us. Image loading stays on the
+  CPU path: it already reaches the ceiling (DMA measured 2% faster, and its
+  payload isn't cache-line aligned). Open: CPU-written IN packets into both
+  buffers (low value now), the OS's own UDC driver thread (item 73's rule;
+  the driver's interrupt mode is ready for it).
 
 ### SD
 

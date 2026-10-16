@@ -33,6 +33,10 @@ const RESTART_TASK: &str = "RetroPane USB restart";
 const RESTART_SCRIPT: &str = "xtask/scripts/usb-restart.ps1";
 
 /// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
+pub(crate) fn open_port_script() -> String {
+    open_port()
+}
+
 fn open_port() -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -42,6 +46,14 @@ if (-not $dev) {{ 'NOPORT'; exit 0 }}
 $port = [regex]::Match($dev.Name, 'COM\d+').Value
 "PORT $port"
 $sp = New-Object System.IO.Ports.SerialPort $port, 115200
+# Windows can take a moment to release the port after the previous
+# command closed it (seen as a script dying right after PORT): retry.
+function Open-Port {{
+    for ($i = 0; $i -lt 20; $i++) {{
+        try {{ $sp.Open(); return }} catch {{ Start-Sleep -Milliseconds 250 }}
+    }}
+    $sp.Open()
+}}
 "#
     )
 }
@@ -53,7 +65,7 @@ fn script() -> String {
 $sp.RtsEnable = $true
 $sp.ReadTimeout = 3000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 try {{ "BANNER " + $sp.ReadLine() }} catch {{ 'NOBANNER' }}
 $sp.WriteLine('{PROBE}')
 try {{ "ECHO " + $sp.ReadLine() }} catch {{ 'NOECHO' }}
@@ -72,7 +84,7 @@ $sp.RtsEnable = $true
 $sp.ReadTimeout = 5000
 $sp.WriteTimeout = 20000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 $sp.DiscardInBuffer()
 $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
@@ -141,7 +153,7 @@ $sp.RtsEnable = $true
 $sp.ReadTimeout = 5000
 $sp.WriteTimeout = 30000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 # A loader holding a run log sends it by itself when the port opens: pass
 # it on (EARLY/PUSHED lines, kept by the PC side), never discard it.
 Start-Sleep -Milliseconds 300
@@ -387,7 +399,7 @@ fn parse(output: &str) -> Outcome {
 /// Runs a script on the device's port. The one way xtask reaches the Axim,
 /// so it takes the machine-wide lock first and keeps it until the process
 /// ends (crate::devlock; a test keeps this the only way).
-fn powershell(script: &str) -> Result<std::process::Output, String> {
+pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
     crate::devlock::ensure_held()?;
     Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
@@ -437,6 +449,13 @@ pub fn setup_restart_task(root: &Path) -> Result<(), String> {
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
 /// the resident loader.
+/// Whether an image is a resident loader (by name or as a `.bin`, e.g. the
+/// card's loader put back from RAM): it carries the READY line it sends.
+fn is_loader(image: &[u8]) -> bool {
+    let ready = rp_loadproto::READY.trim_end().as_bytes();
+    image.windows(ready.len()).any(|w| w == ready)
+}
+
 pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     // An image that never returns would run into the watchdog on the
     // device (found 2026-10-12: rp-bench reset the Axim into Dell's
@@ -533,7 +552,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                     payload.len()
                 );
             }
-            if what == "rp-loader" && (restarted || returned) {
+            if is_loader(&payload) && (restarted || returned) {
                 // A new loader sent as an image replaces the running one in
                 // RAM (it moves itself home first) and announces itself; it
                 // never "returns", so the run log says the image didn't,
@@ -916,6 +935,12 @@ mod tests {
             let skip = s.find("if ($pushed)").expect("pushed log skipped");
             assert!(skip < s.find("-match '^RPL (OK|ERR)'").unwrap());
         }
+    }
+
+    #[test]
+    fn a_loader_is_known_by_its_ready_line() {
+        assert!(is_loader(b"..\x00RPLOAD1 READY\r\n.."));
+        assert!(!is_loader(b"RPLOAD1 READ"));
     }
 
     #[test]

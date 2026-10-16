@@ -108,7 +108,8 @@ mod image {
         cpld.set_backlight_enable(true);
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
-        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(rp_hal_pxa27x::dma_map::SD))
+        else {
             log!("no MMC or DMA");
             return;
         };
