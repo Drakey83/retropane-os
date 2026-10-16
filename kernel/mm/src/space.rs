@@ -341,7 +341,8 @@ impl AddressSpace {
     }
 
     fn is_shared_area(&self) -> bool {
-        self.lo >= layout::SHARED_BASE
+        // Only CE's shared area: the native slots lie above the kernel.
+        self.lo >= layout::SHARED_BASE && self.lo < layout::KERNEL_BASE
     }
 
     /// The regions, in address order.
@@ -1499,6 +1500,17 @@ mod tests {
         // The shared area accepts shared writable mappings.
         let mut g = AddressSpace::shared(1);
         g.map(&mut rp, file(layout::SHARED_BASE, 0x2000, Prot::RW, true))
+            .unwrap();
+        // A native process's slot lies above the shared area's base but is
+        // not the shared area: refused there too (a writable file page at
+        // two addresses would diverge in the VIVT cache).
+        let mut n = AddressSpace::process(layout::FIRST_NATIVE_SLOT, 3);
+        let nb = layout::slot_base(layout::FIRST_NATIVE_SLOT);
+        assert_eq!(
+            n.map(&mut rp, file(nb + 0x10000, 0x1000, Prot::RW, true)),
+            Err(SpaceError::SharedWriteNotGlobal)
+        );
+        n.map(&mut rp, zero(nb + 0x10000, 0x1000, Prot::RW))
             .unwrap();
     }
 

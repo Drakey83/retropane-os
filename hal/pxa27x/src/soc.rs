@@ -168,9 +168,12 @@ impl<B: RegisterBus> GpioEdges<B> {
         (usize::from(pin / 32), 1 << (pin % 32))
     }
 
-    /// Enables edge detection on `pin`.
+    /// Enables edge detection on `pin`, after clearing any edge it already
+    /// recorded (left by an earlier owner, it would read as a fresh event
+    /// the moment the interrupt is claimed: the spare timer's class).
     pub fn arm(&mut self, pin: u8, edge: Edge) {
         let (b, bit) = Self::bank(pin);
+        self.0.write32(gpio_reg::GEDR[b], bit);
         let set = |bus: &mut B, reg: usize, on: bool| {
             let v = bus.read32(reg);
             bus.write32(reg, if on { v | bit } else { v & !bit });
@@ -345,6 +348,17 @@ impl<B: RegisterBus> SpareTimer<B> {
         self.0.write32(ost_reg::OSSR, 1 << 2);
     }
 
+    /// Stops the channel: its interrupt off and any match it left pending
+    /// cleared, so a new owner starts quiet (an earlier image can leave it
+    /// armed, and its match then fires the moment the line is claimed:
+    /// measured on the X51v, an interrupt thread woke 2 ms before its
+    /// timer was due).
+    pub fn quiesce(&mut self) {
+        let oier = self.0.read32(ost_reg::OIER) & !(1 << 2);
+        self.0.write32(ost_reg::OIER, oier);
+        self.0.write32(ost_reg::OSSR, 1 << 2);
+    }
+
     /// The counter now.
     pub fn now(&mut self) -> u32 {
         self.0.read32(ost_reg::OSCR0)
@@ -479,6 +493,33 @@ mod tests {
         assert_eq!(t.0.value(ost_reg::OSMR2), 7000);
         assert_eq!(t.0.value(ost_reg::OIER), (1 << 1) | (1 << 2));
         t.ack();
+        assert_eq!(t.0.writes().last(), Some(&(ost_reg::OSSR, 1 << 2)));
+    }
+
+    #[test]
+    fn arming_a_pin_clears_only_its_own_stale_edge() {
+        let mut g = GpioEdges(MockBus::new());
+        g.arm(37, Edge::Rising);
+        // GEDR is write-1-to-clear: exactly this pin's bit, in its bank,
+        // before detection is enabled.
+        let writes = g.0.writes();
+        assert_eq!(writes.first(), Some(&(gpio_reg::GEDR[1], 1 << 5)));
+        assert!(
+            writes
+                .iter()
+                .filter(|(r, _)| gpio_reg::GEDR.contains(r))
+                .count()
+                == 1
+        );
+    }
+
+    #[test]
+    fn a_quiesced_spare_timer_is_off_with_nothing_pending() {
+        let mut t = SpareTimer(MockBus::new());
+        // Left armed by an earlier owner, next to the alarm's enable.
+        t.0.preset(ost_reg::OIER, (1 << 1) | (1 << 2));
+        t.quiesce();
+        assert_eq!(t.0.value(ost_reg::OIER), 1 << 1, "only channel 2 off");
         assert_eq!(t.0.writes().last(), Some(&(ost_reg::OSSR, 1 << 2)));
     }
 

@@ -420,6 +420,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    "IPC native slots OK",
+    "IPC handle pages OK",
     // A real driver in a host (item 46): the compiled display host runs the
     // backlight on its granted PWM window, restarts after a fault in a
     // call and in its own thread, and keeps the level the hardware shows.
@@ -501,6 +503,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
     "USER KData OK",
+    "THREADS FCSE native slot OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -532,8 +535,53 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData, FCSE in a native slot"
     );
+    Ok(())
+}
+
+/// Must match `rp_quantum::MARKER`.
+const QUANTUM_MARKER: &str = "RETROPANE-QUANTUM-OK";
+
+/// Boots the quantum image (ADR-0010 amendment): every time-slice policy
+/// runs its touch, frame, busy-loop and switch-cost tests. The emulator's
+/// timing isn't the device's, so only that each ran is checked; the numbers
+/// are printed (the device's come from `cargo xtask load rp-quantum`).
+pub fn boot_quantum(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-quantum");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: QUANTUM_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            // Eight policies of ~2.5 s each, in real time (~21 s), with
+            // room for a loaded host.
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    for test in ["touch", "anim", "busy", "hogs"] {
+        let runs = output
+            .lines()
+            .filter(|l| l.starts_with("QT q") && l.contains(&format!(" {test} ")))
+            .count();
+        if runs != 8 {
+            return Err(format!(
+                "quantum check failed: {runs} `{test}` results, not 8"
+            ));
+        }
+    }
+    eprintln!("    quantum OK: eight time-slice policies measured");
     Ok(())
 }
 
@@ -1458,6 +1506,26 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
             (
                 "T13b PVRTC 4 bpp",
                 "[[00, 21, 84, a5], [10, 31, 94, b5], [42, 63, c6, e7], [52, 73, d6, f7]]",
+            ),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
+    // Version 26's 16-bit targets, likewise.
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("S26b") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            (
+                "S26b 0x650 1, 0x660 240:",
+                "(2,2) 0xf800 (18,2) 0x07e0 (2,34) 0x001f (18,34) 0xffff; drawn to x Some(32) on row 2, y Some(64)",
+            ),
+            (
+                "S26b 0x650 3, 0x660 240:",
+                "(2,2) 0xfc00 (18,2) 0x83e0 (2,34) 0x801f (18,34) 0xffff",
             ),
         ] {
             if !line(key).contains(want) {
@@ -4383,8 +4451,14 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let _ = child.wait();
     if wsl {
         // Killing wsl.exe may not reach the Linux process at once; make sure
-        // it's gone before the next test binds the same ports.
-        let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+        // it's gone before the next test binds the same ports. Only this
+        // run's emulator, found by its own serial port: other sessions run
+        // emulators at the same time on their own port blocks.
+        let _ = wsl_bash(&format!(
+            "pkill -f -- '-serial tcp:127.0.0.1:{},'; sleep 0.3; true",
+            serial_port()
+        ))
+        .status();
     }
     // Whatever the guest printed while `during` ran is still queued: keep it,
     // so a test can check what happened after its own waiting.

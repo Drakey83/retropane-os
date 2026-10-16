@@ -228,6 +228,53 @@ impl Dma {
         Some(at.wrapping_sub(addr).min(len))
     }
 
+    /// Starts a memory-to-memory copy into `dst` (SDRAM, whole cache lines)
+    /// from device memory the CPU doesn't cache, read `window` bytes at a
+    /// time from the same physical address `src`: for a device whose data
+    /// register repeats across a window (a CompactFlash card's common
+    /// memory 0x400-0x7FF, docs/research/storage-speed.md), one descriptor per
+    /// window. No request line: the caller starts it only when the device
+    /// has the data (DRQ). Finish with [`DmaEngine::done`]. `false` if
+    /// refused (busy, not whole lines, `dst` not whole windows, more than
+    /// the chain's descriptors, or `src` not word aligned).
+    pub fn arm_copy_from_device_window(&mut self, src: u32, window: usize, dst: &mut [u8]) -> bool {
+        let (addr, len) = (dst.as_mut_ptr() as u32, dst.len());
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || (addr | len as u32) & (cpu::LINE - 1) != 0
+            || src & 3 != 0
+            || window == 0
+            || window > CHUNK
+            || len == 0
+            || !len.is_multiple_of(window)
+            || len / window > DESCRIPTORS
+        {
+            return false;
+        }
+        // Dirty lines would overwrite what the controller writes.
+        cpu::clean_invalidate_range(addr, len as u32);
+        let chain = self.chain();
+        let n = len / window;
+        let base = chain.0.as_ptr() as u32;
+        for (i, d) in chain.0.iter_mut().take(n).enumerate() {
+            d[0] = if i + 1 < n {
+                base + 16 * (i as u32 + 1)
+            } else {
+                DDADR_STOP
+            };
+            d[1] = src;
+            d[2] = addr + (i * window) as u32;
+            d[3] = DCMD_INCSRC | DCMD_INCTRG | DCMD_SIZE32 | width(Width::Word) | window as u32;
+        }
+        cpu::clean_range(base, (16 * n) as u32);
+        write(dcsr(self.ch), 0);
+        write(ddadr(self.ch), base);
+        write(dcsr(self.ch), DCSR_RUN);
+        self.paced = false;
+        self.armed = Some((addr, len as u32, false));
+        true
+    }
+
     fn stop(&mut self) {
         write(dcsr(self.ch), 0);
         if self.paced {
