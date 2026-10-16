@@ -69,7 +69,16 @@ No whine or other sound on any step. Caveat, the owner's: high pitches are
 hard to hear at 43. That matters little here: the cycle is 30 kHz, beyond
 anyone's hearing, and step 6's 1 kHz modulation is well inside an adult's
 range, so its silence is a real result; a coil's sub-harmonics can't be
-ruled out by ear. The two-stage design stands; its darkest picture stage
+ruled out by ear.
+
+**Second device result (P, 2026-10-16, with step 9; `local/rp-nightlight-run6.txt`).**
+Steps 1, 2 and 3 looked the same: one count of 432 is no dimmer to the eye
+than Windows Mobile's one of 216, so the light has a floor at about Windows
+Mobile's dimmest (the driver's or LED's shortest pulse, likely), and every
+step below it comes from the picture stage. Steps 4 and 5 darker each
+time; step 9 (the picture at 1/8, the design's darkest) "very dark" but
+readable: the bottom of the night range is right. No sound on any step.
+The half-size steps still give finer control above the floor. The two-stage design stands; its darkest picture stage
 (1/8) is one step past what was shown (1/4) and is checked by eye when the
 night setting gets its UI.
 
