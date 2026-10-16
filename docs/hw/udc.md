@@ -16,7 +16,7 @@ owner's X51v by the item 74 work (`cargo xtask usbbench`, 2026-10-16).
 | Signal | Where | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
 | USB cable detect | GPIO14, input (AxDroid's guess) | read **1** on the probe run (docked, as WM left it) but **0** under RetroPane while docked and enumerated. So it is not a plain cable-present level, or needs something WM sets up (a CPLD rail? a comparator?). Again 0 on 2026-10-16 with the PC configured (the loader's status line "cable 0 configured yes" after a soft reset), and every boot in the cradle since (owner, 2026-10-16): the loader's "cable" label shows this unproven reading, not a fault. WM enables both edges on it as an interrupt and as a wake source (`GRER0`/`GFER0`/`PWER` bit 14), so it does matter to WM | open | (A), (D), real X51v (2026-10-11) |
-| D+ pull-up ("connect") | **none found: probably hard-wired.** `rp-reconnect` (2026-10-11) tried, with the UDC enabled and the PC idle: GPIO2 low→high, GPIO2 as input→output high, `UP2OCR` DPPUE off→on, DPPDE on→off, CPLD `0x1C` bit 3 off→on, UDE off→on, and CPLD bit 3 + UDE together. Not one produced a bus reset or a SETUP within 3 s: the PC never saw a disconnect. `UP2OCR` read `0x00020020` with the UDC on (HXOE and bit 5). Next: forcing SE0 through `UP2OCR`'s output override, and a PC-side device restart | open | real X51v |
+| D+ pull-up ("connect") | **none found: probably hard-wired.** **But a disconnect can be made without it (2026-10-16, `rp-unplug` run 3): the PXA27x's own host controller, given port 2's transceiver (`UP2OCR.HXS`), drives SE0 with a port reset and the PC sees an unplug; see Open questions, T4.** `rp-reconnect` (2026-10-11) tried, with the UDC enabled and the PC idle: GPIO2 low→high, GPIO2 as input→output high, `UP2OCR` DPPUE off→on, DPPDE on→off, CPLD `0x1C` bit 3 off→on, UDE off→on, and CPLD bit 3 + UDE together. Not one produced a bus reset or a SETUP within 3 s: the PC never saw a disconnect. `UP2OCR` read `0x00020020` with the UDC on (HXOE and bit 5). Next: forcing SE0 through `UP2OCR`'s output override, and a PC-side device restart | open | real X51v |
 | (earlier guess) GPIO2, output, high | the PC enumerated the device with GPIO2 high, but **never noticed a disconnect** when GPIO2 went low (or the UDC was disabled): every run needed a cable replug. So GPIO2 is not (only) the pull-up control; AxDroid's board file left `gpio_pullup` unset too. Candidates: a CPLD bit (docs/hw/cpld.md), `UP2OCR.DPPUE` with the internal transceiver | open | real X51v (2026-10-11) |
 | Transceiver | **port 2's, output enabled: `UP2OCR` = `0x00020000` (HXOE) as WM leaves it** | with HXOE cleared the PC saw the attach (a bus reset) but no SETUP ever arrived; with it set, enumeration worked. The driver sets it | confirmed | real X51v (2026-10-11) |
 | UDC clock | `CKEN` bit 11 | on as WM left it | confirmed | (D) `CKEN 0x00D91AA3` |
@@ -290,6 +290,40 @@ the run log before the screen, and stays well inside the run limit (~15 s).
 Still to learn from run 2: whether the host controller saw the port at all
 (its port status before and after the resets is printed); if it never saw
 the connection, its reset drives nothing and the candidate is untested.
+
+**Runs 2 and 3 (2026-10-16): found.** Run 3 waited before each candidate
+until the PC had configured the device and sent nothing for 2 s, and
+stamped each with its time:
+
+| Candidate | PC's reaction in the 3 s after (1 s before: 0 resets, 0 setups) | Windows |
+|---|---|---|
+| **Host controller SE0 on port 2** (6.5 s in) | **2 resets, 32 setups**: a full enumeration of a new device; configured again | **"surprise removed, missing on the bus" at 11:14:43.58**, the only removal of the run, within a second of the step (the image's own start, ~6 s earlier, was a recovery without a removal) |
+| `UP2OCR` 0 with the UDC off (13.7 s in) | 2 resets, 1 setup, **not configured** 3 s later | nothing logged |
+
+The host controller's port 2 read `0x00010101` before (connected: our own
+pull-up against the PC's pull-downs) and `0x00110103` after (reset done,
+enabled): it drove the reset, and the PC's hub took the SE0 as an unplug.
+Run 2 showed the same (2 resets, 32 setups) but overlapped the image's own
+start. So **the X51v can make the PC see a disconnect without a pull-up
+switch**: switch port 2's transceiver to the PXA27x's host controller
+(`UP2OCR` = `HXS | HXOE | DPPDE | DMPDE`), bring the controller up (out of
+`FHR` reset, `FSBIR`, ports out of sleep standby, `HcRhDescriptorA.NPS`,
+an HCCA in RAM before it goes operational), set port 2's reset, then
+switch back (`UP2OCR` = `HXOE`, controller held in reset) and enable the
+UDC. Code: `boot/unplug`, `Rig::off`/`Rig::on` for `HostSe0`.
+
+The transceiver-off step is no use: the PC never re-configured within 3 s.
+
+**The fix (designed, not built).** The loader does this unplug at start,
+in place of its `DETACH` wait (which drives GPIO2 and does nothing): the
+PC then sees Windows Mobile's device leave and the loader arrive on every
+hand-over, from HaRET or a watchdog reboot, with no re-plug. The code is
+the run's `HostSe0` sequence, a few hundred bytes in the loader (it is near
+its budget: the owner decides what pays for it). Proof on the device: five
+hand-overs from Windows Mobile (`reboot-wm`, then the loader started from
+Windows Mobile) with the composite configured each time, no fallback, no
+re-plug; and `emu-*` with the fork modelling it (a port 2 reset through
+the host controller detaches the emulated host's device).
 
 **Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
 the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even
