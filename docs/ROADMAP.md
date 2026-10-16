@@ -102,6 +102,9 @@ Personality's drawing (Phase 4) are designed:
 ## Phase 5 — Shell and UI
 **Goal:** the "modern take on Windows Mobile" experience.
 
+The owner's direction for the app set, themes, the SD expansion pack and the
+game ports (2026-10-16): [apps-and-packs.md](apps-and-packs.md).
+
 - [ ] UI design spec and mock-ups approved (`docs/ui/`) *before* code
 - [ ] GWES window manager, compositor, theme engine (Modern + Classic)
 - [ ] Today screen, Start menu, task switcher, notifications, SIP keyboard
