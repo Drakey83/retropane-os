@@ -130,6 +130,7 @@ commands:
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
+  emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
   emu-usb-suite every emulator check that goes through the USB controller
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
@@ -158,7 +159,7 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-cfdetect" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -389,6 +390,7 @@ fn run_step(step: &str) -> Result {
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
+        "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order
@@ -428,6 +430,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
             .and_then(|()| emu::boot_loader_handover(&workspace_root()))
             .and_then(|()| emu::boot_loader_nightlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cfdetect(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_trace(&workspace_root()))
