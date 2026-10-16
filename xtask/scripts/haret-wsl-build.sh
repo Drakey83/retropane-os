@@ -75,8 +75,11 @@ mkdir -p out
 # and an import it can't find makes the loader refuse the program ("not
 # signed with a trusted certificate, or one of its components cannot be
 # found").
+# A fixed version string instead of HaRET's build date and time, so the
+# same sources always give the same haret.exe (and `cargo xtask install`
+# doesn't rewrite the card's copy for a new date alone).
 rm -f out/haret-debug.exe out/haret.exe
-make -s BASE="$CEGCC" CXXFLAGS="-Wall -O -g -MD -march=armv4 -Iinclude \
+make -s BASE="$CEGCC" VERSION="pre-0.5.3-rp-${HARET_REV:0:12}" CXXFLAGS="-Wall -O -g -MD -march=armv4 -Iinclude \
     -fno-exceptions -fno-rtti -fno-jump-tables -include rp-compat.h -fpermissive -w" \
     LDFLAGS="-Wl,--major-subsystem-version=2,--minor-subsystem-version=10 -static-libstdc++ -static-libgcc" \
     out/haret-debug > "$HOME/haret-build.log" 2>&1 || true
