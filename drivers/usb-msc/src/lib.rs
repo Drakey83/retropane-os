@@ -7,6 +7,12 @@
 //! (one per logical unit: the SD card now, the CF card later). Driven by
 //! [`Msc::poll`] from the owner's main loop; no heap, no threads.
 //!
+//! A pipe with DMA (item 74) moves a command's blocks a buffer half at a
+//! time with no CPU work per packet: a read sends one half while the card
+//! reads the next into the other; a write receives one half while the CPU
+//! writes the other to the card, so the host isn't held off during card
+//! writes. Without DMA, packets go one by one as before.
+//!
 //! Security (docs/security.md): everything from the host is checked before
 //! use: the CBW's signature, length, LUN and direction, every LBA and block
 //! count with overflow-checked arithmetic. Malformed or unsupported
@@ -49,6 +55,28 @@ pub trait BulkPipe {
     /// Lets the controller move what is queued (called while the storage
     /// is busy reading, so packets keep flowing). Nothing by default.
     fn service(&mut self) {}
+    /// Starts sending `data` (whole packets) to the host by DMA. `data`
+    /// stays untouched until [`dma_done`](Self::dma_done) says it ended.
+    /// False if the pipe can't (no DMA, a misaligned buffer): the caller
+    /// sends packets itself.
+    fn send_dma(&mut self, data: &[u8]) -> bool {
+        let _ = data;
+        false
+    }
+    /// Starts receiving `buf.len()` bytes (whole packets) from the host by
+    /// DMA, on the same terms.
+    fn receive_dma(&mut self, buf: &mut [u8]) -> bool {
+        let _ = buf;
+        false
+    }
+    /// The transfer started by `send_dma` or `receive_dma`: `None` while it
+    /// runs, then `Some(true)` (moved; the endpoint is the CPU's again) or
+    /// `Some(false)` (it failed).
+    fn dma_done(&mut self) -> Option<bool> {
+        Some(true)
+    }
+    /// Stops a transfer in progress (a reset abandoned its command).
+    fn dma_abort(&mut self) {}
 }
 
 /// The storage behind one logical unit.
@@ -135,6 +163,11 @@ struct Unit {
     /// have cached the volume. If not (it saw the unit empty, or never
     /// asked), a change needs no away time: the host has nothing to drop.
     shown: bool,
+    /// The host's view of this unit is known to be current: it read the
+    /// capacity (a fresh mount) or its first look was answered (see
+    /// [`Msc::new`]). Until then, a poll, read or write is a view from
+    /// before this function started.
+    vouched: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +201,11 @@ pub struct Stats {
     pub blocks_written: u32,
     /// Block transfers the storage failed.
     pub io_errors: u32,
+    /// Block transfers moved by the pipe's DMA (halves of the buffer).
+    pub dma_chunks: u32,
+    /// The largest block count one READ/WRITE asked for (how much the
+    /// host moves per command).
+    pub max_blocks: u32,
     /// First block and count of the last failed transfer.
     pub last_error: (u32, u32),
     /// Reads that found their first chunk already read ahead.
@@ -211,6 +249,14 @@ pub struct Msc<'b> {
     pkt: [u8; PACKET],
     last_host_write: Option<u32>,
     stats: Stats,
+    /// A DMA transfer is in flight: a read's front half going out.
+    send_dma: bool,
+    /// A write's half being received by DMA: (half, bytes).
+    recv_dma: Option<(usize, usize)>,
+    /// Bytes of the write command not yet received from the host.
+    recv_left: usize,
+    /// The pipe refused or failed DMA: packets one by one from now on.
+    no_dma: bool,
 }
 
 fn be32(b: &[u8]) -> u32 {
@@ -226,6 +272,17 @@ impl<'b> Msc<'b> {
     /// block transfers in `buf` (a whole number of blocks; bigger means
     /// fewer, longer card commands), reporting `serial` (upper-case hex, as
     /// the transport specification asks) in INQUIRY.
+    ///
+    /// The host may still hold a view of the cards from before this
+    /// function started (the device's pull-up is hard-wired, so Windows
+    /// can re-attach without noticing the device went, and keep its cached
+    /// FAT and directories), while something else wrote them meanwhile (an
+    /// image, a crash report, Windows Mobile). Writing that view back
+    /// loses files. So a unit's first poll, read or write that doesn't
+    /// follow a READ CAPACITY (which a fresh mount always sends first) is
+    /// answered "no medium" and the medium goes away as after
+    /// [`medium_changed`](Self::medium_changed): the host drops its view
+    /// and re-reads before it writes. A fresh host sees no delay.
     ///
     /// # Panics
     /// If `buf` holds no whole block or `luns` is out of range.
@@ -258,6 +315,10 @@ impl<'b> Msc<'b> {
             pkt: [0; PACKET],
             last_host_write: None,
             stats: Stats::default(),
+            send_dma: false,
+            recv_dma: None,
+            recv_left: 0,
+            no_dma: false,
         }
     }
 
@@ -272,6 +333,9 @@ impl<'b> Msc<'b> {
     pub fn reset(&mut self) {
         self.phase = Phase::Command;
         self.ahead = None;
+        // DMA is tried again (a transfer in flight is aborted at the next
+        // poll).
+        self.no_dma = false;
     }
 
     /// The device changed unit `lun`'s medium (a file written on the card,
@@ -355,6 +419,12 @@ impl<'b> Msc<'b> {
     /// `now_ms` is any millisecond clock (wrapping).
     pub fn poll(&mut self, pipe: &mut dyn BulkPipe, luns: &mut [&mut dyn Storage], now_ms: u32) {
         self.settle_away(now_ms);
+        // A reset abandoned the command a transfer was moving.
+        if self.phase == Phase::Command && (self.send_dma || self.recv_dma.is_some()) {
+            pipe.dma_abort();
+            self.send_dma = false;
+            self.recv_dma = None;
+        }
         // Bounded, so the caller's loop keeps servicing everything else.
         for _ in 0..64 {
             let progressed = match self.phase {
@@ -453,6 +523,18 @@ impl<'b> Msc<'b> {
             return;
         }
         let present = !unit.ejected && unit.away.is_none() && luns[self.lun].present();
+        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {
+            let u = &mut self.units[self.lun];
+            u.vouched = true;
+            if present && op != 0x25 {
+                // A view from before this function started: away first.
+                u.away = Some(None);
+                u.away_seen = 0;
+                u.shown = false;
+                self.fail(Sense::NOT_PRESENT);
+                return;
+            }
+        }
         self.units[self.lun].shown = present;
         let blocks = luns[self.lun].blocks();
         let read_only = luns[self.lun].read_only();
@@ -618,8 +700,10 @@ impl<'b> Msc<'b> {
             self.no_data();
             return;
         }
+        self.stats.max_blocks = self.stats.max_blocks.max(count);
         self.lba = lba;
         self.blocks_left = count;
+        self.recv_left = count as usize * BLOCK;
         self.buf_len = 0;
         self.buf_pos = 0;
         self.back_len = 0;
@@ -770,6 +854,16 @@ impl<'b> Msc<'b> {
             self.buf_len = core::mem::take(&mut self.back_len);
             self.buf_pos = 0;
         }
+        // The front goes out by DMA if the pipe can (no CPU per packet, and
+        // it keeps going while the card reads the next chunk below).
+        if !self.send_dma && !self.no_dma && self.buf_pos == 0 && self.buf_len > 0 {
+            let start = self.front * half * usize::from(overlap);
+            if pipe.send_dma(&self.buf[start..start + self.buf_len]) {
+                self.send_dma = true;
+            } else {
+                self.no_dma = true;
+            }
+        }
         // While the front goes out, read the next chunk into the back: the
         // rest of this command, or else (a bulk read just ended) the blocks
         // after it, kept in case the host reads on.
@@ -794,6 +888,24 @@ impl<'b> Msc<'b> {
                         .is_ok()
                 {
                     self.ahead = Some((self.lun, self.lba, n));
+                }
+            }
+        }
+        if self.send_dma {
+            match pipe.dma_done() {
+                None => return false,
+                Some(ok) => {
+                    self.send_dma = false;
+                    if !ok {
+                        // What reached the host is unknown: end the transfer
+                        // with an error (the host retries) and stop using DMA.
+                        self.no_dma = true;
+                        self.blocks_left = 0;
+                        return self.read_failed();
+                    }
+                    self.done += (self.buf_len - self.buf_pos) as u32;
+                    self.buf_pos = self.buf_len;
+                    self.stats.dma_chunks += 1;
                 }
             }
         }
@@ -829,6 +941,11 @@ impl<'b> Msc<'b> {
         luns: &mut [&mut dyn Storage],
         now_ms: u32,
     ) -> bool {
+        // By DMA a half at a time, from a chunk boundary (nothing received
+        // by packets yet), unless the pipe has refused it.
+        if self.recv_dma.is_some() || (!self.no_dma && self.buf_len == 0 && self.recv_left > 0) {
+            return self.write_step_dma(pipe, luns, now_ms);
+        }
         let Some(n) = pipe.read_packet(&mut self.pkt) else {
             return false;
         };
@@ -838,13 +955,103 @@ impl<'b> Msc<'b> {
         self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&self.pkt[..take]);
         self.buf_len += take;
         self.done += n as u32;
+        self.recv_left = self.recv_left.saturating_sub(take);
         let chunk = (self.blocks_left as usize * BLOCK).min(self.buf.len());
         if self.buf_len == chunk {
+            self.store(0, chunk, luns);
+            self.buf_len = 0;
+        }
+        if self.blocks_left == 0 || self.done >= self.host_len {
+            self.phase = Phase::Status;
+        }
+        true
+    }
+
+    /// Bytes per DMA receive: a half (the other is written meanwhile), or
+    /// the whole buffer if it has no halves.
+    fn recv_chunk(&self) -> (usize, bool) {
+        let h = self.buf.len() / 2 / BLOCK * BLOCK;
+        if h == 0 {
+            (self.buf.len() / BLOCK * BLOCK, false)
+        } else {
+            (h, true)
+        }
+    }
+
+    /// Starts receiving the next chunk into half `into`; false if the pipe
+    /// refused (packets from now on).
+    fn arm_receive(&mut self, pipe: &mut dyn BulkPipe, into: usize) -> bool {
+        let (size, _) = self.recv_chunk();
+        let len = self.recv_left.min(size);
+        let at = into * size;
+        if pipe.receive_dma(&mut self.buf[at..at + len]) {
+            self.recv_dma = Some((into, len));
+            true
+        } else {
+            self.no_dma = true;
+            false
+        }
+    }
+
+    fn write_step_dma(
+        &mut self,
+        pipe: &mut dyn BulkPipe,
+        luns: &mut [&mut dyn Storage],
+        now_ms: u32,
+    ) -> bool {
+        let Some((half, len)) = self.recv_dma else {
+            return self.arm_receive(pipe, 0);
+        };
+        let ok = match pipe.dma_done() {
+            None => return false,
+            Some(ok) => ok,
+        };
+        self.recv_dma = None;
+        self.last_host_write = Some(now_ms);
+        if !ok {
+            // How much arrived is unknown: fail the command and drain the
+            // rest by packets.
+            self.no_dma = true;
+            self.units[self.lun].sense = Sense::WRITE_ERROR;
+            self.failed = true;
+            self.stats.failed += 1;
+            self.phase = Phase::Discard;
+            return true;
+        }
+        self.done += len as u32;
+        self.recv_left -= len;
+        self.stats.dma_chunks += 1;
+        // The next chunk comes into the other half while this one is
+        // written to the card.
+        let (_, halves) = self.recv_chunk();
+        let mut next_armed = false;
+        if self.recv_left > 0 && halves {
+            next_armed = self.arm_receive(pipe, half ^ 1);
+        }
+        let (size, _) = self.recv_chunk();
+        self.store(half * size, len, luns);
+        if self.blocks_left == 0 {
+            self.phase = Phase::Status;
+        } else if !halves && self.recv_left > 0 {
+            self.arm_receive(pipe, 0);
+        } else if !next_armed && self.recv_left > 0 {
+            // Refused: the rest comes by packets into the buffer's start.
+            self.buf_len = 0;
+        }
+        true
+    }
+
+    /// Writes `len` bytes of the buffer from `at` to the card at the
+    /// command's next block (skipped once the command has failed: the
+    /// host's data is still taken, the failure reported at the end).
+    fn store(&mut self, at: usize, len: usize, luns: &mut [&mut dyn Storage]) {
+        {
+            let chunk = len;
             let blocks = (chunk / BLOCK) as u32;
             let result = if self.failed {
                 Ok(())
             } else {
-                luns[self.lun].write_blocks(self.lba, &self.buf[..chunk])
+                luns[self.lun].write_blocks(self.lba, &self.buf[at..at + chunk])
             };
             if let Err(e) = result {
                 self.stats.io_errors += 1;
@@ -865,12 +1072,7 @@ impl<'b> Msc<'b> {
             }
             self.lba += blocks;
             self.blocks_left -= blocks;
-            self.buf_len = 0;
         }
-        if self.blocks_left == 0 || self.done >= self.host_len {
-            self.phase = Phase::Status;
-        }
-        true
     }
 
     fn discard_step(&mut self, pipe: &mut dyn BulkPipe) -> bool {

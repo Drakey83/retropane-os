@@ -6,14 +6,15 @@
 //! ARM calling convention says a callee must preserve: `r4`-`r11` and the
 //! return address, pushed on the thread's own kernel stack with one `push`.
 //! Only the stack pointer stays here, indexed by thread number (the
-//! scheduler's `Tid`): one word per thread instead of ten (512 bytes for
-//! 128 threads, not 5 KiB), and the kernel never handles raw stack
+//! scheduler's `Tid`): one word per thread instead of ten (~1 KiB for
+//! 255 threads, not 10 KiB), and the kernel never handles raw stack
 //! pointers.
 
 use core::ptr::addr_of_mut;
 
-/// Threads the HAL keeps contexts for (matches the scheduler's table).
-pub const MAX_THREADS: usize = 128;
+/// Threads the HAL keeps contexts for (matches the scheduler's table; the
+/// kernel image checks at build time).
+pub const MAX_THREADS: usize = 255;
 
 /// Per thread: its kernel stack pointer while it isn't running (its
 /// `r4`-`r11` and return address are pushed just above).

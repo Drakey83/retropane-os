@@ -265,8 +265,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "medium change reported as a unit attention only (Windows keeps its stale view)",
         file: "drivers/usb-msc/src/lib.rs",
-        from: "            u.away = Some(None);",
-        to: "            u.attention = true;",
+        from: "                u.attention = false;\n                u.away = Some(None);",
+        to: "                u.attention = true;",
         check: Check::Host(&[
             "-p",
             "rp-usb-msc",
@@ -314,6 +314,24 @@ pub const MUTANTS: &[Mutant] = &[
         from: "    pub fn medium_changed(&mut self, lun: usize) {\n        self.ahead = None;",
         to: "    pub fn medium_changed(&mut self, lun: usize) {",
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
+    },
+    Mutant {
+        name: "a host's view from before the drive started is trusted (its old root directory written back)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_view_from_before_the_drive_started_is_sent_away_first",
+        ]),
+    },
+    Mutant {
+        name: "a host's view from before the loader's restart writes over an image's file (emulator)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Emu(crate::emu::boot_loader_stale_view_alone),
     },
     Mutant {
         name: "a write uses the blocks read ahead instead of dropping them",
@@ -419,6 +437,45 @@ pub const MUTANTS: &[Mutant] = &[
             "rp-ce-setup",
             "setup_xml_outside_the_subset_is_refused",
         ]),
+    },
+    Mutant {
+        name: "pxa-udc: a full OUT packet sized by the byte count (lost when it reads short)",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        let count = if csr & reg::SP == 0 {",
+        to: "        let count = if false {",
+        check: Check::Host(&["-p", "rp-drv-pxa-udc", "a_lagging_byte_count_loses_no_data"]),
+    },
+    Mutant {
+        name: "pxa-udc: the CPU takes OUT packets meant for the DMA controller",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        if self.dma[SLOT_OUT] {\n            return;\n        }\n",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "an_endpoint_under_dma_is_left_to_the_dma_controller",
+        ]),
+    },
+    Mutant {
+        name: "usb-msc: a reset leaves the abandoned command's DMA running",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if self.phase == Phase::Command && (self.send_dma || self.recv_dma.is_some()) {",
+        to: "        if false {",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_reset_aborts_the_transfer_in_flight"]),
+    },
+    Mutant {
+        name: "usbbench: a bench folder holding someone else's files used anyway",
+        file: "xtask/src/usbbench.rs",
+        from: "                if e.file_name() != BENCH_FILE {",
+        to: "                if false {",
+        check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
+    },
+    Mutant {
+        name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
+        file: "boot/loader/src/main.rs",
+        from: "                        devices::log_mark_handover();",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_usb_alone),
     },
 ];
 /// Puts a file back when dropped.

@@ -184,7 +184,22 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 32 * 1024,
         // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
         // threads' own stacks (24.3 KiB measured, +~10%).
-        max_zero: 27 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads instead of 128 (the owner's vote), the scheduler's and
+        // HAL's per-thread tables; 27.9 KiB measured, +~10%.
+        max_zero: 31 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Quantum test image (ADR-0010 amendment): touch latency, frame timing
+    // and switch cost under each time-slice policy. First budget =
+    // measured + ~10% (30.2 KiB load; 24.4 KiB zeroed: boot stacks,
+    // scheduler tables, 128 thread contexts).
+    Budget {
+        image: "rp-quantum",
+        max_load: 34 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads' tables; 27.3 KiB measured, +~10%.
+        max_zero: 31 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only, never part of the OS: register names and report text
@@ -200,9 +215,12 @@ pub const BUDGETS: &[Budget] = &[
     // paths' benchmarks and on-target check (item 52), so the real X51v
     // measures them too; `Dirty::add` rewritten as a loop on the way
     // (-1.8 KB); 64.1 KiB measured, +~9%.
+    // Ratcheted 70 -> 77 KiB on 2026-10-15 (test image): DMA transfers of
+    // any length streamed through each channel's ring (storage speed-ups
+    // item 1) on top of the DMA channel map; 70.0 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 70 * 1024,
+        max_load: 77 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -210,9 +228,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 20 -> 22 KiB on 2026-10-12 (test image): the crash box
     // reads the 2700G's registers to draw on the plane actually on screen
     // (Windows Mobile's, at offset 0); 20.5 KiB measured, +~7%.
+    // Ratcheted 22 -> 25 KiB on 2026-10-16 (test image): the UDC driver's
+    // double-buffered endpoints, settled OUT reads and DMA hand-off (item
+    // 74); 22.2 KiB measured, +~10%.
     Budget {
         image: "rp-usb",
-        max_load: 22 * 1024,
+        max_load: 25 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -299,6 +320,14 @@ pub const BUDGETS: &[Budget] = &[
     // scene through `rp-gfx` (layer, glyph masks, dirty flushes: ~4 KiB of
     // the library, ~4 KiB of scene code) and times each stage's drawing;
     // 29.7 KiB measured, + ~14%.
+    // Test image (item 68): steps the 2700G's chip-select timing and
+    // verifies 2700G memory at each step. Budget set from the first build.
+    Budget {
+        image: "rp-cs3bus",
+        max_load: 16 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-blend",
         max_load: 34 * 1024,
@@ -357,10 +386,11 @@ pub const BUDGETS: &[Budget] = &[
     // alpha-source and filtering sweeps), 33.1 KiB measured; then 36 -> 42
     // KiB for version 24 (T10-T13: the interrupt line, depth across
     // renders, filtering and mipmaps, 32-bit and PVRTC textures), 39.3 KiB
-    // measured, + ~7%.
+    // measured, + ~7%; tightened 42 -> 35 KiB for version 26 (the clock
+    // and 16-bit target stages; texture helpers gone), 31.2 KiB measured.
     Budget {
         image: "rp-mbx3d",
-        max_load: 42 * 1024,
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -373,6 +403,34 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-mbx3d-api",
         max_load: 66 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Test image (docs/research/storage-speed.md): the CF socket's timings,
+    // the card's CIS and IDENTIFY, five read paths timed; report only.
+    // 32.8 KiB measured (2026-10-15), + ~10%.
+    Budget {
+        image: "rp-cftime",
+        max_load: 37 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Test image (docs/research/storage-speed.md): the SD card's registers
+    // and speeds by size, DMA, pre-erase, clock code and FAT layer. 74.7
+    // KiB measured (2026-10-15, most of it the FAT layer, which also makes
+    // the test file), + ~10%.
+    Budget {
+        image: "rp-sdtime",
+        max_load: 82 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Device test (docs/research/storage-speed.md items 1-4): CF read paths
+    // and attach cycles, SD reads by size, an SD DMA write soak across a
+    // card swap and the lock switch. Provisional until measured.
+    Budget {
+        image: "rp-storfast",
+        max_load: 96 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

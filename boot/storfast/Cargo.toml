@@ -1,0 +1,25 @@
+[package]
+name = "rp-storfast"
+description = "Device test for the storage speed-ups (docs/research/storage-speed.md items 1-4): CF read paths compared byte for byte and 20 attach cycles with the short RESET pulse; SD reads of every size class by DMA; an SD write soak by DMA with read-back, across a card swap and the lock switch; writes only inside /rp-storage-fast/"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cf = { path = "../../drivers/cf" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-fat = { path = "../../kernel/fat" }
+
+[lints]
+workspace = true

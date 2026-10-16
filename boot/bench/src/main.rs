@@ -93,12 +93,15 @@ mod image {
         if let (Some(cpld), Some(mmc), Some(dma)) = (
             rp_hal_x51v::devices::take_cpld(),
             rt::take_mmc(),
-            rt::take_dma(0),
+            rt::take_dma(rp_hal_pxa27x::dma_map::SD),
         ) {
             Cpld::adopt(cpld.0, cpld.1).0.set_sd_power(true);
             rt::delay_us(10_000);
             match SdCard::init(PxaMmc::with_dma(mmc, dma)) {
-                Ok(mut card) => suite::sd(&mut r, &mut card, sd_buf),
+                Ok(mut card) => {
+                    suite::sd(&mut r, &mut card, sd_buf);
+                    sd_dma_past_chain(&mut r, &mut card, layer_work);
+                }
                 Err(e) => r.check("sd", false, e.name()),
             }
         }
@@ -110,6 +113,38 @@ mod image {
         let _ = black_box(rt::fault_probe(black_box(0x8000_0000)));
         let _ = writeln!(out.0, "FAULT-PROBE no fault (unexpected)");
         halt()
+    }
+
+    /// A 1 MiB read, past the 128 KiB the DMA chain once held (it fell
+    /// back to the FIFO above that: docs/research/storage-speed.md), must
+    /// go by DMA in one transfer and read what the FIFO reads.
+    fn sd_dma_past_chain(
+        r: &mut suite::Runner,
+        card: &mut SdCard<PxaMmc<Mmio, rp_hal_pxa27x::dma::Dma>>,
+        work: &mut [u8],
+    ) {
+        const LEN: usize = 1024 * 1024;
+        let Some((dma, rest)) = work.get_mut(..2 * LEN).map(|w| w.split_at_mut(LEN)) else {
+            r.check("sd_dma_past_chain", false, "no buffer");
+            return;
+        };
+        dma.fill(0xA5);
+        let before = card.host().dma_transfers();
+        let by_dma = card.read_many(0, dma).is_ok();
+        let transfers = card.host().dma_transfers() - before;
+        card.host_mut().set_dma(false, false);
+        let by_fifo = card.read_many(0, rest).is_ok();
+        card.host_mut().set_dma(true, true);
+        let ok = by_dma && by_fifo && transfers == 1 && *dma == *rest;
+        r.check(
+            "sd_dma_past_chain",
+            ok,
+            if ok {
+                ""
+            } else {
+                "1 MiB by DMA: not one transfer, or differs from the FIFO"
+            },
+        );
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {

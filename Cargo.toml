@@ -49,8 +49,12 @@ members = [
     "boot/mbx-blend",
     "boot/mbx3d",
     "boot/mbx3d-api",
+    "boot/cftime",
+    "boot/sdtime",
+    "boot/storfast",
     "boot/picture",
     "boot/blend",
+    "boot/cs3bus",
     "boot/usb",
     "boot/reconnect",
     "boot/loadproto",
@@ -60,6 +64,7 @@ members = [
     "boot/probe",
     "boot/kernel",
     "boot/threads",
+    "boot/quantum",
     "services/display-host",
     "services/graphics",
     "shell/core",
@@ -126,6 +131,8 @@ opt-level = "s"
 [profile.release.package.rp-kernel]
 opt-level = "s"
 [profile.release.package.rp-threads]
+opt-level = "s"
+[profile.release.package.rp-quantum]
 opt-level = "s"
 # IPC bookkeeping: table scans unrolled at opt-level 3 cost ~2 KB for no
 # measurable gain (the call path is a few loads and compares).
