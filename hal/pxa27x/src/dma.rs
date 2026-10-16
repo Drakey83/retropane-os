@@ -17,7 +17,7 @@
 //! bytes long) in identity-mapped memory (the bring-up map): the DMA
 //! controller sees physical addresses.
 
-use rp_hal_api::{DmaEngine, DmaRing, Port, Width};
+use rp_hal_api::{DmaEngine, DmaRing, Port, Width, WindowDma};
 
 use crate::cpu;
 use crate::dmachain::{Next, Seen, Shape, Stream};
@@ -65,7 +65,7 @@ fn width(w: Width) -> u32 {
 }
 
 /// Channels handed out ([`crate::rt::take_dma`]): each has its own chain.
-pub const CHANNELS: u32 = 2;
+pub const CHANNELS: u32 = 3;
 
 /// Bytes per descriptor (under the 8,191 the length field holds).
 const CHUNK: u32 = 4096;
@@ -369,6 +369,20 @@ impl DmaEngine for Dma {
 
     fn abort(&mut self) {
         self.stop();
+    }
+}
+
+impl WindowDma for Dma {
+    fn arm_from_window(&mut self, src: u32, window: usize, buf: &mut [u8]) -> bool {
+        self.arm_copy_from_device_window(src, window, buf)
+    }
+
+    fn done(&mut self) -> Option<bool> {
+        DmaEngine::done(self)
+    }
+
+    fn abort(&mut self) {
+        DmaEngine::abort(self);
     }
 }
 

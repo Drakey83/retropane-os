@@ -29,7 +29,14 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 
 /// Where `cargo xtask qemu` builds inside WSL.
-const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+const WSL_QEMU_DEFAULT: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+
+/// The WSL emulator binary: `RETROPANE_WSL_QEMU` (a fork branch built in
+/// its own directory, without replacing the shared build other sessions
+/// use), else `cargo xtask qemu`'s.
+fn wsl_qemu() -> String {
+    std::env::var("RETROPANE_WSL_QEMU").unwrap_or_else(|_| WSL_QEMU_DEFAULT.into())
+}
 
 const EMU_ARGS: &str = "-M x51v -display none";
 
@@ -135,7 +142,7 @@ fn wsl_bash(script: &str) -> Command {
 
 fn wsl_build_exists() -> bool {
     cfg!(windows)
-        && wsl_bash(&format!("test -x {WSL_QEMU}"))
+        && wsl_bash(&format!("test -x {}", wsl_qemu()))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -2039,11 +2046,40 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
             .args(["-M", "x51v", "-device", &format!("{device},help")])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device {device},help")).output()
+            wsl_bash(&format!("{} -M x51v -device {device},help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("{prop}=")))
+}
+
+/// Whether the emulator starts with `-global <setting>`: an emulator whose
+/// device lacks the property refuses to start. For devices whose `,help`
+/// can't be asked (the PC Card socket's instantiates it outside a machine,
+/// which asserts in QEMU's memory code).
+fn emulator_accepts_global(root: &Path, setting: &str) -> bool {
+    let args = format!("-M x51v -display none -S -monitor stdio -serial null -global {setting}");
+    let child = match emulator(root) {
+        Ok(Emulator::Native(exe)) => Command::new(exe)
+            .args(args.split(' '))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn(),
+        Ok(Emulator::Wsl) => wsl_bash(&format!("echo quit | {} {args}", wsl_qemu()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn(),
+        Err(_) => return false,
+    };
+    let Ok(mut child) = child else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"quit\n");
+    }
+    child.wait().is_ok_and(|s| s.success())
 }
 
 /// Whether a device at `path` in the running emulator has `prop`.
@@ -2071,7 +2107,7 @@ fn has_usb_model(root: &Path) -> bool {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
@@ -2598,9 +2634,24 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
         let reply = usb_read_until(&mut s, "model", 20)?;
-        let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, FAT32 partition";
-        if !reply.contains(want) || !reply.contains("was card") {
-            return Err(format!("unexpected reply to cf: {reply:?}"));
+        // Reads come by DMA from the card's data window once IDENTIFY read
+        // through it matched the 16-bit port (docs/research/storage-speed.md):
+        // on a fork modelling the PXA's two card cycles per 32-bit access
+        // (rp-v0.16.0's `word-cycles`). On one that doesn't, the window
+        // reads wrong and the driver must keep the port: the check is the
+        // guard, so a wrong window never reaches a sector.
+        let path = if emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on") {
+            "reads by DMA from the window (0 paths refused)"
+        } else {
+            "reads by 16-bit port (1 paths refused)"
+        };
+        let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, ";
+        if !reply.contains(want)
+            || !reply.contains(path)
+            || !reply.contains("FAT32 partition")
+            || !reply.contains("was card")
+        {
+            return Err(format!("unexpected reply to cf (want {path:?}): {reply:?}"));
         }
         // The power sequence and the card's reset went through the CPLD,
         // whose registers don't read back: the backlight enable sharing
@@ -3664,7 +3715,7 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(e) => return Err(e),
     };
@@ -4109,7 +4160,13 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
     }
     eprintln!("    fault path OK: deliberate unmapped read reported as a data abort");
     // Checks that must have run (and passed), not merely not failed.
-    for check in ["mem", "crypto", "sd_multi_block_matches", "gfx"] {
+    for check in [
+        "mem",
+        "crypto",
+        "sd_multi_block_matches",
+        "sd_dma_past_chain",
+        "gfx",
+    ] {
         if !output.contains(&format!("CHECK {check} OK")) {
             return Err(format!(
                 "on-target check `{check}` missing or failed:\n{output}"
@@ -4290,8 +4347,9 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
             let sd = sd_image
                 .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
                 .unwrap_or_default();
+            let wsl_qemu = wsl_qemu();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                "exec timeout {} {wsl_qemu} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 timeout.as_secs() + 10,
                 extra.join(" "),
                 to_wsl_path(image)
