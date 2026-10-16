@@ -1581,6 +1581,15 @@ mod image {
         let _ = write!(out, "RPL OK backlight {level}% (duty {on}/{counts})\r\n");
     }
 
+    /// CPLD registers as ` offset=value` pairs (`all`: zeros too).
+    fn cpld_regs(out: &mut Line, regs: &[u16; rp_drv_cpld::REGS], all: bool) {
+        for (k, &v) in regs.iter().enumerate() {
+            if all || v != 0 {
+                let _ = write!(out, " {:02x}={v:04x}", k * 2);
+            }
+        }
+    }
+
     /// `handoff`: what `_start` found running at this loader's start, how
     /// long its DMA took to stop, and when the 2700G and the loader were
     /// ready (milliseconds since the start).
@@ -2357,15 +2366,13 @@ mod image {
                             // latches now and where it came from (non-zero
                             // registers only: the reply is one line).
                             let _ = status.write_str("RPL OK cpld:");
-                            for (k, v) in cpld_found.iter().enumerate() {
-                                let _ = write!(status, " {:02x}={v:04x}", k * 2);
-                            }
+                            cpld_regs(&mut status, &cpld_found, true);
                             if let (Some(c), Some(src)) = (cpld.as_ref(), cpld_source) {
-                                let _ = write!(status, "; shadow from {}:", src.name());
-                                for k in (0..rp_drv_cpld::REGS).filter(|&k| c.shadow(k * 2) != 0) {
-                                    let _ =
-                                        write!(status, " {:02x}={:04x}", k * 2, c.shadow(k * 2));
-                                }
+                                let _ = status.write_str("; shadow from ");
+                                let _ = status.write_str(src.name());
+                                let _ = status.write_str(":");
+                                let shadow = core::array::from_fn(|k| c.shadow(k * 2));
+                                cpld_regs(&mut status, &shadow, false);
                             }
                             let _ = status.write_str("\r\n");
                             status.as_str()

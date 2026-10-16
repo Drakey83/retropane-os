@@ -152,21 +152,24 @@ impl<B: RegisterBus16, S: Shadow> Cpld<B, S> {
         Self { bus, shadow }
     }
 
-    fn write(&mut self, offset: usize, value: u16) {
+    /// Every latch change goes through here, out of line: the shadow's
+    /// write-through (the shared table, its check) is code worth keeping
+    /// once, not at every caller.
+    #[inline(never)]
+    fn update(&mut self, offset: usize, set: u16, clear: u16) {
+        let value = (self.shadow.get(offset) & !clear) | set;
         self.shadow.put(offset, value);
         self.bus.write16(offset, value);
     }
 
     /// Sets bits in a register (via the shadow copy).
     pub fn set(&mut self, offset: usize, bits: u16) {
-        let v = self.shadow.get(offset) | bits;
-        self.write(offset, v);
+        self.update(offset, bits, 0);
     }
 
     /// Clears bits in a register (via the shadow copy).
     pub fn clear(&mut self, offset: usize, bits: u16) {
-        let v = self.shadow.get(offset) & !bits;
-        self.write(offset, v);
+        self.update(offset, 0, bits);
     }
 
     /// Reads a register as the bus returns it: status inputs, never what
