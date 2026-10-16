@@ -36,14 +36,11 @@ mod image {
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::crash;
     use rp_drv_pxa_gpio::Gpio;
-    use rp_drv_pxa_i2c::PxaI2c;
-    use rp_drv_pxa_i2s::{PxaI2s, Rate, Tone, stream};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Guard, Volume};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
@@ -209,36 +206,6 @@ mod image {
     /// Windows Mobile's own reboot, after GPIO15 is driven low.
     const BOARD_RESET: u8 = 99;
     const BOARD_RESET_PREP: u8 = 15;
-    /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
-    /// unconfirmed on the device, so changes are logged with the level).
-    const HP_DETECT: u8 = 83;
-
-    /// The headphone jack, debounced over two one-second polls.
-    struct Jack {
-        plugged: bool,
-        seen: bool,
-    }
-
-    impl Jack {
-        /// The new state when the jack changed.
-        fn poll(&mut self, gpio: &mut Gpio<Mmio>) -> Option<bool> {
-            let now = gpio.read(HP_DETECT);
-            let stable = now == self.seen;
-            self.seen = now;
-            (stable && now != self.plugged).then(|| {
-                self.plugged = now;
-                now
-            })
-        }
-
-        fn output(&self) -> Output {
-            if self.plugged {
-                Output::Headphones
-            } else {
-                Output::Speaker
-            }
-        }
-    }
     const SD_LOCK: u8 = 27;
 
     impl Lun {
@@ -1397,107 +1364,6 @@ mod image {
         let _ = out.write_str("\r\n");
     }
 
-    /// Audio: set up on the first `tone`, so nothing touches the I2C bus or
-    /// the codec unasked.
-    enum Audio {
-        Untried,
-        /// The codec, the I2S, and a DMA channel to stream with if one was
-        /// free.
-        Ready(Wm8750<PxaI2c<Mmio>>, PxaI2s<Mmio>, Option<Dma>),
-        Failed(&'static str),
-    }
-
-    /// `tone <hz> <ms>`: a sine (20-20,000 Hz, up to 5 s) through the
-    /// WM8750 at 48 kHz, streamed by DMA from `ring` (the CPU refills it by
-    /// halves); the reply says how long it really took (the codec's clock
-    /// paces it) and how much of that the CPU was busy (a polled FIFO would
-    /// keep it busy throughout). Headphones: the speaker amplifier
-    /// (GPIO82, CPLD 0x14) is left alone until a device run with the owner
-    /// there.
-    #[inline(never)]
-    fn tone_command(
-        audio: &mut Audio,
-        jack: &Jack,
-        args: &[u8],
-        ring: &mut [u8],
-        feed: &mut dyn FnMut(),
-        out: &mut Line,
-    ) {
-        let mut it = args.split(|&b| b == b' ').filter(|a| !a.is_empty());
-        let (Some(hz), Some(ms)) = (
-            it.next()
-                .and_then(parse_number)
-                .filter(|h| (20..=20_000).contains(h)),
-            it.next()
-                .and_then(parse_number)
-                .filter(|m| (1..=5_000).contains(m)),
-        ) else {
-            let _ = write!(out, "RPL ERR usage: tone <20-20000 Hz> <1-5000 ms>\r\n");
-            return;
-        };
-        if let Audio::Untried = audio {
-            *audio = match (rt::take_i2c(), rt::take_i2s()) {
-                (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
-                    Ok(mut codec) => {
-                        let _ = codec.route(jack.output());
-                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(dma_map::AUDIO))
-                    }
-                    Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
-                },
-                _ => Audio::Failed("I2C or I2S unavailable"),
-            };
-        }
-        let (codec, i2s, dma) = match audio {
-            Audio::Ready(c, i, d) => (c, i, d),
-            Audio::Failed(why) => {
-                let _ = write!(out, "RPL ERR tone: {why}\r\n");
-                return;
-            }
-            Audio::Untried => return,
-        };
-        let rate = Rate::Khz48;
-        let frames = rate.hz() / 1000 * ms;
-        let mut source = Tone::new(hz, rate.hz(), 12_000);
-        let Some(dma) = dma else {
-            let _ = write!(out, "RPL ERR tone: no DMA channel\r\n");
-            return;
-        };
-        i2s.start(rate);
-        let r = stream(
-            dma,
-            ring,
-            &mut source,
-            frames,
-            &mut rt::ticks,
-            TICK_1S / 5,
-            feed,
-        );
-        i2s.stop();
-        match r {
-            Ok(s) => {
-                let _ = write!(
-                    out,
-                    "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}, to {}\r\n",
-                    s.total / (TICK_1S / 1000),
-                    u64::from(s.busy) * 100 / u64::from(s.total.max(1)),
-                    codec.address(),
-                    if codec.output() == Output::Headphones {
-                        "headphones"
-                    } else {
-                        "speaker"
-                    }
-                );
-            }
-            Err(e) => {
-                let why = match e {
-                    rp_drv_pxa_i2s::StreamError::Refused => "refused",
-                    rp_drv_pxa_i2s::StreamError::Stalled => "stalled",
-                };
-                let _ = write!(out, "RPL ERR tone: DMA stream {why}\r\n");
-            }
-        }
-    }
-
     /// `card dma` reports the DMA policy; `card dma writes` lets writes use
     /// DMA for this session (only when reads passed their self-test).
     #[inline(never)]
@@ -2071,14 +1937,8 @@ mod image {
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
-        let mut audio = Audio::Untried;
         // The USB controller's DMA channel (item 74).
         let mut udc_dma = rt::take_dma(dma_map::UDC);
-        gpio.make_input(HP_DETECT);
-        let mut jack = Jack {
-            plugged: gpio.read(HP_DETECT),
-            seen: gpio.read(HP_DETECT),
-        };
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
         // Layout fallback: if the PC keeps trying (bus resets) but never
@@ -2096,8 +1956,7 @@ mod image {
             if lun.present() { "ready" } else { "none" }
         );
         // Boot time (docs/design-brief.md): entry to the waiting loop, every
-        // driver set up that the loop needs now (audio and CF start later,
-        // on first use).
+        // driver set up that the loop needs now.
         let ready_at = rt::since_start();
         let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
@@ -2322,21 +2181,6 @@ mod image {
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
                             backlight_command(backlight.as_mut(), &c[9..], &mut status);
-                            status.as_str()
-                        }
-                        Ok(c) if c.starts_with(b"tone") => {
-                            tone_command(
-                                &mut audio,
-                                &jack,
-                                &c[4..],
-                                &mut fat_scratch[..8192],
-                                &mut || {
-                                    if watchdog.armed() {
-                                        watchdog.feed(RUN_LIMIT);
-                                    }
-                                },
-                                &mut status,
-                            );
                             status.as_str()
                         }
                         Ok(c) if c == b"ls" || c.starts_with(b"ls ") => {
@@ -2623,19 +2467,6 @@ mod image {
                     uart,
                     "power button: screen {}",
                     if on { "on" } else { "off" }
-                );
-            }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S
-                && let Some(plugged) = jack.poll(&mut gpio)
-            {
-                if let Audio::Ready(codec, ..) = &mut audio {
-                    let _ = codec.route(jack.output());
-                }
-                let _ = writeln!(
-                    log,
-                    "headphones {} (GPIO83 {})",
-                    if plugged { "in" } else { "out" },
-                    u8::from(plugged)
                 );
             }
             if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {

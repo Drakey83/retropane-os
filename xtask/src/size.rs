@@ -286,9 +286,12 @@ pub const BUDGETS: &[Budget] = &[
     // The loader never ships (docs/security.md). A loader diet (diagnostics
     // whose questions are answered, e.g. the raw `cpld` dump) is queued for
     // the next time it needs room, before any further raise.
+    // Lowered 116 -> 112 KiB the same day by the loader diet: the audio
+    // check (`tone`, the WM8750, I2C, I2S streaming, the headphone jack;
+    // 3.5 KiB) moved to its own test image, rp-tone; 112,680 B measured.
     Budget {
         image: "rp-loader",
-        max_load: 116 * 1024,
+        max_load: 112 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Loader,
     },
@@ -483,6 +486,15 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-cfdetect",
         max_load: 21 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
+    // Test image: the audio check, moved out of the loader (its `tone`
+    // command) in the loader diet of 2026-10-16. Set at its first build:
+    // 22.7 KiB measured, +~10%.
+    Budget {
+        image: "rp-tone",
+        max_load: 25 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

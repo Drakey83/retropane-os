@@ -45,9 +45,11 @@ crossings, the right channel latching both).
 
 - `drivers/pxa-i2c`, `drivers/wm8750`, `drivers/pxa-i2s` (with `Tone`, a
   fixed-point sine from a phase accumulator and a 65-entry quarter table).
-- Loader `tone <hz> <ms>` (`cargo xtask` control frame): finds the codec on
-  first use, streams a sine at 48 kHz by DMA, replies with how long it took
-  (the codec's clock paces it) and the CPU's busy share.
+- `rp-tone` (`cargo xtask tone`; until 2026-10-16 the loader's `tone`
+  command, moved out in the loader diet: 3.5 KiB of the loader): finds the
+  codec, streams 440 Hz for 500 ms at 48 kHz by DMA, logs how long it took
+  (the codec's clock paces it) and the CPU's busy share, then waits 15 s for
+  the headphone jack to change and plays 1000 Hz for 50 ms to the new output.
 - Streaming (`rp_drv_pxa_i2s::stream`): DMA channel 1 loops an 8 KiB ring
   (two 4 KiB halves, 1,024 frames each, ~21 ms) into `SADR` (request line
   3, word-wide, 32-byte bursts); the CPU refills the half the engine has
@@ -55,16 +57,17 @@ crossings, the right channel latching both).
   the last frame has played; a ring that stops moving for 200 ms is an
   error, not a hang.
 - Headphone jack: GPIO83 read each second, debounced over two reads; high
-  is taken as plugged in (unconfirmed: the loader logs each change with
-  the level, so a device run settles it). Plugged in, the speaker pair is
+  is taken as plugged in (unconfirmed: `rp-tone` logs the level at start and
+  each change, so a device run settles it). Plugged in, the speaker pair is
   muted and sound goes to the headphones; unplugged, back to the speaker.
-  The `tone` reply names the output.
+  The log names the output.
 - Not yet: the speaker amplifier, recording, sample rates other than
   48 kHz on the codec side.
 
 ## Device run (with the owner there: it makes sound)
 
-`tone 440 500` with headphones in: the reply names the codec's address
-(recording it here), the time matches 500 ms if the clocks are right. Then,
+`cargo xtask tone` with headphones in (then pull them out while it waits):
+the log names the codec's address (recording it here), the time matches
+500 ms if the clocks are right, and the jack's level for in and out. Then,
 for the speaker, the amplifier lines (GPIO82, CPLD 0x14 bit 3) one at a
 time.

@@ -3291,15 +3291,25 @@ fn wm_cpld_table_args() -> Vec<String> {
         .collect()
 }
 
-/// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S fed by a DMA ring),
-/// recorded by the emulator to a wav file, and the recording's pitch
-/// measured from its zero crossings.
+/// Audio: `rp-tone` under the loader over USB (WM8750 over I2C, I2S fed by
+/// a DMA ring): 440 Hz for 500 ms to the speaker, then, with the headphones
+/// plugged in while it waits, 1000 Hz for 50 ms to them. The emulator records
+/// to a wav file, and the first tone's pitch is measured from its zero
+/// crossings.
 pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    tone: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-tone.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-tone"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
     let wav = root.join("target/emulator/tone.wav");
     let _ = std::fs::remove_file(&wav);
     let wav_path = match emulator(root)? {
@@ -3318,26 +3328,30 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
-        s.write_all(&rp_loadproto::control_frame("tone 440 500"))
-            .map_err(|e| e.to_string())?;
-        let reply = usb_read_line(&mut s, "RPL ", 20)?;
-        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames")
-            || !reply.contains("by DMA")
-            || !reply.contains("to speaker")
-        {
-            return Err(format!("unexpected reply to tone: {reply:?}"));
-        }
-        eprintln!("    loader: {}", reply.trim());
-        // Headphones in: the next tone goes to them (the speaker muted).
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // Headphones in while the image waits for the jack (after its
+        // first tone): the second tone goes to them.
+        std::thread::sleep(Duration::from_secs(4));
         let mut mon = crate::screen::Monitor::connect(port)?;
         mon.query("qom-set /machine/peripheral/jack pressed true")?;
-        std::thread::sleep(Duration::from_millis(2500));
-        s.write_all(&rp_loadproto::control_frame("tone 1000 50"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "to headphones", 20)?;
-        s.write_all(&rp_loadproto::control_frame("tone 5 5"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL ERR usage", 10)?;
+        let log = usb_read_until(&mut s, "RPL END", 40)?;
+        for want in [
+            "tone 440 Hz 500 ms (24000 frames",
+            "by DMA",
+            "to speaker",
+            "headphones in (GPIO83 1)",
+            "tone 1000 Hz 50 ms",
+            "to headphones",
+            "TONE-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("tone: no {want:?} in the run log:{log}"));
+            }
+        }
+        if let Some(line) = log.lines().find(|l| l.starts_with("tone 440")) {
+            eprintln!("    rp-tone: {}", line.trim());
+        }
         // Let the backend write out what it has.
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
@@ -3354,7 +3368,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             input: None,
             during: Some(&check),
             then: None,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(90),
         },
     )?;
     let data = std::fs::read(&wav).map_err(|e| format!("{}: {e}", wav.display()))?;
@@ -3369,9 +3383,25 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         .collect();
     // The tone: the stretch between the first and last loud samples.
     let loud = |s: &i16| s.unsigned_abs() > 2000;
-    let (Some(start), Some(end)) = (left.iter().position(loud), left.iter().rposition(loud)) else {
+    let Some(start) = left.iter().position(loud) else {
         return Err("tone: the recording is silent".into());
     };
+    // The first tone only: it ends at the first tenth of a second of quiet
+    // (the second, to the headphones, comes seconds later).
+    let gap = (rate / 10) as usize;
+    let mut end = start;
+    let mut quiet = 0;
+    for (k, s) in left.iter().enumerate().skip(start) {
+        if loud(s) {
+            end = k;
+            quiet = 0;
+        } else {
+            quiet += 1;
+            if quiet > gap {
+                break;
+            }
+        }
+    }
     let tone = &left[start..=end];
     let crossings = tone.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
     let seconds = tone.len() as f64 / f64::from(rate);
