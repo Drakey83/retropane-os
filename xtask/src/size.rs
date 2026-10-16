@@ -279,9 +279,16 @@ pub const BUDGETS: &[Budget] = &[
     // rule): the drive's overlapped reads and read-ahead (item 58: the
     // card's DMA waits send the previous chunk to the PC); 104,476 B
     // measured. Room for DMA writes and ACMD23 next.
+    // Raised 112 -> 116 KiB on 2026-10-16 (approved by the owner): the
+    // CPLD's shared shadow table at hand-over (items 72/77: ~750 B, the
+    // driver every program uses) and its diagnostics (`handoff`, the
+    // shadow in `cpld`: ~830 B); 116,276 B measured after a 364 B trim.
+    // The loader never ships (docs/security.md). A loader diet (diagnostics
+    // whose questions are answered, e.g. the raw `cpld` dump) is queued for
+    // the next time it needs room, before any further raise.
     Budget {
         image: "rp-loader",
-        max_load: 112 * 1024,
+        max_load: 116 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Loader,
     },
