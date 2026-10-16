@@ -314,16 +314,21 @@ UDC. Code: `boot/unplug`, `Rig::off`/`Rig::on` for `HostSe0`.
 
 The transceiver-off step is no use: the PC never re-configured within 3 s.
 
-**The fix (designed, not built).** The loader does this unplug at start,
-in place of its `DETACH` wait (which drives GPIO2 and does nothing): the
-PC then sees Windows Mobile's device leave and the loader arrive on every
-hand-over, from HaRET or a watchdog reboot, with no re-plug. The code is
-the run's `HostSe0` sequence, a few hundred bytes in the loader (it is near
-its budget: the owner decides what pays for it). Proof on the device: five
-hand-overs from Windows Mobile (`reboot-wm`, then the loader started from
-Windows Mobile) with the composite configured each time, no fallback, no
-re-plug; and `emu-*` with the fork modelling it (a port 2 reset through
-the host controller detaches the emulated host's device).
+**The fix (built 2026-10-16, emulator-checked, not yet on the device).**
+`Udc::unplug` (`drivers/pxa-udc/src/unplug.rs`, the measured sequence,
+host-tested) runs in the loader through one helper, `replug`, everywhere
+the loader presents the device: at start (in place of the `DETACH` wait,
+which drove GPIO2 and did nothing) and at both layout switches (the
+fallback and `drive on`), which had the same flaw: the controller off and
+on is invisible to the PC. +368 bytes (rp-loader 116,276 → 116,644 of
+118,784); ~155 ms more at start, spent with the PC ready to ask at once.
+The emulator models the hard-wired pull-up and the unplug (retropane-qemu
+branch `udc-unplug`, not yet released): `emu-usb`, `emu-loader`,
+`emu-handover` and `emu-unplug` pass; with the unplug taken out of the
+loader (mutant) `emu-usb` fails, the image's run log never coming back
+over USB. Device proof still to do: five hand-overs from Windows Mobile
+(`reboot-wm`, then the loader started from Windows Mobile) with the
+composite configured each time, no fallback, no re-plug.
 
 **Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
 the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even
