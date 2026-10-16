@@ -477,6 +477,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Diagnostics only: CF detect with the slot unpowered (the re-insert
+    // fix, docs/hw/cf.md). Set at its first build on 2026-10-16: 18.3 KiB
+    // measured, +~10%.
+    Budget {
+        image: "rp-cfdetect",
+        max_load: 21 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
 ];
 
 /// The device's RAM (docs/memory-budget.md).

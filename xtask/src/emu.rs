@@ -767,6 +767,57 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The CF detect diagnostic (`rp-cfdetect`) under the loader: it reads the
+/// three detect signals as found, with the slot off through its 30 s watch,
+/// and powered again, logs each, and returns with the slot powered. (The
+/// emulator's slot is empty and its GPIO13 works unpowered, so this checks
+/// the image's run, not the device's answer: docs/hw/emulator.md.)
+pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-cfdetect.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-cfdetect"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT + Duration::from_secs(40),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("cfdetect: no run log after the image returned")?;
+    for want in [
+        " ms as found: GPIO13 ",
+        " ms slot off: GPIO13 ",
+        "PULL THE CF CARD OUT NOW",
+        "PUSH IT BACK IN NOW",
+        " ms end, slot off: GPIO13 ",
+        " ms powered 1 s: GPIO13 ",
+        "CFDETECT-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("cfdetect: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!("    cf detect OK: every stage ran and was logged, back at the loader");
+    Ok(())
+}
+
 /// The night-light experiment (item 76) under the loader: every step runs
 /// and the channel is put back. The emulator's 2700G applies the graphics
 /// gamma table at scan-out (Windows Mobile's grey ramp at reset, gamma off
