@@ -106,7 +106,11 @@ model with a built-in host that enumerates like Windows.
      not by its layout. Diagnosis, ranked hypotheses (the lead: state
      Windows Mobile leaves in the UDC that `Udc::enable` doesn't reset)
      and the test plan: `docs/hw/udc.md` "The first enumeration after a
-     hand-over from Windows Mobile";
+     hand-over from Windows Mobile". A USB trace on the PC (T1,
+     2026-10-16) then showed the mechanism: Windows never sees HaRET's
+     hand-over (the pull-up stays, Windows Mobile's idle device stays
+     "present"), so the loader is enumerated only via the hub's recovery
+     or a re-plug; the fix is a disconnect the loader can make;
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
