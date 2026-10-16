@@ -147,10 +147,9 @@ mod image {
         if let Some(h) = rp_hal_x51v::devices::mbx_handoff() {
             let _ = writeln!(
                 out,
-                "2700G at {} us; DMA {:08X} UDC {} stop {} us",
+                "2700G at {} us; DMA {:08X} stop {} us",
                 h.at * 4 / 13,
                 h.found.dma_running,
-                u8::from(h.found.udc_on),
                 h.stopped.waited * 4 / 13
             );
         }

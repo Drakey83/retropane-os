@@ -77,9 +77,8 @@ mod image {
         if let Some(h) = devices::mbx_handoff() {
             let _ = writeln!(
                 out,
-                "handoff: DMA running {:08X}, UDC {}, stopped in {} us (stuck {:08X}), 2700G at {} us",
+                "handoff: DMA running {:08X}, stopped in {} us (stuck {:08X}), 2700G at {} us",
                 h.found.dma_running,
-                if h.found.udc_on { "on" } else { "off" },
                 us(h.stopped.waited),
                 h.stopped.stuck,
                 us(h.at),
