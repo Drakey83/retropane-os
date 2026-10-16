@@ -37,8 +37,8 @@ Forecast feeds send a condition *code*, not a picture: the World
 Meteorological Organization's weather interpretation codes (the
 WMO 4677 family, as the open feeds use them). A pack is a set of pictures
 named for the icons below, each covering a group of codes, so any pack that
-has every name works. Pictures are 1024x1024 transparent PNGs in the
-pack; the build (or the installer, for a user's pack) scales them into the
+has every name works. Pictures are square transparent PNGs in the
+pack, 512 px or larger and all the same size (1024 or 816 are fine); the build (or the installer, for a user's pack) scales them into the
 asset atlas, so they cost nothing while running (design-brief.md). A pack
 is data only, checked like any input: size-capped, decoded by our own
 validating PNG reader, refused if damaged.
@@ -137,4 +137,4 @@ ICON (one per image):
 22 unknown / no data: a soft translucent cloud with a small question mark
 ```
 
-Name each file by its number (`03.png`); export at 1024x1024, transparent.
+Name each file by its number (`03.png`); export square and transparent, 512 px or larger, every icon the same size (816x816 or 1024x1024).
