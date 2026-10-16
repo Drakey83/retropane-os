@@ -413,6 +413,34 @@ it in use.
    speed per CIS, so the derivation is tested on the host; the socket's
    electrical behaviour can't be modelled (docs/hw/emulator.md).
 
+# Device results: the speed-ups built (2026-10-16, `rp-storfast`)
+
+Run on the owner's X51v (main 03ef598, loader from RAM; the SD card the
+owner's 32 GB "X51V SD", the CF card 8 GB; run log in
+`local/rp-storfast-run1.txt`). Every number below is from
+one run; nothing failed, nothing differed.
+
+| Path | Before | After | |
+|---|---|---|---|
+| SD read, 1 and 4 MiB commands | 1,895 KiB/s (FIFO) | 7,940-7,981 KiB/s (DMA, one transfer each) | 4.2x |
+| SD write, 1 MiB commands | 1,284 KiB/s (FIFO) | 4,891 KiB/s (DMA) | 3.8x |
+| SD write, 64 KiB commands | 1,167 KiB/s (FIFO) | 2,897 KiB/s (DMA) | 2.5x |
+| CF read, 4 MiB | 2,569 KiB/s (16-bit port) | 3,439 (32-bit window), 5,887 KiB/s (DMA from the window) | 2.3x |
+| CF reset to ready | 100 ms pulse + ready wait | 28 ms in all (100 us pulse); 20 of 20 attach cycles good, slowest 28 ms | |
+
+- **S1:** every size class from 2 blocks to 4 MiB by one DMA transfer, every
+  byte checked (item 1: before it, reads over 128 KiB fell back to the FIFO).
+- **S2 soak:** three rounds of 481 writes each (146,943 KiB per round,
+  ~430 MB in all), every write read back by DMA and every fourth by the
+  FIFO too: 0 write errors, 0 read errors, 0 blocks differ. So item 2 (DMA
+  writes on by default in the loader) may go ahead.
+- **S3 card swap:** the card pulled and put back mid-soak; the last writes
+  read back exact and the soak went on. **Lock switch: not tested.** The
+  X51v's slot covers the card's lock tab, so "slide it on with the card in"
+  can't be done; the step must ask for card out, lock, card in.
+- Only the test's own folder was written and it was removed; every root file
+  of the shared card hashed the same before and after.
+
 # Copied values (the audit's tag)
 
 | Value | From | Status after this report |
@@ -424,7 +452,7 @@ it in use.
 | CF RESET held 100 ms (`drivers/cf`) | WM | the specification asks 10 us; a change to 1 ms is ready to make but **not made** (outside "report only"; needs the owner's go) |
 | CPLD power step 10 ms, off 308 ms, on 100 ms (loader) | WM | board-specific, no specification value; the 10 ms step may be the slot's supply ramp before its bus buffers turn on (back-powering a card through its pins is the risk): not shortened without a scope. Open |
 | SD 19.5 MHz | hardware | confirmed the top (B3) |
-| SD DMA writes off | ours (caution) | measured safe: ready to switch on |
+| SD DMA writes off | ours (caution) | measured safe, then soaked on the device (430 MB, 0 errors, 2026-10-16): switch on |
 
 Totals: 8 values looked at; 2 confirmed as hardware facts, 2 settled as
 not worth changing, 4 open (CF timing, CF reset hold, CF power waits, SD
