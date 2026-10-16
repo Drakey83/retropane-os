@@ -13,6 +13,7 @@ mod serve;
 mod size;
 mod trace;
 mod usb;
+mod usbbench;
 mod userimg;
 
 use std::path::{Path, PathBuf};
@@ -54,6 +55,11 @@ commands:
             the resident loader (target/sdkit/loader) over USB
             (--setup: create the admin task that lets it re-find the Axim
             after each run without a cable replug; one UAC prompt, once)
+  usbbench  USB throughput through the loader (docs/perf.md, item 74):
+            `usbbench [serial|drive|all] [runs]`; a bad-CRC image frame and a
+            16 MiB unbuffered file written, read back and compared on the card;
+            `usbbench trial [loader image] [runs]` tries a new loader from RAM
+            (probe + benches), then loads the card's loader back
   put       write a file to the X51v's SD card over USB through the resident
             loader (ADR-0013): cargo xtask put <file> [name on the card]
   install   put the kit's loader, HaRET and scripts on the card the same way
@@ -163,6 +169,19 @@ fn main() -> ExitCode {
                 usb::load(&workspace_root(), &flag, force)
             }
         }
+        "usbbench" => {
+            eprintln!("==> usbbench {flag}");
+            if flag == "dma" {
+                usbbench::dma(&workspace_root())
+            } else if flag == "trial" {
+                let image = args().nth(3).unwrap_or_else(|| "rp-loader".into());
+                let runs = args().nth(4).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::trial(&workspace_root(), &image, runs)
+            } else {
+                let runs = args().nth(3).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::run(&workspace_root(), &flag, runs)
+            }
+        }
         "put" => {
             eprintln!("==> put {flag}");
             if flag.is_empty() {
@@ -225,6 +244,11 @@ fn main() -> ExitCode {
         "log" => {
             eprintln!("==> log");
             usb::last_log(&workspace_root())
+        }
+        "udc" => {
+            // Bring-up: `cargo xtask udc probe` (item 74, docs/hw/udc.md).
+            eprintln!("==> udc {flag}");
+            usb::command(&workspace_root(), &format!("udc {flag}"))
         }
         "cpld" => {
             eprintln!("==> cpld");

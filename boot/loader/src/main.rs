@@ -73,6 +73,14 @@ mod image {
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
+    /// A loader started as an image (a new build tried from RAM, the old
+    /// one still on the card) under a run's watchdog stops feeding it if no
+    /// PC program opens its port and no frame arrives within this time: a
+    /// build whose USB doesn't work resets the Axim back to the card's
+    /// loader instead of holding it.
+    const LINK_PATIENCE: u32 = 90 * TICK_1S;
+    /// A frame whose bytes stop arriving for this long is abandoned.
+    const FRAME_PATIENCE: u32 = 2 * TICK_1S;
     /// The end of the image area, kept for searching the FAT for free
     /// clusters and for reading a written file back (the bigger it is, the
     /// fewer card commands each takes).
@@ -1911,6 +1919,10 @@ mod image {
         }
 
         let mut rx = Receiver::new();
+        // When the last byte of a frame in progress arrived: a frame that
+        // stops arriving is abandoned after FRAME_PATIENCE, so a half-sent
+        // frame can't swallow the next one, and the PC hears how far it got.
+        let mut last_byte = rt::ticks();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         // Idling: after QUIET of nothing happening the loop sleeps until the
         // next 1 ms tick instead of spinning (battery and heat), so traffic
@@ -1919,12 +1931,15 @@ mod image {
         let mut active = rt::ticks();
         let mut msc_seen = 0u32;
         let (mut asleep, mut idle_pct) = (0u32, 0u32);
-        let mut buf = [0u8; 64];
+        // Whole packets go straight from the FIFO into it (both buffers).
+        let mut buf = [0u8; 512];
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
         let mut audio = Audio::Untried;
+        // The USB controller's DMA channel (item 74).
+        let mut udc_dma = rt::take_dma(2);
         gpio.make_input(HP_DETECT);
         let mut jack = Jack {
             plugged: gpio.read(HP_DETECT),
@@ -1952,10 +1967,16 @@ mod image {
         let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
+        let watched = watchdog.armed();
+        let started = rt::ticks();
+        let mut link_proven = false;
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
-            // while waiting.
-            if watchdog.armed() {
+            // while waiting (a loader tried from RAM: once its link works).
+            link_proven |= udc.host_open();
+            if watchdog.armed()
+                && (!watched || link_proven || rt::ticks().wrapping_sub(started) < LINK_PATIENCE)
+            {
                 watchdog.feed(RUN_LIMIT);
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
@@ -2044,6 +2065,25 @@ mod image {
                     outcome = r;
                 }
             }
+            link_proven |= outcome.is_some();
+            if heard {
+                last_byte = rt::ticks();
+            } else if let Some((got, len)) = rx.progress()
+                && rt::ticks().wrapping_sub(last_byte) > FRAME_PATIENCE
+            {
+                rx = Receiver::new();
+                let (csr, bcr, ring) = udc.out_state();
+                let s = udc.stats();
+                let mut line = Line::new();
+                let _ = write!(
+                    line,
+                    "RPL ERR timeout: {got} of {len} bytes, then nothing for 2 s (usb rx {} B, count mismatches {}, out csr {csr:x} bcr {bcr:x} ring {ring})
+",
+                    s.rx_bytes, s.count_mismatch
+                );
+                send(&mut uart, &mut udc, line.as_str());
+                let _ = writeln!(log, "{}", line.as_str().trim_ascii_end());
+            }
             let msc_now = msc.stats().commands;
             if heard
                 || outcome.is_some()
@@ -2081,6 +2121,9 @@ mod image {
                     },
                 )) => {
                     let mut status = Line::new();
+                    // `udc dma-out|dma-in <bytes>`: run after the match
+                    // (it needs the image area the command sits in).
+                    let mut dma_test = None;
                     let reply = match f.command(dest) {
                         Ok(b"drive status") => {
                             let s = msc.stats();
@@ -2117,6 +2160,45 @@ mod image {
                                 dirty.1,
                                 idle_pct.min(100),
                             );
+                            status.as_str()
+                        }
+                        Ok(b"udc stats") => {
+                            let (csr, bcr, ring) = udc.out_state();
+                            let s = udc.stats();
+                            let _ = write!(
+                                status,
+                                "RPL OK udc rx {} tx {} resets {} count mismatches {} (last {:x}) unsettled {} bad CBWs {} out csr {csr:x} bcr {bcr:x} ring {ring}
+",
+                                s.rx_bytes, s.tx_bytes, s.resets, s.count_mismatch, s.last_mismatch, s.unsettled, msc.stats().bad_cbw
+                            );
+                            status.as_str()
+                        }
+                        Ok(c) if c.starts_with(b"udc dma-") => {
+                            let to_host = c.starts_with(b"udc dma-in ");
+                            let skip = if to_host { 11 } else { 12 };
+                            let n = core::str::from_utf8(&c[c.len().min(skip)..])
+                                .ok()
+                                .and_then(|t| t.trim().parse::<usize>().ok());
+                            match n {
+                                Some(n) if c.starts_with(b"udc dma-out ") || to_host => {
+                                    dma_test = Some((to_host, n));
+                                    ""
+                                }
+                                _ => LoadError::BadCommand.reply(),
+                            }
+                        }
+                        Ok(c @ (b"udc in stream" | b"udc in single")) => {
+                            udc.set_in_streaming(c == b"udc in stream");
+                            "RPL OK
+"
+                        }
+                        Ok(b"udc probe") if !msc.busy() => {
+                            let p = udc.probe_in_buffers();
+                            let _ = write!(status, "RPL OK udc probe");
+                            for v in p {
+                                let _ = write!(status, " {v:x}");
+                            }
+                            let _ = write!(status, "\r\n");
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
@@ -2335,6 +2417,12 @@ mod image {
                         _ => LoadError::BadCommand.reply(),
                     };
                     send(&mut uart, &mut udc, reply);
+                    if let Some((to_host, n)) = dma_test {
+                        match udc_dma.as_mut() {
+                            Some(d) => udc_dma_test(&mut udc, d, dest, to_host, n),
+                            None => send(&mut uart, &mut udc, "RPL ERR no DMA channel\r\n"),
+                        }
+                    }
                     let _ = writeln!(log, "{}", reply.trim_ascii_end());
                 }
                 Some(Ok(Frame { len, .. })) => {
@@ -2585,6 +2673,109 @@ mod image {
 
     /// All of `data` over USB, polling as the transmit ring drains (gives
     /// up after 5 s or if the PC goes away).
+    /// The pattern `udc dma-in` sends (the PC computes the same).
+    fn dma_pattern(i: usize) -> u8 {
+        ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8
+    }
+
+    /// Bring-up experiment (item 74): `n` bytes (whole packets, at most
+    /// 64 KiB) through the serial port's bulk endpoint by DMA, the CPU only
+    /// arming and waiting. `to_host`: the pattern above goes to the PC after
+    /// an `RPL OK dma-in <n>` line; otherwise `RPL OK armed <n>` asks the PC
+    /// for `n` bytes. Either way a last line gives the time, the CRC-32 of
+    /// what moved and the endpoint's status, or how far a stalled transfer
+    /// got. Uses the image area (no frame is in progress during a command).
+    fn udc_dma_test(
+        udc: &mut Udc<rp_hal_pxa27x::Mmio>,
+        dma: &mut Dma,
+        area: &mut [u8],
+        to_host: bool,
+        n: usize,
+    ) {
+        use rp_drv_pxa_udc::Bulk;
+        use rp_hal_api::DmaEngine;
+        let n = n.min(64 * 1024).min(area.len()) / 64 * 64;
+        let mut line = Line::new();
+        if n == 0 {
+            usb_bytes(udc, b"RPL ERR dma: no whole packet\r\n");
+            return;
+        }
+        let buf = &mut area[..n];
+        let ep = if to_host {
+            Bulk::SerialIn
+        } else {
+            Bulk::SerialOut
+        };
+        let port = Udc::<rp_hal_pxa27x::Mmio>::dma_port(ep);
+        let armed = if to_host {
+            for (i, b) in buf.iter_mut().enumerate() {
+                *b = dma_pattern(i);
+            }
+            let _ = write!(line, "RPL OK dma-in {n}\r\n");
+            usb_bytes(udc, line.as_str().as_bytes());
+            // The line leaves first: nothing of it may be in the FIFO when
+            // DMA starts filling it.
+            let t = rt::ticks();
+            while (udc.tx_pending() > 0 || !udc.serial_in_idle())
+                && rt::ticks().wrapping_sub(t) < TICK_1S
+            {
+                udc.poll();
+            }
+            let ok = dma.arm_to_device(port, buf);
+            udc.set_dma(ep, ok);
+            ok
+        } else {
+            let ok = dma.arm_from_device(port, buf);
+            udc.set_dma(ep, ok);
+            if ok {
+                let _ = write!(line, "RPL OK armed {n}\r\n");
+                usb_bytes(udc, line.as_str().as_bytes());
+            }
+            ok
+        };
+        if !armed {
+            usb_bytes(udc, b"RPL ERR dma: the channel refused the buffer\r\n");
+            return;
+        }
+        let t0 = rt::ticks();
+        let mut result = None;
+        while result.is_none() {
+            udc.poll();
+            result = dma.done();
+            if result.is_none() && rt::ticks().wrapping_sub(t0) > 5 * TICK_1S {
+                let moved = dma.moved().unwrap_or(0);
+                dma.abort();
+                let csr = udc.dma_csr(ep);
+                udc.set_dma(ep, false);
+                let mut l = Line::new();
+                let _ = write!(
+                    l,
+                    "RPL ERR dma-{} stalled: {moved} of {n} bytes in 5 s, csr {csr:x}\r\n",
+                    if to_host { "in" } else { "out" }
+                );
+                usb_bytes(udc, l.as_str().as_bytes());
+                return;
+            }
+        }
+        let us = rt::ticks().wrapping_sub(t0) * 4 / 13;
+        let csr = udc.dma_csr(ep);
+        if to_host {
+            udc.dma_in_end(ep, n);
+        }
+        udc.set_dma(ep, false);
+        // The CPU reads what the device wrote (the engine discarded the
+        // cache lines after the transfer).
+        let crc = rp_loadproto::crc32(&area[..n]);
+        let mut l = Line::new();
+        let _ = write!(
+            l,
+            "RPL OK dma-{} {n} B in {us} us, crc {crc:08x}, csr {csr:x}, bus error {}\r\n",
+            if to_host { "in" } else { "out" },
+            u8::from(result == Some(false))
+        );
+        usb_bytes(udc, l.as_str().as_bytes());
+    }
+
     fn usb_bytes(udc: &mut Udc<rp_hal_pxa27x::Mmio>, mut data: &[u8]) {
         let start = rt::ticks();
         while !data.is_empty() && udc.configured() && rt::ticks().wrapping_sub(start) < 5 * TICK_1S
