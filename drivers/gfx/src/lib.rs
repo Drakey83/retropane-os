@@ -14,7 +14,7 @@
 //!   with 5-bit alpha, exactly the same result as doing each channel alone
 //!   (tests compare every case against that reference).
 //! - **Glass is a precomputed gradient.** A tinted-glass panel (the VClouds
-//!   look, docs/ui/README.md) varies only across its width, so each column's
+//!   look, docs/design/ui.md) varies only across its width, so each column's
 //!   premultiplied colour is computed once ([`Gradient`]), not per pixel.
 //! - **Nothing trusts its inputs.** Rectangles are clipped with saturating
 //!   arithmetic; a hostile rectangle draws nothing rather than panicking.

@@ -1,5 +1,7 @@
 # RetroPane UI: direction (in progress)
 
+Part of the design area: [README.md](README.md).
+
 Nothing here is approved for code yet (ROADMAP Phase 5: spec and mock-ups
 approved before any UI code). This page records the owner's choices as they
 are made, and links the concept mock-ups.
@@ -36,9 +38,10 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
 - The weather is the hero of the Today screen: large, front and center.
 - Icon language: photoreal, volumetric weather icons (soft 3D clouds,
   glowing suns, a cratered moon, on a dark, moody backdrop), the style of
-  the VClouds set the owner pointed to. **Clean-room for artwork too:**
-  RetroPane draws its own original icons in that language; no third-party
-  icon is copied or shipped. On the device the icons are pre-rendered into
+  the VClouds set the owner pointed to. Where the icons come from (one
+  pack built in, more on the card, bring your own, keyed by the WMO codes):
+  [weather.md](weather.md). No third-party icon is shipped without a
+  licence that allows it. On the device the icons are pre-rendered into
   the asset atlas at build time, so realism costs nothing while running
   (docs/design-brief.md).
 - Mock-ups D-H on the concept canvas; G (Today screen) and H (the icon
@@ -105,11 +108,7 @@ The owner picked VClouds' Rainmeter work (deviantart.com/vclouds: "Glasses", "VC
 - **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
 - **Clean-room.** VClouds' icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping weather icons: see "Weather icon packs" below (owner, 2026-10-16); the Oxygen set and Claude-drawn icons are ruled out by the owner.
 
-**Weather icon packs (owner, 2026-10-16).**
-- **One pack in the system** (flash), kept barebones: VClouds' set if the artist grants permission (asked; no answer yet), else the owner's choice.
-- **Five more packs** install onto the SD or CF card when one is present (from the expansion pack, docs/apps-and-packs.md); with no card, the one built-in pack stays the only option.
-- **Bring your own:** users can add their own pack. Packs are pictures keyed by the WMO weather codes, so any pack covering the codes works.
-- **Sources:** artists' packs with a free licence the owner likes (to find), or packs the owner makes with generative AI. Never Claude-drawn icons.
+**Weather icon packs (owner, 2026-10-16):** see [weather.md](weather.md).
 
 **Owner verdict (2026-10-12): "I LOVE it."** Boards N–R (smoked glass over photo wallpapers) are the chosen direction. The cartoon sky wallpaper is dropped. The candidate wallpapers we'd ship are all free of restrictions, from Wikimedia Commons, cropped to 3:4:
 

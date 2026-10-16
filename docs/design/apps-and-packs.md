@@ -1,8 +1,10 @@
 # Apps, games and packs: the owner's direction
 
+Part of the design area: [README.md](README.md).
+
 **Recorded 2026-10-16 from the owner's own words; specifics later.** This is a
 direction, not a design: each app or pack still gets its own design doc,
-mock-ups and the owner's vote before code (`docs/ui/`, work style). It
+mock-ups and the owner's vote before code (`docs/design/`, work style). It
 gathers ideas that were scattered (DESIGN.md §6 and §9, ROADMAP Phases 4-5,
 the Field Kit pack, the Quake 3 port, LegacySync) into one picture.
 
@@ -46,19 +48,10 @@ measurably wins.
 
 **Beyond WM5, a big emphasis (owner, 2026-10-16): a built-in Weather app.**
 Windows Mobile had none by default; RetroPane makes weather a headline
-feature: the hero of the Today screen (docs/ui/README.md "Weather and
+feature: the hero of the Today screen (docs/design/ui.md "Weather and
 icons": the sky as wallpaper, photoreal icons breaking out of their tiles,
 VClouds' look) plus a full Weather app (hourly, days ahead, places).
-**Custom icons, selectable by the user:** weather icons are an icon pack
-like any theme part (§3). Conditions are keyed by the WMO weather
-interpretation codes (the international standard the open forecast feeds
-use), so any pack that covers those codes works. There's no industry
-*visual* standard for weather icons; the open sets surveyed in 2026-10
-were turned down by the owner for looks (flat), so the default pack is
-still open: a set whose licence allows shipping in GPL software, a
-commissioned set, or our own 3D renders shown for approval first. A pack
-whose licence forbids redistribution can still be used privately from
-the card, never shipped in the repo.
+Icon packs, the pack format and how to make one: [weather.md](weather.md).
 
 Open: which WM5 extras count as "default" (Pocket MSN, the Dell X51v's own
 utilities such as its Wi-Fi tool and display control panel). Proposed rule:
@@ -69,7 +62,7 @@ pages for the same hardware.
 
 Nothing ships in its 2005 look, however small: every dialog, icon, sound and
 error message is redrawn for the 216 dpi VGA screen in RetroPane's design
-language (DESIGN.md §6, `docs/ui/`). Owned art only, no WM artwork.
+language (DESIGN.md §6, `docs/design/`). Owned art only, no WM artwork.
 
 ## 3. Themes and customization: pushed hard
 
@@ -99,7 +92,8 @@ Fits the memory budget: pre-rendered chrome and atlases (design-brief.md).
 ## 5. The SD expansion pack, and one download location
 
 Programs and extra functionality that don't belong in the flash-installed
-system come as an **expansion pack on the SD card**: optional apps, the
+system come as an **expansion pack on the SD card** (the mechanism:
+[ADR-0018](../adr/0018-optional-packs.md), optional packs): optional apps, the
 Field Kit tools (ROADMAP: terminal, hex editor, SSH ...), extra themes,
 games and the game ports below. One **download location** serves the pack
 and the ports; the device and LegacySync can both fetch from it. Security:
@@ -107,13 +101,10 @@ everything downloaded is signed and checked before it is installed or run
 (`docs/security.md`, ADR-0017's signing design); the system in flash stays
 complete without the pack (design-brief.md "What lives on the card").
 
-**Hosting (owner, 2026-10-16):** the owner's local NAS serves the pack and
-the ports to the owner's devices. Because every file is signed and checked
-on the device before install, the host is not trusted: a tampered NAS can't
-get anything installed. For users outside the owner's home, a NAS open to
-the internet is a larger security step; a public mirror (for example GitHub
-Releases) is the simpler route, fetched the same way. Open: how updates are
-offered.
+**Hosting (owner, 2026-10-16):** the owner's NAS hosts the pack and the
+ports, behind the owner's own security layers (never downloaded from it
+directly). Every file is also signed and checked on the device before
+install, so even the host isn't trusted. Open: how updates are offered.
 
 ## 6. Game ports built for RetroPane's GPU driver
 
