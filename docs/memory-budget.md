@@ -42,8 +42,10 @@ doesn't move.
   an app's untouched code costs nothing, a library's code exists once.
 - Reclaim (item 41): pages untouched for a sweep are compressed or let go.
 - Compressed RAM (ADR-0005 rule 6) instead of swap: no flash wear.
-- Fixed-size kernel tables sized for the real limits (31 processes, 128
-  threads), all zero at start, so they cost nothing in the image.
+- Fixed-size kernel tables sized for the real limits (62 processes, 255
+  threads), all zero at start, so they cost nothing in the image; handle
+  tables beyond 8 handles grow into pages a process pays for, with a
+  quota (docs/research/process-limit.md).
 - Cold code built for size; Thumb where it helps (ADR-0015).
 
 ## Today (2026-10-12)

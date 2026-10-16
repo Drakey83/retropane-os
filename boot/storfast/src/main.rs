@@ -45,7 +45,7 @@ mod image {
     use rp_drv_sdcard::{BLOCK, SdCard, mbr_partitions};
     use rp_fat::Volume;
     use rp_hal_api::BlockDevice;
-    use rp_hal_pxa27x::{Mmio, dma::Dma, rt};
+    use rp_hal_pxa27x::{Mmio, dma::Dma, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, RunLog};
 
@@ -221,7 +221,7 @@ mod image {
             log!("S0 no SD card: SD part skipped");
             return None;
         }
-        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
             log!("S0 no MMC or DMA");
             return None;
         };
@@ -294,7 +294,7 @@ mod image {
             log!("C0 no CF windows");
             return;
         };
-        let dma = rt::take_dma(2);
+        let dma = rt::take_dma(dma_map::CF);
         log!(
             "C0 DMA channel 2 {}",
             if dma.is_some() { "taken" } else { "MISSING" }

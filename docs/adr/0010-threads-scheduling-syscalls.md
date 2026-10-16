@@ -336,6 +336,11 @@ overflow the 32 KiB data cache) against one alone. Times in ms:
   (`boot/kernel`) and `rp-threads`, whose 13 tests all pass on the device
   with it.
 
+> **Note (2026-10-15):** the thread table holds 255 threads (every 8-bit
+> thread number but 0), not 128, by the owner's vote
+> (docs/research/process-limit.md); the scheduler, the HAL's contexts and
+> IPC's per-thread table are checked to agree at build time.
+
 ## Open questions
 
 - 2 KiB or 4 KiB kernel stacks (measure).

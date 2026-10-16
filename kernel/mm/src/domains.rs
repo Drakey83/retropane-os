@@ -6,14 +6,15 @@
 //! another process's pages fault even for the kernel. Switching is a DACR
 //! write: no page-table, TLB or cache work.
 //!
-//! ARMv5 has 16 domains and CE5 allows 31 processes, so domains are
+//! ARMv5 has 16 domains and there are 62 process slots (CE's 31 and the
+//! native 31, `layout`), so domains are
 //! recycled: when every process domain is taken, the least recently run
 //! process is *parked*: its slot's first-level entries are retagged to
 //! [`PARKED`] (never enabled) and it gets a domain again when it next runs.
 //! [`Domains::activate`] says what to retag; the caller does it (32 L1
 //! entries per slot, plus a TLB flush for that slot).
 
-use crate::layout::{FIRST_PROCESS_SLOT, LAST_PROCESS_SLOT};
+use crate::layout::{LAST_NATIVE_SLOT, is_process_slot};
 
 /// The kernel's domain.
 pub const KERNEL: u32 = 0;
@@ -26,7 +27,8 @@ pub const FIRST: u32 = 2;
 /// See [`FIRST`].
 pub const LAST: u32 = 14;
 
-const SLOTS: usize = LAST_PROCESS_SLOT as usize + 1;
+/// Indexed by slot number, so up to the last native slot (127 bytes).
+const SLOTS: usize = LAST_NATIVE_SLOT as usize + 1;
 
 /// What switching to a process requires.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -89,10 +91,7 @@ impl Domains {
     /// # Panics
     /// If `slot` isn't a process slot.
     pub fn activate(&mut self, slot: u32) -> Activation {
-        assert!(
-            (FIRST_PROCESS_SLOT..=LAST_PROCESS_SLOT).contains(&slot),
-            "not a process slot"
-        );
+        assert!(is_process_slot(slot), "not a process slot");
         self.clock = self.clock.wrapping_add(1);
         if let Some(d) = self.domain_of(slot) {
             self.used[d as usize] = self.clock;
@@ -147,6 +146,7 @@ impl Domains {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{FIRST_NATIVE_SLOT, FIRST_PROCESS_SLOT, LAST_PROCESS_SLOT};
 
     #[test]
     fn each_process_gets_its_own_domain() {
@@ -218,5 +218,29 @@ mod tests {
     #[should_panic(expected = "not a process slot")]
     fn slot_zero_isnt_a_process() {
         Domains::new().activate(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "not a process slot")]
+    fn the_kernel_s_slots_arent_processes() {
+        Domains::new().activate(84); // 0xA8000000: RAM, where the kernel runs
+    }
+
+    #[test]
+    fn ce_and_native_processes_share_the_domains() {
+        let mut d = Domains::new();
+        let ce = d.activate(LAST_PROCESS_SLOT);
+        let native = d.activate(FIRST_NATIVE_SLOT);
+        assert_ne!(ce.domain, native.domain);
+        assert_eq!(d.domain_of(FIRST_NATIVE_SLOT), Some(native.domain));
+        // Every slot of both kinds gets a domain in turn; parking works
+        // across the two kinds.
+        for slot in
+            (FIRST_PROCESS_SLOT..=LAST_PROCESS_SLOT).chain(FIRST_NATIVE_SLOT..=LAST_NATIVE_SLOT)
+        {
+            let a = d.activate(slot);
+            assert!(![KERNEL, SHARED, PARKED].contains(&a.domain));
+            assert_eq!(d.domain_of(slot), Some(a.domain));
+        }
     }
 }

@@ -60,6 +60,12 @@ Facts that shape the design:
 > was measured in `rp-kernel` in the emulator (~12-17 us, docs/perf.md),
 > not yet in `rp-bench` or on the device.
 
+   > **Amended (2026-10-15, the owner's vote):** 62 processes: CE's
+   > slots 2-32 for Windows Mobile programs and native slots 96-126
+   > (`0xC0000000`-`0xFDFFFFFF`) for RetroPane's own. Handle tables hold 8
+   > handles inline and grow into 4 KiB pages up to 4,104
+   > (docs/research/process-limit.md, "As built").
+
 1. **A process is a slot plus a handle table.** Up to 31 processes (slots
    2-32 of CE5's layout, 32 MB each: FCSE has PIDs up to 63, but above
    slot 32 lies the shared-file area WM apps expect; corrected 2026-10-12), created from a PE image (ADR-0009) with a first
@@ -151,7 +157,11 @@ Facts that shape the design:
   > **Note (2026-10-15):** re-examined (item 78):
   > docs/research/process-limit.md. The OS's own processes take ~11-13
   > slots, and no third-party program in the owner's corpus depends on
-  > CE's slot layout. The options are with the owner for a vote.
+  > CE's slot layout. **Decided by the owner's vote and built the same
+  > day:** RetroPane's own processes live in native slots 96-126
+  > (`0xC0000000` up, above the kernel), so CE programs keep all of
+  > slots 2-32: 62 processes. Handle tables start with 8 handles and grow
+  > into pages up to a quota.
 
 ## Implementation notes (step 3, 2026-10-12)
 

@@ -462,10 +462,10 @@ pub fn take_mmc() -> Option<Mmio> {
 /// CKEN bit for the DMA controller.
 pub const CKEN_DMA: u32 = 24;
 
-/// Hands out DMA channel `ch` (0 to 2: [`crate::dma::CHANNELS`]) once
+/// Hands out DMA channel `ch` (one `crate::dma_map` lists) once
 /// (`_start` stopped every channel), with the controller's clock enabled.
 pub fn take_dma(ch: u32) -> Option<crate::dma::Dma> {
-    if ch >= crate::dma::CHANNELS {
+    if crate::dma_map::descriptors(ch) == 0 {
         return None;
     }
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
@@ -564,7 +564,9 @@ pub fn watchdog() -> crate::soc::Watchdog<Mmio> {
 
 static mut SPARE_TIMER_TAKEN: bool = false;
 
-/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`).
+/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`),
+/// quiesced: whatever an earlier image left armed or pending is cleared, so
+/// take it before claiming its interrupt line.
 pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: single core; IRQs masked by the caller's setup, as for the
     // other single-owner devices.
@@ -575,9 +577,11 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: the OS timer's register window. The spare timer touches only
     // channel 2's match, status and enable bits (read-modify-write of OIER
     // with IRQs masked by its owner's callers), the alarm only channel 1's.
-    Some(crate::soc::SpareTimer(unsafe {
+    let mut t = crate::soc::SpareTimer(unsafe {
         Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
-    }))
+    });
+    t.quiesce();
+    Some(t)
 }
 
 /// The whole OS timer block (channels 0-11), for the run limit.
@@ -1363,6 +1367,36 @@ pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
     let page = unsafe { &mut *(crate::mmu::KDATA_VIRT as *mut [u32; 1024]) };
     page.fill(0);
     Some(page)
+}
+
+/// Maps the 1 MiB at `virt` to SDRAM at `phys` in the bring-up map (normal
+/// memory, as the RAM sections), for self-tests of addresses no bring-up
+/// region covers: the native process slots (`0xC0000000`-`0xFDFFFFFF`,
+/// `rp_kernel_mm::layout`). Refuses (false) anything but a MiB-aligned
+/// `virt` in that range that maps nothing yet, and a MiB of SDRAM. The
+/// caller keeps its view coherent: the same frame at two virtual addresses
+/// in the VIVT cache (clean before reading through the other).
+pub fn map_test_section(virt: u32, phys: u32) -> bool {
+    const MIB: u32 = 1 << 20;
+    let native = (0xC000_0000..0xFE00_0000).contains(&virt);
+    let ram = (0xA800_0000..0xAC00_0000).contains(&phys);
+    if !native || !ram || virt % MIB != 0 || phys % MIB != 0 {
+        return false;
+    }
+    let index = (virt >> 20) as usize;
+    // SAFETY: L1_TABLE is the bring-up table (reserved SDRAM, identity
+    // mapped, boot/link.x); one word of it, for an address the bring-up
+    // map leaves unmapped (checked), so nothing that runs moves.
+    unsafe {
+        let entry = (crate::mmu::L1_TABLE as *mut u32).add(index);
+        if entry.read_volatile() != 0 {
+            return false;
+        }
+        entry.write_volatile(crate::mmu::section(phys, crate::mmu::Memory::Normal));
+        crate::cpu::clean_range(entry as u32, 4);
+    }
+    crate::cpu::invalidate_tlb_all();
+    true
 }
 
 core::arch::global_asm!(

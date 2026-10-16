@@ -14,6 +14,19 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 - **Real X51v:** the same image booted from SD (planned). Absolute numbers will
   differ, especially for 2700G memory, which sits behind a slower bus.
 - **Size:** `cargo xtask cross` checks every bare-metal image against its budget.
+- **USB link (item 74):** `cargo xtask usbbench`, on the device through the
+  resident loader, under the Axim lock. *Serial* (what image loading runs
+  on): a 921,600-byte image frame with a deliberately wrong CRC, timed from
+  the PC's first byte to the loader's `RPL ERR bad crc` (every byte crosses,
+  one CRC pass on the device, nothing runs). *Drive* (mass storage, ADR-0014):
+  a 16 MiB file written to the SD card's drive and read back with Windows'
+  cache bypassed (`FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH`),
+  compared byte for byte, deleted; the card's own speed is in these numbers.
+  *Latency*: 20 round trips of a one-packet command, each after 300 ms of
+  quiet (the loader asleep). `usbbench trial <loader>` runs all of it on a
+  new loader tried from RAM and puts the card's loader back. Full speed's
+  ceiling: 19 bulk packets of 64 bytes per 1 ms frame, 1,216 KB/s on the
+  wire; ~1.1-1.15 MB/s is what a host's scheduling leaves.
 
 ## Rules
 
@@ -32,6 +45,11 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 | Date | Change | Metric | Before | After |
 |---|---|---|---|---|
+| 2026-10-16 | DMA channel map (`hal/pxa27x/src/dma_map.rs`): one table of channel, owner and chain size, checked at compile time (no channel twice, all chains within 1,664 B); chains sized per owner instead of 32 descriptors each: SD 0, audio 1, CF 2 (reserved), USB controller 3 with 8 (its largest transfer is the drive's 32 KiB buffer, checked in the loader) | `rp-loader` zeroed RAM with four channels | 20,608 B (four 32-descriptor chains: over the 20,480 budget) | 20,224 B |
+| 2026-10-16 | **USB device controller (item 74), measured on the device:** double-buffered bulk endpoints (`UDCCRx.DE`), every waiting packet drained per poll, OUT reads that wait for the controller's status to settle (with two buffers a full packet's count once read short and the packet was lost), the drive's blocks by DMA both ways (halves of the staging buffer: the card reads or writes one half while USB moves the other), the UDC interrupt as the waiting loader's wake-up | image loading (921,600-byte frame) / drive write, 16 MiB / drive read, 16 MiB / idle round trip, median (max) | 514 KB/s / 411 KB/s / 765 KB/s / 1,170 us (4,271) | **1,048 KB/s / 856 KB/s / 1,146 KB/s / 292-334 us (4,372-4,730)**; 80 MiB written and read back identical in the soak, Windows' inbox drivers only |
+| 2026-10-16 | The drive's staging buffer: 2 x 32 KiB halves (64 KiB), 2 x 16 KiB (32 KiB), 2 x 8 KiB (16 KiB). Per 64 KiB write command the first half's arrival and the last half's card write can't overlap anything (the PC waits for the status), so smaller halves win until the card's per-command cost takes over; reads stay at the USB ceiling (read-ahead). 32 KiB kept: fastest, and half the memory of 64 | drive write / read, 16 MiB | 800 / 1,146 KB/s (32 KiB halves) | 856 / 1,146 KB/s (16 KiB); 763 / 1,146 (8 KiB) |
+| 2026-10-16 | UDC DMA, raw (the loader's bring-up experiment, since removed: 64 KiB through the serial endpoints, the CPU only arming and waiting, every byte checked on the PC) | 64 KiB OUT / IN | CPU path 1,049 / 765 KB/s | 1,070 / 1,149 KB/s |
+| 2026-10-16 | `rp-loader` with the UDC work (driver +2.4 KB, the drive's DMA paths, `udc stats`, the frame timeout); a third DMA chain (+512 B zeroed RAM in every image using DMA) | `rp-loader` loaded / zeroed | 106,648 / 19,536 B | 110,860 / 20,096 B (inside 112 / 20 KiB) |
 | 2026-10-10 | Startup stack 64 KB → 16 KB (measured usage is far smaller) | `rp-hello` zeroed RAM | 65,544 B | 16,392 B |
 | 2026-10-10 | Benchmark runner made non-generic (`dyn`, never inlined); LLVM had unrolled 64 × 512 FIFO reads | `rp-bench` loaded size | 189,308 B | 10,276 B |
 | 2026-10-10 | Test-pattern fill: build one row as solid spans, copy it down with `memcpy`, no per-pixel maths, no extra memory | `fb_pattern_vga` | 16,434,564 ns | 642,974 ns (**25.6×**) |
@@ -125,6 +143,7 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-14 | `rp-mbx-blend` adds B6 (ADR-0023: source stride 0, blending onto 32 bpp against the reference, an ARGB4444 destination, a 32 bpp screen with the engine busy). Budget 42 -> 51 KiB (test image rule: measured + ~10%) | `rp-mbx-blend` loaded size | 37,705 B | 47,233 B |
 | 2026-10-14 | `rp-mbx-blend`, a new test image (renderer step 1, ADR-0022): the blend-state and display-event probe; the 2D command words move from `rp-mbx` into `rp-drv-blit2d`, shared. Budget 42 KiB (test image rule: measured + ~10%) | `rp-mbx-blend` loaded size | new | 38,281 B |
 | 2026-10-15 | The time slice (ADR-0010 amendment): 20 ms quantum and a 1 ms wake slice instead of CE's 100 ms, measured with `rp-quantum` on the device: touch to screen with a busy equal-priority program 73.5 / 101.7 ms (median / worst) -> 5.1 / 5.1; 60 Hz frames on time 0 -> 35 of 35; never-blocking loop's worst gap 105 -> 25 ms; a busy pair keeps 99.5% of its work (~100 us per switch with cache refills). Cost: `thread_switch` 86,708 -> 88,868 ticks per 2,000 (13.3 -> 13.7 us, two device runs each); kernel +424 B code, +16 B RAM | touch to screen, worst (device) | 101.7 ms | 5.1 ms |
+| 2026-10-15 | Process and thread limits (owner's vote, docs/research/process-limit.md): native slots 96-126 above the kernel (62 processes, CE's layout untouched), handle tables 8 inline + pages on demand (quota 4,104), 255 threads. One out-of-line VM+IPC locking trampoline instead of a copy per call site (-~3 KB). Inside the kernel's 95 KiB load budget, no raise; `rp-threads` and `rp-quantum` zeroed budgets 27 -> 31 KiB (test image rule) | `rp-kernel` loaded / zeroed | 92,128 / 115,948 B | 95,424 / 119,300 B |
 | 2026-10-15 | `rp-quantum`, a new test image (ADR-0010 amendment): eight time-slice policies' touch, frame, busy-loop and switch-cost tests. Budget 34 KiB (test image rule: measured + ~10%) | `rp-quantum` loaded size | new | 30,732 B |
 | 2026-10-13 | `rp-mbx` becomes the first GPU-rectangle test (item 69: MBX 2D engine commands, fence, edge read-back, GPU vs CPU timing); it now links the display driver to adopt the screen and the CPU fill to time against. Budget 12 -> 19 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | under 12,288 B (ID reads only) | 17,077 B |
 | 2026-10-13 | `rp-mbx` adds the GPU copy checks (item 69 step 2: from off-screen memory, overlapping right and down, colour-keyed, ten full-screen copies timed). Budget 19 -> 27 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | 18,205 B | 24,297 B |
@@ -225,6 +244,12 @@ contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
 > switch) on 2026-10-15, steady over two runs, before the wake slice; 88,868
 > (13.7 µs) with it (ADR-0010 amendment). The 12.2 µs above was another
 > day's clock state.
+> **Note (2026-10-15, later):** with 255 threads and the native process
+> slots: 86,924 ticks (13.4 µs). `irq_to_thread_max` had read 4,294,960,808
+> (a wrapped negative: the thread woke ~2 ms before its timer was due)
+> because an earlier image left OS timer channel 2 armed and its match
+> fired when the line was claimed; the HAL now hands the timer out
+> quiesced, and the next run read 38 ticks (~12 µs).
 
 ### The time slice on the real X51v (2026-10-15, `cargo xtask load rp-quantum`)
 

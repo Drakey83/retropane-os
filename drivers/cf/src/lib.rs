@@ -281,38 +281,13 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
     /// is reset first ([`hard_reset`]). The windows come back with the
     /// error if it can't be used.
     pub fn init(
-        mut attr: A,
+        attr: A,
         common: C,
         lines: &mut dyn CfLines,
         delay_us: &mut dyn FnMut(u32),
     ) -> Result<(Self, ResetSeen), (CfError, A, C)> {
-        let seen = match hard_reset(lines, delay_us) {
-            Ok(s) => s,
-            Err(e) => return Err((e, attr, common)),
-        };
-        let config = match walk_cis(&mut attr) {
-            Ok(c) => c,
-            Err(e) => return Err((e, attr, common)),
-        };
-        let mut card = Self {
-            attr,
-            common,
-            dma: NoDma,
-            window_phys: 0,
-            path: ReadPath::Port16,
-            proven: ReadPath::Port16,
-            path_mismatches: 0,
-            dma_refused: 0,
-            sectors: 0,
-            model: [b' '; 40],
-            cache_off: false,
-            last_error: 0,
-            dead: false,
-        };
-        match card.start(config as usize, delay_us) {
-            Ok(()) => Ok((card, seen)),
-            Err(e) => Err((e, card.attr, card.common)),
-        }
+        Self::init_with(attr, common, NoDma, None, lines, delay_us)
+            .map_err(|(e, a, c, _)| (e, a, c))
     }
 
     /// Adds a DMA engine for reads, `common_phys` being the physical
@@ -336,23 +311,75 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             last_error: self.last_error,
             dead: self.dead,
         };
-        if !card.dead && card.path == ReadPath::Window32 {
-            match card.identify_matches(ReadPath::Dma) {
-                Ok(true) => {
-                    card.path = ReadPath::Dma;
-                    card.proven = ReadPath::Dma;
-                }
-                Ok(false) | Err(CfError::Device(_)) => card.path_mismatches += 1,
-                Err(e) => {
-                    let _ = card.failed(e);
-                }
-            }
-        }
+        card.try_dma();
         card
     }
 }
 
 impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDma> CfCard<A, C, D> {
+    /// [`CfCard::init`] then [`CfCard::with_dma`] in one, for a caller that
+    /// has its engine at hand: the same steps, but the card is built with
+    /// its engine's type from the start, so an image carries one copy of
+    /// the driver, not one per engine type (the loader carried two,
+    /// 2026-10-15). `common_phys` `None`: the engine isn't tried. The
+    /// windows and the engine come back with the error.
+    pub fn init_with(
+        mut attr: A,
+        common: C,
+        dma: D,
+        common_phys: Option<u32>,
+        lines: &mut dyn CfLines,
+        delay_us: &mut dyn FnMut(u32),
+    ) -> Result<(Self, ResetSeen), (CfError, A, C, D)> {
+        let seen = match hard_reset(lines, delay_us) {
+            Ok(s) => s,
+            Err(e) => return Err((e, attr, common, dma)),
+        };
+        let config = match walk_cis(&mut attr) {
+            Ok(c) => c,
+            Err(e) => return Err((e, attr, common, dma)),
+        };
+        let mut card = Self {
+            attr,
+            common,
+            dma,
+            window_phys: 0,
+            path: ReadPath::Port16,
+            proven: ReadPath::Port16,
+            path_mismatches: 0,
+            dma_refused: 0,
+            sectors: 0,
+            model: [b' '; 40],
+            cache_off: false,
+            last_error: 0,
+            dead: false,
+        };
+        if let Err(e) = card.start(config as usize, delay_us) {
+            return Err((e, card.attr, card.common, card.dma));
+        }
+        if let Some(phys) = common_phys {
+            card.window_phys = phys + reg::DATA_WINDOW as u32;
+            card.try_dma();
+        }
+        Ok((card, seen))
+    }
+
+    /// Moves reads to the engine if it reads IDENTIFY as the 16-bit port
+    /// does; a card that fails the check keeps the path it has.
+    fn try_dma(&mut self) {
+        if !self.dead && self.path == ReadPath::Window32 {
+            match self.identify_matches(ReadPath::Dma) {
+                Ok(true) => {
+                    self.path = ReadPath::Dma;
+                    self.proven = ReadPath::Dma;
+                }
+                Ok(false) | Err(CfError::Device(_)) => self.path_mismatches += 1,
+                Err(e) => {
+                    let _ = self.failed(e);
+                }
+            }
+        }
+    }
     fn start(&mut self, config: usize, delay_us: &mut dyn FnMut(u32)) -> Result<(), CfError> {
         // Configuration Option Register: soft reset, then index 0 (memory
         // mode).

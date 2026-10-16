@@ -181,7 +181,10 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 32 * 1024,
         // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
         // threads' own stacks (24.3 KiB measured, +~10%).
-        max_zero: 27 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads instead of 128 (the owner's vote), the scheduler's and
+        // HAL's per-thread tables; 27.9 KiB measured, +~10%.
+        max_zero: 31 * 1024,
         device: OnDevice::Returns,
     },
     // Quantum test image (ADR-0010 amendment): touch latency, frame timing
@@ -191,7 +194,9 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-quantum",
         max_load: 34 * 1024,
-        max_zero: 27 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads' tables; 27.3 KiB measured, +~10%.
+        max_zero: 31 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only, never part of the OS: register names and report text
@@ -207,9 +212,12 @@ pub const BUDGETS: &[Budget] = &[
     // paths' benchmarks and on-target check (item 52), so the real X51v
     // measures them too; `Dirty::add` rewritten as a loop on the way
     // (-1.8 KB); 64.1 KiB measured, +~9%.
+    // Ratcheted 70 -> 77 KiB on 2026-10-15 (test image): DMA transfers of
+    // any length streamed through each channel's ring (storage speed-ups
+    // item 1) on top of the DMA channel map; 70.0 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 70 * 1024,
+        max_load: 77 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -217,9 +225,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 20 -> 22 KiB on 2026-10-12 (test image): the crash box
     // reads the 2700G's registers to draw on the plane actually on screen
     // (Windows Mobile's, at offset 0); 20.5 KiB measured, +~7%.
+    // Ratcheted 22 -> 25 KiB on 2026-10-16 (test image): the UDC driver's
+    // double-buffered endpoints, settled OUT reads and DMA hand-off (item
+    // 74); 22.2 KiB measured, +~10%.
     Budget {
         image: "rp-usb",
-        max_load: 22 * 1024,
+        max_load: 25 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
