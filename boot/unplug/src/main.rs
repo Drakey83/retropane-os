@@ -229,21 +229,29 @@ mod image {
         }
         let _ = writeln!(out, "UDC on, UP2OCR {:08X}", rig.udc.read_reg(UP2OCR));
 
+        let start = rt::ticks();
+        let ms = |t: u32| t.wrapping_sub(start) / (TICK_1S / 1000);
         for (name, act) in &CANDIDATES {
-            // Settle, then measure what the PC does on its own first.
-            let quiet = settle(&mut rig, TICK_1S);
+            // The PC must be done with the device first (configured, then
+            // 2 s without a reset or a SETUP): run 2's counts mixed the
+            // PC's late enumeration of this image with the candidate.
+            let (calm, waited) = quiet(&mut rig, 20 * TICK_1S);
+            let base = settle(&mut rig, 0);
             let before = settle(&mut rig, TICK_1S);
+            let at = ms(rt::ticks());
             rig.off(act, &mut out);
             settle(&mut rig, TICK_1S);
             rig.on(act);
             let after = settle(&mut rig, 3 * TICK_1S);
             let _ = writeln!(
                 out,
-                "{name}: resets {} setups {} (idle 1 s before: {}/{}) configured {}",
+                "{name} at {at} ms: resets {} setups {} (PC quiet: {} after {} ms; 1 s before: {}/{}) configured {}",
                 after.resets.wrapping_sub(before.resets),
                 after.setups.wrapping_sub(before.setups),
-                before.resets.wrapping_sub(quiet.resets),
-                before.setups.wrapping_sub(quiet.setups),
+                if calm { "yes" } else { "NO" },
+                waited / (TICK_1S / 1000),
+                before.resets.wrapping_sub(base.resets),
+                before.setups.wrapping_sub(base.setups),
                 u8::from(rig.udc.configured())
             );
         }
@@ -254,9 +262,33 @@ mod image {
         halt()
     }
 
+    /// Polls the UDC until the PC has configured the device and sent no
+    /// reset or SETUP for 2 s, or `limit` passes. Whether it got quiet, and
+    /// after how many ticks.
+    fn quiet(rig: &mut Rig, limit: u32) -> (bool, u32) {
+        let t = rt::ticks();
+        let mut last = rig.udc.stats();
+        let mut since = rt::ticks();
+        loop {
+            rt::check_in();
+            rig.udc.poll();
+            let now = rt::ticks();
+            let s = rig.udc.stats();
+            if s.resets != last.resets || s.setups != last.setups {
+                last = s;
+                since = now;
+            }
+            if rig.udc.configured() && now.wrapping_sub(since) >= 2 * TICK_1S {
+                return (true, now.wrapping_sub(t));
+            }
+            if now.wrapping_sub(t) >= limit {
+                return (false, now.wrapping_sub(t));
+            }
+        }
+    }
+
     /// Polls the UDC for `ticks`, then returns its counters. Checks in with
-    /// the loader's run limits meanwhile (the run takes ~70 s; the limit is
-    /// 30 s without check-ins).
+    /// the loader's run limits meanwhile.
     fn settle(rig: &mut Rig, ticks: u32) -> rp_drv_pxa_udc::Stats {
         let t = rt::ticks();
         while rt::ticks().wrapping_sub(t) < ticks {

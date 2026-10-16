@@ -1596,8 +1596,8 @@ pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
     for want in [
         "UDC on, UP2OCR",
         "UP2OCR was",
-        "host controller SE0 on port 2: resets",
-        "UP2OCR 0 with the UDC off: resets",
+        "host controller SE0 on port 2 at",
+        "UP2OCR 0 with the UDC off at",
         "RETROPANE-UNPLUG-DONE",
     ] {
         if !log.contains(want) {
