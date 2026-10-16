@@ -377,6 +377,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
     Mutant {
+        name: "CF slot power-cycled at start-up although it was found powered (0.4 s of every boot)",
+        file: "boot/loader/src/main.rs",
+        from: "if cpld.cf_powered() && gpio.read(CF_READY) {",
+        to: "if false && cpld.cf_powered() && gpio.read(CF_READY) {",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
         name: "CF slot left powered after the card is removed",
         file: "boot/loader/src/main.rs",
         from: "            cpld.set_cf_power(false, &mut BusyWait);\n            self.powered = false;",

@@ -1241,7 +1241,16 @@ mod image {
         let phys = Some(devices::cf_common_phys().unwrap_or(0));
         let taken = match cpld {
             Some(cpld) if !soft => {
-                cf_power_cycle(cpld);
+                // A slot found powered with its card ready (as Windows Mobile
+                // hands it over) needs only the reset below, not the 0.4 s
+                // power cycle: the CF RESET line is a hard reset by itself
+                // (CF specification; the 100 us pulse, docs/hw/cf.md). A slot
+                // we switched off, or a card that went in since, gets both.
+                if cpld.cf_powered() && gpio.read(CF_READY) {
+                    lun.events.push(b'W');
+                } else {
+                    cf_power_cycle(cpld);
+                }
                 lun.powered = true;
                 let lines = &mut CfSocketLines { gpio, cpld };
                 CfCard::init_with(attr, common, dma, phys, lines, &mut delay)
@@ -1261,12 +1270,6 @@ mod image {
         }
     }
 
-    /// `cf`: attaches the CompactFlash card (hardware reset first: whatever
-    /// an earlier owner left is not trusted) and identifies it, read-only:
-    /// model, capacity, whether its write cache is off, and its first
-    /// partition. An attached card is only reported. The socket is touched
-    /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
-    /// for docs/hw/cf.md) skips the hardware reset.
     /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
     /// follows the card both ways with the slot powered or not (`rp-cfdetect`
     /// on the device, 2026-10-16), so a card pushed back in after the slot
@@ -1278,6 +1281,12 @@ mod image {
         }
     }
 
+    /// `cf`: attaches the CompactFlash card (hardware reset first: whatever
+    /// an earlier owner left is not trusted) and identifies it, read-only:
+    /// model, capacity, whether its write cache is off, and its first
+    /// partition. An attached card is only reported. The socket is touched
+    /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
+    /// for docs/hw/cf.md) skips the hardware reset.
     #[inline(never)]
     fn cf_command(
         lun: &mut CfLun,
