@@ -265,6 +265,20 @@ pub fn log_start() {
     }
 }
 
+/// Marks the run just started as a hand-over to a new loader (the loader,
+/// before starting an image that carries [`LOADER_SIGNATURE`]): the new
+/// loader then doesn't report its predecessor's run as a hang (it had: a
+/// "did not return" report saved over the card's crashlog.txt, 2026-10-16).
+///
+/// [`LOADER_SIGNATURE`]: rp_hal_pxa27x::handoff::LOADER_SIGNATURE
+#[inline(never)]
+pub fn log_mark_handover() {
+    if log_used().is_some() {
+        // SAFETY: the run log's flags word (valid: checked just above).
+        unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 8) };
+    }
+}
+
 /// Appends to the run log, if this run has one. Past the end, bytes are
 /// dropped and the overflow flag is set (reported by the loader: never
 /// silently).
@@ -306,6 +320,9 @@ pub struct PreviousRun {
     pub returned: bool,
     /// It came back because it crashed (a fault or a panic).
     pub crashed: bool,
+    /// The "image" was a new loader, which took over: it never returns, and
+    /// that is no hang ([`log_mark_handover`]).
+    pub handover: bool,
 }
 
 /// Takes the previous run's log (the loader, on start). The log is closed,
@@ -323,6 +340,7 @@ pub fn log_take() -> Option<PreviousRun> {
             overflow: flags & 1 != 0,
             returned: flags & 2 != 0,
             crashed: flags & 4 != 0,
+            handover: flags & 8 != 0,
         })
     }
 }

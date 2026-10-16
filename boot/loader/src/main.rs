@@ -1913,7 +1913,9 @@ mod image {
         // device can be lost on the way; its bytes stay in RAM until the
         // next image starts.
         let last_run = pending;
-        let trouble = pending.as_ref().is_some_and(|r| r.crashed || !r.returned);
+        let trouble = pending
+            .as_ref()
+            .is_some_and(|r| !r.handover && (r.crashed || !r.returned));
         let panel_h = if trouble { CRASH_H } else { 0 };
         let (panel, rest) = rest.split_at_mut(plane.stride * panel_h);
         let mut log = Console::new(
@@ -1955,7 +1957,9 @@ mod image {
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
         if let Some(run) = &pending {
-            let how = if run.crashed {
+            let how = if run.handover {
+                "handed over to this loader"
+            } else if run.crashed {
                 "CRASHED"
             } else if run.returned {
                 "returned"
@@ -1965,7 +1969,7 @@ mod image {
             let _ = writeln!(log, "previous run {how}: {} bytes of log", run.log.len());
             // A crash or a hang is kept on the card first, so the report
             // survives whatever happens next (the PC may not be there).
-            if run.crashed || !run.returned {
+            if !run.handover && (run.crashed || !run.returned) {
                 let saved = save_report(&mut lun, run, &mut fat_scratch[..SCRATCH]);
                 let _ = writeln!(
                     log,
@@ -2503,6 +2507,11 @@ mod image {
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
                     devices::log_start();
+                    // A new loader never returns: it takes over (and must not
+                    // report this run as a hang).
+                    if dest.get(4..12) == Some(&rp_hal_pxa27x::handoff::LOADER_SIGNATURE[..]) {
+                        devices::log_mark_handover();
+                    }
                     if let Some(area) = trace_area.as_deref_mut() {
                         let _ = rp_kernel_trace::Persistent::start(area);
                     }
@@ -2685,7 +2694,9 @@ mod image {
         if run.crashed {
             out(b"\r\n[the image crashed: report kept on the card as crashlog.txt]");
         }
-        if !run.returned {
+        if run.handover {
+            out(b"\r\n[the image was a new loader: it took over]");
+        } else if !run.returned {
             out(b"\r\n[the image did not return: it hung and the device was reset]");
         }
         out(b"\r\nRPL END\r\n");
@@ -2709,8 +2720,12 @@ mod image {
                 b"RPD [the image crashed: report kept on the card as crashlog.txt]\r\n",
             ),
             (
-                !run.returned,
+                !run.returned && !run.handover,
                 b"RPD [the image did not return: it hung and the device was reset]\r\n",
+            ),
+            (
+                run.handover,
+                b"RPD [the image was a new loader: it took over]\r\n",
             ),
         ] {
             if on {

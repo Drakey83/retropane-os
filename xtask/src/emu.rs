@@ -2350,6 +2350,21 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         if !log.contains("all steps OK") {
             return Err(format!("run log over USB incomplete: {log:?}"));
         }
+        // A new loader sent as an image takes over; its predecessor's run is
+        // no hang (2026-10-16: the device saved a 45-byte "did not return"
+        // report over crashlog.txt each time a loader was tried from RAM).
+        let new_loader =
+            std::fs::read(&loader).map_err(|e| format!("{}: {e}", loader.display()))?;
+        s.write_all(&rp_loadproto::frame(&new_loader))
+            .map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // The new loader sends the run's log by itself once the port is open.
+        let run = usb_read_until(&mut s, "RPL END", 30)?;
+        if !run.contains("[the image was a new loader: it took over]")
+            || run.contains("did not return")
+        {
+            return Err(format!("loader hand-over reported as: {run:?}"));
+        }
         Ok(())
     };
     boot(
