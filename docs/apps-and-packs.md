@@ -107,7 +107,13 @@ everything downloaded is signed and checked before it is installed or run
 (`docs/security.md`, ADR-0017's signing design); the system in flash stays
 complete without the pack (design-brief.md "What lives on the card").
 
-Open: where the download location is hosted, and how updates are offered.
+**Hosting (owner, 2026-10-16):** the owner's local NAS serves the pack and
+the ports to the owner's devices. Because every file is signed and checked
+on the device before install, the host is not trusted: a tampered NAS can't
+get anything installed. For users outside the owner's home, a NAS open to
+the internet is a larger security step; a public mirror (for example GitHub
+Releases) is the simpler route, fetched the same way. Open: how updates are
+offered.
 
 ## 6. Game ports built for RetroPane's GPU driver
 
