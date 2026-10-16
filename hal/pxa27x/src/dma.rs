@@ -1,7 +1,8 @@
 //! The PXA27x DMA controller, for device FIFOs (PXA27x Developer's Manual,
 //! DMA controller chapter).
 //!
-//! Channels 0 and 1, each through [`rp_hal_api::DmaEngine`] (a transfer
+//! Channels 0 to 2 (2: the USB device controller's bulk endpoints, item
+//! 74), each through [`rp_hal_api::DmaEngine`] (a transfer
 //! between a device FIFO and a memory buffer, paced by the device's request
 //! line, in descriptor mode: 4 KiB per descriptor, up to 128 KiB) or
 //! [`rp_hal_api::DmaRing`] (a buffer looped into a device without end, for
@@ -57,7 +58,7 @@ fn width(w: Width) -> u32 {
 }
 
 /// Channels handed out ([`crate::rt::take_dma`]): each has its own chain.
-pub const CHANNELS: u32 = 2;
+pub const CHANNELS: u32 = 3;
 
 /// Bytes per descriptor (under the 8,191 the length field holds).
 const CHUNK: usize = 4096;
@@ -215,6 +216,16 @@ impl Dma {
         self.paced = false;
         self.armed = Some((addr, len as u32, true));
         true
+    }
+
+    /// Bytes the armed transfer has moved so far (diagnostics: where a
+    /// paced transfer stalled), from the channel's current memory address;
+    /// `None` if nothing is armed.
+    pub fn moved(&mut self) -> Option<u32> {
+        let (addr, len, to_device) = self.armed?;
+        // DSADR (to a device) or DTADR (from one): the memory side.
+        let at = read(ddadr(self.ch) + if to_device { 4 } else { 8 });
+        Some(at.wrapping_sub(addr).min(len))
     }
 
     fn stop(&mut self) {

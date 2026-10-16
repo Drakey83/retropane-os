@@ -207,9 +207,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 20 -> 22 KiB on 2026-10-12 (test image): the crash box
     // reads the 2700G's registers to draw on the plane actually on screen
     // (Windows Mobile's, at offset 0); 20.5 KiB measured, +~7%.
+    // Ratcheted 22 -> 25 KiB on 2026-10-16 (test image): the UDC driver's
+    // double-buffered endpoints, settled OUT reads and DMA hand-off (item
+    // 74); 22.2 KiB measured, +~10%.
     Budget {
         image: "rp-usb",
-        max_load: 22 * 1024,
+        max_load: 25 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },

@@ -462,7 +462,7 @@ pub fn take_mmc() -> Option<Mmio> {
 /// CKEN bit for the DMA controller.
 pub const CKEN_DMA: u32 = 24;
 
-/// Hands out DMA channel `ch` (0 or 1: [`crate::dma::CHANNELS`]) once
+/// Hands out DMA channel `ch` (0 to 2: [`crate::dma::CHANNELS`]) once
 /// (`_start` stopped every channel), with the controller's clock enabled.
 pub fn take_dma(ch: u32) -> Option<crate::dma::Dma> {
     if ch >= crate::dma::CHANNELS {

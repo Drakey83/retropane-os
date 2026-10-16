@@ -24,14 +24,13 @@ struct SimUdc {
     /// A packet ready for the host's next IN token (full FIFO, or IPR).
     ep0_pending: Option<Vec<u8>>,
     cr: [u32; 24],
-    in_fifo: Vec<u8>,
-    /// A bulk IN packet waiting for the host's IN token.
-    in_pending: Option<Vec<u8>>,
-    /// Bulk IN packet complete (the last packet was taken).
-    in_pc: bool,
-    in_sent: VecDeque<Vec<u8>>,
-    out_fifo: VecDeque<u8>,
-    out_pc: bool,
+    /// The bulk endpoints, by slot.
+    bulk: [Bulk; 6],
+    /// OUT byte counts read 0 (as if the count lagged the packet-complete
+    /// of a packet that just reached the front).
+    bcr_reads_zero: bool,
+    /// Every bulk status write: (slot, value).
+    csr_writes: Vec<(usize, u32)>,
     acked_config: u32,
     smac: u32,
     /// Every raw write to UDCCR, to check the masking rule.
@@ -42,7 +41,86 @@ struct SimUdc {
     isr0: u32,
 }
 
+/// A bulk endpoint: one packet buffer, or two with `UDCCRx.DE`.
+#[derive(Default)]
+struct Bulk {
+    /// IN: bytes written into the buffer being filled.
+    fifo: Vec<u8>,
+    /// IN: committed packets waiting for the host's IN tokens; OUT:
+    /// packets received, the front one being read.
+    queue: VecDeque<VecDeque<u8>>,
+    /// Packet complete (IN: a packet was taken by the host).
+    pc: bool,
+    /// IN: what the host received.
+    sent: VecDeque<Vec<u8>>,
+}
+
 impl SimUdc {
+    /// Packet buffers of `slot`.
+    fn depth(&self, slot: usize) -> usize {
+        if self.cr[slot] & (1 << 1) != 0 { 2 } else { 1 }
+    }
+
+    fn bulk_write(&mut self, slot: usize, bytes: &[u8]) {
+        let depth = self.depth(slot);
+        let b = &mut self.bulk[slot];
+        assert!(
+            b.queue.len() < depth,
+            "wrote into a bulk IN FIFO while every buffer waits for the host"
+        );
+        assert!(
+            b.queue.iter().all(|p| p.len() == usb::BULK_SIZE),
+            "wrote into a bulk IN FIFO behind a short packet"
+        );
+        b.fifo.extend_from_slice(bytes);
+        assert!(b.fifo.len() <= usb::BULK_SIZE, "IN FIFO overrun");
+        if b.fifo.len() == usb::BULK_SIZE {
+            self.bulk_commit(slot);
+        }
+    }
+
+    fn bulk_commit(&mut self, slot: usize) {
+        let depth = self.depth(slot);
+        let b = &mut self.bulk[slot];
+        assert!(
+            b.queue.len() < depth,
+            "bulk IN packet queued with no free buffer"
+        );
+        let p = core::mem::take(&mut b.fifo);
+        b.queue.push_back(p.into_iter().collect());
+    }
+
+    /// The host's IN token on `slot`: takes the oldest waiting packet.
+    fn host_in_on(&mut self, slot: usize) {
+        let b = &mut self.bulk[slot];
+        if let Some(p) = b.queue.pop_front() {
+            b.sent.push_back(p.into_iter().collect());
+            b.pc = true;
+        }
+    }
+
+    /// The host's OUT packet on `slot`: accepted while a buffer is free
+    /// (false: NAKed, the host retries).
+    fn host_out_on(&mut self, slot: usize, packet: &[u8]) -> bool {
+        if self.bulk[slot].queue.len() >= self.depth(slot) {
+            return false;
+        }
+        self.bulk[slot]
+            .queue
+            .push_back(packet.iter().copied().collect());
+        true
+    }
+
+    /// The serial port's OUT packet.
+    fn host_out(&mut self, packet: &[u8]) -> bool {
+        self.host_out_on(SLOT_OUT, packet)
+    }
+
+    /// Whether an OUT packet still waits in the serial port's buffers.
+    fn out_waiting(&self) -> usize {
+        self.bulk[SLOT_OUT].queue.len()
+    }
+
     /// A full FIFO (or IPR) makes a packet ready; it waits there until the
     /// host's next IN token. Pessimistic about IPR: it is not set by the
     /// hardware for a full FIFO, so a driver can only tell the packet left
@@ -66,29 +144,9 @@ impl SimUdc {
         self.ep0_packet_ready();
     }
 
-    fn in_write(&mut self, bytes: &[u8]) {
-        assert!(
-            self.in_pending.is_none(),
-            "wrote into the bulk IN FIFO while a packet waits for the host"
-        );
-        self.in_fifo.extend_from_slice(bytes);
-        assert!(self.in_fifo.len() <= usb::BULK_SIZE, "IN FIFO overrun");
-        if self.in_fifo.len() == usb::BULK_SIZE {
-            self.in_ready();
-        }
-    }
-
-    fn in_ready(&mut self) {
-        assert!(self.in_pending.is_none(), "bulk IN packet queued twice");
-        self.in_pending = Some(core::mem::take(&mut self.in_fifo));
-    }
-
-    /// The host's bulk IN token: takes the waiting packet, if any.
+    /// The host's bulk IN token on the serial port.
     fn host_in_bulk(&mut self) {
-        if let Some(p) = self.in_pending.take() {
-            self.in_sent.push_back(p);
-            self.in_pc = true;
-        }
+        self.host_in_on(SLOT_IN);
     }
 
     /// The host's IN token: takes the waiting packet, if any.
@@ -119,28 +177,43 @@ impl RegisterBus for SimUdc {
                 }
                 u32::from_le_bytes(w)
             }
-            o if o == reg::csr(SLOT_IN) => {
-                // Pessimistic: a waiting short packet doesn't make the FIFO
-                // read "full", so only packet-complete tells it has left.
-                let bnf = if self.in_fifo.len() < usb::BULK_SIZE {
-                    reg::BNF
+            o if (reg::csr(1)..=reg::csr(5)).contains(&o) => {
+                let slot = (o - 0x100) / 4;
+                let b = &self.bulk[slot];
+                let pc = if b.pc { reg::PC } else { 0 };
+                if self.cr[slot] & (1 << 12) != 0 {
+                    // IN: "buffer not full" while a packet buffer is free,
+                    // and (measured on the X51v) not while a short packet
+                    // waits.
+                    let short = b.queue.iter().any(|p| p.len() < usb::BULK_SIZE);
+                    let bnf = if b.queue.len() < self.depth(slot) && !short {
+                        reg::BNF
+                    } else {
+                        0
+                    };
+                    bnf | pc
                 } else {
-                    0
-                };
-                bnf | if self.in_pc { reg::PC } else { 0 }
-            }
-            o if o == reg::csr(SLOT_OUT) => {
-                if self.out_pc {
-                    reg::PC | reg::BNF
-                } else {
-                    0
+                    match b.queue.front() {
+                        None => 0,
+                        Some(p) if p.len() < usb::BULK_SIZE => reg::PC | reg::BNF | reg::SP,
+                        Some(_) => reg::PC | reg::BNF,
+                    }
                 }
             }
-            o if o == reg::bcr(SLOT_OUT) => self.out_fifo.len() as u32,
-            o if o == reg::dr(SLOT_OUT) => {
+            o if (reg::bcr(1)..=reg::bcr(5)).contains(&o) => {
+                let slot = (o - 0x200) / 4;
+                if self.bcr_reads_zero {
+                    return 0;
+                }
+                self.bulk[slot].queue.front().map_or(0, |p| p.len() as u32)
+            }
+            o if (reg::dr(1)..=reg::dr(5)).contains(&o) => {
+                let slot = (o - 0x300) / 4;
                 let mut w = [0u8; 4];
-                for b in &mut w {
-                    *b = self.out_fifo.pop_front().unwrap_or(0);
+                if let Some(p) = self.bulk[slot].queue.front_mut() {
+                    for b in &mut w {
+                        *b = p.pop_front().unwrap_or(0);
+                    }
                 }
                 u32::from_le_bytes(w)
             }
@@ -201,18 +274,29 @@ impl RegisterBus for SimUdc {
                 );
                 self.cr[(o - 0x400) / 4] = v;
             }
-            o if o == reg::dr(SLOT_IN) => self.in_write(&v.to_le_bytes()),
-            o if o == reg::csr(SLOT_IN) => {
-                if v & reg::PC != 0 {
-                    self.in_pc = false;
-                }
-                if v & reg::SP != 0 {
-                    self.in_ready();
-                }
+            o if (reg::dr(1)..=reg::dr(5)).contains(&o) => {
+                self.bulk_write((o - 0x300) / 4, &v.to_le_bytes());
             }
-            o if o == reg::csr(SLOT_OUT) && v & reg::PC != 0 => {
-                self.out_pc = false;
-                self.out_fifo.clear();
+            o if (reg::csr(1)..=reg::csr(5)).contains(&o) => {
+                let slot = (o - 0x100) / 4;
+                self.csr_writes.push((slot, v));
+                let is_in = self.cr[slot] & (1 << 12) != 0;
+                if v & reg::PC != 0 {
+                    if is_in {
+                        self.bulk[slot].pc = false;
+                    } else {
+                        // Releases the packet just read; the next (if
+                        // any) is ready at once.
+                        self.bulk[slot].queue.pop_front();
+                    }
+                }
+                if v & reg::FEF != 0 {
+                    self.bulk[slot].fifo.clear();
+                    self.bulk[slot].queue.clear();
+                }
+                if v & reg::SP != 0 && is_in {
+                    self.bulk_commit(slot);
+                }
             }
             _ => {}
         }
@@ -226,8 +310,8 @@ impl RegisterBus8 for SimUdc {
     fn write8(&mut self, offset: usize, v: u8) {
         if offset == reg::dr(0) {
             self.ep0_write(&[v]);
-        } else if offset == reg::dr(SLOT_IN) {
-            self.in_write(&[v]);
+        } else if (reg::dr(1)..=reg::dr(5)).contains(&offset) {
+            self.bulk_write((offset - 0x300) / 4, &[v]);
         }
     }
 }
@@ -363,12 +447,17 @@ fn enable_writes_the_table_then_enables() {
         sim.cr[1],
         (1 << 25) | (3 << 15) | (3 << 13) | (1 << 12) | (16 << 2) | 1
     );
-    // Slot B: EP2 bulk IN, 64. Slot C: EP1 bulk OUT, 64.
+    // Slot B: EP2 bulk IN, 64. Slot C: EP1 bulk OUT, 64. Bulk endpoints
+    // double buffered (DE, bit 1).
     assert_eq!(
         sim.cr[2],
-        (1 << 25) | (2 << 15) | (2 << 13) | (1 << 12) | (64 << 2) | 1
+        (1 << 25) | (2 << 15) | (2 << 13) | (1 << 12) | (64 << 2) | 2 | 1
     );
-    assert_eq!(sim.cr[3], (1 << 25) | (1 << 15) | (2 << 13) | (64 << 2) | 1);
+    assert_eq!(
+        sim.cr[3],
+        (1 << 25) | (1 << 15) | (2 << 13) | (64 << 2) | 2 | 1
+    );
+    assert_eq!(sim.cr[1] & 2, 0, "the interrupt endpoint stays single");
     for (slot, cr) in sim.cr.iter().enumerate().take(4).skip(1) {
         assert_eq!((cr >> 22) & 7, 0, "slot {slot} not in interface 0");
     }
@@ -509,7 +598,7 @@ fn bulk_in_sends_full_packets_then_a_short_one() {
         h.poll(3);
         h.sim().host_in_bulk();
     }
-    let sent: Vec<Vec<u8>> = h.sim().in_sent.drain(..).collect();
+    let sent: Vec<Vec<u8>> = h.sim().bulk[SLOT_IN].sent.drain(..).collect();
     assert_eq!(sent.iter().map(Vec::len).collect::<Vec<_>>(), [64, 64, 22]);
     assert_eq!(sent.concat(), data);
     assert_eq!(h.udc.stats().tx_bytes, 150);
@@ -521,10 +610,9 @@ fn bulk_out_is_received_in_order() {
     h.enumerate();
     let mut got = Vec::new();
     for packet in [&b"hello, "[..], &[b'x'; 64][..], b"axim"] {
-        h.sim().out_fifo.extend(packet);
-        h.sim().out_pc = true;
+        assert!(h.sim().host_out(packet));
         h.poll(1);
-        assert!(!h.sim().out_pc, "packet not released");
+        assert_eq!(h.sim().out_waiting(), 0, "packet not released");
         let mut buf = [0u8; 128];
         let n = h.udc.read(&mut buf);
         got.extend_from_slice(&buf[..n]);
@@ -539,18 +627,30 @@ fn bulk_out_is_received_in_order() {
 fn a_full_receive_ring_holds_the_host_off() {
     let mut h = Host::new();
     h.enumerate();
-    // Fill the 256-byte ring with four 64-byte packets, then offer a fifth.
-    for _ in 0..5 {
-        h.sim().out_fifo.extend([7u8; 64]);
-        h.sim().out_pc = true;
+    // Fill the 256-byte ring with four 64-byte packets, then offer more:
+    // the fifth and sixth stay in the two packet buffers, the seventh is
+    // NAKed (the host retries) until there's room.
+    for _ in 0..4 {
+        assert!(h.sim().host_out(&[7u8; 64]));
         h.poll(1);
     }
-    // The fifth stays in the FIFO (the hardware NAKs) until there's room.
-    assert!(h.sim().out_pc);
-    let mut buf = [0u8; 64];
-    assert_eq!(h.udc.read(&mut buf), 64);
+    assert!(h.sim().host_out(&[7u8; 64]));
+    assert!(h.sim().host_out(&[7u8; 64]));
+    assert!(!h.sim().host_out(&[7u8; 64]), "both buffers full: NAK");
     h.poll(1);
-    assert!(!h.sim().out_pc);
+    assert_eq!(h.sim().out_waiting(), 2);
+    let mut buf = [0u8; 63];
+    assert_eq!(h.udc.read(&mut buf), 63);
+    h.poll(1);
+    assert_eq!(
+        h.sim().out_waiting(),
+        2,
+        "63 bytes of room hold a packet off"
+    );
+    let mut buf = [0u8; 1];
+    assert_eq!(h.udc.read(&mut buf), 1);
+    h.poll(1);
+    assert_eq!(h.sim().out_waiting(), 1);
 }
 
 #[test]
@@ -565,7 +665,10 @@ fn a_bus_reset_drops_the_configuration_and_queued_data() {
         h.poll(3);
         h.sim().host_in_bulk();
     }
-    assert!(h.sim().in_sent.is_empty(), "stale bytes sent after reset");
+    assert!(
+        h.sim().bulk[SLOT_IN].sent.is_empty(),
+        "stale bytes sent after reset"
+    );
 }
 
 #[test]
@@ -740,4 +843,229 @@ fn random_setup_packets_never_panic_or_overrun() {
             h.poll(3);
         }
     }
+}
+
+/// Double buffering: two full IN packets are queued before the host takes
+/// either (no gap between them on the bus), and nothing goes in behind a
+/// short packet that ends a transfer until it has gone.
+#[test]
+fn bulk_in_queues_both_buffers_and_holds_behind_a_short_packet() {
+    let mut h = Host::new();
+    h.enumerate();
+    h.udc.set_in_streaming(true);
+    let data: Vec<u8> = (0..=199u8).collect();
+    assert_eq!(h.udc.write(&data[..140]), 140);
+    h.poll(1);
+    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 2, "both buffers queued");
+    h.sim().host_in_bulk();
+    h.poll(1);
+    // The 12-byte tail went in as a short packet behind the full one.
+    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 2);
+    h.udc.write(&data[140..]);
+    h.sim().host_in_bulk();
+    h.poll(1);
+    // One buffer is free, but the short packet still waits: hold.
+    assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 1);
+    for _ in 0..6 {
+        h.sim().host_in_bulk();
+        h.poll(1);
+    }
+    let sent: Vec<Vec<u8>> = h.sim().bulk[SLOT_IN].sent.drain(..).collect();
+    assert_eq!(
+        sent.iter().map(Vec::len).collect::<Vec<_>>(),
+        [64, 64, 12, 60]
+    );
+    assert_eq!(sent.concat(), data);
+}
+
+/// By default bulk IN keeps one packet in flight (two buffers or not): the
+/// next only after the previous one's packet-complete.
+#[test]
+fn bulk_in_keeps_one_packet_in_flight_by_default() {
+    let mut h = Host::new();
+    h.enumerate();
+    let data: Vec<u8> = (0..=199u8).collect();
+    assert_eq!(h.udc.write(&data), 200);
+    for _ in 0..3 {
+        h.poll(1);
+        assert_eq!(h.sim().bulk[SLOT_IN].queue.len(), 1);
+        h.sim().host_in_bulk();
+    }
+    for _ in 0..4 {
+        h.poll(1);
+        h.sim().host_in_bulk();
+    }
+    let sent: Vec<Vec<u8>> = h.sim().bulk[SLOT_IN].sent.drain(..).collect();
+    assert_eq!(sent.concat(), data);
+}
+
+/// The probe leaves the endpoint empty and the driver able to send.
+#[test]
+fn the_in_buffer_probe_cleans_up() {
+    let mut h = Host::new();
+    h.enumerate();
+    let p = h.udc.probe_in_buffers();
+    // Two full packets fill both buffers: "not full" clear.
+    assert_eq!(p[2] & reg::BNF, 0);
+    assert_eq!(p[1] & reg::BNF, reg::BNF);
+    assert!(h.sim().bulk[SLOT_MSC_IN].queue.is_empty());
+    assert!(h.udc.msc_can_write());
+}
+
+/// With the ring empty, `read` takes packets straight from both buffers.
+#[test]
+fn reads_take_waiting_packets_straight_from_the_fifo() {
+    let mut h = Host::new();
+    h.enumerate();
+    let a: Vec<u8> = (0..64u8).collect();
+    let b: Vec<u8> = (64..128u8).collect();
+    assert!(h.sim().host_out(&a));
+    assert!(h.sim().host_out(&b));
+    let mut buf = [0u8; 256];
+    assert_eq!(h.udc.read(&mut buf), 128);
+    assert_eq!(&buf[..64], &a[..]);
+    assert_eq!(&buf[64..128], &b[..]);
+    assert_eq!(h.sim().out_waiting(), 0);
+    assert_eq!(h.udc.stats().rx_bytes, 128);
+}
+
+/// Soak: random host timing on all four bulk endpoints (IN tokens, OUT
+/// packets, polls, reads in odd sizes) never loses, reorders or duplicates
+/// a byte in either direction, on either function.
+#[test]
+fn random_interleaving_keeps_both_streams_intact() {
+    let mut x: u32 = 0xB0B5_1EED;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x
+    };
+    let mut h = Host::new();
+    h.enumerate();
+    let total = 40_000usize;
+    let down: Vec<u8> = (0..total).map(|i| (i * 7 + i / 251) as u8).collect();
+    let up: Vec<u8> = (0..total).map(|i| (i * 13 + i / 97) as u8).collect();
+    let (mut sent_down, mut got_down) = (0, Vec::new());
+    let (mut sent_up, mut msc_down, mut msc_up) = (0, 0usize, Vec::new());
+    let mut msc_got = Vec::new();
+    let mut pkt = [0u8; 64];
+    for _ in 0..200_000 {
+        match rnd() % 8 {
+            0 | 1 if sent_down < total => {
+                let n = ((rnd() % 64) as usize + 1).min(total - sent_down);
+                if h.sim().host_out(&down[sent_down..sent_down + n]) {
+                    sent_down += n;
+                }
+            }
+            2 => h.sim().host_in_bulk(),
+            3 => h.udc.poll(),
+            4 => {
+                let mut buf = [0u8; 200];
+                let want = (rnd() % 200) as usize + 1;
+                let n = h.udc.read(&mut buf[..want]);
+                got_down.extend_from_slice(&buf[..n]);
+            }
+            5 if sent_up < total => {
+                let n = ((rnd() % 300) as usize).min(total - sent_up);
+                sent_up += h.udc.write(&up[sent_up..sent_up + n]);
+            }
+            6 => {
+                // Mass storage: full packets out, then echoed back in.
+                if msc_down < total
+                    && h.sim()
+                        .host_out_on(SLOT_MSC_OUT, &down[msc_down..msc_down + 64])
+                {
+                    msc_down += 64;
+                }
+                if let Some(n) = h.udc.msc_read(&mut pkt) {
+                    msc_got.extend_from_slice(&pkt[..n]);
+                }
+            }
+            _ => {
+                h.sim().host_in_on(SLOT_MSC_IN);
+                if msc_up.len() < msc_got.len() && h.udc.msc_can_write() {
+                    let at = msc_up.len();
+                    let n = (msc_got.len() - at).min(64);
+                    let chunk = msc_got[at..at + n].to_vec();
+                    h.udc.msc_write(&chunk);
+                    msc_up.extend_from_slice(&chunk);
+                }
+            }
+        }
+    }
+    for _ in 0..2000 {
+        h.udc.poll();
+        h.sim().host_in_bulk();
+        let mut buf = [0u8; 256];
+        let n = h.udc.read(&mut buf);
+        got_down.extend_from_slice(&buf[..n]);
+    }
+    assert!(
+        sent_down > total / 2 && sent_up > total / 2,
+        "soak too short"
+    );
+    assert_eq!(got_down, down[..sent_down]);
+    let host_up: Vec<u8> = h.sim().bulk[SLOT_IN].sent.drain(..).flatten().collect();
+    assert_eq!(host_up, up[..sent_up]);
+    assert_eq!(msc_got, down[..msc_down]);
+    let msc_host: Vec<u8> = h.sim().bulk[SLOT_MSC_IN].sent.drain(..).flatten().collect();
+    assert_eq!(msc_host, msc_up[..msc_host.len()]);
+    assert!(msc_host.len() > total / 4);
+}
+
+/// A byte count that reads short for a full packet (the double-buffered
+/// OUT race suspected on the device) loses nothing: a full packet's size
+/// comes from the short-packet bit, and the disagreement is counted.
+#[test]
+fn a_lagging_byte_count_loses_no_data() {
+    let mut h = Host::new();
+    h.enumerate();
+    h.sim().bcr_reads_zero = true;
+    let data: Vec<u8> = (0..128u8).collect();
+    assert!(h.sim().host_out(&data[..64]));
+    assert!(h.sim().host_out(&data[64..]));
+    let mut buf = [0u8; 256];
+    assert_eq!(h.udc.read(&mut buf), 128);
+    assert_eq!(&buf[..128], &data[..]);
+    assert_eq!(h.udc.stats().count_mismatch, 2);
+    // A real short packet still reads its count.
+    h.sim().bcr_reads_zero = false;
+    assert!(h.sim().host_out(b"tail"));
+    h.poll(1);
+    assert_eq!(h.udc.read(&mut buf), 4);
+    assert_eq!(&buf[..4], b"tail");
+}
+
+/// An endpoint handed to DMA is left alone by the CPU paths (its packets
+/// stay for the DMA controller), every status write to it keeps `DME`, and
+/// handing it back resumes the CPU paths. Ports: slot A is request 25.
+#[test]
+fn an_endpoint_under_dma_is_left_to_the_dma_controller() {
+    let mut h = Host::new();
+    h.enumerate();
+    let p = Udc::<SimUdc>::dma_port(super::Bulk::SerialOut);
+    assert_eq!(p.request, 24 + SLOT_OUT as u8);
+    assert_eq!(p.addr, 0x4060_0300 + 4 * SLOT_OUT as u32);
+    h.udc.set_dma(super::Bulk::SerialOut, true);
+    assert!(h.sim().host_out(&[1u8; 64]));
+    h.poll(3);
+    let mut buf = [0u8; 256];
+    assert_eq!(h.udc.read(&mut buf), 0);
+    assert_eq!(h.sim().out_waiting(), 1, "the CPU took a DMA packet");
+    h.udc.set_dma(super::Bulk::SerialOut, false);
+    h.poll(1);
+    assert_eq!(h.udc.read(&mut buf), 64);
+    // IN: nothing written by the CPU while DMA has it; SP for a partial
+    // last packet carries DME.
+    h.udc.set_dma(super::Bulk::StorageIn, true);
+    assert!(!h.udc.msc_can_write());
+    h.sim().csr_writes.clear();
+    h.udc.dma_in_end(super::Bulk::StorageIn, 100);
+    assert_eq!(h.sim().csr_writes, [(SLOT_MSC_IN, reg::SP | reg::DME)]);
+    h.sim().csr_writes.clear();
+    h.udc.dma_in_end(super::Bulk::StorageIn, 128);
+    assert!(h.sim().csr_writes.is_empty(), "whole packets need no SP");
+    h.udc.set_dma(super::Bulk::StorageIn, false);
+    assert!(h.sim().csr_writes.iter().all(|&(_, v)| v & reg::DME == 0));
 }
