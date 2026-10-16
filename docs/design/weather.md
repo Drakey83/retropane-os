@@ -88,6 +88,15 @@ pack may leave optional icons out (night variants falling back to day).
 - For any of them: check the terms allow redistributing the images, since
   packs may ship publicly.
 
+**VClouds-style packs (owner, 2026-10-16):** the owner wants six packs that
+are all variations of VClouds' look, and every part 1 names VClouds. The
+prompts are on the owner's private prompts page (a Claude artifact), not in
+this repository. These are AI-made icons in a named artist's style, not
+copies of his work. For the owner's own device that is the owner's call; for
+a pack shipped in this public repository, the artist's permission is wanted
+(asked, no answer yet), or the name comes out of the prompt and the pack is
+judged on its own. The pack's licence note records which.
+
 **Method:** generate the style block and one icon first (`03`, partly
 cloudy, day); regenerate until it's right, then use it as the style
 reference for every other icon so the set matches.
