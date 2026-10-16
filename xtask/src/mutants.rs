@@ -412,6 +412,13 @@ pub const MUTANTS: &[Mutant] = &[
         to: "        if false {",
         check: Check::Host(&["-p", "rp-usb-msc", "a_reset_aborts_the_transfer_in_flight"]),
     },
+    Mutant {
+        name: "usbbench: a bench folder holding someone else's files used anyway",
+        file: "xtask/src/usbbench.rs",
+        from: "                if e.file_name() != BENCH_FILE {",
+        to: "                if false {",
+        check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
