@@ -184,6 +184,16 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 27 * 1024,
         device: OnDevice::Returns,
     },
+    // Quantum test image (ADR-0010 amendment): touch latency, frame timing
+    // and switch cost under each time-slice policy. First budget =
+    // measured + ~10% (30.2 KiB load; 24.4 KiB zeroed: boot stacks,
+    // scheduler tables, 128 thread contexts).
+    Budget {
+        image: "rp-quantum",
+        max_load: 34 * 1024,
+        max_zero: 27 * 1024,
+        device: OnDevice::Returns,
+    },
     // Diagnostics only, never part of the OS: register names and report text
     // dominate. Built for size (opt-level "s").
     // Raised 40 -> 45 KiB on 2026-10-11 (approved by the owner): the run log

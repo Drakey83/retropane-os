@@ -1,0 +1,17 @@
+[package]
+name = "rp-quantum"
+description = "Quantum test image: touch latency, frame timing and switch cost under each time-slice policy (ADR-0010 amendment)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-kernel-sched = { path = "../../kernel/sched" }
+
+[lints]
+workspace = true

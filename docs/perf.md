@@ -124,6 +124,8 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 | 2026-10-14 | Every image reports its deepest SVC stack on returning to the loader (`rt::stack_used`, the stack painted at start-up): a silent overflow of the 16 KiB stack lost rp-today's glyph atlas in the emulator. `rp-hang` budget 9 -> 10 KiB (test image rule) | `rp-hang` loaded size | 8,329 B | 9,269 B |
 | 2026-10-14 | `rp-mbx-blend` adds B6 (ADR-0023: source stride 0, blending onto 32 bpp against the reference, an ARGB4444 destination, a 32 bpp screen with the engine busy). Budget 42 -> 51 KiB (test image rule: measured + ~10%) | `rp-mbx-blend` loaded size | 37,705 B | 47,233 B |
 | 2026-10-14 | `rp-mbx-blend`, a new test image (renderer step 1, ADR-0022): the blend-state and display-event probe; the 2D command words move from `rp-mbx` into `rp-drv-blit2d`, shared. Budget 42 KiB (test image rule: measured + ~10%) | `rp-mbx-blend` loaded size | new | 38,281 B |
+| 2026-10-15 | The time slice (ADR-0010 amendment): 20 ms quantum and a 1 ms wake slice instead of CE's 100 ms, measured with `rp-quantum` on the device: touch to screen with a busy equal-priority program 73.5 / 101.7 ms (median / worst) -> 5.1 / 5.1; 60 Hz frames on time 0 -> 35 of 35; never-blocking loop's worst gap 105 -> 25 ms; a busy pair keeps 99.5% of its work (~100 us per switch with cache refills). Cost: `thread_switch` 86,708 -> 88,868 ticks per 2,000 (13.3 -> 13.7 us, two device runs each); kernel +424 B code, +16 B RAM | touch to screen, worst (device) | 101.7 ms | 5.1 ms |
+| 2026-10-15 | `rp-quantum`, a new test image (ADR-0010 amendment): eight time-slice policies' touch, frame, busy-loop and switch-cost tests. Budget 34 KiB (test image rule: measured + ~10%) | `rp-quantum` loaded size | new | 30,732 B |
 | 2026-10-13 | `rp-mbx` becomes the first GPU-rectangle test (item 69: MBX 2D engine commands, fence, edge read-back, GPU vs CPU timing); it now links the display driver to adopt the screen and the CPU fill to time against. Budget 12 -> 19 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | under 12,288 B (ID reads only) | 17,077 B |
 | 2026-10-13 | `rp-mbx` adds the GPU copy checks (item 69 step 2: from off-screen memory, overlapping right and down, colour-keyed, ten full-screen copies timed). Budget 19 -> 27 KiB (test image rule: measured + ~10%) | `rp-mbx` loaded size | 18,205 B | 24,297 B |
 | 2026-10-13 | `rp-mbx` adds DMA from SDRAM into 2700G memory (timed against the CPU, with the CPU's spare pace) and the probe of local addresses past 16 MiB (ADR-0022 open questions 1-2); the HAL gains memory-to-memory DMA. Budget 27 -> 38 KiB (test image rule) | `rp-mbx` loaded size | 24,297 B | 34,825 B |
@@ -218,6 +220,20 @@ contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
 | `thread_switch` (2,000 switches: event set, wait, schedule, register switch, KData) | 79,385 ticks | **~12.2 µs per switch** |
 | `irq_to_thread_max` (interrupt to the waiting thread running) | 26 ticks | ~8 µs |
 | `sleep_lateness_max` | 56 ticks | ~17 µs |
+
+> **Note (2026-10-15):** the same image measured 86,708 ticks (13.3 µs per
+> switch) on 2026-10-15, steady over two runs, before the wake slice; 88,868
+> (13.7 µs) with it (ADR-0010 amendment). The 12.2 µs above was another
+> day's clock state.
+
+### The time slice on the real X51v (2026-10-15, `cargo xtask load rp-quantum`)
+
+Touch to screen, 60 Hz frames and switch cost against a busy thread at the
+interface thread's priority, for eight policies: the table is in ADR-0010,
+"Amendment: the time slice". Chosen: a 20 ms quantum with a 1 ms wake slice
+(touch 5.1 ms worst, the frame's own time; 35 of 35 frames on time; a busy
+pair keeps 99.5% of its work). A switch between two threads with 16 KiB
+working sets costs ~100 µs in all, of which 13 µs is the register switch.
 
 ### Windows Mobile baseline (2026-10-13, `rp-wmbench` v2 and v3, ROADMAP Phase 0)
 
