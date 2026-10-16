@@ -69,9 +69,52 @@ No whine or other sound on any step. Caveat, the owner's: high pitches are
 hard to hear at 43. That matters little here: the cycle is 30 kHz, beyond
 anyone's hearing, and step 6's 1 kHz modulation is well inside an adult's
 range, so its silence is a real result; a coil's sub-harmonics can't be
-ruled out by ear. The two-stage design stands; its darkest picture stage
+ruled out by ear.
+
+**Second device result (P, 2026-10-16, with step 9; `local/rp-nightlight-run6.txt`).**
+Steps 1, 2 and 3 looked the same: one count of 432 is no dimmer to the eye
+than Windows Mobile's one of 216, so the light has a floor at about Windows
+Mobile's dimmest (the driver's or LED's shortest pulse, likely), and every
+step below it comes from the picture stage. Steps 4 and 5 darker each
+time; step 9 (the picture at 1/8, the design's darkest) "very dark" but
+readable: the bottom of the night range is right. No sound on any step.
+The half-size steps still give finer control above the floor. The two-stage design stands; its darkest picture stage
 (1/8) is one step past what was shown (1/4) and is checked by eye when the
 night setting gets its UI.
+
+## The night setting's control (decided 2026-10-16: A and C)
+
+The device runs settled the mechanism (above): the light down to one count
+of 432, then the picture through the gamma table, to 1/4 seen and liked
+(the owner's darkest of steps 1-8) and 1/8 to judge (`rp-nightlight`
+step 9). What's left is how the user reaches it. It lives in Settings
+(ROADMAP: not built yet); keys keep Windows Mobile's jobs (no new button).
+
+- **A. One brightness slider that goes further down (proposed).** Windows
+  Mobile's Backlight settings have one brightness slider; RetroPane's goes
+  below Windows Mobile's dimmest: the bottom of the slider first lowers the
+  light to one count, then dims the picture. Pros: nothing new to learn, one
+  control, the same place as on Windows Mobile. Cons: someone can slide into
+  a very dark screen by accident; so the slider's night range starts below a
+  visible mark, and the power button's off/on always comes back at least at
+  Windows Mobile's dimmest (a dark screen is never a trap).
+- **B. A separate "Night" switch.** The slider keeps Windows Mobile's range;
+  a switch next to it lets the slider go into the night range. Pros: no
+  accidental darkness. Cons: a second control Windows Mobile didn't have, and
+  two things to set for one result.
+- **C. On a schedule** (dark after a set time). An extra on top of A or B,
+  later; not a substitute.
+
+**Decided (owner, 2026-10-16): A and C.** One brightness slider reaching
+into the night range, and a schedule that moves that same slider: at the
+evening time it slides to the user's night level, in the morning back to
+where it was (one state, so the schedule and a hand on the slider can't
+disagree; a hand change during the night holds until the next scheduled
+time). Built with Settings (ROADMAP); the schedule needs the clock (the
+PXA27x RTC) and two times plus a level stored in settings.
+
+No cost in memory or speed either way: the gamma table is 17 registers
+written once per change, nothing per frame.
 
 ## How RetroPane drives it (`rp-drv-pxa-pwm`)
 
