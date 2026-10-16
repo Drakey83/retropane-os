@@ -542,7 +542,9 @@ mod image {
     /// irregular gaps (20-80 ms), each recorded and passed to the UI thread
     /// as a driver would.
     extern "C" fn touch_thread(_: usize) -> ! {
-        let (Some(mut line), Some(mut timer)) = (rt::take_irq(irq::OST2), rt::take_spare_timer())
+        // The timer first: taking it clears what an earlier image left
+        // pending, before the line is claimed.
+        let (Some(mut timer), Some(mut line)) = (rt::take_spare_timer(), rt::take_irq(irq::OST2))
         else {
             panic!("no spare timer");
         };

@@ -586,7 +586,9 @@ mod image {
     extern "C" fn ist_thread(_: usize) -> ! {
         let (ev, done) = DEMO.with(|d| (d.irq_event, d.done));
         // The thread owns its device and interrupt line (ADR-0007).
-        let (Some(mut line), Some(mut timer)) = (rt::take_irq(irq::OST2), rt::take_spare_timer())
+        // The timer first: taking it clears what an earlier image left
+        // pending, before the line is claimed.
+        let (Some(mut timer), Some(mut line)) = (rt::take_spare_timer(), rt::take_irq(irq::OST2))
         else {
             set(done);
             finish()
