@@ -314,7 +314,7 @@ UDC. Code: `boot/unplug`, `Rig::off`/`Rig::on` for `HostSe0`.
 
 The transceiver-off step is no use: the PC never re-configured within 3 s.
 
-**The fix (built 2026-10-16, emulator-checked, not yet on the device).**
+**The fix (built 2026-10-16, emulator-checked, proven on the device: step B below).**
 `Udc::unplug` (`drivers/pxa-udc/src/unplug.rs`, the measured sequence,
 host-tested) runs in the loader through one helper, `replug`, everywhere
 the loader presents the device: at start (in place of the `DETACH` wait,
@@ -330,10 +330,19 @@ over USB. Step A on the device (2026-10-16 12:01): the new loader sent from RAM
 over the card's one: Windows removed the old device at 12:01:23.4 and had
 the composite back ~2 s later (drive read, `udc stats`: 2 resets), so the
 fix does no harm; it doesn't prove the unplug itself (a hand-over with the
-PC's port open made Windows drop the device before the fix too). Device
-proof still to do: five hand-overs from Windows Mobile
-(`reboot-wm`, then the loader started from Windows Mobile) with the
-composite configured each time, no fallback, no re-plug.
+PC's port open made Windows drop the device before the fix too).
+
+**Step B, proven on the device (2026-10-16 12:04-12:13; the new loader on
+the card, sha `9573c6be`):** five hand-overs from Windows Mobile
+(`reboot-wm`, then the loader started from Windows Mobile, docked, no
+re-plug). Each time Windows logged Windows Mobile's device (`413C:4011`)
+removed the moment the loader started (12:05:45.8, 12:07:36.8, 12:09:07.3,
+12:10:59.2, 12:13:10.2) and had the composite configured 0-3 s later; the
+loader counted 2 resets each time, no fallback, the drive read. Before the
+fix (T1, same morning) Windows Mobile's device stayed "present" for 5+
+minutes and the loader saw 0 resets. The unplug also writes `UP2OCR`
+whole (`HXOE` only), so the transceiver state a watchdog reboot can leave
+(the 0-setup case) no longer survives either.
 
 **Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
 the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even

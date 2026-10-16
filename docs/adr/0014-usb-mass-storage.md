@@ -110,7 +110,10 @@ model with a built-in host that enumerates like Windows.
      2026-10-16) then showed the mechanism: Windows never sees HaRET's
      hand-over (the pull-up stays, Windows Mobile's idle device stays
      "present"), so the loader is enumerated only via the hub's recovery
-     or a re-plug; the fix is a disconnect the loader can make;
+     or a re-plug; fixed 2026-10-16: the loader makes the PC see an unplug at start and
+     at each layout switch (the PXA27x host controller drives SE0 on port
+     2), proven over five hand-overs from Windows Mobile with the
+     composite configured each time (`docs/hw/udc.md` T4);
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.
