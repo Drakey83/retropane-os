@@ -326,6 +326,11 @@ with the performance monitor built first to measure everything else).
   justified by legacy binaries; the quantum to be measured for
   interactivity when the UI exists (item 67's work measures switch costs
   first).
+- **Done (2026-10-15):** measured on the device (`rp-quantum`): CE's 100 ms
+  kept a touch waiting up to 102 ms behind a busy program. Replaced by a
+  20 ms quantum and a 1 ms wake slice (touch 5.1 ms worst; ADR-0010
+  amendment). The 31-process limit: design note
+  docs/research/process-limit.md, for the owner's vote.
 
 ### IPC, processes, driver hosts (ADR-0016, item 46)
 
