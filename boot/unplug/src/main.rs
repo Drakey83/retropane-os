@@ -13,15 +13,16 @@
 //! candidate measures the PC's bus resets and SETUPs for 1 s, applies the
 //! candidate for 1 s, undoes it and counts again for 3 s: a real disconnect
 //! makes the PC's hub reset the port within ~0.1 s of the reconnect.
-//! Candidates, safest first:
+//! Candidates:
 //!
 //! 1. the PXA27x's own USB host controller driving SE0 on port 2 (the
 //!    transceiver switched to it with `UP2OCR.HXS`, a root-hub port reset):
 //!    a driven SE0 beats the pull-up, and the PC reads SE0 as a disconnect;
-//! 2. the port 2 transceiver fully off (`UP2OCR` 0) with the UDC off;
-//! 3. CPLD bits Windows Mobile leaves set whose purpose isn't known, one at
-//!    a time (never SD, CF, backlight, display or the reboot bit). A bit
-//!    that isn't set at start is skipped, so nothing new is switched on.
+//! 2. the port 2 transceiver fully off (`UP2OCR` 0) with the UDC off.
+//!
+//! Run 1 (2026-10-16) also cleared CPLD bits of unknown purpose; one wedged
+//! the bus and the watchdog reset the Axim into Dell's factory prompt, so
+//! those are left out until their purpose is known (docs/hw/udc.md T4).
 //!
 //! Results go to the screen, the serial port and the run log.
 
@@ -37,7 +38,6 @@ pub const MARKER: &str = "RETROPANE-UNPLUG-DONE";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_cpld::{Cpld, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_pxa_uart::PxaUart;
@@ -94,28 +94,22 @@ mod image {
     enum Act {
         HostSe0,
         TransceiverOff,
-        Cpld(usize, u16),
     }
 
-    const CANDIDATES: [(&str, Act); 12] = [
+    /// Run 2 (2026-10-16): the transceiver candidates only. Run 1 also
+    /// cleared CPLD bits Windows Mobile leaves set; one of them (`0x1A`
+    /// bit 1 or `0x14` bit 3, by the timing) wedged the bus, the hardware
+    /// watchdog reset the Axim into Dell's factory prompt, and the run log
+    /// was lost. Bits of unknown purpose are not switched blind again
+    /// (docs/hw/udc.md T4).
+    const CANDIDATES: [(&str, Act); 2] = [
         ("host controller SE0 on port 2", Act::HostSe0),
         ("UP2OCR 0 with the UDC off", Act::TransceiverOff),
-        ("CPLD 1C bit 2", Act::Cpld(0x1C, 0x0004)),
-        ("CPLD 14 bit 3", Act::Cpld(0x14, 0x0008)),
-        ("CPLD 1A bit 1", Act::Cpld(0x1A, 0x0002)),
-        ("CPLD 1A bit 2", Act::Cpld(0x1A, 0x0004)),
-        ("CPLD 02 bit 0", Act::Cpld(0x02, 0x0001)),
-        ("CPLD 02 bit 2", Act::Cpld(0x02, 0x0004)),
-        ("CPLD 02 bit 3", Act::Cpld(0x02, 0x0008)),
-        ("CPLD 02 bit 4", Act::Cpld(0x02, 0x0010)),
-        ("CPLD 02 bit 5", Act::Cpld(0x02, 0x0020)),
-        ("CPLD 02 bit 7", Act::Cpld(0x02, 0x0080)),
     ];
 
     struct Rig {
         udc: Udc<Mmio>,
         uhc: Mmio,
-        cpld: Cpld<Mmio, handover::Table<'static>>,
         hcca: u32,
     }
 
@@ -163,7 +157,6 @@ mod image {
                     self.udc.disable();
                     self.udc.write_reg(UP2OCR, 0);
                 }
-                Act::Cpld(reg, bits) => self.cpld.clear(reg, bits),
             }
         }
 
@@ -183,7 +176,6 @@ mod image {
                     self.udc.write_reg(UP2OCR, HXOE);
                     let _ = self.udc.enable();
                 }
-                Act::Cpld(reg, bits) => self.cpld.set(reg, bits),
             }
         }
     }
@@ -219,9 +211,7 @@ mod image {
         let mut out = Tee(&mut uart, &mut con);
         let _ = writeln!(out, "{}", super::TITLE);
 
-        let (Some(udc_bus), Some(uhc), Some(cpld_bus)) =
-            (rt::take_udc(), rt::take_uhc(), devices::take_cpld())
-        else {
+        let (Some(udc_bus), Some(uhc)) = (rt::take_udc(), rt::take_uhc()) else {
             let _ = writeln!(out, "devices unavailable");
             devices::return_to_loader();
             halt()
@@ -230,7 +220,6 @@ mod image {
         let mut rig = Rig {
             udc: Udc::new(udc_bus),
             uhc,
-            cpld: Cpld::adopt(cpld_bus.0, cpld_bus.1).0,
             hcca: core::ptr::addr_of!(hcca) as u32,
         };
         if rig.udc.enable().is_err() {
@@ -238,23 +227,9 @@ mod image {
             devices::return_to_loader();
             halt()
         }
-        let _ = writeln!(
-            out,
-            "UDC on, UP2OCR {:08X}; CPLD 02={:04X} 14={:04X} 1A={:04X} 1C={:04X}",
-            rig.udc.read_reg(UP2OCR),
-            rig.cpld.shadow(0x02),
-            rig.cpld.shadow(0x14),
-            rig.cpld.shadow(0x1A),
-            rig.cpld.shadow(0x1C),
-        );
+        let _ = writeln!(out, "UDC on, UP2OCR {:08X}", rig.udc.read_reg(UP2OCR));
 
         for (name, act) in &CANDIDATES {
-            if let Act::Cpld(reg, bits) = *act
-                && rig.cpld.shadow(reg) & bits != bits
-            {
-                let _ = writeln!(out, "{name}: not set at start, skipped");
-                continue;
-            }
             // Settle, then measure what the PC does on its own first.
             let quiet = settle(&mut rig, TICK_1S);
             let before = settle(&mut rig, TICK_1S);
@@ -296,8 +271,10 @@ mod image {
 
     impl Write for Tee<'_, '_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            let _ = self.1.write_str(s);
+            // The run log first: it reaches the loader even if a screen
+            // write is the last thing this image does.
             devices::log_write(s.as_bytes());
+            let _ = self.1.write_str(s);
             self.0.write_str(s)
         }
     }

@@ -267,6 +267,30 @@ loader gets that disconnect at start (its `DETACH` window, which today
 does nothing), proven over five hand-overs from Windows Mobile, and the
 emulator models the same switch (the fork's host sees the disconnect).
 
+**Run 1 on the device (2026-10-16 09:29-09:31), and what changed.** The
+image started at 09:29:56 and its UDC was configured by Windows at once.
+Windows logged **no removal of the device until 09:31:22**: none of the
+candidates tried before the hang (the host controller's SE0, the
+transceiver off, CPLD `0x1C` bit 2, `0x14` bit 3, perhaps `0x1A` bit 1)
+made the PC see a disconnect. At 09:31:22, ~87 s in, the hardware watchdog
+reset the Axim into **Dell's factory-restore prompt** (the owner answered
+No with the Mail button). The watchdog is fed for the run limit plus 30 s,
+so the image stopped checking in ~27 s in: around clearing `0x14` bit 3 or
+`0x1A` bit 1. A bus that stops answering (a chip powered off under a
+screen write) can't be caught by the soft run limit. Windows Mobile then
+booted over the run log, so the image's own lines were lost.
+
+My error, and the class: `0x14` bit 3 is listed in `cpld.md` as "display
+(guess)" and `0x1A` bit 1 as "battery / charger (guess)", yet the plan
+called them "purpose unknown". A bit with any recorded owner, even a
+guess, is not switched blind; a bit with none still risks the bus and is
+only tried with the owner watching, one per run. Run 2's image has the two
+transceiver candidates only (`0x1C` bit 2 already showed nothing), writes
+the run log before the screen, and stays well inside the run limit (~15 s).
+Still to learn from run 2: whether the host controller saw the port at all
+(its port status before and after the resets is printed); if it never saw
+the connection, its reset drives nothing and the candidate is untested.
+
 **Ranked hypotheses** (as first written, before T1: hypothesis 2 is now
 the observed mechanism; hypothesis 1 is demoted, as nothing on the PC even
 tried the loader).
