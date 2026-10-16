@@ -44,6 +44,22 @@ measurably wins.
 | ActiveSync (on the device) | Sync with the PC | LegacySync (ADR-0028), see §4 |
 | Terminal Services client | Remote desktop | Later, with networking; may become part of the Field Kit |
 
+**Beyond WM5, a big emphasis (owner, 2026-10-16): a built-in Weather app.**
+Windows Mobile had none by default; RetroPane makes weather a headline
+feature: the hero of the Today screen (docs/ui/README.md "Weather and
+icons": the sky as wallpaper, photoreal icons breaking out of their tiles,
+VClouds' look) plus a full Weather app (hourly, days ahead, places).
+**Custom icons, selectable by the user:** weather icons are an icon pack
+like any theme part (§3). Conditions are keyed by the WMO weather
+interpretation codes (the international standard the open forecast feeds
+use), so any pack that covers those codes works. There's no industry
+*visual* standard for weather icons; the open sets surveyed in 2026-10
+were turned down by the owner for looks (flat), so the default pack is
+still open: a set whose licence allows shipping in GPL software, a
+commissioned set, or our own 3D renders shown for approval first. A pack
+whose licence forbids redistribution can still be used privately from
+the card, never shipped in the repo.
+
 Open: which WM5 extras count as "default" (Pocket MSN, the Dell X51v's own
 utilities such as its Wi-Fi tool and display control panel). Proposed rule:
 Microsoft's stock WM5 set is in; Dell's utilities become RetroPane Settings
