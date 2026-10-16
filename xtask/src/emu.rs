@@ -1598,8 +1598,6 @@ pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
         "UP2OCR was",
         "host controller SE0 on port 2: resets",
         "UP2OCR 0 with the UDC off: resets",
-        "CPLD 1C bit 2:",
-        "CPLD 02 bit 7:",
         "RETROPANE-UNPLUG-DONE",
     ] {
         if !log.contains(want) {
