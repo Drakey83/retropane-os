@@ -1,5 +1,5 @@
 //! The shell (ADR-0021): the Today screen, the title bar with Start, the
-//! Start menu and the two softkeys (docs/ui/README.md), in the smoked-glass
+//! Start menu and the two softkeys (docs/design/ui.md), in the smoked-glass
 //! look the owner chose.
 //!
 //! It owns layout, focus, touch and D-pad handling and what changed; it
@@ -149,7 +149,7 @@ pub const TITLE_CLOCK: Rect = Rect::new(W - 140, 0, 140, 36);
 /// The big clock's baseline from the top of its panel.
 const BIG_CLOCK_BASELINE: u16 = 92;
 
-/// The quick buttons (docs/ui/README.md "A PDA, proudly").
+/// The quick buttons (docs/design/ui.md "A PDA, proudly").
 const QUICK: [&str; 5] = ["Note", "Record", "Reader", "Media", "Games"];
 const QUICK_Y: u16 = 416;
 const QUICK_SIZE: u16 = 82;
@@ -158,7 +158,7 @@ fn quick_rect(i: u8) -> Rect {
     Rect::new(16 + u16::from(i) * 90, QUICK_Y, QUICK_SIZE, QUICK_SIZE)
 }
 
-/// The Start menu (docs/ui/README.md), "Back to loader" only in test images.
+/// The Start menu (docs/design/ui.md), "Back to loader" only in test images.
 const MENU: [&str; 10] = [
     "Today",
     "Calendar",
@@ -181,7 +181,7 @@ const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
 const MENU_ROW: u16 = 40;
 
-// ---- Colours (the the reference smoked glass, docs/ui/README.md) -------------
+// ---- Colours (the the reference smoked glass, docs/design/ui.md) -------------
 
 const GLASS_LEFT: Argb = 0xB810_1418;
 const GLASS_RIGHT: Argb = 0x8C4C_545C;

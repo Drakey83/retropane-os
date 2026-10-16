@@ -407,7 +407,7 @@ with the performance monitor built first to measure everything else).
   (they don't, cpld.md).
 - `kernel/fat/src/lib.rs` "not here yet: subdirectories, deleting" (both
   exist); ADR-0013 "not yet: creating files".
-- docs/ui/README.md's 600 KB RGB565 desktop cache vs the two-plane
+- docs/design/ui.md's 600 KB RGB565 desktop cache vs the two-plane
   ARGB8888 design (item 60).
 - `drivers/pxa-keypad` "polling now, interrupts later" (interrupts exist).
 - DESIGN.md "Duktape" vs §10.1 "QuickJS-class".
