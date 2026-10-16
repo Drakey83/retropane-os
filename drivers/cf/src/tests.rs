@@ -654,6 +654,59 @@ fn reads_take_the_fastest_path_that_reads_identify_right() {
     assert_eq!(dma.sectors, 1 + 64, "the check, then each sector");
 }
 
+/// `init_with` (the engine from the start: one copy of the driver per
+/// image) ends where `init` then `with_dma` does: the same path, the same
+/// check, the same reads.
+#[test]
+fn init_with_an_engine_matches_init_then_with_dma() {
+    let (c, attr, common) = card_with_data();
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(
+        attr,
+        common,
+        FakeDma::new(&c),
+        Some(0x3C00_0000),
+        lines,
+        &mut no_wait(),
+    )
+    .ok()
+    .unwrap();
+    let mut cf = cf;
+    assert_eq!(cf.read_path(), ReadPath::Dma);
+    assert_eq!(cf.path_mismatches(), 0);
+    let mut aligned = Aligned([0; 64 * SECTOR]);
+    cf.read_blocks(7, &mut aligned.0).unwrap();
+    assert_eq!(aligned.0[..], c.borrow().disk[7 * SECTOR..71 * SECTOR]);
+    let (_, _, dma) = cf.into_parts();
+    assert_eq!(dma.sectors, 1 + 64, "the check, then each sector");
+    // No address: the engine isn't tried; a broken window keeps the port
+    // and the engine comes back untried.
+    let (c, attr, common) = card_with_data();
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(attr, common, FakeDma::new(&c), None, lines, &mut no_wait())
+        .ok()
+        .unwrap();
+    assert_eq!(cf.read_path(), ReadPath::Window32);
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().window_broken = true;
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(
+        attr,
+        common,
+        FakeDma::new(&c),
+        Some(0x3C00_0000),
+        lines,
+        &mut no_wait(),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(
+        (cf.read_path(), cf.path_mismatches()),
+        (ReadPath::Port16, 1)
+    );
+    assert_eq!(cf.into_parts().2.sectors, 0, "DMA not tried");
+}
+
 #[repr(C, align(32))]
 struct Aligned([u8; 64 * SECTOR]);
 

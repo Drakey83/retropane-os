@@ -32,8 +32,10 @@ pub const HIGHEST: u8 = 0;
 pub const NORMAL: u8 = 251;
 /// Lowest priority (the idle level).
 pub const LOWEST: u8 = 255;
-/// Thread table size.
-pub const MAX_THREADS: usize = 128;
+/// Thread table size: every 8-bit thread number but 0 (the sentinel).
+/// Raised from 128 (owner's vote, 2026-10-15, docs/research/process-limit.md):
+/// the OS's own processes take a few dozen. 24 bytes a thread.
+pub const MAX_THREADS: usize = 255;
 /// The default quantum: 20 ms, in OS-timer ticks (3.25 MHz). Measured on
 /// the X51v (`rp-quantum`, ADR-0010 amendment): a program that draws in a
 /// loop without blocking gets the CPU back within 25 ms of a busy peer

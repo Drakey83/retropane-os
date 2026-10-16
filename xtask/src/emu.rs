@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.15.0";
+pub const QEMU_RELEASE: &str = "rp-v0.16.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -420,6 +420,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    "IPC native slots OK",
+    "IPC handle pages OK",
     // A real driver in a host (item 46): the compiled display host runs the
     // backlight on its granted PWM window, restarts after a fault in a
     // call and in its own thread, and keeps the level the hardware shows.
@@ -501,6 +503,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
     "USER KData OK",
+    "THREADS FCSE native slot OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -532,7 +535,7 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData, FCSE in a native slot"
     );
     Ok(())
 }
@@ -2205,6 +2208,40 @@ fn usb_read_until(s: &mut std::net::TcpStream, want: &str, secs: u64) -> Result<
     ))
 }
 
+/// Reads until `start` and the end of its line: the reply's whole line
+/// (with whatever came before it), however the bytes were split into reads.
+/// (Reading until `start` and then until a newline waited for a second
+/// line whenever the reply arrived in one piece.)
+fn usb_read_line(s: &mut std::net::TcpStream, start: &str, secs: u64) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while Instant::now() < deadline {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got);
+                if let Some(at) = text.find(start)
+                    && text[at..].contains('\n')
+                {
+                    return Ok(text.into_owned());
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!(
+        "no whole `{start}` line on the emulated USB port; got {:?}",
+        String::from_utf8_lossy(&got)
+    ))
+}
+
 /// The USB link test end to end: the emulator's host enumerates rp-usb,
 /// opens the port (the banner arrives) and gets its echo back.
 pub fn boot_usb_link(root: &Path) -> Result<(), String> {
@@ -2246,13 +2283,26 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
 /// port, its run log back the same way.
 /// `cargo xtask emu-usb`: the loader-over-USB check on its own.
 pub fn boot_loader_usb_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_usb(root)
+}
+
+/// `cargo xtask emu-drive`: the drive check alone (item 74: its blocks go
+/// by the UDC's DMA both ways).
+pub fn boot_loader_drive_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_drive(root)
+}
+
+/// The raw images the USB checks send.
+fn usb_images(root: &Path) -> Result<(), String> {
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     for image in ["rp-loader", "rp-light"] {
         crate::sdkit::raw_binary(&release.join(image), &dir.join(format!("{image}.bin")))?;
     }
-    boot_loader_usb(root)
+    Ok(())
 }
 
 pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
@@ -2270,8 +2320,7 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(1)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        let ok = usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
-        let ok = usb_read_until(&mut s, "\n", 10).map(|t| ok + &t)?;
+        let ok = usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         let theirs = ok.rsplit("RPL OK sha256 ").next().unwrap_or("").trim();
         crate::usb::check_digest(theirs, &payload, "image over USB")?;
         // The loader disconnects to run the image and reconnects when it
@@ -3730,8 +3779,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         }
         // The device refuses to write while the PC just wrote...
         serial.write_all(&put).map_err(|e| e.to_string())?;
-        let r = usb_read_until(&mut serial, "RPL ", 20)?;
-        let r = r + &usb_read_until(&mut serial, "\n", 5)?;
+        let r = usb_read_line(&mut serial, "RPL ", 20)?;
         if !r.contains("RPL ERR card busy") {
             return Err(format!("serial put during a drive write: {r:?}"));
         }
