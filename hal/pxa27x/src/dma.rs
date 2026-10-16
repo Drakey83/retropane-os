@@ -87,6 +87,9 @@ pub struct Dma {
     armed: Option<(u32, u32, bool)>,
     /// The armed transfer's descriptors, streamed through the chain.
     stream: Option<Stream>,
+    /// The armed transfer was written whole, links and all, before the
+    /// controller started: it can't stop short, so polls need only `DCSR`.
+    whole: bool,
     /// The running ring: its address and length.
     ring: Option<(u32, u32)>,
 }
@@ -111,6 +114,7 @@ impl Dma {
             paced: false,
             armed: None,
             stream: None,
+            whole: false,
             ring: None,
         }
     }
@@ -163,8 +167,9 @@ impl Dma {
         let Some(stream) = Stream::start(shape, chain, base) else {
             return false;
         };
-        // The controller reads the chain from memory.
-        cpu::clean_range(base, (16 * chain.len()) as u32);
+        // The controller reads the chain from memory: the slots written
+        // (the first ones; a short transfer uses few of the ring's).
+        cpu::clean_range(base, 16 * stream.written());
         write(dcsr(self.ch), 0);
         if let Some(r) = request {
             write(drcmr(r), DRCMR_MAPVLD | self.ch);
@@ -173,6 +178,7 @@ impl Dma {
         write(ddadr(self.ch), base);
         write(dcsr(self.ch), DCSR_RUN);
         self.paced = request.is_some();
+        self.whole = stream.written() == stream.count();
         self.stream = Some(stream);
         true
     }
@@ -311,6 +317,9 @@ impl Dma {
         Some(at.wrapping_sub(addr).min(len))
     }
 
+    // One copy: `done` alone ends a transfer five ways (the loader is at
+    // its size budget).
+    #[inline(never)]
     fn stop(&mut self) {
         write(dcsr(self.ch), 0);
         if self.paced {
@@ -343,6 +352,16 @@ impl DmaEngine for Dma {
         if s & DCSR_BUSERR != 0 {
             self.stop();
             return Some(false);
+        }
+        if self.whole {
+            // Nothing to top up and no stop short of the end: the one
+            // register the pre-streaming chain read (the emulator's SD
+            // benches lost 4-26% to full polls on short reads, 2026-10-15).
+            if s & DCSR_STOPINTR == 0 {
+                return None;
+            }
+            self.stop();
+            return Some(true);
         }
         // DCSR first: when it says stopped, the address registers read
         // after it are final.

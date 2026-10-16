@@ -95,18 +95,27 @@ impl Shape {
     /// a length field that holds the chunk, and no address that wraps.
     #[must_use]
     pub fn valid(&self) -> bool {
+        self.checked_count().is_some()
+    }
+
+    /// [`Shape::count`] if the shape is [`valid`](Self::valid) (one
+    /// division: the ARMv5TE has none in hardware).
+    fn checked_count(&self) -> Option<u32> {
+        if self.len == 0
+            || self.chunk == 0
+            || self.chunk > 0x1FFF
+            || (self.src_step != 0 && self.src_step != self.chunk)
+            || (self.dst_step != 0 && self.dst_step != self.chunk)
+        {
+            return None;
+        }
+        let count = self.count();
         let end = |base: u32, step: u32| {
-            base.checked_add((self.count().saturating_sub(1)).saturating_mul(step))
+            base.checked_add((count - 1).saturating_mul(step))
                 .and_then(|last| last.checked_add(if step == 0 { 0 } else { self.chunk }))
                 .is_some()
         };
-        self.len != 0
-            && self.chunk != 0
-            && self.chunk <= 0x1FFF
-            && (self.src_step == 0 || self.src_step == self.chunk)
-            && (self.dst_step == 0 || self.dst_step == self.chunk)
-            && end(self.src, self.src_step)
-            && end(self.dst, self.dst_step)
+        (end(self.src, self.src_step) && end(self.dst, self.dst_step)).then_some(count)
     }
 }
 
@@ -142,6 +151,8 @@ pub enum Next {
 pub struct Stream {
     shape: Shape,
     base: u32,
+    /// Descriptors in the whole transfer ([`Shape::count`], kept).
+    count: u32,
     /// Descriptors written to the ring so far.
     written: u32,
     /// Descriptors the controller has certainly loaded.
@@ -153,17 +164,32 @@ impl Stream {
     /// the caller writes the ring back to memory and starts the controller
     /// at `base`. `None` if the shape is invalid.
     pub fn start(shape: Shape, ring: &mut [[u32; 4]], base: u32) -> Option<Self> {
-        if !shape.valid() || ring.is_empty() || !base.is_multiple_of(SLOT) {
+        let count = shape.checked_count()?;
+        if ring.is_empty() || !base.is_multiple_of(SLOT) {
             return None;
         }
-        let mut s = Self {
+        // Nothing runs yet: each descriptor is written once, already linked
+        // (what `top_up` ends with, without its STOP-then-link steps).
+        let n = count.min(ring.len() as u32);
+        for (i, d) in (0..n).zip(ring.iter_mut()) {
+            *d = shape.descriptor(i);
+            if i + 1 < n {
+                d[0] = base + SLOT * (i + 1);
+            }
+        }
+        Some(Self {
             shape,
             base,
-            written: 0,
+            count,
+            written: n,
             loaded: 0,
-        };
-        s.top_up(ring, &mut |_| {});
-        Some(s)
+        })
+    }
+
+    /// Descriptors in the whole transfer.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
     }
 
     /// The transfer.
@@ -188,18 +214,25 @@ impl Stream {
     /// it).
     fn top_up(&mut self, ring: &mut [[u32; 4]], clean: &mut dyn FnMut(usize)) {
         let slots = ring.len() as u32;
-        let count = self.shape.count();
-        while self.written < count && self.written < self.loaded + slots {
-            let i = self.written;
-            let slot = (i % slots) as usize;
-            ring[slot] = self.shape.descriptor(i);
+        let end = self.count.min(self.loaded + slots);
+        if self.written >= end {
+            return;
+        }
+        // Descriptor `written`'s slot, stepped rather than divided per
+        // descriptor: the ARMv5TE has no divide instruction, so each `%` is
+        // a library call (the emulator's SD benches lost 4-20% to them,
+        // 2026-10-15).
+        let mut slot = (self.written % slots) as usize;
+        while self.written < end {
+            ring[slot] = self.shape.descriptor(self.written);
             clean(slot);
-            if i > 0 {
-                let prev = ((i - 1) % slots) as usize;
-                ring[prev][0] = self.slot_addr(slots, i);
+            if self.written > 0 {
+                let prev = if slot == 0 { ring.len() - 1 } else { slot - 1 };
+                ring[prev][0] = self.base + SLOT * slot as u32;
                 clean(prev);
             }
             self.written += 1;
+            slot = if slot + 1 == ring.len() { 0 } else { slot + 1 };
         }
     }
 
@@ -228,7 +261,7 @@ impl Stream {
             // finished) is the one the moved bytes are in, so at least the
             // ones before it, and it, were loaded.
             let moved = self.shape.moved(seen.dsadr, seen.dtadr);
-            let at_least = (moved / chunk).min(self.shape.count());
+            let at_least = (moved / chunk).min(self.count);
             self.loaded = self.loaded.max(at_least);
         }
         if self.loaded > self.written {
