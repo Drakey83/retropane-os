@@ -22,6 +22,7 @@
 //! | 6 | 0 and 1 of 432 alternating every 0.5 ms | flicker or whine? |
 //! | 7 | 216 of 432 (half) | whine? (ear to the case) |
 //! | 8 | 108 of 216 (half, Windows Mobile's cycle) | whine? (reference) |
+//! | 9 | 1 of 432, picture at 1/8 (the design's darkest) | still readable in the dark? |
 //!
 //! Everything is put back as found at the end.
 
@@ -95,7 +96,7 @@ mod image {
         dither: bool,
     }
 
-    const STEPS: [Step; 8] = [
+    const STEPS: [Step; 9] = [
         Step {
             label: "WM dimmest 1/216",
             prescale: 1,
@@ -158,6 +159,14 @@ mod image {
             counts: 216,
             duty: 108,
             picture: 256,
+            dither: false,
+        },
+        Step {
+            label: "1/432, picture 1/8",
+            prescale: 0,
+            counts: 432,
+            duty: 1,
+            picture: 32,
             dither: false,
         },
     ];

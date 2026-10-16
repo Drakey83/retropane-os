@@ -850,15 +850,15 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
         let t = scale_gamma(&WM_GAMMA, picture);
         (gamma(&t, r, 16), gamma(&t, g, 8), gamma(&t, r, 0))
     };
-    let pictures = [256, 128, 64];
+    let pictures = [256, 128, 64, 32];
     let check = || -> Result<(), String> {
-        let mut seen = [false; 3];
+        let mut seen = [false; 4];
         let mut last = None;
         let until = Instant::now() + Duration::from_secs(120);
         while !seen.iter().all(|s| *s) {
             if Instant::now() > until {
                 return Err(format!(
-                    "nightlight: picture steps not all seen through the gamma table (full, 1/2, 1/4: {seen:?}); last bars 15 and 8: {last:?}, want {:?}",
+                    "nightlight: picture steps not all seen through the gamma table (full, 1/2, 1/4, 1/8: {seen:?}); last bars 15 and 8: {last:?}, want {:?}",
                     pictures.map(|p| (bar(15, p), bar(8, p)))
                 ));
             }
@@ -917,7 +917,7 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
         return Err(format!("nightlight: a step was skipped:{log}"));
     }
     eprintln!(
-        "    night light OK: every step ran; the picture steps dimmed the screen through Windows Mobile's gamma table (full, 1/2, 1/4), pixel for pixel as the reference"
+        "    night light OK: every step ran; the picture steps dimmed the screen through Windows Mobile's gamma table (full, 1/2, 1/4, 1/8), pixel for pixel as the reference"
     );
     Ok(())
 }
