@@ -47,7 +47,7 @@ mod image {
     use rp_fat::{AnyVolume, Guard, Volume};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
-    use rp_hal_pxa27x::{Mmio, handoff, rt};
+    use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
@@ -96,6 +96,9 @@ mod image {
     /// ends that can't overlap (the first half's arrival, the last half's
     /// card write before the status); measured against 32 KiB halves.
     const MSC_BUF: usize = 32 * 1024;
+    // The drive's largest DMA transfer (the whole buffer, for a unit that
+    // doesn't overlap) fits the USB controller's chain.
+    const _: () = assert!(MSC_BUF <= dma_map::max_bytes(dma_map::UDC));
     /// The drive's serial number: the USB serial string (16 hex digits).
     const MSC_SERIAL: &[u8] = b"5250323630303031";
     /// How long the PC may try to enumerate a layout without configuring it
@@ -464,7 +467,7 @@ mod image {
         let Some(mut cpld) = devices::take_cpld() else {
             return (None, None, [0; 16], None);
         };
-        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
             return (None, None, [0; 16], Some(Cpld::new(cpld)));
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
@@ -1428,7 +1431,7 @@ mod image {
                 (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
                     Ok(mut codec) => {
                         let _ = codec.route(jack.output());
-                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(1))
+                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(dma_map::AUDIO))
                     }
                     Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
                 },
@@ -2002,7 +2005,7 @@ mod image {
         let mut backlight = rt::take_pwm0().map(Backlight::new);
         let mut audio = Audio::Untried;
         // The USB controller's DMA channel (item 74).
-        let mut udc_dma = rt::take_dma(2);
+        let mut udc_dma = rt::take_dma(dma_map::UDC);
         gpio.make_input(HP_DETECT);
         let mut jack = Jack {
             plugged: gpio.read(HP_DETECT),
