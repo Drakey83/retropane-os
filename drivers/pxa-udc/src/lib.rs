@@ -1,8 +1,12 @@
 //! Driver for the PXA27x USB device controller (UDC), presenting the X51v to
 //! a PC as a CDC-ACM serial port (ADR-0012, docs/hw/udc.md).
 //!
-//! Polled: call [`Udc::poll`] often (every few milliseconds while data
-//! moves). The hardware answers SET_ADDRESS/SET_CONFIGURATION itself; this
+//! Polled, or interrupt-driven (ADR-0007): [`Udc::set_interrupts`] turns
+//! on the packet-complete interrupts of endpoint 0 and the bulk endpoints
+//! (with the bus events), and the owner's interrupt thread runs [`Udc::poll`]
+//! each time the USB client line (PXA27x source 11) fires, then re-enables
+//! the line. Polled, call [`Udc::poll`] often (every few milliseconds while
+//! data moves). The hardware answers SET_ADDRESS/SET_CONFIGURATION itself; this
 //! driver answers descriptor and CDC requests on endpoint 0 and moves bytes
 //! between two small rings and the bulk FIFOs. The board's D+ pull-up and
 //! cable detect are GPIOs, switched by the caller.
@@ -10,12 +14,11 @@
 //! Throughput (audit item 74, docs/perf.md): the bulk endpoints are double
 //! buffered (`UDCCRx.DE`), so the host fills (or empties) one packet buffer
 //! while the CPU serves the other instead of being NAKed; every poll drains
-//! all packets waiting. Bulk IN keeps one packet in flight by default:
-//! streaming into both IN buffers ([`Udc::set_in_streaming`]) kept the data
-//! intact but made Windows time out and reset the device during drive
-//! reads on the X51v (docs/hw/udc.md), so it is off until understood.
-//! Measured ([`Udc::probe_in_buffers`]): with double buffering `BNF` reads
-//! 1 after one full IN packet, 0 after two, and 0 after a single short one.
+//! all packets waiting. The CPU keeps one bulk IN packet in flight; the
+//! drive's blocks go by DMA ([`Udc::set_dma`]), which keeps both IN buffers
+//! full. Measured on the X51v (docs/hw/udc.md): with double buffering `BNF`
+//! reads 1 after one full IN packet, 0 after two, and 0 after a single
+//! short one.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -80,6 +83,11 @@ pub mod reg {
 
     /// UDCISR0/UDCICR0: endpoint 0 packet complete.
     pub const EP0_PACKET: u32 = 1 << 0;
+    /// UDCISR0/UDCICR0: packet complete of endpoint slot `x` (1 = A).
+    #[must_use]
+    pub const fn packet_irq(x: usize) -> u32 {
+        1 << (2 * x)
+    }
     /// UDCISR1/UDCICR1: bus reset.
     pub const RESET: u32 = 1 << 27;
     /// Suspend.
@@ -307,14 +315,14 @@ pub struct Udc<B> {
     configuration: u8,
     rx: Ring<256>,
     tx: Ring<512>,
-    /// Bulk IN streams into both buffers (off: one packet in flight).
-    in_streaming: bool,
     /// Per slot: an IN packet was written and its packet-complete not yet
     /// seen (one-in-flight mode).
     in_wait: [bool; 6],
     /// Per slot: DMA serves the endpoint (`DME` set): the CPU paths leave
     /// its FIFO alone, and every status write carries `DME`.
     dma: [bool; 6],
+    /// The packet-complete interrupts are on ([`Udc::set_interrupts`]).
+    interrupts: bool,
     /// A bus reset or a mass storage reset happened: the storage function
     /// must abandon its command ([`Udc::take_msc_reset`]).
     msc_reset: bool,
@@ -334,9 +342,9 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             configuration: 0,
             rx: Ring::new(),
             tx: Ring::new(),
-            in_streaming: false,
             in_wait: [false; 6],
             dma: [false; 6],
+            interrupts: false,
             msc_reset: false,
             stats: Stats {
                 resets: 0,
@@ -396,9 +404,38 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             reg::UDCICR1,
             reg::RESET | reg::SUSPEND | reg::RESUME | reg::CONFIG_CHANGE,
         );
-        self.bus.write32(reg::UDCICR0, reg::EP0_PACKET);
+        self.bus.write32(reg::UDCICR0, self.icr0());
         self.ep0 = Ep0::Idle;
         Ok(())
+    }
+
+    /// The bulk endpoints' packet-complete events.
+    const BULK_EVENTS: u32 = reg::packet_irq(SLOT_IN)
+        | reg::packet_irq(SLOT_OUT)
+        | reg::packet_irq(SLOT_MSC_OUT)
+        | reg::packet_irq(SLOT_MSC_IN);
+
+    /// `UDCICR0`: endpoint 0's packet-complete always (its state machine
+    /// reads the event), the bulk endpoints' too with interrupts on.
+    fn icr0(&self) -> u32 {
+        reg::EP0_PACKET
+            | if self.interrupts {
+                Self::BULK_EVENTS
+            } else {
+                0
+            }
+    }
+
+    /// Interrupt-driven (`true`, ADR-0007) or polled. With interrupts on,
+    /// every packet the host sends or takes on endpoint 0 and the bulk
+    /// endpoints, and every bus event, raises the USB client line until the
+    /// next [`Udc::poll`] has dealt with it; the line stays quiet between
+    /// events, so its owner can sleep.
+    pub fn set_interrupts(&mut self, on: bool) {
+        self.interrupts = on;
+        if self.bus.read32(reg::UDCCR) & reg::UDE != 0 {
+            self.bus.write32(reg::UDCICR0, self.icr0());
+        }
     }
 
     /// Reads a UDC register directly (bring-up: board facts such as the
@@ -415,6 +452,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
 
     /// Turns the controller off.
     pub fn disable(&mut self) {
+        self.bus.write32(reg::UDCICR0, 0);
         self.bus.write32(reg::UDCICR1, 0);
         self.udccr(0, reg::UDE);
         self.configuration = 0;
@@ -484,6 +522,21 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
 
     /// Services the controller: bus events, endpoint 0, then data.
     pub fn poll(&mut self) {
+        // The bulk endpoints' events (and endpoint 0's, unless its state
+        // machine is waiting on it) are cleared before they are served: the
+        // endpoints' own status says what to do, and a packet that lands
+        // while this runs raises the line again instead of being missed by
+        // an interrupt-driven owner.
+        let served = Self::BULK_EVENTS
+            | if self.ep0 == Ep0::InData {
+                0
+            } else {
+                reg::EP0_PACKET
+            };
+        let done = self.bus.read32(reg::UDCISR0) & served;
+        if done != 0 {
+            self.bus.write32(reg::UDCISR0, done);
+        }
         let events = self.bus.read32(reg::UDCISR1);
         if events & reg::RESET != 0 {
             self.bus.write32(reg::UDCISR1, reg::RESET);
@@ -718,7 +771,7 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.csr_write(slot, reg::PC);
             self.in_wait[slot] = false;
         }
-        csr & reg::BNF != 0 && (self.in_streaming || !self.in_wait[slot])
+        csr & reg::BNF != 0 && !self.in_wait[slot]
     }
 
     /// A bulk endpoint's status write: `bits`, plus `DME` while DMA serves
@@ -743,47 +796,40 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
     }
 
     /// Hands a bulk endpoint to DMA (`on`) or back to the CPU. Arm the DMA
-    /// channel first for OUT (the request comes as soon as a packet waits),
-    /// after for IN. Stale packet-complete and NAK flags are cleared.
+    /// channel first: the endpoint asks for it as soon as `DME` is set. On
+    /// the way to DMA an IN endpoint's stale NAK flag is cleared.
     pub fn set_dma(&mut self, ep: Bulk, on: bool) {
         let slot = ep.slot();
         self.dma[slot] = on;
-        let stale = self.bus.read32(reg::csr(slot)) & (reg::PC | reg::TRN);
-        let keep = if ep == Bulk::SerialOut || ep == Bulk::StorageOut {
-            0
+        let is_in = ep == Bulk::SerialIn || ep == Bulk::StorageIn;
+        let stale = if on && is_in {
+            self.bus.read32(reg::csr(slot)) & reg::TRN
         } else {
-            stale
+            0
         };
-        self.csr_write(slot, keep);
+        self.csr_write(slot, stale);
     }
 
-    /// A bulk endpoint's `UDCCSRx` (diagnostics).
-    pub fn dma_csr(&mut self, ep: Bulk) -> u32 {
-        self.bus.read32(reg::csr(ep.slot()))
-    }
-
-    /// Whether the serial port's bulk IN has nothing queued for the host
-    /// that the driver knows of (its last packet's complete seen).
-    pub fn serial_in_idle(&mut self) -> bool {
-        self.in_room(SLOT_IN) && !self.in_wait[SLOT_IN]
+    /// Whether DMA serves a bulk endpoint ([`Udc::set_dma`]; a bus reset
+    /// hands every endpoint back to the CPU).
+    #[must_use]
+    pub fn dma_on(&self, ep: Bulk) -> bool {
+        self.dma[ep.slot()]
     }
 
     /// After an IN DMA of `len` bytes ended: a partial last packet is sent
-    /// (SP); full packets went by themselves. The endpoint stays with DMA
-    /// until [`Udc::set_dma`] hands it back.
+    /// (SP); full packets went by themselves. The last one or two may still
+    /// be queued: the next CPU write waits only for a free buffer (`BNF`,
+    /// which stays 0 behind a short packet), so it lines up behind them;
+    /// waiting for a packet-complete instead could wait forever if they
+    /// had already gone. The endpoint stays with DMA until [`Udc::set_dma`]
+    /// hands it back.
     pub fn dma_in_end(&mut self, ep: Bulk, len: usize) {
         let slot = ep.slot();
-        self.in_wait[slot] = true;
+        self.in_wait[slot] = false;
         if !len.is_multiple_of(usb::BULK_SIZE) {
             self.csr_write(slot, reg::SP);
         }
-    }
-
-    /// Bulk IN into both buffers (`true`) or one packet in flight (the
-    /// default, measured good). Diagnostics: streaming made Windows reset
-    /// the device during drive reads.
-    pub fn set_in_streaming(&mut self, on: bool) {
-        self.in_streaming = on;
     }
 
     /// Writes one bulk IN packet (at most 64 bytes; shorter ends the
@@ -830,48 +876,6 @@ impl<B: RegisterBus + RegisterBus8> Udc<B> {
             self.bus.read32(reg::bcr(SLOT_OUT)),
             self.rx.len(),
         )
-    }
-
-    /// Bring-up probe (item 74): how the mass storage IN endpoint's status
-    /// reads with 0, 1 and 2 packets queued, full and short, double
-    /// buffered. Each entry is `UDCCSRx` (bits 9:0) | `UDCBCRx` << 16, after:
-    /// a flush; one full packet; two; a flush; one short packet; the same
-    /// read again (nothing is written behind a short packet: on the X51v
-    /// `BNF` already reads 0); a flush; one full then one short; a flush. Run only while the
-    /// storage function is idle (no command: the host sends no IN tokens
-    /// then, so the packets stay queued); the endpoint is flushed after.
-    pub fn probe_in_buffers(&mut self) -> [u32; 9] {
-        let slot = SLOT_MSC_IN;
-        let mut out = [0u32; 9];
-        let mut at = 0;
-        let mut note = |u: &mut Self| {
-            out[at] = (u.bus.read32(reg::csr(slot)) & 0x3FF)
-                | (u.bus.read32(reg::bcr(slot)) & 0x3FF) << 16;
-            at += 1;
-        };
-        let full = [0x5Au8; usb::BULK_SIZE];
-        let short = [0xA5u8; 12];
-        self.bus.write32(reg::csr(slot), reg::FEF);
-        note(self);
-        self.write_packet(slot, &full);
-        note(self);
-        self.write_packet(slot, &full);
-        note(self);
-        self.bus.write32(reg::csr(slot), reg::FEF);
-        note(self);
-        self.write_packet(slot, &short);
-        note(self);
-        note(self);
-        self.bus.write32(reg::csr(slot), reg::FEF);
-        note(self);
-        self.write_packet(slot, &full);
-        self.write_packet(slot, &short);
-        note(self);
-        self.bus
-            .write32(reg::csr(slot), reg::FEF | reg::PC | reg::TRN);
-        note(self);
-        self.in_wait[slot] = false;
-        out
     }
 
     /// Writes the next endpoint 0 packet. A short packet (including an

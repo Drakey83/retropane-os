@@ -41,7 +41,7 @@ mod image {
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_pxa_udc::Udc;
+    use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
     use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Guard, Volume};
@@ -90,7 +90,11 @@ mod image {
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
     /// Staging buffer for the drive's block transfers (in the scratch
-    /// area, not the image: 64 sectors per card command).
+    /// area, not the image): two 16 KiB halves, each one card command and
+    /// one USB DMA transfer, the card working on one while the USB link
+    /// moves the other (item 74). Smaller halves shorten a write's two
+    /// ends that can't overlap (the first half's arrival, the last half's
+    /// card write before the status); measured against 32 KiB halves.
     const MSC_BUF: usize = 32 * 1024;
     /// The drive's serial number: the USB serial string (16 hex digits).
     const MSC_SERIAL: &[u8] = b"5250323630303031";
@@ -347,8 +351,9 @@ mod image {
         }
     }
 
-    /// The UDC's mass storage endpoints as the drive's bulk pipe.
-    struct Pipe<'a>(&'a mut Udc<Mmio>);
+    /// The UDC's mass storage endpoints as the drive's bulk pipe, with the
+    /// UDC's DMA channel for whole halves of the drive's buffer (item 74).
+    struct Pipe<'a>(&'a mut Udc<Mmio>, Option<&'a mut Dma>);
 
     impl BulkPipe for Pipe<'_> {
         fn read_packet(&mut self, buf: &mut [u8; 64]) -> Option<usize> {
@@ -362,6 +367,57 @@ mod image {
         }
         fn service(&mut self) {
             self.0.poll();
+        }
+        fn send_dma(&mut self, data: &[u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            // The channel first: the endpoint asks for data once DME is on.
+            let ok = self.0.configured()
+                && d.arm_to_device(Udc::<Mmio>::dma_port(Bulk::StorageIn), data);
+            if ok {
+                self.0.set_dma(Bulk::StorageIn, true);
+            }
+            ok
+        }
+        fn receive_dma(&mut self, buf: &mut [u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            let ok = self.0.configured()
+                && d.arm_from_device(Udc::<Mmio>::dma_port(Bulk::StorageOut), buf);
+            if ok {
+                self.0.set_dma(Bulk::StorageOut, true);
+            }
+            ok
+        }
+        fn dma_done(&mut self) -> Option<bool> {
+            use rp_hal_api::DmaEngine;
+            let d = self.1.as_deref_mut()?;
+            // A bus reset meanwhile handed the endpoints back: the transfer
+            // can't finish (the command is abandoned anyway).
+            let r = if self.0.dma_on(Bulk::StorageIn) || self.0.dma_on(Bulk::StorageOut) {
+                d.done()?
+            } else {
+                d.abort();
+                false
+            };
+            if self.0.dma_on(Bulk::StorageIn) {
+                self.0.dma_in_end(Bulk::StorageIn, 0);
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
+            Some(r)
+        }
+        fn dma_abort(&mut self) {
+            use rp_hal_api::DmaEngine;
+            if let Some(d) = self.1.as_deref_mut() {
+                d.abort();
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
         }
     }
 
@@ -1867,6 +1923,13 @@ mod image {
         }
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
+        // The controller's interrupt wakes the waiting loop (item 74).
+        let mut udc_irq = if usb {
+            udc.set_interrupts(true);
+            rt::take_irq(rp_hal_pxa27x::soc::irq::USB_CLIENT)
+        } else {
+            None
+        };
         if usb {
             gpio.write(USB_PULLUP, true);
         }
@@ -1981,10 +2044,21 @@ mod image {
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
                 let t = rt::ticks();
-                rt::wait_tick();
+                // Until the next tick, or at once when the PC sends or takes
+                // a USB packet (ADR-0007: the controller's interrupt).
+                if udc_irq.is_some() {
+                    rt::wait_any_signal();
+                } else {
+                    rt::wait_tick();
+                }
                 asleep = asleep.wrapping_add(rt::ticks().wrapping_sub(t));
             }
+            let usb_woke = udc_irq.as_mut().is_some_and(rt::IrqLine::take);
             udc.poll();
+            if usb_woke && let Some(l) = udc_irq.as_mut() {
+                // Served: the line may fire again.
+                l.done();
+            }
             if udc.take_msc_reset() {
                 msc.reset();
             }
@@ -2022,7 +2096,11 @@ mod image {
             if core::mem::take(&mut guard_due) && lun.refresh_guard() {
                 msc.medium_changed(0);
             }
-            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun, &mut cf], now_ms());
+            msc.poll(
+                &mut Pipe(&mut udc, udc_dma.as_mut()),
+                &mut [&mut lun, &mut cf],
+                now_ms(),
+            );
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
                 msc.medium_changed(1);
@@ -2121,9 +2199,6 @@ mod image {
                     },
                 )) => {
                     let mut status = Line::new();
-                    // `udc dma-out|dma-in <bytes>`: run after the match
-                    // (it needs the image area the command sits in).
-                    let mut dma_test = None;
                     let reply = match f.command(dest) {
                         Ok(b"drive status") => {
                             let s = msc.stats();
@@ -2167,38 +2242,10 @@ mod image {
                             let s = udc.stats();
                             let _ = write!(
                                 status,
-                                "RPL OK udc rx {} tx {} resets {} count mismatches {} (last {:x}) unsettled {} bad CBWs {} out csr {csr:x} bcr {bcr:x} ring {ring}
+                                "RPL OK udc rx {} tx {} resets {} count mismatches {} (last {:x}) unsettled {} bad CBWs {} drive DMA chunks {} largest transfer {} blocks out csr {csr:x} bcr {bcr:x} ring {ring}
 ",
-                                s.rx_bytes, s.tx_bytes, s.resets, s.count_mismatch, s.last_mismatch, s.unsettled, msc.stats().bad_cbw
+                                s.rx_bytes, s.tx_bytes, s.resets, s.count_mismatch, s.last_mismatch, s.unsettled, msc.stats().bad_cbw, msc.stats().dma_chunks, msc.stats().max_blocks
                             );
-                            status.as_str()
-                        }
-                        Ok(c) if c.starts_with(b"udc dma-") => {
-                            let to_host = c.starts_with(b"udc dma-in ");
-                            let skip = if to_host { 11 } else { 12 };
-                            let n = core::str::from_utf8(&c[c.len().min(skip)..])
-                                .ok()
-                                .and_then(|t| t.trim().parse::<usize>().ok());
-                            match n {
-                                Some(n) if c.starts_with(b"udc dma-out ") || to_host => {
-                                    dma_test = Some((to_host, n));
-                                    ""
-                                }
-                                _ => LoadError::BadCommand.reply(),
-                            }
-                        }
-                        Ok(c @ (b"udc in stream" | b"udc in single")) => {
-                            udc.set_in_streaming(c == b"udc in stream");
-                            "RPL OK
-"
-                        }
-                        Ok(b"udc probe") if !msc.busy() => {
-                            let p = udc.probe_in_buffers();
-                            let _ = write!(status, "RPL OK udc probe");
-                            for v in p {
-                                let _ = write!(status, " {v:x}");
-                            }
-                            let _ = write!(status, "\r\n");
                             status.as_str()
                         }
                         Ok(c) if c.starts_with(b"backlight") => {
@@ -2417,12 +2464,6 @@ mod image {
                         _ => LoadError::BadCommand.reply(),
                     };
                     send(&mut uart, &mut udc, reply);
-                    if let Some((to_host, n)) = dma_test {
-                        match udc_dma.as_mut() {
-                            Some(d) => udc_dma_test(&mut udc, d, dest, to_host, n),
-                            None => send(&mut uart, &mut udc, "RPL ERR no DMA channel\r\n"),
-                        }
-                    }
                     let _ = writeln!(log, "{}", reply.trim_ascii_end());
                 }
                 Some(Ok(Frame { len, .. })) => {
@@ -2673,109 +2714,6 @@ mod image {
 
     /// All of `data` over USB, polling as the transmit ring drains (gives
     /// up after 5 s or if the PC goes away).
-    /// The pattern `udc dma-in` sends (the PC computes the same).
-    fn dma_pattern(i: usize) -> u8 {
-        ((i as u32).wrapping_mul(2_654_435_761) >> 24) as u8
-    }
-
-    /// Bring-up experiment (item 74): `n` bytes (whole packets, at most
-    /// 64 KiB) through the serial port's bulk endpoint by DMA, the CPU only
-    /// arming and waiting. `to_host`: the pattern above goes to the PC after
-    /// an `RPL OK dma-in <n>` line; otherwise `RPL OK armed <n>` asks the PC
-    /// for `n` bytes. Either way a last line gives the time, the CRC-32 of
-    /// what moved and the endpoint's status, or how far a stalled transfer
-    /// got. Uses the image area (no frame is in progress during a command).
-    fn udc_dma_test(
-        udc: &mut Udc<rp_hal_pxa27x::Mmio>,
-        dma: &mut Dma,
-        area: &mut [u8],
-        to_host: bool,
-        n: usize,
-    ) {
-        use rp_drv_pxa_udc::Bulk;
-        use rp_hal_api::DmaEngine;
-        let n = n.min(64 * 1024).min(area.len()) / 64 * 64;
-        let mut line = Line::new();
-        if n == 0 {
-            usb_bytes(udc, b"RPL ERR dma: no whole packet\r\n");
-            return;
-        }
-        let buf = &mut area[..n];
-        let ep = if to_host {
-            Bulk::SerialIn
-        } else {
-            Bulk::SerialOut
-        };
-        let port = Udc::<rp_hal_pxa27x::Mmio>::dma_port(ep);
-        let armed = if to_host {
-            for (i, b) in buf.iter_mut().enumerate() {
-                *b = dma_pattern(i);
-            }
-            let _ = write!(line, "RPL OK dma-in {n}\r\n");
-            usb_bytes(udc, line.as_str().as_bytes());
-            // The line leaves first: nothing of it may be in the FIFO when
-            // DMA starts filling it.
-            let t = rt::ticks();
-            while (udc.tx_pending() > 0 || !udc.serial_in_idle())
-                && rt::ticks().wrapping_sub(t) < TICK_1S
-            {
-                udc.poll();
-            }
-            let ok = dma.arm_to_device(port, buf);
-            udc.set_dma(ep, ok);
-            ok
-        } else {
-            let ok = dma.arm_from_device(port, buf);
-            udc.set_dma(ep, ok);
-            if ok {
-                let _ = write!(line, "RPL OK armed {n}\r\n");
-                usb_bytes(udc, line.as_str().as_bytes());
-            }
-            ok
-        };
-        if !armed {
-            usb_bytes(udc, b"RPL ERR dma: the channel refused the buffer\r\n");
-            return;
-        }
-        let t0 = rt::ticks();
-        let mut result = None;
-        while result.is_none() {
-            udc.poll();
-            result = dma.done();
-            if result.is_none() && rt::ticks().wrapping_sub(t0) > 5 * TICK_1S {
-                let moved = dma.moved().unwrap_or(0);
-                dma.abort();
-                let csr = udc.dma_csr(ep);
-                udc.set_dma(ep, false);
-                let mut l = Line::new();
-                let _ = write!(
-                    l,
-                    "RPL ERR dma-{} stalled: {moved} of {n} bytes in 5 s, csr {csr:x}\r\n",
-                    if to_host { "in" } else { "out" }
-                );
-                usb_bytes(udc, l.as_str().as_bytes());
-                return;
-            }
-        }
-        let us = rt::ticks().wrapping_sub(t0) * 4 / 13;
-        let csr = udc.dma_csr(ep);
-        if to_host {
-            udc.dma_in_end(ep, n);
-        }
-        udc.set_dma(ep, false);
-        // The CPU reads what the device wrote (the engine discarded the
-        // cache lines after the transfer).
-        let crc = rp_loadproto::crc32(&area[..n]);
-        let mut l = Line::new();
-        let _ = write!(
-            l,
-            "RPL OK dma-{} {n} B in {us} us, crc {crc:08x}, csr {csr:x}, bus error {}\r\n",
-            if to_host { "in" } else { "out" },
-            u8::from(result == Some(false))
-        );
-        usb_bytes(udc, l.as_str().as_bytes());
-    }
-
     fn usb_bytes(udc: &mut Udc<rp_hal_pxa27x::Mmio>, mut data: &[u8]) {
         let start = rt::ticks();
         while !data.is_empty() && udc.configured() && rt::ticks().wrapping_sub(start) < 5 * TICK_1S
