@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Component as PathPart, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use rp_cab::{Cabinet, Scratch, Source};
 use rp_ce_setup::xml::Setup;
