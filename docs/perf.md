@@ -226,6 +226,12 @@ contained user fault, lazy iWMMXt, KData). OS timer ticks at 3.25 MHz:
 > switch) on 2026-10-15, steady over two runs, before the wake slice; 88,868
 > (13.7 µs) with it (ADR-0010 amendment). The 12.2 µs above was another
 > day's clock state.
+> **Note (2026-10-15, later):** with 255 threads and the native process
+> slots: 86,924 ticks (13.4 µs). `irq_to_thread_max` had read 4,294,960,808
+> (a wrapped negative: the thread woke ~2 ms before its timer was due)
+> because an earlier image left OS timer channel 2 armed and its match
+> fired when the line was claimed; the HAL now hands the timer out
+> quiesced, and the next run read 38 ticks (~12 µs).
 
 ### The time slice on the real X51v (2026-10-15, `cargo xtask load rp-quantum`)
 

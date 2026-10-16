@@ -564,7 +564,9 @@ pub fn watchdog() -> crate::soc::Watchdog<Mmio> {
 
 static mut SPARE_TIMER_TAKEN: bool = false;
 
-/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`).
+/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`),
+/// quiesced: whatever an earlier image left armed or pending is cleared, so
+/// take it before claiming its interrupt line.
 pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: single core; IRQs masked by the caller's setup, as for the
     // other single-owner devices.
@@ -575,9 +577,11 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: the OS timer's register window. The spare timer touches only
     // channel 2's match, status and enable bits (read-modify-write of OIER
     // with IRQs masked by its owner's callers), the alarm only channel 1's.
-    Some(crate::soc::SpareTimer(unsafe {
+    let mut t = crate::soc::SpareTimer(unsafe {
         Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
-    }))
+    });
+    t.quiesce();
+    Some(t)
 }
 
 /// The whole OS timer block (channels 0-11), for the run limit.
