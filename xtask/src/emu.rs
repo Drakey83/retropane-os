@@ -530,6 +530,51 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Must match `rp_quantum::MARKER`.
+const QUANTUM_MARKER: &str = "RETROPANE-QUANTUM-OK";
+
+/// Boots the quantum image (ADR-0010 amendment): every time-slice policy
+/// runs its touch, frame, busy-loop and switch-cost tests. The emulator's
+/// timing isn't the device's, so only that each ran is checked; the numbers
+/// are printed (the device's come from `cargo xtask load rp-quantum`).
+pub fn boot_quantum(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-quantum");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: QUANTUM_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            // Eight policies of ~2.5 s each, in real time (~21 s), with
+            // room for a loaded host.
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    for test in ["touch", "anim", "busy", "hogs"] {
+        let runs = output
+            .lines()
+            .filter(|l| l.starts_with("QT q") && l.contains(&format!(" {test} ")))
+            .count();
+        if runs != 8 {
+            return Err(format!(
+                "quantum check failed: {runs} `{test}` results, not 8"
+            ));
+        }
+    }
+    eprintln!("    quantum OK: eight time-slice policies measured");
+    Ok(())
+}
+
 /// Must match `rp_light::MARKER`.
 const LIGHT_MARKER: &str = "RETROPANE-LIGHT-OK";
 

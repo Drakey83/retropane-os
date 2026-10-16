@@ -2,7 +2,9 @@
 //!
 //! - **256 priorities, CE numbering:** 0 is the highest, applications default
 //!   to 251 ([`NORMAL`]). Within a priority, threads take turns (FIFO,
-//!   round-robin on quantum expiry).
+//!   round-robin on quantum expiry), and a thread that wakes doesn't wait
+//!   out a busy peer's whole quantum: the **wake slice**
+//!   ([`Scheduler::set_wake_slice`], ADR-0010 amendment).
 //! - **O(1) with `CLZ`:** a 256-bit ready map plus an 8-bit summary. Bits are
 //!   stored highest-priority-first from the top of each word, so finding the
 //!   most urgent ready thread is two count-leading-zeros (one instruction
@@ -32,8 +34,24 @@ pub const NORMAL: u8 = 251;
 pub const LOWEST: u8 = 255;
 /// Thread table size.
 pub const MAX_THREADS: usize = 128;
-/// CE's default quantum: 100 ms, in OS-timer ticks (3.25 MHz).
-pub const DEFAULT_QUANTUM: u32 = 325_000;
+/// The default quantum: 20 ms, in OS-timer ticks (3.25 MHz). Measured on
+/// the X51v (`rp-quantum`, ADR-0010 amendment): a program that draws in a
+/// loop without blocking gets the CPU back within 25 ms of a busy peer
+/// instead of 105, for ~0.5% of a busy pair's work (switches with cache
+/// refills, ~100 µs each) against ~0.2% at CE's 100 ms.
+pub const DEFAULT_QUANTUM: u32 = 65_000;
+/// CE's default quantum, 100 ms (what `CeGetThreadQuantum` reported).
+pub const CE_QUANTUM: u32 = 325_000;
+/// A thread's burst is counted in units of 64 ticks (~20 µs; 16 bits hold
+/// 1.3 s, ten quanta).
+const BURST_SHIFT: u32 = 6;
+const BURST_UNIT: u32 = 1 << BURST_SHIFT;
+
+/// The wake slice (ADR-0010 amendment): how soon a woken thread of the
+/// running thread's priority gets the CPU, at the earliest. 1 ms: a frame
+/// tick waits at most that for a busy peer, and a storm of wakes can't
+/// hand the CPU over more than ~1,000 times a second.
+pub const DEFAULT_WAKE_SLICE: u32 = 3_250;
 
 /// A thread's number (1-based: 0 is the table's sentinel).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,6 +103,10 @@ struct Thread {
     deadline: u32,
     /// Quantum left when it last stopped running.
     quantum: u32,
+    /// CPU time used since it last woke, in units of [`BURST_UNIT`] ticks
+    /// (rounded up, saturating): when it next wakes, the length of its last
+    /// burst of work. 16 bits fill the record's padding, so it costs no RAM.
+    burst: u16,
     /// The event it waits on (`NONE` if none), and whether it was signalled
     /// (as opposed to timing out).
     waiting_on: u8,
@@ -104,6 +126,7 @@ const EMPTY: Thread = Thread {
     sleeping: false,
     deadline: 0,
     quantum: 0,
+    burst: 0,
     waiting_on: NONE,
     signalled: false,
     tls: 0,
@@ -195,6 +218,17 @@ pub struct Scheduler {
     quantum_end: u32,
     /// Quantum in ticks; 0 means [`DEFAULT_QUANTUM`] (keeps `new` all-zero).
     quantum_setting: u32,
+    /// The thread to charge for the CPU time since `charged_from`.
+    charged: u8,
+    charged_from: u32,
+    /// A thread of the running thread's priority woke (and went to the
+    /// front of its queue): the running thread's quantum is cut at the next
+    /// `schedule`. `cut_burst` is the shortest last burst among them.
+    cut: bool,
+    cut_burst: u32,
+    /// Wake slice in ticks; 0 means [`DEFAULT_WAKE_SLICE`], `u32::MAX` off
+    /// (CE's behaviour).
+    wake_setting: u32,
 }
 
 impl Default for Scheduler {
@@ -219,6 +253,11 @@ impl Scheduler {
             running: NONE,
             quantum_end: 0,
             quantum_setting: 0,
+            charged: NONE,
+            charged_from: 0,
+            cut: false,
+            cut_burst: 0,
+            wake_setting: 0,
         }
     }
 
@@ -233,6 +272,27 @@ impl Scheduler {
     /// Sets the quantum for threads that start running from now on.
     pub fn set_quantum(&mut self, ticks: u32) {
         self.quantum_setting = ticks.max(1);
+    }
+
+    fn wake_slice(&self) -> Option<u32> {
+        match self.wake_setting {
+            0 => Some(DEFAULT_WAKE_SLICE),
+            u32::MAX => None,
+            s => Some(s),
+        }
+    }
+
+    /// Sets the wake slice (`None`: off, CE's plain round-robin). A thread
+    /// that wakes while a thread of its own priority runs goes to the front
+    /// of its queue, and the running thread's quantum ends `slice` ticks
+    /// later, or once it has used as much of its quantum as the woken
+    /// thread's last burst of work, whichever is later. So a touch or a
+    /// frame tick reaches its thread within about a slice instead of up to a
+    /// whole quantum, and a thread that sleeps often can't take more than
+    /// an equal share from a busy one. A woken thread whose last burst was
+    /// a whole quantum or more queues at the back as in CE.
+    pub fn set_wake_slice(&mut self, slice: Option<u32>) {
+        self.wake_setting = slice.map_or(u32::MAX, |s| s.clamp(1, u32::MAX - 1));
     }
 
     /// Creates a ready thread in process `slot` at `priority`.
@@ -264,6 +324,9 @@ impl Scheduler {
             State::Blocked => self.cancel_wait(i),
             State::Running => self.running = NONE,
             State::Free => {}
+        }
+        if self.charged == i {
+            self.charged = NONE;
         }
         // Mutexes it still holds pass to their next waiter (CE: abandoned).
         let mut used = self.events_used;
@@ -336,36 +399,38 @@ impl Scheduler {
 
     // ---- the ready queues -------------------------------------------------
 
-    fn make_ready(&mut self, i: u8) {
+    /// Queues ready thread `i` between `prev` and `next` (neighbours in
+    /// its priority's queue, or `NONE` at either end). The one place that
+    /// links a ready thread in: back, front and behind a peer share it.
+    #[inline(never)]
+    fn link(&mut self, i: u8, prev: u8, next: u8) {
         let p = usize::from(self.threads[usize::from(i)].priority);
         let th = &mut self.threads[usize::from(i)];
         th.state = State::Ready;
-        th.next = NONE;
-        th.prev = self.tail[p];
-        if self.tail[p] == NONE {
+        th.prev = prev;
+        th.next = next;
+        if prev == NONE {
             self.head[p] = i;
         } else {
-            self.threads[usize::from(self.tail[p])].next = i;
+            self.threads[usize::from(prev)].next = i;
         }
-        self.tail[p] = i;
+        if next == NONE {
+            self.tail[p] = i;
+        } else {
+            self.threads[usize::from(next)].prev = i;
+        }
         self.map[p / 32] |= 1 << (31 - p % 32);
         self.summary |= 1 << (7 - p / 32);
     }
 
+    fn make_ready(&mut self, i: u8) {
+        let p = usize::from(self.threads[usize::from(i)].priority);
+        self.link(i, self.tail[p], NONE);
+    }
+
     fn make_ready_front(&mut self, i: u8) {
         let p = usize::from(self.threads[usize::from(i)].priority);
-        let th = &mut self.threads[usize::from(i)];
-        th.state = State::Ready;
-        th.prev = NONE;
-        th.next = self.head[p];
-        if self.head[p] == NONE {
-            self.tail[p] = i;
-        } else {
-            self.threads[usize::from(self.head[p])].prev = i;
-        }
-        self.head[p] = i;
-        self.map[p / 32] |= 1 << (31 - p % 32);
-        self.summary |= 1 << (7 - p / 32);
+        self.link(i, NONE, self.head[p]);
     }
 
     fn unlink_ready(&mut self, i: u8) {
@@ -408,8 +473,21 @@ impl Scheduler {
     /// thread to run (`None`: nothing is ready; idle).
     #[inline(never)]
     pub fn schedule(&mut self, now: u32) -> Option<Tid> {
+        // Charge the CPU time since the last call to whoever had it (it may
+        // have blocked since), before sleepers wake and read their bursts.
+        if self.charged != NONE {
+            let th = &mut self.threads[usize::from(self.charged)];
+            let units = now.wrapping_sub(self.charged_from).div_ceil(BURST_UNIT);
+            th.burst = th
+                .burst
+                .saturating_add(u16::try_from(units).unwrap_or(u16::MAX));
+        }
+        self.charged_from = now;
         self.expire_sleepers(now);
         let cur = self.running;
+        if core::mem::take(&mut self.cut) && cur != NONE {
+            self.cut_quantum(now);
+        }
         let best = self.best_ready();
         if cur != NONE {
             let cp = self.threads[usize::from(cur)].priority;
@@ -422,14 +500,25 @@ impl Scheduler {
                 if expired {
                     self.quantum_end = now.wrapping_add(self.quantum());
                 }
+                self.charged = cur;
                 return Some(Tid(cur));
             }
             // Quantum over: back of its queue with a fresh quantum. Preempted
             // by a more urgent thread: *front* of its queue with what was
             // left, so it resumes before its peers (CE/NT semantics).
-            if expired {
+            // Tickless, a thread alone at its priority runs on past its
+            // quantum's end (nothing needs the timer); preempted then, it
+            // has used its whole quantum, so with the wake slice it keeps
+            // its place with nothing left: a peer that wakes next goes
+            // first (measured on the device: a fresh quantum here made the
+            // UI wait one burst behind it, touch 10 ms instead of 5).
+            let p = usize::from(cp);
+            if expired && (self.head[p] != NONE || self.wake_slice().is_none()) {
                 self.threads[usize::from(cur)].quantum = self.quantum();
                 self.make_ready(cur);
+            } else if expired {
+                self.threads[usize::from(cur)].quantum = 0;
+                self.make_ready_front(cur);
             } else {
                 self.threads[usize::from(cur)].quantum = self.quantum_end.wrapping_sub(now);
                 self.make_ready_front(cur);
@@ -444,7 +533,78 @@ impl Scheduler {
         self.quantum_end = now.wrapping_add(th.quantum);
         th.quantum = fresh;
         self.running = next;
+        self.charged = next;
         Some(Tid(next))
+    }
+
+    /// A peer of the running thread woke: its quantum ends a wake slice from
+    /// `now`, or once it has used `cut_burst` of it, whichever is later
+    /// (never later than it would have).
+    fn cut_quantum(&mut self, now: u32) {
+        let Some(slice) = self.wake_slice() else {
+            return;
+        };
+        let start = self.quantum_end.wrapping_sub(self.quantum());
+        let soonest = now.wrapping_add(slice);
+        let fair = start.wrapping_add(self.cut_burst);
+        let at = if reached(soonest, fair) {
+            soonest
+        } else {
+            fair
+        };
+        if reached(self.quantum_end, at) {
+            self.quantum_end = at;
+        }
+    }
+
+    /// A blocked thread becomes ready (signalled, handed a mutex, or its
+    /// time came). With a wake slice, a thread whose last burst was shorter
+    /// than a quantum doesn't wait for the peer that holds its priority's
+    /// turn (see [`set_wake_slice`](Self::set_wake_slice)):
+    ///
+    /// - that peer is running: the woken thread goes to the front of the
+    ///   queue and the peer's quantum is cut at the next `schedule`;
+    /// - a more urgent thread is running (the driver thread that woke it,
+    ///   say) and the peer waits at the head of the queue, preempted: the
+    ///   woken thread goes ahead of it if the peer has used as much of its
+    ///   quantum as the woken thread's last burst, else right behind it,
+    ///   with what the peer has left cut the same way.
+    ///
+    /// Otherwise CE's order: the back of its queue.
+    #[inline(never)]
+    fn wake(&mut self, i: u8) {
+        let burst =
+            u32::from(core::mem::take(&mut self.threads[usize::from(i)].burst)) << BURST_SHIFT;
+        let p = self.threads[usize::from(i)].priority;
+        let cur = self.running;
+        let Some(slice) = self
+            .wake_slice()
+            .filter(|_| burst < self.quantum() && cur != NONE)
+        else {
+            self.make_ready(i);
+            return;
+        };
+        let cp = self.threads[usize::from(cur)].priority;
+        let h = self.head[usize::from(p)];
+        if cp == p {
+            self.make_ready_front(i);
+            if !self.cut || burst < self.cut_burst {
+                self.cut_burst = burst;
+            }
+            self.cut = true;
+        } else if cp < p && h != NONE {
+            let left = self.threads[usize::from(h)].quantum;
+            let used = self.quantum().saturating_sub(left);
+            if used >= burst {
+                self.make_ready_front(i);
+            } else {
+                let fair = (burst - used).max(slice);
+                self.threads[usize::from(h)].quantum = left.min(fair);
+                self.link(i, h, self.threads[usize::from(h)].next);
+            }
+        } else {
+            self.make_ready(i);
+        }
     }
 
     /// Whether any thread is waiting for the CPU (the idle loop sleeps only
@@ -576,7 +736,7 @@ impl Scheduler {
         let ev = &mut self.events[usize::from(m)];
         ev.owner = w;
         ev.count = 1;
-        self.make_ready(w);
+        self.wake(w);
         // Its remaining waiters now push on the new owner.
         self.update_priority(w);
     }
@@ -640,7 +800,7 @@ impl Scheduler {
                 }
             }
             self.threads[usize::from(i)].signalled = false;
-            self.make_ready(i);
+            self.wake(i);
         }
     }
 
@@ -845,7 +1005,7 @@ impl Scheduler {
         self.unlink_waiter(i);
         self.remove_sleeper(i);
         self.threads[usize::from(i)].signalled = true;
-        self.make_ready(i);
+        self.wake(i);
     }
 
     /// Sets `e`: a manual-reset event releases every waiter and stays set; an

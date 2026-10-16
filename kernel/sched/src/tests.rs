@@ -470,3 +470,244 @@ fn the_kdata_view_follows_the_thread() {
     assert_eq!(c, a);
     assert_eq!(s.view(c).tls, 0);
 }
+
+// ---- the wake slice (ADR-0010 amendment) ------------------------------------
+
+const SLICE: u32 = 10;
+
+/// A busy thread `hog` running, and `ui` (same priority) blocked on `ev`
+/// after a burst of `burst` ticks of work, at `now`.
+fn hog_and_waiter(s: &mut Scheduler, burst: u32) -> (Tid, Tid, Eid, u32) {
+    let ui = s.create(2, NORMAL).unwrap();
+    let hog = s.create(2, NORMAL).unwrap();
+    let ev = s.create_event(false, false).unwrap();
+    assert_eq!(s.schedule(0), Some(ui));
+    assert_eq!(s.wait(ev, None), Ok(None)); // works `burst`, then waits
+    assert_eq!(s.schedule(burst), Some(hog));
+    (hog, ui, ev, burst)
+}
+
+#[test]
+fn ce_mode_a_woken_peer_waits_for_the_whole_quantum() {
+    let mut s = sched();
+    s.set_wake_slice(None);
+    let (hog, ui, ev, t) = hog_and_waiter(&mut s, 50);
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(t + 100), Some(hog));
+    assert_eq!(s.next_deadline(), Some(t + Q), "the hog's full quantum");
+    assert_eq!(s.schedule(t + Q - 1), Some(hog));
+    assert_eq!(s.schedule(t + Q), Some(ui));
+}
+
+#[test]
+fn a_woken_peer_runs_within_the_wake_slice() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    // The UI's last burst (5) is shorter than what the hog has used (100).
+    let (hog, ui, ev, t) = hog_and_waiter(&mut s, 5);
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(t + 100), Some(hog), "not at once: a slice");
+    assert_eq!(s.next_deadline(), Some(t + 100 + SLICE));
+    assert_eq!(s.schedule(t + 100 + SLICE), Some(ui));
+    assert_eq!(s.state(hog), State::Ready);
+    // The UI starts its own fresh quantum.
+    assert_eq!(s.next_deadline(), Some(t + 100 + SLICE + Q));
+}
+
+#[test]
+fn the_running_peer_keeps_as_much_as_the_woken_one_last_used() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    // The waker's last burst was 384: the hog keeps the CPU until it has
+    // used 384 of its quantum, so neither can take more than the other.
+    // (Bursts are counted in 64-tick units, rounded up.)
+    let (hog, ui, ev, t) = hog_and_waiter(&mut s, 384);
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(t + 100), Some(hog));
+    assert_eq!(s.next_deadline(), Some(t + 384));
+    assert_eq!(s.schedule(t + 383), Some(hog));
+    assert_eq!(s.schedule(t + 384), Some(ui));
+}
+
+#[test]
+fn a_waker_that_used_a_whole_quantum_queues_at_the_back_as_in_ce() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    let (hog, ui, ev, t) = hog_and_waiter(&mut s, Q);
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(t + 100), Some(hog));
+    assert_eq!(s.next_deadline(), Some(t + Q));
+    assert_eq!(s.schedule(t + Q), Some(ui));
+}
+
+#[test]
+fn a_woken_peer_goes_ahead_of_ready_peers() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    let ui = s.create(2, NORMAL).unwrap();
+    let hog = s.create(2, NORMAL).unwrap();
+    let hog2 = s.create(2, NORMAL).unwrap();
+    let ev = s.create_event(false, false).unwrap();
+    assert_eq!(s.schedule(0), Some(ui));
+    assert_eq!(s.wait(ev, None), Ok(None));
+    assert_eq!(s.schedule(5), Some(hog));
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(200), Some(hog));
+    assert_eq!(s.schedule(200 + SLICE), Some(ui), "ahead of hog2");
+    s.wait(ev, None).unwrap();
+    assert_eq!(s.schedule(220), Some(hog2), "then the peers in order");
+    assert_eq!(s.state(hog), State::Ready);
+}
+
+/// The touch path: a driver thread (more urgent) preempts the busy peer,
+/// then wakes the UI thread.
+fn driver_wakes_ui(slice: Option<u32>, burst: u32, hog_ran: u32) -> (Scheduler, Tid, Tid) {
+    let mut s = sched();
+    s.set_wake_slice(slice);
+    let ui = s.create(2, NORMAL).unwrap();
+    let hog = s.create(2, NORMAL).unwrap();
+    let driver = s.create(2, 100).unwrap();
+    let irq = s.create_event(false, false).unwrap();
+    let input = s.create_event(false, false).unwrap();
+    assert_eq!(s.schedule(0), Some(driver));
+    s.wait(irq, None).unwrap();
+    assert_eq!(s.schedule(0), Some(ui));
+    s.wait(input, None).unwrap();
+    assert_eq!(s.schedule(burst), Some(hog));
+    let t = burst + hog_ran;
+    s.set_event(irq).unwrap(); // the touch interrupt
+    assert_eq!(s.schedule(t), Some(driver));
+    s.set_event(input).unwrap();
+    s.wait(irq, None).unwrap();
+    (s, ui, hog)
+}
+
+#[test]
+fn a_peer_preempted_by_the_driver_doesnt_keep_the_ui_waiting() {
+    // The hog has used 300 of its quantum, more than the UI's last burst
+    // (5): the UI runs as soon as the driver is done.
+    let (mut s, ui, hog) = driver_wakes_ui(Some(SLICE), 5, 300);
+    assert_eq!(s.schedule(310), Some(ui));
+    assert_eq!(s.state(hog), State::Ready);
+}
+
+#[test]
+fn a_peer_preempted_early_keeps_the_ui_s_last_burst_first() {
+    // The hog had used only 20 when preempted; the UI's last burst was
+    // 192: the hog runs 172 more (up to an equal share), then the UI.
+    let (mut s, ui, hog) = driver_wakes_ui(Some(SLICE), 192, 20);
+    assert_eq!(s.schedule(222), Some(hog));
+    assert_eq!(s.next_deadline(), Some(222 + 172));
+    assert_eq!(s.schedule(222 + 172), Some(ui));
+}
+
+#[test]
+fn a_peer_that_ran_alone_past_its_quantum_has_used_it_all() {
+    // The hog ran alone for 5000 (five quanta, no timer: tickless) when the
+    // driver preempted it: the UI (last burst 192) goes first.
+    let (mut s, ui, hog) = driver_wakes_ui(Some(SLICE), 192, 5000);
+    assert_eq!(s.schedule(5200), Some(ui));
+    assert_eq!(s.state(hog), State::Ready);
+    // With nothing left, the hog renews when it runs again alone.
+    s.exit(ui).unwrap();
+    assert_eq!(s.schedule(5300), Some(hog));
+    assert_eq!(s.next_deadline(), None);
+    assert_eq!(s.schedule(5400), Some(hog));
+}
+
+#[test]
+fn ce_mode_the_preempted_peer_finishes_its_quantum_first() {
+    let (mut s, ui, hog) = driver_wakes_ui(None, 5, 300);
+    assert_eq!(s.schedule(310), Some(hog), "its 700 left first");
+    assert_eq!(s.next_deadline(), Some(310 + 700));
+    assert_eq!(s.schedule(1010), Some(ui));
+}
+
+#[test]
+fn sleeps_that_end_cut_the_quantum_too() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    let ui = s.create(2, NORMAL).unwrap();
+    let hog = s.create(2, NORMAL).unwrap();
+    assert_eq!(s.schedule(0), Some(ui));
+    s.sleep_until(300).unwrap(); // a frame tick at 300
+    assert_eq!(s.schedule(3), Some(hog));
+    assert_eq!(s.next_deadline(), Some(300), "the sleeper");
+    assert_eq!(s.schedule(300), Some(hog));
+    assert_eq!(s.next_deadline(), Some(300 + SLICE));
+    assert_eq!(s.schedule(300 + SLICE), Some(ui));
+}
+
+#[test]
+fn other_priorities_are_untouched() {
+    let mut s = sched();
+    s.set_wake_slice(Some(SLICE));
+    // Less urgent: waits as always (strict priority).
+    let low = s.create(2, 252).unwrap();
+    let hog = s.create(2, NORMAL).unwrap();
+    let peer = s.create(2, NORMAL).unwrap();
+    let ev = s.create_event(false, false).unwrap();
+    assert_eq!(s.schedule(0), Some(hog));
+    s.exit(peer).unwrap();
+    // `low` blocks only after `hog` sleeps; then wakes while `hog` runs.
+    s.sleep_until(50).unwrap();
+    assert_eq!(s.schedule(1), Some(low));
+    s.wait(ev, None).unwrap();
+    assert_eq!(s.schedule(50), Some(hog));
+    s.set_event(ev).unwrap();
+    assert_eq!(s.schedule(60), Some(hog));
+    assert_eq!(s.next_deadline(), None, "no peer: no quantum to cut");
+    assert_eq!(s.state(low), State::Ready);
+}
+
+#[test]
+fn a_frequent_sleeper_takes_no_more_than_an_equal_share() {
+    // A thread that works `b` then sleeps a tick, forever, against a busy
+    // thread: with the wake slice the busy one still gets at least as much
+    // CPU (CE: exactly a quantum each turn; here at least `b` each turn).
+    for b in [5, 50, 300, 999] {
+        let mut s = sched();
+        s.set_wake_slice(Some(SLICE));
+        let sleeper = s.create(2, NORMAL).unwrap();
+        let hog = s.create(2, NORMAL).unwrap();
+        let (mut now, mut hog_time, mut sleeper_time) = (0u32, 0u32, 0u32);
+        let mut on = s.schedule(now).unwrap();
+        let mut wake_at = None;
+        while now < 100_000 {
+            // Run whoever is on the CPU until its next event.
+            let deadline = s.next_deadline().unwrap_or(now + Q);
+            let until = if on == sleeper { now + b } else { deadline };
+            let until = until.min(deadline).max(now + 1);
+            if on == hog {
+                hog_time += until - now;
+            } else {
+                sleeper_time += until - now;
+            }
+            now = until;
+            if on == sleeper && wake_at.is_none() {
+                s.sleep_until(now + 1).unwrap();
+                wake_at = Some(now + 1);
+            }
+            if wake_at.is_some_and(|w| now >= w) {
+                wake_at = None;
+            }
+            on = s.schedule(now).unwrap();
+        }
+        // (The sleeper may be one burst ahead when the window ends.)
+        assert!(
+            hog_time + b >= sleeper_time,
+            "burst {b}: hog {hog_time}, sleeper {sleeper_time}"
+        );
+    }
+}
+
+#[test]
+fn the_wake_slice_is_on_by_default_and_can_be_switched_off() {
+    let s = Scheduler::new();
+    assert_eq!(s.wake_slice(), Some(DEFAULT_WAKE_SLICE));
+    let mut s = s;
+    s.set_wake_slice(None);
+    assert_eq!(s.wake_slice(), None);
+    s.set_wake_slice(Some(0));
+    assert_eq!(s.wake_slice(), Some(1), "a slice is at least a tick");
+}
