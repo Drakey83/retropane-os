@@ -188,9 +188,12 @@ pub fn describe_note(text: &str, now: u64) -> String {
     if !who.is_empty() {
         s = format!("{who}: {s}");
     }
-    let place = Path::new(field("cwd"))
-        .file_name()
-        .map(|n| format!(", in {}", n.to_string_lossy()))
+    // The note is written on Windows: split on both separators, so it reads
+    // the same on every host (Path only knows its own host's separator).
+    let place = field("cwd")
+        .rsplit(['/', '\\'])
+        .find(|n| !n.is_empty())
+        .map(|n| format!(", in {n}"))
         .unwrap_or_default();
     s += &format!(" (pid {}{place})", field("pid"));
     if let Ok(since) = field("since").parse::<u64>() {
