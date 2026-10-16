@@ -711,3 +711,25 @@ fn the_wake_slice_is_on_by_default_and_can_be_switched_off() {
     s.set_wake_slice(Some(0));
     assert_eq!(s.wake_slice(), Some(1), "a slice is at least a tick");
 }
+
+#[test]
+fn the_last_thread_number_queues_waits_and_wakes() {
+    // Thread 255: the highest 8-bit number, linked through the same u8
+    // queue links as every other (0 is the sentinel, never a thread).
+    let mut s = sched();
+    let mut last = Tid(0);
+    for _ in 0..MAX_THREADS {
+        last = s.create(2, 200).unwrap();
+    }
+    assert_eq!(last, Tid(255));
+    assert_eq!(last.index(), MAX_THREADS - 1);
+    s.set_priority(last, 100).unwrap();
+    assert_eq!(s.schedule(0), Some(last));
+    let ev = s.create_event(false, false).unwrap();
+    s.wait(ev, None).unwrap();
+    assert_eq!(s.schedule(1), Some(Tid(1)));
+    assert_eq!(s.set_event(ev), Ok(1));
+    assert_eq!(s.schedule(2), Some(last), "woken and more urgent");
+    s.exit(last).unwrap();
+    assert_eq!(s.create(2, 200), Ok(Tid(255)), "its number is reused");
+}

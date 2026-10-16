@@ -30,7 +30,7 @@ mod image {
     use rp_hal_pxa27x::rt::{self, Global};
     use rp_hal_pxa27x::soc::irq;
     use rp_hal_pxa27x::user::{self, Frame};
-    use rp_hal_pxa27x::{iwmmxt, thread};
+    use rp_hal_pxa27x::{cpu, iwmmxt, thread};
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid, kdata};
     use rp_kernel_trace::{Kind, Persistent};
@@ -172,8 +172,10 @@ mod image {
         });
         trace(Kind::Mark, 1, 0);
 
-        // Thread stacks: 4 KiB each from the RAM pool.
+        // Thread stacks: 4 KiB each from the RAM pool; its last MiB is the
+        // FCSE test's frame.
         let Some(pool) = take_ram_pool() else { halt() };
+        let (pool, fcse_mib) = pool.split_at_mut(pool.len() - (1 << 20) / 4);
         let mut stacks = pool.chunks_exact_mut(1024);
 
         let started = SCHED.with(|s| -> Result<(), Error> {
@@ -390,6 +392,8 @@ mod image {
         // 3 checks per thread, all matching.
         let pass = good == 6 && addr == KDATA_PROBE && untouched;
         ok &= report(&mut uart, "USER KData", pass, good);
+        let native = fcse_native_slot(fcse_mib);
+        ok &= report(&mut uart, "THREADS FCSE native slot", native, 0);
         if ok {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
@@ -398,6 +402,33 @@ mod image {
         // Back to the resident loader, if it started this run.
         rp_hal_x51v::devices::return_to_loader();
         halt()
+    }
+
+    /// FCSE above the kernel (docs/research/process-limit.md): RetroPane's
+    /// own processes live in slots 96-126, `0xC0000000` up, so a 7-bit
+    /// process ID must relocate the bottom 32 MiB there on the real XScale,
+    /// not only in the emulator. A word in a test MiB, mapped at slot 98:
+    /// with process ID 98, address `0x40` reads it; with 97 nothing is
+    /// there (an abort, caught).
+    #[inline(never)]
+    fn fcse_native_slot(frame: &'static mut [u32]) -> bool {
+        const SLOT: u32 = 98;
+        const OFF: u32 = 0x40;
+        const MARK: u32 = 0x5107_0098;
+        let phys = frame.as_ptr() as usize as u32;
+        frame[(OFF / 4) as usize] = MARK;
+        // To RAM before the other address reads it (VIVT: a second alias).
+        cpu::clean_range(phys + OFF, 4);
+        if !rt::map_test_section(SLOT << 25, phys) {
+            return false;
+        }
+        let direct = rt::try_read((SLOT << 25 | OFF) as usize);
+        cpu::set_pid(SLOT);
+        let relocated = rt::try_read(OFF as usize);
+        cpu::set_pid(SLOT - 1);
+        let elsewhere = rt::try_read(OFF as usize);
+        cpu::set_pid(0);
+        direct == Some(MARK) && relocated == Some(MARK) && elsewhere.is_none()
     }
 
     /// Starts two user threads at priority 200 (a kernel stack and a user

@@ -181,7 +181,10 @@ pub const BUDGETS: &[Budget] = &[
         max_load: 32 * 1024,
         // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
         // threads' own stacks (24.3 KiB measured, +~10%).
-        max_zero: 27 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads instead of 128 (the owner's vote), the scheduler's and
+        // HAL's per-thread tables; 27.9 KiB measured, +~10%.
+        max_zero: 31 * 1024,
         device: OnDevice::Returns,
     },
     // Quantum test image (ADR-0010 amendment): touch latency, frame timing
@@ -191,7 +194,9 @@ pub const BUDGETS: &[Budget] = &[
     Budget {
         image: "rp-quantum",
         max_load: 34 * 1024,
-        max_zero: 27 * 1024,
+        // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
+        // threads' tables; 27.3 KiB measured, +~10%.
+        max_zero: 31 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only, never part of the OS: register names and report text
