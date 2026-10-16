@@ -124,6 +124,13 @@ const MCMEM1: usize = 0x2C;
 const MCATT1: usize = 0x34;
 const MCIO1: usize = 0x3C;
 
+/// The physical address of the CompactFlash socket's common memory (what
+/// a DMA engine reads the card's data window from).
+#[must_use]
+pub fn cf_common_phys() -> Option<u32> {
+    Some(region("pcmcia1_cf")?.base + CF_COMMON as u32)
+}
+
 /// Hands out the CompactFlash socket's attribute and common memory windows
 /// once (enough for the CIS, the configuration registers and the ATA task
 /// file), with the socket enabled (`MECR`: two sockets, card inserted) and

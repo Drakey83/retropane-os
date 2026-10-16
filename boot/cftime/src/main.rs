@@ -434,7 +434,7 @@ mod image {
                 gpio: &mut gpio,
                 cpld: &mut cpld,
             },
-            &mut |ms| rt::delay_us(ms * 1000),
+            &mut |us| rt::delay_us(us),
         );
         log!("R2 reset: {seen:?}");
         if seen.is_err() {

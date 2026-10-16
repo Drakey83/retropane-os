@@ -924,11 +924,12 @@ mod image {
     /// on insertion) or on `cf`; then the card, or why not.
     enum CfSlot {
         Untried,
-        Card(CfCard<Mmio, Mmio>),
+        Card(CfCard<Mmio, Mmio, Option<Dma>>),
         /// No card in use (taken out, failed to attach, or stopped
-        /// answering: the reason): the socket's windows, kept so the next
-        /// insertion or `cf` tries again, from a hardware reset.
-        Idle(Mmio, Mmio, &'static str),
+        /// answering: the reason): the socket's windows and its DMA
+        /// channel, kept so the next insertion or `cf` tries again, from a
+        /// hardware reset.
+        Idle(Mmio, Mmio, Option<Dma>, &'static str),
         /// The board has no socket windows.
         Unavailable,
     }
@@ -1131,8 +1132,8 @@ mod image {
                 let CfSlot::Card(card) = core::mem::replace(&mut self.slot, CfSlot::Untried) else {
                     return;
                 };
-                let (attr, common) = card.into_inner();
-                self.slot = CfSlot::Idle(attr, common, why);
+                let (attr, common, dma) = card.into_parts();
+                self.slot = CfSlot::Idle(attr, common, dma, why);
             }
         }
     }
@@ -1187,16 +1188,19 @@ mod image {
         soft: bool,
     ) -> Option<rp_drv_cf::ResetSeen> {
         let slot = &mut lun.slot;
-        let (attr, common) = match core::mem::replace(slot, CfSlot::Unavailable) {
-            CfSlot::Untried => devices::take_cf()?,
-            CfSlot::Idle(attr, common, _) => (attr, common),
+        let (attr, common, dma) = match core::mem::replace(slot, CfSlot::Unavailable) {
+            CfSlot::Untried => {
+                let (attr, common) = devices::take_cf()?;
+                (attr, common, rt::take_dma(2))
+            }
+            CfSlot::Idle(attr, common, dma, _) => (attr, common, dma),
             card @ CfSlot::Card(_) => {
                 *slot = card;
                 return None;
             }
             CfSlot::Unavailable => return None,
         };
-        let mut delay = |ms| rt::delay_us(ms * 1000);
+        let mut delay = |us| rt::delay_us(us);
         let taken = match cpld {
             Some(cpld) if !soft => {
                 cf_power_cycle(cpld);
@@ -1208,11 +1212,14 @@ mod image {
         match taken {
             Ok((card, seen)) => {
                 lun.events.push(b'A');
-                *slot = CfSlot::Card(card);
+                // Reads by DMA from the data window when it reads IDENTIFY
+                // as the 16-bit port does (docs/research/storage-speed.md).
+                let phys = devices::cf_common_phys().unwrap_or(0);
+                *slot = CfSlot::Card(card.with_dma(dma, phys));
                 Some(seen)
             }
             Err((e, attr, common)) => {
-                *slot = CfSlot::Idle(attr, common, e.name());
+                *slot = CfSlot::Idle(attr, common, dma, e.name());
                 None
             }
         }
@@ -1240,7 +1247,7 @@ mod image {
         let was = match lun.slot {
             CfSlot::Untried => "untried",
             CfSlot::Card(_) => "card",
-            CfSlot::Idle(_, _, why) => why,
+            CfSlot::Idle(_, _, _, why) => why,
             CfSlot::Unavailable => "unavailable",
         };
         let (was_in, changes) = (lun.inserted, lun.changes);
@@ -1250,7 +1257,7 @@ mod image {
         let reset = cf_attach(lun, gpio, cpld, soft);
         let card = match &mut lun.slot {
             CfSlot::Card(c) => c,
-            CfSlot::Idle(_, _, why) => {
+            CfSlot::Idle(_, _, _, why) => {
                 let _ = write!(
                     out,
                     "RPL ERR cf: {why} (was {was}; GPIO84 {} before, {} now)\r\n",
@@ -1279,10 +1286,12 @@ mod image {
         };
         let _ = write!(
             out,
-            "RPL OK cf: {} MB ({} sectors), write cache {}, {first}, model ",
+            "RPL OK cf: {} MB ({} sectors), write cache {}, reads by {} ({} paths refused), {first}, model ",
             card.sectors() / 2048,
             card.sectors(),
             if card.write_cache_off() { "off" } else { "on" },
+            card.read_path().name(),
+            card.path_mismatches(),
         );
         for &b in card.model().iter().take(40) {
             let _ = out.write_char(char::from(b));
@@ -2430,7 +2439,7 @@ mod image {
                     match (&cf.slot, cf.inserted) {
                         (_, false) => "out",
                         (CfSlot::Card(_), true) => "in: attached",
-                        (CfSlot::Idle(_, _, why), true) => why,
+                        (CfSlot::Idle(_, _, _, why), true) => why,
                         _ => "in: socket unavailable",
                     }
                 );
@@ -2449,7 +2458,7 @@ mod image {
                     "CF card retried: {}",
                     match &cf.slot {
                         CfSlot::Card(_) => "attached",
-                        CfSlot::Idle(_, _, why) => why,
+                        CfSlot::Idle(_, _, _, why) => why,
                         _ => "socket unavailable",
                     }
                 );
