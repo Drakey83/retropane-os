@@ -37,7 +37,8 @@ Clock: `CKEN[0]` (PWM0 and PWM2).
 |---|---|---|
 | The PWM counts 13 MHz / (prescale + 1); Windows Mobile's prescale 1 and 216 counts make 30.09 kHz, so prescale 0 and 432 counts make exactly the same 30.09 kHz with steps half the size. A longer cycle at prescale 0 would lower the frequency (649 counts: 20 kHz, the edge of hearing) | confirmed (arithmetic, M) | (M) |
 | One count of 216 is Windows Mobile's dimmest (~7% on the perceptual scale); one of 432 would be ~5% | confirmed (arithmetic) | |
-| The display's graphics gamma table (`GFXGAM0`-`16`, `0x2250`-`0x2290`, 17 entries, used while `GSCTRL[26]` is set, which Windows Mobile leaves on) is applied at scan-out | likely | Intel's 2700G register names (mbxfb headers, B); `rp-light` (`GSCTRL` gamma bit set); the entries' format is unknown until `rp-nightlight` reads them |
+| The display's graphics gamma table (`GFXGAM0`-`16`, `0x2250`-`0x2290`, 17 entries, used while `GSCTRL[26]` is set, which Windows Mobile leaves on) is applied at scan-out | likely | Intel's 2700G register names (mbxfb headers, B); `rp-light` (`GSCTRL` gamma bit set) |
+| The gamma table's entries are `0x00RRGGBB`, 8 bits per colour; Windows Mobile leaves a straight grey ramp (`00`, `0F`, `1F` ... `EE`, `FD`); scaling it dims the picture on the device | confirmed | P, 2026-10-16, `rp-nightlight` (`local/rp-nightlight-run1.txt`), steps 4-5 seen dimmer |
 
 **RetroPane (`rp-drv-pxa-pwm`):** the backlight is taken over at prescale 0
 and 432 counts, keeping the brightness found (Windows Mobile's 137/216
@@ -58,6 +59,19 @@ lets the owner judge it, for the record.
 listening):** steps 1-8 compare Windows Mobile's dimmest with 2/432 (the
 same?) and 1/432 (dimmer, still lit?), the picture at 1/2 and 1/4, the
 dithered duty, and listen for whine at half brightness on both cycles.
+
+**Device result (P, 2026-10-16, three runs: one to log, one to watch, one
+to listen; `local/rp-nightlight-run1..3.txt`).** All eight steps ran and the
+light was put back as found. The screen stayed lit through every step,
+including 1/432 and the 0-1/432 dithering. Step 5 (1/432, picture at 1/4)
+was the dimmest and clearly dimmer than Windows Mobile's dimmest (step 1).
+No whine or other sound on any step. Caveat, the owner's: high pitches are
+hard to hear at 43. That matters little here: the cycle is 30 kHz, beyond
+anyone's hearing, and step 6's 1 kHz modulation is well inside an adult's
+range, so its silence is a real result; a coil's sub-harmonics can't be
+ruled out by ear. The two-stage design stands; its darkest picture stage
+(1/8) is one step past what was shown (1/4) and is checked by eye when the
+night setting gets its UI.
 
 ## How RetroPane drives it (`rp-drv-pxa-pwm`)
 
