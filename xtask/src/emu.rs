@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.18.0";
+pub const QEMU_RELEASE: &str = "rp-v0.19.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -3587,11 +3587,11 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
-        // No CF card in this machine: the slot reads empty and the socket
-        // is never touched.
+        // No CF card in this machine: the slot reads empty (CPLD 0x04 bit 1)
+        // and the socket is never touched.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL ERR cf: no card (GPIO13 high)", 20)?;
+        usb_read_until(&mut s, "RPL ERR cf: no card\r\n", 20)?;
         // SD DMA: reads and writes on after the start-up self-test (writes
         // since rp-storfast's device soak); `card dma writes` still answers;
         // the puts below write by DMA and are checked in the image afterwards.
