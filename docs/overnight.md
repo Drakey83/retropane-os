@@ -1507,3 +1507,34 @@ comes before the UI and GDI designs, which are written GPU-first.
     card in, `cargo xtask load` any returning image a few times with
     Explorer open: J: should come back each time with its label, size and
     icon at once; `cargo xtask cf log` should show no `dead` events.
+
+84. **A PC write after an image's run lost a file** (2026-10-15:
+    noise-ri.bin, 591 rows, gone after a drive bench). **Fixed in the
+    emulator, device check pending.** Cause: the X51v's pull-up is
+    hard-wired, so when the loader comes back after an image Windows can
+    re-attach the drive without noticing it went (the disk log shows no
+    SD events across image runs) and keep its cached FAT and root
+    directory; an image (rp-noise), the crash report the loader saves, or
+    Windows Mobile had written the card meanwhile, and the next PC write
+    put the old root directory back. Class fix in `rp-usb-msc` (every
+    unit, every way the card changes outside the loader's life): a unit's
+    first poll, read or write after the loader starts that doesn't follow
+    a READ CAPACITY (a fresh mount always sends one first) is a view from
+    before: "no medium" with the card untouched, then the usual away
+    window and "medium changed", so Windows re-reads before it writes. A
+    fresh mount sees no delay (the CF fix, item 83, holds). In-loader
+    writes (`put`, `rm`, card repair/scrub, `drive rw/ro`) already
+    announce a change (audited). Guards: `cargo xtask emu-stale` (the PC
+    writes a file, rp-crash runs and the loader keeps its report, the PC's
+    old root directory is refused, the drive goes away and back, all
+    three files stay in the card image); host tests for both paths; two
+    mutants (both killed). The emulator's simulated PC now mounts as a
+    real one does (READ CAPACITY first). **Device check:** run an image
+    that writes the card (rp-noise) with Explorer open on I:; after it,
+    the drive should blink away ~2 s and show the new file; a PC write
+    then keeps it. Not covered: whether Windows' re-attach really sends a
+    poll before any READ CAPACITY (if it re-reads the capacity first, this
+    misses it; the disk log after the device check tells). The other way
+    round: if a fresh Windows mount polls before READ CAPACITY, both
+    drives would arrive empty for ~2 s (item 83's symptom);
+    Explorer would show it (each drive briefly without its size).

@@ -2474,6 +2474,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
             let (_, scan_t) = step(&scan, "4096: 0 failed", "scan of the last blocks")?;
             // The PC's view: the whole card, its last block readable.
             let mut bot = Bot::connect(13)?;
+            bot.mount()?;
             let deadline = Instant::now() + Duration::from_secs(30);
             while bot.command(&[0; 6], 0, false, &[])?.status != 0 {
                 let _ = bot.sense()?;
@@ -2632,10 +2633,11 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             }
         };
         // The card in the slot at start-up is attached before the PC can
-        // see the drive: its first question finds it ready, with no "no
-        // medium" or "medium changed" first (the owner's flaky "USB Drive
-        // (J:)": Explorer drew the drive empty, its icon minutes later).
-        let first = bot.command(&[0; 6], 0, false, &[])?;
+        // see the drive: a fresh mount's first question (READ CAPACITY)
+        // finds it, with no "no medium" or "medium changed" first (the
+        // owner's flaky "USB Drive (J:)": Explorer drew the drive empty, its
+        // icon minutes later).
+        let first = bot.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
         if first.status != 0 {
             let sense = bot.sense()?;
             return Err(format!(
@@ -3337,6 +3339,27 @@ impl Bot {
         }
     }
 
+    /// A fresh host's mount: READ CAPACITY first (as Windows, Linux and
+    /// macOS mount), until the unit answers (a change reported once, or a
+    /// card still being attached), so the drive takes the view as current.
+    fn mount(&mut self) -> Result<u32, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let r = self.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+            if r.status == 0 && r.data.len() == 8 {
+                return Ok(u32::from_be_bytes([r.data[0], r.data[1], r.data[2], r.data[3]]) + 1);
+            }
+            let _ = self.sense()?;
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "drive: unit {} never answered READ CAPACITY",
+                    self.lun
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
     fn sense(&mut self) -> Result<(u8, u8, u8), String> {
         let r = self.command(&[0x03, 0, 0, 0, 18, 0], 18, true, &[])?;
         if r.data.len() < 14 {
@@ -3421,6 +3444,152 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The first block of a FAT32 volume's root directory, from its boot
+/// sector (read through the drive, as the PC would).
+fn root_dir_lba(bot: &mut Bot) -> Result<u32, String> {
+    let ps = rp_fat::format::PARTITION_START;
+    let mut b = [0u8; 512];
+    rp_hal_api::BlockDevice::read_blocks(bot, ps, &mut b)
+        .map_err(|_| "drive: boot sector unreadable".to_string())?;
+    let le16 = |o: usize| u32::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let le32 = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    let (spc, reserved, fats, fat_size, root) = (
+        u32::from(b[13]),
+        le16(14),
+        u32::from(b[16]),
+        le32(36),
+        le32(44),
+    );
+    Ok(ps + reserved + fats * fat_size + (root - 2) * spc)
+}
+
+/// `cargo xtask emu-stale`: the stale-view check on its own.
+pub fn boot_loader_stale_view_alone(root: &Path) -> Result<(), String> {
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &dir.join("rp-loader.bin"),
+    )?;
+    boot_loader_stale_view(root)
+}
+
+/// The stale-view class (noise-ri.bin lost, 2026-10-15): the PC writes the
+/// card through the drive, then something writes it while the loader isn't
+/// running (here the crash report the loader keeps after rp-crash; on the
+/// device an image such as rp-noise, or Windows Mobile). The X51v's pull-up
+/// is hard-wired, so Windows can re-attach without noticing the device went
+/// and keep its cached root directory. Its first write after the loader is
+/// back (that old root directory) must be refused with the card untouched,
+/// the drive must go away and come back changed, and after re-reading, the
+/// PC's next file must leave every entry in place: the PC's first file, the
+/// crash report and the new one, checked in the card image.
+pub fn boot_loader_stale_view(root: &Path) -> Result<(), String> {
+    if !has_msc_model(root) {
+        eprintln!("    stale view: skipped (this emulator's USB model has no mass storage bridge)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    let crash = dir.join("rp-crash.bin");
+    crate::sdkit::raw_binary(&release.join("rp-crash"), &crash)?;
+    let payload = std::fs::read(&crash).map_err(|e| format!("{}: {e}", crash.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let loader = dir.join("rp-loader.bin");
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let sd = root.join("target/emulator/sd-stale.img");
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let before = b"written by the PC before the image ran\r\n";
+    let after = b"written by the PC after the loader came back\r\n";
+    let mut args: Vec<String> = usb_args(14).to_vec();
+    args.extend(msc_args(15));
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut bot = Bot::connect(15)?;
+        let mut s = usb_connect(14)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        bot.mount()?;
+        let mut scratch = vec![0u8; 32 * 1024];
+        {
+            let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
+                .map_err(|e| format!("stale view: mount: {}", e.name()))?;
+            vol.put("pc-before.txt", before, &mut scratch)
+                .map_err(|e| format!("stale view: put: {}", e.name()))?;
+        }
+        // The root directory as the PC caches it.
+        let root_lba = root_dir_lba(&mut bot)?;
+        let mut stale = vec![0u8; 512];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, root_lba, &mut stale)
+            .map_err(|_| "stale view: root directory unreadable".to_string())?;
+        // An image that crashes: the loader comes back and keeps the
+        // report on the card before it offers the drive again.
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 60)?;
+        // The PC kept its view and writes its old root directory back.
+        let r = bot.command(&rw10(0x2A, root_lba, 1), 512, false, &stale)?;
+        if r.status == 0 {
+            return Err(
+                "stale view: the PC's root directory from before the image was written back (the crash report's entry is lost)"
+                    .into(),
+            );
+        }
+        let sense = bot.sense()?;
+        if sense != (0x02, 0x3A, 0x00) {
+            return Err(format!(
+                "stale view: the old view's write failed with {sense:x?}, not \"no medium\""
+            ));
+        }
+        expect_away_then_back(&mut bot, "the image's run")?;
+        // Re-read (a fresh view): the report is there; the next file
+        // goes next to it.
+        bot.mount()?;
+        let report = drive_file(&mut bot, "crashlog.txt")?;
+        if report.is_empty() {
+            return Err("stale view: crashlog.txt is empty".into());
+        }
+        let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
+            .map_err(|e| format!("stale view: mount after: {}", e.name()))?;
+        vol.put("pc-after.txt", after, &mut scratch)
+            .map_err(|e| format!("stale view: put after: {}", e.name()))?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    for (name, want) in [("pc-before.txt", &before[..]), ("pc-after.txt", &after[..])] {
+        if card_file(&sd, name)? != want {
+            return Err(format!("stale view: {name} differs in the card image"));
+        }
+    }
+    if card_file(&sd, "crashlog.txt")?.is_empty() {
+        return Err("stale view: crashlog.txt lost from the card image".into());
+    }
+    eprintln!(
+        "    stale view OK: after the image's run (crash report kept on the card) the PC's old root directory was refused with no medium, the drive went away and came back changed, and the PC's files and the report all stayed"
+    );
+    Ok(())
+}
+
 /// Reads `name` from the card through the drive.
 fn drive_file(bot: &mut Bot, name: &str) -> Result<Vec<u8>, String> {
     let mut vol = rp_fat::Volume::mount(&mut *bot, rp_fat::format::PARTITION_START)
@@ -3487,6 +3656,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         let mut bot = Bot::connect(6)?;
         let mut serial = usb_connect(5)?;
         usb_read_until(&mut serial, "RPLOAD1 READY", 10)?;
+        bot.mount()?;
         // The drive becomes ready.
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {

@@ -173,6 +173,13 @@ fn run_lun(
     run_at(msc, disk, 1000, lun, len, dir_in, cb, data_out)
 }
 
+/// A fresh host's mount: READ CAPACITY first, as Windows, Linux and macOS
+/// do, so the unit takes its view as current (no start-up away).
+fn mount(msc: &mut Msc<'_>, disk: &mut Disk) {
+    let (_, csw) = run(msc, disk, 8, true, &[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], &[]);
+    assert_eq!(csw.status, 0, "READ CAPACITY on mount");
+}
+
 /// TEST UNIT READY at `now_ms`: its status and the sense that follows.
 fn tur_at(msc: &mut Msc<'_>, disk: &mut Disk, now_ms: u32) -> (u8, (u8, u8, u8)) {
     let (_, csw) = run_at(msc, disk, now_ms, 0, 0, false, &[0; 6], &[]);
@@ -243,6 +250,7 @@ fn inquiry_reports_a_removable_retropane_drive() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     let (d, csw) = run(&mut msc, &mut disk, 36, true, &[0x12, 0, 0, 0, 36, 0], &[]);
     assert_eq!((csw.tag, csw.residue, csw.status), (0xC0FFEE, 0, 0));
     assert_eq!(d.len(), 36);
@@ -278,6 +286,7 @@ fn capacity_and_format_capacities() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     let (d, _) = run(
         &mut msc,
         &mut disk,
@@ -305,6 +314,7 @@ fn reads_and_writes_blocks_through_a_small_buffer() {
     let mut buf = vec![0u8; 2 * BLOCK]; // forces refills
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     let want = disk.data[3 * BLOCK..8 * BLOCK].to_vec();
     let (d, csw) = run(&mut msc, &mut disk, 5 * 512, true, &read10(3, 5), &[]);
     assert_eq!((csw.status, csw.residue), (0, 0));
@@ -325,6 +335,7 @@ fn out_of_range_and_wrapping_requests_never_touch_the_card() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     for (lba, count) in [(15, 2), (16, 1), (u32::MAX, 2), (u32::MAX - 1, 0xFFFF)] {
         let len = u32::from(count) * 512;
         let (d, csw) = run(&mut msc, &mut disk, len, true, &read10(lba, count), &[]);
@@ -351,6 +362,7 @@ fn a_mismatched_transfer_is_refused_without_card_access() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     // READ of 2 blocks, but the host asks for 512 bytes, or sends OUT.
     let (_, csw) = run(&mut msc, &mut disk, 512, true, &read10(0, 2), &[]);
     assert_eq!(csw.status, 1);
@@ -364,6 +376,7 @@ fn malformed_cbws_are_ignored_and_the_next_command_works() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     let mut pipe = Pipe::default();
     let mut bad = cbw(1, 0, false, 0, &[0]);
     bad[0] ^= 1;
@@ -385,6 +398,7 @@ fn unknown_commands_and_bad_luns_fail_with_sense() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     let (_, csw) = run(&mut msc, &mut disk, 0, false, &[0xC5, 0, 0, 0, 0, 0], &[]);
     assert_eq!(csw.status, 1);
     assert_eq!(sense(&mut msc, &mut disk), (0x05, 0x20, 0x00));
@@ -403,6 +417,7 @@ fn data_the_command_doesnt_use_is_drained_or_ended_short() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     // TEST UNIT READY with the host expecting 8 bytes in: an empty packet.
     let (d, csw) = run(&mut msc, &mut disk, 8, true, &[0; 6], &[]);
     assert!(d.is_empty());
@@ -425,6 +440,7 @@ fn write_protection_is_honoured_and_reported() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     disk.read_only = true;
     let before = disk.data.clone();
     let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(1, 1), &[9; 512]);
@@ -443,6 +459,7 @@ fn a_refused_block_is_reported_as_write_protected() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     disk.guarded = Some(3);
     let before = disk.data.clone();
     let (_, csw) = run(&mut msc, &mut disk, 512, false, &write10(3, 1), &[9; 512]);
@@ -462,6 +479,7 @@ fn a_device_side_change_takes_the_medium_away_until_the_host_notices() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     // The host has seen the medium (it may have cached the volume).
     assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
     msc.medium_changed(0);
@@ -516,10 +534,21 @@ fn a_medium_arriving_where_the_host_saw_none_is_offered_at_once() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
-    // Never asked: no away.
+    // Never asked: no away. A fresh host's mount (READ CAPACITY) hears of
+    // the change once, then works.
     msc.medium_changed(0);
     assert!(!msc.away(0));
-    assert_eq!(tur_at(&mut msc, &mut disk, 0), (1, (0x06, 0x28, 0x00)));
+    let (_, csw) = run(
+        &mut msc,
+        &mut disk,
+        8,
+        true,
+        &[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        &[],
+    );
+    assert_eq!(csw.status, 1);
+    assert_eq!(sense(&mut msc, &mut disk), (0x06, 0x28, 0x00));
+    mount(&mut msc, &mut disk);
     assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
     // Seen empty, then a card arrives: unit attention, then ready.
     disk.present = false;
@@ -546,6 +575,7 @@ fn a_changed_medium_comes_back_only_once_the_host_noticed_or_after_the_ceiling()
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
     msc.medium_changed(0);
     // The away time starts at the first poll after the change.
@@ -571,6 +601,7 @@ fn a_card_error_mid_read_ends_the_transfer_with_sense() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     disk.fail_reads = true;
     let (d, csw) = run(&mut msc, &mut disk, 4 * 512, true, &read10(0, 4), &[]);
     assert!(d.is_empty());
@@ -589,6 +620,7 @@ fn no_medium_means_not_ready() {
     let mut buf = vec![0u8; 2 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
     disk.present = false;
     let (_, csw) = run(&mut msc, &mut disk, 512, true, &read10(0, 1), &[]);
     assert_eq!(csw.status, 1);
@@ -604,6 +636,7 @@ fn random_commands_never_panic_or_reach_past_the_card() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     let mut x: u64 = 0x2026_1012;
     let mut rnd = || {
         x ^= x << 13;
@@ -658,6 +691,7 @@ fn busy_from_command_to_status() {
     let mut buf = vec![0u8; 4096];
     let mut msc = Msc::new(&mut buf, b"0123456789AB", 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     assert!(!msc.busy());
     let mut pipe = Pipe::default();
     pipe.out
@@ -682,6 +716,7 @@ fn long_reads_overlap_and_stream_the_card_exactly() {
     let mut buf = vec![0u8; 4 * BLOCK]; // halves of 2 blocks
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     disk.overlap = true;
     let want = disk.data.clone();
     let (d, csw) = run(&mut msc, &mut disk, 64 * 512, true, &read10(0, 64), &[]);
@@ -698,6 +733,7 @@ fn read_ahead_serves_the_next_read_and_a_write_drops_it() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     disk.overlap = true;
     let want = disk.data.clone();
     let (d, _) = run(&mut msc, &mut disk, 8 * 512, true, &read10(0, 8), &[]);
@@ -722,6 +758,7 @@ fn a_medium_change_drops_the_read_ahead() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     disk.overlap = true;
     let _ = run(&mut msc, &mut disk, 4 * 512, true, &read10(0, 4), &[]);
     disk.data[4 * 512..5 * 512].fill(0x5A);
@@ -747,6 +784,7 @@ fn a_failure_behind_the_front_is_reported_after_the_good_blocks() {
     let mut buf = vec![0u8; 4 * BLOCK];
     let mut msc = Msc::new(&mut buf, SERIAL, 1);
     let mut disk = Disk::new(64);
+    mount(&mut msc, &mut disk);
     disk.overlap = true;
     disk.fail_from = Some(4);
     let want = disk.data.clone();
@@ -758,4 +796,72 @@ fn a_failure_behind_the_front_is_reported_after_the_good_blocks() {
     );
     assert_eq!(csw.residue, 4 * 512);
     assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x11, 0x00));
+}
+
+/// The stale-view class (2026-10-15, noise-ri.bin lost): an image wrote
+/// the card between loader runs; Windows had re-attached without noticing
+/// the device went (hard-wired pull-up) and wrote its old root directory
+/// back. A host whose first poll, read or write since the drive started
+/// doesn't follow a READ CAPACITY is using a view from before: the medium
+/// goes away first (as after a device-side change), so it re-reads. Once
+/// per unit: after that it is an ordinary drive.
+#[test]
+fn a_view_from_before_the_drive_started_is_sent_away_first() {
+    for first in [vec![0u8; 6], write10(3, 1), read10(3, 1)] {
+        let mut buf = vec![0u8; 2 * BLOCK];
+        let mut msc = Msc::new(&mut buf, SERIAL, 1);
+        let mut disk = Disk::new(16);
+        // INQUIRY and REQUEST SENSE don't count either way.
+        let (_, csw) = run(&mut msc, &mut disk, 36, true, &[0x12, 0, 0, 0, 36, 0], &[]);
+        assert_eq!(csw.status, 0);
+        let (len, dir_in, data) = match first[0] {
+            0x2A => (512, false, vec![0xEE; 512]),
+            0x28 => (512, true, Vec::new()),
+            _ => (0, false, Vec::new()),
+        };
+        let (_, csw) = run_at(&mut msc, &mut disk, 1000, 0, len, dir_in, &first, &data);
+        assert_eq!(csw.status, 1, "op {:#x}: refused", first[0]);
+        assert_eq!(sense(&mut msc, &mut disk), (0x02, 0x3A, 0x00));
+        assert!(msc.away(0));
+        assert_eq!((disk.reads, disk.writes), (0, 0), "the card untouched");
+        // Away as after a device-side change, then back with the change
+        // reported once, then an ordinary drive (never sent away again).
+        assert_eq!(tur_at(&mut msc, &mut disk, 1500).0, 1);
+        assert_eq!(
+            tur_at(&mut msc, &mut disk, 1000 + AWAY_MIN_MS),
+            (1, (0x06, 0x28, 0x00))
+        );
+        assert_eq!(tur_at(&mut msc, &mut disk, 1000 + AWAY_MIN_MS).0, 0);
+        let (_, csw) = run(
+            &mut msc,
+            &mut disk,
+            512,
+            false,
+            &write10(3, 1),
+            &[0xEE; 512],
+        );
+        assert_eq!(csw.status, 0);
+    }
+}
+
+/// A fresh mount (READ CAPACITY first) is never delayed, and an empty
+/// slot's first look is just "no medium" (nothing to send away).
+#[test]
+fn a_fresh_mount_or_an_empty_slot_sees_no_start_up_away() {
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(16);
+    mount(&mut msc, &mut disk);
+    assert!(!msc.away(0));
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
+    let mut buf = vec![0u8; 2 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    disk.present = false;
+    assert_eq!(tur_at(&mut msc, &mut disk, 0), (1, (0x02, 0x3A, 0x00)));
+    assert!(!msc.away(0));
+    disk.present = true;
+    msc.medium_changed(0);
+    assert!(!msc.away(0), "seen empty: offered at once");
+    assert_eq!(tur_at(&mut msc, &mut disk, 0), (1, (0x06, 0x28, 0x00)));
+    assert_eq!(tur_at(&mut msc, &mut disk, 0).0, 0);
 }

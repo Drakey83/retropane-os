@@ -135,6 +135,11 @@ struct Unit {
     /// have cached the volume. If not (it saw the unit empty, or never
     /// asked), a change needs no away time: the host has nothing to drop.
     shown: bool,
+    /// The host's view of this unit is known to be current: it read the
+    /// capacity (a fresh mount) or its first look was answered (see
+    /// [`Msc::new`]). Until then, a poll, read or write is a view from
+    /// before this function started.
+    vouched: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -226,6 +231,17 @@ impl<'b> Msc<'b> {
     /// block transfers in `buf` (a whole number of blocks; bigger means
     /// fewer, longer card commands), reporting `serial` (upper-case hex, as
     /// the transport specification asks) in INQUIRY.
+    ///
+    /// The host may still hold a view of the cards from before this
+    /// function started (the device's pull-up is hard-wired, so Windows
+    /// can re-attach without noticing the device went, and keep its cached
+    /// FAT and directories), while something else wrote them meanwhile (an
+    /// image, a crash report, Windows Mobile). Writing that view back
+    /// loses files. So a unit's first poll, read or write that doesn't
+    /// follow a READ CAPACITY (which a fresh mount always sends first) is
+    /// answered "no medium" and the medium goes away as after
+    /// [`medium_changed`](Self::medium_changed): the host drops its view
+    /// and re-reads before it writes. A fresh host sees no delay.
     ///
     /// # Panics
     /// If `buf` holds no whole block or `luns` is out of range.
@@ -453,6 +469,18 @@ impl<'b> Msc<'b> {
             return;
         }
         let present = !unit.ejected && unit.away.is_none() && luns[self.lun].present();
+        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {
+            let u = &mut self.units[self.lun];
+            u.vouched = true;
+            if present && op != 0x25 {
+                // A view from before this function started: away first.
+                u.away = Some(None);
+                u.away_seen = 0;
+                u.shown = false;
+                self.fail(Sense::NOT_PRESENT);
+                return;
+            }
+        }
         self.units[self.lun].shown = present;
         let blocks = luns[self.lun].blocks();
         let read_only = luns[self.lun].read_only();
