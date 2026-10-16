@@ -635,7 +635,7 @@ mod image {
         };
         let buf = &mut scratch[..32 * 512];
         let mut sums = [0u32; SECTORS];
-        let mut dma = rt::take_dma(1);
+        let mut dma = rt::take_dma(rp_hal_pxa27x::dma_map::CF);
         let mut ready = (0u32, 0u32);
         let a = path(
             &mut card,

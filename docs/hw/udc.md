@@ -7,7 +7,9 @@ standard USB classes (DESIGN.md §10b, ADR-0012).
 Evidence key: **(M)** PXA27x developer's manual register model as used by the
 Linux `pxa27x_udc` driver (read for facts only, as with the other reference
 drivers); **(A)** AxDroid's X50/X51 board file; **(D)** measured on the
-owner's X51v by `rp-probe` (`probe-2026-10-11.md`).
+owner's X51v by `rp-probe` (`probe-2026-10-11.md`); **(T)** Toradex's PXA27x
+DMA library documentation (its request-number table); **(U)** measured on the
+owner's X51v by the item 74 work (`cargo xtask usbbench`, 2026-10-16).
 
 ## Board wiring
 
@@ -58,14 +60,14 @@ all set, read as two 32-bit words, then acknowledged by writing SA | OPC.
 
 | Bit | Name | Meaning |
 |---|---|---|
-| 0 | FS | FIFO needs service |
-| 1 | PC | packet complete; write 1 to clear |
+| 0 | FS | FIFO needs service (IN: read the same as BNF in every probe state, (U)) |
+| 1 | PC | packet complete; write 1 to clear. With two buffers it says only that *a* packet completed |
 | 2 | TRN | Tx/Rx NAK |
-| 3 | DME | DMA enable (preserve on writes) |
+| 3 | DME | DMA enable: the endpoint drives its DMA request. Every write sets or clears it, so writes made while DMA serves the endpoint must carry it |
 | 4 | SST | a STALL was sent; write 1 to clear |
 | 5 | FST | force STALL (preserve on writes) |
-| 6 | BNF / BNE | IN endpoint: buffer not full; OUT endpoint: buffer not empty. Reads 0 while the endpoint isn't active, which once looked like "full" (it was the interface problem below, not this bit) |
-| 7 | SP | short packet: set by software to send a short IN packet |
+| 6 | BNF / BNE | IN endpoint: buffer not full; OUT endpoint: buffer not empty. Reads 0 while the endpoint isn't active, which once looked like "full" (it was the interface problem below, not this bit). Double buffered, IN: 1 while a buffer is free and no short packet waits (table below) |
+| 7 | SP | short packet. IN: set by software to send a short packet. OUT: set by the hardware while the packet being read is shorter than the maximum ((U): thousands of 31-byte command blocks read by it, none misread) |
 | 8 | FEF | flush the FIFO |
 | 9 | DPE | data packet error |
 
@@ -78,7 +80,7 @@ needs SP. An OUT packet is read from `UDCBCRx`/`UDCDRx`, then released with PC.
 | Bits | Field | Meaning |
 |---|---|---|
 | 0 | EE | endpoint enable |
-| 1 | DE | double buffering |
+| 1 | DE | double buffering: two packet buffers (accepted for the four 64-byte bulk endpoints, no EMCE, (U)) |
 | 11:2 | MPS | maximum packet size |
 | 12 | ED | direction: 1 = IN |
 | 14:13 | ET | type: 1 isochronous, 2 bulk, 3 interrupt |
@@ -112,9 +114,33 @@ on the pxa") and gives each endpoint a distinct number.
 | **Composite device (ADR-0014):** endpoints 4 (bulk OUT) and 5 (bulk IN) carry USB mass storage in descriptor interface 2; like the serial data pair they sit in interface 0 of the hardware endpoint table (only the active interface's endpoints work). Device class 0xEF/02/01 with an IAD over interfaces 0-1, `bcdDevice` 26.01 so Windows re-enumerates | emulator; device pending | ADR-0014 |
 | A bus reset's endpoint 0 clean-up (`FTF`, `OPC`) must not clear the `OPC` of a SETUP that has already arrived (`SA` set): that is the first request, lost. Real hosts wait 10 ms after a reset, so it's a race only with a slow driver poll or an impatient host | likely | emulator (rp-v0.8.0 model), driver test |
 | **IN data waits until a PC program reads the port.** While the device is configured but no program has the port open, Windows issues no IN requests: whatever the device queues stays queued. A device that keeps writing (the loader's once-a-second READY) fills its own ring; after an hour idle, 36 stale lines and one torn one poured out when the port was next opened, and the reply to the first frame was cut short | confirmed | real X51v, 2026-10-12 (idle-put log) |
-| **One packet in flight per endpoint.** The next IN packet may be written only after the previous one's packet-complete event (`UDCISR0` bit 0 for endpoint 0, `UDCCSRx.PC` for A–X), the moment an interrupt-driven driver would run. IPR/BNF alone don't prove a packet has left (a short packet doesn't fill the FIFO) | likely: (M)'s driver only writes from those events; a polled driver that didn't wait is the leading explanation for the "Device Descriptor Request Failed" seen on the device | (M), real X51v |
+| **One packet in flight per endpoint** (single-buffered; with `DE` see "Throughput" below). The next IN packet may be written only after the previous one's packet-complete event (`UDCISR0` bit 0 for endpoint 0, `UDCCSRx.PC` for A–X), the moment an interrupt-driven driver would run. IPR/BNF alone don't prove a packet has left (a short packet doesn't fill the FIFO) | likely: (M)'s driver only writes from those events; a polled driver that didn't wait is the leading explanation for the "Device Descriptor Request Failed" seen on the device | (M), real X51v |
+
+## Throughput: double buffering, DMA, interrupts (item 74)
+
+Measured on the X51v (U) by the loader under test from RAM; numbers in
+`perf.md`. Linux's driver uses neither ("No use is made of UDC's double
+buffering either", and no DMA), so none of this came from it.
+
+| Behaviour | Confidence | Evidence |
+|---|---|---|
+| **Double-buffered IN, `BNF`:** with `DE`, the mass storage IN endpoint (flushed between steps with `FEF`) read `UDCCSRx` 0x43 empty, **0x43 after one full packet** (FS, PC, BNF: a buffer free), **0x02 after two** (full), **0x02 after one short packet** (12 bytes + SP: nothing may go in behind it), 0x02 after a full and a short one. So `BNF` alone says when an IN write is safe | confirmed | (U) probe, 2026-10-16 (three runs, same values) |
+| **Double-buffered OUT: the status and count can still be changing when a packet completes.** Reading `UDCBCRx` as soon as PC appeared gave a short count for a full packet: the driver released it unread and the bytes were lost (the PC's write completed, the device counted ~1 KB of a 921 KB frame). Fix: read status and count until two reads agree, and take a full packet's size from SP (clear = 64). Since then: 0 mismatches and 0 bad command blocks in 80 MiB; 0-6 unsettled reads per trial caught | confirmed | (U) trials 2-9 and the soak |
+| **DMA request lines: endpoint 0 is request 24, slot A 25, slot x 24 + x** | confirmed for slots B-E | (T); (U): requests 26-29 moved data both ways, checked byte for byte |
+| **OUT by DMA needs no CPU per packet:** with `DME` set and a channel armed on the FIFO (32-byte bursts, 32-bit width), 64 KiB of full packets arrived in 61 ms with the CRC right; afterwards `UDCCSRx` read 0x8 (DME only): the DMA reading a packet to its end releases it | confirmed (full packets; a short packet by DMA not tried) | (U) |
+| **IN by DMA:** full packets go to the host by themselves as the DMA fills the buffers (both buffers kept full); 64 KiB in 57 ms, every byte checked; afterwards PC and TRN set. A partial last packet needs SP from software | confirmed (whole packets) | (U) |
+| **The CPU keeps one IN packet in flight.** An early run streaming CPU writes into both IN buffers saw Windows time out and reset the device during drive reads (14 resets), but that run also had the OUT race above (6 mismatched counts), which explains resets by itself; streaming wasn't retried. The drive's blocks go by DMA (both buffers) and the CPU writes only command replies and the status, after the DMA's last packet (waiting for `BNF`, not for a packet-complete that may already have come) | likely | (U) |
+| **The USB client interrupt is PXA27x source 11**; `UDCISR0` bit 2x is slot x's packet complete. With those enabled the waiting loader sleeps until the PC sends or takes a packet: idle round trip median 1,170 to 292-334 us | confirmed | (U) |
+| **Windows moves at most 128 blocks (64 KiB) per READ(10)/WRITE(10)** to this full-speed drive | confirmed | (U) `udc stats` "largest transfer" |
+| Windows sometimes refuses to reopen the serial port for a moment after a program closed it ("access denied"): xtask's scripts retry the open | likely | (U) the first of several back-to-back commands died right after finding the port |
 
 ## Open questions
+
+- Streaming CPU-written IN packets into both buffers without the OUT race
+  (see above): would let command replies go back to back; low value now that
+  bulk data goes by DMA.
+- A short OUT packet by DMA (the end-of-receive signal): not needed while
+  every DMA transfer is whole packets of a known length.
 
 - GPIO14 polarity (cable present = high?) and whether the cradle and the cable
   behave the same: `rp-usb` shows the level live.
