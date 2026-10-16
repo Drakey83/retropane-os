@@ -14,6 +14,19 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 - **Real X51v:** the same image booted from SD (planned). Absolute numbers will
   differ, especially for 2700G memory, which sits behind a slower bus.
 - **Size:** `cargo xtask cross` checks every bare-metal image against its budget.
+- **USB link (item 74):** `cargo xtask usbbench`, on the device through the
+  resident loader, under the Axim lock. *Serial* (what image loading runs
+  on): a 921,600-byte image frame with a deliberately wrong CRC, timed from
+  the PC's first byte to the loader's `RPL ERR bad crc` (every byte crosses,
+  one CRC pass on the device, nothing runs). *Drive* (mass storage, ADR-0014):
+  a 16 MiB file written to the SD card's drive and read back with Windows'
+  cache bypassed (`FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH`),
+  compared byte for byte, deleted; the card's own speed is in these numbers.
+  *Latency*: 20 round trips of a one-packet command, each after 300 ms of
+  quiet (the loader asleep). `usbbench trial <loader>` runs all of it on a
+  new loader tried from RAM and puts the card's loader back. Full speed's
+  ceiling: 19 bulk packets of 64 bytes per 1 ms frame, 1,216 KB/s on the
+  wire; ~1.1-1.15 MB/s is what a host's scheduling leaves.
 
 ## Rules
 
@@ -32,6 +45,11 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 | Date | Change | Metric | Before | After |
 |---|---|---|---|---|
+| 2026-10-16 | DMA channel map (`hal/pxa27x/src/dma_map.rs`): one table of channel, owner and chain size, checked at compile time (no channel twice, all chains within 1,664 B); chains sized per owner instead of 32 descriptors each: SD 0, audio 1, CF 2 (reserved), USB controller 3 with 8 (its largest transfer is the drive's 32 KiB buffer, checked in the loader) | `rp-loader` zeroed RAM with four channels | 20,608 B (four 32-descriptor chains: over the 20,480 budget) | 20,224 B |
+| 2026-10-16 | **USB device controller (item 74), measured on the device:** double-buffered bulk endpoints (`UDCCRx.DE`), every waiting packet drained per poll, OUT reads that wait for the controller's status to settle (with two buffers a full packet's count once read short and the packet was lost), the drive's blocks by DMA both ways (halves of the staging buffer: the card reads or writes one half while USB moves the other), the UDC interrupt as the waiting loader's wake-up | image loading (921,600-byte frame) / drive write, 16 MiB / drive read, 16 MiB / idle round trip, median (max) | 514 KB/s / 411 KB/s / 765 KB/s / 1,170 us (4,271) | **1,048 KB/s / 856 KB/s / 1,146 KB/s / 292-334 us (4,372-4,730)**; 80 MiB written and read back identical in the soak, Windows' inbox drivers only |
+| 2026-10-16 | The drive's staging buffer: 2 x 32 KiB halves (64 KiB), 2 x 16 KiB (32 KiB), 2 x 8 KiB (16 KiB). Per 64 KiB write command the first half's arrival and the last half's card write can't overlap anything (the PC waits for the status), so smaller halves win until the card's per-command cost takes over; reads stay at the USB ceiling (read-ahead). 32 KiB kept: fastest, and half the memory of 64 | drive write / read, 16 MiB | 800 / 1,146 KB/s (32 KiB halves) | 856 / 1,146 KB/s (16 KiB); 763 / 1,146 (8 KiB) |
+| 2026-10-16 | UDC DMA, raw (the loader's bring-up experiment, since removed: 64 KiB through the serial endpoints, the CPU only arming and waiting, every byte checked on the PC) | 64 KiB OUT / IN | CPU path 1,049 / 765 KB/s | 1,070 / 1,149 KB/s |
+| 2026-10-16 | `rp-loader` with the UDC work (driver +2.4 KB, the drive's DMA paths, `udc stats`, the frame timeout); a third DMA chain (+512 B zeroed RAM in every image using DMA) | `rp-loader` loaded / zeroed | 106,648 / 19,536 B | 110,860 / 20,096 B (inside 112 / 20 KiB) |
 | 2026-10-10 | Startup stack 64 KB → 16 KB (measured usage is far smaller) | `rp-hello` zeroed RAM | 65,544 B | 16,392 B |
 | 2026-10-10 | Benchmark runner made non-generic (`dyn`, never inlined); LLVM had unrolled 64 × 512 FIFO reads | `rp-bench` loaded size | 189,308 B | 10,276 B |
 | 2026-10-10 | Test-pattern fill: build one row as solid spans, copy it down with `memcpy`, no per-pixel maths, no extra memory | `fb_pattern_vga` | 16,434,564 ns | 642,974 ns (**25.6×**) |

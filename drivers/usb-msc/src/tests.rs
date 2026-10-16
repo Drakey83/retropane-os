@@ -1,15 +1,48 @@
+use std::cell::Cell;
 use std::collections::VecDeque;
 
 use rp_hal_api::BlockError;
 
 use super::*;
 
-/// A bulk pipe that records IN packets and plays queued OUT packets.
+thread_local! {
+    /// Card reads and writes so far on this test's thread: DMA events note
+    /// it, to show what the card did while a transfer was in flight.
+    static CARD_OPS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn card_ops() -> usize {
+    CARD_OPS.with(Cell::get)
+}
+
+/// A bulk pipe that records IN packets and plays queued OUT packets; with
+/// `dma`, transfers end `delay` polls after they start.
 #[derive(Default)]
 struct Pipe {
     out: VecDeque<Vec<u8>>,
     ins: Vec<Vec<u8>>,
     busy: bool,
+    dma: bool,
+    refuse: bool,
+    fail: bool,
+    delay: u32,
+    /// A send in flight: its packets and polls left.
+    sending: Option<(Vec<u8>, u32)>,
+    /// A receive in flight: polls left.
+    receiving: Option<u32>,
+    /// (started, ended): card operations when each transfer did.
+    spans: Vec<(usize, usize)>,
+    aborted: u32,
+}
+
+impl Pipe {
+    fn with_dma(delay: u32) -> Self {
+        Self {
+            dma: true,
+            delay,
+            ..Self::default()
+        }
+    }
 }
 
 impl BulkPipe for Pipe {
@@ -19,13 +52,73 @@ impl BulkPipe for Pipe {
         Some(p.len())
     }
     fn can_write(&mut self) -> bool {
+        if self.sending.is_some() || self.receiving.is_some() {
+            return false;
+        }
         // Alternate busy/free, as a real endpoint with one packet in flight.
         self.busy = !self.busy;
         !self.busy
     }
     fn write_packet(&mut self, data: &[u8]) {
         assert!(data.len() <= PACKET);
+        assert!(self.sending.is_none(), "a packet written during DMA");
         self.ins.push(data.to_vec());
+    }
+    fn send_dma(&mut self, data: &[u8]) -> bool {
+        if !self.dma || self.refuse {
+            return false;
+        }
+        assert!(self.sending.is_none() && self.receiving.is_none());
+        assert!(data.len().is_multiple_of(PACKET) && !data.is_empty());
+        self.sending = Some((data.to_vec(), self.delay));
+        self.spans.push((card_ops(), usize::MAX));
+        true
+    }
+    fn receive_dma(&mut self, buf: &mut [u8]) -> bool {
+        if !self.dma || self.refuse {
+            return false;
+        }
+        assert!(self.sending.is_none() && self.receiving.is_none());
+        assert!(buf.len().is_multiple_of(PACKET) && !buf.is_empty());
+        let mut at = 0;
+        while at < buf.len() {
+            let p = self.out.pop_front().expect("host data for the DMA");
+            assert_eq!(p.len(), PACKET, "DMA needs whole packets");
+            buf[at..at + PACKET].copy_from_slice(&p);
+            at += PACKET;
+        }
+        self.receiving = Some(self.delay);
+        self.spans.push((card_ops(), usize::MAX));
+        true
+    }
+    fn dma_done(&mut self) -> Option<bool> {
+        if let Some((data, left)) = &mut self.sending {
+            if *left > 0 {
+                *left -= 1;
+                return None;
+            }
+            for p in data.chunks(PACKET) {
+                self.ins.push(p.to_vec());
+            }
+            self.sending = None;
+        } else if let Some(left) = &mut self.receiving {
+            if *left > 0 {
+                *left -= 1;
+                return None;
+            }
+            self.receiving = None;
+        } else {
+            panic!("dma_done with nothing in flight");
+        }
+        if let Some(s) = self.spans.last_mut() {
+            s.1 = card_ops();
+        }
+        Some(!self.fail)
+    }
+    fn dma_abort(&mut self) {
+        self.sending = None;
+        self.receiving = None;
+        self.aborted += 1;
     }
 }
 
@@ -71,6 +164,7 @@ impl Disk {
 
 impl BlockDevice for Disk {
     fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+        CARD_OPS.with(|c| c.set(c.get() + 1));
         let o = lba as usize * BLOCK;
         assert!(o + buf.len() <= self.data.len(), "read past the end");
         self.reads += 1;
@@ -82,6 +176,7 @@ impl BlockDevice for Disk {
         Ok(())
     }
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+        CARD_OPS.with(|c| c.set(c.get() + 1));
         let o = lba as usize * BLOCK;
         assert!(o + buf.len() <= self.data.len(), "write past the end");
         self.writes += 1;
@@ -191,13 +286,38 @@ fn run_at(
     cb: &[u8],
     data_out: &[u8],
 ) -> (Vec<u8>, Csw) {
-    let mut pipe = Pipe::default();
+    run_with(
+        &mut Pipe::default(),
+        msc,
+        disk,
+        now_ms,
+        lun,
+        len,
+        dir_in,
+        cb,
+        data_out,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with(
+    pipe: &mut Pipe,
+    msc: &mut Msc<'_>,
+    disk: &mut Disk,
+    now_ms: u32,
+    lun: u8,
+    len: u32,
+    dir_in: bool,
+    cb: &[u8],
+    data_out: &[u8],
+) -> (Vec<u8>, Csw) {
+    pipe.ins.clear();
     pipe.out.push_back(cbw(0xC0FFEE, len, dir_in, lun, cb));
     for p in data_out.chunks(PACKET) {
         pipe.out.push_back(p.to_vec());
     }
     for _ in 0..100_000 {
-        msc.poll(&mut pipe, &mut [disk], now_ms);
+        msc.poll(pipe, &mut [disk], now_ms);
         if let Some(last) = pipe.ins.last()
             && last.len() == 13
             && last[..4] == 0x5342_5355u32.to_le_bytes()
@@ -758,4 +878,177 @@ fn a_failure_behind_the_front_is_reported_after_the_good_blocks() {
     );
     assert_eq!(csw.residue, 4 * 512);
     assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x11, 0x00));
+}
+
+/// DMA reads (item 74): each half goes out as one transfer, and the card
+/// reads the next half while it is in flight; the stream is exact.
+#[test]
+fn dma_reads_send_a_half_while_the_card_reads_the_next() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let want = disk.data.clone();
+    let mut pipe = Pipe::with_dma(5);
+    let (d, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        64 * 512,
+        true,
+        &read10(0, 64),
+        &[],
+    );
+    assert_eq!((csw.status, csw.residue), (0, 0));
+    assert!(d == want, "the stream differs from the card");
+    assert_eq!(msc.stats().dma_chunks, 32);
+    assert_eq!(disk.reads, 32, "two blocks per read, nothing read twice");
+    let overlapped = pipe.spans.iter().filter(|(a, b)| b > a).count();
+    assert!(overlapped >= 30, "card reads during sends: {overlapped}");
+}
+
+/// DMA writes: each half comes in as one transfer, the next is already
+/// arriving while the previous one is written to the card.
+#[test]
+fn dma_writes_receive_a_half_while_the_card_writes_the_last() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    let new: Vec<u8> = (0..16 * BLOCK).map(|i| (i * 13 + i / 511) as u8).collect();
+    let mut pipe = Pipe::with_dma(3);
+    let (_, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        16 * 512,
+        false,
+        &write10(8, 16),
+        &new,
+    );
+    assert_eq!((csw.status, csw.residue), (0, 0));
+    assert!(disk.data[8 * BLOCK..24 * BLOCK] == new[..]);
+    assert_eq!(msc.stats().blocks_written, 16);
+    assert_eq!(msc.stats().dma_chunks, 8);
+    assert_eq!(disk.writes, 8);
+    let overlapped = pipe.spans.iter().filter(|(a, b)| b > a).count();
+    assert_eq!(
+        overlapped, 7,
+        "every receive but the first spans a card write"
+    );
+    assert!(msc.host_writing(1000));
+    // A one-block write (smaller than a half) too.
+    let one = vec![0x3Cu8; BLOCK];
+    let (_, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        512,
+        false,
+        &write10(40, 1),
+        &one,
+    );
+    assert_eq!(csw.status, 0);
+    assert!(disk.data[40 * BLOCK..41 * BLOCK] == one[..]);
+}
+
+/// A pipe that refuses DMA gets packets one by one, and the data is the
+/// same; a failed write still drains the host's data and reports it.
+#[test]
+fn refused_or_failing_dma_falls_back_or_fails_cleanly() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let want = disk.data.clone();
+    let mut pipe = Pipe::with_dma(2);
+    pipe.refuse = true;
+    let (d, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        8 * 512,
+        true,
+        &read10(0, 8),
+        &[],
+    );
+    assert_eq!(csw.status, 0);
+    assert!(d == want[..8 * 512]);
+    assert_eq!(msc.stats().dma_chunks, 0);
+    let new = vec![0x77u8; 4 * BLOCK];
+    let (_, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        4 * 512,
+        false,
+        &write10(0, 4),
+        &new,
+    );
+    assert_eq!(csw.status, 0);
+    assert!(disk.data[..4 * BLOCK] == new[..]);
+
+    // A transfer that fails: the read ends with an error (the host
+    // retries), and DMA is off until a reset.
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut pipe = Pipe::with_dma(1);
+    pipe.fail = true;
+    let (_, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        8 * 512,
+        true,
+        &read10(0, 8),
+        &[],
+    );
+    assert_eq!(csw.status, 1);
+    assert_eq!(sense(&mut msc, &mut disk), (0x03, 0x11, 0x00));
+}
+
+/// A reset while a transfer is in flight aborts it; the next command
+/// works (by DMA again).
+#[test]
+fn a_reset_aborts_the_transfer_in_flight() {
+    let mut buf = vec![0u8; 4 * BLOCK];
+    let mut msc = Msc::new(&mut buf, SERIAL, 1);
+    let mut disk = Disk::new(64);
+    disk.overlap = true;
+    let mut pipe = Pipe::with_dma(1000);
+    pipe.out.push_back(cbw(1, 8 * 512, true, 0, &read10(0, 8)));
+    for _ in 0..10 {
+        msc.poll(&mut pipe, &mut [&mut disk], 1000);
+    }
+    assert!(pipe.sending.is_some());
+    msc.reset();
+    msc.poll(&mut pipe, &mut [&mut disk], 1000);
+    assert_eq!(pipe.aborted, 1);
+    assert!(pipe.sending.is_none());
+    pipe.delay = 2;
+    let want = disk.data[16 * BLOCK..20 * BLOCK].to_vec();
+    let (d, csw) = run_with(
+        &mut pipe,
+        &mut msc,
+        &mut disk,
+        1000,
+        0,
+        4 * 512,
+        true,
+        &read10(16, 4),
+        &[],
+    );
+    assert_eq!(csw.status, 0);
+    assert!(d == want);
 }
