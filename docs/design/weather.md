@@ -127,7 +127,7 @@ edge. Must read clearly when shrunk to 96x96 pixels on a dark smoked-glass
 panel: strong silhouette, high contrast against dark grey.
 Consistent across the whole set: same camera angle (straight on, very
 slight top-down), same light direction, same cloud material, same sun and
-moon design, same scale.
+moon design (a full moon, never a crescent), same scale.
 
 ICON (one per image):
 <insert one line from the list>
@@ -135,9 +135,9 @@ ICON (one per image):
 
 ```
 01 clear sky, day: a bright golden sun with soft glowing rays
-02 clear sky, night: a crescent moon with a few small stars
+02 clear sky, night: a full moon with a few small stars
 03 partly cloudy, day: sun partly behind one fluffy white cloud
-04 partly cloudy, night: crescent moon partly behind one cloud
+04 partly cloudy, night: full moon partly behind one cloud
 05 cloudy: two layered grey-white clouds
 06 overcast: heavy dark grey cloud mass
 07 fog: soft cloud with horizontal mist bands below
