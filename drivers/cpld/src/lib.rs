@@ -209,6 +209,14 @@ impl<B: RegisterBus16, S: Shadow> Cpld<B, S> {
         self.bus.read16(reg::STATUS04) & CF_PRESENT_N == 0
     }
 
+    /// Whether the CompactFlash slot's power is on, both stages, as far as
+    /// the shadow knows (Windows Mobile hands over with it on: its table).
+    #[must_use]
+    pub fn cf_powered(&self) -> bool {
+        self.shadow.get(reg::PWR16) & CF_POWER_1 != 0
+            && self.shadow.get(reg::PWR10) & CF_POWER_2 != 0
+    }
+
     /// Switches the CompactFlash slot's power, in Windows Mobile's two
     /// stages: on is `0x16` bit 1, 10 ms, `0x10` bit 12; off the reverse.
     pub fn set_cf_power(&mut self, on: bool, delay: &mut impl Delay) {
@@ -325,6 +333,25 @@ mod tests {
                 (reg::PWR16, 0x0001),
             ]
         );
+    }
+
+    /// Both power stages must be on to count as powered: one alone is a slot
+    /// half switched (the old loader's `0x16` write once left it so).
+    #[test]
+    fn cf_powered_needs_both_stages() {
+        let mut cpld = Cpld::new(MockBus::new(), zero());
+        let mut delay = Recorder::default();
+        assert!(!cpld.cf_powered());
+        cpld.set(reg::PWR16, CF_POWER_1);
+        assert!(!cpld.cf_powered(), "first stage only");
+        cpld.clear(reg::PWR16, CF_POWER_1);
+        cpld.set(reg::PWR10, CF_POWER_2);
+        assert!(!cpld.cf_powered(), "second stage only");
+        cpld.clear(reg::PWR10, CF_POWER_2);
+        cpld.set_cf_power(true, &mut delay);
+        assert!(cpld.cf_powered());
+        cpld.set_cf_power(false, &mut delay);
+        assert!(!cpld.cf_powered());
     }
 
     /// The device's bug (2026-10-12): resetting the CF card wrote 0x18

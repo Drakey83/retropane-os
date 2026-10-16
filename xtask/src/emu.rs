@@ -3112,6 +3112,33 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         let mut bot = Bot::connect(3)?;
         bot.lun = 1;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // The slot starts powered with its card ready, as Windows Mobile
+        // hands it over: the attach is the reset alone, not the 0.4 s power
+        // cycle (boot time; the device's CF stage was 457 ms with it).
+        s.write_all(&rp_loadproto::control_frame("handoff"))
+            .map_err(|e| e.to_string())?;
+        let stages = usb_read_until(
+            &mut s, " ms
+", 10,
+        )?;
+        let at = |key: &str| -> Option<u32> {
+            stages
+                .split(key)
+                .nth(1)?
+                .split(" ms")
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        match (at("dma+fat "), at("cf ")) {
+            (Some(before), Some(cf)) if cf - before < 200 => {}
+            _ => {
+                return Err(format!(
+                    "CF attach at start-up power-cycled a powered slot: {stages:?}"
+                ));
+            }
+        }
         // Nothing asked: the loader attaches the card in the slot itself,
         // and the PC's second drive becomes ready (after "medium changed").
         let ready = |bot: &mut Bot, what: &str| -> Result<(), String> {
