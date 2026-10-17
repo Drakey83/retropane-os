@@ -926,8 +926,8 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
 /// under the loader: its picture is pixel-exact below the caption through
 /// each gamma table it sets (the emulator's 2700G applies the table at
 /// scan-out, Windows Mobile's grey ramp at reset): Stock, then D-pad right
-/// (Shadows 5), up (Shadows 6), centre (A/B: Stock shown), a tap (Contrast
-/// 5), and Home puts everything back and returns.
+/// (Shadows 5), up (Shadows 6), centre (A/B: Stock shown), a tap
+/// (Highlights 5), and Home puts everything back and returns.
 pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     use rp_display_cal::{CAPTION_H, Curve, H, W, pixel, table};
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
@@ -1010,7 +1010,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         touch(&mut qmp, &Action::TouchDown(240, 500))?;
         std::thread::sleep(Duration::from_millis(300));
         touch(&mut qmp, &Action::TouchUp)?;
-        until("contrast-5", &table(Curve::Contrast, 5, &WM_GAMMA))?;
+        until("highlights-5", &table(Curve::Highlights, 5, &WM_GAMMA))?;
         key("f4")
     };
     let output = boot(
@@ -1037,8 +1037,8 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         ": Shadows 5",
         ": Shadows 6",
         "Shadows 6 (B: Stock shown)",
-        ": Contrast 5",
-        "done (Home) after 4 changes; last: Contrast 5",
+        ": Highlights 5",
+        "done (Home) after 4 changes; last: Highlights 5",
         "DISPLAY-CAL-OK",
     ] {
         if !log.contains(want) {
@@ -1046,7 +1046,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    display-cal OK: the picture pixel-exact through Stock, Shadows 5 and 6, A/B Stock and Contrast 5 (keys and a tap); Home put back and returned"
+        "    display-cal OK: the picture pixel-exact through Stock, Shadows 5 and 6, A/B Stock and Highlights 5 (keys and a tap); Home put back and returned"
     );
     Ok(())
 }

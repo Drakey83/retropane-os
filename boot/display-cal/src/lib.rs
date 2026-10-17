@@ -14,7 +14,7 @@
 //! | 112-171 | near-white steps 224, 228 .. 252, 255 |
 //! | 172-211 | grey ramp 0-255 |
 //! | 212-301 | red, green, blue ramps |
-//! | 302-381 | gamma check: line pairs (black and white, average 50%) around solid squares |
+//! | 302-381 | gamma check: a checkerboard (black and white, average 50%) around solid squares |
 //! | 382-401 | the squares' labels: the panel gamma each one matches |
 //! | 402-441 | colour bars |
 //! | 442-639 | a dark synthetic game scene (a corridor, a torch, a status bar) |
@@ -79,7 +79,9 @@ pub fn pixel(x: u32, y: u32) -> (u8, u8, u8) {
     }
 }
 
-/// Six columns of one-pixel black and white lines, a solid square in each.
+/// Six columns of a one-pixel black and white checkerboard, a solid square
+/// in each. (Device run 2: alternating lines didn't blend into a flat grey
+/// on the X51v's panel; a checkerboard has no row structure to see.)
 fn check(x: u32, y: u32) -> (u8, u8, u8) {
     let (col, cx) = (x / 80, x % 80);
     let cy = y - CHECK.0;
@@ -87,7 +89,7 @@ fn check(x: u32, y: u32) -> (u8, u8, u8) {
         let v = CHECK_LEVELS[col as usize];
         return (v, v, v);
     }
-    if y.is_multiple_of(2) {
+    if (x + y).is_multiple_of(2) {
         (255, 255, 255)
     } else {
         (0, 0, 0)
@@ -207,6 +209,12 @@ pub enum Curve {
     Stock,
     /// Shadows lifted: dark levels raised, black and white kept.
     Shadows,
+    /// Highlights spread: the top of the range brought down under the
+    /// panel's clip (device run 2: 224-255 looked like one band), the
+    /// lower half kept.
+    Highlights,
+    /// Shadows, then Highlights, at the same strength.
+    Both,
     /// An S-curve: more contrast in the middle, black and white kept.
     Contrast,
     /// Warmer white: blue (and a little green) turned down.
@@ -217,9 +225,11 @@ pub enum Curve {
 
 impl Curve {
     /// In flip order.
-    pub const ALL: [Curve; 5] = [
+    pub const ALL: [Curve; 7] = [
         Self::Stock,
         Self::Shadows,
+        Self::Highlights,
+        Self::Both,
         Self::Contrast,
         Self::Warm,
         Self::Cool,
@@ -234,6 +244,8 @@ impl Curve {
             Self::Contrast => "Contrast",
             Self::Warm => "Warm",
             Self::Cool => "Cool",
+            Self::Highlights => "Highlights",
+            Self::Both => "Shadows+Highl.",
         }
     }
 
@@ -262,6 +274,22 @@ pub fn shape(curve: Curve, strength: u32, v: u32, shift: u32) -> u32 {
         // v + k * v(255 - v)/255: at full strength 2v - v^2/255, the lift
         // of a gamma of about 1.6.
         Curve::Shadows => v + s * v * (255 - v) / (255 * STRENGTH_MAX),
+        // Linear to 128, then the rest squeezed up to 255 - 5k (205 at
+        // full strength): the top steps land below the clip, apart.
+        Curve::Highlights => {
+            let top = 255 - 5 * s;
+            if v <= 128 {
+                v
+            } else {
+                128 + (v - 128) * (top - 128) / 127
+            }
+        }
+        Curve::Both => shape(
+            Curve::Highlights,
+            s,
+            shape(Curve::Shadows, s, v, shift),
+            shift,
+        ),
         // Toward smoothstep: 3t^2 - 2t^3.
         Curve::Contrast => {
             let sm = v * v * (765 - 2 * v) / (255 * 255);
@@ -333,11 +361,19 @@ mod tests {
         assert!(shape(Curve::Contrast, 10, 192, 8) > 205);
         assert!(shape(Curve::Warm, 10, 255, 0) < shape(Curve::Warm, 10, 255, 16));
         assert!(shape(Curve::Cool, 10, 255, 16) < shape(Curve::Cool, 10, 255, 0));
+        // Highlights: the near-white steps (4 apart) stay apart, under 240.
+        assert_eq!(shape(Curve::Highlights, 10, 100, 8), 100);
+        assert!(shape(Curve::Highlights, 5, 255, 8) <= 230);
+        assert!(shape(Curve::Highlights, 10, 228, 8) > shape(Curve::Highlights, 10, 224, 8));
+        assert!(shape(Curve::Both, 5, 16, 8) > 16);
+        assert!(shape(Curve::Both, 5, 255, 8) < 255);
     }
 
     #[test]
     fn flip_order_wraps_both_ways() {
         assert_eq!(Curve::Cool.step(false), Curve::Stock);
+        assert_eq!(Curve::Stock.step(false), Curve::Shadows);
+        assert_eq!(Curve::Shadows.step(false), Curve::Highlights);
         assert_eq!(Curve::Stock.step(true), Curve::Cool);
     }
 

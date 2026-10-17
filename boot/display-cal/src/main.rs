@@ -9,7 +9,7 @@
 //! |---|---|
 //! | Tap, or D-pad right / left | next / previous curve |
 //! | D-pad up / down | the curve's strength (0-10) |
-//! | D-pad centre | A/B: flips between the curve and Stock |
+//! | D-pad centre | A/B: flips between the curve and Stock ("compare") |
 //! | Home | done: everything put back, back to the loader |
 //!
 //! Every change goes to the run log, and the last choice with its table.
@@ -136,18 +136,27 @@ mod image {
         if curve != Curve::Stock {
             let _ = write!(l, "{strength}/{STRENGTH_MAX}");
         }
-        if showing_stock {
-            let _ = write!(l, "  [B: Stock]");
-        }
         text(fb, 6, 4, 3, (255, 255, 255), l.as_str());
-        text(
-            fb,
-            6,
-            32,
-            2,
-            (150, 150, 150),
-            "Tap/<> curve  ^v strength  OK A/B",
-        );
+        // The second line: the controls, or that A/B shows Stock now.
+        if showing_stock {
+            text(
+                fb,
+                6,
+                32,
+                2,
+                (255, 210, 0),
+                "B: Stock shown. OK = back to it",
+            );
+        } else {
+            text(
+                fb,
+                6,
+                32,
+                2,
+                (150, 150, 150),
+                "<> curve  Up/Dn strength  OK compare",
+            );
+        }
     }
 
     fn write_gamma<B: RegisterBus>(regs: &mut B, t: &[u32; GAMMA_ENTRIES]) {
