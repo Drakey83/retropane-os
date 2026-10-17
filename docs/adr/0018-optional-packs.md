@@ -120,7 +120,7 @@ Constraints that shape the answer:
 - (Added 2026-10-12.) **Anything the screen shows must not depend on the
   card.** A wallpaper picked from a card is converted into the user's
   flash storage when picked; the base has its own wallpaper and a
-  drawn-in-code fallback. See docs/ui/README.md.
+  drawn-in-code fallback. See docs/design/ui.md.
 
 ## For the vote
 

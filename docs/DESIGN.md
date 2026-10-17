@@ -336,7 +336,7 @@ Rust API, so legacy support never constrains the native design.
   smooth GPU-composited transitions, notification centre, proper task switcher.
 - A **theme engine** with at least two themes: *Modern* (default) and *Classic*
   (a faithful WM5-style homage, using our own artwork).
-- Design spec lives in `docs/ui/` (to be written) with mock-ups before code.
+- Design spec lives in `docs/design/` (start at its README: everything in one place), with mock-ups before code.
 
 ---
 

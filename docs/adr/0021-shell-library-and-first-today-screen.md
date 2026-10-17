@@ -62,7 +62,7 @@ measures it yet.
 
 1. **`rp-shell` (in `shell/`), `no_std`, no `unsafe`, host-tested:** owns
    the Today screen, title bar (Start at top left, clock, battery), Start
-   menu and the two softkeys (docs/ui/README.md), the widget model,
+   menu and the two softkeys (docs/design/ui.md), the widget model,
    layout for 480 x 640, hit-testing, focus ring and D-pad navigation
    (keys keep their WM jobs), and which rectangles changed. It knows
    nothing about pixels, planes or hardware.
@@ -88,7 +88,7 @@ measures it yet.
    The primitives are the ones a GPU does well (rectangles, gradients,
    textured quads, alpha masks), so nothing in the list is CPU-only.
 3. **Text and art are prepared on the PC, at build time:** the font
-   (Didact Gothic, SIL OFL, docs/ui/README.md) as glyph masks at the sizes
+   (Didact Gothic, SIL OFL, docs/design/ui.md) as glyph masks at the sizes
    the Today screen uses; icons as ARGB images; the wallpaper as the video
    plane's 4:2:0 YUV. No font, image or file parser runs on the device in
    this ADR (that comes with wallpapers from the card, a later ADR).

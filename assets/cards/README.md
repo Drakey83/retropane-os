@@ -41,5 +41,5 @@ notes), these icons are credited to Juanje, puntodepartida.com.
   at the sizes it needs, once File Explorer exists.
 
 The owner put them in the base system on 2026-10-14, an exception to the
-rule that third-party art ships only in packs (docs/ui/README.md): written
+rule that third-party art ships only in packs (docs/design/ui.md): written
 permission, two small images.
