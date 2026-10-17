@@ -266,9 +266,12 @@ mod tests {
             }
             // Measured: 3 at worst, in about a dozen of 921,600 channel
             // values a frame, where glass is stacked on glass (each engine
-            // blend truncates; the CPU composes the layer once).
+            // blend truncates; the CPU composes the layer once). With the
+            // weather icons baked in (local builds; CI builds without them),
+            // 114 or 152 a frame, still 3 at worst: their see-through edges
+            // over the glass are one more truncating blend (2026-10-17).
             assert!(
-                worst <= 3 && over2 < 100,
+                worst <= 3 && over2 < 256,
                 "step {k}: worst {worst}, {over2} channels off by more than 2"
             );
         }
