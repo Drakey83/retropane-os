@@ -289,6 +289,12 @@ system default; games get the Dark games curve by default (the per-game
 curve of apps-and-packs §6a); Settings > Display offers the looks (Original,
 Everyday, Dark games, Accurate) for each owner to choose.
 
+**Decided (owner, 2026-10-17): a choice of three picture looks, Original,
+Everyday and Dark games**, offered at the first start (a one-tap pick, each
+shown on the real screen) and in Settings > Display any time after. Original
+is the default. The measured (Accurate) tables stay in the calibration tool
+for owners who want them.
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made
