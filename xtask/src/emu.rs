@@ -929,9 +929,10 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
 /// Mobile's grey ramp at reset). Step 1 right (Black 26); down to step 2,
 /// where every other dial is back at 25 (the original), right (White 26);
 /// down to step 6, right (Sat 26: the picture redrawn); down to step 7,
-/// every pick at once; centre (the original); Home puts everything back.
+/// the starting look, right (the next look); centre (the original); Home
+/// puts everything back.
 pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
-    use rp_display_cal::{CAPTION_H, Dials, H, NEUTRAL, W, pixel_sat, table};
+    use rp_display_cal::{CAPTION_H, Dials, H, PRESET_START, PRESETS, W, pixel_sat, table};
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -1018,13 +1019,9 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         key("right")?;
         until("sat-26", up(5))?;
         key("down")?;
-        let picks = Dials {
-            black: NEUTRAL + 1,
-            white: NEUTRAL + 1,
-            sat: NEUTRAL + 1,
-            ..Dials::STOCK
-        };
-        until("all-together", picks)?;
+        until("look-start", PRESETS[PRESET_START].1)?;
+        key("right")?;
+        until("look-next", PRESETS[PRESET_START + 1].1)?;
         key("ret")?;
         until("compare-original", Dials::STOCK)?;
         key("f4")
@@ -1053,7 +1050,8 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         "step 1 Black: 26",
         "step 2 White: 26",
         "step 6 Sat: 26",
-        "done (Home) after 10 changes; picks: Black 26 White 26 Mid 25 Warm 25 Bright 25 Sat 26",
+        "done (Home) after 11 changes; picks: Black 26 White 26 Mid 25 Warm 25 Bright 25 Sat 26",
+        "last look: Dark games",
         "DISPLAY-CAL-OK",
     ] {
         if !log.contains(want) {
@@ -1061,7 +1059,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    display-cal OK: the guided steps pixel-exact (Black 26, the reset on the next step, White 26, Sat 26 redrawn, all together, the original); Home put back and returned"
+        "    display-cal OK: the guided steps pixel-exact (Black 26, the reset on the next step, White 26, Sat 26 redrawn, two looks, the original); Home put back and returned"
     );
     Ok(())
 }

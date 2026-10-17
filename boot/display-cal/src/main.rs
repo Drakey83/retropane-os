@@ -4,14 +4,15 @@
 //!
 //! The picture ([`rp_display_cal::pixel`]) is drawn into a 32 bpp plane.
 //! Six steps, one dial each ([`rp_display_cal::Dials`], 1-50, 25 =
-//! unchanged): Black, White, Mid, Warm, Bright, Sat; then a seventh, "All
-//! together", showing every step's pick at once. Moving to another step
+//! unchanged): Black, White, Mid, Warm, Bright, Sat; then a seventh,
+//! "Looks", flipping between ready-made settings made from the owner's
+//! picks (`PRESETS`: Original, Accurate, Everyday, Dark games). Moving to another step
 //! puts every dial back to 25 except that step's own pick (the owner's
 //! request after run 4, where a reset to the wrong value spoilt the rest).
 //!
 //! | Input | Does |
 //! |---|---|
-//! | D-pad right / left | this step's dial up / down by 1 (held: repeats) |
+//! | D-pad right / left | this step's dial up / down by 1 (held: repeats); last step: next / previous look |
 //! | D-pad down / up | next / previous step, the others back to 25 |
 //! | D-pad centre | compare: flips between this step and the original |
 //! | Home | done: everything put back, back to the loader |
@@ -32,7 +33,8 @@ mod image {
     use core::fmt::Write;
 
     use rp_display_cal::{
-        CAPTION_H, DIAL_NAMES, DIALS, Dials, H, NEUTRAL, W, backlight, pixel_sat, table,
+        CAPTION_H, DIAL_NAMES, DIALS, Dials, H, NEUTRAL, PRESET_START, PRESETS, W, backlight,
+        pixel_sat, table,
     };
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
     use rp_drv_mbx_display::scanout::GAMMA_ENTRIES;
@@ -144,7 +146,7 @@ mod image {
 
     /// The caption: the step and its dial (or every pick, last step), and
     /// the controls; red with "ORIGINAL" while compare shows the original.
-    fn caption(fb: &mut [u8], step: usize, picks: Dials, original: bool) {
+    fn caption(fb: &mut [u8], step: usize, picks: Dials, look: usize, original: bool) {
         for y in 0..CAPTION_H {
             for x in 0..W {
                 put(fb, x, y, (0, 0, 0));
@@ -161,7 +163,7 @@ mod image {
                 picks.get(step)
             );
         } else {
-            let _ = write!(top, "{STEPS}/{STEPS} All together");
+            let _ = write!(top, "{STEPS}/{STEPS} {}", PRESETS[look].0);
         }
         if original {
             let _ = write!(low, "ORIGINAL shown - OK to go back");
@@ -169,7 +171,7 @@ mod image {
             let _ = write!(low, "<> adjust (25 = none)  v next  ^ back");
         } else {
             for i in 0..DIALS {
-                let _ = write!(low, "{}{} ", &DIAL_NAMES[i][..2], picks.get(i));
+                let _ = write!(low, "{}{} ", &DIAL_NAMES[i][..2], PRESETS[look].1.get(i));
             }
         }
         let colour = if original {
@@ -196,14 +198,14 @@ mod image {
     }
 
     /// What step `step` shows: its own pick with every other dial at 25,
-    /// or every pick for the last step; everything at 25 when comparing.
-    fn shown(step: usize, picks: Dials, original: bool) -> Dials {
+    /// or look `look` for the last step; everything at 25 when comparing.
+    fn shown(step: usize, picks: Dials, look: usize, original: bool) -> Dials {
         if original {
             Dials::STOCK
         } else if step < DIALS {
             Dials::STOCK.moved(step, picks.get(step) as i32 - NEUTRAL as i32)
         } else {
-            picks
+            PRESETS[look].1
         }
     }
 
@@ -235,7 +237,8 @@ mod image {
         let t0 = rt::ticks();
         draw(fb, NEUTRAL);
         let (mut step, mut picks, mut original) = (0usize, Dials::STOCK, false);
-        caption(fb, step, picks, original);
+        let mut look = PRESET_START;
+        caption(fb, step, picks, look, original);
         let _ = writeln!(
             RunLog,
             "picture drawn in {} ms",
@@ -302,6 +305,10 @@ mod image {
                 if by != 0 && step < DIALS {
                     picks = picks.moved(step, by);
                     original = false;
+                } else if by != 0 {
+                    look = (look as i32 + by).rem_euclid(PRESETS.len() as i32) as usize;
+                    original = false;
+                    let _ = writeln!(RunLog, "look {}", PRESETS[look].0);
                 }
                 if go != 0 {
                     if step < DIALS {
@@ -318,7 +325,7 @@ mod image {
                     let _ = writeln!(RunLog, "at {} ms: step {}", now / ms, step + 1);
                 }
                 original ^= flip;
-                let d = shown(step, picks, original);
+                let d = shown(step, picks, look, original);
                 write_gamma(display.regs(), &table(d, &found));
                 if d.bright == NEUTRAL {
                     pwm.write32(CR, light.0);
@@ -329,10 +336,10 @@ mod image {
                     pwm.write32(PCR, COUNTS - 1);
                     pwm.write32(DCR, backlight(d.bright, found_duty, COUNTS));
                 }
-                caption(fb, step, picks, original);
+                caption(fb, step, picks, look, original);
             }
             // Saturation redraws the picture, once the keys are let go.
-            let want = shown(step, picks, original).sat;
+            let want = shown(step, picks, look, original).sat;
             if want != drawn_sat && pressed == Pressed::NONE {
                 draw(fb, want);
                 drawn_sat = want;
@@ -346,6 +353,7 @@ mod image {
         }
         let _ = writeln!(RunLog);
         log_table("picks' table", &table(picks, &found));
+        let _ = writeln!(RunLog, "last look: {}", PRESETS[look].0);
         write_gamma(display.regs(), &found);
         pwm.write32(CR, light.0);
         pwm.write32(PCR, light.2);

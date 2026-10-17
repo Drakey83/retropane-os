@@ -153,6 +153,25 @@ wallpaper side by side was).
    the steps pixel-exact (including the reset and the saturation redraw),
    with a mutant. 28.8 KiB, budget 32 KiB. Run 4's numbers on the new scale:
    Black 8 = about 29, White 23 = about 36, Mid 16 = 16.
+
+   **Device run 5 (2026-10-17, owner watching, 1698 changes, Home, all put
+   back):** Black 28, White 26 (owner said 27), Warm 22, Bright 35 (78% of
+   full, vs Windows Mobile's 63%), Sat 30 (1.2x). **Gamma check, every box:**
+   box 1 (gamma 1.0) vanishes at Mid 37, box 2 (1.5) at 25, box 3 (1.8) at
+   19, box 4 (2.2) at 14, box 5 (2.5) at 12, box 6 (3.0) at about 1. So **the
+   panel with Windows Mobile's table shows mid-tones like gamma 1.5**
+   (bright and flat; standard is 2.2), and Mid 14 makes it standard (run 4:
+   16, consistent). "All together looks much worse for the corridor": the
+   test's fault again. Step 3 is a measurement, but its last value (Mid 8,
+   left there after testing box 5) was used as a pick, darkening every
+   mid-tone.
+
+   **Run 6 built: the last step is "Looks"**, ready-made settings made from
+   these numbers, flipped with left/right: Original, **Accurate** (the picks
+   with Mid 14: standard gamma 2.2), **Everyday** (the picks with Mid 25:
+   the panel's own bright mid-tones, the starting look), **Dark games**
+   (Black 31, Mid 38, Bright 45, Sat 32: the corridor easy to see). The
+   owner picks a look; it becomes the system default (C5).
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until

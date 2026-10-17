@@ -285,6 +285,51 @@ impl Dials {
     }
 }
 
+/// The ready-made looks the last step flips between, made from the
+/// owner's run 5 picks (Black 28, White 26, Warm 22, Bright 35, Sat 30;
+/// the gamma check: box 4, standard gamma 2.2, at Mid 14, and box 2 at
+/// 25, so the panel shows mid-tones like gamma 1.5). Mid is a measurement
+/// in step 3, not a pick: the looks set it themselves.
+pub const PRESETS: [(&str, Dials); 4] = [
+    ("Original", Dials::STOCK),
+    (
+        "Accurate",
+        Dials {
+            black: 28,
+            white: 26,
+            mid: 14,
+            warm: 22,
+            bright: 35,
+            sat: 30,
+        },
+    ),
+    (
+        "Everyday",
+        Dials {
+            black: 28,
+            white: 26,
+            mid: 25,
+            warm: 22,
+            bright: 35,
+            sat: 30,
+        },
+    ),
+    (
+        "Dark games",
+        Dials {
+            black: 31,
+            white: 26,
+            mid: 38,
+            warm: 22,
+            bright: 45,
+            sat: 32,
+        },
+    ),
+];
+
+/// The look the last step starts on.
+pub const PRESET_START: usize = 2;
+
 /// A dial's distance from unchanged: -24 to +25.
 fn off(v: u32) -> i32 {
     v.clamp(DIAL_MIN, DIAL_MAX) as i32 - NEUTRAL as i32
