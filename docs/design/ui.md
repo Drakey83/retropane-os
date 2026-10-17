@@ -214,8 +214,27 @@ the label alone. Nothing ships until its row says **ship**.
 |---|---|---|---|
 | Mountain lake | N. Lowe, U.S. Forest Service Intermountain Region (Flickr), 2016 | Work of a U.S. federal employee: public domain (`PD US USDA FS`); Commons' Flickr licence review passed | **ship** |
 | City at night | Tabitha Mort, Pexels photo 432361, 2014 (Portland) | CC0 as published on Pexels at the time; Commons category "reviewed licenses" | **ship** once the Pexels page date is archived with the pack |
-| Pier, black and white | Christopher Sardegna, Unsplash `uDUiRS8YroY`, 2013 | CC0 if published on Unsplash before its June 2017 licence change; on Commons since May 2017, but tagged **"review needed"** | **verify**: confirm the Unsplash date (Wayback copy) or replace |
-| Aurora | Credited to Rich and Rose Primmer, U.S. Fish and Wildlife Service, via a "public-domain-image" wallpaper site | Rests on that site's claim (`PD-author`), not a government source | **verify**: find it in the USFWS image library, or replace with an aurora from a .gov source (NASA, NPS, USFWS) |
+| Pier, black and white | Christopher Sardegna, Unsplash `uDUiRS8YroY`, 2013 | CC0 on Unsplash in 2013. **Checked 2026-10-17:** the Internet Archive holds copies of its Unsplash page from 2016-10-20 and 2017-05-04, both before Unsplash's June 2017 licence change, so the photo was published under CC0 (Commons' own Wayback copy is from July 2017, which alone would not prove it) | **ship** (keep the two archive dates with the pack) |
+| Aurora | The Commons file credited to Rich and Rose Primmer via a wallpaper site | Rests on that site's claim, not a government source | **dropped 2026-10-17**, replaced by the NPS aurora photos below (federal employees' work, public domain) |
+
+**Proposed to reach ten (2026-10-17, checked through Commons' own records, for the
+owner's approval; picture sheet: [wallpaper-cands.jpg](wallpaper-cands.jpg)):**
+
+| Wallpaper | Commons file | Author and basis | Status |
+|---|---|---|---|
+| Aurora over Denali | `File:Aurora in Denali (98bfa86a-4e3a-4cec-b641-9dccd7377fab).jpg` | NPS Photo / Tim Rains: federal employee's work, public domain | proposed |
+| Aurora over the boreal forest | `File:Aurora over the boreal forest (57be20e1-a3cf-453e-9632-2d38df39b643).jpg` | NPS Photo / Tim Rains: public domain | proposed |
+| Milky Way over Earth's glow | `File:The Milky Way spans the night sky above a bright orange-yellow airglow (iss073e0982679).jpg` | NASA Johnson Space Center: public domain | proposed |
+| Desert sky at dusk | `File:Desert sky scene at dusk.jpg` | Steve Hillebrand, U.S. Fish and Wildlife Service: public domain | proposed |
+| Electric Peak, morning light | `File:Morning light on Electric Peak.jpg` | Jacob W. Frank, National Park Service: public domain | proposed |
+| Sunset thunderstorm | `File:Sunset Thunderstorm (53721202248).jpg` | Bob Hyatt, U.S. National Weather Service: public domain | proposed |
+| Snowy dunes at alpenglow | `File:Alpenglow on Snowy Star Dune and Crestone Peaks (31601451293).jpg` | Great Sand Dunes National Park and Preserve (NPS): public domain | proposed |
+| Forest sunrise | `File:Forest sunrise.jpg` | Peter Heeling: CC0, as the uploader declares | proposed (**verify** the source page) |
+| Quebec City at night | `File:Chateau Frontenac illuminated at night in Quebec City.jpg` | Wilfredor: CC0 own work, as the uploader declares | proposed, an alternative to the Portland city photo |
+
+With the lake, the pier and the city photo this makes at least ten.
+The other rows work only as a pack's wallpapers: each is cropped to 3:4 from
+the original, which is 3000 pixels or more wide, so none looks soft.
 
 Each pack carries this table for its files (author, source link, licence
 basis, date checked) as its provenance note.
