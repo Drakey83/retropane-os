@@ -238,6 +238,64 @@ program**, for a game that times itself by the refresh (DirectDraw's
 vertical-blank wait). For the flash-installed OS (no Windows Mobile boot to
 set the PLL), RetroPane programs `0xFC5` itself.
 
+## C6, the best picture this panel can give: full colour management (plan, 2026-10-17)
+
+**Owner (2026-10-17):** "use those readings while researching that screen, to
+give it the best contrast, brightness, saturated and color accurate picture",
+however long it takes. The three measured tables of C1 were a first pass from
+31 readings; the curves alone can only move tones around inside what the panel
+shows, which is why Everyday and Dark games looked washed out. This is the
+full job, as a professional display calibration does it, within the panel's
+limits.
+
+**What the panel is (measured, runs 2-3):** white 41 cd/m2 at Windows Mobile's
+63% backlight, 57 at full (new: 165); black 1.89 (the screen's own glow, 0.45
+even with the backlight off); contrast 22:1 (new: 200:1); white about
+13,300 K (very blue: aged LEDs); primaries red 0.488/0.305, green 0.295/0.426,
+blue 0.151/0.134 (a small gamut, the datasheet's NTSC 35%); grey curve gamma
+1.80 with the top clipped (gamma 1.05 at 240). Viewing angle shifts tones
+strongly (twisted nematic).
+
+**What we control:** the backlight (to full); the 2700G's 17-point table per
+colour (tone and white balance, free); everything about content, applied once
+on the CPU or GPU: a colour transform for pictures at load, game textures at
+upload (our own GLES driver), theme colours at build; PWM1 (unknown, C4); and
+possibly a colour matrix in the 2700G's video plane (to check).
+
+**Steps:**
+1. **Research first.** C4: what Dell's PWM1 drives (Dell's display driver,
+   facts only; the Sharp datasheet's pins; the board). If it moves the panel's
+   black, contrast is the biggest win left. Also: whether the backlight driver
+   can give more than full PWM (Dell's driver facts; current set by a resistor
+   would mean hardware only), and whether the 2700G's video plane has a
+   programmable colour matrix (mbxfb register facts).
+2. **Profiling measurement.** A patch set made for profiling (about 150): each
+   channel at 17 levels, greys at 17, secondaries, a colour set from Argyll's
+   `targen` (skin, sky, foliage, saturated), and a separate verification set.
+   Speed first: try driving `spotread` interactively through a Windows
+   pseudo-console (ConPTY) to cut a reading from about 10 s to about 2 s; else
+   one-shot readings (about 40 minutes).
+3. **Profile.** Readings to an Argyll `.ti3`; `colprof` builds the panel's
+   profile (shaper/matrix and a table-based one); `profcheck` gives the fit.
+4. **Calibration, in the 17-point table, at full backlight:** neutral greys
+   from black to white at a chosen white (the brightest that looks neutral:
+   candidates D65, about 7,500 K and about 9,000 K, each with its brightness
+   cost), the tone curve BT.1886 with the measured black (made for screens
+   with raised black: shadow detail without the wash-out of a lifted curve).
+   Measure greys through it, refine, two or three passes.
+5. **Content colour management:** a 3D table (17 x 17 x 17, about 15 KB) from
+   sRGB to the panel, made with Argyll's `collink` in three intents: accurate
+   (relative colorimetric), balanced (perceptual), vivid (saturation, for
+   "pop"); applied with integer interpolation on the device (no floats) to
+   pictures, textures and theme colours.
+6. **Pop for pictures (optional):** local contrast and a touch of sharpening
+   per picture at load, judged on the device.
+7. **Test image with real photos** (the wallpapers) and a colour chart: looks
+   Original, Accurate, Balanced, Vivid, at full backlight, A/B against
+   Original; the owner and family pick.
+8. **Verify:** the chart measured through the chosen pipeline, a colour error
+   (Delta E 2000) report per patch. The result replaces C1's three looks.
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings
