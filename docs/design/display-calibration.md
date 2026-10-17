@@ -394,6 +394,26 @@ The graphics plane (everything RetroPane draws) has only the 17-point table
   channel (blue, for D65) keeps fewer levels, which can show as bands in
   smooth blue gradients. The looks test shows ramps so this is judged on
   the screen, against the other whites.
+- **Fallback if the pseudo-console fails on the first run:** Argyll's own
+  tools can drive a display through a small web server (`-dweb:<port>`;
+  checked on the PC 2026-10-17: `GET /ajax/messages` waits, then answers
+  each new patch as `#RRGGBB`). A bridge from that to the Axim would let
+  `dispread` and `dispcal` run the whole measurement with the instrument
+  kept open, but it needs a live link to the running image (its own USB
+  serial port, with the re-enumeration risks of docs/hw/udc.md), which the
+  program room avoids. Kept in reserve, not built.
+- **Not built yet: the VCOM sweep** (step 1's measured sweep). The program
+  room has no field for PWM1; adding one (bounded to 290-370 of 1000, Dell's
+  330 put back) is a small change, made only after the profile and
+  calibration runs, with the owner watching for flicker.
+
+**Reviewed and kept (2026-10-17):** the C6 tools above were built by a
+parallel session, stopped by the owner, and committed whole (`e4dde85`);
+this session reviewed them: `xtask ci` clean, `emu-screen-measure` passes,
+`measure --profile --dry-run` plans 226 patches + 7 drift whites, about 26
+minutes, program 1,884 of 8,192 bytes. The pseudo-console has not yet run
+`spotread` with the Spyder (the instrument wasn't plugged in): the first
+profiling run is its test.
 
 ## Measured with a colorimeter (2026-10-17)
 
