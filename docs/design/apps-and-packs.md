@@ -193,6 +193,15 @@ open source and speak simple, documented web APIs.
 - The same rules as above apply: tokens in the encrypted store, TLS, the smallest
   permission, one switch removes a library and its cache.
 
+**A pack, not the base (owner, 2026-10-17).** The Plex, Audiobookshelf, Jellyfin
+and Subsonic clients ship as a **Media Servers pack** on the card (§5), signed
+and loaded only when used, so the flash image stays small and nobody pays for
+what they don't use. The base keeps only what every service shares: the
+Connections page, the token store, the sync scheduler, and the TLS and web
+client the browser needs anyway. The same split fits the other services: small
+ones that most people want (calendar by iCal link, weather) stay in the base;
+the heavy or niche ones (media servers, SMB, Immich) are packs.
+
 **Order:** Audiobookshelf and Subsonic (audio) first, then Jellyfin and Plex
 audio, and video last, after the decoder measurement.
 
