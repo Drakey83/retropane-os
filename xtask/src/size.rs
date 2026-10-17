@@ -361,11 +361,12 @@ pub const BUDGETS: &[Budget] = &[
     // 780 -> 900 KiB (2026-10-17, owner: the big icon looked small): the icons
     // are cropped to what is drawn and scaled to the mock-ups' boxes (the big
     // one 250 x 174, 170 KiB, the small ones 66 px wide); 833.8 KiB measured
-    // in all, + ~8%.
+    // in all, + ~8%. Zeroed RAM 30 -> 46 KiB (the same day): its stack 24 -> 40
+    // KiB, 23.5 KiB of it used (96%) and a deeper path froze the device.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 30 * 1024,
+        max_zero: 46 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

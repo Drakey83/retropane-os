@@ -81,6 +81,6 @@ engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
 | Area cache (finished areas reused: an opened menu is one copy; 8 areas; approved by the owner 2026-10-14) | 0x810000 | 1.17 MiB |
 | Free for program surfaces (ADR-0022 decision 2) | 0x940000 up | ~6.8 MiB |
 
-The SVC stack is 16 KiB in every image unless it sizes its own (`rp-today`: 24 KiB); each now reports its deepest use
+The SVC stack is 16 KiB in every image unless it sizes its own (`rp-today`: 40 KiB since 2026-10-17; it used 23.5 of its old 24); each now reports its deepest use
 when it returns to the loader (`stack: deepest N of 16384 bytes` in the
 run log), since a silent overflow lost a glyph atlas on 2026-10-14.

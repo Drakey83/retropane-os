@@ -61,10 +61,11 @@ pub static SMALL: [Image; 5] = [{empty}, {empty}, {empty}, {empty}, {empty}];
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
-        // 24 KiB of stack: the shell's frame (~5 KiB) and the GPU
-        // renderer's tables sit on it; 12.6 of 16 KiB was used on the
-        // device (2026-10-14).
-        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=24576");
+        // 40 KiB of stack: it was 24, and the image used 23.5 of them (96%) in
+        // the emulator and on the device (2026-10-17); an older build that
+        // went a little deeper froze the Axim (the watchdog error screen).
+        // `emu-today` fails above 80% use.
+        println!("cargo:rustc-link-arg-bins=--defsym=__stack_size=40960");
     }
 }
 

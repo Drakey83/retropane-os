@@ -2263,10 +2263,34 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         .lines()
         .find(|l| l.contains("calibrated:"))
         .ok_or_else(|| format!("today: the align screen never finished:{log}"))?;
+    // The stack's headroom: a silent overflow freezes the image (the device's
+    // watchdog error screen, 2026-10-17: it ran at 95% of its stack), so use
+    // above 80% of it fails the check.
+    let stack = log
+        .lines()
+        .find_map(|l| l.split("stack: deepest ").nth(1))
+        .and_then(|s| {
+            let mut n = s.split(" of ").map(|p| {
+                p.split(|c: char| !c.is_ascii_digit())
+                    .next()?
+                    .parse::<u32>()
+                    .ok()
+            });
+            Some((n.next()??, n.next()??))
+        })
+        .ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
+    if stack.0 * 100 > stack.1 * 80 {
+        return Err(format!(
+            "today: the stack went {} of {} bytes deep (over 80%: an overflow freezes the image)",
+            stack.0, stack.1
+        ));
+    }
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, Back to loader returned; {}",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
-        line.trim()
+        line.trim(),
+        stack.0,
+        stack.1
     );
     Ok(())
 }
