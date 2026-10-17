@@ -18,8 +18,8 @@ The OS is designed around what the PXA270 and the 2700G do best, not
 built for the CPU and retrofitted. Before the UI (Phase 5) and the CE
 Personality's drawing (Phase 4) are designed:
 
-- [ ] **RE:** the MBX core's command interface, step by step on the device (clear, triangle, textured quad, blend), pulled forward from Phase 7 (`docs/research/imitation-audit.md`, item 69)
-- [ ] The CPU's unused features measured (performance monitor, cache locking, mini-data cache, SRAM, clocks and power states, memory timings: items 67, 68, 80). Memory timings follow the owner's brief (2026-10-15): find the X51v's SDRAM chips and their datasheet timings, and compare them with Dell's `MDCNFG`/`MDREFR` (probe 2026-10-11). Report only, with alternatives and a risk calibration; tighter timings fail by silently corrupting data, so a stress-test plan comes before any change, and the owner decides. Report done 2026-10-15: docs/research/memory-timing.md
+- [x] **RE:** the MBX core's command interface, step by step on the device (clear, triangle, textured quad, blend), pulled forward from Phase 7 (`docs/research/imitation-audit.md`, item 69) *(all proven on the device by 2026-10-15: the 2D engine (fills, copies, per-pixel blending) and the 3D core (flat, Gouraud, textured in four formats, blending, depth); ADR-0022 to ADR-0024, docs/hw/2700g.md)*
+- [ ] The CPU's unused features measured (performance monitor, cache locking, mini-data cache, SRAM, clocks and power states, memory timings: items 67, 68, 80). Memory timings follow the owner's brief (2026-10-15): find the X51v's SDRAM chips and their datasheet timings, and compare them with Dell's `MDCNFG`/`MDREFR` (probe 2026-10-11). Report only, with alternatives and a risk calibration; tighter timings fail by silently corrupting data, so a stress-test plan comes before any change, and the owner decides. Report done 2026-10-15: docs/research/memory-timing.md. Clocks: the first device run of the clock changes hung (most likely at the memory-clock halving); the next version waits on its branch
 - [ ] The compositor/UI and GDI designs written GPU-first, with the CPU as fallback
 
 ---
@@ -77,14 +77,14 @@ Personality's drawing (Phase 4) are designed:
 ## Phase 3 — Core drivers
 **Goal:** every "easy" (documented) device working natively.
 
-- [ ] Display (pxafb passthrough first, then native 2700G planes)
+- [x] Display (pxafb passthrough first, then native 2700G planes) *(the 2700G's own planes on the device since 2026-10-14: the Today screen is one picture composed by the 2D engine, double-buffered (ADR-0023); night-light gamma table found 2026-10-16)*
 - [x] Touch (TSC2046 via SSP1 + GPIO), keypad buttons: drivers + emulator tests *(calibration UI still to do)*
-- [ ] Backlight (PWM), power button *(both done 2026-10-12 in the emulator: `rp-drv-pxa-pwm`, `cargo xtask backlight`, a press fades the screen off/on; device runs to do)*
-- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled, 4-bit, multi-block reads and writes with recovery for slow and failing blocks, hot swap and the lock switch; FAT32 read/create/replace (crash-safe), exFAT read and write (crash-safe, folders); the card as a USB drive (ADR-0014); folders; DMA for multi-block transfers, self-tested at start-up (emulator; device run pending); all 2026-10-11/12. To do: SDIO)*
+- [ ] Backlight (PWM), power button *(both done 2026-10-12 in the emulator: `rp-drv-pxa-pwm`, `cargo xtask backlight`, a press fades the screen off/on. On the device 2026-10-16: the backlight taken over from Windows Mobile and dimmed to 1/432 (`rp-handover`, `rp-nightlight`); power button device run to do)*
+- [ ] SD/SDIO with DMA and 4-bit mode: **SD, SDHC and SDXC** cards (beyond stock WM's 2 GB SD limit), plus a FAT32/exFAT file system *(polled, 4-bit, multi-block reads and writes with recovery for slow and failing blocks, hot swap and the lock switch; FAT32 read/create/replace (crash-safe), exFAT read and write (crash-safe, folders); the card as a USB drive (ADR-0014); folders; DMA for multi-block transfers, self-tested at start-up; all 2026-10-11/12. **On the device 2026-10-16** (`rp-storfast`): reads 4.2x faster by DMA (7.9 MB/s), writes 3.8x, a 430 MB soak with 0 errors, a card swap mid-soak; DMA writes on in the loader. To do: SDIO, the lock-switch step)*
 - [ ] CompactFlash (PXA PC Card socket 1, DMA where possible) *(spec `docs/hw/cf.md` and the probe's socket readings 2026-10-12; driver `rp-drv-cf` (memory mode, ATA, write cache off) and the loader's `cf` command 2026-10-12 in the emulator; the card as the USB drive's second unit; **on the device 2026-10-16/17:** the card attaches (warm, 25 ms), reads by DMA, and shows in Explorer as the PC's second drive; to do on the device: the slot powering down when the card is pulled)*
-- [ ] Audio (WM8750, I²S, DMA) *(I2C, codec and I2S drivers and the loader's `tone` 2026-10-12 in the emulator, the output recorded and its pitch measured in CI; DMA streaming the same day (CPU under 1% busy); to do: amplifier, headphone detect, device run)*
+- [ ] Audio (WM8750, I²S, DMA) *(I2C, codec and I2S drivers and the loader's `tone` 2026-10-12 in the emulator, the output recorded and its pitch measured in CI; DMA streaming the same day (CPU under 1% busy). First device run 2026-10-16 (`rp-tone`): **no codec answered on I2C** at 0x1a or 0x1b, and GPIO83 isn't the jack (docs/hw/audio.md); next: a read-only probe of pin functions, clock enables and an I2C scan. To do after it: amplifier, headphone detect)*
 - [x] USB client (serial gadget for development networking) *(CDC-ACM serial, and since 2026-10-12 a composite device with USB mass storage: ADR-0012, ADR-0014)*
-- [ ] **RE:** full CPLD register map in `docs/hw/cpld.md` *(v0.1 from AxDroid facts; confirm and complete from Dell's OAL in `nk.exe`)*
+- [ ] **RE:** full CPLD register map in `docs/hw/cpld.md` *(v0.1 from AxDroid facts; confirm and complete from Dell's OAL in `nk.exe`. Windows Mobile's register table read on the device 2026-10-16 and adopted at hand-over (`Cpld::adopt`); card-detect bit (0x04 bit 1) proven)*
 
 **Exit:** touch, keys, SD, CF and audio pass hardware-in-the-loop tests.
 
@@ -107,7 +107,7 @@ gathered in [design/README.md](design/README.md).
 
 - [ ] UI design spec and mock-ups approved (`docs/design/`) *before* code
 - [ ] GWES window manager, compositor, theme engine (Modern + Classic)
-- [ ] Today screen, Start menu, task switcher, notifications, SIP keyboard
+- [ ] Today screen, Start menu, task switcher, notifications, SIP keyboard *(Today screen in the test image `rp-today` on the device: mock-up layout and VClouds' weather icons (T1, T2, 2026-10-17), Start menu, softkeys, D-pad focus; touch-to-screen median 19 ms. Next: wallpaper and settings from the card (T3, T4), which wait for the OS storage service)*
 - [ ] Settings, file manager, notes
 
 **Exit:** usable day to day as an offline PDA.
@@ -128,8 +128,8 @@ gathered in [design/README.md](design/README.md).
 **Goal:** all 2700G blocks running on native drivers, at full speed.
 *(RE starts in Phase 0; this phase is where the drivers land.)*
 
-- [ ] 2D blitter driver; GDI and compositor accelerated
-- [ ] MBX 3D: init → clear → triangle → textured → GLES 1.1 CL subset
+- [ ] 2D blitter driver; GDI and compositor accelerated *(2D renderer `rp-mbx-render` drawing the Today screen on the device since 2026-10-14; GDI to do)*
+- [ ] MBX 3D: init → clear → triangle → textured → GLES 1.1 CL subset *(init, clear, triangle, textured, blending and depth proven on the device; our own renderer (ADR-0026) built and timed on the device; the GLES subset to do)*
 - [ ] `libGLES_CL.dll` + EGL in the CE Personality on MBX
 - [ ] Compositor moved to MBX at 60 fps
 - [ ] MVED1 video decoder driver; media player
@@ -157,7 +157,7 @@ gathered in [design/README.md](design/README.md).
 - [x] Shared CAB and setup-script parsers, device and PC (`rp-cab`, `rp-ce-setup`)
 - [x] `ceappmgr.exe` stand-in: checks, chooses and stages the CAB with its plan (registration: option A chosen, backup/take-over/check built, not yet applied; docs/legacysync/ceappmgr-standin.md)
 - [x] Device link session design, accepted 2026-10-15 (docs/legacysync/device-link.md: own WinUSB interface, Noise XX pairing with a 6-digit code then KK, signed partnership list in the built-in flash, the card as the SD-stage stand-in)
-- [ ] **Device random number source** (docs/security.md principle 4): not started, no code yet. Gates every key the device makes, so the link's device side waits for it. Needs its own design (entropy sources on the X51v measured)
+- [ ] **Device random number source** (docs/security.md principle 4): gates every key the device makes, so the link's device side waits for it. Design ADR-0029 and the `rp-noise` entropy measurements are on the branch `claude/adr-0029-rng`, not yet on main (it must be moved across the 2026-10-17 history rewrite)
 - [ ] X25519, ChaCha20-Poly1305 and list signing in `rp-crypto`; the transport-agnostic frame codec and Noise handshakes (no RNG needed)
 - [ ] Sending to the device and installing (needs Phase 4's CAB installer)
 - [ ] RAPI (L3), time, Explore, backup; then sync and pass-through
