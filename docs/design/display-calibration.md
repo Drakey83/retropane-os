@@ -280,6 +280,15 @@ looks "Measured full", "Measured half" and "Measured gamma", at full
 backlight; emu-display-cal shows the first pixel-exact. The owner picks by
 eye; then a measurement with the pick on confirms it hits its targets.
 
+**Looks run (2026-10-17, the owner's family, 321 presses, every look seen
+many times):** the owner's son picked **Original**, the owner leans the same
+way; the owner's wife picked **Everyday or Dark games** ("you can see things
+better"). Nobody picked a Measured look: made accurate, this screen looks
+dimmer and duller than people are used to. Proposed: Original stays the
+system default; games get the Dark games curve by default (the per-game
+curve of apps-and-packs §6a); Settings > Display offers the looks (Original,
+Everyday, Dark games, Accurate) for each owner to choose.
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made
