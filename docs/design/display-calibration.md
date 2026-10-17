@@ -111,6 +111,27 @@ wallpaper side by side was).
    Warm 24, with a mutant. 27.7 KB. **This image is the seed of the
    screen-calibration tool in Settings** (ROADMAP, Phase 5): every owner's
    aged panel dialled in with the same patterns.
+
+   **Device run 4 (2026-10-17, owner watching, 1649 changes, Home, all put
+   back; the backlight found at 274/432 = 63%, Bright 32):** each dial was
+   set alone, the others back at the original:
+   | Dial | Owner's setting | Means |
+   |---|---|---|
+   | Black | 8 ("8?") | black raised to 14: all 9 near-black squares show |
+   | White | 23 | white down to 189: all 9 near-white squares show |
+   | Mid | 16, box 4 | box 4 (gamma 2.2) matches only with mids darkened: the panel shows mid-tones brighter than standard (about gamma 1.8) |
+   | Warm | 20 | slightly cooler: the panel leans warm/yellow |
+   | Bright | 50 | full backlight preferred over Windows Mobile's 63% |
+   Owner's two problems: (1) **saturation drains away** with no dial to
+   bring it back. The gamma table bends each colour on its own, so it can't
+   add saturation, and Black and White squeeze the range, which washes
+   colours out. Saturation needs channel mixing: in content (pictures,
+   game rendering) or a 2700G colour matrix if one exists (open). (2)
+   **At the original settings the corridor is too dark to see.** Expected:
+   that is Windows Mobile's own curve, and the scene lives at levels 4-60
+   where the panel crushes the bottom. Next: ready-made settings built from
+   these numbers, plus a saturation dial that redraws the picture (a
+   preview of what the OS would apply to content).
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
