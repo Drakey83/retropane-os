@@ -107,6 +107,7 @@ gathered in [design/README.md](design/README.md).
 
 - [ ] UI design spec and mock-ups approved (`docs/design/`) *before* code
 - [ ] GWES window manager, compositor, theme engine (Modern + Classic)
+- [ ] Screen calibration in Settings (owner, 2026-10-17): every X51v's panel has aged differently, so each owner dials in their own screen (black end, white end, mid-tones, warmth, backlight) with the patterns of `rp-display-cal` (docs/design/display-calibration.md); first as the dials, later a guided or automated tool. The result is the system's gamma table and backlight range
 - [ ] Today screen, Start menu, task switcher, notifications, SIP keyboard *(Today screen in the test image `rp-today` on the device: mock-up layout and VClouds' weather icons (T1, T2, 2026-10-17), Start menu, softkeys, D-pad focus; touch-to-screen median 19 ms. Next: wallpaper and settings from the card (T3, T4), which wait for the OS storage service)*
 - [ ] Settings, file manager, notes
 

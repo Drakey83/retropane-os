@@ -922,14 +922,15 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The display calibration test image (C1, docs/design/display-calibration.md)
+/// The display calibration test image (docs/design/display-calibration.md)
 /// under the loader: its picture is pixel-exact below the caption through
-/// each gamma table it sets (the emulator's 2700G applies the table at
-/// scan-out, Windows Mobile's grey ramp at reset): Stock, then D-pad right
-/// (Shadows 5), up (Shadows 6), centre (A/B: Stock shown), a tap
-/// (Highlights 5), and Home puts everything back and returns.
+/// each gamma table its dials set (the emulator's 2700G applies the table
+/// at scan-out, Windows Mobile's grey ramp at reset): the original, then
+/// D-pad right (Black 2), down and right (White 2), centre twice (the
+/// original, then back), down twice and left (Warm 24); Home puts
+/// everything back and returns.
 pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
-    use rp_display_cal::{CAPTION_H, Curve, H, W, pixel, table};
+    use rp_display_cal::{CAPTION_H, Dials, H, W, pixel, table};
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -994,23 +995,32 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     };
     let check = || -> Result<(), String> {
-        until("stock", &WM_GAMMA)?;
+        until("original", &WM_GAMMA)?;
         let key = |k: &str| -> Result<(), String> {
-            // Held 200 ms, answered before the connection closes.
+            // Held 200 ms (under the repeat delay), answered before the
+            // connection closes.
             crate::screen::Monitor::connect(monitor_port())?.query(&format!("sendkey {k} 200"))?;
+            std::thread::sleep(Duration::from_millis(150));
             Ok(())
         };
+        let black2 = Dials {
+            black: 2,
+            ..Dials::STOCK
+        };
+        let white2 = Dials { white: 2, ..black2 };
         key("right")?;
-        until("shadows-5", &table(Curve::Shadows, 5, &WM_GAMMA))?;
-        key("up")?;
-        until("shadows-6", &table(Curve::Shadows, 6, &WM_GAMMA))?;
+        until("black-2", &table(black2, &WM_GAMMA))?;
+        key("down")?;
+        key("right")?;
+        until("white-2", &table(white2, &WM_GAMMA))?;
         key("ret")?;
-        until("ab-stock", &WM_GAMMA)?;
-        let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
-        touch(&mut qmp, &Action::TouchDown(240, 500))?;
-        std::thread::sleep(Duration::from_millis(300));
-        touch(&mut qmp, &Action::TouchUp)?;
-        until("highlights-5", &table(Curve::Highlights, 5, &WM_GAMMA))?;
+        until("compare-original", &WM_GAMMA)?;
+        key("ret")?;
+        until("compare-back", &table(white2, &WM_GAMMA))?;
+        key("down")?;
+        key("down")?;
+        key("left")?;
+        until("warm-24", &table(Dials { warm: 24, ..white2 }, &WM_GAMMA))?;
         key("f4")
     };
     let output = boot(
@@ -1034,11 +1044,10 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         .ok_or("display-cal: no run log after the image returned")?;
     for want in [
         "gamma: off, switched on",
-        ": Shadows 5",
-        ": Shadows 6",
-        "Shadows 6 (B: Stock shown)",
-        ": Highlights 5",
-        "done (Home) after 4 changes; last: Highlights 5",
+        "ready: Black 1 White 1 Mid 25 Warm 25",
+        "(original shown): Black 2 White 2",
+        "done (Home) after 8 changes",
+        "last: Black 2 White 2 Mid 25 Warm 24",
         "DISPLAY-CAL-OK",
     ] {
         if !log.contains(want) {
@@ -1046,7 +1055,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    display-cal OK: the picture pixel-exact through Stock, Shadows 5 and 6, A/B Stock and Highlights 5 (keys and a tap); Home put back and returned"
+        "    display-cal OK: the picture pixel-exact through the original, Black 2, White 2, the original and Warm 24 (dials moved and picked with the D-pad); Home put back and returned"
     );
     Ok(())
 }

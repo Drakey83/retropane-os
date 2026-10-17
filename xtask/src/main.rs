@@ -139,7 +139,7 @@ commands:
   emu-nightlight only the night-light experiment's check (rp-nightlight)
   emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
   emu-display-cal the display calibration image's check (rp-display-cal: the
-            picture pixel-exact through each gamma curve; keys and a tap)
+            picture pixel-exact through each gamma table its dials set)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
   emu-usb-suite every emulator check that goes through the USB controller
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images

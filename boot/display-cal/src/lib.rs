@@ -9,13 +9,13 @@
 //!
 //! | Rows | Band |
 //! |---|---|
-//! | 0-51 | caption: curve, strength, A/B (drawn by the image, not here) |
+//! | 0-51 | caption: the three dials, A/B (drawn by the image, not here) |
 //! | 52-111 | near-black steps 0, 4 .. 32 |
 //! | 112-171 | near-white steps 224, 228 .. 252, 255 |
 //! | 172-211 | grey ramp 0-255 |
 //! | 212-301 | red, green, blue ramps |
 //! | 302-381 | gamma check: a checkerboard (black and white, average 50%) around solid squares |
-//! | 382-401 | the squares' labels: the panel gamma each one matches |
+//! | 382-401 | the squares' labels: box numbers 1-6 (panel gamma 1.0-3.0) |
 //! | 402-441 | colour bars |
 //! | 442-639 | a dark synthetic game scene (a corridor, a torch, a status bar) |
 
@@ -48,11 +48,14 @@ pub const BLACK_STEPS: [u8; 9] = [0, 4, 8, 12, 16, 20, 24, 28, 32];
 /// Near-white step levels.
 pub const WHITE_STEPS: [u8; 9] = [224, 228, 232, 236, 240, 244, 248, 252, 255];
 
-/// The gamma check's solid levels: each matches the line pairs' average
-/// (50% light) on a panel of the gamma under it (255 x 0.5^(1/gamma)).
+/// The gamma check's solid levels: each matches the checkerboard's
+/// average (50% light) on a panel of the gamma in [`CHECK_GAMMA`]
+/// (255 x 0.5^(1/gamma)).
 pub const CHECK_LEVELS: [u8; 6] = [128, 161, 175, 186, 194, 202];
-/// The panel gamma each [`CHECK_LEVELS`] square matches.
-pub const CHECK_LABELS: [&str; 6] = ["1.0", "1.5", "1.8", "2.2", "2.5", "3.0"];
+/// The squares' labels: box numbers the owner reports.
+pub const CHECK_LABELS: [&str; 6] = ["1", "2", "3", "4", "5", "6"];
+/// The panel gamma each box matches, for the docs and the log.
+pub const CHECK_GAMMA: [&str; 6] = ["1.0", "1.5", "1.8", "2.2", "2.5", "3.0"];
 
 /// The picture's colour at `(x, y)`, `y` at or below [`CAPTION_H`]
 /// (black above it).
@@ -202,123 +205,116 @@ fn status_bar(x: u32, y: u32) -> (u8, u8, u8) {
     }
 }
 
-/// The curves the owner flips between.
+/// The dials, each 1-50 (the owner's request for run 4: big, visible
+/// changes per click, one dial per question).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Curve {
-    /// The table as found (Windows Mobile's straight ramp).
-    Stock,
-    /// Shadows lifted: dark levels raised, black and white kept.
-    Shadows,
-    /// Highlights spread: the top of the range brought down under the
-    /// panel's clip (device run 2: 224-255 looked like one band), the
-    /// lower half kept.
-    Highlights,
-    /// Shadows, then Highlights, at the same strength.
-    Both,
-    /// An S-curve: more contrast in the middle, black and white kept.
-    Contrast,
-    /// Warmer white: blue (and a little green) turned down.
-    Warm,
-    /// Cooler white: red (and a little green) turned down.
-    Cool,
+pub struct Dials {
+    /// Black end: lifts black so the near-black squares come apart (1:
+    /// none, 50: black raised by 98 of 255).
+    pub black: u32,
+    /// White end: brings white down under the panel's clip while keeping
+    /// the top 64 levels at full spacing, so the near-white squares come
+    /// apart (1: none, 50: white at 108 of 255).
+    pub white: u32,
+    /// Middle: darker (below 25) or brighter (above) mid-tones, black and
+    /// white kept; the gamma check's question.
+    pub mid: u32,
+    /// White balance: cooler (below 25: red down) or warmer (above: blue
+    /// down), green a little down either way; judged on the grey ramp.
+    pub warm: u32,
+    /// The backlight, in 50ths of full (not part of the table: the image
+    /// sets PWM0, starting from the setting found).
+    pub bright: u32,
 }
 
-impl Curve {
-    /// In flip order.
-    pub const ALL: [Curve; 7] = [
-        Self::Stock,
-        Self::Shadows,
-        Self::Highlights,
-        Self::Both,
-        Self::Contrast,
-        Self::Warm,
-        Self::Cool,
-    ];
+/// The dials' range.
+pub const DIAL_MIN: u32 = 1;
+/// The dials' range.
+pub const DIAL_MAX: u32 = 50;
+/// The middle and warm dials' neutral setting.
+pub const MID_NEUTRAL: u32 = 25;
+/// How many dials.
+pub const DIALS: usize = 5;
+/// The dials' names, in order.
+pub const DIAL_NAMES: [&str; DIALS] = ["Black", "White", "Mid", "Warm", "Bright"];
 
-    /// The caption and run log's name.
-    #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Stock => "Stock",
-            Self::Shadows => "Shadows",
-            Self::Contrast => "Contrast",
-            Self::Warm => "Warm",
-            Self::Cool => "Cool",
-            Self::Highlights => "Highlights",
-            Self::Both => "Shadows+Highl.",
-        }
-    }
-
-    /// The next curve in flip order (`back`: the one before), wrapping.
-    #[must_use]
-    pub fn step(self, back: bool) -> Self {
-        let i = Self::ALL.iter().position(|&c| c == self).unwrap_or(0);
-        let n = Self::ALL.len();
-        Self::ALL[if back { (i + n - 1) % n } else { (i + 1) % n }]
-    }
-}
-
-/// Strength range (D-pad up and down) and where each curve starts.
-pub const STRENGTH_MAX: u32 = 10;
-/// The strength a curve starts at.
-pub const STRENGTH_START: u32 = 5;
-
-/// One level through `curve` at `strength` (0..=[`STRENGTH_MAX`]) on lane
-/// `shift` (16 red, 8 green, 0 blue).
-#[must_use]
-pub fn shape(curve: Curve, strength: u32, v: u32, shift: u32) -> u32 {
-    let s = strength.min(STRENGTH_MAX);
-    let v = v.min(255);
-    let out = match curve {
-        Curve::Stock => v,
-        // v + k * v(255 - v)/255: at full strength 2v - v^2/255, the lift
-        // of a gamma of about 1.6.
-        Curve::Shadows => v + s * v * (255 - v) / (255 * STRENGTH_MAX),
-        // Linear to 128, then the rest squeezed up to 255 - 5k (205 at
-        // full strength): the top steps land below the clip, apart.
-        Curve::Highlights => {
-            let top = 255 - 5 * s;
-            if v <= 128 {
-                v
-            } else {
-                128 + (v - 128) * (top - 128) / 127
-            }
-        }
-        Curve::Both => shape(
-            Curve::Highlights,
-            s,
-            shape(Curve::Shadows, s, v, shift),
-            shift,
-        ),
-        // Toward smoothstep: 3t^2 - 2t^3.
-        Curve::Contrast => {
-            let sm = v * v * (765 - 2 * v) / (255 * 255);
-            (v * (STRENGTH_MAX - s) + sm * s) / STRENGTH_MAX
-        }
-        // At full strength blue to 77%, green to 92%.
-        Curve::Warm => match shift {
-            0 => v * (256 - 6 * s) / 256,
-            8 => v * (256 - 2 * s) / 256,
-            _ => v,
-        },
-        Curve::Cool => match shift {
-            16 => v * (256 - 6 * s) / 256,
-            8 => v * (256 - 2 * s) / 256,
-            _ => v,
-        },
+impl Dials {
+    /// No change: the table as found, the backlight full.
+    pub const STOCK: Self = Self {
+        black: DIAL_MIN,
+        white: DIAL_MIN,
+        mid: MID_NEUTRAL,
+        warm: MID_NEUTRAL,
+        bright: DIAL_MAX,
     };
-    out.min(255)
+
+    /// Dial `i`, in [`DIAL_NAMES`] order.
+    #[must_use]
+    pub const fn get(&self, i: usize) -> u32 {
+        match i {
+            0 => self.black,
+            1 => self.white,
+            2 => self.mid,
+            3 => self.warm,
+            _ => self.bright,
+        }
+    }
+
+    /// Dial `i` moved by `by`, kept in range.
+    #[must_use]
+    pub fn moved(mut self, i: usize, by: i32) -> Self {
+        let v = (self.get(i) as i32 + by).clamp(DIAL_MIN as i32, DIAL_MAX as i32) as u32;
+        match i {
+            0 => self.black = v,
+            1 => self.white = v,
+            2 => self.mid = v,
+            3 => self.warm = v,
+            _ => self.bright = v,
+        }
+        self
+    }
 }
 
-/// The gamma table for `curve` at `strength`: each lane of `found` (the
-/// table as the image found it) put through [`shape`], so Stock is exactly
-/// `found`.
+/// One level (0-255) of lane `shift` (16 red, 8 green, 0 blue) through the
+/// dials: black, middle, white, then warmth.
 #[must_use]
-pub fn table(curve: Curve, strength: u32, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
+pub fn shape(d: Dials, v: u32, shift: u32) -> u32 {
+    let v = v.min(255);
+    // Black: raised to `off`, white kept.
+    let off = 2 * (d.black.clamp(DIAL_MIN, DIAL_MAX) - 1);
+    let v = off + v * (255 - off) / 255;
+    // Middle: v + m v(255 - v)/255, m from -24/25 to +1.
+    let m = d.mid.clamp(DIAL_MIN, DIAL_MAX) as i32 - MID_NEUTRAL as i32;
+    let vi = v as i32;
+    let v = (vi + m * vi * (255 - vi) / (255 * 25)) as u32;
+    // White: down to `top`; the top 64 levels keep their spacing (one
+    // panel level per 4), everything under them squeezed.
+    let top = 255 - 3 * (d.white.clamp(DIAL_MIN, DIAL_MAX) - 1);
+    const SPAN: u32 = 64;
+    let v = if v >= 255 - SPAN {
+        top - (255 - v)
+    } else {
+        v * (top - SPAN) / (255 - SPAN)
+    };
+    // Warmth: at the ends one colour at 61%, green at 90%.
+    let w = d.warm.clamp(DIAL_MIN, DIAL_MAX) as i32 - MID_NEUTRAL as i32;
+    let keep = match shift {
+        16 if w < 0 => 256 + 4 * w,
+        0 if w > 0 => 256 - 4 * w,
+        8 => 256 - w.abs(),
+        _ => 256,
+    };
+    (v.min(255) * keep as u32 / 256).min(255)
+}
+
+/// The gamma table for `d`: each lane of `found` (the table as the image
+/// found it) put through [`shape`], so [`Dials::STOCK`] is exactly `found`.
+#[must_use]
+pub fn table(d: Dials, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
     core::array::from_fn(|i| {
         [16, 8, 0]
             .iter()
-            .map(|&sh| shape(curve, strength, found[i] >> sh & 0xFF, sh) << sh)
+            .map(|&sh| shape(d, found[i] >> sh & 0xFF, sh) << sh)
             .fold(0, |a, l| a | l)
     })
 }
@@ -328,53 +324,89 @@ mod tests {
     use super::*;
     use rp_drv_mbx_display::scanout::WM_GAMMA;
 
+    fn all() -> impl Iterator<Item = Dials> {
+        let steps = [1, 2, 10, 24, 25, 26, 40, 49, 50];
+        steps.into_iter().flat_map(move |black| {
+            steps.into_iter().flat_map(move |white| {
+                steps.into_iter().flat_map(move |mid| {
+                    [1, 25, 50].into_iter().map(move |warm| Dials {
+                        black,
+                        white,
+                        mid,
+                        warm,
+                        bright: 50,
+                    })
+                })
+            })
+        })
+    }
+
     #[test]
     fn stock_is_the_table_as_found() {
-        assert_eq!(table(Curve::Stock, 7, &WM_GAMMA), WM_GAMMA);
-        for c in Curve::ALL {
-            assert_eq!(table(c, 0, &WM_GAMMA), WM_GAMMA, "{c:?} at strength 0");
+        assert_eq!(table(Dials::STOCK, &WM_GAMMA), WM_GAMMA);
+        for v in 0..=255 {
+            for sh in [16, 8, 0] {
+                assert_eq!(shape(Dials::STOCK, v, sh), v);
+            }
         }
     }
 
     #[test]
-    fn curves_keep_black_and_never_fall() {
-        for c in Curve::ALL {
-            for s in 0..=STRENGTH_MAX {
-                for sh in [16, 8, 0] {
-                    assert_eq!(shape(c, s, 0, sh), 0);
-                    let mut last = 0;
-                    for v in 0..=255 {
-                        let o = shape(c, s, v, sh);
-                        assert!(o >= last, "{c:?} {s} falls at {v}");
-                        last = o;
-                    }
+    fn every_setting_rises_and_stays_in_range() {
+        for d in all() {
+            for sh in [16, 8, 0] {
+                let mut last = 0;
+                for v in 0..=255 {
+                    let o = shape(d, v, sh);
+                    assert!(o <= 255);
+                    assert!(o >= last, "{d:?} falls at {v}");
+                    last = o;
                 }
             }
         }
     }
 
     #[test]
-    fn curves_do_what_their_names_say() {
-        assert!(shape(Curve::Shadows, 10, 32, 8) > 55);
-        assert_eq!(shape(Curve::Shadows, 10, 255, 8), 255);
-        assert!(shape(Curve::Contrast, 10, 64, 8) < 50);
-        assert!(shape(Curve::Contrast, 10, 192, 8) > 205);
-        assert!(shape(Curve::Warm, 10, 255, 0) < shape(Curve::Warm, 10, 255, 16));
-        assert!(shape(Curve::Cool, 10, 255, 16) < shape(Curve::Cool, 10, 255, 0));
-        // Highlights: the near-white steps (4 apart) stay apart, under 240.
-        assert_eq!(shape(Curve::Highlights, 10, 100, 8), 100);
-        assert!(shape(Curve::Highlights, 5, 255, 8) <= 230);
-        assert!(shape(Curve::Highlights, 10, 228, 8) > shape(Curve::Highlights, 10, 224, 8));
-        assert!(shape(Curve::Both, 5, 16, 8) > 16);
-        assert!(shape(Curve::Both, 5, 255, 8) < 255);
+    fn each_dial_does_its_job_drastically() {
+        let at = |black, white, mid, v| {
+            let d = Dials {
+                black,
+                white,
+                mid,
+                ..Dials::STOCK
+            };
+            shape(d, v, 8)
+        };
+        // Black: lifted a lot at 50, a visible step per click.
+        assert!(at(50, 1, 25, 0) >= 90);
+        assert!(at(2, 1, 25, 0) >= 2);
+        // White: well down at 50; the top squares keep 4 apart.
+        assert!(at(1, 50, 25, 255) <= 110);
+        assert_eq!(at(1, 30, 25, 255) - at(1, 30, 25, 251), 4);
+        // Middle: darker below 25, brighter above, ends kept.
+        assert!(at(1, 1, 1, 128) < 70);
+        assert!(at(1, 1, 50, 128) > 185);
+        assert_eq!(at(1, 1, 1, 255), 255);
+        assert_eq!(at(1, 1, 50, 0), 0);
+        // Warmth: blue down when warm, red down when cool.
+        let warm = |warm, sh| {
+            shape(
+                Dials {
+                    warm,
+                    ..Dials::STOCK
+                },
+                255,
+                sh,
+            )
+        };
+        assert!(warm(50, 0) < 160 && warm(50, 16) == 255);
+        assert!(warm(1, 16) < 165 && warm(1, 0) == 255);
     }
 
     #[test]
-    fn flip_order_wraps_both_ways() {
-        assert_eq!(Curve::Cool.step(false), Curve::Stock);
-        assert_eq!(Curve::Stock.step(false), Curve::Shadows);
-        assert_eq!(Curve::Shadows.step(false), Curve::Highlights);
-        assert_eq!(Curve::Stock.step(true), Curve::Cool);
+    fn dials_stay_in_range() {
+        let d = Dials::STOCK.moved(0, -5).moved(1, 100).moved(2, 3);
+        assert_eq!((d.black, d.white, d.mid), (1, 50, 28));
     }
 
     #[test]
@@ -386,7 +418,6 @@ mod tests {
         assert_eq!(pixel(W - 1, RGB.0 + 30), (0, 255, 0));
         assert_eq!(pixel(40, CHECK.0 + 40), (128, 128, 128));
         assert_eq!(pixel(0, BARS_Y.0), (255, 255, 255));
-        // Most of the scene (outside the flame and the torch's pool) dark.
         let (mut dark, mut all) = (0, 0);
         for y in SCENE_Y..H - 20 {
             for x in (0..W).step_by(3) {
@@ -407,7 +438,7 @@ mod tests {
                 .flat_map(|x| (LABELS.0..LABELS.1).map(move |y| (x, y)))
                 .filter(|&(x, y)| pixel(x, y) != (0, 0, 0))
                 .count();
-            assert!(lit > 20, "label {col}: {lit} pixels");
+            assert!(lit > 8, "label {col}: {lit} pixels");
         }
     }
 }

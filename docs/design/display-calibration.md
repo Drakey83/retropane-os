@@ -90,6 +90,27 @@ wallpaper side by side was).
    strongest setting**, so the range should go further. Owner: Part 1
    "needs a bigger change" to judge. Next: wider-step near-white squares
    (where does white stop getting brighter?) and strengths past 10.
+
+   **Run 4 rebuilt as dials (2026-10-17, owner: "steps 1-50 ... really
+   make drastic changes", one number per question, plus any other numbers
+   I need):** the curves are replaced by five dials, each 1-50, seen all at
+   once in the caption (the chosen one yellow). D-pad up/down picks a dial,
+   right/left moves it (held: repeats), centre compares with the original
+   (caption red, "ORIG"), Home finishes. All dials combine into one table.
+   | Dial | Question it answers | 1 | 50 |
+   |---|---|---|---|
+   | Black | the setting where all 9 near-black squares show | none | black raised to 98 |
+   | White | the setting where all 9 near-white squares show | none | white down to 108, the top 64 levels kept 4 apart (the squeezing of run 3 lost levels; this doesn't) |
+   | Mid | which gamma box (1-6) matches the checkerboard, at which setting | mids much darker (25 = none) | mids much brighter |
+   | Warm | where the grey ramp looks neutral (no blue or yellow) | red at 61% (cool; 25 = none) | blue at 61% (warm) |
+   | Bright | the backlight the owner wants (C2's question, asked here) | 1/50 of full | full |
+   The gamma boxes are now labelled 1-6 (panel gamma 1.0, 1.5, 1.8, 2.2,
+   2.5, 3.0). The run log keeps every setting once it settles (1 s) and the
+   last one with its table. Touch input dropped (D-pad only). emu-display-cal:
+   pixel-exact through the original, Black 2, White 2, compare and back,
+   Warm 24, with a mutant. 27.7 KB. **This image is the seed of the
+   screen-calibration tool in Settings** (ROADMAP, Phase 5): every owner's
+   aged panel dialled in with the same patterns.
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
