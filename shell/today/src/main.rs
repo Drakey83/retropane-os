@@ -154,8 +154,9 @@ mod image {
         };
         let t0 = rt::ticks();
         rp_today::show_gpu(two_d, WALLPAPER, rt::delay_us);
-        // The graphics service (ADR-0030) owns the engines from here.
-        let Some(gfx) = GFX.put_with(|| Graphics::new(two_d, Pool::new(POOL))) else {
+        // The graphics service (ADR-0030) owns the engines from here; 2D
+        // only, so no 3D state is lent (ThreeD: ~5 KiB).
+        let Some(gfx) = GFX.put_with(|| Graphics::new(two_d, Pool::new(POOL), None)) else {
             crash(format_args!("started twice"))
         };
         let mut gclock = TickClock {

@@ -63,6 +63,9 @@ pub enum Error {
     BadHandle,
     /// The 3D scene is another client's, or none is open.
     NotYourScene,
+    /// The program gave the service no 3D state ([`ThreeD`]): it draws 2D
+    /// only.
+    No3d,
     /// Refused by the 3D renderer.
     Scene(r3d::Error),
 }
@@ -199,32 +202,72 @@ pub enum Step {
 /// prediction; a full-screen 2D frame takes milliseconds).
 const TWO_D_POLL_US: u32 = 200;
 
+/// The service's 3D state: the scene and the texture blocks (about 5 KiB).
+/// Kept by the program and lent to the service only by programs that use
+/// 3D, so a 2D-only one (the Today screen) doesn't carry it (stack audit,
+/// 2026-10-17: it was 5 of the 5.4 KiB of `Graphics`, all unused there).
+pub struct ThreeD {
+    scene: Option<Scene>,
+    blocks: [Block; BLOCKS],
+}
+
+impl ThreeD {
+    /// No scene, no textures.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            scene: None,
+            blocks: [NO_BLOCK; BLOCKS],
+        }
+    }
+}
+
+impl Default for ThreeD {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The owner of the 2D engine and the 3D core. It borrows the 2D renderer
-/// (5-6 KiB) rather than holding it: moving one into the other put both on
-/// a test image's stack at once and overflowed it (`rp-today` in the
-/// emulator, 2026-10-15); a test keeps this struct small.
+/// (5-6 KiB) and the 3D state rather than holding them: moving one into the
+/// other put both on a test image's stack at once and overflowed it
+/// (`rp-today` in the emulator, 2026-10-15); a test keeps this struct small.
 pub struct Graphics<'a, R, M> {
     two_d: &'a mut Mbx2dRenderer<R, M>,
-    scene: Option<Scene>,
+    three_d: Option<&'a mut ThreeD>,
     pool: Pool,
     clients: [ClientRec; CLIENTS],
-    blocks: [Block; BLOCKS],
     job: Job,
 }
 
 impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// The service over the 2D renderer (which holds the register window
-    /// and memory, its flips held for the 3D area) and the pool.
-    pub fn new(two_d: &'a mut Mbx2dRenderer<R, M>, pool: Pool) -> Self {
+    /// and memory, its flips held for the 3D area), the pool, and the 3D
+    /// state if the program uses 3D (without it, 3D requests are refused
+    /// with [`Error::No3d`] and frames are 2D only).
+    pub fn new(
+        two_d: &'a mut Mbx2dRenderer<R, M>,
+        pool: Pool,
+        three_d: Option<&'a mut ThreeD>,
+    ) -> Self {
         two_d.hold = true;
         Self {
             two_d,
-            scene: None,
+            three_d,
             pool,
             clients: [ClientRec::default(); CLIENTS],
-            blocks: [NO_BLOCK; BLOCKS],
             job: Job::None,
         }
+    }
+
+    /// The open scene, if any.
+    fn open(&self) -> Option<&Scene> {
+        self.three_d.as_deref()?.scene.as_ref()
+    }
+
+    /// The open scene, if any, to change.
+    fn open_mut(&mut self) -> Option<&mut Scene> {
+        self.three_d.as_deref_mut()?.scene.as_mut()
     }
 
     /// The 2D renderer (wallpaper, showing the picture: the service's own
@@ -261,14 +304,18 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// pool, its scene closes.
     pub fn close(&mut self, c: ClientId) -> Result<(), Error> {
         self.rec(c)?;
-        if self.scene.as_ref().is_some_and(|s| s.owner == c.0) {
+        if self.open().is_some_and(|s| s.owner == c.0) {
             self.close_scene(c)?;
         }
         if self.job != Job::None {
             return Err(Error::Busy);
         }
         for k in 0..BLOCKS {
-            if self.blocks[k].tex.is_some() && self.blocks[k].owner == c.0 {
+            if self
+                .three_d
+                .as_deref()
+                .is_some_and(|t| t.blocks[k].tex.is_some() && t.blocks[k].owner == c.0)
+            {
                 self.drop_block(k);
             }
         }
@@ -277,11 +324,15 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 
     fn drop_block(&mut self, k: usize) {
-        if let Some(t) = self.blocks[k].tex.take() {
+        let Some(three_d) = self.three_d.as_deref_mut() else {
+            return;
+        };
+        let b = &mut three_d.blocks[k];
+        if let Some(t) = b.tex.take() {
             let _ = r3d::release(&mut self.pool, t);
-            let owner = usize::from(self.blocks[k].owner);
+            let owner = usize::from(b.owner);
             self.clients[owner].used = self.clients[owner].used.saturating_sub(t.bytes());
-            self.blocks[k].generation = self.blocks[k].generation.wrapping_add(1);
+            b.generation = b.generation.wrapping_add(1);
         }
     }
 
@@ -362,28 +413,33 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             levels,
         }
         .bytes();
+        let three_d = self.three_d.as_deref_mut().ok_or(Error::No3d)?;
         if rec.used.saturating_add(bytes) > rec.quota {
             return Err(Error::Quota);
         }
-        let k = self
+        let k = three_d
             .blocks
             .iter()
             .position(|b| b.tex.is_none())
             .ok_or(Error::NoMemory)?;
         let (_, mem) = self.two_d.parts();
         let t = up(&mut self.pool, mem).ok_or(Error::NoMemory)?;
-        self.blocks[k].owner = c.0;
-        self.blocks[k].tex = Some(t);
+        let b = &mut three_d.blocks[k];
+        b.owner = c.0;
+        b.tex = Some(t);
         self.clients[usize::from(c.0)].used += t.bytes();
         Ok(Handle {
             slot: k as u16,
-            generation: self.blocks[k].generation,
+            generation: b.generation,
         })
     }
 
     /// Client `c`'s texture behind `h`.
     fn texture(&self, c: ClientId, h: Handle) -> Result<Texture, Error> {
         let b = self
+            .three_d
+            .as_deref()
+            .ok_or(Error::No3d)?
             .blocks
             .get(usize::from(h.slot))
             .ok_or(Error::BadHandle)?;
@@ -411,7 +467,10 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// flip.
     pub fn open_scene(&mut self, c: ClientId, x: u16, y: u16, w: u16, h: u16) -> Result<(), Error> {
         self.rec(c)?;
-        if self.scene.is_some() || self.job != Job::None {
+        if self.three_d.is_none() {
+            return Err(Error::No3d);
+        }
+        if self.open().is_some() || self.job != Job::None {
             return Err(Error::Busy);
         }
         let pic = Picture::screen(0);
@@ -421,26 +480,28 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
             return Err(Error::Scene(r3d::Error::BadTarget));
         }
         let r = r3d::Renderer::new(&mut self.pool, w, h).ok_or(Error::NoMemory)?;
-        self.scene = Some(Scene {
-            owner: c.0,
-            r,
-            x,
-            y,
-            resets: 0,
-        });
+        if let Some(t) = self.three_d.as_deref_mut() {
+            t.scene = Some(Scene {
+                owner: c.0,
+                r,
+                x,
+                y,
+                resets: 0,
+            });
+        }
         Ok(())
     }
 
     /// Closes client `c`'s scene (with nothing in flight); its area goes
     /// back to 2D, redrawn whole on the next frame.
     pub fn close_scene(&mut self, c: ClientId) -> Result<(), Error> {
-        if !self.scene.as_ref().is_some_and(|s| s.owner == c.0) {
+        if !self.open().is_some_and(|s| s.owner == c.0) {
             return Err(Error::NotYourScene);
         }
         if self.job != Job::None {
             return Err(Error::Busy);
         }
-        if let Some(s) = self.scene.take() {
+        if let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.take()) {
             let _ = s.r.release(&mut self.pool);
         }
         self.two_d.invalidate_all();
@@ -448,7 +509,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     }
 
     fn scene(&mut self, c: ClientId) -> Result<&mut Scene, Error> {
-        match &mut self.scene {
+        match self.open_mut() {
             Some(s) if s.owner == c.0 => Ok(s),
             _ => Err(Error::NotYourScene),
         }
@@ -495,7 +556,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.job != Job::None {
             return Err(Error::Busy);
         }
-        let s = match &mut self.scene {
+        let s = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
             Some(s) if s.owner == c.0 => s,
             _ => return Err(Error::NotYourScene),
         };
@@ -519,7 +580,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         // renders into the one not on screen, which is then shown. Nothing
         // changed in the scene either: nothing to do (the picture not on
         // screen catches up on the next frame drawn into it).
-        if self.scene.as_ref().is_none_or(|s| s.r.dirty() == 0) {
+        if self.open().is_none_or(|s| s.r.dirty() == 0) {
             return Ok(Step::Idle);
         }
         let Some(back) = self.two_d.back() else {
@@ -537,7 +598,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// Renders the scene into its area of the picture at `at`: when to
     /// poll, or `None` if there's nothing to render (or no scene).
     fn start_3d<C: Clock>(&mut self, at: usize, clock: &mut C) -> Option<u32> {
-        let s = self.scene.as_mut()?;
+        let s = self.three_d.as_deref_mut()?.scene.as_mut()?;
         let target = Target {
             picture: Picture {
                 at: at as u32,
@@ -567,7 +628,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 };
                 // What 2D drew afresh over the area: the scene draws it
                 // again before the flip.
-                if let Some(s) = &mut self.scene {
+                if let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
                     for r in self.two_d.drawn() {
                         s.r.invalidate(
                             i32::from(r.x) - i32::from(s.x),
@@ -590,7 +651,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                 }
             }
             Job::ThreeD { back } => {
-                let p = match &mut self.scene {
+                let p = match self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) {
                     Some(s) => {
                         let (e, mem) = self.two_d.parts();
                         s.r.poll(&mut e.regs, mem, clock)
@@ -617,7 +678,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
     /// The 2D engine's stream restarts after a reset the 3D renderer made
     /// (the reset is the whole MBX's).
     fn after_3d(&mut self) {
-        let Some(s) = &mut self.scene else {
+        let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return;
         };
         if s.r.core_resets() != s.resets {
@@ -631,7 +692,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
         if self.job != Job::None {
             return false;
         }
-        let Some(s) = &mut self.scene else {
+        let Some(s) = self.three_d.as_deref_mut().and_then(|t| t.scene.as_mut()) else {
             return false;
         };
         let (e, _) = self.two_d.parts();

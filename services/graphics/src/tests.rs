@@ -86,6 +86,7 @@ fn rig() -> Rig {
         g: Graphics::new(
             std::boxed::Box::leak(std::boxed::Box::new(two)),
             Pool::new(POOL),
+            Some(std::boxed::Box::leak(std::boxed::Box::new(ThreeD::new()))),
         ),
         mem,
         clock,
@@ -336,11 +337,50 @@ fn closing_the_scene_gives_its_area_back_and_the_clock_goes_off_when_idle() {
 
 #[test]
 fn the_service_stays_small() {
-    // It lives on an image's stack next to the 2D renderer and a frame
-    // (rp-today overflowed its 24 KiB when the service held the renderer:
-    // 11 KiB here then). Host sizes (64-bit) bound the device's.
+    // It lives next to the 2D renderer and a frame (rp-today overflowed its
+    // 24 KiB stack when the service held the renderer: 11 KiB here then;
+    // 5.4 KiB with the 3D state inside, 2026-10-17). The 3D state is lent
+    // only by programs that use 3D. Host sizes (64-bit) bound the device's.
     let size = core::mem::size_of::<Graphics<'static, Both, m2::Mem>>();
-    assert!(size <= 6 * 1024, "{size} bytes");
+    assert!(size <= 1024, "{size} bytes");
+}
+
+#[test]
+fn without_3d_state_frames_are_2d_and_3d_is_refused() {
+    let mem = m2::memory();
+    let clock = SimClock::default();
+    let bus = Both {
+        two: m2::Bus::new(mem.clone()),
+        three: m3::Gpu::new(mem.clone(), &clock),
+    };
+    let mut two = Mbx2dRenderer::new(bus, m2::Mem(mem.clone()), Layout::X51V, now, 1);
+    let row = [GREY; 480];
+    for y in 0..640 {
+        two.wallpaper_row(y, &row);
+    }
+    two.show(|_| {});
+    two.dither = false;
+    let mut r = Rig {
+        g: Graphics::new(
+            std::boxed::Box::leak(std::boxed::Box::new(two)),
+            Pool::new(POOL),
+            None,
+        ),
+        mem,
+        clock,
+    };
+    let c = r.g.client(4096).unwrap();
+    let (x, y, w, h) = AREA;
+    assert_eq!(r.g.open_scene(c, x, y, w, h), Err(Error::No3d));
+    assert_eq!(
+        r.g.upload_texture(c, 0, format::RGB565, &texels()),
+        Err(Error::No3d)
+    );
+    assert_eq!(r.g.used(c), 0);
+    assert_eq!(r.frame(&fill(Rect::new(0, 0, 480, 32), BLUE)), Step::Shown);
+    assert_eq!(r.on_screen(10, 10), BLUE & 0xFF_FFFF);
+    assert!(!r.g.idle(0));
+    r.g.close(c).unwrap();
 }
 
 #[test]

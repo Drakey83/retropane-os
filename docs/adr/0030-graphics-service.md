@@ -94,6 +94,12 @@ tests). Next: the shell's Today screen on the service, then a device run.
 Later (B in G1): 2D could leave out the area instead of drawing under it
 (saves the 2D engine's work there), and text over 3D.
 
+**3D state lent, not held (2026-10-17, stack audit).** The scene and the
+64 texture blocks (`ThreeD`, about 5 KiB of the service's 5.4) are kept by
+the program and lent to `Graphics::new` only by programs that use 3D; a
+2D-only one (the Today screen) passes none, and 3D requests are then
+refused with `Error::No3d`. Nothing changes for a program that lends it.
+
 ## The four lenses
 
 | Lens | Effect |
