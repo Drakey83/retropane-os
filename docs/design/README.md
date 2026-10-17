@@ -72,5 +72,6 @@ A running list; each line points to where the detail is.
   front page; fifteen wallpapers approved ([ui.md](ui.md)); Quake 2 added to the
   game ports; connected services (iCal, then CalDAV, then Google sign-in) with
   one Connections page, and streaming from the owner's own libraries as a pack
-  ([apps-and-packs.md](apps-and-packs.md) §7, §7b); Tailscale for away from home
-  (§7c); the Today screen plan ([today-screen-plan.md](today-screen-plan.md)).
+  ([apps-and-packs.md](apps-and-packs.md) §7, §7b); Tailscale for away from home:
+  a gateway at home (A) until our own tailnet client (C) exists (§7c); the
+  Today screen plan ([today-screen-plan.md](today-screen-plan.md)).

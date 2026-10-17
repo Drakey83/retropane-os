@@ -233,6 +233,10 @@ stand-in for that server. Three ways for the X51v to use it, smallest first:
 | B. WireGuard to a gateway | The device is a plain WireGuard peer of a home machine that is also on the tailnet and passes traffic through | Small code (the WireGuard pieces are well specified), no Tailscale account logic on the device | The device is not a tailnet member: no per-device rules, names or revoking from the Tailscale console; keys are set by hand |
 | C. A real tailnet node | RetroPane's own client in Rust: registers with the control service, keeps the device map, talks through Tailscale's relay servers over HTTPS (no router tricks needed), and carries WireGuard inside | The proper answer: the device appears in your tailnet, gets a name, can be limited by access rules and revoked from the console | The most work: the control protocol, the relay protocol, WireGuard and a TCP/IP stack; Tailscale's terms for third-party clients to be checked first, with Headscale as the fallback |
 
+**Decided (owner, 2026-10-17): A until C exists.** A gateway at home
+(way A) is how the device reaches the library away from home until
+RetroPane's own tailnet client (way C) is built; B is not planned.
+
 **Recommendation: C, built as an operating-system service** (the owner's
 word: "a service"), so every app benefits, not only the media ones: media
 servers, NAS shares, calendar sync, remote desktop. Stages: **T1** use A
