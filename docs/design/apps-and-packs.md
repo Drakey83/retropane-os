@@ -116,6 +116,7 @@ direct path is faster), downloadable from the same location as the pack:
 | DOOM, DOOM II | id's 1997 source release (GPL-2.0) | DoomGLES stays the legacy flagship test (DESIGN.md); the port is our own fast path |
 | Heretic | Raven's 1999 source release (GPL-2.0) | HereticGLES is the legacy reference |
 | Quake | id's Quake 1 source (GPL-2.0) | New addition |
+| Quake 2 | id's 2001 source release (GPL-2.0) | Added 2026-10-16 (owner): lighter than Quake 3 (built for 1997-98 PCs, 16-32 MB); software and OpenGL 1.x renderers to start from; game data (`pak0.pak`) stays the user's own |
 | Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one |
 
 Game data (WADs, PAKs) stays the user's own, except freely distributable
