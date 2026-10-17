@@ -508,8 +508,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "display cal: a dial change never reaches the gamma table (every setting looks like the original)",
         file: "boot/display-cal/src/main.rs",
-        from: "            write_gamma(display.regs(), &table(shown, &found));",
-        to: "            write_gamma(display.regs(), &found);",
+        from: "                write_gamma(display.regs(), &table(d, &found));",
+        to: "                write_gamma(display.regs(), &found);",
         check: Check::Emu(crate::emu::boot_loader_display_cal),
     },
     Mutant {

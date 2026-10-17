@@ -132,6 +132,27 @@ wallpaper side by side was).
    where the panel crushes the bottom. Next: ready-made settings built from
    these numbers, plus a saturation dial that redraws the picture (a
    preview of what the OS would apply to content).
+
+   **Run 4's log, read afterwards:** the owner's "too dark at the original
+   numbers" was the test's fault. Black and White started at 1, Mid and
+   Warm at 25. After the gamma check the owner reset Mid to 1 (Mid's
+   darkest), and the Warm and Bright steps ran with it there. Black 8,
+   White 23 and Mid 16 at box 4 stand. **Warm 20 and Bright 50 must be
+   measured again.**
+
+   **Run 5 built (2026-10-17): a guided test.** Every dial is 1-50 with
+   **25 = unchanged** (Black below 25 deepens the shadows, White below 25
+   pushes the top into white). Six steps, one dial each: Black, White, Mid,
+   Warm, Bright (25 = the backlight as found, 50 = full), **Sat**
+   (saturation, 25 as drawn, 1 grey, 50 double; the image redraws the
+   picture, since the gamma table can't mix colours). A seventh step, **All
+   together**, shows every pick at once. D-pad down = next step, up = back:
+   moving puts every other dial back to 25 (the owner's request). Right/left
+   adjust, centre compares with the original, Home finishes. The log keeps
+   each step's pick and all picks with their table. emu-display-cal walks
+   the steps pixel-exact (including the reset and the saturation redraw),
+   with a mutant. 28.8 KiB, budget 32 KiB. Run 4's numbers on the new scale:
+   Black 8 = about 29, White 23 = about 36, Mid 16 = 16.
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until

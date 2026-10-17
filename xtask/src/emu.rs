@@ -923,14 +923,15 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
 }
 
 /// The display calibration test image (docs/design/display-calibration.md)
-/// under the loader: its picture is pixel-exact below the caption through
-/// each gamma table its dials set (the emulator's 2700G applies the table
-/// at scan-out, Windows Mobile's grey ramp at reset): the original, then
-/// D-pad right (Black 2), down and right (White 2), centre twice (the
-/// original, then back), down twice and left (Warm 24); Home puts
-/// everything back and returns.
+/// under the loader, as the guided test it is: its picture is pixel-exact
+/// below the caption through each gamma table and saturation its steps
+/// set (the emulator's 2700G applies the table at scan-out, Windows
+/// Mobile's grey ramp at reset). Step 1 right (Black 26); down to step 2,
+/// where every other dial is back at 25 (the original), right (White 26);
+/// down to step 6, right (Sat 26: the picture redrawn); down to step 7,
+/// every pick at once; centre (the original); Home puts everything back.
 pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
-    use rp_display_cal::{CAPTION_H, Dials, H, W, pixel, table};
+    use rp_display_cal::{CAPTION_H, Dials, H, NEUTRAL, W, pixel_sat, table};
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -947,19 +948,19 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
     };
-    // The picture below the caption, through `t`.
-    let want = |t: &[u32; GAMMA_ENTRIES]| -> Vec<u8> {
+    // The picture below the caption at saturation `sat`, through `t`.
+    let want = |t: &[u32; GAMMA_ENTRIES], sat: u32| -> Vec<u8> {
         let mut v = Vec::with_capacity((W * (H - CAPTION_H) * 3) as usize);
         for y in CAPTION_H..H {
             for x in 0..W {
-                let (r, g, b) = pixel(x, y);
+                let (r, g, b) = pixel_sat(x, y, sat);
                 v.extend_from_slice(&[gamma(t, r, 16), gamma(t, g, 8), gamma(t, b, 0)]);
             }
         }
         v
     };
-    let until = |name: &str, t: &[u32; GAMMA_ENTRIES]| -> Result<(), String> {
-        let want = want(t);
+    let until = |name: &str, d: Dials| -> Result<(), String> {
+        let want = want(&table(d, &WM_GAMMA), d.sat);
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let _ = std::fs::remove_file(&shot);
@@ -995,7 +996,6 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     };
     let check = || -> Result<(), String> {
-        until("original", &WM_GAMMA)?;
         let key = |k: &str| -> Result<(), String> {
             // Held 200 ms (under the repeat delay), answered before the
             // connection closes.
@@ -1003,24 +1003,30 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(150));
             Ok(())
         };
-        let black2 = Dials {
-            black: 2,
+        let up = |i: usize| Dials::STOCK.moved(i, 1);
+        until("original", Dials::STOCK)?;
+        key("right")?;
+        until("black-26", up(0))?;
+        key("down")?;
+        until("step-2-reset", Dials::STOCK)?;
+        key("right")?;
+        until("white-26", up(1))?;
+        for _ in 0..4 {
+            key("down")?;
+        }
+        until("step-6-reset", Dials::STOCK)?;
+        key("right")?;
+        until("sat-26", up(5))?;
+        key("down")?;
+        let picks = Dials {
+            black: NEUTRAL + 1,
+            white: NEUTRAL + 1,
+            sat: NEUTRAL + 1,
             ..Dials::STOCK
         };
-        let white2 = Dials { white: 2, ..black2 };
-        key("right")?;
-        until("black-2", &table(black2, &WM_GAMMA))?;
-        key("down")?;
-        key("right")?;
-        until("white-2", &table(white2, &WM_GAMMA))?;
+        until("all-together", picks)?;
         key("ret")?;
-        until("compare-original", &WM_GAMMA)?;
-        key("ret")?;
-        until("compare-back", &table(white2, &WM_GAMMA))?;
-        key("down")?;
-        key("down")?;
-        key("left")?;
-        until("warm-24", &table(Dials { warm: 24, ..white2 }, &WM_GAMMA))?;
+        until("compare-original", Dials::STOCK)?;
         key("f4")
     };
     let output = boot(
@@ -1044,10 +1050,10 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         .ok_or("display-cal: no run log after the image returned")?;
     for want in [
         "gamma: off, switched on",
-        "ready: Black 1 White 1 Mid 25 Warm 25",
-        "(original shown): Black 2 White 2",
-        "done (Home) after 8 changes",
-        "last: Black 2 White 2 Mid 25 Warm 24",
+        "step 1 Black: 26",
+        "step 2 White: 26",
+        "step 6 Sat: 26",
+        "done (Home) after 10 changes; picks: Black 26 White 26 Mid 25 Warm 25 Bright 25 Sat 26",
         "DISPLAY-CAL-OK",
     ] {
         if !log.contains(want) {
@@ -1055,7 +1061,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    display-cal OK: the picture pixel-exact through the original, Black 2, White 2, the original and Warm 24 (dials moved and picked with the D-pad); Home put back and returned"
+        "    display-cal OK: the guided steps pixel-exact (Black 26, the reset on the next step, White 26, Sat 26 redrawn, all together, the original); Home put back and returned"
     );
     Ok(())
 }

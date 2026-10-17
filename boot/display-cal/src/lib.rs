@@ -205,16 +205,18 @@ fn status_bar(x: u32, y: u32) -> (u8, u8, u8) {
     }
 }
 
-/// The dials, each 1-50 (the owner's request for run 4: big, visible
-/// changes per click, one dial per question).
+/// The dials, each 1-50 with **25 = unchanged** for every one (run 5: in
+/// run 4 the dials started at different values and a reset to the wrong
+/// one darkened the rest of the run). Big, visible changes per click.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Dials {
-    /// Black end: lifts black so the near-black squares come apart (1:
-    /// none, 50: black raised by 98 of 255).
+    /// Black end. Above 25 black is lifted so the near-black squares come
+    /// apart (50: black at 100 of 255); below, the darkest levels are
+    /// pushed into black (deeper shadows, 1: the bottom 48 levels black).
     pub black: u32,
-    /// White end: brings white down under the panel's clip while keeping
-    /// the top 64 levels at full spacing, so the near-white squares come
-    /// apart (1: none, 50: white at 108 of 255).
+    /// White end. Above 25 white comes down under the panel's clip while
+    /// the top 64 levels keep their spacing (50: white at 105); below, the
+    /// top is pushed into white (1: the top 48 levels white).
     pub white: u32,
     /// Middle: darker (below 25) or brighter (above) mid-tones, black and
     /// white kept; the gamma check's question.
@@ -222,30 +224,36 @@ pub struct Dials {
     /// White balance: cooler (below 25: red down) or warmer (above: blue
     /// down), green a little down either way; judged on the grey ramp.
     pub warm: u32,
-    /// The backlight, in 50ths of full (not part of the table: the image
-    /// sets PWM0, starting from the setting found).
+    /// The backlight: 25 as found, 50 full, 1 a twenty-fifth of the found
+    /// level (the image sets PWM0; not part of the table).
     pub bright: u32,
+    /// Saturation: 25 as drawn, 1 grey, 50 double. The gamma table can't
+    /// mix colours, so the image redraws the picture: a preview of what the
+    /// OS would apply to pictures and game output.
+    pub sat: u32,
 }
 
 /// The dials' range.
 pub const DIAL_MIN: u32 = 1;
 /// The dials' range.
 pub const DIAL_MAX: u32 = 50;
-/// The middle and warm dials' neutral setting.
-pub const MID_NEUTRAL: u32 = 25;
+/// Every dial's "unchanged" setting.
+pub const NEUTRAL: u32 = 25;
 /// How many dials.
-pub const DIALS: usize = 5;
+pub const DIALS: usize = 6;
 /// The dials' names, in order.
-pub const DIAL_NAMES: [&str; DIALS] = ["Black", "White", "Mid", "Warm", "Bright"];
+pub const DIAL_NAMES: [&str; DIALS] = ["Black", "White", "Mid", "Warm", "Bright", "Sat"];
 
 impl Dials {
-    /// No change: the table as found, the backlight full.
+    /// Every dial unchanged: the table and backlight as found, the picture
+    /// as drawn.
     pub const STOCK: Self = Self {
-        black: DIAL_MIN,
-        white: DIAL_MIN,
-        mid: MID_NEUTRAL,
-        warm: MID_NEUTRAL,
-        bright: DIAL_MAX,
+        black: NEUTRAL,
+        white: NEUTRAL,
+        mid: NEUTRAL,
+        warm: NEUTRAL,
+        bright: NEUTRAL,
+        sat: NEUTRAL,
     };
 
     /// Dial `i`, in [`DIAL_NAMES`] order.
@@ -256,7 +264,8 @@ impl Dials {
             1 => self.white,
             2 => self.mid,
             3 => self.warm,
-            _ => self.bright,
+            4 => self.bright,
+            _ => self.sat,
         }
     }
 
@@ -269,42 +278,59 @@ impl Dials {
             1 => self.white = v,
             2 => self.mid = v,
             3 => self.warm = v,
-            _ => self.bright = v,
+            4 => self.bright = v,
+            _ => self.sat = v,
         }
         self
     }
 }
 
+/// A dial's distance from unchanged: -24 to +25.
+fn off(v: u32) -> i32 {
+    v.clamp(DIAL_MIN, DIAL_MAX) as i32 - NEUTRAL as i32
+}
+
 /// One level (0-255) of lane `shift` (16 red, 8 green, 0 blue) through the
-/// dials: black, middle, white, then warmth.
+/// table's dials: black, middle, white, then warmth.
 #[must_use]
 pub fn shape(d: Dials, v: u32, shift: u32) -> u32 {
-    let v = v.min(255);
-    // Black: raised to `off`, white kept.
-    let off = 2 * (d.black.clamp(DIAL_MIN, DIAL_MAX) - 1);
-    let v = off + v * (255 - off) / 255;
-    // Middle: v + m v(255 - v)/255, m from -24/25 to +1.
-    let m = d.mid.clamp(DIAL_MIN, DIAL_MAX) as i32 - MID_NEUTRAL as i32;
-    let vi = v as i32;
-    let v = (vi + m * vi * (255 - vi) / (255 * 25)) as u32;
-    // White: down to `top`; the top 64 levels keep their spacing (one
-    // panel level per 4), everything under them squeezed.
-    let top = 255 - 3 * (d.white.clamp(DIAL_MIN, DIAL_MAX) - 1);
-    const SPAN: u32 = 64;
-    let v = if v >= 255 - SPAN {
-        top - (255 - v)
+    let v = v.min(255) as i32;
+    // Black: lifted to `4b` above 25; below, the bottom `2|b|` levels
+    // pushed into black and the rest stretched back to 255.
+    let b = off(d.black);
+    let v = if b >= 0 {
+        4 * b + v * (255 - 4 * b) / 255
     } else {
-        v * (top - SPAN) / (255 - SPAN)
+        let cut = -2 * b;
+        (v - cut).max(0) * 255 / (255 - cut)
+    };
+    // Middle: v + m v(255 - v)/255, m from -24/25 to +1.
+    let m = off(d.mid);
+    let v = v + m * v * (255 - v) / (255 * 25);
+    // White: above 25 down to `top`, the top 64 levels kept 4 apart and
+    // everything under them squeezed; below, the top `2|w|` levels pushed
+    // into white.
+    let w = off(d.white);
+    const SPAN: i32 = 64;
+    let v = if w >= 0 {
+        let top = 255 - 6 * w;
+        if v >= 255 - SPAN {
+            top - (255 - v)
+        } else {
+            v * (top - SPAN) / (255 - SPAN)
+        }
+    } else {
+        (v * 255 / (255 + 2 * w)).min(255)
     };
     // Warmth: at the ends one colour at 61%, green at 90%.
-    let w = d.warm.clamp(DIAL_MIN, DIAL_MAX) as i32 - MID_NEUTRAL as i32;
+    let t = off(d.warm);
     let keep = match shift {
-        16 if w < 0 => 256 + 4 * w,
-        0 if w > 0 => 256 - 4 * w,
-        8 => 256 - w.abs(),
+        16 if t < 0 => 256 + 4 * t,
+        0 if t > 0 => 256 - 4 * t,
+        8 => 256 - t.abs(),
         _ => 256,
     };
-    (v.min(255) * keep as u32 / 256).min(255)
+    (v.clamp(0, 255) * keep / 256).clamp(0, 255) as u32
 }
 
 /// The gamma table for `d`: each lane of `found` (the table as the image
@@ -317,6 +343,41 @@ pub fn table(d: Dials, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
             .map(|&sh| shape(d, found[i] >> sh & 0xFF, sh) << sh)
             .fold(0, |a, l| a | l)
     })
+}
+
+/// The backlight's duty for the Bright dial, of `counts` per cycle, from
+/// `found` (the duty as found, of `counts`): exactly `found` at 25, full at
+/// 50, down to a twenty-fifth of `found` at 1 (never below 1).
+#[must_use]
+pub fn backlight(bright: u32, found: u32, counts: u32) -> u32 {
+    let found = found.min(counts);
+    let b = off(bright);
+    if b >= 0 {
+        found + (counts - found) * b as u32 / 25
+    } else {
+        (found * (25 - b.unsigned_abs()) / 25).max(1)
+    }
+}
+
+/// The picture's colour at `(x, y)` with saturation dial `sat` (25: as
+/// [`pixel`]; 1: grey; 50: twice as far from grey).
+#[must_use]
+pub fn pixel_sat(x: u32, y: u32, sat: u32) -> (u8, u8, u8) {
+    let (r, g, b) = pixel(x, y);
+    let k = sat.clamp(DIAL_MIN, DIAL_MAX) as i32;
+    if k == NEUTRAL as i32 {
+        return (r, g, b);
+    }
+    let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
+    let y = (77 * r + 150 * g + 29 * b) >> 8;
+    // 1 to 25: grey to as drawn; 25 to 50: as drawn to double.
+    let (num, den) = if k <= NEUTRAL as i32 {
+        (k - 1, NEUTRAL as i32 - 1)
+    } else {
+        (k, NEUTRAL as i32)
+    };
+    let c = |v: i32| (y + (v - y) * num / den).clamp(0, 255) as u8;
+    (c(r), c(g), c(b))
 }
 
 #[cfg(test)]
@@ -334,7 +395,7 @@ mod tests {
                         white,
                         mid,
                         warm,
-                        bright: 50,
+                        ..Dials::STOCK
                     })
                 })
             })
@@ -377,17 +438,19 @@ mod tests {
             };
             shape(d, v, 8)
         };
-        // Black: lifted a lot at 50, a visible step per click.
-        assert!(at(50, 1, 25, 0) >= 90);
-        assert!(at(2, 1, 25, 0) >= 2);
-        // White: well down at 50; the top squares keep 4 apart.
-        assert!(at(1, 50, 25, 255) <= 110);
-        assert_eq!(at(1, 30, 25, 255) - at(1, 30, 25, 251), 4);
+        // Black: lifted a lot at 50, a visible step per click; deeper below.
+        assert!(at(50, 25, 25, 0) >= 95);
+        assert!(at(26, 25, 25, 0) >= 4);
+        assert_eq!(at(1, 25, 25, 40), 0);
+        // White: well down at 50; the top squares keep 4 apart; clipped below.
+        assert!(at(25, 50, 25, 255) <= 110);
+        assert_eq!(at(25, 35, 25, 255) - at(25, 35, 25, 251), 4);
+        assert_eq!(at(25, 1, 25, 215), 255);
         // Middle: darker below 25, brighter above, ends kept.
-        assert!(at(1, 1, 1, 128) < 70);
-        assert!(at(1, 1, 50, 128) > 185);
-        assert_eq!(at(1, 1, 1, 255), 255);
-        assert_eq!(at(1, 1, 50, 0), 0);
+        assert!(at(25, 25, 1, 128) < 70);
+        assert!(at(25, 25, 50, 128) > 185);
+        assert_eq!(at(25, 25, 1, 255), 255);
+        assert_eq!(at(25, 25, 50, 0), 0);
         // Warmth: blue down when warm, red down when cool.
         let warm = |warm, sh| {
             shape(
@@ -404,8 +467,31 @@ mod tests {
     }
 
     #[test]
+    fn backlight_is_as_found_at_25_and_full_at_50() {
+        assert_eq!(backlight(25, 274, 432), 274);
+        assert_eq!(backlight(50, 274, 432), 432);
+        assert!(backlight(1, 274, 432) < 15);
+        assert_eq!(backlight(1, 0, 432), 1);
+        for b in 1..50 {
+            assert!(backlight(b + 1, 274, 432) > backlight(b, 274, 432));
+        }
+    }
+
+    #[test]
+    fn saturation_keeps_greys_and_scales_colour() {
+        let (x, y) = (0, BARS_Y.0 + 5); // white bar
+        assert_eq!(pixel_sat(x, y, 50), (255, 255, 255));
+        let red = (W * 5 / 8 + 5, BARS_Y.0 + 5);
+        assert_eq!(pixel_sat(red.0, red.1, 25), (255, 0, 0));
+        let (r, g, _) = pixel_sat(red.0, red.1, 1);
+        assert_eq!(r, g);
+        let (_, g, _) = pixel_sat(red.0, red.1, 13);
+        assert!(g > 20);
+    }
+
+    #[test]
     fn dials_stay_in_range() {
-        let d = Dials::STOCK.moved(0, -5).moved(1, 100).moved(2, 3);
+        let d = Dials::STOCK.moved(0, -50).moved(1, 100).moved(2, 3);
         assert_eq!((d.black, d.white, d.mid), (1, 50, 28));
     }
 
