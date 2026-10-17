@@ -181,7 +181,7 @@ const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
 const MENU_ROW: u16 = 40;
 
-// ---- Colours (the the reference smoked glass, docs/design/ui.md) -------------
+// ---- Colours (the smoked glass, docs/design/ui.md) -------------
 
 const GLASS_LEFT: Argb = 0xB810_1418;
 const GLASS_RIGHT: Argb = 0x8C4C_545C;

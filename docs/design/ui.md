@@ -37,8 +37,7 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
 
 - The weather is the hero of the Today screen: large, front and center.
 - Icon language: photoreal, volumetric weather icons (soft 3D clouds,
-  glowing suns, a cratered moon, on a dark, moody backdrop), the style of
-  the the reference set the owner pointed to. Where the icons come from (one
+  glowing suns, a cratered moon, on a dark, moody backdrop). Where the icons come from (one
   pack built in, more on the card, bring your own, keyed by the WMO codes):
   [weather.md](weather.md). No third-party icon is shipped without a
   licence that allows it. On the device the icons are pre-rendered into
@@ -73,9 +72,7 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
   the reading sits on it with no box. Concept A's calendar card and quick
   buttons are kept as they are.
 - Icons: the owner wants an existing artist's realistic set under a free
-  licence rather than generated ones. Licence check: the reference (the owner's
-  reference) is CC BY-NC-SA 3.0, non-commercial, which a GPL OS can't ship
-  without the artist's permission; KDE's Oxygen weather icons are LGPL-3
+  licence rather than generated ones. Licence check: the set the owner liked best is CC BY-NC-SA 3.0, non-commercial, which a GPL OS can't ship without the artist's permission; KDE's Oxygen weather icons are LGPL-3
   (shippable with attribution and their SVG sources); MerlinTheRed's plain
   set is CC BY-SA (a plainer style); the Xfce "liquid" set's licence is
   unclear (avoid).
@@ -99,14 +96,14 @@ Explorer (SD · CF), Inbox, Browser, Programs, Settings.
 
 ## The smoked-glass design language (owner, 2026-10-12)
 
-The owner picked the reference's Rainmeter work ( "Glasses", "the reference Weather 2") as the look to borrow heavily from: "a good mix of retro and modern".
+The look the owner chose: smoked glass over a wallpaper, "a good mix of retro and modern".
 
 - **Smoked glass on a wallpaper the owner chooses.** Panels are dark, translucent glass. The gradient runs from near-black on the left to a lit grey on the right. Each panel has a 1 px bright edge, an almost square corner (3 px) and a soft gloss. A thin vertical light streak sits on one edge, and there is a faint reflection under the bottom row. Everything floats over a full-screen photo.
 - **Wallpapers.** We ship a few that suit glass: dramatic, moody photography with dark areas where the panels sit, such as a black-and-white pier, a mountain lake, a city at night or an aurora. Users can pick their own picture from SD or CF. Settings will offer glass darkness and dimming the wallpaper at night. Any wallpaper we ship must be our own or CC0/public-domain and recorded in the licence list.
-- **Type.** Thin geometric sans, big light numerals (`18°`) and spaced capitals for labels and dates (`MON 12`, `OCTOBER`). His skins bundle Century Gothic, which is Monotype's and is never shipped. The concepts use Didact Gothic (SIL OFL) as an open stand-in.
+- **Type.** Thin geometric sans, big light numerals (`18°`) and spaced capitals for labels and dates (`MON 12`, `OCTOBER`). Century Gothic is Monotype's and is never shipped. The concepts use Didact Gothic (SIL OFL) as an open stand-in.
 - **Icons break out of their frames.** Weather icons are large and overhang the top edge of their glass tile.
 - **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
-- **Clean-room.** the reference's icons are CC BY-NC-SA 3.0, so they can't ship in a product we might sell, and they never enter this repository. They appear only in the private concept canvas (boards N, O and P), credited. The glass panels are rebuilt from plain gradients, not his images. Shipping weather icons: see "Weather icon packs" below (owner, 2026-10-16); the Oxygen set and Claude-drawn icons are ruled out by the owner.
+- **Clean-room.** The glass panels are rebuilt from plain gradients, not from anyone's images. No third-party icon art ships without a licence that allows it; the weather icons are covered in [weather.md](weather.md).
 
 **Weather icon packs (owner, 2026-10-16):** see [weather.md](weather.md).
 
@@ -146,7 +143,7 @@ The concepts keep the glass light enough that the photo shows through. A "glass 
 
 An outside review warned that glass is the most compositing-heavy look
 possible on this CPU. That's true of *frosted* glass (a blur under every
-panel, every frame). The the reference look is tinted glass with no blur, and
+panel, every frame). The smoked-glass look is tinted glass with no blur, and
 it's mostly static, which changes the cost completely:
 
 - **Superseded by item 60 (2026-10-12): the display controller blends at
@@ -192,7 +189,7 @@ it's mostly static, which changes the cost completely:
 
 ## Third-party art ships as a pack, never in the base
 
-Licensed third-party content (the the reference icons, if the artist agrees)
+Licensed third-party content (an artist's icon set, if the artist agrees)
 ships as a separate, signed, optional pack (ADR-0018), never in the base
 image. The base keeps its own complete look (original icons in this
 style), so a "no", a withdrawn permission or a licence change removes

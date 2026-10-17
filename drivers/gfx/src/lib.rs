@@ -13,7 +13,7 @@
 //!   `(src * a + dst * (32 - a)) >> 5` blends red, green and blue at once
 //!   with 5-bit alpha, exactly the same result as doing each channel alone
 //!   (tests compare every case against that reference).
-//! - **Glass is a precomputed gradient.** A tinted-glass panel (the the reference
+//! - **Glass is a precomputed gradient.** A tinted-glass panel (the smoked-glass
 //!   look, docs/design/ui.md) varies only across its width, so each column's
 //!   premultiplied colour is computed once ([`Gradient`]), not per pixel.
 //! - **Nothing trusts its inputs.** Rectangles are clipped with saturating

@@ -15,9 +15,9 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 
 | Page | What's in it |
 |---|---|
-| [ui.md](ui.md) | The look: the owner's decisions, the the reference smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
+| [ui.md](ui.md) | The look: the owner's decisions, the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [apps-and-packs.md](apps-and-packs.md) | Every Windows Mobile 5 default app rebuilt and modernized, a new coat of paint on everything, themes and customization, legacy apps and games, the SD expansion pack and its download location, our own DOOM / Heretic / Quake ports, more ideas to modernize |
-| [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (one built in, five on the card, bring your own), the pack format keyed by the WMO codes, the prompt and models for making a pack with the owner's own tools |
+| [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (one built in, five on the card, bring your own), the pack format keyed by the WMO codes |
 | [mockups/](mockups/README.md) | Images of the Today screen with the Sunburst weather icons, an icon sheet, and their credits and licences |
 
 **Mock-ups:** the concept canvas, private to the owner (Claude artifact
@@ -62,6 +62,5 @@ A running list; each line points to where the detail is.
   and modernized, themes, GLES for all games, the SD expansion pack, our own
   DOOM / Heretic / Quake ports ([apps-and-packs.md](apps-and-packs.md));
   the Weather app as a headline feature, icon packs (one built in, five on
-  the card, bring your own), packs made with the owner's own tools, never
-  Claude-drawn icons ([weather.md](weather.md)); the owner's NAS hosts the
+  the card, bring your own), never Claude-drawn icons ([weather.md](weather.md)); the owner's NAS hosts the
   downloads behind security layers ([apps-and-packs.md](apps-and-packs.md) §5).
