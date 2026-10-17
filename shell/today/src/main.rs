@@ -152,7 +152,7 @@ mod image {
             "gpu: wallpaper converted to 32 bpp and shown in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
-        let mut shell = Shell::new(rp_today::shell_fonts(), true);
+        let mut shell = Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
         let mut frame = Frame::new();
 
         // Input: the keypad and the touch screen, interrupt-driven.

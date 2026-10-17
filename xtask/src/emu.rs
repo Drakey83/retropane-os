@@ -2051,7 +2051,7 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
         1,
     );
     rp_today::show_gpu(&mut gpu, wall, |_| {});
-    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), true);
+    let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
     shell.set_time(rp_shell::Time {
         hour: 12,
         minute: 0,

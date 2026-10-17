@@ -5,6 +5,7 @@
 //!   `tools/shell-assets/wallpaper.py` from the CC0 pier photo; `local/` is
 //!   never committed) or, when that's absent, a generated dusk sky, so the
 //!   image always builds;
+//! - the weather pictures (`local/icons/icons.rs`, else empty);
 //! - the clock's start: the build machine's local time (there is no RTC
 //!   driver yet), as minutes since 1970 plus the UTC offset. The clock is
 //!   right to within the time between building and running.
@@ -29,6 +30,22 @@ fn main() {
         Err(_) => sky(),
     };
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
+
+    // The weather pictures: `local/icons/icons.rs` (made by
+    // `tools/shell-assets/icons.py` from assets/weather/vclouds; `local/` is
+    // never committed) or, when absent, empty pictures: the screen then
+    // draws outlines where they go.
+    let icons = Path::new(&dir).join("../../local/icons/icons.rs");
+    println!("cargo:rerun-if-changed={}", icons.display());
+    let data = std::fs::read_to_string(&icons).unwrap_or_else(|_| {
+        let empty = "Image { w: 0, h: 0, px: &[] }";
+        format!(
+            "pub static HERO: Image = {empty};
+pub static SMALL: [Image; 5] = [{empty}, {empty}, {empty}, {empty}, {empty}];
+"
+        )
+    });
+    std::fs::write(Path::new(&out).join("icons.rs"), data).expect("OUT_DIR writable");
 
     // Rebuilt each time, so the clock starts near the real time.
     println!("cargo:rerun-if-changed=build.rs");

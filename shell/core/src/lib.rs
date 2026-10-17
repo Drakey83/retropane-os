@@ -21,7 +21,7 @@
 
 pub mod align;
 
-use rp_draw::{Argb, Cmd, Font, Frame, Rect};
+use rp_draw::{Argb, Cmd, Font, Frame, Image, Rect};
 pub use rp_touch_cal::Calibration;
 
 /// Screen width.
@@ -37,6 +37,24 @@ pub struct Fonts {
     pub label: &'static Font,
     /// The big light numerals (the clock, the temperature).
     pub big: &'static Font,
+}
+
+/// The weather pictures the Today screen draws (made from the icon pack on
+/// the PC; none yet means an outline where each goes).
+#[derive(Clone, Copy, Default)]
+pub struct Icons {
+    /// The big one in the hero panel.
+    pub hero: Option<&'static Image>,
+    /// The five in the forecast row.
+    pub forecast: [Option<&'static Image>; 5],
+}
+
+impl Icons {
+    /// No pictures.
+    pub const NONE: Self = Self {
+        hero: None,
+        forecast: [None; 5],
+    };
 }
 
 /// The keys the shell reacts to.
@@ -139,14 +157,18 @@ pub const START: Rect = Rect::new(0, 0, 96, 36);
 /// high and low, and the date (docs/design/ui.md "Weather and icons").
 const HERO: Rect = Rect::new(16, 52, 448, 196);
 /// Where the weather icon goes (the panel's top right; it may reach above it).
-const HERO_ICON: Rect = Rect::new(16 + 448 - 16 - 175, 52 + 10, 175, 120);
+const HERO_ICON: Rect = Rect::new(16 + 448 - 16 - 175, 40, 175, 120);
 /// The date at the hero's bottom right (its text depends on the day).
 pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
-/// The five-day forecast row (its day names depend on the day).
-pub const FORECAST_ROW: Rect = Rect::new(16, 260, 448, 74);
+/// The five-day forecast row with the room above it for the icons that
+/// reach over the cards' top edge (its day names depend on the day).
+pub const FORECAST_ROW: Rect = Rect::new(16, 252, 448, 88);
+/// The cards' top: the row's top plus the icons' headroom.
+const FORECAST_TOP: u16 = 266;
+const FORECAST_H: u16 = 74;
 const FORECAST_W: u16 = 83;
 const FORECAST_STEP: u16 = 91;
-const CALENDAR_PANEL: Rect = Rect::new(16, 346, 448, 104);
+const CALENDAR_PANEL: Rect = Rect::new(16, 352, 448, 104);
 const SOFTKEYS: Rect = Rect::new(0, H - 40, W, 40);
 const SOFT_LEFT: Rect = Rect::new(0, H - 40, 160, 40);
 const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
@@ -225,6 +247,7 @@ const MAX_DAMAGE: usize = 8;
 /// The shell's state.
 pub struct Shell {
     fonts: Fonts,
+    icons: Icons,
     /// Whether the Start menu offers "Back to loader" (test images only).
     dev_exit: bool,
     menu_open: bool,
@@ -242,9 +265,10 @@ pub struct Shell {
 impl Shell {
     /// The Today screen, all of it to be drawn.
     #[must_use]
-    pub fn new(fonts: Fonts, dev_exit: bool) -> Self {
+    pub fn new(fonts: Fonts, icons: Icons, dev_exit: bool) -> Self {
         let mut s = Self {
             fonts,
+            icons,
             dev_exit,
             menu_open: false,
             focus: None,
@@ -765,11 +789,19 @@ impl Shell {
         let (hi, lo) = SAMPLE_HIGH_LOW;
         let n = high_low(&mut buf, hi, lo);
         f.text(HERO.x + 20, HERO.y + 174, ui, DIM, &buf[..n]);
-        // The icon's place until the pack's pictures load (docs/design/today-screen-plan.md).
-        f.push(Cmd::Outline {
-            r: HERO_ICON,
-            color: 0x30FF_FFFF,
-        });
+        // The icon, or its outline until the pictures exist
+        // (docs/design/today-screen-plan.md).
+        match self.icons.hero {
+            Some(img) => f.push(Cmd::Image {
+                x: HERO_ICON.x,
+                y: HERO_ICON.y,
+                img,
+            }),
+            None => f.push(Cmd::Outline {
+                r: HERO_ICON,
+                color: 0x30FF_FFFF,
+            }),
+        }
         let date = date_line(&mut buf, self.time);
         let w = label.width(date);
         f.text(
@@ -787,21 +819,29 @@ impl Shell {
             b"sample data",
         );
 
-        // The five-day forecast.
+        // The five-day forecast: the card, its icon over the card's top edge,
+        // the day name and the high and low.
         for (i, (hi, lo)) in SAMPLE_FORECAST.iter().enumerate() {
             let r = Rect::new(
                 FORECAST_ROW.x + i as u16 * FORECAST_STEP,
-                FORECAST_ROW.y,
+                FORECAST_TOP,
                 FORECAST_W,
-                FORECAST_ROW.h,
+                FORECAST_H,
             );
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            match self.icons.forecast[i] {
+                Some(img) => f.push(Cmd::Image {
+                    x: r.x + r.w.saturating_sub(img.w) / 2,
+                    y: r.y.saturating_sub(14),
+                    img,
+                }),
+                None => f.push(Cmd::Outline {
+                    r: Rect::new(r.x + r.w / 2 - 22, r.y + 6, 44, 24),
+                    color: 0x30FF_FFFF,
+                }),
+            }
             let day = day_name(self.time.weekday, i as u8 + 1);
-            self.centred(f, r, r.y + 18, label, DIM, day);
-            f.push(Cmd::Outline {
-                r: Rect::new(r.x + r.w / 2 - 22, r.y + 24, 44, 24),
-                color: 0x30FF_FFFF,
-            });
+            self.centred(f, r, r.y + 44, label, DIM, day);
             let n = high_low_short(&mut buf, *hi, *lo);
             self.centred(f, r, r.y + r.h - 8, ui, TEXT, &buf[..n]);
         }

@@ -28,7 +28,7 @@ the video plane. It is the right frame; it lacks the weather look.
    date), forecast row and calendar panel as in the mock-up, with a plain
    placeholder in place of each icon. Host tests for layout and hit targets;
    `emu-today` pixel check. No new data format.
-2. **T2, icons from the card.** One icon format, a pack folder on the card, the
+2. **T2, icons.** **Built in the test image and emulator-verified (2026-10-17); not yet run on the device.** The six pictures the screen shows (VClouds' icons) are baked into `rp-today` by `tools/shell-assets/icons.py` (output in `local/icons/`, never committed; without it the screen draws outlines), because the test image has no card access. **Loading them from the card waits for the OS's storage service** (the test image runs under the loader and reads no files). The hero is 175 x 120 at its own size; the five small ones are the same pictures scaled by exactly one third (58 x 40) on the PC. The test image grew to 744,417 bytes (budget raised to 780 KiB, test images ratchet freely). Original aim, kept for the OS: One icon format, a pack folder on the card, the
    shell loads the six icons the screen shows. First pack: VClouds' icons (assets/weather/vclouds).
 3. **T3, wallpaper from the card.** Same idea for the picture in the video
    plane; falls back to the built-in wallpaper when the card is missing.
@@ -38,7 +38,7 @@ the video plane. It is the right frame; it lacks the weather look.
 Weather data is a fixed reading until the networking phase; the screen says
 so ("sample data") rather than pretending.
 
-<img src="../img/emulator-today-t1.png" width="320" alt="The Today screen after T1 in the emulator: the weather hero, a five-day row, today's calendar, the quick buttons and the softkeys, with outlines where the icons will go">
+<img src="../img/emulator-today-t2.png" width="320" alt="The Today screen in the emulator: the weather hero with VClouds' icon, a five-day row with icons, today's calendar, the quick buttons and the softkeys">
 
 T1 as built: the hero panel (place, temperature, condition, high and low, the
 date, an outline where the icon goes), the five-day row, a calendar panel with

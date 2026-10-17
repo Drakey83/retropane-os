@@ -25,6 +25,7 @@ fn shell(dev: bool) -> Shell {
             label: &FONT,
             big: &FONT,
         },
+        Icons::NONE,
         dev,
     )
 }
@@ -453,6 +454,9 @@ fn overlap(a: Rect, b: Rect) -> bool {
 #[test]
 fn the_today_layout_fits_the_screen_and_nothing_overlaps() {
     let mut boxes = vec![TITLE, HERO, FORECAST_ROW, CALENDAR_PANEL, SOFTKEYS];
+    // The cards sit inside the row, below the icons' headroom.
+    let card = Rect::new(FORECAST_ROW.x, FORECAST_TOP, FORECAST_ROW.w, FORECAST_H);
+    assert!(FORECAST_ROW.union(&card) == FORECAST_ROW);
     boxes.extend((0..5).map(quick_rect));
     for r in &boxes {
         assert!(r.x + r.w <= W && r.y + r.h <= H, "{r:?} leaves the screen");
@@ -520,4 +524,38 @@ fn temperatures_and_day_names_format() {
     assert_eq!(day_name(6, 1), b"MON");
     assert_eq!(day_name(4, 5), b"WED");
     assert_eq!(day_name(9, 1), b"MON"); // a weekday out of range is clamped to Sunday
+}
+
+static PX: [u32; 4] = [0xFFFF_FFFF; 4];
+static PIC: Image = Image {
+    w: 2,
+    h: 2,
+    px: &PX,
+};
+
+#[test]
+fn pictures_replace_the_outlines_and_still_fit_a_frame() {
+    let mut s = Shell::new(
+        Fonts {
+            ui: &FONT,
+            label: &FONT,
+            big: &FONT,
+        },
+        Icons {
+            hero: Some(&PIC),
+            forecast: [Some(&PIC); 5],
+        },
+        true,
+    );
+    let f = drawn(&mut s);
+    let images = f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count();
+    assert_eq!(images, 6);
+    assert!(!f.overflowed());
+    // Without pictures the same places draw outlines and no images.
+    let mut none = shell(true);
+    let f = drawn(&mut none);
+    assert_eq!(
+        f.cmds().filter(|c| matches!(c, Cmd::Image { .. })).count(),
+        0
+    );
 }

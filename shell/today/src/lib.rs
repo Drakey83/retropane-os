@@ -43,6 +43,33 @@ pub fn shell_fonts() -> rp_shell::Fonts {
     }
 }
 
+/// The weather pictures the Today screen shows, from `local/icons/icons.rs`
+/// (made by `tools/shell-assets/icons.py` from the default pack; without it
+/// the pictures are empty and the screen draws outlines).
+mod icon_data {
+    use rp_draw::Image;
+    include!(concat!(env!("OUT_DIR"), "/icons.rs"));
+}
+
+/// The icons for the shell: none when the pictures weren't made.
+#[must_use]
+pub fn icons() -> rp_shell::Icons {
+    if icon_data::HERO.w == 0 {
+        return rp_shell::Icons::NONE;
+    }
+    let s = &icon_data::SMALL;
+    rp_shell::Icons {
+        hero: Some(&icon_data::HERO),
+        forecast: [
+            Some(&s[0]),
+            Some(&s[1]),
+            Some(&s[2]),
+            Some(&s[3]),
+            Some(&s[4]),
+        ],
+    }
+}
+
 /// Screen width and height.
 pub const W: usize = 480;
 /// Screen height.
@@ -179,7 +206,7 @@ mod tests {
         gpu.dither = false;
         let mut work = vec![0u8; SCREEN_BYTES];
         let mut plane = vec![0u8; SCREEN_BYTES];
-        let mut shell = Shell::new(shell_fonts(), true);
+        let mut shell = Shell::new(shell_fonts(), icons(), true);
         // The emulator's run showed this; frames differ by their text.
         shell.set_time(rp_shell::Time {
             hour: 12,
@@ -268,7 +295,7 @@ mod tests {
             1,
         );
         show_gpu(&mut gpu, &wall, |_| {});
-        let mut shell = Shell::new(shell_fonts(), true);
+        let mut shell = Shell::new(shell_fonts(), icons(), true);
         let mut f = Frame::new();
         let s = rp_shell::START;
         let (sx, sy) = (s.x + s.w / 2, s.y + s.h / 2);
@@ -314,7 +341,7 @@ mod tests {
     #[test]
     fn the_real_fonts_fit_the_shell() {
         // Every frame of the real Today screen fits, menu open included.
-        let mut s = rp_shell::Shell::new(shell_fonts(), true);
+        let mut s = rp_shell::Shell::new(shell_fonts(), icons(), true);
         let mut f = rp_draw::Frame::new();
         s.frame(&mut f);
         assert!(!f.overflowed());

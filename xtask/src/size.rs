@@ -354,9 +354,13 @@ pub const BUDGETS: &[Budget] = &[
     // graphics service (ADR-0030: rp-graphics with the 3D renderer it owns,
     // ~10.7 KiB of code); 596.0 KiB measured, + ~10% of the code (the
     // wallpaper isn't code).
+    // 610 -> 780 KiB (2026-10-17, test image): the six weather pictures of
+    // the Today screen are baked in until the card can supply them (one
+    // 175 x 120 and five 58 x 40, straight ARGB8888, 139 KiB); 599.4 KiB
+    // measured without them, 727.0 KiB with, + ~7%.
     Budget {
         image: "rp-today",
-        max_load: 610 * 1024,
+        max_load: 780 * 1024,
         max_zero: 30 * 1024,
         device: OnDevice::Returns,
     },
