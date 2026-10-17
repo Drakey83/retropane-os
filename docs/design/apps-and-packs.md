@@ -123,6 +123,58 @@ Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
 
+## 6a. Picture quality in every game (owner, 2026-10-17)
+
+**Why.** DoomGLES under Windows Mobile is hard to see: dark, with walls,
+floors and monsters blending together. The cause is mostly the game's
+textures, not the screen: captured on the owner's X51v they are
+**ARGB4444**, 16 shades per colour channel ([ADR-0024](../adr/0024-mbx-3d-core.md)),
+so the dark end of Doom's palette rounds to a few shades, and the game's
+lighting then darkens those further. Doom was also made for CRTs, which
+showed dark tones brighter than this LCD does. The owner sees the same in
+all the GLES game ports. The panel itself shows 16 bits ("64K colours"),
+and a 16-bit picture dithered once looks identical to 32 bits on it (the
+side-by-side of 2026-10-17, [ADR-0023](../adr/0023-mbx2d-renderer.md)).
+
+**Requirements, for every game port we make** (DOOM, DOOM II, Heretic,
+Quake 1-3 above, and any later one), and as far as possible for the
+legacy GLES games run through our own driver:
+
+1. **Textures at 16 bits dithered or better, never 4 bits a channel.**
+   Colour textures are RGB565, dithered once when they are made (as the
+   16-bit wallpaper), or ARGB8888 where alpha is needed with colour, or
+   PVRTC where it looks the same; ARGB4444 is never used for colour.
+   All three are proven on the 3D core (ADR-0024: RGB565, ARGB8888,
+   PVRTC 4 and 2 bpp). The same for render targets and lightmaps: the
+   game's lighting is applied at that depth, so shadows keep their detail.
+2. **A brightness curve per game.** The 2700G's display has a colour
+   lookup table every pixel passes through on its way to the panel (found
+   for the night light, [hw/backlight.md](../hw/backlight.md): 17 points per colour,
+   8 bits each, confirmed on the device). A game loads its own
+   curve when it takes the screen and the system puts the normal one back
+   when it leaves: shadows lifted for CRT-era games without crushing the
+   highlights, at no cost per frame. Each game has a sensible default and
+   a slider in its game settings (the "Gamma" of the old PC games, done by
+   the hardware).
+3. **Checked by eye on the device** before a port ships: dark scenes side
+   by side, the 4-bit look against ours, as the 16-bit wallpaper was.
+
+**Closed legacy GLES games** (the commercial titles, ADR D7): the
+brightness curve works for them too. Their texture depth depends on who
+made it 4-bit: if the game hands our libGLES 8-bit texels and it was Dell's
+driver that stored them at 4 bits, our driver keeps them at 16 or 32 bits
+and the game looks right unchanged; if the game itself sends 4-bit data,
+the lost shades can't be recovered (only the curve helps). Which applies
+to each title is read from its texture uploads (open; DoomGLES first).
+
+**Open, to try later:** the panel's own contrast. Dell's display driver
+sets PWM1 to a panel-specific constant (70 of 216 on the owner's Sharp),
+most likely the panel's bias or contrast voltage, not the backlight
+([hw/backlight.md](../hw/backlight.md)). If it is, a little more or less may
+improve the picture beyond what the gamma table can. A device test changes
+it in small steps with the owner watching, and puts Dell's value back
+(docs: no blind board bits).
+
 ## 7. Connected services (owner, 2026-10-17)
 
 The owner wants the apps to reach modern services; the first example is the

@@ -73,5 +73,7 @@ A running list; each line points to where the detail is.
   game ports; connected services (iCal, then CalDAV, then Google sign-in) with
   one Connections page, and streaming from the owner's own libraries as a pack
   ([apps-and-packs.md](apps-and-packs.md) §7, §7b); Tailscale for away from home:
-  a gateway at home (A) until our own tailnet client (C) exists (§7c); the
+  a gateway at home (A) until our own tailnet client (C) exists (§7c); every
+  game port draws textures at 16 bits dithered or better (never 4 bits a
+  channel) and has its own brightness curve (§6a); the
   Today screen plan ([today-screen-plan.md](today-screen-plan.md)).
