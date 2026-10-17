@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.19.0";
+pub const QEMU_RELEASE: &str = "rp-v0.20.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -1605,6 +1605,60 @@ fn strip_tail(v: &str) -> String {
 /// emulator that models the blend and the display's events (`mbx-blend`,
 /// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
 /// device's run (docs/hw/emulator.md).
+/// The USB disconnect hunt (rp-unplug, docs/hw/udc.md T4): every candidate
+/// tried and undone, the host controller's port 2 reached, the run back at
+/// the loader with no fault. The emulator can't say which candidate
+/// disconnects on the device (its pull-up isn't modelled): this only proves
+/// the image is safe to send.
+pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-unplug.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-unplug"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((
+                &rp_loadproto::frame(&payload),
+                "RetroPane 26 USB disconnect hunt",
+            )),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("unplug: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("unplug: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "UDC on, UP2OCR",
+        "UP2OCR was",
+        "host controller SE0 on port 2 at",
+        "UP2OCR 0 with the UDC off at",
+        "RETROPANE-UNPLUG-DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("unplug: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    unplug OK: every candidate tried and undone, back at the loader");
+    Ok(())
+}
+
 /// The MBX 3D core's first-triangle test (rp-mbx3d, ADR-0024 M4): runs
 /// under the loader, every try timed out (no 3D model), back on a button.
 pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
@@ -3058,6 +3112,33 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         let mut bot = Bot::connect(3)?;
         bot.lun = 1;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        // The slot starts powered with its card ready, as Windows Mobile
+        // hands it over: the attach is the reset alone, not the 0.4 s power
+        // cycle (boot time; the device's CF stage was 457 ms with it).
+        s.write_all(&rp_loadproto::control_frame("handoff"))
+            .map_err(|e| e.to_string())?;
+        let stages = usb_read_until(
+            &mut s, " ms
+", 10,
+        )?;
+        let at = |key: &str| -> Option<u32> {
+            stages
+                .split(key)
+                .nth(1)?
+                .split(" ms")
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        match (at("dma+fat "), at("cf ")) {
+            (Some(before), Some(cf)) if cf - before < 200 => {}
+            _ => {
+                return Err(format!(
+                    "CF attach at start-up power-cycled a powered slot: {stages:?}"
+                ));
+            }
+        }
         // Nothing asked: the loader attaches the card in the slot itself,
         // and the PC's second drive becomes ready (after "medium changed").
         let ready = |bot: &mut Bot, what: &str| -> Result<(), String> {

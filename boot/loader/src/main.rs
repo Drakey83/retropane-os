@@ -55,12 +55,10 @@ mod image {
     /// The CPLD, with the shadow table every program shares.
     type BoardCpld = Cpld<Mmio, handover::Table<'static>>;
 
-    /// D+ pull-up and cable detect (docs/hw/udc.md).
+    /// GPIO2 (AxDroid's guess for the D+ pull-up: measured, it isn't; the
+    /// pull-up is hard-wired) and the cable detect (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
     const USB_DETECT: u8 = 14;
-    /// How long the USB pull-up stays off at start (OS timer ticks, 200 ms),
-    /// so the PC sees the device leave and come back.
-    const DETACH: u32 = 650_000;
     /// OS timer ticks (3.25 MHz) between READY lines and status redraws.
     const TICK_1S: u32 = 3_250_000;
     const STATUS_H: usize = 6 * 16;
@@ -1243,7 +1241,16 @@ mod image {
         let phys = Some(devices::cf_common_phys().unwrap_or(0));
         let taken = match cpld {
             Some(cpld) if !soft => {
-                cf_power_cycle(cpld);
+                // A slot found powered with its card ready (as Windows Mobile
+                // hands it over) needs only the reset below, not the 0.4 s
+                // power cycle: the CF RESET line is a hard reset by itself
+                // (CF specification; the 100 us pulse, docs/hw/cf.md). A slot
+                // we switched off, or a card that went in since, gets both.
+                if cpld.cf_powered() && gpio.read(CF_READY) {
+                    lun.events.push(b'W');
+                } else {
+                    cf_power_cycle(cpld);
+                }
                 lun.powered = true;
                 let lines = &mut CfSocketLines { gpio, cpld };
                 CfCard::init_with(attr, common, dma, phys, lines, &mut delay)
@@ -1263,12 +1270,6 @@ mod image {
         }
     }
 
-    /// `cf`: attaches the CompactFlash card (hardware reset first: whatever
-    /// an earlier owner left is not trusted) and identifies it, read-only:
-    /// model, capacity, whether its write cache is off, and its first
-    /// partition. An attached card is only reported. The socket is touched
-    /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
-    /// for docs/hw/cf.md) skips the hardware reset.
     /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
     /// follows the card both ways with the slot powered or not (`rp-cfdetect`
     /// on the device, 2026-10-16), so a card pushed back in after the slot
@@ -1280,6 +1281,12 @@ mod image {
         }
     }
 
+    /// `cf`: attaches the CompactFlash card (hardware reset first: whatever
+    /// an earlier owner left is not trusted) and identifies it, read-only:
+    /// model, capacity, whether its write cache is off, and its first
+    /// partition. An attached card is only reported. The socket is touched
+    /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
+    /// for docs/hw/cf.md) skips the hardware reset.
     #[inline(never)]
     fn cf_command(
         lun: &mut CfLun,
@@ -1762,9 +1769,6 @@ mod image {
         let mut gpio = Gpio::new(gpio_bus);
         gpio.make_input(USB_DETECT);
         gpio.make_output(USB_PULLUP, false);
-        // The PC must see the device gone for DETACH before it comes back;
-        // card set-up runs meanwhile, and only what's left is waited for.
-        let detached_at = rt::ticks();
         let Some(udc_bus) = rt::take_udc() else {
             halt()
         };
@@ -1867,12 +1871,15 @@ mod image {
             halt()
         };
 
-        let waited = rt::ticks().wrapping_sub(detached_at);
-        if waited < DETACH {
-            rt::delay_us((DETACH - waited) / 13 * 4);
-        }
         let mut udc = Udc::new(udc_bus);
-        let usb = udc.enable().is_ok();
+        // The PC must see a new device: the pull-up is hard-wired, so after
+        // HaRET's hand-over it would keep Windows Mobile's (or the last
+        // owner's) and never ask this loader anything. The host controller
+        // drives SE0 on the connector instead (~155 ms), the PC takes it as
+        // an unplug, and the enable below is a fresh plug-in (docs/hw/udc.md
+        // T4). Right before the enable: the PC asks at once.
+        let mut uhc = rt::take_uhc();
+        let usb = replug(&mut udc, uhc.as_mut());
         // The controller's interrupt wakes the waiting loop (item 74).
         let mut udc_irq = if usb {
             udc.set_interrupts(true);
@@ -2015,9 +2022,8 @@ mod image {
                 && rt::ticks().wrapping_sub(layout_since) > LAYOUT_PATIENCE
             {
                 let composite = !udc.composite();
-                udc.disable();
                 udc.set_composite(composite);
-                let _ = udc.enable();
+                replug(&mut udc, uhc.as_mut());
                 layout_since = rt::ticks();
                 layout_resets = udc.stats().resets;
                 let _ = writeln!(
@@ -2380,9 +2386,8 @@ mod image {
                                 // back. The reply can't arrive (the device
                                 // re-enumerates), so the host checks for
                                 // the drive instead.
-                                udc.disable();
                                 udc.set_composite(true);
-                                let _ = udc.enable();
+                                replug(&mut udc, uhc.as_mut());
                                 layout_since = rt::ticks();
                                 layout_resets = udc.stats().resets;
                                 "RPL OK drive offered to the PC (serial + drive layout back)\r\n"
@@ -2582,6 +2587,22 @@ mod image {
 
     /// A line to the host on both transports; over USB it goes whole, the
     /// ring draining as the PC reads (never cut short to fit).
+    /// Presents the device to the PC afresh (at start, and when the layout
+    /// changes): the pull-up is hard-wired, so the controller off and on is
+    /// invisible to the PC, which would keep the old device. With the host
+    /// controller the PC sees an unplug first (docs/hw/udc.md T4). Whether
+    /// the controller came up.
+    #[inline(never)]
+    fn replug(udc: &mut Udc<Mmio>, uhc: Option<&mut Mmio>) -> bool {
+        match uhc {
+            Some(uhc) => {
+                udc.unplug(uhc, &mut rt::delay_us);
+            }
+            None => udc.disable(),
+        }
+        udc.enable().is_ok()
+    }
+
     fn send(uart: &mut PxaUart<rp_hal_pxa27x::Mmio>, udc: &mut Udc<rp_hal_pxa27x::Mmio>, s: &str) {
         let _ = uart.write_str(s);
         usb_bytes(udc, s.as_bytes());

@@ -10,7 +10,7 @@
 use std::fmt::Write as _;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Component as PathPart, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use rp_cab::{Cabinet, Scratch, Source};
 use rp_ce_setup::xml::Setup;
@@ -242,14 +242,24 @@ pub fn check_cab(path: &Path, scratch: &mut Scratch) -> Result<Checked, String> 
 
 /// A CAB name from an INI as a path under the INI's folder: relative, no
 /// `..`, no drive or root.
+///
+/// The name is split as Windows splits it (`\` and `/`) on every system:
+/// INIs are written for Windows, and a host that splits only on `/` would
+/// take `..\a.cab` as one plain name.
 fn cab_path(ini_dir: &Path, name: &str) -> Result<PathBuf, String> {
-    let p = Path::new(name);
-    if p.components().any(|c| !matches!(c, PathPart::Normal(_))) || name.contains(':') {
+    let parts: Vec<&str> = name.split(['\\', '/']).collect();
+    if name.contains(':')
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || *p == "." || *p == "..")
+    {
         return Err(format!(
             "CAB name {name:?} must be a plain name beside the INI"
         ));
     }
-    Ok(ini_dir.join(p))
+    Ok(parts
+        .iter()
+        .fold(ini_dir.to_path_buf(), |dir, p| dir.join(p)))
 }
 
 /// A folder name for an app: letters, digits and ` ._-`, never empty or a
@@ -444,9 +454,15 @@ mod tests {
     fn cab_names_stay_beside_the_ini() {
         let dir = Path::new("C:\\stage");
         assert!(cab_path(dir, "Toy Golf.CAB").is_ok());
-        assert!(cab_path(dir, "cabs\\a.cab").is_ok());
+        // Split as Windows splits it, on every host (CI runs on Linux).
+        assert_eq!(
+            cab_path(dir, "cabs\\a.cab"),
+            Ok(dir.join("cabs").join("a.cab"))
+        );
         for bad in [
             "..\\a.cab",
+            "../a.cab",
+            "cabs\\..\\..\\a.cab",
             "C:\\Windows\\a.cab",
             "\\a.cab",
             "c:a.cab",

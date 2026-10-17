@@ -133,11 +133,12 @@ pub const X51V_BRINGUP: &[Region] = &[
         len: MIB,
         memory: Memory::Device,
     },
-    // CS4/CS5 (CPLD), PC Card sockets (Wi-Fi, CF), PXA27x peripherals.
+    // CS4/CS5 (CPLD), PC Card sockets (Wi-Fi, CF), PXA27x peripherals,
+    // the LCD and memory controllers, and the USB host controller's MiB.
     Region {
         virt: 0x1000_0000,
         phys: 0x1000_0000,
-        len: 0x3C00_0000,
+        len: 0x3C10_0000,
         memory: Memory::Device,
     },
     // Internal-memory control (IMPMCR): device.

@@ -90,11 +90,19 @@ fn value_prefix(name: &str) -> String {
     }
 }
 
+/// The folder of a Windows path, split as Windows does (`\` or `/`)
+/// whatever system runs this: the registry holds Windows paths, and
+/// `Path::parent` splits only on `/` elsewhere (the CI host).
+fn windows_parent(path: &str) -> &str {
+    path.rsplit_once(['\\', '/']).map_or("", |(dir, _)| dir)
+}
+
 /// The take-over: `exe` (LegacySync's `ceappmgr.exe`) registered in both
 /// views.
 #[must_use]
 pub fn reg_file(exe: &Path) -> String {
-    let dir = exe.parent().unwrap_or(Path::new(""));
+    let exe_s = exe.to_string_lossy();
+    let dir = windows_parent(&exe_s);
     let (major, minor, build) = REPORTED_VERSION;
     let mut t = String::from("Windows Registry Editor Version 5.00\n");
     for view in VIEWS {
@@ -107,7 +115,7 @@ pub fn reg_file(exe: &Path) -> String {
              \"BuildNumber\"=dword:{build:08x}\n\
              \n[HKEY_LOCAL_MACHINE\\{view}\\{APP_PATHS}]\n\
              @=\"{}\"\n",
-            reg_string(&dir.to_string_lossy()),
+            reg_string(dir),
             reg_string(&exe.to_string_lossy()),
         );
     }
@@ -213,12 +221,12 @@ fn get(state: &State, name: &str) -> Option<String> {
 #[must_use]
 pub fn points_at(states: &[(Managed, State)], exe: &Path) -> bool {
     let exe_s = exe.to_string_lossy();
-    let dir_s = exe.parent().unwrap_or(Path::new("")).to_string_lossy();
+    let dir_s = windows_parent(&exe_s);
     states.iter().all(|(m, s)| {
         let (name, want) = if m.values == SERVICES_VALUES {
-            ("InstalledDir", &dir_s)
+            ("InstalledDir", dir_s)
         } else {
-            ("", &exe_s)
+            ("", &*exe_s)
         };
         get(s, name).is_some_and(|v| v.eq_ignore_ascii_case(want))
     })

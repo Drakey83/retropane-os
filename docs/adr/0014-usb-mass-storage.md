@@ -98,7 +98,22 @@ model with a built-in host that enumerates like Windows.
      help, a soft reset into the card's loader did). Five later runs
      (main's and this loader, normal return and crash, read-only and
      read-write with Explorer open) didn't reproduce it; that try alone
-     had Windows write and read ~20 MB through the drive just before;
+     had Windows write and read ~20 MB through the drive just before.
+     Seen again after soft resets (2026-10-16: 11 resets, 34 setups) and
+     a watchdog reboot (27 resets, 0 setups); Windows' logs show the
+     composite configured at the first try right after the controller was
+     re-enabled (07:12:15), so the fallback works by re-enabling the UDC,
+     not by its layout. Diagnosis, ranked hypotheses (the lead: state
+     Windows Mobile leaves in the UDC that `Udc::enable` doesn't reset)
+     and the test plan: `docs/hw/udc.md` "The first enumeration after a
+     hand-over from Windows Mobile". A USB trace on the PC (T1,
+     2026-10-16) then showed the mechanism: Windows never sees HaRET's
+     hand-over (the pull-up stays, Windows Mobile's idle device stays
+     "present"), so the loader is enumerated only via the hub's recovery
+     or a re-plug; fixed 2026-10-16: the loader makes the PC see an unplug at start and
+     at each layout switch (the PXA27x host controller drives SE0 on port
+     2), proven over five hand-overs from Windows Mobile with the
+     composite configured each time (`docs/hw/udc.md` T4);
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.

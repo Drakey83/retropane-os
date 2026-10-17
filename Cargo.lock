@@ -729,6 +729,18 @@ name = "rp-touch-cal"
 version = "0.0.0"
 
 [[package]]
+name = "rp-unplug"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-uart",
+ "rp-drv-pxa-udc",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-usb"
 version = "0.0.0"
 dependencies = [

@@ -99,7 +99,7 @@ from its users.
 | `0x12` | `0x0001`-`0x0008` | display sequence bits (LCD power-up/down, guess) | `ddi`, `ddi_2700g` | guess | D |
 | `0x14` | `0x0002` | audio (guess: amplifier) | `wavedev` | guess | D |
 | `0x14` | `0x0004` | peripheral / serial (guess) | `peripheral`, `serial32` | guess | D |
-| `0x14` | `0x0008` | display (AxDroid: audio amplifier, set at boot) | `ddi`, `ddi_2700g` | guess | D; C |
+| `0x14` | `0x0008` | display (AxDroid: audio amplifier, set at boot). **Clearing this or `0x1A` bit 1 for 1 s wedged the device** (no check-ins after it; hardware watchdog into Dell's factory prompt; rp-unplug run 1, 2026-10-16, docs/hw/udc.md T4): never cleared outside a run built to find out which | `ddi`, `ddi_2700g` | guess | D; C; P (the hang) |
 | `0x16` | `0x0001` | **SD card power** | `pxa27x_sdhc` | confirmed | D; C; P |
 | `0x16` | `0x0002` | **CompactFlash slot power, stage 1** | `pcc_socket` | confirmed | D; P |
 | `0x16` | `0x0004` | Wi-Fi power sequence step 3 | `pcc_socket`, `tiacxwln` | likely | D; C |

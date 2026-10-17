@@ -1,0 +1,19 @@
+[package]
+name = "rp-unplug"
+description = "USB disconnect hunt (docs/hw/udc.md T4): tries each candidate way to make the PC see the X51v unplug and come back, counting whether the PC re-enumerates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true
