@@ -219,6 +219,16 @@ finds exactly `0xEC5`. Risk: a wrong clock shows a bad picture until Home.
 fork's PLL reads 0) and the frame count; the PLL isn't modelled yet
 (docs/hw/emulator.md).
 
+**Device run (2026-10-17, owner watching, `local/rp-refresh-run1-log.txt`):**
+found `0xEC5`, `PLLSTAT` 7. Measured 56.0 and 56.5 Hz at Dell's clock, **60.0
+and 60.5 Hz at `0xFC5`** (2 s counts: half a hertz per frame counted), the PLL
+locked at once each time, **no under/overrun bits at 32 bpp** at either
+clock, put back to `0xEC5` on Home. Owner: "60 Hz ran well", nothing wrong
+seen. **Result: the panel runs at its typical clock and 60 Hz with no
+faults.** Proposed: RetroPane sets `0xFC5` when it takes the display (only
+from Windows Mobile's `0xEC5`), so every screen runs at 60 Hz; `X51V_VGA`'s
+pixel clock becomes 25.1875 MHz.
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings
