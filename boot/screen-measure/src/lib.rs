@@ -14,6 +14,10 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod program;
+
+use program::{COUNTS, Program, Step, StepLight};
+
 /// Before the first patch: time for the PC's reply handling and for the
 /// panel to settle on black.
 pub const LEAD_MS: u32 = 12_000;
@@ -148,6 +152,80 @@ pub fn total_ms() -> u32 {
     start_ms(PATCHES.len())
 }
 
+/// What the image runs: the built-in [`PATCHES`] or a program the PC wrote
+/// into it ([`program`]).
+#[derive(Clone, Copy, Debug)]
+pub enum Schedule<'a> {
+    /// [`PATCHES`], after [`LEAD_MS`].
+    BuiltIn,
+    /// A checked program.
+    Program(Program<'a>),
+}
+
+impl<'a> Schedule<'a> {
+    /// The schedule in an image's program room.
+    ///
+    /// # Errors
+    /// The room holds a damaged or out-of-range program.
+    pub fn from_room(room: &'a [u8]) -> Result<Self, program::Error> {
+        Ok(Program::parse(room)?.map_or(Self::BuiltIn, Self::Program))
+    }
+
+    /// Steps.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::BuiltIn => PATCHES.len(),
+            Self::Program(p) => p.len(),
+        }
+    }
+
+    /// Never true; for clippy.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Before the first step, milliseconds.
+    #[must_use]
+    pub fn lead_ms(&self) -> u32 {
+        match self {
+            Self::BuiltIn => LEAD_MS,
+            Self::Program(p) => p.lead_ms(),
+        }
+    }
+
+    /// Step `i`.
+    #[must_use]
+    pub fn step(&self, i: usize) -> Step {
+        match self {
+            Self::BuiltIn => {
+                let p = &PATCHES[i];
+                Step {
+                    rgb: p.rgb,
+                    table: 0,
+                    light: match p.light {
+                        Light::Found => StepLight::Found,
+                        Light::Off => StepLight::Counts(0),
+                        Light::Eighths(n) => StepLight::Counts(COUNTS * n.min(8) as u16 / 8),
+                    },
+                    ms: p.ms,
+                }
+            }
+            Self::Program(p) => p.step(i),
+        }
+    }
+
+    /// Gamma table `k` (0: straight).
+    #[must_use]
+    pub fn table(&self, k: u8) -> [u32; 17] {
+        match self {
+            Self::BuiltIn => straight_table(),
+            Self::Program(p) => p.table(k),
+        }
+    }
+}
+
 /// The straight gamma table (output = input), as the 2700G's 17 points.
 #[must_use]
 pub fn straight_table() -> [u32; 17] {
@@ -183,6 +261,26 @@ mod tests {
                     .any(|p| p.rgb == (g, g, g) && p.light == Light::Found)
             );
         }
+    }
+
+    #[test]
+    fn the_built_in_schedule_is_the_patch_list() {
+        let room = program::placeholder();
+        let s = Schedule::from_room(&room).unwrap();
+        assert!(matches!(s, Schedule::BuiltIn));
+        assert_eq!(s.len(), PATCHES.len());
+        assert_eq!(s.lead_ms(), LEAD_MS);
+        for (i, p) in PATCHES.iter().enumerate() {
+            let st = s.step(i);
+            assert_eq!((st.rgb, st.ms, st.table), (p.rgb, p.ms, 0), "{}", p.name);
+            let want = match p.light {
+                Light::Found => StepLight::Found,
+                Light::Off => StepLight::Counts(0),
+                Light::Eighths(n) => StepLight::Counts(54 * n as u16),
+            };
+            assert_eq!(st.light, want, "{}", p.name);
+        }
+        assert_eq!(s.table(0), straight_table());
     }
 
     #[test]

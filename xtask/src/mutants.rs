@@ -513,6 +513,20 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_display_cal),
     },
     Mutant {
+        name: "screen measure: a program's table change never reaches the gamma table",
+        file: "boot/screen-measure/src/main.rs",
+        from: "                    if s.table != table {",
+        to: "                    if false && s.table != table {",
+        check: Check::Emu(crate::emu::boot_loader_screen_measure),
+    },
+    Mutant {
+        name: "screen measure: a damaged program is shown anyway",
+        file: "boot/screen-measure/src/program.rs",
+        from: "        if fnv1a(&room[HEADER..end]) != u32_at(room, 16) {",
+        to: "        if false && fnv1a(&room[HEADER..end]) != u32_at(room, 16) {",
+        check: Check::Host(&["-p", "rp-screen-measure", "the_device_refuses_damage"]),
+    },
+    Mutant {
         name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
         file: "boot/loader/src/main.rs",
         from: "                        devices::log_mark_handover();",

@@ -529,10 +529,11 @@ pub const BUDGETS: &[Budget] = &[
     // saturation redraw, steps): 28.8 KiB measured, +~10%.
     // Test image: the screen's patches for a colorimeter (`cargo xtask
     // measure`). Set at its first build on 2026-10-17: 17.3 KiB measured,
-    // +~10%.
+    // +~10%. 2026-10-17 (C6): + the 8 KiB program room the PC writes a
+    // measurement program into (28.4 KB measured).
     Budget {
         image: "rp-screen-measure",
-        max_load: 19 * 1024,
+        max_load: 30 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

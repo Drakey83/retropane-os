@@ -169,13 +169,13 @@ pub fn measure(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn home() -> PathBuf {
+pub(crate) fn home() -> PathBuf {
     PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
 }
 
 /// Argyll's `spotread`: `RETROPANE_ARGYLL` (the `bin` folder), else the
 /// newest `Argyll_*` under Downloads.
-fn find_spotread() -> Result<PathBuf, String> {
+pub(crate) fn find_spotread() -> Result<PathBuf, String> {
     if let Ok(dir) = std::env::var("RETROPANE_ARGYLL") {
         let p = Path::new(&dir).join("spotread.exe");
         return if p.exists() {
@@ -214,7 +214,7 @@ fn find_spotread() -> Result<PathBuf, String> {
 }
 
 /// The port number Argyll gives the USB colorimeter (never a COM port).
-fn instrument_port(spotread: &Path) -> Result<u32, String> {
+pub(crate) fn instrument_port(spotread: &Path) -> Result<u32, String> {
     let out = Command::new(spotread)
         .arg("-?")
         .current_dir(std::env::temp_dir())
@@ -237,7 +237,7 @@ fn parse_port(listing: &str) -> Option<u32> {
 }
 
 /// One emissive reading.
-fn read_once(spotread: &Path, port: u32, ccss: &Path) -> Result<Xyz, String> {
+pub(crate) fn read_once(spotread: &Path, port: u32, ccss: &Path) -> Result<Xyz, String> {
     let mut cmd = Command::new(spotread);
     cmd.args(["-e", "-c", &port.to_string(), "-O"]);
     if ccss.exists() {
@@ -258,7 +258,7 @@ fn read_once(spotread: &Path, port: u32, ccss: &Path) -> Result<Xyz, String> {
     })
 }
 
-fn parse_result(text: &str) -> Option<Xyz> {
+pub(crate) fn parse_result(text: &str) -> Option<Xyz> {
     let line = text.lines().find(|l| l.contains("Result is XYZ:"))?;
     let rest = line.split("XYZ:").nth(1)?;
     let mut n = rest.split([' ', ',']).filter_map(|t| t.parse::<f64>().ok());
@@ -270,7 +270,7 @@ fn parse_result(text: &str) -> Option<Xyz> {
 }
 
 /// McCamy's correlated colour temperature from (x, y).
-fn cct((x, y): (f64, f64)) -> f64 {
+pub(crate) fn cct((x, y): (f64, f64)) -> f64 {
     let n = (x - 0.3320) / (0.1858 - y);
     449.0 * n.powi(3) + 3525.0 * n.powi(2) + 6823.3 * n + 5520.33
 }

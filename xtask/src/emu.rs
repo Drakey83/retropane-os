@@ -1074,12 +1074,15 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The screen measurement image (`cargo xtask measure`'s patches) under the
-/// loader: the whole schedule runs (about 8 minutes), each patch within
-/// 300 ms of its planned start, the grey 128 patch is exactly grey 128 on
-/// screen (the straight gamma table), and everything is put back.
+/// The screen measurement image under the loader, driven by a measurement
+/// program written into it (C6, `rp_screen_measure::program`) as `cargo
+/// xtask measure --profile` does: grey 128 through the straight table shows
+/// exactly 128, then through a halving table exactly 64, each step within
+/// 300 ms of plan, everything put back. Then the same image with a damaged
+/// program: refused (checksum), nothing shown, returned. The built-in
+/// schedule is the same code path (its steps are host-tested).
 pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
-    use rp_screen_measure::{PATCHES, start_ms, total_ms};
+    use rp_screen_measure::program::{PROGRAM_BYTES, Step, StepLight, encode};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1087,44 +1090,79 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
     let image = dir.join("rp-screen-measure.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     crate::sdkit::raw_binary(&release.join("rp-screen-measure"), &image)?;
-    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
-    let frame = rp_loadproto::frame(&payload);
+    let plain = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let room = crate::profile::find_room(&plain)?;
+    let lead = 3_000;
+    let steps = [
+        Step {
+            rgb: (128, 128, 128),
+            table: 0,
+            light: StepLight::Counts(432),
+            ms: 4_000,
+        },
+        Step {
+            rgb: (128, 128, 128),
+            table: 1,
+            light: StepLight::Found,
+            ms: 4_000,
+        },
+        Step {
+            rgb: (255, 255, 255),
+            table: 0,
+            light: StepLight::Counts(0),
+            ms: 1_000,
+        },
+    ];
+    let half: [u32; 17] = core::array::from_fn(|i| (((16 * i as u32).min(255)) / 2) * 0x01_0101);
+    let mut payload = plain.clone();
+    encode(
+        &steps,
+        &[half],
+        lead,
+        &mut payload[room..room + PROGRAM_BYTES],
+    )
+    .map_err(|e| format!("screen-measure program: {}", e.name()))?;
+    let starts: Vec<u32> = (0..steps.len())
+        .map(|i| lead + steps[..i].iter().map(|s| s.ms).sum::<u32>())
+        .collect();
     let shot = root.join("target/emulator/screen-measure.ppm");
     std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
     };
-    let grey = PATCHES
-        .iter()
-        .position(|p| p.name == "grey 128")
-        .ok_or("no grey 128 patch")?;
-    let check = || -> Result<(), String> {
-        let t0 = Instant::now();
-        // Watch from the patch's start until its end: grey 128 everywhere.
-        let from = Duration::from_millis(u64::from(start_ms(grey)) + 1_000);
-        let to = Duration::from_millis(u64::from(start_ms(grey) + PATCHES[grey].ms));
-        std::thread::sleep(from);
+    let screen_is = |grey: u8, from_ms: u32, to_ms: u32, t0: Instant| -> Result<(), String> {
+        let from = Duration::from_millis(u64::from(from_ms) + 800);
+        if let Some(w) = from.checked_sub(t0.elapsed()) {
+            std::thread::sleep(w);
+        }
         let mut seen = None;
-        while t0.elapsed() < to {
+        while t0.elapsed() < Duration::from_millis(u64::from(to_ms)) {
             let _ = std::fs::remove_file(&shot);
             crate::screen::Monitor::connect(monitor_port())?.screendump(&guest, &shot)?;
             let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
-            let all = img
+            let want = [grey; 3];
+            if img
                 .rgb
                 .chunks(3)
                 .take((img.width * 640) as usize)
-                .all(|c| c == [128, 128, 128]);
-            seen = Some(img.rgb.get(..3).map(<[u8]>::to_vec));
-            if all {
+                .all(|c| c == want)
+            {
                 return Ok(());
             }
-            std::thread::sleep(Duration::from_millis(500));
+            seen = Some(img.rgb.get(..3).map(<[u8]>::to_vec));
+            std::thread::sleep(Duration::from_millis(300));
         }
         Err(format!(
-            "screen-measure: the grey 128 patch never showed as grey 128 (first pixel {seen:?})"
+            "screen-measure: grey {grey} never showed on screen between {from_ms} and {to_ms} ms (first pixel {seen:?})"
         ))
     };
+    let check = || -> Result<(), String> {
+        let t0 = Instant::now();
+        screen_is(128, starts[0], starts[1], t0)?;
+        screen_is(64, starts[1], starts[2], t0)
+    };
+    let frame = rp_loadproto::frame(&payload);
     let output = boot(
         root,
         &Boot {
@@ -1137,36 +1175,70 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
             input: Some((&frame, "RPL OK")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_millis(u64::from(total_ms()) + 180_000),
+            timeout: Duration::from_secs(120),
         },
     )?;
     let log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("screen-measure: no run log after the image returned")?;
-    for (i, p) in PATCHES.iter().enumerate() {
-        let head = format!("patch {i} {} at ", p.name);
+    for (i, planned) in starts.iter().enumerate() {
+        let head = format!("step {i} at ");
         let at = log
             .lines()
             .find_map(|l| l.trim().strip_prefix(&head))
             .and_then(|r| r.split(' ').next())
             .and_then(|n| n.parse::<u32>().ok())
             .ok_or_else(|| format!("screen-measure: no {head:?} in the run log:{log}"))?;
-        if at.abs_diff(start_ms(i)) > 300 {
+        if at.abs_diff(*planned) > 300 {
             return Err(format!(
-                "screen-measure: patch {i} started at {at} ms, planned {}",
-                start_ms(i)
+                "screen-measure: step {i} started at {at} ms, planned {planned}"
             ));
         }
     }
-    for want in ["all patches shown", "SCREEN-MEASURE-OK"] {
+    for want in ["3 steps, program", "all patches shown", "SCREEN-MEASURE-OK"] {
         if !log.contains(want) {
             return Err(format!("screen-measure: no {want:?} in the run log:{log}"));
         }
     }
+
+    // Damaged: one byte of the steps changed after the checksum was made.
+    let mut bad = payload;
+    bad[room + 20 + 68 + 1] ^= 0x40;
+    let frame = rp_loadproto::frame(&bad);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(60),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("screen-measure: no run log after the damaged program")?;
+    for want in ["program refused: checksum", "SCREEN-MEASURE-OK"] {
+        if !log.contains(want) {
+            return Err(format!(
+                "screen-measure (damaged program): no {want:?} in the run log:{log}"
+            ));
+        }
+    }
+    if log.contains("step 0 at") {
+        return Err(format!(
+            "screen-measure: a damaged program's step was shown:{log}"
+        ));
+    }
     eprintln!(
-        "    screen-measure OK: {} patches on schedule (each within 300 ms), grey 128 exact on screen, put back and returned",
-        PATCHES.len()
+        "    screen-measure OK: a program's steps on schedule (each within 300 ms), grey 128 exact through the straight table and 64 through a halving one, a damaged program refused, put back and returned"
     );
     Ok(())
 }

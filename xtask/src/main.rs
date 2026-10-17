@@ -3,15 +3,18 @@
 
 #![forbid(unsafe_code)]
 
+mod calib;
 mod devlock;
 mod emu;
 mod measure;
 mod mutants;
 mod policy;
+mod profile;
 mod screen;
 mod sdkit;
 mod serve;
 mod size;
+mod spot;
 mod trace;
 mod usb;
 mod usbbench;
@@ -139,12 +142,21 @@ commands:
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
   emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
-  emu-screen-measure the colorimeter patches' check (rp-screen-measure: the
-            whole 8-minute schedule on time; not part of `emu`): run it
-            before `measure`
+  emu-screen-measure the colorimeter patches' check (rp-screen-measure driven
+            by a measurement program: steps on time, the table switched, a
+            damaged program refused; not part of `emu`): run it before `measure`
   measure   the screen measured with a colorimeter (ArgyllCMS + Spyder4):
             starts rp-screen-measure, reads each patch, writes a report and a
             correcting gamma table to local/screen-measure/
+            --profile: a profiling set (Argyll targen + greys and ramps) at
+            full backlight, one spotread kept open, missed patches read again;
+            .csv + Argyll .ti3 to local/screen-measure/c6/. --ti1 <file>
+            other patches, --table <file> through a 17-point table, --light
+            found|<0-432>, --name <text>, --dry-run (plan only)
+  calibrate <readings.ti3> 17-point tables (native, 9000 K, 7500 K, D65
+            white; BT.1886 greys) from a profiling run, with a report.
+            --verify native,9000,6504 [--passes n]: each table's greys read on
+            the Axim, corrected, read again (n passes, default 2; hands-free)
   emu-refresh the refresh-rate test's check (rp-refresh: frames counted, no PLL
             switch without Windows Mobile's value): run it before `load rp-refresh`
   emu-display-cal the display calibration image's check (rp-display-cal: the
@@ -292,8 +304,39 @@ fn main() -> ExitCode {
                     Some(csv) => measure::report(Path::new(&csv)),
                     None => Err("usage: cargo xtask measure --report <readings.csv>".into()),
                 }
+            } else if matches!(flag.as_str(), "--profile" | "--ti1" | "--table" | "--light") {
+                measure_options().and_then(|o| profile::run(&workspace_root(), &o))
             } else {
                 measure::measure(&workspace_root())
+            }
+        }
+        "calibrate" => {
+            // C6 step 4 (docs/design/display-calibration.md): 17-point
+            // tables from a profiling run's readings.
+            eprintln!("==> calibrate");
+            let a: Vec<String> = args().skip(2).collect();
+            let usage = "usage: cargo xtask calibrate <readings.ti3> [--verify native,9000,6504 [--passes n]]";
+            match a.as_slice() {
+                [ti3] => calib::run(Path::new(ti3)),
+                [ti3, v, whites, rest @ ..] if v == "--verify" => {
+                    let passes = match rest {
+                        [] => Ok(2),
+                        [p, n] if p == "--passes" => n
+                            .parse::<u32>()
+                            .ok()
+                            .filter(|n| (1..=5).contains(n))
+                            .ok_or_else(|| "--passes: 1-5".to_string()),
+                        _ => Err(usage.to_string()),
+                    };
+                    passes.and_then(|passes| {
+                        let w: Vec<calib::White> = whites
+                            .split(',')
+                            .map(calib::parse_white)
+                            .collect::<Result<_>>()?;
+                        calib::verify(&workspace_root(), Path::new(ti3), &w, passes)
+                    })
+                }
+                _ => Err(usage.into()),
             }
         }
         "udc" => {
@@ -647,6 +690,63 @@ fn lint() -> Result {
         }
         Err(format!("{} policy violation(s)", violations.len()))
     }
+}
+
+/// `measure --profile | --ti1 <file>`, `--table <file>`, `--light found|<counts>`,
+/// `--name <text>`, `--dry-run` (C6, docs/design/display-calibration.md).
+fn measure_options() -> Result<profile::Options> {
+    let a: Vec<String> = args().skip(2).collect();
+    let mut o = profile::Options {
+        name: "profile".into(),
+        ti1: None,
+        table: None,
+        light: rp_screen_measure::program::StepLight::Counts(432),
+        dry: false,
+    };
+    let mut i = 0;
+    let value = |i: usize| {
+        a.get(i + 1)
+            .cloned()
+            .ok_or(format!("{} needs a value", a[i]))
+    };
+    while i < a.len() {
+        match a[i].as_str() {
+            "--profile" => i += 1,
+            "--dry-run" => {
+                o.dry = true;
+                i += 1;
+            }
+            "--ti1" => {
+                o.ti1 = Some(value(i)?.into());
+                i += 2;
+            }
+            "--table" => {
+                o.table = Some(value(i)?.into());
+                i += 2;
+            }
+            "--name" => {
+                o.name = value(i)?;
+                i += 2;
+            }
+            "--light" => {
+                let v = value(i)?;
+                o.light = if v == "found" {
+                    rp_screen_measure::program::StepLight::Found
+                } else {
+                    let c: u16 = v
+                        .parse()
+                        .map_err(|_| format!("--light {v}: found or 0-432"))?;
+                    if c > 432 {
+                        return Err(format!("--light {v}: at most 432"));
+                    }
+                    rp_screen_measure::program::StepLight::Counts(c)
+                };
+                i += 2;
+            }
+            other => return Err(format!("measure: unknown option {other}")),
+        }
+    }
+    Ok(o)
 }
 
 fn cross() -> Result {

@@ -484,6 +484,12 @@ mod tests {
                     body.contains("crate::devlock::ensure_held()?"),
                     "fn powershell must take the Axim lock before anything else"
                 );
+            } else if name == "spot.rs" {
+                // The colorimeter's pseudo-console host: once, after the lock.
+                assert_eq!((spawns, ports), (1, 0), "spot.rs: one PowerShell host");
+                let body = text.split("pub fn open(").nth(1).unwrap();
+                let lock = body.find("crate::devlock::ensure_held()?").unwrap();
+                assert!(lock < body.find("Command::new(\"powershell").unwrap());
             } else {
                 assert_eq!(
                     spawns + ports,

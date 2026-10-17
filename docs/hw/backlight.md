@@ -11,7 +11,8 @@
 |---|---|---|---|
 | Backlight brightness | PWM0, output on GPIO17 | confirmed (code) | (C) |
 | Backlight enable | CPLD `0x18` bit 2 (`0x0004`), set = on; Windows Mobile leaves it on | confirmed | Dell's `Backlight.dll` and display drivers set it (cpld.md (D)); clearing it darkened the panel on the owner's X51v, setting it lit it again (2026-10-12) |
-| PWM1 | running (duty 0x46 of 0xD7) as WM leaves it. Set only by Dell's display drivers at display start-up, to a panel-specific constant (one value for the Samsung panel, another for the Sharps; on the owner's Sharp it works out to 70 of 216): most likely the panel's bias or contrast, **not** a backlight brightness. RetroPane leaves it alone | likely | (P); (D) Dell's `ddi_2700g` and `Backlight` (static analysis, 2026-10-15: the PWM helper called with channel 1 from the display driver only, the value chosen by panel type) |
+| PWM1 | running (duty 0x46 of 0xD7) as WM leaves it. **The panel's VCOM.** Set only by Dell's display drivers at display start-up: a value in thousandths of the cycle (duty = v x 215 / 1000), taken from RAM `0xAC002608` when the tag `"MOCV"` is there (+4: 16 bits, accepted 20-820), else the panel type's default, 330 (owner's type, CPLD LCD bits 0) or 280; 330 = the 70 of 216 seen. **Not** a backlight brightness. RetroPane leaves it alone | confirmed (code) | (P); (D) Dell's `ddi_2700g` and `ddi` (2026-10-15: PWM helper called with channel 1; 2026-10-17: the VCOM tag and defaults, docs/design/display-calibration.md C6 step 1) |
+| Backlight ceiling | Dell's table caps the owner's panel type (and one other) at 137/216 (nine levels 0-137), a third type at 193/216; full duty is the most software can give (no LED-current control found in Dell's code) | confirmed (code) | (D) `ddi_2700g` table at `0x020FD820` |
 
 ## PXA27x PWM (M)
 

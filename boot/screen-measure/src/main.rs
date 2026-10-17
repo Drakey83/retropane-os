@@ -24,7 +24,8 @@ mod image {
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, RunLog};
-    use rp_screen_measure::{LEAD_MS, Light, PATCHES, start_ms, straight_table};
+    use rp_screen_measure::Schedule;
+    use rp_screen_measure::program::{PROGRAM_BYTES, StepLight, placeholder};
     use rp_vram_map::SCREENS;
 
     rp_hal_pxa27x::entry!(main);
@@ -41,6 +42,11 @@ mod image {
     const W: usize = 480;
     const H: usize = 640;
     const STRIDE: usize = W * 4;
+
+    /// The program room: the PC writes a measurement program here in a copy
+    /// of the image before sending it (rp_screen_measure::program). Empty:
+    /// the built-in schedule.
+    static PROGRAM: [u8; PROGRAM_BYTES] = placeholder();
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
@@ -102,8 +108,13 @@ mod image {
             },
             Layer::SOLO,
         );
-        for (i, w) in straight_table().iter().enumerate() {
-            display.regs().write32(GFXGAM0 + 4 * i, *w);
+        // Read through an opaque reference: the room's contents are written
+        // after the build, so the compiler mustn't fold them in.
+        let room: &[u8] = core::hint::black_box(&PROGRAM[..]);
+        let schedule = Schedule::from_room(room);
+        let mut table = 0;
+        for (j, w) in rp_screen_measure::straight_table().iter().enumerate() {
+            display.regs().write32(GFXGAM0 + 4 * j, *w);
         }
         let on = display.regs().read32(GSCTRL) | GSCTRL_GAMMA;
         display.regs().write32(GSCTRL, on);
@@ -120,44 +131,63 @@ mod image {
             }
             false
         };
-        stopped |= wait_until(LEAD_MS, &mut keypad);
-        for (i, p) in PATCHES.iter().enumerate() {
-            if stopped {
-                break;
+        let mut refused = false;
+        match schedule {
+            Err(e) => {
+                let _ = writeln!(RunLog, "program refused: {}", e.name());
+                refused = true;
             }
-            let (r, g, b) = p.rgb;
-            let word = 0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
-            rp_hal_mem::fill32(fb, word);
-            match p.light {
-                Light::Found => {
-                    pwm.write32(CR, light.0);
-                    pwm.write32(PCR, light.2);
-                    pwm.write32(DCR, light.1);
-                }
-                Light::Off => {
-                    pwm.write32(CR, 0);
-                    pwm.write32(PCR, COUNTS - 1);
-                    pwm.write32(DCR, 0);
-                }
-                Light::Eighths(n) => {
-                    pwm.write32(CR, 0);
-                    pwm.write32(PCR, COUNTS - 1);
-                    pwm.write32(DCR, COUNTS * n.min(8) / 8);
+            Ok(schedule) => {
+                let _ = writeln!(
+                    RunLog,
+                    "{} steps, {}",
+                    schedule.len(),
+                    if matches!(schedule, Schedule::BuiltIn) {
+                        "built-in"
+                    } else {
+                        "program"
+                    }
+                );
+                let mut at_ms = schedule.lead_ms();
+                stopped |= wait_until(at_ms, &mut keypad);
+                for i in 0..schedule.len() {
+                    if stopped {
+                        break;
+                    }
+                    let s = schedule.step(i);
+                    let (r, g, b) = s.rgb;
+                    let word = 0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
+                    rp_hal_mem::fill32(fb, word);
+                    if s.table != table {
+                        for (j, w) in schedule.table(s.table).iter().enumerate() {
+                            display.regs().write32(GFXGAM0 + 4 * j, *w);
+                        }
+                        table = s.table;
+                    }
+                    match s.light {
+                        StepLight::Found => {
+                            pwm.write32(CR, light.0);
+                            pwm.write32(PCR, light.2);
+                            pwm.write32(DCR, light.1);
+                        }
+                        StepLight::Counts(n) => {
+                            pwm.write32(CR, 0);
+                            pwm.write32(PCR, COUNTS - 1);
+                            pwm.write32(DCR, u32::from(n).min(COUNTS));
+                        }
+                    }
+                    let _ = writeln!(RunLog, "step {i} at {} ms (planned {at_ms})", ms_since(t0));
+                    at_ms += s.ms;
+                    stopped |= wait_until(at_ms, &mut keypad);
                 }
             }
-            let _ = writeln!(
-                RunLog,
-                "patch {i} {} at {} ms (planned {})",
-                p.name,
-                ms_since(t0),
-                start_ms(i)
-            );
-            stopped |= wait_until(start_ms(i) + p.ms, &mut keypad);
         }
         let _ = writeln!(
             RunLog,
             "{} at {} ms",
-            if stopped {
+            if refused {
+                "nothing shown"
+            } else if stopped {
                 "stopped (Home)"
             } else {
                 "all patches shown"

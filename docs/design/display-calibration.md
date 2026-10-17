@@ -17,7 +17,7 @@ not built yet.**
 | **Gamma table** (`GFXGAM0`-`16`: 17 points per colour, 8 bits each, applied as pixels go to the panel) | Brightness curve, contrast curve, white balance (each colour separately). Free: no work per frame | Format confirmed on the device (`rp-nightlight`); Windows Mobile leaves a straight ramp | None: a table, put back on exit |
 | **Backlight** (PWM0, 432 steps at 30 kHz) | How bright the panel is; battery | Ours since 2026-10-16; Windows Mobile runs it at 137/216 = 63% | None up to full duty; battery cost to measure |
 | **Pixel clock / refresh** (the 2700G's PLL and timings) | 55-56 Hz today; smoother motion at 60 Hz | Dell's 23.56 MHz is a little *under* the Sharp's 24.0-26.3 MHz range ([research/screen-swap.md](../research/screen-swap.md), datasheet S); 25.2 MHz typical gives ~60 Hz | Low, owner watching: a wrong timing only shows a bad picture until the next start |
-| **PWM1** (Dell sets a panel-specific constant: 70 of 216 on the Sharp) | Unknown. Not the panel's bias supplies (those are made on the panel's own flex from 3.3 V, datasheet S); possibly a contrast or reference input | Untested | Unknown: research first, then small steps with the owner watching and Dell's value put back (no blind board bits) |
+| **PWM1** (Dell sets a panel-specific constant: 70 of 216 on the Sharp) | **The panel's VCOM** (C6 research, 2026-10-17): flicker and DC balance, not contrast | Untested | Low if small: steps inside Dell's 20-820 window, owner watching, Dell's value put back |
 | **Dither** (4 x 4 on the engine, Floyd-Steinberg for pictures at load) | Smooth gradients on a 16/18-bit panel | Done; 16-bit wallpaper indistinguishable on the device (ADR-0023) | None |
 | **Content** (wallpapers, icons, themes) | Saturation and contrast baked in once when converted; glass darkness, text brightness | Ours | None |
 | Panel colours, black level, viewing angle | Physical: the panel's filters and backlight leakage (200:1 contrast, 165 nits, NTSC 35%) | Fixed | Only a new panel changes these (parked: research/screen-swap.md) |
@@ -295,6 +295,105 @@ possibly a colour matrix in the 2700G's video plane (to check).
    Original; the owner and family pick.
 8. **Verify:** the chart measured through the chosen pipeline, a colour error
    (Delta E 2000) report per patch. The result replaces C1's three looks.
+
+### C6 step 1: research results (2026-10-17, static, facts only)
+
+**PWM1 is the panel's VCOM** (the common-electrode voltage), confirmed (code).
+Dell's display drivers (`ddi_2700g.dll` and `ddi.dll`, the same routine) set
+it once at display start-up: they look in RAM at `0xAC002608` for the tag
+`"MOCV"` (`0x56434F4D`, "VCOM" read backwards) and, if it is there, take a
+16-bit value at `+4`, accepted only from 20 to 820; with no tag they use a
+per-panel default: **330 for the owner's panel type** (the CPLD's LCD-type
+bits read 0), 280 for the other. The value is in thousandths of the PWM's
+cycle: duty = value x 215 / 1000 (PWM1, prescale 1, 216 counts, 30 kHz,
+filtered on the board into a DC level). 330 gives **70 of 216, exactly what
+the owner's Axim runs**, so it uses Dell's default (or a factory value equal
+to it); nothing in Windows Mobile's image writes the tag (searched: only the
+two display drivers and their copies in the ROM read it).
+- What VCOM does on an LCD: it centres the alternating drive across the liquid
+  crystal. At the right value the picture doesn't flicker and no DC sits on
+  the cells; off it, the picture flickers at half the refresh rate and, held
+  for hours, images stick. It is **not a contrast control**: it may move black
+  slightly, mostly it trades flicker. Dell's range check (20-820) is the safe
+  window its code allows.
+- **Worth one measured sweep, nothing more:** a few steps either side of 330
+  (for example 290-370), each held under a minute, black and white read by the
+  Spyder, a flicker pattern judged by eye, then 330 put back. If one value has
+  a lower black and no flicker, it is a free gain; if not, Dell's default stays.
+  Owner watching, steps small, never outside Dell's 20-820.
+
+**Backlight maximum: full duty is the ceiling software has.** Dell's backlight
+table caps the owner's panel type (and one other) at 137 of 216 (63%, levels
+0-137 in nine steps), a third panel type at 193. RetroPane already goes to full duty
+(57 cd/m2, measured). The LED current is set by the board's boost driver
+(constant current); no register, CPLD bit or driver call that changes it was
+found in Dell's code (only PWM0's duty and CPLD `0x18` bit 2, the enable).
+More light means hardware (a new panel's fresh LEDs, or the driver's current
+resistor), not software.
+
+**No colour matrix for the screen's picture.** The 2700G has colour-conversion
+registers `CSC01`-`CSC05` (`0x2330`-`0x2340`) but they belong to the **video
+plane** (`VSCTRL[25]` turns on its YUV-to-RGB conversion), and the video plane
+takes only YUV formats. Neither Dell's display driver (its register table has
+no `CSC` entry) nor Linux's mbxfb writes them: they run at their reset values.
+The graphics plane (everything RetroPane draws) has only the 17-point table
+(`GFXGAM`) and a palette for indexed pixels. So:
+- tone and white balance: the 17-point table (free);
+- saturation and colour accuracy: **in content**, once, when a picture loads,
+  a texture uploads or a theme is built (the 3D tables of step 5);
+- later, for video playback: the CSC coefficients could add saturation and
+  correct colour to video for free (field layout unknown; a device test
+  before use, recorded as open).
+
+### C6 step 2: the measuring tools (built 2026-10-17)
+
+- **One image, any patches.** `rp-screen-measure` now holds an 8 KiB
+  *program room*: the PC writes a measurement program into a copy of the
+  image before sending it (up to 954 steps, each a full-screen colour, one of
+  up to 8 tables of 17 points or the straight one, a backlight from off to
+  full or as found, a time), so profiling, every refinement pass and the
+  final verification are the same image with different data, never a
+  rebuild. The device checks the whole program before showing anything
+  (sizes, an FNV-1a checksum, table numbers, backlight at most 432, step
+  times, the run at most 90 minutes, each table word's spare byte); a
+  damaged one is refused and logged. An empty room runs the old 31-patch
+  schedule. 28.2 KB (test-image budget raised to 30 KiB).
+- **Faster readings.** Argyll's `spotread` reads keys from the console
+  itself, so piped keys never reach it; it now runs inside a Windows
+  pseudo-console (ConPTY, hosted by `xtask/src/conpty.ps1`), kept open for
+  the whole run: one instrument start-up, then a key press per reading
+  instead of a 10 s start-up each time. If the pseudo-console can't start,
+  the run falls back to one `spotread` per reading with four times the
+  windows. Proven with a console program reading its keys directly;
+  spotread itself on the first run.
+- **`cargo xtask measure --profile`**: Argyll's `targen` spread (150
+  patches, dark region emphasised: this panel crushes its shadows), plus
+  greys every 8 levels and each channel alone every 16 (the table's points),
+  226 patches, with white read every 40 for the backlight's drift, at full
+  backlight; about 26 minutes. Each patch's reading window follows its
+  expected brightness (the Spyder4 integrates longer in the dark); any
+  patch that missed its window is shown again right after with three times
+  the window: the image returns to the loader by itself, so no hands are
+  needed. Results: readings `.csv` and an Argyll `.ti3` (drift-corrected,
+  white = 100, white's cd/m2 recorded) in `local/screen-measure/c6/`.
+  `--ti1`, `--table`, `--light`, `--dry-run` for other passes.
+- **`cargo xtask calibrate <ti3>`**: the panel modelled as black plus each
+  channel's own light above black at the 17 table levels (its error on the
+  mixed patches reported), then a table for each white candidate (native,
+  9,000 K, 7,500 K, D65): the brightest white of that colour the panel
+  reaches, greys from the panel's black to it neutral, the tone curve
+  BT.1886 with the measured black. Point 16 stands for input 256, so it is
+  aimed for input 255 to land on white. **`--verify native,9000,6504`**
+  shows each table, reads 33 greys (every 8: the table's points and the
+  levels between them, which test how the 2700G interpolates), corrects
+  each point from its error, and reads again (2 passes by default): all
+  hands-free in one sitting. Delta E 2000 checked against Sharma's
+  reference pairs.
+- **Known limit:** no dither on the 2700G's output was found, so table
+  values land on the panel's 64 levels a channel; a strongly turned-down
+  channel (blue, for D65) keeps fewer levels, which can show as bands in
+  smooth blue gradients. The looks test shows ramps so this is judged on
+  the screen, against the other whites.
 
 ## Measured with a colorimeter (2026-10-17)
 
