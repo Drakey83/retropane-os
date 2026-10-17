@@ -132,6 +132,8 @@ commands:
             (rp-quantum: all run; numbers printed): run it before `load rp-quantum`
   emu-usb   only the loader-over-USB check (image in, run log out)
   emu-loader only the loader's boot check (boot time, an image's round trip)
+  emu-keepfed after an image returns, the loader keeps the watchdog fed with no PC program (150 s;
+              needs the fork's timer fix, branch timer-match-one: not in `emu` until it's released)
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
@@ -164,7 +166,7 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-unplug" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-cfdetect" | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -393,6 +395,7 @@ fn run_step(step: &str) -> Result {
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
         "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
+        "emu-keepfed" => cross().and_then(|()| emu::boot_loader_keeps_feeding(&workspace_root())),
         "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
         "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),

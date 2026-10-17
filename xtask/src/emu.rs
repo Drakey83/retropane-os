@@ -1091,6 +1091,66 @@ pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The card's loader after an image returns, with no PC program on its
+/// port: it keeps the watchdog (armed by the run) fed however long it waits.
+/// Its link patience (90 s, then a reset) is for a loader started as an
+/// image only; on 2026-10-17 it fired after an rp-today run whose USB never
+/// came back, and the Axim landed on Dell's factory prompt. The emulated PC
+/// enumerates the loader but no program opens its port (the USB chardev has
+/// no client), so the link is never proven, as on that day. A loader that
+/// stopped feeding would reset within 90 + 30 s of the return; this waits
+/// 150 s and wants no start after the one the return makes.
+pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    keep-fed: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let light = dir.join("rp-light.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-light"), &light)?;
+    let payload = std::fs::read(&light).map_err(|e| format!("{}: {e}", light.display()))?;
+    let input = rp_loadproto::frame(&payload);
+    let args = usb_args(4);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let wait = || -> Result<(), String> {
+        std::thread::sleep(Duration::from_secs(150));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: Some((&input, "RPL END")),
+            during: Some(&wait),
+            then: None,
+            timeout: Duration::from_secs(400),
+        },
+    )?;
+    // Kept for reading: what the loader printed while it waited.
+    let _ = std::fs::write(dir.join("keepfed.txt"), &output);
+    // Ready once at the first boot, once after the image returned; a third
+    // is a reset.
+    let starts = output.matches("BENCH boot_loader_ready").count();
+    if starts != 2 {
+        return Err(format!(
+            "keep-fed: the loader started {starts} times (2 wanted: a watchdog reset after the image returned?):{output}"
+        ));
+    }
+    eprintln!(
+        "    keep-fed OK: after the image returned, the loader kept the watchdog fed for 150 s with no PC program on its port"
+    );
+    Ok(())
+}
+
 /// The soft run limit (overnight item 55): an image that runs forever with
 /// interrupts on and never checks in must come back to the loader with a
 /// crash report saying so, with no reset (on the X51v a reset lands on

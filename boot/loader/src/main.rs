@@ -1998,7 +1998,13 @@ mod image {
         let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
-        let watched = watchdog.armed();
+        // LINK_PATIENCE is for a loader started as an image only (the run
+        // log says so: `handover`). The card's own loader starts afresh after
+        // every image too, with the watchdog still armed from the run; it
+        // keeps feeding it whatever the link does (2026-10-17: the PC never
+        // configured USB after an rp-today run, and 90 s later this sent the
+        // Axim through a watchdog reset to Dell's factory prompt).
+        let watched = watchdog.armed() && last_run.as_ref().is_some_and(|r| r.handover);
         let started = rt::ticks();
         let mut link_proven = false;
         loop {
