@@ -98,3 +98,4 @@ running. **Device test (owner present):** expected Windows Mobile booting
 as after the stylus reset, with no factory prompt; if the prompt appears,
 the reset type is what Dell's bootloader keys on and item 64 ends as a
 dead end.
+**Device test passed (2026-10-17, owner present):** `cargo xtask reboot-wm` from the PC restarted the Axim into Windows Mobile without the factory prompt, twice; the loader does not start by itself afterwards (it is launched from Windows Mobile, as after the stylus reset).

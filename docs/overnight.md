@@ -1057,6 +1057,7 @@ on the host or in the emulator first.
     `card check` reads both FATs (8-16 MB at 32 GB), so on the device it
     may take minutes and holds up the USB loop while it runs: worth a
     device run with the 32 GB card, and a chunked check if it is too slow
+    **Device check passed (2026-10-17):** `cargo xtask card check` on the owner's 29 GB card (a 32 GB-class card) through the loader: clean, 4,492 files, 162 folders, 51,988 clusters, 0 problems.
     (item 62 (c)'s rule).
 
 52. **Display fast paths**: **done (emulator), iWMMXt next.** `rp-gfx`
