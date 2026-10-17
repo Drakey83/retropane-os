@@ -17,8 +17,9 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 |---|---|
 | [ui.md](ui.md) | The look: the owner's decisions, the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [apps-and-packs.md](apps-and-packs.md) | Every Windows Mobile 5 default app rebuilt and modernized, a new coat of paint on everything, themes and customization, legacy apps and games, the SD expansion pack and its download location, our own DOOM / Heretic / Quake ports, more ideas to modernize |
-| [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (one built in, five on the card, bring your own), the pack format keyed by the WMO codes |
-| [mockups/](mockups/README.md) | Images of the Today screen with the Sunburst weather icons, an icon sheet, and their credits and licences |
+| [today-screen-plan.md](today-screen-plan.md) | The plan for the Today screen on the device: what runs now, the four steps, the icon format |
+| [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (VClouds' built in, five optional ones on the card, bring your own), the pack format keyed by the WMO codes |
+| [mockups/](mockups/README.md) | Images of the Today screen with the default weather icons (VClouds'), an icon sheet, the five optional packs, and their credits and licences |
 
 **Mock-ups:** the concept canvas, private to the owner (Claude artifact
 "RetroPane UI concepts", 2026-10-12): concepts A-K, then boards N-R, the
@@ -60,7 +61,16 @@ A running list; each line points to where the detail is.
 - **2026-10-16:** the night control: one slider plus a schedule
   ([hw/backlight.md](../hw/backlight.md)); every WM5 default app rebuilt
   and modernized, themes, GLES for all games, the SD expansion pack, our own
-  DOOM / Heretic / Quake ports ([apps-and-packs.md](apps-and-packs.md));
+  DOOM / Heretic / Quake / Quake 2 ports ([apps-and-packs.md](apps-and-packs.md));
   the Weather app as a headline feature, icon packs (one built in, five on
   the card, bring your own), never Claude-drawn icons ([weather.md](weather.md)); the owner's NAS hosts the
   downloads behind security layers ([apps-and-packs.md](apps-and-packs.md) §5).
+- **2026-10-17:** VClouds gave permission to use his weather icons and skin
+  design with credit; his icons are the default pack, the owner's first pack is
+  dropped and the other five are optional ([weather.md](weather.md),
+  [ui.md](ui.md)); the optional packs and all other generated icons stay off the
+  front page; fifteen wallpapers approved ([ui.md](ui.md)); Quake 2 added to the
+  game ports; connected services (iCal, then CalDAV, then Google sign-in) with
+  one Connections page, and streaming from the owner's own libraries as a pack
+  ([apps-and-packs.md](apps-and-packs.md) §7, §7b); Tailscale for away from home
+  (§7c); the Today screen plan ([today-screen-plan.md](today-screen-plan.md)).

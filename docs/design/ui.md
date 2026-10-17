@@ -71,11 +71,15 @@ pre-rendered (docs/design-brief.md); 64 MB of RAM (docs/memory-budget.md).
 - The weather blends into the desktop: the wallpaper is the current sky,
   the reading sits on it with no box. Concept A's calendar card and quick
   buttons are kept as they are.
-- Icons: the owner wants an existing artist's realistic set under a free
-  licence rather than generated ones. Licence check: the set the owner liked best is CC BY-NC-SA 3.0, non-commercial, which a GPL OS can't ship without the artist's permission; KDE's Oxygen weather icons are LGPL-3
-  (shippable with attribution and their SVG sources); MerlinTheRed's plain
-  set is CC BY-SA (a plainer style); the Xfce "liquid" set's licence is
-  unclear (avoid).
+- Icons: the owner wanted an existing artist's realistic set under a free
+  licence rather than generated ones. **Settled 2026-10-16/17:** the set the owner
+  liked best is VClouds' (CC BY-NC-SA 3.0, non-commercial, which a GPL OS can't
+  ship without the artist's permission); the owner asked, and **VClouds agreed on
+  2026-10-16** to its use in RetroPane with credit. His icons are the default pack
+  ([../../assets/weather/vclouds/README.md](../../assets/weather/vclouds/README.md),
+  [weather.md](weather.md)). The alternatives checked earlier, not needed now: KDE's
+  Oxygen (LGPL-3), MerlinTheRed's plain set (CC BY-SA), the Xfce "liquid" set
+  (licence unclear, avoid).
 
 ## A PDA, proudly (owner, 2026-10-12)
 
@@ -99,7 +103,7 @@ Explorer (SD · CF), Inbox, Browser, Programs, Settings.
 The look the owner chose: smoked glass over a wallpaper, "a good mix of retro and modern".
 
 - **Smoked glass on a wallpaper the owner chooses.** Panels are dark, translucent glass. The gradient runs from near-black on the left to a lit grey on the right. Each panel has a 1 px bright edge, an almost square corner (3 px) and a soft gloss. A thin vertical light streak sits on one edge, and there is a faint reflection under the bottom row. Everything floats over a full-screen photo.
-- **Wallpapers.** We ship a few that suit glass: dramatic, moody photography with dark areas where the panels sit, such as a black-and-white pier, a mountain lake, a city at night or an aurora. Users can pick their own picture from SD or CF. Settings will offer glass darkness and dimming the wallpaper at night. Any wallpaper we ship must be our own or CC0/public-domain and recorded in the licence list.
+- **Wallpapers.** We ship a few that suit glass: dramatic, moody photography with dark areas where the panels sit, such as mountain lakes and canyons at sunset, an aurora, fog, a black-and-white lake (the approved list is under "Wallpaper provenance"). Users can pick their own picture from SD or CF. Settings will offer glass darkness and dimming the wallpaper at night. Any wallpaper we ship must be our own or CC0/public-domain and recorded in the licence list.
 - **Type.** Thin geometric sans, big light numerals (`18°`) and spaced capitals for labels and dates (`MON 12`, `OCTOBER`). Century Gothic is Monotype's and is never shipped. The concepts use Didact Gothic (SIL OFL) as an open stand-in.
 - **Icons break out of their frames.** Weather icons are large and overhang the top edge of their glass tile.
 - **The WM structure stays.** The title bar has Start at the top left and status at the right. The Start menu is a glass panel dropping from Start. Softkeys sit at the bottom.
@@ -116,10 +120,11 @@ The look the owner chose: smoked glass over a wallpaper, "a good mix of retro an
 | City at night | `File:Long Exposure Photography of City Buildings.jpg` | CC0 |
 | Aurora | `File:Night landscape northern lights scenic aurora borealis.jpg` | Public domain |
 
-**Goal (owner, 2026-10-13): at least 10 approved wallpapers ship.** The four
-above are approved; six more are to be found under the same rule (our own,
-CC0 or public domain, recorded with their Commons file and licence here),
-suited to glass (dark areas where the panels sit), and put to the owner.
+**Goal (owner, 2026-10-13): at least 10 approved wallpapers ship. Met 2026-10-17:**
+the owner approved 15 from 47 candidates (the table under "Wallpaper provenance"
+supersedes the four above, of which only the lake is still in use as a built-in
+default candidate). Two of the 15 still need a source check. The rule stays: our
+own, CC0 or public domain, recorded with their Commons file and licence.
 **Where they live (owner, 2026-10-13):** the ten ship as a wallpaper pack
 on the SD card (ADR-0018); the base system carries just one default, so
 the OS stays small. Sizes for scale: one 480 x 640 wallpaper is 450 KB
@@ -189,7 +194,8 @@ it's mostly static, which changes the cost completely:
 
 ## Third-party art ships as a pack, never in the base
 
-Licensed third-party content (an artist's icon set, if the artist agrees)
+Licensed third-party content (an artist's icon set, if the artist agrees; the
+two exceptions below)
 ships as a separate, signed, optional pack (ADR-0018), never in the base
 image. The base keeps its own complete look (original icons in this
 style), so a "no", a withdrawn permission or a licence change removes
@@ -198,6 +204,15 @@ permission text inside it. Permission asked for in writing must name
 the scope: distributing the icons in a free pack alongside the OS, and
 converting them for the device (resizing, cropping, colour conversion).
 The CC0 / public-domain wallpapers need no permission.
+
+**Exception (owner, 2026-10-17): the default weather icons** by VClouds
+are in the base system, not a pack: he gave permission for RetroPane with
+credit (deviantart.com/vclouds, in the About screen and beside the files),
+on his terms, kept apart from the code's licence, for non-commercial use.
+The cost is the same as the card icons': if he withdrew permission or the
+terms changed, the next release would swap the default for one of the
+owner's own packs, and anyone selling RetroPane or a device with it asks him
+first ([assets/weather/vclouds/README.md](../../assets/weather/vclouds/README.md)).
 
 **Exception (owner, 2026-10-14): the SD and CF card icons** by Juanje
 (puntodepartida.com) are in the base system, not a pack: the author gave

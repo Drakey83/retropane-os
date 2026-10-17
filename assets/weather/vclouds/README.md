@@ -35,8 +35,7 @@ outside RetroPane is not covered either.
 ## What is here
 
 The 22 pictures of the pack format ([weather.md](../../../docs/design/weather.md)),
-each an unchanged picture from his *VClouds Weather 2* download (175 x 120
-pixels, transparent), and the eight moon-phase pictures in `moon/` (110 x 110).
+each an unchanged picture from his downloads (175 x 120 pixels, transparent): all from *VClouds Weather 2*, except the two night icons (`02`, `04`), which come from his plain icon download because Weather 2's versions leave the moon out for the skin to draw; and the eight moon-phase pictures in `moon/` (110 x 110).
 His set follows the Yahoo weather condition codes (0 to 47); the files below
 are the ones that stand for each RetroPane icon:
 

@@ -20,8 +20,8 @@ The look is in [ui.md](ui.md) ("Weather and icons", "The smoked-glass design lan
   weather icons** (owner, 2026-10-17), used with his permission and credited
   to him on the About screen and beside the files
   ([assets/weather/vclouds/](../../assets/weather/vclouds/README.md)).
-- **Six more packs**, the owner's own (Sunburst, Golden Hour, Frosted, Noir,
-  Aurora, Chrome), install onto the SD or CF card when one is present,
+- **Five more packs**, the owner's own (Golden Hour, Frosted, Noir, Aurora,
+  Chrome), install onto the SD or CF card when one is present,
   from the expansion pack ([ADR-0018](../adr/0018-optional-packs.md),
   [apps-and-packs.md](apps-and-packs.md) §5). With no card, the one
   built-in pack is the only option.
@@ -74,24 +74,28 @@ Open: the exact code-to-file mapping (some codes, such as 3 split into
 cloudy and overcast, depend on extra data like cloud cover), and whether a
 pack may leave optional icons out (night variants falling back to day).
 
-## Mock-ups (Sunburst pack, 2026-10-16)
+## Mock-ups (2026-10-17)
 
-The first pack, "Sunburst" (22 icons, made by the owner), on the
-Today screen. Credits and licences: [mockups/README.md](mockups/README.md).
+The Today screen with the default pack, VClouds' icons. Credits and licences:
+[mockups/README.md](mockups/README.md).
 
 <table>
 <tr>
-<td><img src="mockups/today-lake-clear.jpg" width="320" alt="Today screen, clear sky over a mountain lake"></td>
-<td><img src="mockups/today-lake-heavy-rain.jpg" width="320" alt="Today screen, heavy rain over a mountain lake"></td>
+<td><img src="mockups/today-clear.jpg" width="320" alt="Today screen, clear sky"></td>
+<td><img src="mockups/today-heavy-rain.jpg" width="320" alt="Today screen, heavy rain"></td>
 </tr>
 <tr>
 <td><img src="mockups/today-night-clear.jpg" width="320" alt="Today screen, clear night"></td>
-<td><img src="mockups/today-dusk-thunderstorm.jpg" width="320" alt="Today screen, thunderstorm at dusk"></td>
+<td><img src="mockups/today-thunderstorm.jpg" width="320" alt="Today screen, thunderstorm"></td>
 </tr>
 </table>
 
-<img src="mockups/sunburst-icons.jpg" width="720" alt="All 22 Sunburst icons at full size, 96 px and 48 px">
+<img src="mockups/vclouds-icons.jpg" width="720" alt="The 22 VClouds icons the Today screen uses, at their own size, 96 px and 48 px">
+
+The five optional packs (made by the owner), six icons each:
+
+<img src="mockups/optional-packs.jpg" width="720" alt="The five optional icon packs: Golden Hour, Frosted, Noir, Aurora and Chrome, six icons each">
 
 What the mock-ups showed: the icons keep real transparency and clean edges on
-any wallpaper, and the sun, moon and clouds stay recognizable at 48 px;
-drizzle (08) is the faintest on a bright background.
+any wallpaper, and the sun, clouds and moon stay recognizable at 48 px; the fog
+and clear-night icons (07, 02) are the faintest on a bright wallpaper.

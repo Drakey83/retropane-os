@@ -187,9 +187,8 @@ open source and speak simple, documented web APIs.
 - **Download for offline.** Audiobooks and albums can be copied to the card ahead
   of time (over Wi-Fi at home, or from the PC), then play with Wi-Fi off, which
   also saves battery.
-- **Reaching the server away from home** needs the server's own remote access or
-  a VPN; WireGuard is cheap enough for this CPU and is the candidate. At first
-  the library is reached on the home network.
+- **Reaching the server away from home** is §7c (Tailscale). At first the library
+  is reached on the home network.
 - The same rules as above apply: tokens in the encrypted store, TLS, the smallest
   permission, one switch removes a library and its cache.
 
@@ -214,6 +213,42 @@ loses local events. Contacts stay out (RetroPane is not a phone).
 
 Other apps follow the same pattern later (Tasks, Reader feeds, weather
 providers); each gets its own line here when picked up.
+
+## 7c. Away from home: Tailscale (owner, 2026-10-17)
+
+The owner uses Tailscale all the time and wants it for reaching the home
+libraries and servers (§7b) when out. This is a plan for a vote, not built;
+it needs the Wi-Fi, TCP/IP and TLS work of Phase 6 first.
+
+Tailscale is built on WireGuard. Its official client is open source (written
+in Go, too heavy for 64 MB of RAM); the service that hands out keys and the map
+of your devices is Tailscale's own (Headscale is an open-source stand-in for
+it). Three ways for the X51v to use it, smallest first:
+
+| Way | What it is | Pros | Cons |
+|---|---|---|---|
+| A. A gateway at home | A machine on the tailnet makes the library reachable over ordinary HTTPS (Tailscale's Funnel gives a public address with a real certificate); the device needs only TLS | No VPN code on the device at all; works the day networking lands | Funnel puts the service on the public internet, guarded only by the server's own login; so it is opt-in, and the library must be set up with strong passwords |
+| B. WireGuard to a gateway | The device is a plain WireGuard peer of a home machine that is also on the tailnet and passes traffic through | Small code (the WireGuard pieces are well specified), no Tailscale account logic on the device | The device is not a tailnet member: no per-device rules, names or revoking from the Tailscale console; keys are set by hand |
+| C. A real tailnet node | RetroPane's own client in Rust: registers with the control service, keeps the device map, talks through Tailscale's relay servers over HTTPS (no router tricks needed), and carries WireGuard inside | The proper answer: the device appears in your tailnet, gets a name, can be limited by access rules and revoked from the console | The most work: the control protocol, the relay protocol, WireGuard and a TCP/IP stack; Tailscale's terms for third-party clients to be checked first, with Headscale as the fallback |
+
+**Recommendation: C, built as an operating-system service** (the owner's
+word: "a service"), so every app benefits, not only the media ones: media
+servers, NAS shares, calendar sync, remote desktop. Stages: **T1** use A
+until the service exists; **T2** the service, relay-only (always works, speed
+is limited by the 802.11b link anyway), signing in with a **tagged,
+expiring auth key** the owner creates; **T3** direct paths between devices
+later if the relay is too slow. It ships as a pack (§5, §7b), loaded when a
+connection is wanted, not always on, to save battery and RAM. Sizes (the
+crypto is a few tens of KB, the netmap is read as a stream) are to be
+measured, not guessed.
+
+**Security rules specific to this** ([security.md](../security.md)):
+the device's key lives in the encrypted store; the auth key is tagged so the
+access rules let the device reach **only** the media server and nothing else
+on the tailnet; the node is "ephemeral", so a lost device drops out by itself,
+and can be removed from the Tailscale console at any time; the device is never
+an exit node or a subnet router; every packet the service parses is treated as
+hostile input and fuzzed.
 
 ## 8. More ideas to modernize
 

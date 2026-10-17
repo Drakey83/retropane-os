@@ -29,7 +29,7 @@ the video plane. It is the right frame; it lacks the weather look.
    placeholder in place of each icon. Host tests for layout and hit targets;
    `emu-today` pixel check. No new data format.
 2. **T2, icons from the card.** One icon format, a pack folder on the card, the
-   shell loads the six icons the screen shows. First pack: Sunburst.
+   shell loads the six icons the screen shows. First pack: VClouds' icons (assets/weather/vclouds).
 3. **T3, wallpaper from the card.** Same idea for the picture in the video
    plane; falls back to the built-in wallpaper when the card is missing.
 4. **T4, a choice.** Settings page: pick the wallpaper and the icon pack; the

@@ -30,9 +30,10 @@ and icon packs are swappable from the SD or CF card.
 
 > **Status: Phase 2 (kernel).** No usable OS yet. RetroPane boots on the real
 > X51v from the SD card, and a resident loader takes new builds over USB.
-> The display, SD and SDHC cards (32 GB tested) and USB work on the device; CompactFlash,
-> audio, keys, touch and the backlight work in the emulator, with device runs
-> next. The kernel runs processes with protected memory, demand paging,
+> The display, SD and SDHC cards (32 GB tested), CompactFlash (as the PC's
+> second drive), USB, touch and the backlight work on the device; audio and
+> keys work in the emulator, with device runs next. The kernel runs processes
+> with protected memory, demand paging,
 > compressed RAM and fast message passing in the emulator. See the
 > [roadmap](docs/ROADMAP.md).
 
