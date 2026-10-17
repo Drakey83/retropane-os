@@ -32,7 +32,7 @@ plan is in [../weather.md](../weather.md).
   McDonald Lake, Glacier National Park 19 (Ansel Adams, National Park Service mural project, National Archives);
   Aurora over the boreal forest (NPS Photo / Tim Rains);
   San Rafael Swell and Canyon, Wedgepanel (BLMUtah);
-  Storm clouds over Lost Horse Valley (Joshua Tree National Park).
+  Morning Reflections at Lake McDonald (GlacierNPS, National Park Service).
 - **Optional icon packs (`optional-packs.jpg`):** Golden Hour, Frosted, Noir, Aurora
   and Chrome, made by the project owner. Design mock-up only; the licence under
   which they would ship is still to be decided ([../weather.md](../weather.md)).

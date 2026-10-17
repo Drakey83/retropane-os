@@ -121,9 +121,9 @@ The look the owner chose: smoked glass over a wallpaper, "a good mix of retro an
 | Aurora | `File:Night landscape northern lights scenic aurora borealis.jpg` | Public domain |
 
 **Goal (owner, 2026-10-13): at least 10 approved wallpapers ship. Met 2026-10-17:**
-the owner approved 15 from 47 candidates (the table under "Wallpaper provenance"
+the owner approved 15 from 47 candidates and then cut them to ten (the table under "Wallpaper provenance"
 supersedes the four above, of which only the lake is still in use as a built-in
-default candidate). Two of the 15 still need a source check. The rule stays: our
+default candidate). All ten are fully licensed. The rule stays: our
 own, CC0 or public domain, recorded with their Commons file and licence.
 **Where they live (owner, 2026-10-13):** the ten ship as a wallpaper pack
 on the SD card (ADR-0018); the base system carries just one default, so
@@ -232,33 +232,34 @@ the label alone. Nothing ships until its row says **ship**.
 | Pier, black and white | Christopher Sardegna, Unsplash `uDUiRS8YroY`, 2013 | CC0 on Unsplash in 2013. **Checked 2026-10-17:** the Internet Archive holds copies of its Unsplash page from 2016-10-20 and 2017-05-04, both before Unsplash's June 2017 licence change, so the photo was published under CC0 (Commons' own Wayback copy is from July 2017, which alone would not prove it) | **ship** (keep the two archive dates with the pack) |
 | Aurora | The Commons file credited to Rich and Rose Primmer via a wallpaper site | Rests on that site's claim, not a government source | **dropped 2026-10-17**, replaced by the NPS aurora photos below (federal employees' work, public domain) |
 
-**Approved by the owner (2026-10-17), from 47 candidates; numbers are those of the picture
-sheets** (the pier, the lake and the others not listed were not picked, though the
-lake still ships as the built-in wallpaper). Checked through Commons' own records:
+**Approved by the owner (2026-10-17), from 47 candidates, then cut to ten (2026-10-17, owner):**
+numbers are those of the picture sheets. Everything not fully licensed was
+dropped (#13, imported from 500px with an unconfirmed CC0 label) and then the
+weakest, until ten were left (#10, #16, #44 and #46: a saturated green forest,
+a flat fog, dull storm clouds, a vivid orange sunset). The pier and the lake
+were not picked either, though the lake photo still ships as the built-in
+wallpaper candidate. Checked through Commons' own records:
 
 | # | Commons file | Author and basis | Status |
 |---|---|---|---|
 | 4 | `File:Aurora over the boreal forest (57be20e1-a3cf-453e-9632-2d38df39b643).jpg` | NPS Photo / Tim Rains: public domain (federal agency work) | **approved** |
 | 5 | `File:The Milky Way spans the night sky above a bright orange-yellow airglow (iss073e0982679).jpg` | NASA Johnson Space Center: public domain (federal agency work) | **approved** |
 | 7 | `File:Morning light on Electric Peak.jpg` | Jacob W. Frank: public domain (federal agency work) | **approved** |
-| 10 | `File:Forest sunrise.jpg` | Peter Heeling: CC0 as the uploader declares | **approved**; the file was reviewed by a Commons licence reviewer on 2018-08-18 (CC0, posted as "Foggy forest" by Peter Heeling, 2015) |
-| 13 | `File:Foggy Forest (256920249).jpeg` | Phos4: CC0 as the uploader declares | approved, **verify**: imported from 500px and labelled CC0; the licence could not be confirmed, so replace it if it cannot be |
-| 16 | `File:Clouds and fog over Lost Horse Valley (50863680453).jpg` | Joshua Tree National Park: public domain (federal agency work) | **approved** |
 | 18 | `File:Crooked River and Chimney Rock at Sunset (25903316784).jpg` | Bureau of Land Management Oregon and Washingto: public domain (federal agency work) | **approved** |
 | 23 | `File:San Rafael Swell and Canyon - Wedgepanel (27079938169).jpg` | BLMUtah: public domain (federal agency work) | **approved** |
 | 29 | `File:McDonald Lake, Glacier National Park 19.jpg` | Ansel Adams: public domain (federal agency work) | **approved** (Ansel Adams, National Park Service mural project) |
 | 37 | `File:Morning Reflections at Lake McDonald (18750990873).jpg` | GlacierNPS: public domain (federal agency work) | **approved** |
 | 39 | `File:Two Medicine Lake Reflections (20499664708).jpg` | GlacierNPS: public domain (federal agency work) | **approved** |
 | 42 | `File:Sunset reflection on Lower Twin Lake (46171178422).jpg` | BLM Oregon & Washington: public domain (federal agency work) | **approved** |
-| 44 | `File:Storm clouds over Lost Horse Valley (50578197936).jpg` | Joshua Tree National Park: public domain (federal agency work) | **approved** |
 | 45 | `File:The Delong Mountains are reflected in the clear, clean water of Desperation Lake in the northern part of Noatak National (936b4940-1dd8-b71c-070e-3b979ec0a573).jpg` | NPS Photo: public domain (federal agency work) | **approved** |
-| 46 | `File:-conservationlands15 Social Media Takeover, Oct 15th, Top 15 Bucket List Adventures (21586256194).jpg` | mypubliclands: public domain (federal agency work) | **approved** |
 
-That is 15 against the goal of ten. Each is cropped to 3:4 from an original that
-is at least 1600 pixels wide, so none looks soft. The owner's taste, from three
-reference pictures: photographic and cinematic, real depth and leading lines,
-dramatic skies, warm earth tones against dark reflective water, black and white,
-soft bokeh; less saturated than the first batch.
+That is the ten (goal met). Each is cropped to 3:4 from an original at least 1600
+pixels wide, so none looks soft. The owner's taste, from three reference pictures:
+photographic and cinematic, real depth and leading lines, dramatic skies, warm earth
+tones against dark reflective water, black and white, soft bokeh; less saturated than
+the first batch. Note: #5 is a NASA space photograph and #29 is Ansel Adams for the
+National Park Service (National Archives); the rest are National Park Service, Bureau of
+Land Management and similar federal photographs.
 
 Each pack carries this table for its files (author, source link, licence
 basis, date checked) as its provenance note.
