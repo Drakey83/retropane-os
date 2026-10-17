@@ -261,6 +261,15 @@ sensor reads colour about right, perhaps a few hundred kelvin cool with the
 white-LED correction. **The Axim's 13,500 K is real: its white is very blue**
 (aged white LEDs), not a sensor error.
 
+**Run 3 (2026-10-17, sensor centred, the Axim and sensor wrapped in a thick
+blanket):** every patch within 1.4% of run 2, most within 0.5%; white
+40.7 cd/m2, black 1.44, 28:1, about 13,240 K. **The measurement repeats.**
+The backlight-off reading (0.448, run 2: 0.442) didn't change with the
+better wrap, so it is not room light: the sensor's floor or the panel's own
+faint glow with the backlight off. Open: which (a reading with the sensor
+face down on something opaque settles it; it moves black and contrast by
+about a third, nothing else).
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made
