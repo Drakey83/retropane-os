@@ -152,6 +152,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-display-cal"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-keypad",
+ "rp-drv-pxa-ssp",
+ "rp-drv-tsc2046",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-display-host"
 version = "0.0.0"
 dependencies = [
@@ -829,6 +844,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "rp-crypto",
+ "rp-display-cal",
  "rp-draw",
  "rp-drv-mbx-display",
  "rp-fat",

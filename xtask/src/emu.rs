@@ -922,6 +922,135 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The display calibration test image (C1, docs/design/display-calibration.md)
+/// under the loader: its picture is pixel-exact below the caption through
+/// each gamma table it sets (the emulator's 2700G applies the table at
+/// scan-out, Windows Mobile's grey ramp at reset): Stock, then D-pad right
+/// (Shadows 5), up (Shadows 6), centre (A/B: Stock shown), a tap (Contrast
+/// 5), and Home puts everything back and returns.
+pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
+    use rp_display_cal::{CAPTION_H, Curve, H, W, pixel, table};
+    use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-display-cal.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-display-cal"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let shot = root.join("target/emulator/display-cal-screen.ppm");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    // The picture below the caption, through `t`.
+    let want = |t: &[u32; GAMMA_ENTRIES]| -> Vec<u8> {
+        let mut v = Vec::with_capacity((W * (H - CAPTION_H) * 3) as usize);
+        for y in CAPTION_H..H {
+            for x in 0..W {
+                let (r, g, b) = pixel(x, y);
+                v.extend_from_slice(&[gamma(t, r, 16), gamma(t, g, 8), gamma(t, b, 0)]);
+            }
+        }
+        v
+    };
+    let until = |name: &str, t: &[u32; GAMMA_ENTRIES]| -> Result<(), String> {
+        let want = want(t);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let _ = std::fs::remove_file(&shot);
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            mon.screendump(&guest, &shot)?;
+            let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+            let mut differ = usize::MAX;
+            if img.width >= W && img.height >= H {
+                let mut got = Vec::with_capacity(want.len());
+                for y in CAPTION_H..H {
+                    let o = ((y * img.width) * 3) as usize;
+                    got.extend_from_slice(&img.rgb[o..o + (W * 3) as usize]);
+                }
+                differ = got
+                    .chunks(3)
+                    .zip(want.chunks(3))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if differ == 0 {
+                    return Ok(());
+                }
+            }
+            if Instant::now() > deadline {
+                let _ = std::fs::copy(
+                    &shot,
+                    root.join(format!("target/emulator/display-cal-{name}.ppm")),
+                );
+                return Err(format!(
+                    "display-cal: the {name} screen differs from the reference in {differ} pixels (target/emulator/display-cal-{name}.ppm)"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    };
+    let check = || -> Result<(), String> {
+        until("stock", &WM_GAMMA)?;
+        let key = |k: &str| -> Result<(), String> {
+            // Held 200 ms, answered before the connection closes.
+            crate::screen::Monitor::connect(monitor_port())?.query(&format!("sendkey {k} 200"))?;
+            Ok(())
+        };
+        key("right")?;
+        until("shadows-5", &table(Curve::Shadows, 5, &WM_GAMMA))?;
+        key("up")?;
+        until("shadows-6", &table(Curve::Shadows, 6, &WM_GAMMA))?;
+        key("ret")?;
+        until("ab-stock", &WM_GAMMA)?;
+        let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
+        touch(&mut qmp, &Action::TouchDown(240, 500))?;
+        std::thread::sleep(Duration::from_millis(300));
+        touch(&mut qmp, &Action::TouchUp)?;
+        until("contrast-5", &table(Curve::Contrast, 5, &WM_GAMMA))?;
+        key("f4")
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("display-cal: no run log after the image returned")?;
+    for want in [
+        "gamma: off, switched on",
+        ": Shadows 5",
+        ": Shadows 6",
+        "Shadows 6 (B: Stock shown)",
+        ": Contrast 5",
+        "done (Home) after 4 changes; last: Contrast 5",
+        "DISPLAY-CAL-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("display-cal: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!(
+        "    display-cal OK: the picture pixel-exact through Stock, Shadows 5 and 6, A/B Stock and Contrast 5 (keys and a tap); Home put back and returned"
+    );
+    Ok(())
+}
+
 /// The crash path: the loader starts an image that panics on purpose; the
 /// panic must come back to the loader (no watchdog reset), reach the PC as
 /// a crash report, and be kept on the card as `crashlog.txt`.

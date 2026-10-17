@@ -523,6 +523,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image: display calibration C1 (docs/design/display-calibration.md),
+    // the gamma table judged by eye. Set at its first build on 2026-10-17:
+    // 25.9 KiB measured, +~10%.
+    Budget {
+        image: "rp-display-cal",
+        max_load: 29 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
 ];
 
 /// The device's RAM (docs/memory-budget.md).

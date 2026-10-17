@@ -6,7 +6,8 @@ every game port avoid the downfalls that make the GLES games dark and
 muddy. The games' half is a standing rule already
 ([apps-and-packs.md](apps-and-packs.md) §6a): textures at 16 bits dithered
 or better, never 4 bits a channel, and a brightness curve per game. This
-page is the screen's half. **A plan: nothing below is built yet.**
+page is the screen's half. **C1 is built and checked in the emulator
+(2026-10-17); its device run is next. C2-C5 are not built yet.**
 
 ## What we control, and what we don't
 
@@ -34,6 +35,23 @@ wallpaper side by side was).
    contrast, warmer and cooler white; the D-pad changes the chosen one's
    strength. The log records each choice. Owner picks the system default
    and a "dark games" default. No risk.
+
+   **Built (2026-10-17): `boot/display-cal`, `cargo xtask load rp-display-cal`.**
+   The picture is drawn once into a 32 bpp plane, so a curve change touches
+   only the table: near-black 0-32 and near-white 224-255 in steps of 4 (one
+   step per level of the 18-bit panel), grey and R/G/B ramps, a gamma check
+   (squares that match 50% line pairs on panels of gamma 1.0, 1.5, 1.8, 2.2,
+   2.5 and 3.0), colour bars, and a dark corridor drawn from arithmetic with
+   a torch and a status bar. Curves: Stock (the table as found), Shadows,
+   Contrast (S-curve), Warm, Cool, each 0-10 and starting at 5. Each curve is
+   applied to the table as found, so Stock is exactly what Windows Mobile
+   left. Controls: tap or D-pad right/left for the next/previous curve, up/down
+   for strength, centre for A/B (the curve against Stock), Home when done.
+   Everything is put back as found; it returns by itself after 10 minutes
+   with no input. `cargo xtask emu-display-cal` checks the picture
+   pixel-exact through Stock, Shadows 5 and 6, A/B and Contrast 5, driven
+   by keys and a tap. A mutant (curve changes never reach the table) must
+   fail it. 25.9 KiB, budget 29 KiB.
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
@@ -50,7 +68,25 @@ wallpaper side by side was).
    contrast if C4 finds a knob), and each game's default curve (§6a).
 
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
-4-7). What can be done now: read DoomGLES's texture uploads (static, its
-`glTexImage2D` calls) to learn whether the game sends 4-bit data or Dell's
-driver made it 4-bit. If Dell's driver did, our own GLES driver fixes the
-closed games too, simply by keeping their textures at 16 or 32 bits.
+4-7). What could be done now was a static read of DoomGLES's texture
+uploads, to learn whether the game sends 4-bit data or Dell's driver made
+it 4-bit.
+
+**Result (2026-10-17, static read of the owner's DoomGLES.exe; Doom2GLES
+is the same program):** neither the game's code nor Dell's driver picks the
+depth. **The game's data files do.** Almost every texture comes from a
+pre-converted PowerVR `.pvr` file (`\OpenGLES\<game>\*.pvr`: per-level
+walls and flats, sprite pages, skies, fonts, `haze.pvr`). The game's built-in
+PVR loader reads each file's pixel-type field and passes the matching
+format straight to `glTexImage2D`: 4444, 5551, 565, 8888, luminance, or
+PVRTC through `glCompressedTexImage2D`. It uploads every mip level the file
+holds. Only one 128 x 128 texture (likely the haze/corona) is built by the
+game itself, as 8-bit RGBA. There is no `glTexSubImage2D` and no palette
+path (it checks for paletted textures and reports them unsupported).
+Confidence: *confirmed* for the code path; *likely, not confirmed* that the
+files are 4444. Next check: byte 0x10 of any `.pvr` header on the card
+(0x10 = RGBA4444). If they are 4444, our own driver alone won't fix
+DoomGLES. Converting the textures again from the WADs at 565/8888 would
+(the native port does that anyway). Closed games must be checked one by
+one: those that ship 4444 data stay 4444 whatever the driver does. The
+game's only picture setting is `usegamma` 0-4 in `doomgles.cfg`.

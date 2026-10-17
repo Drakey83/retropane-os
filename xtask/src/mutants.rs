@@ -506,6 +506,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_nightlight),
     },
     Mutant {
+        name: "display cal: a curve change never reaches the gamma table (every curve looks like Stock)",
+        file: "boot/display-cal/src/main.rs",
+        from: "            write_gamma(display.regs(), &t);",
+        to: "            write_gamma(display.regs(), &found);",
+        check: Check::Emu(crate::emu::boot_loader_display_cal),
+    },
+    Mutant {
         name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
         file: "boot/loader/src/main.rs",
         from: "                        devices::log_mark_handover();",

@@ -1,0 +1,25 @@
+[package]
+name = "rp-display-cal"
+description = "Display calibration test image (C1) for the real X51v: test patterns in 32 bpp under gamma-table curves the owner flips between and judges by eye"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Also on the host: the emulator check builds its reference picture from it.
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
+
+[lints]
+workspace = true

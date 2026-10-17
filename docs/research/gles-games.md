@@ -35,7 +35,7 @@ git).
 | Virtual Pool Mobile | closed | installed build is v1.78, **software rendered** (GAPI, no GLES); the GLES build v1.29 is a CAB on the owner's CF card, not installed | (v1.29) to read | |
 | Toy Golf | closed | owner looking for it | to read | |
 | Quake Mobile | Quake engine (GPL) | installer only on the card, not installed | to read | |
-| DoomGLES, Doom2GLES, HereticGLES (Kokak) | open engines (GPL) | installed on the card | `libGLES_CL.dll`, 59 each | native ports planned (brightness control first) |
+| DoomGLES, Doom2GLES, HereticGLES (Kokak) | open engines (GPL) | installed on the card | `libGLES_CL.dll`, 59 each | native ports planned (brightness control first)  Textures come from `.pvr` files whose header picks the format (4444 likely): see design/display-calibration.md, Games |
 | Quake III Arena (Q3CE) | open engine (GPL) | installed on the card | `libGLES_CL.dll`, 57 | its own `libGLES_CM_NoE.dll` (+ `libEGL.dll`) looks like a software fallback (it imports JIT helpers: `eglAllocExecutable`...); on the 2700G Q3CE uses Intel's DLL. Native port planned |
 | Pocket Cube (Cube engine) | open engine | installed on the card | `libGLES_CL.dll`: game and server 35 each, its SDL port 14 (EGL) | |
 
