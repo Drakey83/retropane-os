@@ -225,9 +225,18 @@ and 60.5 Hz at `0xFC5`** (2 s counts: half a hertz per frame counted), the PLL
 locked at once each time, **no under/overrun bits at 32 bpp** at either
 clock, put back to `0xEC5` on Home. Owner: "60 Hz ran well", nothing wrong
 seen. **Result: the panel runs at its typical clock and 60 Hz with no
-faults.** Proposed: RetroPane sets `0xFC5` when it takes the display (only
-from Windows Mobile's `0xEC5`), so every screen runs at 60 Hz; `X51V_VGA`'s
-pixel clock becomes 25.1875 MHz.
+faults.** **Decided (owner): 60 Hz is RetroPane's default.** Built:
+`Display::adopt` (every image's and the loader's takeover) calls
+`refresh_60`, which moves exactly Windows Mobile's `0xEC5` to `0xFC5` and
+leaves any other value alone (`pll::WM`, `pll::SIXTY` in rp-drv-mbx-display;
+host test). Windows Mobile's own boot sets its clock again, so going back to
+it is untouched. The loader shows 60 Hz once reinstalled on the card; images
+already do. Still to do before it's final: a long run under a heavy 3D load
+(the renderer's benchmark at 56 and 60 Hz: the scan-out takes 7% more memory
+time) and a sleep/wake; and a **56 Hz compatibility switch per legacy
+program**, for a game that times itself by the refresh (DirectDraw's
+vertical-blank wait). For the flash-installed OS (no Windows Mobile boot to
+set the PLL), RetroPane programs `0xFC5` itself.
 
 ## Measured with a colorimeter (2026-10-17)
 

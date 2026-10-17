@@ -64,6 +64,24 @@ pub mod reg {
     pub const DINTRE: usize = 0x217C;
     /// The current scan line (bits 0-11).
     pub const DVLNUM: usize = 0x2308;
+    /// The display PLL: `13 MHz x M / (N x 2^P)`, M bits 12-7, N 6-4, P
+    /// 3-1, bit 0 enable (mbxfb; docs/hw/2700g.md S26c).
+    pub const DISPPLL: usize = 0x03C;
+    /// PLL status: bit 0 the display PLL locked.
+    pub const PLLSTAT: usize = 0x040;
+}
+
+/// The display PLL settings RetroPane knows (display calibration C3,
+/// docs/design/display-calibration.md).
+pub mod pll {
+    /// Windows Mobile's: M 29, N 4, P 2 = 23.5625 MHz, 56.4 Hz on the X51v
+    /// (under the Sharp panel's 24.0-26.3 MHz).
+    pub const WM: u32 = 0xEC5;
+    /// RetroPane's: M 31 = 25.1875 MHz, the panel's typical clock, 60.3 Hz
+    /// (device-proven 2026-10-17 with `rp-refresh`: no under/overrun at 32
+    /// bpp). A 56 Hz compatibility switch per legacy program is planned for
+    /// a game that times itself by the refresh.
+    pub const SIXTY: u32 = 0xFC5;
 }
 
 /// `DINTRS`/`DINTRE` bits (mbxfb's names; measured on the X51v 2026-10-14).
@@ -329,6 +347,7 @@ impl<B: RegisterBus> Display<B> {
     /// blend mode a previous program left on would cover the screen.
     /// Also says whether the plane was kept (`true`) or set up anew.
     pub fn adopt(&mut self, vram_size: usize) -> (Plane, bool) {
+        self.refresh_60();
         if let Some(p) = self.scanned_out(vram_size) {
             layers::solo(&mut self.regs);
             (p, true)
@@ -337,6 +356,24 @@ impl<B: RegisterBus> Display<B> {
             self.enable(&X51V_VGA, &p);
             (p, false)
         }
+    }
+
+    /// Moves the display from Windows Mobile's 56 Hz pixel clock to the
+    /// panel's typical one, 60 Hz ([`pll::SIXTY`]), and waits for the PLL's
+    /// lock (at once on the device; bounded). Only from exactly
+    /// [`pll::WM`]: any other value (a cold 2700G, a setting this code
+    /// doesn't know) is left alone. Says whether it switched.
+    pub fn refresh_60(&mut self) -> bool {
+        if self.regs.read32(reg::DISPPLL) != pll::WM {
+            return false;
+        }
+        self.regs.write32(reg::DISPPLL, pll::SIXTY);
+        for _ in 0..10_000 {
+            if self.regs.read32(reg::PLLSTAT) & 1 != 0 {
+                break;
+            }
+        }
+        true
     }
 
     /// The 480 × 640 RGB565 plane scanning out now, if any: the plane
@@ -677,6 +714,26 @@ mod tests {
         assert!(!kept);
         assert_eq!(p, Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565));
         assert_eq!(d.into_inner().value(layers::reg::VSCADR) >> 31, 0);
+    }
+
+    #[test]
+    fn adopt_moves_windows_mobiles_clock_to_60_hz_and_nothing_else() {
+        let mut bus = MockBus::new();
+        bus.preset(reg::DISPPLL, pll::WM);
+        bus.preset(reg::PLLSTAT, 7);
+        let mut d = Display::new(bus);
+        let _ = d.adopt(16 << 20);
+        assert_eq!(d.into_inner().value(reg::DISPPLL), pll::SIXTY);
+        // Any other value stays: a cold chip, or a setting not known here.
+        for other in [0, 0xEC4, 0xBB1, pll::SIXTY] {
+            let mut bus = MockBus::new();
+            bus.preset(reg::DISPPLL, other);
+            let mut d = Display::new(bus);
+            assert!(!d.refresh_60());
+            let bus = d.into_inner();
+            assert_eq!(bus.value(reg::DISPPLL), other);
+            assert!(!bus.writes().iter().any(|w| w.0 == reg::DISPPLL));
+        }
     }
 
     #[test]

@@ -194,9 +194,14 @@ mod image {
             halt()
         };
         let mut display = Display::new(regs);
-        let _ = display.adopt(MBX_VRAM_SIZE as usize);
-        let before = Snapshot::take(display.regs());
+        // Before the takeover: `adopt` moves Windows Mobile's clock to 60 Hz.
         let found = display.regs().read32(DISPPLL);
+        let _ = display.adopt(MBX_VRAM_SIZE as usize);
+        // The test starts at Dell's clock again, as found.
+        if found == WM_DISPPLL {
+            display.regs().write32(DISPPLL, found);
+        }
+        let before = Snapshot::take(display.regs());
         let _ = writeln!(
             RunLog,
             "DISPPLL found {found:03X} ({:?} kHz), PLLSTAT {:X}",
