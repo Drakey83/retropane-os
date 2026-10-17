@@ -80,6 +80,16 @@ wallpaper side by side was).
    yellow while A/B shows Stock. emu-display-cal: pixel-exact through
    Stock, Shadows 5/6, A/B, Highlights 5. 27.6 KB. Then settle the system
    default (C5).
+
+   **Device run 3 (2026-10-17, owner watching, 181 changes, Home, all put
+   back):** Highlights barely helps: at 10, 3-4 of the 9 near-white
+   squares are barely told apart. That is about the arithmetic limit: the
+   squares are one 18-bit panel level apart (steps of 4), and squeezing
+   224-255 into 186-203 leaves about 4 panel levels for 9 squares.
+   Squeezing can't add levels. **Shadows+Highlights looks best at 10, the
+   strongest setting**, so the range should go further. Owner: Part 1
+   "needs a bigger change" to judge. Next: wider-step near-white squares
+   (where does white stop getting brighter?) and strengths past 10.
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
