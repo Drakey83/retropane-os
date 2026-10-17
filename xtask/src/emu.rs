@@ -1171,6 +1171,74 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The refresh-rate test (display calibration C3) under the loader. The
+/// emulator's display PLL reads 0, not Windows Mobile's value, so the image
+/// must refuse to switch and only measure: the emulated frame is fixed at
+/// the device's 56.46 Hz (the PLL isn't modelled, docs/hw/emulator.md), and
+/// the counted rate must come out within 1 Hz of it, twice (at the start,
+/// then after D-pad centre); Home puts everything back.
+pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-refresh.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-refresh"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let check = || -> Result<(), String> {
+        let key = |k: &str| -> Result<(), String> {
+            crate::screen::Monitor::connect(monitor_port())?.query(&format!("sendkey {k} 200"))?;
+            Ok(())
+        };
+        // The first measurement (2 s), then a switch press and its 2 s.
+        std::thread::sleep(Duration::from_secs(5));
+        key("ret")?;
+        std::thread::sleep(Duration::from_secs(5));
+        key("f4")
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("refresh: no run log after the image returned")?;
+    for want in ["no switch, measuring only", "done (Home)", "REFRESH-OK"] {
+        if !log.contains(want) {
+            return Err(format!("refresh: no {want:?} in the run log:{log}"));
+        }
+    }
+    let rates: Vec<u32> = log
+        .lines()
+        .filter_map(|l| l.split("clock: ").nth(1))
+        .filter_map(|r| r.split(' ').next()?.parse().ok())
+        .collect();
+    if rates.len() != 2 || rates.iter().any(|r| r.abs_diff(5646) > 100) {
+        return Err(format!(
+            "refresh: want two rates within 1 Hz of 56.46 Hz, got {rates:?} (centi-Hz):{log}"
+        ));
+    }
+    eprintln!(
+        "    refresh OK: no PLL switch without Windows Mobile's value; frames counted at {:?} centi-Hz (56.46 Hz modelled); Home put back and returned",
+        rates
+    );
+    Ok(())
+}
+
 /// The crash path: the loader starts an image that panics on purpose; the
 /// panic must come back to the loader (no watchdog reset), reach the PC as
 /// a crash report, and be kept on the card as `crashlog.txt`.

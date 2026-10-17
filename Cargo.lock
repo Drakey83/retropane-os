@@ -650,6 +650,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-refresh"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-screen-measure"
 version = "0.0.0"
 dependencies = [

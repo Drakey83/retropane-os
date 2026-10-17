@@ -1,0 +1,20 @@
+[package]
+name = "rp-refresh"
+description = "Refresh-rate test (display calibration C3) for the real X51v: frames counted at Windows Mobile's 56 Hz pixel clock and at the panel's typical 25.2 MHz (60 Hz), switched with the D-pad centre, owner watching"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+
+[lints]
+workspace = true

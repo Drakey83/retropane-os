@@ -197,6 +197,28 @@ wallpaper side by side was).
    backlight range, the Display settings design (brightness, warmth,
    contrast if C4 finds a knob), and each game's default curve (§6a).
 
+## C3, refresh at 60 Hz (2026-10-17)
+
+**Static check:** the display PLL (`DISPPLL`, `13 MHz x M / (N x 2^P)`) holds
+Windows Mobile's `0xEC5` = M 29, N 4, P 2 = **23.5625 MHz**, Dell's pixel
+clock, under the Sharp panel's 24.0-26.3 MHz (typical 25.2). With the X51v's
+frame (648 clocks a line, 645 lines, measured) that is **56.4 Hz** (56.46
+measured). Changing only M to 31 gives **25.1875 MHz, the panel's typical
+clock, and 60.3 Hz**; the PLL's internal frequency stays near Windows
+Mobile's (13 x 31 / 4 = 100.75 MHz against 94.25), the porches, syncs and
+frame size don't change.
+
+**`rp-refresh` (test image, 24.1 KiB, owner watching):** a 32 bpp picture with
+a bar moving one step a frame and a grey ramp; frames counted from VEVENT0
+over 2 s, the under/overrun bits recorded (the display running short of data
+at the faster clock, a risk at 32 bpp). D-pad centre switches between the two
+clocks (each switch waits for the PLL's lock and measures again); Home, or 3
+minutes idle, puts the PLL and display back. It changes the PLL only when it
+finds exactly `0xEC5`. Risk: a wrong clock shows a bad picture until Home.
+`emu-refresh` checks the refusal to switch from an unknown value (the
+fork's PLL reads 0) and the frame count; the PLL isn't modelled yet
+(docs/hw/emulator.md).
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings

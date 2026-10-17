@@ -45,6 +45,7 @@ members = [
     "boot/nightlight",
     "boot/display-cal",
     "boot/screen-measure",
+    "boot/refresh",
     "boot/cfdetect",
     "boot/tone",
     "boot/crash",

@@ -536,6 +536,14 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image: the refresh-rate test (display calibration C3). Set at
+    // its first build on 2026-10-17: 24.1 KiB measured, +~10%.
+    Budget {
+        image: "rp-refresh",
+        max_load: 27 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-display-cal",
         max_load: 32 * 1024,
