@@ -21,7 +21,7 @@ mod image {
     use rp_graphics::{Graphics, Step};
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::soc::irq;
-    use rp_hal_pxa27x::{cpu, rt};
+    use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_mbx_render::{Layout, LocalMem, Mbx2dRenderer};
@@ -75,6 +75,17 @@ mod image {
             cpu::drain_write_buffer();
         }
     }
+
+    // The image's long-lived objects, in `.bss` (counted by the build's
+    // budget) instead of `main`'s frame: as locals they made it 22 KiB deep
+    // and an older build overflowed its stack (2026-10-17).
+    static TWO_D: rt::Slot<Mbx2dRenderer<Mmio, Vram>> = rt::Slot::new();
+    static GFX: rt::Slot<Graphics<'static, Mmio, Vram>> = rt::Slot::new();
+    static SHELL: rt::Slot<Shell> = rt::Slot::new();
+    static FRAME: rt::Slot<Frame> = rt::Slot::new();
+    /// Touch to flush, then its parts: landing to verdict, frame + queueing,
+    /// queue to flip.
+    static LATENCY: rt::Slot<[Latency; 4]> = rt::Slot::new();
 
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
@@ -130,18 +141,23 @@ mod image {
         let before = Snapshot::take(d.regs());
 
         // ADR-0023: the 2D engine draws; no CPU layer in SDRAM.
-        let mut two_d = Mbx2dRenderer::new(
-            d.into_inner(),
-            Vram(vram),
-            Layout::X51V,
-            rt::ticks,
-            TICKS_MS,
-        );
+        let Some(two_d) = TWO_D.put_with(|| {
+            Mbx2dRenderer::new(
+                d.into_inner(),
+                Vram(vram),
+                Layout::X51V,
+                rt::ticks,
+                TICKS_MS,
+            )
+        }) else {
+            crash(format_args!("started twice"))
+        };
         let t0 = rt::ticks();
-        rp_today::show_gpu(&mut two_d, WALLPAPER, rt::delay_us);
+        rp_today::show_gpu(two_d, WALLPAPER, rt::delay_us);
         // The graphics service (ADR-0030) owns the engines from here.
-        // It borrows the renderer: both by value overflowed the stack.
-        let mut gfx = Graphics::new(&mut two_d, Pool::new(POOL));
+        let Some(gfx) = GFX.put_with(|| Graphics::new(two_d, Pool::new(POOL))) else {
+            crash(format_args!("started twice"))
+        };
         let mut gclock = TickClock {
             last: rt::ticks(),
             us: 0,
@@ -152,8 +168,12 @@ mod image {
             "gpu: wallpaper converted to 32 bpp and shown in {} us",
             rt::ticks().wrapping_sub(t0) / 13 * 4
         );
-        let mut shell = Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
-        let mut frame = Frame::new();
+        let (Some(shell), Some(frame)) = (
+            SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), rp_today::icons(), true)),
+            FRAME.put_with(Frame::new),
+        ) else {
+            crash(format_args!("started twice"))
+        };
 
         // Input: the keypad and the touch screen, interrupt-driven.
         let (Some(kp), Some(gpio), Some(ssp)) =
@@ -206,10 +226,17 @@ mod image {
         let start_min = start_minutes();
         let mut minute_shown = -1i64;
 
-        let mut latency = Latency::new();
-        // The parts of a tap's answer, for their medians.
-        let (mut settle, mut queueing, mut to_flip) =
-            (Latency::new(), Latency::new(), Latency::new());
+        // Touch to flush, and the parts of a tap's answer, for their medians.
+        let Some([latency, settle, queueing, to_flip]) = LATENCY.put_with(|| {
+            [
+                Latency::new(),
+                Latency::new(),
+                Latency::new(),
+                Latency::new(),
+            ]
+        }) else {
+            crash(format_args!("started twice"))
+        };
         let mut frames = 0u32;
         let mut draw_us_worst = 0u32;
         // The CPU time of the frame last queued (for the slow-answer line).
@@ -410,9 +437,9 @@ mod image {
                 );
                 // Typical values (medians) of each part of a tap's answer.
                 for (name, l) in [
-                    ("touch landing to the filter's verdict", &mut settle),
-                    ("shell frame + CPU queueing", &mut queueing),
-                    ("queue to flip (engine, polled every ms)", &mut to_flip),
+                    ("touch landing to the filter's verdict", &mut *settle),
+                    ("shell frame + CPU queueing", &mut *queueing),
+                    ("queue to flip (engine, polled every ms)", &mut *to_flip),
                 ] {
                     let (n, median, worst) = l.summary();
                     let _ = writeln!(
@@ -451,11 +478,11 @@ mod image {
             // Draw what changed, timing it.
             if shell.needs_frame() {
                 let t0 = rt::ticks();
-                shell.frame(&mut frame);
+                shell.frame(frame);
                 // One job at a time: the frame in flight finishes first (as
                 // the 2D renderer's own draw waited for it).
                 while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
-                let _ = gfx.frame(&frame, &mut gclock);
+                let _ = gfx.frame(frame, &mut gclock);
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 draw_us_worst = draw_us_worst.max(us);

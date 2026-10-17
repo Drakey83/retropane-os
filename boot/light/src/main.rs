@@ -53,6 +53,11 @@ mod image {
     /// The last step's colour, for the fault stripes.
     static STEP: Global<u16> = Global::new(0);
 
+    /// Filled once per start: an image that began without a fresh `.bss`
+    /// (re-entered rather than started) would find it filled. `emu-usb` runs
+    /// this image twice under one loader and wants "slot: fresh" both times.
+    static STARTS: rt::Slot<u32> = rt::Slot::new();
+
     fn step(colour: u16) {
         STEP.with(|s| *s = colour);
         beacon(colour, colour);
@@ -143,6 +148,8 @@ mod image {
         let mut out = Tee(&mut uart, &mut con);
         let _ = writeln!(out, "RetroPane 26 first light");
         let _ = writeln!(out, "all steps OK");
+        let fresh = STARTS.put_with(|| 1).is_some();
+        let _ = writeln!(out, "slot: {}", if fresh { "fresh" } else { "STALE" });
         let _ = writeln!(out, "display: {note} @{:06X}", plane.offset);
         if let Some(h) = rp_hal_x51v::devices::mbx_handoff() {
             let _ = writeln!(

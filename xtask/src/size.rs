@@ -363,10 +363,14 @@ pub const BUDGETS: &[Budget] = &[
     // one 250 x 174, 170 KiB, the small ones 66 px wide); 833.8 KiB measured
     // in all, + ~8%. Zeroed RAM 30 -> 46 KiB (the same day): its stack 24 -> 40
     // KiB, 23.5 KiB of it used (96%) and a deeper path froze the device.
+    // Zeroed RAM 46 -> 36 KiB (the same day, stack audit): 22 KiB of that
+    // depth was `main`'s frame holding the long-lived objects; they are in
+    // `rt::Slot`s in `.bss` now (19 KiB, counted here) and the stack is 12
+    // KiB, 6.0 of it used (50%): 32.8 KiB in all, + ~10%.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 46 * 1024,
+        max_zero: 36 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

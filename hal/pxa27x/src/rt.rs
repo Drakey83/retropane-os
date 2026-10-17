@@ -1035,6 +1035,67 @@ impl<T> Global<T> {
     }
 }
 
+/// One long-lived object of an image, kept in `.bss` instead of on the
+/// stack: the build's zeroed-RAM budget counts it, where a local of `main`
+/// was found only by an overflow at run time (rp-today's `main` held 22 KiB
+/// of objects in its frame, 2026-10-17).
+///
+/// **Filled once per image start, never re-initialised in place.**
+/// [`put_with`](Self::put_with) fills the slot and lends the object for the
+/// rest of the run; a second fill returns `None` (the caller crashes loudly)
+/// and never hands back, or quietly overwrites, the first. The slot is fresh
+/// at every start because nothing re-enters a running image: the loader
+/// starts an image only after receiving and checking it
+/// (`handoff::launch`), `_start` zeroes `.bss` before `rp_main`, and a soft
+/// reset or the watchdog restarts the whole device. Anything that one day
+/// re-enters an image (or restarts a service in its own process) without
+/// that hits the refusal at start-up, not stale state.
+///
+/// In-flight state: the object is never dropped (nor were the locals of a
+/// `main` that never returns), so hardware it drives must be stopped by the
+/// image before it returns to the loader. Hardware the next image inherits
+/// is that image's to check: the 2700G isn't reset between images
+/// (docs/hw/2700g.md).
+pub struct Slot<T> {
+    filled: core::cell::Cell<bool>,
+    value: core::cell::UnsafeCell<core::mem::MaybeUninit<T>>,
+}
+
+// SAFETY: the claim (`filled`) is taken with IRQs masked on this
+// single-core CPU, so exactly one context ever gets the reference; the
+// object is made in that context and stays there (`&'static mut T` is only
+// `Send` when `T` is), so `T` itself needn't be `Send`.
+unsafe impl<T> Sync for Slot<T> {}
+
+impl<T> Slot<T> {
+    /// An empty slot (all zero: it lives in `.bss`).
+    #[allow(clippy::new_without_default)]
+    pub const fn new() -> Self {
+        Self {
+            filled: core::cell::Cell::new(false),
+            value: core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()),
+        }
+    }
+
+    /// Makes the object with `make` straight into the slot and lends it for
+    /// the rest of the run; `None` if the slot was filled already this
+    /// start. Not inlined, so any temporary `make` needs is in this call's
+    /// frame, gone once it returns, not in the caller's for the whole run.
+    #[inline(never)]
+    pub fn put_with(&'static self, make: impl FnOnce() -> T) -> Option<&'static mut T> {
+        let was = irq_save();
+        let filled = self.filled.replace(true);
+        irq_restore(was);
+        if filled {
+            return None;
+        }
+        // SAFETY: `filled` went false -> true under masked IRQs just now, and
+        // nothing ever sets it back, so this is the only reference made.
+        let value = unsafe { &mut *self.value.get() };
+        Some(value.write(make()))
+    }
+}
+
 /// The SPSR at the last undefined-instruction exception (bring-up).
 #[unsafe(export_name = "rp_fault_spsr")]
 static mut FAULT_SPSR: u32 = 0;

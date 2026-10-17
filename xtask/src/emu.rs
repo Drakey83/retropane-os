@@ -2263,28 +2263,8 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         .lines()
         .find(|l| l.contains("calibrated:"))
         .ok_or_else(|| format!("today: the align screen never finished:{log}"))?;
-    // The stack's headroom: a silent overflow freezes the image (the device's
-    // watchdog error screen, 2026-10-17: it ran at 95% of its stack), so use
-    // above 80% of it fails the check.
-    let stack = log
-        .lines()
-        .find_map(|l| l.split("stack: deepest ").nth(1))
-        .and_then(|s| {
-            let mut n = s.split(" of ").map(|p| {
-                p.split(|c: char| !c.is_ascii_digit())
-                    .next()?
-                    .parse::<u32>()
-                    .ok()
-            });
-            Some((n.next()??, n.next()??))
-        })
-        .ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
-    if stack.0 * 100 > stack.1 * 80 {
-        return Err(format!(
-            "today: the stack went {} of {} bytes deep (over 80%: an overflow freezes the image)",
-            stack.0, stack.1
-        ));
-    }
+    let stack =
+        check_stack(log)?.ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
     eprintln!(
         "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
@@ -2509,7 +2489,9 @@ fn usb_read_until(s: &mut std::net::TcpStream, want: &str, secs: u64) -> Result<
             Ok(n) => {
                 got.extend_from_slice(&buf[..n]);
                 if String::from_utf8_lossy(&got).contains(want) {
-                    return Ok(String::from_utf8_lossy(&got).into_owned());
+                    let text = String::from_utf8_lossy(&got).into_owned();
+                    check_stack(&text)?;
+                    return Ok(text);
                 }
             }
             Err(e)
@@ -2543,6 +2525,7 @@ fn usb_read_line(s: &mut std::net::TcpStream, start: &str, secs: u64) -> Result<
                 if let Some(at) = text.find(start)
                     && text[at..].contains('\n')
                 {
+                    check_stack(&text)?;
                     return Ok(text.into_owned());
                 }
             }
@@ -2645,8 +2628,17 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         // returns (the emulated host enumerates it again); the socket stays
         // up throughout, and the run log arrives once the port is reopened.
         let log = usb_read_until(&mut s, "RPL END", 30)?;
-        if !log.contains("all steps OK") {
+        if !log.contains("all steps OK") || !log.contains("slot: fresh") {
             return Err(format!("run log over USB incomplete: {log:?}"));
+        }
+        // The same image again under the same loader: it must start fresh
+        // (rt::Slot: filled once per start, `.bss` zeroed by `_start`), not
+        // find the first run's state.
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        let again = usb_read_until(&mut s, "RPL END", 30)?;
+        if !again.contains("all steps OK") || !again.contains("slot: fresh") {
+            return Err(format!("second run of the same image not fresh: {again:?}"));
         }
         // A new loader sent as an image takes over; its predecessor's run is
         // no hang (2026-10-16: the device saved a 45-byte "did not return"
@@ -2680,7 +2672,9 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(60),
         },
     )?;
-    eprintln!("    loader over USB OK: image in, run log out, through the emulated USB port");
+    eprintln!(
+        "    loader over USB OK: image in, run log out, through the emulated USB port; the same image twice, fresh both times"
+    );
     Ok(())
 }
 
@@ -5157,6 +5151,39 @@ struct Boot<'a> {
     timeout: Duration,
 }
 
+/// The stack's headroom, for every image the emulator runs: each reports
+/// "stack: deepest N of M bytes" when it returns to the loader, and use above
+/// 80% fails. A silent overflow freezes the image (rp-today ran at 96% of its
+/// stack and an older build froze the Axim into the watchdog error screen,
+/// 2026-10-17). Returns the deepest report seen, as (used, size).
+fn check_stack(text: &str) -> Result<Option<(u32, u32)>, String> {
+    let mut deepest: Option<(u32, u32)> = None;
+    for rest in text.split("stack: deepest ").skip(1) {
+        let mut n = rest.split(" of ").map(|p| {
+            p.split(|c: char| !c.is_ascii_digit())
+                .next()
+                .and_then(|d| d.parse::<u32>().ok())
+        });
+        let (Some(Some(used)), Some(Some(size))) = (n.next(), n.next()) else {
+            return Err(format!(
+                "unreadable stack report: {:?}",
+                rest.lines().next().unwrap_or("")
+            ));
+        };
+        if u64::from(used) * 100 > u64::from(size) * 80 {
+            return Err(format!(
+                "the stack went {used} of {size} bytes deep (over 80%: an overflow freezes the image)"
+            ));
+        }
+        if deepest
+            .is_none_or(|(u, s)| u64::from(used) * u64::from(s) > u64::from(u) * u64::from(size))
+        {
+            deepest = Some((used, size));
+        }
+    }
+    Ok(deepest)
+}
+
 fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let Boot {
         image,
@@ -5273,7 +5300,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     for chunk in serial.rx.try_iter() {
         serial.output.push_str(&String::from_utf8_lossy(&chunk));
     }
-    match result {
+    match result.and_then(|()| check_stack(&serial.output).map(|_| ())) {
         Ok(()) => Ok(serial.output),
         Err(e) => Err(format!("{e}. Serial output so far:\n{}", serial.output)),
     }
@@ -5431,6 +5458,24 @@ fn touch_near(output: &str, x: u16, y: u16) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_stack_check_passes_80_percent_and_fails_above() {
+        use super::check_stack;
+        assert_eq!(check_stack("no report").unwrap(), None);
+        assert_eq!(
+            check_stack("stack: deepest 6108 of 12288 bytes\n").unwrap(),
+            Some((6108, 12288))
+        );
+        assert!(check_stack("stack: deepest 8192 of 10240 bytes").is_ok());
+        assert!(check_stack("stack: deepest 23480 of 24576 bytes").is_err());
+        // Two runs in one output: either over 80% fails.
+        assert!(
+            check_stack("stack: deepest 100 of 16384 bytes\nstack: deepest 15000 of 16384 bytes")
+                .is_err()
+        );
+        assert!(check_stack("stack: deepest lots of room").is_err());
+    }
+
     #[test]
     fn mbx_blend_device_matches_itself_and_catches_a_pixel() {
         use super::{MBX_BLEND_DEVICE, mbx_blend_mismatches};
