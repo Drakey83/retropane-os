@@ -230,6 +230,28 @@ driver (switched in Device Manager; switch back for Wacom's software).
   centred, not pressed (pressing distorts an LCD); straight on, so the
   viewing-angle shift remains.
 
+**Measurement run 1 (2026-10-17):** the backlight-off and black readings ran
+past their 16 s patches (the Spyder4 integrates for a long time near black;
+dark patches are now 45 s, about 12 minutes in all). **Run 2** (cloth over the
+Axim and sensor; owner will wrap it better next time), report
+`local/screen-measure/report-1792274616.md`:
+| | |
+|---|---|
+| Stray light, backlight off | 0.44 cd/m2 (room light leaking in, or the sensor's floor; subtracted) |
+| White at Windows Mobile's 63% | 40.8 cd/m2; full backlight 56.9 (the datasheet's new panel: 165) |
+| Black | 1.43 cd/m2 (2.11 at full backlight: it follows the backlight, so it is the panel's own glow, not room light) |
+| Contrast | 29:1 (datasheet 200:1) |
+| White point | x 0.269 y 0.264, about 13,500 K: very blue (aged white LEDs lose their yellow phosphor), **to verify** |
+| Primaries | red 0.488/0.304, green 0.294/0.423, blue 0.151/0.133: a small gamut, as the datasheet's NTSC 35% |
+| Panel gamma | **1.79** over the mid-tones (eye test said about 1.5); the top flattens (gamma 1.05 at 240): the white end clips, as the owner saw |
+| Backlight | white 15.5 cd/m2 at 1/8 duty up to 56.9 at full: straight with a large offset |
+| Drift | -0.7% over the run; run 1 and run 2 agree within a few percent |
+The correcting table for gamma 2.2 and D65 cuts blue to 0.30 and red to
+0.77, which would dim white by about a quarter: worth it only if the
+13,500 K is real. Checks before building it in: (1) the same Spyder and
+correction on a display of known white (the owner's calibrated Wacom
+display), (2) a repeat on the Axim, wrapped better, compared with run 2.
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made

@@ -8,7 +8,8 @@
 //! [`READ_AT_MS`] into it. Patches are full-screen solid colours with the
 //! gamma table straight (output = input), so the readings are the panel's
 //! own response. A one-shot reading with Argyll's `spotread` and a Spyder4
-//! takes about 10 s (measured 2026-10-17), hence the long patches.
+//! takes about 10 s on lit patches and much longer near black (measured
+//! 2026-10-17), hence the long patches.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -52,7 +53,9 @@ const fn p(name: &'static str, rgb: (u8, u8, u8), light: Light, ms: u32) -> Patc
     }
 }
 
-const DARK: u32 = 16_000;
+/// Near black the Spyder4 integrates far longer: run 1 (2026-10-17) lost the
+/// backlight-off and black readings at 16 s; 45 s leaves room.
+const DARK: u32 = 45_000;
 const LIT: u32 = 14_000;
 
 /// Grey levels measured at the found backlight.
@@ -159,13 +162,16 @@ mod tests {
     fn every_patch_has_time_for_a_reading() {
         for p in &PATCHES {
             assert!(p.ms >= READ_AT_MS + 11_000, "{}", p.name);
+            if p.rgb == (0, 0, 0) {
+                assert!(p.ms >= READ_AT_MS + 40_000, "{} is near black", p.name);
+            }
         }
     }
 
     #[test]
     fn the_run_is_under_ten_minutes_and_starts_after_the_lead() {
         assert_eq!(start_ms(0), LEAD_MS);
-        assert!(total_ms() < 10 * 60_000, "{} ms", total_ms());
+        assert!(total_ms() < 13 * 60_000, "{} ms", total_ms());
     }
 
     #[test]

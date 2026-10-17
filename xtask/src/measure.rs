@@ -73,12 +73,14 @@ pub fn measure(root: &Path) -> Result<(), String> {
         if let Some(wait) = read_at.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
         }
+        let began = Instant::now();
         let r = read_once(&spotread, port, &ccss);
+        let took = began.elapsed().as_secs_f64();
         let late = Instant::now() > ends;
         let r = match r {
             Ok(_) if late => {
                 eprintln!(
-                    "    {:2}/{} {}: reading ran past the patch, dropped",
+                    "    {:2}/{} {}: reading ran past the patch ({took:.1} s), dropped",
                     i + 1,
                     PATCHES.len(),
                     p.name
@@ -87,7 +89,7 @@ pub fn measure(root: &Path) -> Result<(), String> {
             }
             Ok(v) => {
                 eprintln!(
-                    "    {:2}/{} {}: {:.3} cd/m2",
+                    "    {:2}/{} {}: {:.3} cd/m2 ({took:.1} s)",
                     i + 1,
                     PATCHES.len(),
                     p.name,
