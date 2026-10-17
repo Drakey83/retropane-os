@@ -156,8 +156,10 @@ pub const START: Rect = Rect::new(0, 0, 96, 36);
 /// The weather hero panel: the place, the temperature, the condition, today's
 /// high and low, and the date (docs/design/ui.md "Weather and icons").
 const HERO: Rect = Rect::new(16, 52, 448, 196);
-/// Where the weather icon goes (the panel's top right; it may reach above it).
-const HERO_ICON: Rect = Rect::new(16 + 448 - 16 - 175, 40, 175, 120);
+/// The box of the weather icon, as in the mock-ups: 8 px past the panel's right
+/// edge and 48 px above its top, over the title bar; the picture is centred
+/// vertically in it and sits against its right side.
+const HERO_ICON: Rect = Rect::new(16 + 448 + 8 - 250, 52 - 48, 250, 176);
 /// The date at the hero's bottom right (its text depends on the day).
 pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
 /// The five-day forecast row with the room above it for the icons that
@@ -782,7 +784,13 @@ impl Shell {
 
         // The weather hero.
         Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
-        f.text(HERO.x + 20, HERO.y + 34, label, DIM, b"YOUR CITY");
+        f.text(
+            HERO.x + 20,
+            HERO.y + 34,
+            label,
+            DIM,
+            b"YOUR CITY - SAMPLE DATA",
+        );
         let temp = [b'0' + SAMPLE_NOW / 10, b'0' + SAMPLE_NOW % 10, DEG_BIG];
         f.text(HERO.x + 20, HERO.y + 116, big, TEXT, &temp);
         f.text(HERO.x + 20, HERO.y + 146, ui, TEXT, b"Partly cloudy");
@@ -793,8 +801,8 @@ impl Shell {
         // (docs/design/today-screen-plan.md).
         match self.icons.hero {
             Some(img) => f.push(Cmd::Image {
-                x: HERO_ICON.x,
-                y: HERO_ICON.y,
+                x: HERO_ICON.x + HERO_ICON.w.saturating_sub(img.w),
+                y: HERO_ICON.y + HERO_ICON.h.saturating_sub(img.h) / 2,
                 img,
             }),
             None => f.push(Cmd::Outline {
@@ -811,13 +819,6 @@ impl Shell {
             TEXT,
             date,
         );
-        f.text(
-            HERO.x + HERO.w - 20 - ui.width(b"sample data"),
-            HERO.y + 164 - 12,
-            ui,
-            DIM,
-            b"sample data",
-        );
 
         // The five-day forecast: the card, its icon over the card's top edge,
         // the day name and the high and low.
@@ -829,10 +830,11 @@ impl Shell {
                 FORECAST_H,
             );
             Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            // The icon's 66 px box reaches 30 px above the card (as in the mock-ups).
             match self.icons.forecast[i] {
                 Some(img) => f.push(Cmd::Image {
                     x: r.x + r.w.saturating_sub(img.w) / 2,
-                    y: r.y.saturating_sub(14),
+                    y: (r.y + 36).saturating_sub(66) + 66u16.saturating_sub(img.h) / 2,
                     img,
                 }),
                 None => f.push(Cmd::Outline {

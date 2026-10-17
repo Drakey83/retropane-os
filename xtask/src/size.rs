@@ -358,9 +358,13 @@ pub const BUDGETS: &[Budget] = &[
     // the Today screen are baked in until the card can supply them (one
     // 175 x 120 and five 58 x 40, straight ARGB8888, 139 KiB); 599.4 KiB
     // measured without them, 727.0 KiB with, + ~7%.
+    // 780 -> 900 KiB (2026-10-17, owner: the big icon looked small): the icons
+    // are cropped to what is drawn and scaled to the mock-ups' boxes (the big
+    // one 250 x 174, 170 KiB, the small ones 66 px wide); 833.8 KiB measured
+    // in all, + ~8%.
     Budget {
         image: "rp-today",
-        max_load: 780 * 1024,
+        max_load: 900 * 1024,
         max_zero: 30 * 1024,
         device: OnDevice::Returns,
     },
