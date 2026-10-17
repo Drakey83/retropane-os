@@ -217,24 +217,33 @@ the label alone. Nothing ships until its row says **ship**.
 | Pier, black and white | Christopher Sardegna, Unsplash `uDUiRS8YroY`, 2013 | CC0 on Unsplash in 2013. **Checked 2026-10-17:** the Internet Archive holds copies of its Unsplash page from 2016-10-20 and 2017-05-04, both before Unsplash's June 2017 licence change, so the photo was published under CC0 (Commons' own Wayback copy is from July 2017, which alone would not prove it) | **ship** (keep the two archive dates with the pack) |
 | Aurora | The Commons file credited to Rich and Rose Primmer via a wallpaper site | Rests on that site's claim, not a government source | **dropped 2026-10-17**, replaced by the NPS aurora photos below (federal employees' work, public domain) |
 
-**Proposed to reach ten (2026-10-17, checked through Commons' own records, for the
-owner's approval; picture sheet: [wallpaper-cands.jpg](wallpaper-cands.jpg)):**
+**Approved by the owner (2026-10-17), from 47 candidates; numbers are those of the picture
+sheets** (the pier, the lake and the others not listed were not picked, though the
+lake still ships as the built-in wallpaper). Checked through Commons' own records:
 
-| Wallpaper | Commons file | Author and basis | Status |
+| # | Commons file | Author and basis | Status |
 |---|---|---|---|
-| Aurora over Denali | `File:Aurora in Denali (98bfa86a-4e3a-4cec-b641-9dccd7377fab).jpg` | NPS Photo / Tim Rains: federal employee's work, public domain | proposed |
-| Aurora over the boreal forest | `File:Aurora over the boreal forest (57be20e1-a3cf-453e-9632-2d38df39b643).jpg` | NPS Photo / Tim Rains: public domain | proposed |
-| Milky Way over Earth's glow | `File:The Milky Way spans the night sky above a bright orange-yellow airglow (iss073e0982679).jpg` | NASA Johnson Space Center: public domain | proposed |
-| Desert sky at dusk | `File:Desert sky scene at dusk.jpg` | Steve Hillebrand, U.S. Fish and Wildlife Service: public domain | proposed |
-| Electric Peak, morning light | `File:Morning light on Electric Peak.jpg` | Jacob W. Frank, National Park Service: public domain | proposed |
-| Sunset thunderstorm | `File:Sunset Thunderstorm (53721202248).jpg` | Bob Hyatt, U.S. National Weather Service: public domain | proposed |
-| Snowy dunes at alpenglow | `File:Alpenglow on Snowy Star Dune and Crestone Peaks (31601451293).jpg` | Great Sand Dunes National Park and Preserve (NPS): public domain | proposed |
-| Forest sunrise | `File:Forest sunrise.jpg` | Peter Heeling: CC0, as the uploader declares | proposed (**verify** the source page) |
-| Quebec City at night | `File:Chateau Frontenac illuminated at night in Quebec City.jpg` | Wilfredor: CC0 own work, as the uploader declares | proposed, an alternative to the Portland city photo |
+| 4 | `File:Aurora over the boreal forest (57be20e1-a3cf-453e-9632-2d38df39b643).jpg` | NPS Photo / Tim Rains: public domain (federal agency work) | **approved** |
+| 5 | `File:The Milky Way spans the night sky above a bright orange-yellow airglow (iss073e0982679).jpg` | NASA Johnson Space Center: public domain (federal agency work) | **approved** |
+| 7 | `File:Morning light on Electric Peak.jpg` | Jacob W. Frank: public domain (federal agency work) | **approved** |
+| 10 | `File:Forest sunrise.jpg` | Peter Heeling: CC0 as the uploader declares | approved, **verify** the source page (CC0 as declared) |
+| 13 | `File:Foggy Forest (256920249).jpeg` | Phos4: CC0 as the uploader declares | approved, **verify**: imported from 500px and labelled CC0; the licence could not be confirmed, so replace it if it cannot be |
+| 16 | `File:Clouds and fog over Lost Horse Valley (50863680453).jpg` | Joshua Tree National Park: public domain (federal agency work) | **approved** |
+| 18 | `File:Crooked River and Chimney Rock at Sunset (25903316784).jpg` | Bureau of Land Management Oregon and Washingto: public domain (federal agency work) | **approved** |
+| 23 | `File:San Rafael Swell and Canyon - Wedgepanel (27079938169).jpg` | BLMUtah: public domain (federal agency work) | **approved** |
+| 29 | `File:McDonald Lake, Glacier National Park 19.jpg` | Ansel Adams: public domain (federal agency work) | **approved** (Ansel Adams, National Park Service mural project) |
+| 37 | `File:Morning Reflections at Lake McDonald (18750990873).jpg` | GlacierNPS: public domain (federal agency work) | **approved** |
+| 39 | `File:Two Medicine Lake Reflections (20499664708).jpg` | GlacierNPS: public domain (federal agency work) | **approved** |
+| 42 | `File:Sunset reflection on Lower Twin Lake (46171178422).jpg` | BLM Oregon & Washington: public domain (federal agency work) | **approved** |
+| 44 | `File:Storm clouds over Lost Horse Valley (50578197936).jpg` | Joshua Tree National Park: public domain (federal agency work) | **approved** |
+| 45 | `File:The Delong Mountains are reflected in the clear, clean water of Desperation Lake in the northern part of Noatak National (936b4940-1dd8-b71c-070e-3b979ec0a573).jpg` | NPS Photo: public domain (federal agency work) | **approved** |
+| 46 | `File:-conservationlands15 Social Media Takeover, Oct 15th, Top 15 Bucket List Adventures (21586256194).jpg` | mypubliclands: public domain (federal agency work) | **approved** |
 
-With the lake, the pier and the city photo this makes at least ten.
-The other rows work only as a pack's wallpapers: each is cropped to 3:4 from
-the original, which is 3000 pixels or more wide, so none looks soft.
+That is 15 against the goal of ten. Each is cropped to 3:4 from an original that
+is at least 1600 pixels wide, so none looks soft. The owner's taste, from three
+reference pictures: photographic and cinematic, real depth and leading lines,
+dramatic skies, warm earth tones against dark reflective water, black and white,
+soft bokeh; less saturated than the first batch.
 
 Each pack carries this table for its files (author, source link, licence
 basis, date checked) as its provenance note.
