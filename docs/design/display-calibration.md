@@ -7,7 +7,8 @@ muddy. The games' half is a standing rule already
 ([apps-and-packs.md](apps-and-packs.md) §6a): textures at 16 bits dithered
 or better, never 4 bits a channel, and a brightness curve per game. This
 page is the screen's half. **C1 is built and checked in the emulator
-(2026-10-17); its device run is next. C2-C5 are not built yet.**
+(2026-10-17) and ran on the device (run 2: findings under C1). C2-C5 are
+not built yet.**
 
 ## What we control, and what we don't
 
@@ -52,6 +53,27 @@ wallpaper side by side was).
    pixel-exact through Stock, Shadows 5 and 6, A/B and Contrast 5, driven
    by keys and a tap. A mutant (curve changes never reach the table) must
    fail it. 25.9 KiB, budget 29 KiB.
+
+   **Device run 2 (2026-10-17, owner watching; run 1 timed out unwatched,
+   cleanly):** picture drawn in 102 ms. The owner flipped through every
+   curve (61 changes, strength left at 5 throughout) and pressed Home.
+   Everything was put back as found. Findings, by eye:
+   - **Near-black: 6-7 of the 9 steps visible.** The bottom 2-3 (0-8 of
+     255) all look black: shadow detail is lost on the stock curve.
+   - **Near-white: all 9 steps look like one band.** 224-255 are not
+     told apart: the top of the range is clipped (panel or backlight).
+     Content above about 220 is wasted on this screen.
+   - **Gamma check: inconclusive.** No square vanished into the line
+     pairs. On this panel the one-pixel lines don't blend into a flat
+     grey at arm's length. A different pattern is needed to measure the
+     panel's gamma (e.g. a 2 x 2 checkerboard, or a ramp matched against
+     dithered halftones).
+   - **Pick: Shadows 5 looks best "when it comes to being able to see"**
+     (overall and for the dark corridor). Strengths other than 5 were
+     not tried.
+   Open for a short run 3: try Shadows 3-8, and a new **Highlights**
+   curve that spreads the top of the range (pulls 224-255 apart) together
+   with Shadows. Then settle the system default (C5).
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
