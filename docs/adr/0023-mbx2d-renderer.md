@@ -217,6 +217,29 @@ drawing is no longer what a tap waits for: the CPU's share fell to under a
 millisecond and the engine's is ~7 ms; the touch filter's settling is
 most of the rest (the same under either renderer). Stack 17.4 of 24 KiB.
 
+## A 16-bit wallpaper, side by side (2026-10-17, `rp-today` b2b699f)
+
+The owner's rule for 16-bit tricks: only with no visible loss in looks or
+speed, judged by eye on the device. The test image's "Wallpaper compare"
+shows the wallpaper alone and flips it, per tap, between full depth and
+RGB565 dithered once on the CPU (Floyd-Steinberg); the Today screen with
+its glass can be checked at either depth too. One wallpaper per build.
+
+- **The engine widens a 16-bit source by repeating the top bits** (64 of
+  64 probe pixels, both runs): what the comparison showed is what a
+  wallpaper kept as RGB565 in 2700G memory would look like.
+- **The owner saw no difference and no banding** on the black-and-white
+  pier ("even with magnified reading glasses") nor on the Milky Way over
+  its orange airglow (#5, the smoothest colour gradient of the approved
+  wallpapers on hand).
+- What it would save: half the wallpaper's 1.2 MiB of 2700G memory, and
+  half the bytes read where a frame copies the wallpaper itself (the
+  Today screen copies its 32-bit background picture instead, so there
+  only the background's rebuild reads it). The speed side isn't measured
+  yet: it needs the real RGB565 storage (the test stores the widened
+  pixels at 32 bits). Logs: `local/rp-today-compare-pier.txt`,
+  `local/rp-today-compare-milkyway.txt`.
+
 ## Open questions
 
 1. ~~Owner: A or B?~~ B (2026-10-14).
