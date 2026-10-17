@@ -241,7 +241,7 @@ lake still ships as the built-in wallpaper). Checked through Commons' own record
 | 4 | `File:Aurora over the boreal forest (57be20e1-a3cf-453e-9632-2d38df39b643).jpg` | NPS Photo / Tim Rains: public domain (federal agency work) | **approved** |
 | 5 | `File:The Milky Way spans the night sky above a bright orange-yellow airglow (iss073e0982679).jpg` | NASA Johnson Space Center: public domain (federal agency work) | **approved** |
 | 7 | `File:Morning light on Electric Peak.jpg` | Jacob W. Frank: public domain (federal agency work) | **approved** |
-| 10 | `File:Forest sunrise.jpg` | Peter Heeling: CC0 as the uploader declares | approved, **verify** the source page (CC0 as declared) |
+| 10 | `File:Forest sunrise.jpg` | Peter Heeling: CC0 as the uploader declares | **approved**; the file was reviewed by a Commons licence reviewer on 2018-08-18 (CC0, posted as "Foggy forest" by Peter Heeling, 2015) |
 | 13 | `File:Foggy Forest (256920249).jpeg` | Phos4: CC0 as the uploader declares | approved, **verify**: imported from 500px and labelled CC0; the licence could not be confirmed, so replace it if it cannot be |
 | 16 | `File:Clouds and fog over Lost Horse Valley (50863680453).jpg` | Joshua Tree National Park: public domain (federal agency work) | **approved** |
 | 18 | `File:Crooked River and Chimney Rock at Sunset (25903316784).jpg` | Bureau of Land Management Oregon and Washingto: public domain (federal agency work) | **approved** |

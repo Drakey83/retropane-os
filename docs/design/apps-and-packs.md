@@ -242,6 +242,15 @@ connection is wanted, not always on, to save battery and RAM. Sizes (the
 crypto is a few tens of KB, the netmap is read as a stream) are to be
 measured, not guessed.
 
+**Terms check (2026-10-17, reading Tailscale's customer terms; not legal advice):**
+nothing in them mentions third-party clients, for or against. They forbid
+reverse engineering or copying "the Services" and commercially exploiting them;
+the official client is open source and shows how it talks to the service, but
+whether an unofficial client is welcome is **not stated**. So before stage T2
+the owner (or a note from the project) asks Tailscale, and Headscale is the
+fallback that needs no one's permission. Stage T1 (a gateway) uses the official
+client on a home machine and has no such question.
+
 **Security rules specific to this** ([security.md](../security.md)):
 the device's key lives in the encrypted store; the auth key is tagged so the
 access rules let the device reach **only** the media server and nothing else
