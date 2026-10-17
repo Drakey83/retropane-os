@@ -252,6 +252,15 @@ The correcting table for gamma 2.2 and D65 cuts blue to 0.30 and red to
 correction on a display of known white (the owner's calibrated Wacom
 display), (2) a repeat on the Axim, wrapped better, compared with run 2.
 
+**Sensor check on the owner's phone (2026-10-17; the Wacom display is too old
+to be a reference):** the phone's white (white page, half brightness) read
+7,290 and 7,180 K with the white-LED correction, 6,780 K with none, 6,210 K
+with the CCFL one, 5,570 K with the RGB-LED one; brightness the same
+(29.6-30.1 cd/m2) with all of them. A phone's white sits near 6,500 K, so the
+sensor reads colour about right, perhaps a few hundred kelvin cool with the
+white-LED correction. **The Axim's 13,500 K is real: its white is very blue**
+(aged white LEDs), not a sensor error.
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made
