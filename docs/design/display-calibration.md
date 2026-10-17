@@ -172,6 +172,16 @@ wallpaper side by side was).
    the panel's own bright mid-tones, the starting look), **Dark games**
    (Black 31, Mid 38, Bright 45, Sat 32: the corridor easy to see). The
    owner picks a look; it becomes the system default (C5).
+
+   **Viewing angle (owner, 2026-10-17): the numbers vary a lot with the
+   angle the screen is seen from.** Expected on this panel type (twisted
+   nematic): tilting it up or down shifts the mid-tones strongly, side to
+   side less. So every reading is only true at one angle. Rules for the
+   tool: judge at the angle the device is normally held (straight on, at
+   reading distance, ideally propped so it stays put); prefer settings that
+   still look right a little off-axis over the ones that are best at
+   exactly one angle; the install step says how to hold it. A colorimeter
+   reading (layer 3 in the roadmap) is taken straight on, at one angle too.
 2. **C2, backlight range and cost.** The same image steps the backlight to
    full: how much brighter than Windows Mobile's 63% it gets, and the
    battery cost (current draw from the power IC when that's read; until
