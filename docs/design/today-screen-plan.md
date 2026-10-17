@@ -43,8 +43,8 @@ so ("sample data") rather than pretending.
 T1 as built: the hero panel (place, temperature, condition, high and low, the
 date, an outline where the icon goes), the five-day row, a calendar panel with
 sample lines, and the quick buttons at the bottom; the clock moved to the title
-bar only, as in the mock-ups. The degree sign was added to the small fonts (the
-10 px of flash it costs is noted in the code). Left and right on the D-pad now
+bar only, as in the mock-ups. The degree sign was added to the two small fonts
+(two glyphs; the image is 613,805 bytes against its 640,000 byte budget). Left and right on the D-pad now
 stay on their row, because the quick row sits just above the softkeys. All of
 the weather and calendar text says "sample data". Checked by 20 host tests and
 `cargo xtask emu-today` (pixel-exact against the shell's own renderer, the
