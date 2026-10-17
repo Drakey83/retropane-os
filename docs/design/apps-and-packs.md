@@ -137,10 +137,64 @@ Calendar app and Google Calendar. This is a plan for a vote, not built.
 | C. Google sign-in (OAuth device flow) | The device shows a short code, you approve it on a phone or PC, the device keeps a revocable token | First-class Google, read and write, no password on the device, you can revoke it from your Google account | Needs a Google Cloud project; Google's check of the app for calendar access (until then "unverified", limited test users, and tokens that expire in 7 days); TLS 1.3 on a 624 MHz CPU (fine once per sync) |
 | D. Through the PC | LegacySync (ADR-0028) or a home server does the cloud side; the device talks only to it on the home network | Lightest for the device, the PC holds the Google secrets | Needs the PC or server on; not "connect from anywhere" |
 
-**Recommendation:** A first (small, safe, useful at once), then B as the
-generic layer, then C for Google read and write. D stays an option for anyone
-who prefers it. Sync runs on a timer and on opening the app, never as a live
+**Decided (owner, 2026-10-17): the order A, then B, then C**, with D left as
+an option. Sync runs on a timer and on opening the app, never as a live
 connection, to save battery and RAM.
+
+**Improvements over the first sketch**, so every service shares one piece of
+machinery instead of each app growing its own:
+
+- **One "Connections" page in Settings.** Every account and library (calendar,
+  media server, weather provider) is added, tested and removed in one place,
+  with a "Test connection" button that says plainly what failed (no network,
+  wrong address, certificate, login).
+- **One token store and one sync scheduler** for all apps. Syncs are batched so
+  the Wi-Fi radio wakes once, not once per app, and they are skipped on low
+  battery.
+- **Everything cached for offline use.** The Calendar always opens from its local
+  copy; a sync that fails changes nothing. Changes made offline are queued and
+  sent later, with a visible "not yet synced" mark.
+- **Addresses without typing.** A long link or server address is copied from the
+  PC over USB, from a small text file on the card, or typed once with a code
+  shown on the device; nobody types a secret link with a stylus.
+- **Home servers with their own certificates.** A self-signed certificate can be
+  trusted by its fingerprint, shown on screen and confirmed once, instead of
+  "ignore all certificate errors".
+
+## 7b. Streaming from your own library (owner, 2026-10-17)
+
+Not too much: audio is easy, video is the part to measure. The owner named Plex
+and Audiobookshelf; Jellyfin and Navidrome (music) are added because they are
+open source and speak simple, documented web APIs.
+
+| Service | Kind | How the device talks to it | Difficulty |
+|---|---|---|---|
+| Audiobookshelf | Audiobooks and podcasts | Its web API with a token; progress is synced both ways, so you resume where the phone stopped | Easy |
+| Navidrome and other Subsonic servers | Music | The Subsonic API; the server can send MP3 or Opus at a chosen bit rate | Easy |
+| Jellyfin | Music, video | Its web API; the server converts video to the format and size the device asks for | Medium |
+| Plex | Music, video | Sign-in through a code shown on the device; the server converts to a stream the device can play | Medium |
+
+**What limits it, and how it is handled:**
+
+- **The Wi-Fi is 802.11b** (11 Mbit/s on paper, roughly 4 to 5 in practice). Audio
+  needs well under 1; a 480 x 320 video at 600 to 900 kbit/s fits. So the device
+  always asks the server for a small, low-rate stream (the server does the heavy
+  work), and never plays a 1080p file as it is.
+- **The CPU is 624 MHz.** Music and audiobook codecs (MP3, AAC, Opus, FLAC) are
+  light. For video the 2700G has hardware WMV9 decode (docs/hw/2700g.md); whether
+  that or a software H.264 baseline decoder is better is settled by measurement
+  on the device, not by guessing.
+- **Download for offline.** Audiobooks and albums can be copied to the card ahead
+  of time (over Wi-Fi at home, or from the PC), then play with Wi-Fi off, which
+  also saves battery.
+- **Reaching the server away from home** needs the server's own remote access or
+  a VPN; WireGuard is cheap enough for this CPU and is the candidate. At first
+  the library is reached on the home network.
+- The same rules as above apply: tokens in the encrypted store, TLS, the smallest
+  permission, one switch removes a library and its cache.
+
+**Order:** Audiobookshelf and Subsonic (audio) first, then Jellyfin and Plex
+audio, and video last, after the decoder measurement.
 
 **Rules that apply to every service** ([security.md](../security.md)): tokens
 live in the encrypted store, never in plain files on the card; the smallest
