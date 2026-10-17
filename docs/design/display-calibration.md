@@ -197,6 +197,39 @@ wallpaper side by side was).
    backlight range, the Display settings design (brightness, warmth,
    contrast if C4 finds a knob), and each game's default curve (§6a).
 
+## Measured with a colorimeter (2026-10-17)
+
+The owner has a Datacolor Spyder4, which takes the eye out of the readings
+(C1's dials showed how much the eye, the viewing angle and the test's own
+design can mislead). Tools on the PC: **ArgyllCMS 3.5.0** (open source,
+AGPL; run as a separate program, nothing linked or shipped), the Spyder4's
+factory calibration read by Argyll's `oeminst` from the `dccmtr.dll` of
+Wacom's colour software, and Argyll's white-LED spectral correction (the
+X51v's backlight is a white LED string). The Spyder runs on Argyll's USB
+driver (switched in Device Manager; switch back for Wacom's software).
+
+- **`rp-screen-measure`** (test image, 17.3 KiB): 31 full-screen patches on
+  a fixed schedule, gamma table straight (output = input) so the readings
+  are the panel's own: stray light (backlight off), 14 greys, red/green/blue
+  at 128 and 255, black at full backlight, white at 1/8 to 8/8 backlight,
+  white again for drift. About 8 minutes. Home stops it; everything is put
+  back. The schedule lives in its library and is shared with the PC side.
+- **`cargo xtask measure`**: starts the image and takes the loader's "started"
+  reply as time zero, then runs one `spotread -O` reading per patch (about
+  10 s each, measured: piped keystrokes don't reach Argyll's console input on
+  Windows) at the scheduled moment; a reading that runs past its patch is
+  dropped, never shifted. It uses only the USB instrument Argyll lists, never
+  a serial port (the Axim is COM4). Report under `local/screen-measure/`:
+  stray light subtracted; white, black, contrast; white point and colour
+  temperature; primaries; grey curve and panel gamma; backlight steps; drift;
+  and a **correcting gamma table** (gamma 2.2 between the panel's own black
+  and white, white balanced to D65 by turning channels down).
+- `cargo xtask emu-screen-measure` runs the whole schedule in the emulator:
+  each patch within 300 ms of plan, grey 128 exact on screen.
+- Method: dark room or a cloth over the sensor and the Axim; sensor flat and
+  centred, not pressed (pressing distorts an LCD); straight on, so the
+  viewing-angle shift remains.
+
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture
 uploads, to learn whether the game sends 4-bit data or Dell's driver made

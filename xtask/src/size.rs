@@ -527,6 +527,15 @@ pub const BUDGETS: &[Budget] = &[
     // the gamma table judged by eye. Set at its first build on 2026-10-17:
     // 25.9 KiB measured, +~10%. Raised for the guided run 5 (six dials,
     // saturation redraw, steps): 28.8 KiB measured, +~10%.
+    // Test image: the screen's patches for a colorimeter (`cargo xtask
+    // measure`). Set at its first build on 2026-10-17: 17.3 KiB measured,
+    // +~10%.
+    Budget {
+        image: "rp-screen-measure",
+        max_load: 19 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-display-cal",
         max_load: 32 * 1024,

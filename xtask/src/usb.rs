@@ -75,7 +75,14 @@ $sp.Close()
 }
 
 fn load_script(frame: &Path) -> String {
+    load_script_opts(frame, true)
+}
+
+/// [`load_script`], or with `wait_log` false only the send and the
+/// loader's reply (for [`start`]).
+fn load_script_opts(frame: &Path, wait_log: bool) -> String {
     let path = frame.display().to_string().replace('\'', "''");
+    let stop = if wait_log { "" } else { "exit 0\n" };
     open_port()
         + &format!(
             r#"$bytes = [System.IO.File]::ReadAllBytes('{path}')
@@ -96,7 +103,7 @@ while ((Get-Date) -lt $deadline) {{
 }}
 try {{ $sp.Close() }} catch {{ }}
 if ($reply -like 'RPL ERR*') {{ exit 0 }}
-# No reply read is normal too: the device disconnects to run the image
+{stop}# No reply read is normal too: the device disconnects to run the image
 # within half a second of saying OK, and the port may go away first.
 # The device disconnects to run the image. If the image returns to the
 # loader, it reconnects and sends the run log: reopen the port and read it.
@@ -456,17 +463,9 @@ fn is_loader(image: &[u8]) -> bool {
     image.windows(ready.len()).any(|w| w == ready)
 }
 
-pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
-    // An image that never returns would run into the watchdog on the
-    // device (found 2026-10-12: rp-bench reset the Axim into Dell's
-    // factory-restore prompt). The device gets only images that come back.
-    if crate::size::on_device(what) == Some(crate::size::OnDevice::NeverReturns) && !force {
-        return Err(format!(
-            "`{what}` never returns to the loader (it runs in the emulator, or HaRET starts it \
-             directly): on the device the watchdog would reset the Axim. `rp-probe` runs the \
-             benchmarks on the device. Add --force to send it anyway."
-        ));
-    }
+/// The image `what` (a name, built first, or a `.bin` file) as bytes, and
+/// its load frame written next to it.
+fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf), String> {
     let bin = if what.ends_with(".bin") {
         Path::new(what).to_path_buf()
     } else {
@@ -487,6 +486,46 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     let frame = bin.with_extension("frame");
     std::fs::write(&frame, rp_loadproto::frame(&payload))
         .map_err(|e| format!("{}: {e}", frame.display()))?;
+    Ok((payload, frame))
+}
+
+/// Sends image `what` and returns as soon as the loader has said it starts
+/// it, with that moment: for `cargo xtask measure`, whose schedule counts
+/// from the image's start. The run log is left for `cargo xtask log`.
+pub fn start(root: &Path, what: &str) -> Result<std::time::Instant, String> {
+    let (payload, frame) = image_frame(root, what)?;
+    let out = powershell(&load_script_opts(&frame, false))?;
+    let at = std::time::Instant::now();
+    let text = String::from_utf8_lossy(&out.stdout);
+    if text.contains("NOPORT") || !text.contains("PORT ") {
+        return Err(format!(
+            "no RetroPane USB port ({VID_PID}) found. Is the loader running with the cable plugged in?{}",
+            stderr_note(&out.stderr)
+        ));
+    }
+    let reply = text
+        .lines()
+        .find_map(|l| l.trim_end().strip_prefix("REPLY "))
+        .ok_or("the loader didn't confirm the start (no reply): try again")?;
+    let theirs = reply
+        .strip_prefix("RPL OK sha256 ")
+        .ok_or_else(|| format!("the loader refused the image: {reply}"))?;
+    check_digest(theirs, &payload, what)?;
+    Ok(at)
+}
+
+pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
+    // An image that never returns would run into the watchdog on the
+    // device (found 2026-10-12: rp-bench reset the Axim into Dell's
+    // factory-restore prompt). The device gets only images that come back.
+    if crate::size::on_device(what) == Some(crate::size::OnDevice::NeverReturns) && !force {
+        return Err(format!(
+            "`{what}` never returns to the loader (it runs in the emulator, or HaRET starts it \
+             directly): on the device the watchdog would reset the Axim. `rp-probe` runs the \
+             benchmarks on the device. Add --force to send it anyway."
+        ));
+    }
+    let (payload, frame) = image_frame(root, what)?;
     let mut out = powershell(&load_script(&frame))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
         // Windows still holds a stale entry for the port (Windows Mobile's

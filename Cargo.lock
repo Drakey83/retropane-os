@@ -156,10 +156,7 @@ name = "rp-display-cal"
 version = "0.0.0"
 dependencies = [
  "rp-drv-mbx-display",
- "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
- "rp-drv-pxa-ssp",
- "rp-drv-tsc2046",
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
@@ -653,6 +650,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-screen-measure"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-keypad",
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-sdtime"
 version = "0.0.0"
 dependencies = [
@@ -854,6 +864,7 @@ dependencies = [
  "rp-kernel-trace",
  "rp-loadproto",
  "rp-mbx-render",
+ "rp-screen-measure",
  "rp-shell",
  "rp-today",
  "serde_json",

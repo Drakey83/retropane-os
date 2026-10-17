@@ -5,6 +5,7 @@
 
 mod devlock;
 mod emu;
+mod measure;
 mod mutants;
 mod policy;
 mod screen;
@@ -138,6 +139,12 @@ commands:
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
   emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
+  emu-screen-measure the colorimeter patches' check (rp-screen-measure: the
+            whole 8-minute schedule on time; not part of `emu`): run it
+            before `measure`
+  measure   the screen measured with a colorimeter (ArgyllCMS + Spyder4):
+            starts rp-screen-measure, reads each patch, writes a report and a
+            correcting gamma table to local/screen-measure/
   emu-display-cal the display calibration image's check (rp-display-cal: the
             picture pixel-exact through each gamma table its dials set)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
@@ -168,8 +175,8 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-display-cal" | "emu-unplug" | "emu-keepfed" | "mutants"
-        | "qemu" => run_step(&cmd),
+        | "emu-cfdetect" | "emu-display-cal" | "emu-screen-measure" | "emu-unplug"
+        | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -275,6 +282,10 @@ fn main() -> ExitCode {
         "log" => {
             eprintln!("==> log");
             usb::last_log(&workspace_root())
+        }
+        "measure" => {
+            eprintln!("==> measure");
+            measure::measure(&workspace_root())
         }
         "udc" => {
             // Diagnostics: `cargo xtask udc stats` (item 74, docs/hw/udc.md).
@@ -403,6 +414,9 @@ fn run_step(step: &str) -> Result {
         "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
         "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
         "emu-display-cal" => cross().and_then(|()| emu::boot_loader_display_cal(&workspace_root())),
+        "emu-screen-measure" => {
+            cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
+        }
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order

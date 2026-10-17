@@ -1,0 +1,20 @@
+[package]
+name = "rp-screen-measure"
+description = "Screen measurement test image for the real X51v: full-screen patches on a fixed schedule for a colorimeter, read by cargo xtask measure"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+
+[lints]
+workspace = true
