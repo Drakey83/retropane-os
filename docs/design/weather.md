@@ -72,6 +72,30 @@ Open: the exact code-to-file mapping (some codes, such as 3 split into
 cloudy and overcast, depend on extra data like cloud cover), and whether a
 pack may leave optional icons out (night variants falling back to day).
 
+## Mock-ups (Sunburst pack, 2026-10-16)
+
+The first pack, "Sunburst" (22 icons, made by the owner with GPT Image v2.5), on the
+Today screen. Credits and licences: [mockups/README.md](mockups/README.md).
+
+<table>
+<tr>
+<td><img src="mockups/today-lake-clear.jpg" width="320" alt="Today screen, clear sky over a mountain lake"></td>
+<td><img src="mockups/today-lake-heavy-rain.jpg" width="320" alt="Today screen, heavy rain over a mountain lake"></td>
+</tr>
+<tr>
+<td><img src="mockups/today-night-clear.jpg" width="320" alt="Today screen, clear night"></td>
+<td><img src="mockups/today-dusk-thunderstorm.jpg" width="320" alt="Today screen, thunderstorm at dusk"></td>
+</tr>
+</table>
+
+<img src="mockups/sunburst-icons.jpg" width="720" alt="All 22 Sunburst icons at full size, 96 px and 48 px">
+
+What the mock-ups showed: the icons keep real transparency and clean edges on
+any wallpaper; the sun, moon and clouds stay recognizable at 48 px; the
+files came out 1024 x 768 where 1024 x 1024 was asked (padding them onto a
+square canvas fixes that without resizing); drizzle (08) is the faintest on
+a bright background, and the moon in 02 is darker than in 04, 13 and 18.
+
 ## Making a pack with generative AI (owner, 2026-10-16)
 
 **Models:**

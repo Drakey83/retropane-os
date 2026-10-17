@@ -18,6 +18,7 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 | [ui.md](ui.md) | The look: the owner's decisions, the VClouds smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [apps-and-packs.md](apps-and-packs.md) | Every Windows Mobile 5 default app rebuilt and modernized, a new coat of paint on everything, themes and customization, legacy apps and games, the SD expansion pack and its download location, our own DOOM / Heretic / Quake ports, more ideas to modernize |
 | [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (one built in, five on the card, bring your own), the pack format keyed by the WMO codes, the prompt and models for making a pack with generative AI |
+| [mockups/](mockups/README.md) | Images of the Today screen with the Sunburst weather icons, an icon sheet, and their credits and licences |
 
 **Mock-ups:** the concept canvas, private to the owner (Claude artifact
 "RetroPane UI concepts", 2026-10-12): concepts A-K, then boards N-R, the
