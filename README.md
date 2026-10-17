@@ -51,10 +51,10 @@ Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** 
 - **Fast on a 624 MHz CPU:** tinted glass with no blur, composed once and
   cached, with only the changed parts redrawn.
 
-**Make it yours.** The same screen with six wallpapers and six weather icon
-packs. These are design mock-ups, not screenshots: the shell is still in design.
+**Make it yours.** The same screen with six wallpapers and four weather icon
+packs (the default is VClouds', used with his permission). These are design mock-ups, not screenshots: the shell is still in design.
 
-<img src="docs/design/mockups/themes-montage.jpg" width="100%" alt="Six mock-ups of the RetroPane Today screen, each with a different wallpaper and weather icon pack: Sunburst on a mountain lake, Golden Hour on sunset ridges, Aurora on an aurora sky, Frosted on the ocean, Chrome on a forest mist, Noir on graphite">
+<img src="docs/design/mockups/themes-montage.jpg" width="100%" alt="Six mock-ups of the RetroPane Today screen: the default VClouds weather icons on a mountain lake, a forest mist and an aurora wallpaper, then the Golden Hour, Frosted and Noir icon packs on sunset, ocean and graphite wallpapers">
 
 Details: [the design area](docs/design/README.md).
 

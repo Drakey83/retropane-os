@@ -26,7 +26,8 @@ plan is in [../weather.md](../weather.md).
   Region (Flickr), 2016. Public domain, a work of a U.S. federal employee
   (provenance in [../ui.md](../ui.md)). The source image is 600 x 800, so it
   looks soft at 2x.
-- **Icon packs in the montage (Golden Hour, Frosted, Noir, Aurora, Chrome):** made by the project owner, like Sunburst; mock-up use only, licence to be decided.
+- **Default weather icons in the montage: VClouds** ([deviantart.com/vclouds](https://www.deviantart.com/vclouds)), used with his permission and under his terms ([assets/weather/vclouds](../../../assets/weather/vclouds/README.md)). The montage shows them at their own size (175 x 120), never stretched.
+- **Other icon packs in the montage (Golden Hour, Frosted, Noir):** made by the project owner, like Sunburst; mock-up use only, licence to be decided.
 - **Montage wallpapers (sunset ridges, aurora, ocean, forest mist, graphite):** generated for these mock-ups from gradients and drawn ridge shapes. No third-party art; the lake is the public-domain photo above.
 - **Night and dusk backgrounds:** plain gradients made for these mock-ups. No
   third-party art.
