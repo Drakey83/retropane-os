@@ -468,9 +468,9 @@ fn the_today_layout_fits_the_screen_and_nothing_overlaps() {
     }
     // The date sits inside the hero; the five forecast cards inside their row.
     assert!(HERO.union(&DATE_BOX) == HERO);
-    assert!(4 * FORECAST_STEP + FORECAST_W <= FORECAST_ROW.w);
+    const { assert!(4 * FORECAST_STEP + FORECAST_W <= FORECAST_ROW.w) };
     // The weather icon reaches into the hero's top right, as in the mock-ups.
-    assert!(HERO_ICON.x + HERO_ICON.w <= HERO.x + HERO.w);
+    const { assert!(HERO_ICON.x + HERO_ICON.w <= HERO.x + HERO.w) };
 }
 
 #[test]
