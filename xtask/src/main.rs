@@ -285,7 +285,14 @@ fn main() -> ExitCode {
         }
         "measure" => {
             eprintln!("==> measure");
-            measure::measure(&workspace_root())
+            if flag == "--report" {
+                match args().nth(3) {
+                    Some(csv) => measure::report(Path::new(&csv)),
+                    None => Err("usage: cargo xtask measure --report <readings.csv>".into()),
+                }
+            } else {
+                measure::measure(&workspace_root())
+            }
         }
         "udc" => {
             // Diagnostics: `cargo xtask udc stats` (item 74, docs/hw/udc.md).

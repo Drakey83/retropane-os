@@ -47,6 +47,44 @@ impl Xyz {
     }
 }
 
+/// `cargo xtask measure --report <readings.csv>`: the report again from
+/// saved readings (after a change to the analysis).
+pub fn report(csv: &Path) -> Result<(), String> {
+    let text = std::fs::read_to_string(csv).map_err(|e| format!("{}: {e}", csv.display()))?;
+    let mut readings = vec![None; PATCHES.len()];
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let (Ok(i), Ok(x), Ok(y), Ok(z)) = (
+            f[0].parse::<usize>(),
+            f[2].parse::<f64>(),
+            f[3].parse::<f64>(),
+            f[4].parse::<f64>(),
+        ) else {
+            continue;
+        };
+        if let Some(r) = readings.get_mut(i) {
+            *r = Some(Xyz { x, y, z });
+        }
+    }
+    let report = analyse(&readings)?;
+    let md = csv.with_file_name(
+        csv.file_name()
+            .map(|n| {
+                n.to_string_lossy()
+                    .replace("readings-", "report-")
+                    .replace(".csv", ".md")
+            })
+            .unwrap_or_else(|| "report.md".into()),
+    );
+    std::fs::write(&md, &report).map_err(|e| format!("{}: {e}", md.display()))?;
+    eprintln!("{report}");
+    eprintln!("    saved {}", md.display());
+    Ok(())
+}
+
 pub fn measure(root: &Path) -> Result<(), String> {
     let spotread = find_spotread()?;
     let port = instrument_port(&spotread)?;
@@ -265,11 +303,15 @@ pub fn analyse(readings: &[Option<Xyz>]) -> Result<String, String> {
             .position(|p| p.name == name)
             .and_then(|i| readings.get(i).copied().flatten())
     };
-    let stray = get("stray").unwrap_or(Xyz {
+    // The backlight-off reading is light from the screen itself (the
+    // sensor's floor is 0.02 cd/m2 face down, 2026-10-17; a better wrap
+    // didn't change it): part of what the eye sees, so not subtracted.
+    let glow = get("stray");
+    let stray = Xyz {
         x: 0.0,
         y: 0.0,
         z: 0.0,
-    });
+    };
     let need = |name: &str| {
         get(name)
             .map(|v| v.minus(stray))
@@ -282,10 +324,12 @@ pub fn analyse(readings: &[Option<Xyz>]) -> Result<String, String> {
         return Err("white reads no brighter than black: was the sensor on the screen?".into());
     }
     let mut out = String::from("# X51v screen measurement\n\n");
-    out += &format!(
-        "Stray light (backlight off): {:.3} cd/m2, subtracted from every reading.\n\n",
-        stray.y
-    );
+    if let Some(g) = glow {
+        out += &format!(
+            "Backlight off: {:.3} cd/m2 (the screen's own faint glow; the sensor's floor is 0.02). Nothing subtracted.\n\n",
+            g.y
+        );
+    }
     out += &format!(
         "| | |\n|---|---|\n| White (Windows Mobile's backlight) | {:.1} cd/m2 |\n| Black | {:.3} cd/m2 |\n| Contrast | {:.0}:1 |\n",
         white.y,
@@ -373,22 +417,41 @@ pub fn analyse(readings: &[Option<Xyz>]) -> Result<String, String> {
     }
     // The correcting table: gamma 2.2 between the panel's own black and
     // white, white balanced to D65 by turning channels down.
-    let table = correction(&curve, &prim);
-    out += "\n## Correcting gamma table (gamma 2.2, D65 white)\n\n";
-    match table {
-        Some((t, k)) => {
-            out += &format!(
-                "Channel scale for D65: red {:.3}, green {:.3}, blue {:.3}.\n\n```\n",
-                k[0], k[1], k[2]
-            );
-            for w in t {
-                out += &format!("{w:06X} ");
+    out += "\n## Correcting gamma tables (gamma 2.2 between the panel's black and white)\n\n";
+    for (name, target) in TARGETS {
+        match correction(&curve, &prim, target) {
+            Some((t, k)) => {
+                let dim =
+                    k[0] * prim_y(&prim, 0) + k[1] * prim_y(&prim, 1) + k[2] * prim_y(&prim, 2);
+                let full = prim_y(&prim, 0) + prim_y(&prim, 1) + prim_y(&prim, 2);
+                out += &format!(
+                    "**{name}**: channel scale red {:.3}, green {:.3}, blue {:.3}; white at {:.0}% of the panel's.\n\n```\n",
+                    k[0],
+                    k[1],
+                    k[2],
+                    100.0 * dim / full.max(1e-9)
+                );
+                for w in t {
+                    out += &format!("0x{w:06X}, ");
+                }
+                out += "\n```\n\n";
             }
-            out += "\n```\n";
+            None => out += &format!("{name}: not enough readings for a table.\n"),
         }
-        None => out += "Not enough readings for a table.\n",
     }
     Ok(out)
+}
+
+/// The white each table aims for: D65, half-way (D90, about 9,000 K: most
+/// of the gain for less brightness), and none (the panel's own white).
+const TARGETS: [(&str, Option<(f64, f64)>); 3] = [
+    ("Full (D65, 6,500 K)", Some((0.3127, 0.3290))),
+    ("Half-way (about 9,000 K)", Some((0.2848, 0.2932))),
+    ("Gamma only (white as it is)", None),
+];
+
+fn prim_y(prim: &[Option<Xyz>], c: usize) -> f64 {
+    prim.get(c).copied().flatten().map_or(0.0, |p| p.y)
 }
 
 /// Inverse of the measured curve: the level giving normalised light `l`.
@@ -407,14 +470,18 @@ fn level_for(curve: &[(f64, f64)], l: f64) -> f64 {
 
 /// The 17-point table and the D65 channel scales, from the grey curve and
 /// the primaries.
-fn correction(curve: &[(f64, f64)], prim: &[Option<Xyz>]) -> Option<([u32; 17], [f64; 3])> {
+fn correction(
+    curve: &[(f64, f64)],
+    prim: &[Option<Xyz>],
+    target: Option<(f64, f64)>,
+) -> Option<([u32; 17], [f64; 3])> {
     if curve.len() < 6 {
         return None;
     }
-    let k = match (prim[0], prim[1], prim[2]) {
-        (Some(r), Some(g), Some(b)) => {
+    let k = match (prim[0], prim[1], prim[2], target) {
+        (Some(r), Some(g), Some(b), Some((tx, ty))) => {
             let m = [[r.x, g.x, b.x], [r.y, g.y, b.y], [r.z, g.z, b.z]];
-            let k = solve3(m, [0.9505, 1.0, 1.0890])?;
+            let k = solve3(m, [tx / ty, 1.0, (1.0 - tx - ty) / ty])?;
             let top = k.iter().cloned().fold(f64::MIN, f64::max);
             if top <= 0.0 || k.iter().any(|&v| v <= 0.0) {
                 [1.0; 3]
@@ -490,7 +557,7 @@ mod tests {
     fn a_gamma_1_5_panel_is_measured_as_1_5_and_corrected() {
         let r = analyse(&fake(1.5)).unwrap();
         assert!(r.contains("**1.5"), "{r}");
-        assert!(r.contains("6504 K") && r.contains("Correcting gamma table"));
+        assert!(r.contains("6504 K") && r.contains("Correcting gamma tables"));
         // The table darkens the mid-tones of a too-bright panel.
         let (t, k) = correction(
             &rp_screen_measure::GREYS
@@ -498,6 +565,7 @@ mod tests {
                 .map(|&g| (f64::from(g), (f64::from(g) / 255.0).powf(1.5)))
                 .collect::<Vec<_>>(),
             &[None, None, None],
+            Some((0.3127, 0.3290)),
         )
         .unwrap();
         assert_eq!(k, [1.0; 3]);

@@ -266,9 +266,19 @@ blanket):** every patch within 1.4% of run 2, most within 0.5%; white
 40.7 cd/m2, black 1.44, 28:1, about 13,240 K. **The measurement repeats.**
 The backlight-off reading (0.448, run 2: 0.442) didn't change with the
 better wrap, so it is not room light: the sensor's floor or the panel's own
-faint glow with the backlight off. Open: which (a reading with the sensor
-face down on something opaque settles it; it moves black and contrast by
-about a third, nothing else).
+faint glow with the backlight off. **Settled:** face down on something
+opaque the sensor reads 0.02 cd/m2, so the 0.45 is the screen's own glow
+with the backlight off: part of what the eye sees, no longer subtracted
+(`cargo xtask measure --report <csv>` re-analyses saved readings). Run 3
+then: black 1.89 cd/m2, white 41.2, **contrast 22:1**, 13,300 K, gamma 1.80.
+
+**Three measured tables** (gamma 2.2 between the panel's own black and
+white): **full** (D65: red 0.78, blue 0.32; white keeps 79% of its
+brightness), **half-way** (about 9,000 K: red 0.81, blue 0.63; 87%), **gamma
+only** (white as it is; 100%). Added to rp-display-cal's last step as the
+looks "Measured full", "Measured half" and "Measured gamma", at full
+backlight; emu-display-cal shows the first pixel-exact. The owner picks by
+eye; then a measurement with the pick on confirms it hits its targets.
 
 **Games, meanwhile:** the ports themselves come later (ROADMAP Phases
 4-7). What could be done now was a static read of DoomGLES's texture

@@ -6,7 +6,8 @@
 //! Six steps, one dial each ([`rp_display_cal::Dials`], 1-50, 25 =
 //! unchanged): Black, White, Mid, Warm, Bright, Sat; then a seventh,
 //! "Looks", flipping between ready-made settings made from the owner's
-//! picks (`PRESETS`: Original, Accurate, Everyday, Dark games). Moving to another step
+//! picks (`PRESETS`: Original, Accurate, Everyday, Dark games) and the
+//! three tables measured with the colorimeter (`MEASURED`). Moving to another step
 //! puts every dial back to 25 except that step's own pick (the owner's
 //! request after run 4, where a reset to the wrong value spoilt the rest).
 //!
@@ -33,8 +34,8 @@ mod image {
     use core::fmt::Write;
 
     use rp_display_cal::{
-        CAPTION_H, DIAL_NAMES, DIALS, Dials, H, NEUTRAL, PRESET_START, PRESETS, W, backlight,
-        pixel_sat, table,
+        CAPTION_H, DIAL_NAMES, DIALS, Dials, H, LOOKS, NEUTRAL, PRESET_START, W, backlight,
+        look_dials, look_name, look_table, pixel_sat, table,
     };
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
     use rp_drv_mbx_display::scanout::GAMMA_ENTRIES;
@@ -163,7 +164,7 @@ mod image {
                 picks.get(step)
             );
         } else {
-            let _ = write!(top, "{STEPS}/{STEPS} {}", PRESETS[look].0);
+            let _ = write!(top, "{STEPS}/{STEPS} {}", look_name(look));
         }
         if original {
             let _ = write!(low, "ORIGINAL shown - OK to go back");
@@ -171,7 +172,7 @@ mod image {
             let _ = write!(low, "<> adjust (25 = none)  v next  ^ back");
         } else {
             for i in 0..DIALS {
-                let _ = write!(low, "{}{} ", &DIAL_NAMES[i][..2], PRESETS[look].1.get(i));
+                let _ = write!(low, "{}{} ", &DIAL_NAMES[i][..2], look_dials(look).get(i));
             }
         }
         let colour = if original {
@@ -205,7 +206,7 @@ mod image {
         } else if step < DIALS {
             Dials::STOCK.moved(step, picks.get(step) as i32 - NEUTRAL as i32)
         } else {
-            PRESETS[look].1
+            look_dials(look)
         }
     }
 
@@ -306,9 +307,9 @@ mod image {
                     picks = picks.moved(step, by);
                     original = false;
                 } else if by != 0 {
-                    look = (look as i32 + by).rem_euclid(PRESETS.len() as i32) as usize;
+                    look = (look as i32 + by).rem_euclid(LOOKS as i32) as usize;
                     original = false;
-                    let _ = writeln!(RunLog, "look {}", PRESETS[look].0);
+                    let _ = writeln!(RunLog, "look {}", look_name(look));
                 }
                 if go != 0 {
                     if step < DIALS {
@@ -326,7 +327,13 @@ mod image {
                 }
                 original ^= flip;
                 let d = shown(step, picks, look, original);
-                write_gamma(display.regs(), &table(d, &found));
+                // The last step's looks bring their own tables.
+                let t = if step == DIALS && !original {
+                    look_table(look, &found)
+                } else {
+                    table(d, &found)
+                };
+                write_gamma(display.regs(), &t);
                 if d.bright == NEUTRAL {
                     pwm.write32(CR, light.0);
                     pwm.write32(PCR, light.2);
@@ -353,7 +360,7 @@ mod image {
         }
         let _ = writeln!(RunLog);
         log_table("picks' table", &table(picks, &found));
-        let _ = writeln!(RunLog, "last look: {}", PRESETS[look].0);
+        let _ = writeln!(RunLog, "last look: {}", look_name(look));
         write_gamma(display.regs(), &found);
         pwm.write32(CR, light.0);
         pwm.write32(PCR, light.2);

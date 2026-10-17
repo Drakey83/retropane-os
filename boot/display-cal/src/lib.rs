@@ -330,6 +330,72 @@ pub const PRESETS: [(&str, Dials); 4] = [
 /// The look the last step starts on.
 pub const PRESET_START: usize = 2;
 
+/// Gamma tables measured with the Spyder4 (`cargo xtask measure`, run 3,
+/// 2026-10-17, readings `local/screen-measure/readings-1792276147.csv`):
+/// gamma 2.2 between the panel's own black and white, white at D65, half-way
+/// (about 9,000 K), or as it is. Shown at full backlight (the panel is dim:
+/// 41 cd/m2 at Windows Mobile's 63%, 57 at full).
+pub const MEASURED: [(&str, [u32; GAMMA_ENTRIES]); 3] = [
+    (
+        "Measured full",
+        [
+            0x000000, 0x030401, 0x0F1206, 0x1C210F, 0x2A3118, 0x384121, 0x465029, 0x546133,
+            0x63703D, 0x708146, 0x7F904F, 0x8DA259, 0x9DB463, 0xACC66B, 0xBDD774, 0xCCE87F,
+            0xDBFF87,
+        ],
+    ),
+    (
+        "Measured half",
+        [
+            0x000000, 0x040403, 0x0F120C, 0x1D2119, 0x2B3125, 0x394132, 0x47503F, 0x56614B,
+            0x657058, 0x738166, 0x829072, 0x90A27F, 0xA0B48C, 0xB0C69A, 0xC1D7A8, 0xD0E8B7,
+            0xE0FFC5,
+        ],
+    ),
+    (
+        "Measured gamma",
+        [
+            0x000000, 0x040404, 0x121212, 0x212121, 0x313131, 0x414141, 0x505050, 0x616161,
+            0x707070, 0x818181, 0x909090, 0xA2A2A2, 0xB4B4B4, 0xC6C6C6, 0xD7D7D7, 0xE8E8E8,
+            0xFFFFFF,
+        ],
+    ),
+];
+
+/// How many looks the last step flips between: the presets, then the
+/// measured tables.
+pub const LOOKS: usize = PRESETS.len() + MEASURED.len();
+
+/// Look `i`'s name.
+#[must_use]
+pub fn look_name(i: usize) -> &'static str {
+    match i.checked_sub(PRESETS.len()) {
+        None => PRESETS[i].0,
+        Some(m) => MEASURED[m % MEASURED.len()].0,
+    }
+}
+
+/// Look `i`'s dials (a measured look: unchanged but the backlight full).
+#[must_use]
+pub fn look_dials(i: usize) -> Dials {
+    match i.checked_sub(PRESETS.len()) {
+        None => PRESETS[i].1,
+        Some(_) => Dials {
+            bright: DIAL_MAX,
+            ..Dials::STOCK
+        },
+    }
+}
+
+/// Look `i`'s gamma table, `found` being the table as found.
+#[must_use]
+pub fn look_table(i: usize, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
+    match i.checked_sub(PRESETS.len()) {
+        None => table(PRESETS[i].1, found),
+        Some(m) => MEASURED[m % MEASURED.len()].1,
+    }
+}
+
 /// A dial's distance from unchanged: -24 to +25.
 fn off(v: u32) -> i32 {
     v.clamp(DIAL_MIN, DIAL_MAX) as i32 - NEUTRAL as i32
@@ -532,6 +598,22 @@ mod tests {
         assert_eq!(r, g);
         let (_, g, _) = pixel_sat(red.0, red.1, 13);
         assert!(g > 20);
+    }
+
+    #[test]
+    fn measured_tables_rise_and_start_at_black() {
+        for (name, t) in &MEASURED {
+            assert_eq!(t[0], 0, "{name}");
+            for sh in [16, 8, 0] {
+                assert!(
+                    t.windows(2)
+                        .all(|w| (w[1] >> sh & 0xFF) >= (w[0] >> sh & 0xFF)),
+                    "{name}"
+                );
+            }
+        }
+        assert_eq!(look_name(PRESETS.len()), "Measured full");
+        assert_eq!(look_dials(LOOKS - 1).bright, DIAL_MAX);
     }
 
     #[test]

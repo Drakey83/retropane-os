@@ -932,7 +932,9 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
 /// the starting look, right (the next look); centre (the original); Home
 /// puts everything back.
 pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
-    use rp_display_cal::{CAPTION_H, Dials, H, PRESET_START, PRESETS, W, pixel_sat, table};
+    use rp_display_cal::{
+        CAPTION_H, Dials, H, PRESET_START, PRESETS, W, look_table, pixel_sat, table,
+    };
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -960,8 +962,8 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
         v
     };
-    let until = |name: &str, d: Dials| -> Result<(), String> {
-        let want = want(&table(d, &WM_GAMMA), d.sat);
+    let until_table = |name: &str, t: &[u32; GAMMA_ENTRIES], sat: u32| -> Result<(), String> {
+        let want = want(t, sat);
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             let _ = std::fs::remove_file(&shot);
@@ -996,6 +998,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(400));
         }
     };
+    let until = |name: &str, d: Dials| until_table(name, &table(d, &WM_GAMMA), d.sat);
     let check = || -> Result<(), String> {
         let key = |k: &str| -> Result<(), String> {
             // Held 200 ms (under the repeat delay), answered before the
@@ -1022,6 +1025,13 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         until("look-start", PRESETS[PRESET_START].1)?;
         key("right")?;
         until("look-next", PRESETS[PRESET_START + 1].1)?;
+        // The first measured look: its own table, the picture as drawn.
+        key("right")?;
+        until_table(
+            "look-measured",
+            &look_table(PRESETS.len(), &WM_GAMMA),
+            Dials::STOCK.sat,
+        )?;
         key("ret")?;
         until("compare-original", Dials::STOCK)?;
         key("f4")
@@ -1050,8 +1060,8 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         "step 1 Black: 26",
         "step 2 White: 26",
         "step 6 Sat: 26",
-        "done (Home) after 11 changes; picks: Black 26 White 26 Mid 25 Warm 25 Bright 25 Sat 26",
-        "last look: Dark games",
+        "done (Home) after 12 changes; picks: Black 26 White 26 Mid 25 Warm 25 Bright 25 Sat 26",
+        "last look: Measured full",
         "DISPLAY-CAL-OK",
     ] {
         if !log.contains(want) {
@@ -1059,7 +1069,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    display-cal OK: the guided steps pixel-exact (Black 26, the reset on the next step, White 26, Sat 26 redrawn, two looks, the original); Home put back and returned"
+        "    display-cal OK: the guided steps pixel-exact (Black 26, the reset on the next step, White 26, Sat 26 redrawn, two looks and a measured one, the original); Home put back and returned"
     );
     Ok(())
 }
