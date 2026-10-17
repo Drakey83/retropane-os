@@ -173,6 +173,13 @@ drawn through RetroPane's 3D core work, with start-up time as a goal from
 day one: Q3CE's start under Windows Mobile measured first as the baseline.
 After the OS work; likely its own repository. Game data stays the owner's.
 
+## Maybe, long after everything else: a modern screen
+**Parked by the owner, 2026-10-17: a slight "maybe", only once everything above
+is done.** Desk research on swapping the X51v's 3.7" Sharp panel for a cheap
+modern one through our own flex adapter, and whether it could be a kit:
+[research/screen-swap.md](research/screen-swap.md). Nothing planned; any
+prototype would be on the spare X50v, never the owner's X51v.
+
 ---
 
 ## Tracking
