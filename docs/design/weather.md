@@ -16,8 +16,12 @@ The look is in [ui.md](ui.md) ("Weather and icons", "The smoked-glass design lan
 
 ## Icon packs (decided by the owner, 2026-10-16)
 
-- **One pack in the system** (flash), keeping the base small: the owner's choice.
-- **Five more packs** install onto the SD or CF card when one is present,
+- **One pack in the system** (flash), keeping the base small. **It is VClouds'
+  weather icons** (owner, 2026-10-17), used with his permission and credited
+  to him on the About screen and beside the files
+  ([assets/weather/vclouds/](../../assets/weather/vclouds/README.md)).
+- **Six more packs**, the owner's own (Sunburst, Golden Hour, Frosted, Noir,
+  Aurora, Chrome), install onto the SD or CF card when one is present,
   from the expansion pack ([ADR-0018](../adr/0018-optional-packs.md),
   [apps-and-packs.md](apps-and-packs.md) §5). With no card, the one
   built-in pack is the only option.
@@ -33,8 +37,10 @@ Forecast feeds send a condition *code*, not a picture: the World
 Meteorological Organization's weather interpretation codes (the
 WMO 4677 family, as the open feeds use them). A pack is a set of pictures
 named for the icons below, each covering a group of codes, so any pack that
-has every name works. Pictures are square transparent PNGs in the
-pack, 512 px or larger and all the same size (1024 or 816 are fine); the build (or the installer, for a user's pack) scales them into the
+has every name works. Pictures are transparent PNGs, all the same size
+within a pack: square and 512 px or larger (1024 or 816 are fine), or the
+native size of an older set such as VClouds' (175 x 120, never stretched to
+square); the build (or the installer, for a user's pack) scales them into the
 asset atlas, so they cost nothing while running (design-brief.md). A pack
 is data only, checked like any input: size-capped, decoded by our own
 validating PNG reader, refused if damaged.

@@ -43,7 +43,8 @@ Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** 
   Media, Games) below it. Time, battery and Wi-Fi are always visible.
 - **Smoked glass over a wallpaper you choose:** dark, tinted glass panels
   with fine bright edges over photography, a retro and modern mix in the
-  spirit of the glassy desktop art of the late 2000s. A few wallpapers ship
+  spirit of the glassy desktop art of the late 2000s (the look comes from
+  VClouds' Rainmeter skins, with his permission). A few wallpapers ship
   with it, or you can use your own from either card.
 - **Stylus and D-pad equally**, with the buttons doing what they did on
   Windows Mobile.
@@ -56,6 +57,17 @@ packs. These are design mock-ups, not screenshots: the shell is still in design.
 <img src="docs/design/mockups/themes-montage.jpg" width="100%" alt="Six mock-ups of the RetroPane Today screen, each with a different wallpaper and weather icon pack: Sunburst on a mountain lake, Golden Hour on sunset ridges, Aurora on an aurora sky, Frosted on the ocean, Chrome on a forest mist, Noir on graphite">
 
 Details: [the design area](docs/design/README.md).
+
+## Credits
+
+- **Weather icons: VClouds** ([deviantart.com/vclouds](https://www.deviantart.com/vclouds)).
+  RetroPane's default weather icons and the glass look of the design are his
+  work, used with his permission and under his terms, kept apart from the
+  code's licence ([assets/weather/vclouds](assets/weather/vclouds/README.md)).
+- **Memory card icons: Juanje** (puntodepartida.com), used with his
+  permission ([assets/cards](assets/cards/README.md)).
+- Typeface Didact Gothic, SIL Open Font License 1.1. Wallpaper credits are in
+  [the mock-up notes](docs/design/mockups/README.md).
 
 ## Documents
 
