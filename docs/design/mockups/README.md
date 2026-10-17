@@ -34,7 +34,10 @@ plan is in [../weather.md](../weather.md).
   San Rafael Swell and Canyon, Wedgepanel (BLMUtah);
   Morning Reflections at Lake McDonald (GlacierNPS, National Park Service).
 - **Optional icon packs (`optional-packs.jpg`):** Golden Hour, Frosted, Noir, Aurora
-  and Chrome, made by the project owner. Design mock-up only; the licence under
-  which they would ship is still to be decided ([../weather.md](../weather.md)).
+  and Chrome, made by the project owner, who holds the right to distribute them
+  (confirmed by the owner, 2026-10-17). The licence they will ship under is the
+  owner's to choose; the suggestion is CC BY 4.0 (free to use and share with
+  credit to the owner), kept in the packs' own folder like VClouds'. Design
+  mock-up only for now ([../weather.md](../weather.md)).
 - **Typeface:** Didact Gothic, SIL Open Font License 1.1.
 - **Glass panels, buttons and small line icons:** original to RetroPane.

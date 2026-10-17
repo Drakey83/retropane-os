@@ -20,8 +20,10 @@ from PIL import Image, ImageDraw, ImageFont
 # name, pixel size, first..last character, extra tracking (spaced capitals
 # for labels), characters actually drawn (others are empty entries).
 SIZES = [
-    ("UI", 18, 0x20, 0x7E, 0, None),
-    ("LABEL", 15, 0x20, 0x7E, 2, None),
+    # 0x7F draws the degree sign (DEL has no other use): the small fonts have
+    # no room for the whole Latin-1 range, and the shell only needs one extra.
+    ("UI", 18, 0x20, 0x7F, 0, None),
+    ("LABEL", 15, 0x20, 0x7F, 2, None),
     ("BIG", 76, 0x30, 0xB0, 0, "0123456789:°"),
 ]
 
@@ -64,7 +66,7 @@ def main():
         ascent, descent = font.getmetrics()
         entries = []
         for code in range(first, last + 1):
-            ch = chr(code)
+            ch = "°" if code == 0x7F else chr(code)
             if only is not None and ch not in only:
                 entries.append("    g(0, 0, 0, 0, 0, &[]),")
                 continue

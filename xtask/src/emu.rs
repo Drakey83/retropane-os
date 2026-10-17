@@ -2085,7 +2085,7 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
 /// Pixels that differ outside the clock's areas (their text depends on
 /// when the check runs).
 fn today_differ(got: &[u8], want: &[u8]) -> usize {
-    let masked = [rp_shell::CLOCK_PANEL, rp_shell::TITLE_CLOCK];
+    let masked = [rp_shell::DATE_BOX, rp_shell::FORECAST_ROW, rp_shell::TITLE_CLOCK];
     got.chunks(3)
         .zip(want.chunks(3))
         .enumerate()

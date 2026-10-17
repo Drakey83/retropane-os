@@ -24,7 +24,7 @@ the video plane. It is the right frame; it lacks the weather look.
 
 ## The steps, in order, each small and device-proven
 
-1. **T1, the layout.** Hero panel (city, temperature, condition, high and low,
+1. **T1, the layout. Built and emulator-verified (2026-10-17); not yet run on the device.** Hero panel (city, temperature, condition, high and low,
    date), forecast row and calendar panel as in the mock-up, with a plain
    placeholder in place of each icon. Host tests for layout and hit targets;
    `emu-today` pixel check. No new data format.
@@ -37,6 +37,18 @@ the video plane. It is the right frame; it lacks the weather look.
 
 Weather data is a fixed reading until the networking phase; the screen says
 so ("sample data") rather than pretending.
+
+<img src="../img/emulator-today-t1.png" width="320" alt="The Today screen after T1 in the emulator: the weather hero, a five-day row, today's calendar, the quick buttons and the softkeys, with outlines where the icons will go">
+
+T1 as built: the hero panel (place, temperature, condition, high and low, the
+date, an outline where the icon goes), the five-day row, a calendar panel with
+sample lines, and the quick buttons at the bottom; the clock moved to the title
+bar only, as in the mock-ups. The degree sign was added to the small fonts (the
+10 px of flash it costs is noted in the code). Left and right on the D-pad now
+stay on their row, because the quick row sits just above the softkeys. All of
+the weather and calendar text says "sample data". Checked by 20 host tests and
+`cargo xtask emu-today` (pixel-exact against the shell's own renderer, the
+date and clock areas masked).
 
 ## The icon format (the one design decision)
 

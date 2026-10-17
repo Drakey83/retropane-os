@@ -445,3 +445,79 @@ fn home_leaves_the_align_screen_unchanged() {
     // Raw readings outside it do nothing.
     assert_eq!(s.input(Input::Raw { rx: 1, ry: 1 }), Action::Nothing);
 }
+
+fn overlap(a: Rect, b: Rect) -> bool {
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+}
+
+#[test]
+fn the_today_layout_fits_the_screen_and_nothing_overlaps() {
+    let mut boxes = vec![TITLE, HERO, FORECAST_ROW, CALENDAR_PANEL, SOFTKEYS];
+    boxes.extend((0..5).map(quick_rect));
+    for r in &boxes {
+        assert!(r.x + r.w <= W && r.y + r.h <= H, "{r:?} leaves the screen");
+    }
+    for (i, a) in boxes.iter().enumerate() {
+        for b in &boxes[i + 1..] {
+            assert!(!overlap(*a, *b), "{a:?} overlaps {b:?}");
+        }
+    }
+    // The date sits inside the hero; the five forecast cards inside their row.
+    assert!(HERO.union(&DATE_BOX) == HERO);
+    assert!(4 * FORECAST_STEP + FORECAST_W <= FORECAST_ROW.w);
+    // The weather icon reaches into the hero's top right, as in the mock-ups.
+    assert!(HERO_ICON.x + HERO_ICON.w <= HERO.x + HERO.w);
+}
+
+#[test]
+fn a_new_day_redraws_the_date_and_forecast_names_not_the_screen() {
+    let mut s = shell(false);
+    drawn(&mut s);
+    let monday = Time {
+        hour: 23,
+        minute: 59,
+        weekday: 0,
+        day: 12,
+        month: 10,
+    };
+    s.set_time(monday);
+    drawn(&mut s);
+    s.set_time(Time {
+        hour: 0,
+        minute: 0,
+        weekday: 1,
+        day: 13,
+        ..monday
+    });
+    let f = drawn(&mut s);
+    for want in [TITLE_CLOCK, DATE_BOX, FORECAST_ROW] {
+        assert!(
+            f.dirty().contains(&want),
+            "{want:?} not redrawn: {:?}",
+            f.dirty()
+        );
+    }
+    // A minute within the day redraws neither of the day's boxes.
+    s.set_time(Time {
+        minute: 1,
+        weekday: 1,
+        day: 13,
+        hour: 0,
+        ..monday
+    });
+    let f = drawn(&mut s);
+    assert!(!f.dirty().contains(&DATE_BOX) && !f.dirty().contains(&FORECAST_ROW));
+}
+
+#[test]
+fn temperatures_and_day_names_format() {
+    let mut b = [0; 32];
+    let n = high_low(&mut b, 75, 52);
+    assert_eq!(&b[..n], b"High 75\x7f   Low 52\x7f");
+    let n = high_low_short(&mut b, 73, 5);
+    assert_eq!(&b[..n], b"73\x7f 05\x7f");
+    assert_eq!(two(250), *b"99");
+    assert_eq!(day_name(6, 1), b"MON");
+    assert_eq!(day_name(4, 5), b"WED");
+    assert_eq!(day_name(9, 1), b"MON"); // a weekday out of range is clamped to Sunday
+}

@@ -135,10 +135,18 @@ pub enum Target {
 const TITLE: Rect = Rect::new(0, 0, W, 36);
 /// Start, top left.
 pub const START: Rect = Rect::new(0, 0, 96, 36);
-/// The clock and date panel (its contents depend on the time).
-pub const CLOCK_PANEL: Rect = Rect::new(16, 56, 448, 150);
-const WEATHER_PANEL: Rect = Rect::new(16, 222, 448, 110);
-const CALENDAR_PANEL: Rect = Rect::new(16, 348, 448, 52);
+/// The weather hero panel: the place, the temperature, the condition, today's
+/// high and low, and the date (docs/design/ui.md "Weather and icons").
+const HERO: Rect = Rect::new(16, 52, 448, 196);
+/// Where the weather icon goes (the panel's top right; it may reach above it).
+const HERO_ICON: Rect = Rect::new(16 + 448 - 16 - 175, 52 + 10, 175, 120);
+/// The date at the hero's bottom right (its text depends on the day).
+pub const DATE_BOX: Rect = Rect::new(280, 52 + 196 - 50, 168, 40);
+/// The five-day forecast row (its day names depend on the day).
+pub const FORECAST_ROW: Rect = Rect::new(16, 260, 448, 74);
+const FORECAST_W: u16 = 83;
+const FORECAST_STEP: u16 = 91;
+const CALENDAR_PANEL: Rect = Rect::new(16, 346, 448, 104);
 const SOFTKEYS: Rect = Rect::new(0, H - 40, W, 40);
 const SOFT_LEFT: Rect = Rect::new(0, H - 40, 160, 40);
 const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
@@ -146,17 +154,26 @@ const SOFT_RIGHT: Rect = Rect::new(W - 160, H - 40, 160, 40);
 const NOTICE: Rect = Rect::new(160, H - 40, 160, 40);
 /// The title bar's clock and status (depends on the time).
 pub const TITLE_CLOCK: Rect = Rect::new(W - 140, 0, 140, 36);
-/// The big clock's baseline from the top of its panel.
-const BIG_CLOCK_BASELINE: u16 = 92;
-
 /// The quick buttons (docs/design/ui.md "A PDA, proudly").
 const QUICK: [&str; 5] = ["Note", "Record", "Reader", "Media", "Games"];
-const QUICK_Y: u16 = 416;
-const QUICK_SIZE: u16 = 82;
+const QUICK_Y: u16 = 532;
+const QUICK_W: u16 = 84;
+const QUICK_H: u16 = 54;
 
 fn quick_rect(i: u8) -> Rect {
-    Rect::new(16 + u16::from(i) * 90, QUICK_Y, QUICK_SIZE, QUICK_SIZE)
+    Rect::new(16 + u16::from(i) * 91, QUICK_Y, QUICK_W, QUICK_H)
 }
+
+/// The degree sign in the small fonts (DEL's slot, tools/shell-assets/fonts.py);
+/// the big font has it at the Latin-1 place.
+const DEG: u8 = 0x7F;
+const DEG_BIG: u8 = 0xB0;
+
+/// Placeholder weather until there is a network: today's reading and a
+/// five-day forecast as (high, low), drawn with "sample data" beside them.
+const SAMPLE_NOW: u8 = 72;
+const SAMPLE_HIGH_LOW: (u8, u8) = (75, 52);
+const SAMPLE_FORECAST: [(u8, u8); 5] = [(73, 52), (63, 48), (61, 48), (59, 46), (70, 50)];
 
 /// The Start menu (docs/design/ui.md), "Back to loader" only in test images.
 const MENU: [&str; 10] = [
@@ -372,26 +389,13 @@ impl Shell {
         }
         let date_changed =
             (t.weekday, t.day, t.month) != (self.time.weekday, self.time.day, self.time.month);
-        // The big clock's box before and after (its width can change).
-        let old = self.big_clock_rect(self.time);
         self.time = t;
         self.dirty(TITLE_CLOCK);
         if date_changed {
-            self.dirty(CLOCK_PANEL);
-        } else {
-            self.dirty(old.union(&self.big_clock_rect(t)));
+            self.dirty(DATE_BOX);
+            self.dirty(FORECAST_ROW);
         }
         Action::Redraw
-    }
-
-    /// The box the big clock's text takes for `t` (with the text margin).
-    fn big_clock_rect(&self, t: Time) -> Rect {
-        let mut buf = [0u8; 32];
-        let font = self.fonts.big;
-        let w = font.width(hh_mm(&mut buf, t));
-        let x = CLOCK_PANEL.x + CLOCK_PANEL.w.saturating_sub(w) / 2;
-        let top = (CLOCK_PANEL.y + BIG_CLOCK_BASELINE).saturating_sub(u16::from(font.ascent) + 4);
-        Rect::new(x.saturating_sub(4), top, w + 8, u16::from(font.line) + 8).intersect(&CLOCK_PANEL)
     }
 
     fn set_focus(&mut self, f: Option<Target>) {
@@ -600,8 +604,16 @@ impl Shell {
                     Key::Right => (dx, dy),
                     _ => return None,
                 };
-                // In that direction, within 45 degrees; nearest, straightest.
-                (along > 0 && across.abs() <= along).then_some((along + 2 * across.abs(), t))
+                // In that direction; nearest, straightest. Up and down accept
+                // 45 degrees; left and right stay near their row (the quick
+                // row sits just above the softkeys: Left from the right
+                // softkey must reach the left one, not a quick button).
+                let wide = if matches!(k, Key::Left | Key::Right) {
+                    4
+                } else {
+                    1
+                };
+                (along > 0 && wide * across.abs() <= along).then_some((along + 2 * across.abs(), t))
             })
             .min_by_key(|&(d, _)| d)
             .map(|(_, t)| t)
@@ -744,53 +756,83 @@ impl Shell {
             color: DIM,
         });
 
-        // The clock and date.
-        Self::glass(f, CLOCK_PANEL, GLASS_LEFT, GLASS_RIGHT);
-        let hm = hh_mm(&mut buf, self.time);
-        self.centred(
-            f,
-            CLOCK_PANEL,
-            CLOCK_PANEL.y + BIG_CLOCK_BASELINE,
-            big,
-            TEXT,
-            hm,
-        );
+        // The weather hero.
+        Self::glass(f, HERO, GLASS_LEFT, GLASS_RIGHT);
+        f.text(HERO.x + 20, HERO.y + 34, label, DIM, b"YOUR CITY");
+        let temp = [b'0' + SAMPLE_NOW / 10, b'0' + SAMPLE_NOW % 10, DEG_BIG];
+        f.text(HERO.x + 20, HERO.y + 116, big, TEXT, &temp);
+        f.text(HERO.x + 20, HERO.y + 146, ui, TEXT, b"Partly cloudy");
+        let (hi, lo) = SAMPLE_HIGH_LOW;
+        let n = high_low(&mut buf, hi, lo);
+        f.text(HERO.x + 20, HERO.y + 174, ui, DIM, &buf[..n]);
+        // The icon's place until the pack's pictures load (docs/design/today-screen-plan.md).
+        f.push(Cmd::Outline {
+            r: HERO_ICON,
+            color: 0x30FF_FFFF,
+        });
         let date = date_line(&mut buf, self.time);
-        self.centred(f, CLOCK_PANEL, CLOCK_PANEL.y + 130, label, DIM, date);
-
-        // The weather: a placeholder until there's a network.
-        Self::glass(f, WEATHER_PANEL, GLASS_LEFT, GLASS_RIGHT);
+        let w = label.width(date);
         f.text(
-            WEATHER_PANEL.x + 24,
-            WEATHER_PANEL.y + 74,
-            big,
-            TEXT,
-            b"18\xb0",
-        );
-        f.text(
-            WEATHER_PANEL.x + 200,
-            WEATHER_PANEL.y + 48,
+            DATE_BOX.x + DATE_BOX.w - w,
+            HERO.y + HERO.h - 20,
             label,
             TEXT,
-            b"PARTLY CLOUDY",
+            date,
         );
         f.text(
-            WEATHER_PANEL.x + 200,
-            WEATHER_PANEL.y + 78,
+            HERO.x + HERO.w - 20 - ui.width(b"sample data"),
+            HERO.y + 164 - 12,
             ui,
             DIM,
-            b"(sample: no network yet)",
+            b"sample data",
         );
 
-        // The calendar line.
+        // The five-day forecast.
+        for (i, (hi, lo)) in SAMPLE_FORECAST.iter().enumerate() {
+            let r = Rect::new(
+                FORECAST_ROW.x + i as u16 * FORECAST_STEP,
+                FORECAST_ROW.y,
+                FORECAST_W,
+                FORECAST_ROW.h,
+            );
+            Self::glass(f, r, GLASS_LEFT, GLASS_RIGHT);
+            let day = day_name(self.time.weekday, i as u8 + 1);
+            self.centred(f, r, r.y + 18, label, DIM, day);
+            f.push(Cmd::Outline {
+                r: Rect::new(r.x + r.w / 2 - 22, r.y + 24, 44, 24),
+                color: 0x30FF_FFFF,
+            });
+            let n = high_low_short(&mut buf, *hi, *lo);
+            self.centred(f, r, r.y + r.h - 8, ui, TEXT, &buf[..n]);
+        }
+
+        // The calendar: sample lines until there is a calendar.
         Self::glass(f, CALENDAR_PANEL, GLASS_LEFT, GLASS_RIGHT);
         f.text(
             CALENDAR_PANEL.x + 16,
-            CALENDAR_PANEL.y + 33,
-            ui,
-            TEXT,
-            b"No appointments today",
+            CALENDAR_PANEL.y + 28,
+            label,
+            DIM,
+            b"TODAY",
         );
+        f.text(
+            CALENDAR_PANEL.x + CALENDAR_PANEL.w - 16 - ui.width(b"sample data"),
+            CALENDAR_PANEL.y + 28,
+            ui,
+            DIM,
+            b"sample data",
+        );
+        for (k, (when, what)) in [
+            (&b"11:30"[..], &b"Team call"[..]),
+            (b"16:00", b"Pick up parts"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let y = CALENDAR_PANEL.y + 58 + k as u16 * 28;
+            f.text(CALENDAR_PANEL.x + 16, y, ui, DIM, when);
+            f.text(CALENDAR_PANEL.x + 80, y, ui, TEXT, what);
+        }
 
         // Quick buttons.
         for (i, name) in QUICK.iter().enumerate() {
@@ -860,6 +902,45 @@ fn hh_mm(buf: &mut [u8; 32], t: Time) -> &[u8] {
         b'0' + m % 10,
     ]);
     &buf[..5]
+}
+
+/// "High 75° Low 52°" into `buf` (the degree sign is the small fonts' own).
+fn high_low(buf: &mut [u8; 32], hi: u8, lo: u8) -> usize {
+    let mut n = 0;
+    for part in [
+        &b"High "[..],
+        &two(hi),
+        &[DEG],
+        b"   Low ",
+        &two(lo),
+        &[DEG],
+    ] {
+        buf[n..n + part.len()].copy_from_slice(part);
+        n += part.len();
+    }
+    n
+}
+
+/// "73° 52°" into `buf` (a forecast card).
+fn high_low_short(buf: &mut [u8; 32], hi: u8, lo: u8) -> usize {
+    let mut n = 0;
+    for part in [&two(hi)[..], &[DEG, b' '], &two(lo), &[DEG]] {
+        buf[n..n + part.len()].copy_from_slice(part);
+        n += part.len();
+    }
+    n
+}
+
+/// Two digits of `n` (0..=99).
+fn two(n: u8) -> [u8; 2] {
+    let n = n.min(99);
+    [b'0' + n / 10, b'0' + n % 10]
+}
+
+/// The name of the weekday `ahead` days after `weekday` (0 Monday).
+fn day_name(weekday: u8, ahead: u8) -> &'static [u8] {
+    const DAYS: [&[u8]; 7] = [b"MON", b"TUE", b"WED", b"THU", b"FRI", b"SAT", b"SUN"];
+    DAYS[usize::from((weekday.min(6) + ahead) % 7)]
 }
 
 /// `MON 13 OCTOBER` into `buf` (spaced capitals are the label font's job).
