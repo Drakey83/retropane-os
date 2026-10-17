@@ -254,6 +254,16 @@ the owner (or a note from the project) asks Tailscale, and Headscale is the
 fallback that needs no one's permission. Stage T1 (a gateway) uses the official
 client on a home machine and has no such question.
 
+**A free tailnet for the project (owner, 2026-10-17, from Tailscale's own pages as
+summarised by a search overview; to be confirmed on tailscale.com before applying):**
+Tailscale offers open-source projects with an OSI-approved licence on GitHub a free
+"Community on GitHub" plan, up to 25 users and 5 devices each. RetroPane (GPL, on
+GitHub) should qualify: the owner applies. It would give the project its own tailnet
+for test devices, the download host and the media-server tests. The client's
+components are open source under BSD, MIT or Apache 2.0 depending on the part, free to
+fork or build on; `tsnet`, the library that embeds Tailscale in a program, is Go, so
+it can help the PC or home-server side but cannot run on the Axim.
+
 **Security rules specific to this** ([security.md](../security.md)):
 the device's key lives in the encrypted store; the auth key is tagged so the
 access rules let the device reach **only** the media server and nothing else
