@@ -49,8 +49,7 @@ measurably wins.
 **Beyond WM5, a big emphasis (owner, 2026-10-16): a built-in Weather app.**
 Windows Mobile had none by default; RetroPane makes weather a headline
 feature: the hero of the Today screen (docs/design/ui.md "Weather and
-icons": the sky as wallpaper, photoreal icons breaking out of their tiles,
-VClouds' look) plus a full Weather app (hourly, days ahead, places).
+icons": the sky as wallpaper, photoreal icons breaking out of their tiles) plus a full Weather app (hourly, days ahead, places).
 Icon packs, the pack format and how to make one: [weather.md](weather.md).
 
 Open: which WM5 extras count as "default" (Pocket MSN, the Dell X51v's own

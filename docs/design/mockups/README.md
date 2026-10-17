@@ -18,8 +18,7 @@ plan is in [../weather.md](../weather.md).
 
 ## Credits and licences
 
-- **Weather icons (Sunburst):** made by the project owner with GPT Image
-  v2.5, from the owner's own prompts. Shown here as a design mock-up only; the
+- **Weather icons (Sunburst):** made by the project owner. Shown here as a design mock-up only; the
   pack is not part of the operating system yet, and the licence under which
   a pack would ship is still to be decided ([../weather.md](../weather.md)).
 - **Mountain lake wallpaper:** N. Lowe, U.S. Forest Service Intermountain
