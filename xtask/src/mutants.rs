@@ -316,6 +316,20 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
     },
     Mutant {
+        name: "a unit without overlap reads after one with it leaves the front on the second half (the PC saw the CF drive as zeros)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "                if !overlap {
+                    self.front = 0;
+                }
+",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_unit_without_overlap_sends_what_it_read",
+        ]),
+    },
+    Mutant {
         name: "a host's view from before the drive started is trusted (its old root directory written back)",
         file: "drivers/usb-msc/src/lib.rs",
         from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",

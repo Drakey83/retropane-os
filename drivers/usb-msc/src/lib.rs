@@ -839,6 +839,12 @@ impl<'b> Msc<'b> {
                 // (half the buffer if the other half follows, else all of
                 // it), as if it had been read behind.
                 let max = if overlap { half } else { self.buf.len() };
+                // A unit that doesn't overlap uses the buffer from its start
+                // (what the send below reads); the front a unit that does left
+                // on the second half would send what was never read.
+                if !overlap {
+                    self.front = 0;
+                }
                 let Some(n) = self.next_chunk(self.front, max, false, pipe, lun) else {
                     return self.read_failed();
                 };

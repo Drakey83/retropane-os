@@ -1071,6 +1071,11 @@ mod image {
         /// re-inserts it); after that it waits for re-insertion or `cf`,
         /// never a retry loop.
         retry: bool,
+        /// The first PC reads of this unit (diagnostics, docs/hw/cf.md: the
+        /// drive showed empty in Explorer): block, count, result, and the
+        /// first four bytes read.
+        reads: [(u32, u16, bool, [u8; 4]); 6],
+        reads_len: usize,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -1176,7 +1181,15 @@ mod image {
     impl BlockDevice for CfLun {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             match &mut self.slot {
-                CfSlot::Card(c) if self.inserted => c.read_blocks(lba, buf),
+                CfSlot::Card(c) if self.inserted => {
+                    let r = c.read_blocks(lba, buf);
+                    if let Some(e) = self.reads.get_mut(self.reads_len) {
+                        let head = buf.first_chunk().copied().unwrap_or_default();
+                        *e = (lba, (buf.len() / 512) as u16, r.is_ok(), head);
+                        self.reads_len += 1;
+                    }
+                    r
+                }
                 _ => Err(BlockError::Device),
             }
         }
@@ -1831,6 +1844,8 @@ mod image {
             },
             powered: false,
             retry: cf_in,
+            reads: [(0, 0, false, [0; 4]); 6],
+            reads_len: 0,
         };
         cf.events.push(if cf.ready { b'1' } else { b'0' });
         if cf_in {
@@ -2278,6 +2293,18 @@ mod image {
                         Ok(b"cf log") => {
                             let _ = status.write_str("RPL OK cf:");
                             cf.events.write(&mut status);
+                            let _ = status.write_str("; reads");
+                            for &(lba, n, ok, h) in &cf.reads[..cf.reads_len] {
+                                let _ = write!(
+                                    status,
+                                    " {lba}+{n} {} {:02x}{:02x}{:02x}{:02x},",
+                                    u8::from(ok),
+                                    h[0],
+                                    h[1],
+                                    h[2],
+                                    h[3]
+                                );
+                            }
                             let _ = status.write_str("\r\n");
                             status.as_str()
                         }

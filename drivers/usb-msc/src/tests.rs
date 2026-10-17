@@ -846,6 +846,46 @@ fn long_reads_overlap_and_stream_the_card_exactly() {
     assert!(disk.waits > 0, "reads ran the hook");
 }
 
+/// A unit that doesn't overlap (the CF card) reads right after one that does
+/// (the SD card) left the buffer's front on the second half: the data sent is
+/// what was read (the PC saw all zeros for the CF drive, 2026-10-16).
+#[test]
+fn a_unit_without_overlap_sends_what_it_read_whatever_the_front() {
+    for blocks in [1usize, 2, 3, 8] {
+        for first in [3usize, 4, 5, 6, 7] {
+            let mut buf = vec![0u8; 4 * BLOCK];
+            let mut msc = Msc::new(&mut buf, SERIAL, 1);
+            let mut disk = Disk::new(64);
+            mount(&mut msc, &mut disk);
+            disk.overlap = true;
+            let want = disk.data.clone();
+            let (d, _) = run(
+                &mut msc,
+                &mut disk,
+                (first * 512) as u32,
+                true,
+                &read10(0, first as u16),
+                &[],
+            );
+            assert!(d == want[..first * 512]);
+            disk.overlap = false;
+            let (d, csw) = run(
+                &mut msc,
+                &mut disk,
+                (blocks * 512) as u32,
+                true,
+                &read10(40, blocks as u16),
+                &[],
+            );
+            assert_eq!(csw.status, 0);
+            assert!(
+                d == want[40 * 512..(40 + blocks) * 512],
+                "sent other data than read: {first} blocks, then {blocks}"
+            );
+        }
+    }
+}
+
 /// The blocks after a bulk read are read ahead and used by the next read
 /// that starts there; a write drops them, so a read after it sees the card.
 #[test]
