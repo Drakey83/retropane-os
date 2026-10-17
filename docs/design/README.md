@@ -17,6 +17,7 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 |---|---|
 | [ui.md](ui.md) | The look: the owner's decisions, the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [apps-and-packs.md](apps-and-packs.md) | Every Windows Mobile 5 default app rebuilt and modernized, a new coat of paint on everything, themes and customization, legacy apps and games, the SD expansion pack and its download location, our own DOOM / Heretic / Quake ports, more ideas to modernize |
+| [display-calibration.md](display-calibration.md) | Getting the most out of the X51v's screen: what we control (gamma table, backlight, refresh, PWM1, dither, content) and what we can't, and the plan (C1-C5) to calibrate it by eye on the device |
 | [today-screen-plan.md](today-screen-plan.md) | The plan for the Today screen on the device: what runs now, the four steps, the icon format |
 | [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (VClouds' built in, five optional ones on the card, bring your own), the pack format keyed by the WMO codes |
 | [mockups/](mockups/README.md) | Images of the Today screen with the default weather icons (VClouds'), an icon sheet, the five optional packs, and their credits and licences |
