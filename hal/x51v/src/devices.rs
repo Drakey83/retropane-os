@@ -23,17 +23,23 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     if taken {
         return None;
     }
-    // Let the 2700G settle after the hand-off before its registers are read.
-    // Measured on the real X51v: images that read them at once hung after
-    // HaRET's "Jumping to Kernel..." in some runs (rp-probe, rp-usb), while
-    // those that first spent ~1 s writing its memory never did (rp-light,
-    // rp-probe with start-up colours). Cause not yet known (docs/perf.md
-    // open question); half a second after the hand-off is cheap insurance.
-    // Counted from the image's start, so work done before this call (card
-    // set-up, the USB detach) overlaps it instead of adding to it.
-    let elapsed_us = rp_hal_pxa27x::rt::since_start() / 13 * 4;
-    if elapsed_us < SETTLE_US {
-        rp_hal_pxa27x::rt::delay_us(SETTLE_US - elapsed_us);
+    // The registers are read once nothing the previous owner left running
+    // still moves data. History (docs/hw/2700g.md "After the hand-off"):
+    // images that read them at once hung after HaRET's hand-off in some
+    // runs, and a fixed 500 ms wait went in; 21 minutes later the cause was
+    // found (images hung at random early points, not only here, only while
+    // docked: Windows Mobile's USB DMA still writing RAM) and `_start` began
+    // stopping all DMA and the UDC. The fixed wait stayed and every image
+    // paid it. What remains to wait for is a channel finishing the
+    // transfer in flight after `RUN` is cleared: microseconds, bounded.
+    let stopped = rp_hal_pxa27x::rt::wait_handoff_dma(DMA_STOP_TIMEOUT_US);
+    // SAFETY: single core; written once here, before anyone reads it.
+    unsafe {
+        core::ptr::addr_of_mut!(MBX_HANDOFF).write(Some(MbxHandoff {
+            found: rp_hal_pxa27x::rt::handoff(),
+            stopped,
+            at: rp_hal_pxa27x::rt::since_start(),
+        }));
     }
     let cs3 = va(region("cs3_2700g")?.base as usize) as u32;
     let regs = NonNull::new((cs3 + MBX_REG_OFFSET) as *mut u32)?;
@@ -46,8 +52,33 @@ pub fn take_mbx() -> Option<(Mmio, &'static mut [u8])> {
     Some((regs, vram))
 }
 
-/// How long [`take_mbx`] waits before the 2700G's registers are first used.
-const SETTLE_US: u32 = 500_000;
+/// The longest [`take_mbx`] waits for the hand-off's DMA channels to stop.
+/// With `RUN` cleared a channel stops once the transfer in flight is done
+/// (a burst of at most 32 bytes); 10 ms is far more than that takes on any
+/// peripheral. A channel still running after it won't stop by waiting: the
+/// wait gives up, and [`mbx_handoff`] says so.
+const DMA_STOP_TIMEOUT_US: u32 = 10_000;
+
+/// What [`take_mbx`] found and waited for at the hand-off.
+#[derive(Clone, Copy, Debug)]
+pub struct MbxHandoff {
+    /// What `_start` found running.
+    pub found: rp_hal_pxa27x::rt::Handoff,
+    /// How waiting for those DMA channels to stop went.
+    pub stopped: rp_hal_pxa27x::rt::DmaStopped,
+    /// When the 2700G was handed out (OS timer ticks since the image's start).
+    pub at: u32,
+}
+
+static mut MBX_HANDOFF: Option<MbxHandoff> = None;
+
+/// What [`take_mbx`] found at the hand-off, once it has run (boot-time and
+/// hand-off diagnostics: the loader's `handoff` command).
+#[must_use]
+pub fn mbx_handoff() -> Option<MbxHandoff> {
+    // SAFETY: a plain read; written once by `take_mbx` before any reader.
+    unsafe { core::ptr::addr_of!(MBX_HANDOFF).read() }
+}
 
 /// The 2700G for crash reporting only, once [`take_mbx`] has handed it out
 /// (so the display is known to be set up): its register block, to find the
@@ -101,8 +132,17 @@ pub fn beacon(a: u16, b: u16) {
     }
 }
 
-/// Hands out the board CPLD's register window once.
-pub fn take_cpld() -> Option<Mmio> {
+/// The CPLD's shared shadow table in RAM (`rp_drv_cpld::handover`):
+/// Windows Mobile's at HaRET's hand-off, RetroPane's from the first program
+/// that adopts it, shared by the loader and every image it starts.
+const CPLD_TABLE: usize = 0xA800_1320;
+/// The table's size in words (`rp_drv_cpld::handover::WORDS`).
+pub const CPLD_TABLE_WORDS: usize = 10;
+
+/// Hands out the board CPLD once: its register window and the shared table
+/// of what is latched in it (its registers don't read back; pass both to
+/// `rp_drv_cpld::handover::Table::adopt` and `Cpld::new`).
+pub fn take_cpld() -> Option<(Mmio, &'static mut [u32; CPLD_TABLE_WORDS])> {
     // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
     let taken = unsafe { core::ptr::addr_of_mut!(CPLD_TAKEN).replace(true) };
     if taken {
@@ -111,7 +151,14 @@ pub fn take_cpld() -> Option<Mmio> {
     let base = NonNull::new(va(region("cs4_cpld")?.base as usize) as *mut u32)?;
     // SAFETY: CS4 holds the CPLD's 0x20-byte register window (docs/hw/cpld.md),
     // identity-mapped with the MMU off; the flag guarantees one owner.
-    Some(unsafe { Mmio::new(base, 0x20) })
+    let regs = unsafe { Mmio::new(base, 0x20) };
+    // SAFETY: 40 bytes of SDRAM that RetroPane reserves for this table
+    // (below every image at 0xA8008000, above HaRET's boot tags; docs/hw/
+    // memory-map.md), identity-mapped, word-aligned; the flag makes this
+    // the only reference in this program. Programs run one at a time, and
+    // the loader cleans the D-cache before starting the next one.
+    let table = unsafe { &mut *(CPLD_TABLE as *mut [u32; CPLD_TABLE_WORDS]) };
+    Some((regs, table))
 }
 
 /// CompactFlash socket (PXA27x PC Card socket 1, docs/hw/cf.md): offsets of
@@ -123,6 +170,13 @@ const MECR: usize = 0x14;
 const MCMEM1: usize = 0x2C;
 const MCATT1: usize = 0x34;
 const MCIO1: usize = 0x3C;
+
+/// The physical address of the CompactFlash socket's common memory (what
+/// a DMA engine reads the card's data window from).
+#[must_use]
+pub fn cf_common_phys() -> Option<u32> {
+    Some(region("pcmcia1_cf")?.base + CF_COMMON as u32)
+}
 
 /// Hands out the CompactFlash socket's attribute and common memory windows
 /// once (enough for the CIS, the configuration registers and the ATA task
@@ -258,6 +312,20 @@ pub fn log_start() {
     }
 }
 
+/// Marks the run just started as a hand-over to a new loader (the loader,
+/// before starting an image that carries [`LOADER_SIGNATURE`]): the new
+/// loader then doesn't report its predecessor's run as a hang (it had: a
+/// "did not return" report saved over the card's crashlog.txt, 2026-10-16).
+///
+/// [`LOADER_SIGNATURE`]: rp_hal_pxa27x::handoff::LOADER_SIGNATURE
+#[inline(never)]
+pub fn log_mark_handover() {
+    if log_used().is_some() {
+        // SAFETY: the run log's flags word (valid: checked just above).
+        unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 8) };
+    }
+}
+
 /// Appends to the run log, if this run has one. Past the end, bytes are
 /// dropped and the overflow flag is set (reported by the loader: never
 /// silently).
@@ -299,6 +367,9 @@ pub struct PreviousRun {
     pub returned: bool,
     /// It came back because it crashed (a fault or a panic).
     pub crashed: bool,
+    /// The "image" was a new loader, which took over: it never returns, and
+    /// that is no hang ([`log_mark_handover`]).
+    pub handover: bool,
 }
 
 /// Takes the previous run's log (the loader, on start). The log is closed,
@@ -316,6 +387,7 @@ pub fn log_take() -> Option<PreviousRun> {
             overflow: flags & 1 != 0,
             returned: flags & 2 != 0,
             crashed: flags & 4 != 0,
+            handover: flags & 8 != 0,
         })
     }
 }
@@ -438,4 +510,16 @@ pub fn take_ram_pool() -> Option<&'static mut [u32]> {
     // the first MiB, scratch at 8 MiB); word aligned; identity-mapped; the
     // flag guarantees one owner.
     Some(unsafe { core::slice::from_raw_parts_mut(RAM_POOL_BASE as *mut u32, RAM_POOL_SIZE / 4) })
+}
+
+/// [`take_ram_pool`] as bytes, for test images that need large buffers
+/// (storage soaks): the same pool, the same one owner.
+pub fn take_ram_pool_bytes() -> Option<&'static mut [u8]> {
+    take_ram_pool().map(|w| {
+        let len = w.len() * 4;
+        // SAFETY: the pool's own words, reborrowed as bytes (u8 has no
+        // alignment or validity requirement); `w` is consumed, so this is
+        // the one reference.
+        unsafe { core::slice::from_raw_parts_mut(w.as_mut_ptr().cast::<u8>(), len) }
+    })
 }

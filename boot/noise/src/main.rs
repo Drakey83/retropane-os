@@ -669,10 +669,12 @@ mod image {
     /// The SD card, as the loader starts it (power through the CPLD, then
     /// the card); `None` if there is none.
     fn open_card() -> Option<Sd> {
-        let mut cpld = Cpld::new(devices::take_cpld()?);
-        let (mmc, dma) = (rt::take_mmc()?, rt::take_dma(0)?);
-        // The CPLD doesn't read back: as the loader, the backlight's enable
-        // (sharing a register with the CF reset) set again with SD power.
+        // The CPLD with the shadow table every program shares (Windows
+        // Mobile's at the hand-over): the backlight's enable and the rest of
+        // what it left on are kept, so nothing here starts from zero.
+        let (bus, table) = devices::take_cpld()?;
+        let (mut cpld, _) = Cpld::adopt(bus, table);
+        let (mmc, dma) = (rt::take_mmc()?, rt::take_dma(rp_hal_pxa27x::dma_map::SD)?);
         cpld.set_backlight_enable(true);
         cpld.set_sd_power(true);
         rt::delay_us(10_000);

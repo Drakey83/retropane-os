@@ -23,7 +23,8 @@
 //! +0.5 with a top-left fill rule (each pixel of a shared edge drawn once);
 //! Gouraud and modulate rounding; 5/6-bit texel channels widened by
 //! repeating their top bits; both windings drawn; `0x654`/`0x658` not
-//! clipping. Anything else in the words panics, so a test sees the
+//! clipping; the core's state kept across the 3D clock off is measured
+//! (T9). Anything else in the words panics, so a test sees the
 //! renderer ask for something no device run has shown.
 
 extern crate std;
@@ -143,6 +144,9 @@ pub struct Gpu {
     pub renders: u32,
     /// Tiles the last render covered.
     pub tiles: u32,
+    /// Render-done edges on the interrupt line (GPIO85), counted when a
+    /// status read or clear notices the render finished.
+    pub irqs: u32,
 }
 
 const RENDER_DONE: u32 = m3::RENDER_DONE;
@@ -169,6 +173,7 @@ impl Gpu {
             hang_next: false,
             renders: 0,
             tiles: 0,
+            irqs: 0,
         }
     }
 
@@ -192,6 +197,14 @@ impl Gpu {
         if self.done_at.is_some_and(|t| self.passed(t)) {
             self.done_at = None;
             self.status |= RENDER_DONE;
+            // An edge on GPIO85 with the MBX core's master and render-done
+            // enables and MINTENABLE's master and MBX bits (version 24).
+            let both = 0x8000 | RENDER_DONE;
+            let en = self.regs.get(&(MBX + reg::ENABLE)).copied().unwrap_or(0);
+            let mint = self.regs.get(&crate::MINTENABLE).copied().unwrap_or(0);
+            if en & both == both && mint & 0x8004 == 0x8004 {
+                self.irqs += 1;
+            }
         }
         if self.ready_at.is_some_and(|t| self.passed(t)) {
             self.ready_at = None;
@@ -250,7 +263,10 @@ impl Gpu {
                     tex::STRIP_GAME => Obj::textured(&m, at),
                     f => panic!("strip pointer flags {f:#010x} never measured"),
                 };
-                if o.tsp & (1 << 16 | 1 << 19) != 0 {
+                // TEX1 bit 30 without bit 29 (mipmap "linear", no levels)
+                // hung the core too (version 24).
+                let mip_hang = o.tex.is_some_and(|t| t[1] & 0x6000_0000 == 0x4000_0000);
+                if o.tsp & (1 << 16 | 1 << 19) != 0 || mip_hang {
                     // TSP bits 16 and 19 hung the device's core.
                     self.hung = true;
                     return (n, 0);
@@ -262,11 +278,32 @@ impl Gpu {
                     quads += quad_cost(o.tex.is_some(), o.tsp & m3::TSP_BLEND != 0);
                 }
             }
+            // The target's format (`0x650`, version 26): 6 ARGB8888, 1
+            // RGB565, 3 ARGB1555 (channels truncated; the alpha bit set for
+            // opaque pixels: from bit 7, assumed).
+            let format = self.reg(0x650);
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
-                    let a = (target + (tile.y + py) * stride + 4 * (tile.x + px)) as usize;
                     let c = tile.c[(py * m3::TILE_W + px) as usize];
-                    m[a..a + 4].copy_from_slice(&c.to_le_bytes());
+                    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
+                    let x = tile.x + px;
+                    let row = target + (tile.y + py) * stride;
+                    match format {
+                        1 | 3 => {
+                            let v = if format == 1 {
+                                (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+                            } else {
+                                (c >> 31) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3
+                            };
+                            let a = (row + 2 * x) as usize;
+                            m[a..a + 2].copy_from_slice(&(v as u16).to_le_bytes());
+                        }
+                        6 => {
+                            let a = (row + 4 * x) as usize;
+                            m[a..a + 4].copy_from_slice(&c.to_le_bytes());
+                        }
+                        f => panic!("target format 0x650 = {f} never measured"),
+                    }
                 }
             }
             n += 1;
@@ -444,9 +481,44 @@ impl Obj {
                     v[0].argb
                 };
                 if let Some(tw) = self.tex {
+                    // Filtered textures sample at the pixel's corner, not
+                    // its centre (version 24: the checker's ramp 0x3F,
+                    // 0x7F, 0xBF fits only that).
+                    let w = if tw[1] & tex::TEX1_LINEAR != 0 {
+                        let (cx, cy) = (x - 0.5, y - 0.5);
+                        [0, 1, 2].map(|i| {
+                            let (a, b) = (v[(i + 1) % 3], v[(i + 2) % 3]);
+                            e(a, b, cx, cy) / area
+                        })
+                    } else {
+                        w
+                    };
                     let u = w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u;
                     let vv = w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v;
-                    src = modulate(sample(m, tw, u, vv), src);
+                    // TEX2 bit 13 (Dell's opaque combine word) makes the
+                    // texel's alpha 1 (version 23: texture alpha blended
+                    // only with it clear; version 24: a 32-bit texel at
+                    // alpha 0x80 and a black PVRTC block drew alpha 0xFF).
+                    let level = mip_level(
+                        tw,
+                        |px, py| {
+                            let w = [0, 1, 2].map(|i| {
+                                let (a, b) = (v[(i + 1) % 3], v[(i + 2) % 3]);
+                                e(a, b, px, py) / area
+                            });
+                            (
+                                w[0] * v[0].u + w[1] * v[1].u + w[2] * v[2].u,
+                                w[0] * v[0].v + w[1] * v[1].v + w[2] * v[2].v,
+                            )
+                        },
+                        x,
+                        y,
+                    );
+                    let mut t = sample(m, tw, u, vv, level);
+                    if tw[2] & (1 << 13) != 0 {
+                        t |= 0xFF00_0000;
+                    }
+                    src = modulate(t, src);
                 }
                 t.c[k] = blend(self.tsp, src, t.c[k]);
                 if self.tsp & (1 << 7) == 0 {
@@ -457,27 +529,93 @@ impl Obj {
     }
 }
 
-/// Texel at `(u, v)` (0 to 1 across the texture), ARGB8888.
-fn sample(m: &[u8], [tex0, tex1, _]: [u32; 3], u: f64, v: f64) -> u32 {
-    let side_u = 8i64 << ((tex0 >> 24) & 15);
-    let side_v = 8i64 << ((tex0 >> 20) & 15);
-    let at = |c: f64, side: i64, mode: u32| {
-        let i = (c * side as f64).floor() as i64;
-        match mode {
-            tex::WRAP => i.rem_euclid(side),
-            tex::MIRROR => {
-                let p = i.rem_euclid(2 * side);
-                if p >= side { 2 * side - 1 - p } else { p }
-            }
-            tex::CLAMP => i.clamp(0, side - 1),
-            _ => panic!("address mode 3 broke sampling on the device"),
+/// The texture's colour at `(u, v)` (0 to 1 across it), ARGB8888: point
+/// sampled, or bilinear with TEX1 bit 31 (version 24: weights from the
+/// texel centres, each channel truncated).
+fn sample(m: &[u8], tw: [u32; 3], u: f64, v: f64, level: u32) -> u32 {
+    let tex0 = tw[0];
+    let side_u = (8i64 << ((tex0 >> 24) & 15)) >> level;
+    let side_v = (8i64 << ((tex0 >> 20) & 15)) >> level;
+    let wrap = |i: i64, side: i64, mode: u32| match mode {
+        tex::WRAP => i.rem_euclid(side),
+        tex::MIRROR => {
+            let p = i.rem_euclid(2 * side);
+            if p >= side { 2 * side - 1 - p } else { p }
         }
+        tex::CLAMP => i.clamp(0, side - 1),
+        _ => panic!("address mode 3 broke sampling on the device"),
     };
-    let x = at(u, side_u, tex0 >> 30) as u32;
-    let y = at(v, side_v, (tex0 >> 28) & 3) as u32;
-    let base = (tex1 & 0x01FF_FFFF) << 7;
-    let a = (base + 2 * tex::twiddle(x, y)) as usize;
-    let t = u32::from(u16::from_le_bytes([m[a], m[a + 1]]));
+    let (mu, mv) = (tex0 >> 30, (tex0 >> 28) & 3);
+    let at = |x: i64, y: i64| {
+        texel(
+            m,
+            tw,
+            level,
+            wrap(x, side_u, mu) as u32,
+            wrap(y, side_v, mv) as u32,
+        )
+    };
+    if tw[1] & tex::TEX1_LINEAR == 0 {
+        let x = (u * side_u as f64).floor() as i64;
+        let y = (v * side_v as f64).floor() as i64;
+        return at(x, y);
+    }
+    let (tu, tv) = (u * side_u as f64 - 0.5, v * side_v as f64 - 0.5);
+    let (x0, y0) = (tu.floor() as i64, tv.floor() as i64);
+    let (fx, fy) = (tu - x0 as f64, tv - y0 as f64);
+    let q = [
+        at(x0, y0),
+        at(x0 + 1, y0),
+        at(x0, y0 + 1),
+        at(x0 + 1, y0 + 1),
+    ];
+    (0..4)
+        .map(|i| {
+            let sh = 8 * i;
+            let c = |k: usize| f64::from((q[k] >> sh) & 0xFF);
+            let top = c(0) * (1.0 - fx) + c(1) * fx;
+            let bottom = c(2) * (1.0 - fx) + c(3) * fx;
+            ((top * (1.0 - fy) + bottom * fy).floor() as u32).min(255) << sh
+        })
+        .fold(0, |a, b| a | b)
+}
+
+/// The mip level a pixel at `(x, y)` samples: with TEX1 bits 30-29 = 1
+/// (the nearest level), the one whose texels match the pixels (the larger
+/// of the steps in texels across and down: `rp-mbx3d` version 25, a 64 x
+/// 64 texture over 16 and 8 px drew levels 2 and 3), up to TEX0 bits 12-9
+/// (0: the base only, version 24). Between powers of two the nearest in
+/// log2 is assumed. `uv` gives the texture coordinates at a point.
+fn mip_level(tw: [u32; 3], uv: impl Fn(f64, f64) -> (f64, f64), x: f64, y: f64) -> u32 {
+    if tw[1] & 0x6000_0000 != tex::TEX1_MIP_NEAREST {
+        return 0;
+    }
+    let size = f64::from(8u32 << ((tw[0] >> 24) & 15));
+    let (u0, v0) = uv(x, y);
+    let (u1, v1) = uv(x + 1.0, y);
+    let (u2, v2) = uv(x, y + 1.0);
+    let step = ((u1 - u0).hypot(v1 - v0)).max((u2 - u0).hypot(v2 - v0)) * size;
+    let top = ((tw[0] >> 9) & 15).min(((tw[0] >> 24) & 15) + 3);
+    if step <= 1.0 {
+        return 0;
+    }
+    (step.log2().round() as u32).min(top)
+}
+
+/// Texel `(x, y)` of mip level `level` of the texture, ARGB8888 (levels
+/// after the base, each after the larger one: version 25).
+fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], level: u32, x: u32, y: u32) -> u32 {
+    let side = 8usize << ((tex0 >> 24) & 15);
+    let texel_bytes = if (tex0 >> tex::FORMAT_SHIFT) & 0x1F == tex::ARGB8888 {
+        4
+    } else {
+        2
+    };
+    let base = ((tex1 & 0x01FF_FFFF) << 7) as usize
+        + (0..level as usize)
+            .map(|k| (side >> k) * (side >> k) * texel_bytes)
+            .sum::<usize>();
+    let word = |a: usize| u32::from_le_bytes([m[a], m[a + 1], m[a + 2], m[a + 3]]);
     let wide = |c: u32, bits: u32| match bits {
         5 => c << 3 | c >> 2,
         6 => c << 2 | c >> 4,
@@ -487,7 +625,38 @@ fn sample(m: &[u8], [tex0, tex1, _]: [u32; 3], u: f64, v: f64) -> u32 {
         _ => unreachable!(),
     };
     let argb = |a: u32, r: u32, g: u32, b: u32| a << 24 | r << 16 | g << 8 | b;
-    match (tex0 >> tex::FORMAT_SHIFT) & 7 {
+    let format = (tex0 >> tex::FORMAT_SHIFT) & 0x1F;
+    match format {
+        tex::ARGB8888 => return word(base + 4 * tex::twiddle(x, y) as usize),
+        tex::PVRTC4 | tex::PVRTC2 => {
+            // Approximate (exact for solid blocks, as version 24 drew
+            // them): the block's colour A, modulation and the blending
+            // between neighbouring blocks left out. Blocks in twiddled
+            // order (PVRTC's; version 24 couldn't tell it from row order).
+            let bw = if format == tex::PVRTC4 { 4 } else { 8 };
+            let b = tex::twiddle(x / bw, y / 4) as usize;
+            let c = word(base + 8 * b + 4) & 0xFFFF;
+            return if c & 0x8000 != 0 {
+                argb(
+                    255,
+                    wide((c >> 10) & 31, 5),
+                    wide((c >> 5) & 31, 5),
+                    wide((c >> 1) & 15, 4),
+                )
+            } else {
+                argb(
+                    wide((c >> 12) & 7, 3),
+                    wide((c >> 8) & 15, 4),
+                    wide((c >> 4) & 15, 4),
+                    wide((c >> 1) & 7, 3),
+                )
+            };
+        }
+        _ => {}
+    }
+    let a = base + 2 * tex::twiddle(x, y) as usize;
+    let t = u32::from(u16::from_le_bytes([m[a], m[a + 1]]));
+    match format {
         tex::ARGB1555 => argb(
             if t & 0x8000 != 0 { 255 } else { 0 },
             wide((t >> 10) & 31, 5),

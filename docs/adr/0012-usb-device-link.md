@@ -152,6 +152,13 @@ Facts (docs/hw/udc.md):
   violation: silently discarded output). Now at most one READY waits in the
   ring and replies are always queued whole. Checked: after 6 idle minutes
   the port opened to ≤1 stale line and the reply arrived at once.
+- **One run at a time (2026-10-15):** two sessions' runs overlapped
+  through a hand-made "pause file" one of them deleted between runs. Every
+  command that talks to the Axim now takes a machine-wide OS lock
+  (`%LOCALAPPDATA%\RetroPane\axim.lock`, `xtask/src/devlock.rs`) at its
+  first contact and holds it to the end, run log included; a second caller
+  waits, naming the holder, or fails at once with `--no-wait`. `cargo xtask
+  axim` says who holds it. The rule is in docs/testing.md.
 
 ## The four lenses
 

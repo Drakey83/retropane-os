@@ -34,11 +34,25 @@ _start:
     @ RUN off), and the USB device controller (its driver's transfers).
     @ On the real X51v, images hung at random early points only while the
     @ Axim was docked with USB active.
+    @ The channels that were running are kept for `rt::handoff` (r4),
+    @ read only with the DMA clock on (r5: CKEN as found; without it a
+    @ channel can't run). The UDC is only stopped, not read: a read of a
+    @ block that isn't there faults, and nothing catches a fault yet (the
+    @ emulator has no UDC unless asked for one). The writes stay
+    @ unconditional, as before.
+    ldr     r0, =0x41300004
+    ldr     r5, [r0]
+    mov     r4, #0
     ldr     r0, =0x40000000
     mov     r1, #0
-    mov     r2, #32
-0:  str     r1, [r0], #4
-    subs    r2, r2, #1
+    mov     r2, #1
+0:  tst     r5, #0x01000000
+    beq     4f
+    ldr     r3, [r0]
+    tst     r3, #0x80000000
+    orrne   r4, r4, r2
+4:  str     r1, [r0], #4
+    movs    r2, r2, lsl #1
     bne     0b
     ldr     r0, =0x40600000
     str     r1, [r0]
@@ -66,6 +80,8 @@ _start:
 1:  cmp     r0, r1
     strlo   r2, [r0], #4
     blo     1b
+    ldr     r0, =rp_handoff_dma
+    str     r4, [r0]
 
     @ Paint the SVC stack below us, so `stack_used` can find how deep it
     @ went (a silent overflow into .bss lost a glyph atlas, 2026-10-14).
@@ -217,6 +233,79 @@ macro_rules! entry {
 
 /// The OS timer when the image's code started.
 static mut START: u32 = 0;
+
+/// DMA channels found running at the image's first instruction (one bit
+/// each), recorded by `_start` before it stopped them.
+#[unsafe(export_name = "rp_handoff_dma")]
+static mut HANDOFF_DMA: u32 = 0;
+
+/// What the previous owner of the CPU (Windows Mobile through HaRET, or a
+/// RetroPane image through the loader) left running that writes memory by
+/// itself. `_start` stops all of it before anything else; this says what
+/// it found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Handoff {
+    /// DMA channels that were running (bit n = channel n).
+    pub dma_running: u32,
+}
+
+/// What `_start` found running (see [`Handoff`]).
+#[must_use]
+pub fn handoff() -> Handoff {
+    // SAFETY: plain words written once by `_start` before `rp_main`.
+    unsafe {
+        Handoff {
+            dma_running: core::ptr::addr_of!(HANDOFF_DMA).read(),
+        }
+    }
+}
+
+/// How waiting for the hand-off's DMA to stop went ([`wait_handoff_dma`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaStopped {
+    /// OS timer ticks spent waiting.
+    pub waited: u32,
+    /// Channels that still hadn't stopped when the wait gave up.
+    pub stuck: u32,
+}
+
+/// DMA channel status registers (`DCSRn`, 4 bytes apart).
+const DCSR0: usize = 0x4000_0000;
+/// `DCSR.STOPINTR`: the channel is stopped (also set after reset).
+const DCSR_STOPPED: u32 = 1 << 3;
+
+/// Waits until every DMA channel `_start` found running reports stopped,
+/// at most `timeout_us`. Clearing `RUN` doesn't stop a channel at once: it
+/// finishes the transfer in flight first. This is the condition the first
+/// reads of a shared bus device (the 2700G) wait for after the hand-off.
+pub fn wait_handoff_dma(timeout_us: u32) -> DmaStopped {
+    let running = handoff().dma_running;
+    let start = ticks();
+    let limit = timeout_us.saturating_mul(OSCR_TICKS_PER_US_X4).div_ceil(4);
+    let mut stuck = running;
+    while stuck != 0 {
+        let mut left = 0;
+        for ch in 0..32 {
+            if stuck & (1 << ch) != 0 {
+                // SAFETY: DCSRn of a channel that was running, so the DMA
+                // clock is on (`_start` read it with CKEN checked); reading
+                // a status register has no side effects.
+                let s = unsafe { (va(DCSR0 + ch * 4) as *const u32).read_volatile() };
+                if s & DCSR_STOPPED == 0 {
+                    left |= 1 << ch;
+                }
+            }
+        }
+        stuck = left;
+        if stuck == 0 || ticks().wrapping_sub(start) >= limit {
+            break;
+        }
+    }
+    DmaStopped {
+        waited: ticks().wrapping_sub(start),
+        stuck,
+    }
+}
 
 /// Records now as the image's start (called by [`entry!`]).
 #[doc(hidden)]
@@ -462,10 +551,10 @@ pub fn take_mmc() -> Option<Mmio> {
 /// CKEN bit for the DMA controller.
 pub const CKEN_DMA: u32 = 24;
 
-/// Hands out DMA channel `ch` (0 or 1: [`crate::dma::CHANNELS`]) once
+/// Hands out DMA channel `ch` (one `crate::dma_map` lists) once
 /// (`_start` stopped every channel), with the controller's clock enabled.
 pub fn take_dma(ch: u32) -> Option<crate::dma::Dma> {
-    if ch >= crate::dma::CHANNELS {
+    if crate::dma_map::descriptors(ch) == 0 {
         return None;
     }
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
@@ -564,7 +653,9 @@ pub fn watchdog() -> crate::soc::Watchdog<Mmio> {
 
 static mut SPARE_TIMER_TAKEN: bool = false;
 
-/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`).
+/// Hands out OS timer match channel 2 once (its interrupt: `soc::irq::OST2`),
+/// quiesced: whatever an earlier image left armed or pending is cleared, so
+/// take it before claiming its interrupt line.
 pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: single core; IRQs masked by the caller's setup, as for the
     // other single-owner devices.
@@ -575,9 +666,11 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     // SAFETY: the OS timer's register window. The spare timer touches only
     // channel 2's match, status and enable bits (read-modify-write of OIER
     // with IRQs masked by its owner's callers), the alarm only channel 1's.
-    Some(crate::soc::SpareTimer(unsafe {
+    let mut t = crate::soc::SpareTimer(unsafe {
         Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0x20)
-    }))
+    });
+    t.quiesce();
+    Some(t)
 }
 
 static mut OST_CHANNELS_TAKEN: bool = false;
@@ -1425,6 +1518,36 @@ pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
     let page = unsafe { &mut *(crate::mmu::KDATA_VIRT as *mut [u32; 1024]) };
     page.fill(0);
     Some(page)
+}
+
+/// Maps the 1 MiB at `virt` to SDRAM at `phys` in the bring-up map (normal
+/// memory, as the RAM sections), for self-tests of addresses no bring-up
+/// region covers: the native process slots (`0xC0000000`-`0xFDFFFFFF`,
+/// `rp_kernel_mm::layout`). Refuses (false) anything but a MiB-aligned
+/// `virt` in that range that maps nothing yet, and a MiB of SDRAM. The
+/// caller keeps its view coherent: the same frame at two virtual addresses
+/// in the VIVT cache (clean before reading through the other).
+pub fn map_test_section(virt: u32, phys: u32) -> bool {
+    const MIB: u32 = 1 << 20;
+    let native = (0xC000_0000..0xFE00_0000).contains(&virt);
+    let ram = (0xA800_0000..0xAC00_0000).contains(&phys);
+    if !native || !ram || virt % MIB != 0 || phys % MIB != 0 {
+        return false;
+    }
+    let index = (virt >> 20) as usize;
+    // SAFETY: L1_TABLE is the bring-up table (reserved SDRAM, identity
+    // mapped, boot/link.x); one word of it, for an address the bring-up
+    // map leaves unmapped (checked), so nothing that runs moves.
+    unsafe {
+        let entry = (crate::mmu::L1_TABLE as *mut u32).add(index);
+        if entry.read_volatile() != 0 {
+            return false;
+        }
+        entry.write_volatile(crate::mmu::section(phys, crate::mmu::Memory::Normal));
+        crate::cpu::clean_range(entry as u32, 4);
+    }
+    crate::cpu::invalidate_tlb_all();
+    true
 }
 
 core::arch::global_asm!(

@@ -31,29 +31,29 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_cf::CfCard;
-    use rp_drv_cpld::Cpld;
+    use rp_drv_cpld::{Cpld, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::crash;
     use rp_drv_pxa_gpio::Gpio;
-    use rp_drv_pxa_i2c::PxaI2c;
-    use rp_drv_pxa_i2s::{PxaI2s, Rate, Tone, stream};
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_pxa_pwm::Backlight;
     use rp_drv_pxa_uart::PxaUart;
-    use rp_drv_pxa_udc::Udc;
+    use rp_drv_pxa_udc::{Bulk, Udc};
     use rp_drv_sdcard::{SdCard, mbr_partitions};
-    use rp_drv_wm8750::{Output, Wm8750};
     use rp_fat::{AnyVolume, Guard, Volume};
     use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::dma::Dma;
-    use rp_hal_pxa27x::{Mmio, handoff, rt};
+    use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
     use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
     use rp_usb_msc::{BulkPipe, Msc, Storage};
 
     rp_hal_pxa27x::entry!(main);
+
+    /// The CPLD, with the shadow table every program shares.
+    type BoardCpld = Cpld<Mmio, handover::Table<'static>>;
 
     /// D+ pull-up and cable detect (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
@@ -73,6 +73,14 @@ mod image {
     /// How long a loaded image may run without returning or feeding the
     /// watchdog (the probe, the slowest, takes about 15 s on the device).
     const RUN_LIMIT: u32 = 30 * TICK_1S;
+    /// A loader started as an image (a new build tried from RAM, the old
+    /// one still on the card) under a run's watchdog stops feeding it if no
+    /// PC program opens its port and no frame arrives within this time: a
+    /// build whose USB doesn't work resets the Axim back to the card's
+    /// loader instead of holding it.
+    const LINK_PATIENCE: u32 = 90 * TICK_1S;
+    /// A frame whose bytes stop arriving for this long is abandoned.
+    const FRAME_PATIENCE: u32 = 2 * TICK_1S;
     /// The end of the image area, kept for searching the FAT for free
     /// clusters and for reading a written file back (the bigger it is, the
     /// fewer card commands each takes).
@@ -82,8 +90,15 @@ mod image {
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
     /// Staging buffer for the drive's block transfers (in the scratch
-    /// area, not the image: 64 sectors per card command).
+    /// area, not the image): two 16 KiB halves, each one card command and
+    /// one USB DMA transfer, the card working on one while the USB link
+    /// moves the other (item 74). Smaller halves shorten a write's two
+    /// ends that can't overlap (the first half's arrival, the last half's
+    /// card write before the status); measured against 32 KiB halves.
     const MSC_BUF: usize = 32 * 1024;
+    // The drive's largest DMA transfer (the whole buffer, for a unit that
+    // doesn't overlap) fits the USB controller's chain.
+    const _: () = assert!(MSC_BUF <= dma_map::max_bytes(dma_map::UDC));
     /// The drive's serial number: the USB serial string (16 hex digits).
     const MSC_SERIAL: &[u8] = b"5250323630303031";
     /// How long the PC may try to enumerate a layout without configuring it
@@ -181,7 +196,10 @@ mod image {
 
     /// SD slot switches (measured on the owner's X51v, docs/hw/sd.md).
     const SD_DETECT: u8 = 12;
-    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot.
+    /// CompactFlash card detect (docs/hw/cf.md): low = a card in the slot,
+    /// but only while the slot is powered: unpowered, it sticks at "no card"
+    /// after a removal (`rp-cfdetect`, 2026-10-16). The fallback when there's
+    /// no CPLD; [`cf_card_in`] reads the CPLD's status bit instead.
     const CF_DETECT: u8 = 13;
     /// CompactFlash slot power / READY (docs/hw/cf.md): high while the
     /// slot is powered (CPLD `0x16` bit 1 + `0x10` bit 12). The card's
@@ -191,36 +209,6 @@ mod image {
     /// Windows Mobile's own reboot, after GPIO15 is driven low.
     const BOARD_RESET: u8 = 99;
     const BOARD_RESET_PREP: u8 = 15;
-    /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
-    /// unconfirmed on the device, so changes are logged with the level).
-    const HP_DETECT: u8 = 83;
-
-    /// The headphone jack, debounced over two one-second polls.
-    struct Jack {
-        plugged: bool,
-        seen: bool,
-    }
-
-    impl Jack {
-        /// The new state when the jack changed.
-        fn poll(&mut self, gpio: &mut Gpio<Mmio>) -> Option<bool> {
-            let now = gpio.read(HP_DETECT);
-            let stable = now == self.seen;
-            self.seen = now;
-            (stable && now != self.plugged).then(|| {
-                self.plugged = now;
-                now
-            })
-        }
-
-        fn output(&self) -> Output {
-            if self.plugged {
-                Output::Headphones
-            } else {
-                Output::Speaker
-            }
-        }
-    }
     const SD_LOCK: u8 = 27;
 
     impl Lun {
@@ -339,8 +327,9 @@ mod image {
         }
     }
 
-    /// The UDC's mass storage endpoints as the drive's bulk pipe.
-    struct Pipe<'a>(&'a mut Udc<Mmio>);
+    /// The UDC's mass storage endpoints as the drive's bulk pipe, with the
+    /// UDC's DMA channel for whole halves of the drive's buffer (item 74).
+    struct Pipe<'a>(&'a mut Udc<Mmio>, Option<&'a mut Dma>);
 
     impl BulkPipe for Pipe<'_> {
         fn read_packet(&mut self, buf: &mut [u8; 64]) -> Option<usize> {
@@ -354,6 +343,57 @@ mod image {
         }
         fn service(&mut self) {
             self.0.poll();
+        }
+        fn send_dma(&mut self, data: &[u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            // The channel first: the endpoint asks for data once DME is on.
+            let ok = self.0.configured()
+                && d.arm_to_device(Udc::<Mmio>::dma_port(Bulk::StorageIn), data);
+            if ok {
+                self.0.set_dma(Bulk::StorageIn, true);
+            }
+            ok
+        }
+        fn receive_dma(&mut self, buf: &mut [u8]) -> bool {
+            use rp_hal_api::DmaEngine;
+            let Some(d) = self.1.as_deref_mut() else {
+                return false;
+            };
+            let ok = self.0.configured()
+                && d.arm_from_device(Udc::<Mmio>::dma_port(Bulk::StorageOut), buf);
+            if ok {
+                self.0.set_dma(Bulk::StorageOut, true);
+            }
+            ok
+        }
+        fn dma_done(&mut self) -> Option<bool> {
+            use rp_hal_api::DmaEngine;
+            let d = self.1.as_deref_mut()?;
+            // A bus reset meanwhile handed the endpoints back: the transfer
+            // can't finish (the command is abandoned anyway).
+            let r = if self.0.dma_on(Bulk::StorageIn) || self.0.dma_on(Bulk::StorageOut) {
+                d.done()?
+            } else {
+                d.abort();
+                false
+            };
+            if self.0.dma_on(Bulk::StorageIn) {
+                self.0.dma_in_end(Bulk::StorageIn, 0);
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
+            Some(r)
+        }
+        fn dma_abort(&mut self) {
+            use rp_hal_api::DmaEngine;
+            if let Some(d) = self.1.as_deref_mut() {
+                d.abort();
+            }
+            self.0.set_dma(Bulk::StorageIn, false);
+            self.0.set_dma(Bulk::StorageOut, false);
         }
     }
 
@@ -395,33 +435,29 @@ mod image {
         Option<Sd>,
         Option<PxaMmc<Mmio, Dma>>,
         [u16; 16],
-        Option<Cpld<Mmio>>,
+        Option<(BoardCpld, handover::Source)>,
     ) {
-        let Some(mut cpld) = devices::take_cpld() else {
+        let Some((mut cpld, table)) = devices::take_cpld() else {
             return (None, None, [0; 16], None);
         };
-        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(0)) else {
-            return (None, None, [0; 16], Some(Cpld::new(cpld)));
+        let (Some(mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(dma_map::SD)) else {
+            return (None, None, [0; 16], Some(Cpld::adopt(cpld, table)));
         };
         // Diagnostics (CF power hunt): the CPLD's registers as Windows
         // Mobile left them, read before our first write. Reads only; whether
         // they read back at all is one of the questions (docs/hw/cpld.md).
         let found: [u16; 16] =
             core::array::from_fn(|k| rp_hal_api::RegisterBus16::read16(&mut cpld, k * 2));
-        // One CPLD for the loader's whole life: its shadow is what keeps
-        // the SD card's, the CF slot's and the Wi-Fi's bits in shared
-        // registers from undoing each other.
-        let mut cpld = Cpld::new(cpld);
-        // The CPLD doesn't read back: bits Windows Mobile left on in a
-        // register we write must be set here first. The backlight's enable
-        // shares 0x18 with the CF reset (a CF attach once turned the
-        // backlight off); setting it also brings it back after that.
-        cpld.set_backlight_enable(true);
+        // One CPLD for the loader's whole life, its shadow seeded from the
+        // table every program shares (Windows Mobile's at HaRET's hand-off):
+        // it keeps the backlight's, the SD card's, the CF slot's and the
+        // Wi-Fi's bits in shared registers from undoing each other.
+        let (mut cpld, source) = Cpld::adopt(cpld, table);
         cpld.set_sd_power(true);
         rt::delay_us(10_000);
         match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
-            Ok(card) => (Some(card), None, found, Some(cpld)),
-            Err((_, host)) => (None, Some(host), found, Some(cpld)),
+            Ok(card) => (Some(card), None, found, Some((cpld, source))),
+            Err((_, host)) => (None, Some(host), found, Some((cpld, source))),
         }
     }
 
@@ -688,10 +724,10 @@ mod image {
         }
     }
 
-    /// How SD DMA is used: reads once the start-up self-test has shown DMA
-    /// reads match programmed I/O on this hardware; writes only once the
-    /// owner turns them on (`card dma writes`), until a device run has
-    /// proven them (a verified `put`). Nothing unproven touches the card.
+    /// How SD DMA is used: reads and writes once the start-up self-test has
+    /// shown DMA reads match programmed I/O on this hardware. Writes were
+    /// off until a device run proved them: `rp-storfast` wrote and read back
+    /// ~430 MB by DMA with no error, a card swap included (2026-10-16).
     struct DmaPolicy {
         /// The self-test's verdict.
         verdict: &'static str,
@@ -712,7 +748,7 @@ mod image {
                 verdict: "off (no card to test with)",
             };
         };
-        sd.host_mut().set_dma(true, false);
+        sd.host_mut().set_dma(true, true);
         let many = &mut buf[..BLOCKS * rp_drv_sdcard::BLOCK];
         many.fill(0xA5);
         let before = sd.host().dma_transfers();
@@ -924,11 +960,12 @@ mod image {
     /// on insertion) or on `cf`; then the card, or why not.
     enum CfSlot {
         Untried,
-        Card(CfCard<Mmio, Mmio>),
+        Card(CfCard<Mmio, Mmio, Option<Dma>>),
         /// No card in use (taken out, failed to attach, or stopped
-        /// answering: the reason): the socket's windows, kept so the next
-        /// insertion or `cf` tries again, from a hardware reset.
-        Idle(Mmio, Mmio, &'static str),
+        /// answering: the reason): the socket's windows and its DMA
+        /// channel, kept so the next insertion or `cf` tries again, from a
+        /// hardware reset.
+        Idle(Mmio, Mmio, Option<Dma>, &'static str),
         /// The board has no socket windows.
         Unavailable,
     }
@@ -937,7 +974,7 @@ mod image {
     /// reset"): RESET is CPLD `0x18` bit 1, READY / slot power GPIO84.
     struct CfSocketLines<'a> {
         gpio: &'a mut Gpio<Mmio>,
-        cpld: &'a mut Cpld<Mmio>,
+        cpld: &'a mut BoardCpld,
     }
 
     impl rp_drv_cf::CfLines for CfSocketLines<'_> {
@@ -964,7 +1001,7 @@ mod image {
     /// reset this should bring Windows Mobile back without Dell's factory
     /// prompt (item 64; not yet tried on the device). Returns only if
     /// nothing reset within 1 s, with GPIO99 back low.
-    fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut Cpld<Mmio>>) {
+    fn board_reset(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) {
         if let Some(cpld) = cpld {
             cpld.set(rp_drv_cpld::reg::CTL08, 0x0002);
         }
@@ -1003,7 +1040,7 @@ mod image {
     /// Powers the CF slot from off, as Windows Mobile's socket driver does
     /// when a card goes in: off, 308 ms, on (two stages), 100 ms. The card
     /// is then reset by `CfCard::init` through the RESET line.
-    fn cf_power_cycle(cpld: &mut Cpld<Mmio>) {
+    fn cf_power_cycle(cpld: &mut BoardCpld) {
         cpld.set_cf_power(false, &mut BusyWait);
         rt::delay_us(308_000);
         cpld.set_cf_power(true, &mut BusyWait);
@@ -1030,6 +1067,12 @@ mod image {
         /// off yet. Power Windows Mobile left on with no card in isn't
         /// switched off: the socket is touched only when a card is in.
         powered: bool,
+        /// One automatic retry left for this insertion: a card that failed
+        /// to attach or stopped answering is taken again once (a passing
+        /// hiccup no longer leaves the PC an empty drive until someone
+        /// re-inserts it); after that it waits for re-insertion or `cf`,
+        /// never a retry loop.
+        retry: bool,
     }
 
     /// The first CF slot events since start-up, timestamped (ms): READY
@@ -1072,16 +1115,18 @@ mod image {
             }
         }
 
-        /// Follows the detect line; `true` when the card came or went (the
-        /// caller attaches a card that came, and tells the PC).
-        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>) -> bool {
-            let now = !gpio.read(CF_DETECT);
+        /// Follows the card's presence ([`cf_card_in`]); `true` when the
+        /// card came or went (the caller attaches a card that came, and tells
+        /// the PC).
+        fn poll_detect(&mut self, gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+            let now = cf_card_in(gpio, cpld);
             let stable = now == self.seen;
             self.seen = now;
             if !stable || now == self.inserted {
                 return false;
             }
             self.inserted = now;
+            self.retry = now;
             self.changes = self.changes.saturating_add(1);
             if !now {
                 self.release("removed");
@@ -1105,7 +1150,7 @@ mod image {
         /// attach, the power we switched on goes off (CPLD `0x10` bit 12,
         /// 10 ms, `0x16` bit 1). Checked every loop pass, so every way of
         /// letting the card go is covered; `true` when it switched off now.
-        fn power_down_if_unused(&mut self, cpld: Option<&mut Cpld<Mmio>>) -> bool {
+        fn power_down_if_unused(&mut self, cpld: Option<&mut BoardCpld>) -> bool {
             if !self.powered || matches!(self.slot, CfSlot::Card(_)) {
                 return false;
             }
@@ -1124,8 +1169,8 @@ mod image {
                 let CfSlot::Card(card) = core::mem::replace(&mut self.slot, CfSlot::Untried) else {
                     return;
                 };
-                let (attr, common) = card.into_inner();
-                self.slot = CfSlot::Idle(attr, common, why);
+                let (attr, common, dma) = card.into_parts();
+                self.slot = CfSlot::Idle(attr, common, dma, why);
             }
         }
     }
@@ -1176,27 +1221,34 @@ mod image {
     fn cf_attach(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut Cpld<Mmio>>,
+        cpld: Option<&mut BoardCpld>,
         soft: bool,
     ) -> Option<rp_drv_cf::ResetSeen> {
         let slot = &mut lun.slot;
-        let (attr, common) = match core::mem::replace(slot, CfSlot::Unavailable) {
-            CfSlot::Untried => devices::take_cf()?,
-            CfSlot::Idle(attr, common, _) => (attr, common),
+        let (attr, common, dma) = match core::mem::replace(slot, CfSlot::Unavailable) {
+            CfSlot::Untried => {
+                let (attr, common) = devices::take_cf()?;
+                (attr, common, rt::take_dma(dma_map::CF))
+            }
+            CfSlot::Idle(attr, common, dma, _) => (attr, common, dma),
             card @ CfSlot::Card(_) => {
                 *slot = card;
                 return None;
             }
             CfSlot::Unavailable => return None,
         };
-        let mut delay = |ms| rt::delay_us(ms * 1000);
+        let mut delay = |us| rt::delay_us(us);
+        // Reads by DMA from the data window when it reads IDENTIFY as the
+        // 16-bit port does (docs/research/storage-speed.md).
+        let phys = Some(devices::cf_common_phys().unwrap_or(0));
         let taken = match cpld {
             Some(cpld) if !soft => {
                 cf_power_cycle(cpld);
                 lun.powered = true;
-                CfCard::init(attr, common, &mut CfSocketLines { gpio, cpld }, &mut delay)
+                let lines = &mut CfSocketLines { gpio, cpld };
+                CfCard::init_with(attr, common, dma, phys, lines, &mut delay)
             }
-            _ => CfCard::init(attr, common, &mut rp_drv_cf::NoLines, &mut delay),
+            _ => CfCard::init_with(attr, common, dma, phys, &mut rp_drv_cf::NoLines, &mut delay),
         };
         match taken {
             Ok((card, seen)) => {
@@ -1204,8 +1256,8 @@ mod image {
                 *slot = CfSlot::Card(card);
                 Some(seen)
             }
-            Err((e, attr, common)) => {
-                *slot = CfSlot::Idle(attr, common, e.name());
+            Err((e, attr, common, dma)) => {
+                *slot = CfSlot::Idle(attr, common, dma, e.name());
                 None
             }
         }
@@ -1217,23 +1269,34 @@ mod image {
     /// partition. An attached card is only reported. The socket is touched
     /// only when GPIO13 says a card is in it. `soft` (diagnostics, the A/B
     /// for docs/hw/cf.md) skips the hardware reset.
+    /// Whether a CompactFlash card is in the slot: CPLD `0x04` bit 1, which
+    /// follows the card both ways with the slot powered or not (`rp-cfdetect`
+    /// on the device, 2026-10-16), so a card pushed back in after the slot
+    /// was switched off is seen; GPIO13 only without a CPLD.
+    fn cf_card_in(gpio: &mut Gpio<Mmio>, cpld: Option<&mut BoardCpld>) -> bool {
+        match cpld {
+            Some(c) => c.cf_present(),
+            None => !gpio.read(CF_DETECT),
+        }
+    }
+
     #[inline(never)]
     fn cf_command(
         lun: &mut CfLun,
         gpio: &mut Gpio<Mmio>,
-        cpld: Option<&mut Cpld<Mmio>>,
+        mut cpld: Option<&mut BoardCpld>,
         soft: bool,
         out: &mut Line,
     ) {
-        if gpio.read(CF_DETECT) {
-            let _ = write!(out, "RPL ERR cf: no card (GPIO13 high)\r\n");
+        if !cf_card_in(gpio, cpld.as_deref_mut()) {
+            let _ = write!(out, "RPL ERR cf: no card\r\n");
             return;
         }
         // What the slot looked like before this command (diagnostics).
         let was = match lun.slot {
             CfSlot::Untried => "untried",
             CfSlot::Card(_) => "card",
-            CfSlot::Idle(_, _, why) => why,
+            CfSlot::Idle(_, _, _, why) => why,
             CfSlot::Unavailable => "unavailable",
         };
         let (was_in, changes) = (lun.inserted, lun.changes);
@@ -1243,7 +1306,7 @@ mod image {
         let reset = cf_attach(lun, gpio, cpld, soft);
         let card = match &mut lun.slot {
             CfSlot::Card(c) => c,
-            CfSlot::Idle(_, _, why) => {
+            CfSlot::Idle(_, _, _, why) => {
                 let _ = write!(
                     out,
                     "RPL ERR cf: {why} (was {was}; GPIO84 {} before, {} now)\r\n",
@@ -1272,10 +1335,12 @@ mod image {
         };
         let _ = write!(
             out,
-            "RPL OK cf: {} MB ({} sectors), write cache {}, {first}, model ",
+            "RPL OK cf: {} MB ({} sectors), write cache {}, reads by {} ({} paths refused), {first}, model ",
             card.sectors() / 2048,
             card.sectors(),
             if card.write_cache_off() { "off" } else { "on" },
+            card.read_path().name(),
+            card.path_mismatches(),
         );
         for &b in card.model().iter().take(40) {
             let _ = out.write_char(char::from(b));
@@ -1312,107 +1377,6 @@ mod image {
             }
         }
         let _ = out.write_str("\r\n");
-    }
-
-    /// Audio: set up on the first `tone`, so nothing touches the I2C bus or
-    /// the codec unasked.
-    enum Audio {
-        Untried,
-        /// The codec, the I2S, and a DMA channel to stream with if one was
-        /// free.
-        Ready(Wm8750<PxaI2c<Mmio>>, PxaI2s<Mmio>, Option<Dma>),
-        Failed(&'static str),
-    }
-
-    /// `tone <hz> <ms>`: a sine (20-20,000 Hz, up to 5 s) through the
-    /// WM8750 at 48 kHz, streamed by DMA from `ring` (the CPU refills it by
-    /// halves); the reply says how long it really took (the codec's clock
-    /// paces it) and how much of that the CPU was busy (a polled FIFO would
-    /// keep it busy throughout). Headphones: the speaker amplifier
-    /// (GPIO82, CPLD 0x14) is left alone until a device run with the owner
-    /// there.
-    #[inline(never)]
-    fn tone_command(
-        audio: &mut Audio,
-        jack: &Jack,
-        args: &[u8],
-        ring: &mut [u8],
-        feed: &mut dyn FnMut(),
-        out: &mut Line,
-    ) {
-        let mut it = args.split(|&b| b == b' ').filter(|a| !a.is_empty());
-        let (Some(hz), Some(ms)) = (
-            it.next()
-                .and_then(parse_number)
-                .filter(|h| (20..=20_000).contains(h)),
-            it.next()
-                .and_then(parse_number)
-                .filter(|m| (1..=5_000).contains(m)),
-        ) else {
-            let _ = write!(out, "RPL ERR usage: tone <20-20000 Hz> <1-5000 ms>\r\n");
-            return;
-        };
-        if let Audio::Untried = audio {
-            *audio = match (rt::take_i2c(), rt::take_i2s()) {
-                (Some(i2c), Some(i2s)) => match Wm8750::init(PxaI2c::new(i2c), 60) {
-                    Ok(mut codec) => {
-                        let _ = codec.route(jack.output());
-                        Audio::Ready(codec, PxaI2s::new(i2s), rt::take_dma(1))
-                    }
-                    Err(_) => Audio::Failed("no codec answered on I2C (0x1a, 0x1b)"),
-                },
-                _ => Audio::Failed("I2C or I2S unavailable"),
-            };
-        }
-        let (codec, i2s, dma) = match audio {
-            Audio::Ready(c, i, d) => (c, i, d),
-            Audio::Failed(why) => {
-                let _ = write!(out, "RPL ERR tone: {why}\r\n");
-                return;
-            }
-            Audio::Untried => return,
-        };
-        let rate = Rate::Khz48;
-        let frames = rate.hz() / 1000 * ms;
-        let mut source = Tone::new(hz, rate.hz(), 12_000);
-        let Some(dma) = dma else {
-            let _ = write!(out, "RPL ERR tone: no DMA channel\r\n");
-            return;
-        };
-        i2s.start(rate);
-        let r = stream(
-            dma,
-            ring,
-            &mut source,
-            frames,
-            &mut rt::ticks,
-            TICK_1S / 5,
-            feed,
-        );
-        i2s.stop();
-        match r {
-            Ok(s) => {
-                let _ = write!(
-                    out,
-                    "RPL OK tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}, to {}\r\n",
-                    s.total / (TICK_1S / 1000),
-                    u64::from(s.busy) * 100 / u64::from(s.total.max(1)),
-                    codec.address(),
-                    if codec.output() == Output::Headphones {
-                        "headphones"
-                    } else {
-                        "speaker"
-                    }
-                );
-            }
-            Err(e) => {
-                let why = match e {
-                    rp_drv_pxa_i2s::StreamError::Refused => "refused",
-                    rp_drv_pxa_i2s::StreamError::Stalled => "stalled",
-                };
-                let _ = write!(out, "RPL ERR tone: DMA stream {why}\r\n");
-            }
-        }
     }
 
     /// `card dma` reports the DMA policy; `card dma writes` lets writes use
@@ -1496,6 +1460,53 @@ mod image {
         let level = bl.level();
         let (on, counts) = bl.duty();
         let _ = write!(out, "RPL OK backlight {level}% (duty {on}/{counts})\r\n");
+    }
+
+    /// CPLD registers as ` offset=value` pairs (`all`: zeros too).
+    fn cpld_regs(out: &mut Line, regs: &[u16; rp_drv_cpld::REGS], all: bool) {
+        for (k, &v) in regs.iter().enumerate() {
+            if all || v != 0 {
+                let _ = write!(out, " {:02x}={v:04x}", k * 2);
+            }
+        }
+    }
+
+    /// `handoff`: what `_start` found running at this loader's start, how
+    /// long its DMA took to stop, and when the 2700G and the loader were
+    /// ready (milliseconds since the start), and when each start-up stage
+    /// before the display ended (`stages`: the SD card, its DMA self-test and
+    /// file system checks, the CF slot), to find where the boot time goes.
+    fn handoff_command(ready_at: u32, stages: &[u32; 3], out: &mut Line) {
+        let ms = |t: u32| t / (TICK_1S / 1000);
+        let _ = write!(
+            out,
+            "RPL OK handoff: card {} ms, dma+fat {} ms, cf {} ms; ",
+            ms(stages[0]),
+            ms(stages[1]),
+            ms(stages[2]),
+        );
+        match devices::mbx_handoff() {
+            Some(h) => {
+                let _ = write!(
+                    out,
+                    "dma running {:08x}, stopped in {} us (stuck {:08x}), 2700G at {} ms, ready at {} ms
+",
+                    h.found.dma_running,
+                    h.stopped.waited * 4 / 13,
+                    h.stopped.stuck,
+                    ms(h.at),
+                    ms(ready_at),
+                );
+            }
+            None => {
+                let _ = write!(
+                    out,
+                    "2700G not taken, ready at {} ms
+",
+                    ms(ready_at)
+                );
+            }
+        }
     }
 
     /// A decimal number from a command's argument (spaces ignored).
@@ -1763,7 +1774,13 @@ mod image {
         // host gave up on the first descriptor request).
         gpio.make_input(SD_DETECT);
         gpio.make_input(SD_LOCK);
-        let (card, spare, cpld_found, mut cpld) = open_card();
+        let (card, spare, cpld_found, cpld) = open_card();
+        // When each start-up stage ended (`handoff`: boot time on the device).
+        let mut stages = [rt::since_start(), 0, 0];
+        let (mut cpld, cpld_source) = match cpld {
+            Some((c, s)) => (Some(c), Some(s)),
+            None => (None, None),
+        };
         // The trace region: started afresh with each program, sent to the
         // PC on `trace` (the last program's, even after a hang and reset).
         let mut trace_area = devices::take_trace_area();
@@ -1789,6 +1806,33 @@ mod image {
         let dma = check_dma(&mut lun, msc_buf);
         lun.refresh_guard();
         lun.dirty_found = lun.dirty_flag();
+        stages[1] = rt::since_start();
+        // The CF card too, before the pull-up (the owner's flaky "USB Drive
+        // (J:)" with no size, 2026-10-15): attached later in the loop, it
+        // was "no medium" when the PC enumerated, then away for seconds,
+        // and the attach stalled the PC's requests meanwhile; Explorer drew
+        // the drive empty and its icon only minutes later. Now the PC finds
+        // it ready from its first question, as the SD card.
+        let cf_in = cf_card_in(&mut gpio, cpld.as_mut());
+        let mut cf = CfLun {
+            slot: CfSlot::Untried,
+            inserted: cf_in,
+            seen: cf_in,
+            writable: false,
+            changes: 0,
+            ready: gpio.read(CF_READY),
+            events: CfEvents {
+                at: [(0, 0); 12],
+                len: 0,
+            },
+            powered: false,
+            retry: cf_in,
+        };
+        cf.events.push(if cf.ready { b'1' } else { b'0' });
+        if cf_in {
+            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+        }
+        stages[2] = rt::since_start();
 
         let Some((regs, vram)) = devices::take_mbx() else {
             halt()
@@ -1804,7 +1848,9 @@ mod image {
         // device can be lost on the way; its bytes stay in RAM until the
         // next image starts.
         let last_run = pending;
-        let trouble = pending.as_ref().is_some_and(|r| r.crashed || !r.returned);
+        let trouble = pending
+            .as_ref()
+            .is_some_and(|r| !r.handover && (r.crashed || !r.returned));
         let panel_h = if trouble { CRASH_H } else { 0 };
         let (panel, rest) = rest.split_at_mut(plane.stride * panel_h);
         let mut log = Console::new(
@@ -1827,19 +1873,28 @@ mod image {
         }
         let mut udc = Udc::new(udc_bus);
         let usb = udc.enable().is_ok();
+        // The controller's interrupt wakes the waiting loop (item 74).
+        let mut udc_irq = if usb {
+            udc.set_interrupts(true);
+            rt::take_irq(rp_hal_pxa27x::soc::irq::USB_CLIENT)
+        } else {
+            None
+        };
         if usb {
             gpio.write(USB_PULLUP, true);
         }
         let _ = writeln!(log, "RetroPane loader at {:#x}", devices::LOADER_BASE);
         let _ = writeln!(log, "USB {}", if usb { "connected" } else { "unavailable" });
-        let _ = writeln!(log, "SD DMA reads {}, writes off", dma.verdict);
+        let _ = writeln!(log, "SD DMA {}", dma.verdict);
         let _ = writeln!(log, "waiting for an image: cargo xtask load");
 
         // The previous run's log (an image this loader started, now back):
         // to the FFUART at once, and over USB once the PC has the port open
         // again (the device reconnected when it came back).
         if let Some(run) = &pending {
-            let how = if run.crashed {
+            let how = if run.handover {
+                "handed over to this loader"
+            } else if run.crashed {
                 "CRASHED"
             } else if run.returned {
                 "returned"
@@ -1849,7 +1904,7 @@ mod image {
             let _ = writeln!(log, "previous run {how}: {} bytes of log", run.log.len());
             // A crash or a hang is kept on the card first, so the report
             // survives whatever happens next (the PC may not be there).
-            if run.crashed || !run.returned {
+            if !run.handover && (run.crashed || !run.returned) {
                 let saved = save_report(&mut lun, run, &mut fat_scratch[..SCRATCH]);
                 let _ = writeln!(
                     log,
@@ -1879,6 +1934,10 @@ mod image {
         }
 
         let mut rx = Receiver::new();
+        // When the last byte of a frame in progress arrived: a frame that
+        // stops arriving is abandoned after FRAME_PATIENCE, so a half-sent
+        // frame can't swallow the next one, and the PC hears how far it got.
+        let mut last_byte = rt::ticks();
         let mut last = rt::ticks().wrapping_sub(TICK_1S);
         // Idling: after QUIET of nothing happening the loop sleeps until the
         // next 1 ms tick instead of spinning (battery and heat), so traffic
@@ -1887,31 +1946,14 @@ mod image {
         let mut active = rt::ticks();
         let mut msc_seen = 0u32;
         let (mut asleep, mut idle_pct) = (0u32, 0u32);
-        let mut buf = [0u8; 64];
+        // Whole packets go straight from the FIFO into it (both buffers).
+        let mut buf = [0u8; 512];
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
         let mut backlight = rt::take_pwm0().map(Backlight::new);
-        let mut audio = Audio::Untried;
-        gpio.make_input(HP_DETECT);
-        let mut jack = Jack {
-            plugged: gpio.read(HP_DETECT),
-            seen: gpio.read(HP_DETECT),
-        };
-        let mut cf = CfLun {
-            slot: CfSlot::Untried,
-            inserted: false,
-            seen: false,
-            writable: false,
-            changes: 0,
-            ready: gpio.read(CF_READY),
-            events: CfEvents {
-                at: [(0, 0); 12],
-                len: 0,
-            },
-            powered: false,
-        };
-        cf.events.push(if cf.ready { b'1' } else { b'0' });
+        // The USB controller's DMA channel (item 74).
+        let mut udc_dma = rt::take_dma(dma_map::UDC);
         let mut power = PowerButton::new(&mut gpio);
         udc.set_msc_luns(2);
         // Layout fallback: if the PC keeps trying (bus resets) but never
@@ -1929,23 +1971,40 @@ mod image {
             if lun.present() { "ready" } else { "none" }
         );
         // Boot time (docs/design-brief.md): entry to the waiting loop, every
-        // driver set up that the loop needs now (audio and CF start later,
-        // on first use).
-        let _ = writeln!(uart, "BENCH boot_loader_ready {} 1", rt::since_start());
+        // driver set up that the loop needs now.
+        let ready_at = rt::since_start();
+        let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
+        let watched = watchdog.armed();
+        let started = rt::ticks();
+        let mut link_proven = false;
         loop {
             // Armed by an earlier run (it can't be disarmed): keep it fed
-            // while waiting.
-            if watchdog.armed() {
+            // while waiting (a loader tried from RAM: once its link works).
+            link_proven |= udc.host_open();
+            if watchdog.armed()
+                && (!watched || link_proven || rt::ticks().wrapping_sub(started) < LINK_PATIENCE)
+            {
                 watchdog.feed(RUN_LIMIT);
             }
             if rt::ticks().wrapping_sub(active) > QUIET {
                 let t = rt::ticks();
-                rt::wait_tick();
+                // Until the next tick, or at once when the PC sends or takes
+                // a USB packet (ADR-0007: the controller's interrupt).
+                if udc_irq.is_some() {
+                    rt::wait_any_signal();
+                } else {
+                    rt::wait_tick();
+                }
                 asleep = asleep.wrapping_add(rt::ticks().wrapping_sub(t));
             }
+            let usb_woke = udc_irq.as_mut().is_some_and(rt::IrqLine::take);
             udc.poll();
+            if usb_woke && let Some(l) = udc_irq.as_mut() {
+                // Served: the line may fire again.
+                l.done();
+            }
             if udc.take_msc_reset() {
                 msc.reset();
             }
@@ -1983,7 +2042,11 @@ mod image {
             if core::mem::take(&mut guard_due) && lun.refresh_guard() {
                 msc.medium_changed(0);
             }
-            msc.poll(&mut Pipe(&mut udc), &mut [&mut lun, &mut cf], now_ms());
+            msc.poll(
+                &mut Pipe(&mut udc, udc_dma.as_mut()),
+                &mut [&mut lun, &mut cf],
+                now_ms(),
+            );
             cf.poll_ready(&mut gpio);
             if cf.drop_if_dead() {
                 msc.medium_changed(1);
@@ -2025,6 +2088,25 @@ mod image {
                     used += u;
                     outcome = r;
                 }
+            }
+            link_proven |= outcome.is_some();
+            if heard {
+                last_byte = rt::ticks();
+            } else if let Some((got, len)) = rx.progress()
+                && rt::ticks().wrapping_sub(last_byte) > FRAME_PATIENCE
+            {
+                rx = Receiver::new();
+                let (csr, bcr, ring) = udc.out_state();
+                let s = udc.stats();
+                let mut line = Line::new();
+                let _ = write!(
+                    line,
+                    "RPL ERR timeout: {got} of {len} bytes, then nothing for 2 s (usb rx {} B, count mismatches {}, out csr {csr:x} bcr {bcr:x} ring {ring})
+",
+                    s.rx_bytes, s.count_mismatch
+                );
+                send(&mut uart, &mut udc, line.as_str());
+                let _ = writeln!(log, "{}", line.as_str().trim_ascii_end());
             }
             let msc_now = msc.stats().commands;
             if heard
@@ -2101,23 +2183,19 @@ mod image {
                             );
                             status.as_str()
                         }
-                        Ok(c) if c.starts_with(b"backlight") => {
-                            backlight_command(backlight.as_mut(), &c[9..], &mut status);
+                        Ok(b"udc stats") => {
+                            let (csr, bcr, ring) = udc.out_state();
+                            let s = udc.stats();
+                            let _ = write!(
+                                status,
+                                "RPL OK udc rx {} tx {} resets {} count mismatches {} (last {:x}) unsettled {} bad CBWs {} drive DMA chunks {} largest transfer {} blocks out csr {csr:x} bcr {bcr:x} ring {ring}
+",
+                                s.rx_bytes, s.tx_bytes, s.resets, s.count_mismatch, s.last_mismatch, s.unsettled, msc.stats().bad_cbw, msc.stats().dma_chunks, msc.stats().max_blocks
+                            );
                             status.as_str()
                         }
-                        Ok(c) if c.starts_with(b"tone") => {
-                            tone_command(
-                                &mut audio,
-                                &jack,
-                                &c[4..],
-                                &mut fat_scratch[..8192],
-                                &mut || {
-                                    if watchdog.armed() {
-                                        watchdog.feed(RUN_LIMIT);
-                                    }
-                                },
-                                &mut status,
-                            );
+                        Ok(c) if c.starts_with(b"backlight") => {
+                            backlight_command(backlight.as_mut(), &c[9..], &mut status);
                             status.as_str()
                         }
                         Ok(c) if c == b"ls" || c.starts_with(b"ls ") => {
@@ -2155,13 +2233,28 @@ mod image {
                             None => "RPL ERR log: no image has run since the loader started\r\n",
                         },
                         Ok(b"cpld") => {
-                            // The CPLD as found at start-up (read-only
-                            // diagnostics; offsets 0x00..0x1E).
+                            // The CPLD as read at start-up (diagnostics;
+                            // offsets 0x00..0x1E), then the shadow of its
+                            // latches now and where it came from (non-zero
+                            // registers only: the reply is one line).
                             let _ = status.write_str("RPL OK cpld:");
-                            for (k, v) in cpld_found.iter().enumerate() {
-                                let _ = write!(status, " {:02x}={v:04x}", k * 2);
+                            cpld_regs(&mut status, &cpld_found, true);
+                            if let (Some(c), Some(src)) = (cpld.as_ref(), cpld_source) {
+                                let _ = status.write_str("; shadow from ");
+                                let _ = status.write_str(src.name());
+                                let _ = status.write_str(":");
+                                let shadow = core::array::from_fn(|k| c.shadow(k * 2));
+                                cpld_regs(&mut status, &shadow, false);
                             }
                             let _ = status.write_str("\r\n");
+                            status.as_str()
+                        }
+                        Ok(b"handoff") => {
+                            // What this start found and waited for: the
+                            // previous owner's DMA (HaRET's hand-off
+                            // from Windows Mobile, or an image's return), and
+                            // the boot time it cost.
+                            handoff_command(ready_at, &stages, &mut status);
                             status.as_str()
                         }
                         Ok(b"reboot wm") => {
@@ -2343,6 +2436,11 @@ mod image {
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
                     devices::log_start();
+                    // A new loader never returns: it takes over (and must not
+                    // report this run as a hang).
+                    if dest.get(4..12) == Some(&rp_hal_pxa27x::handoff::LOADER_SIGNATURE[..]) {
+                        devices::log_mark_handover();
+                    }
                     if let Some(area) = trace_area.as_deref_mut() {
                         let _ = rp_kernel_trace::Persistent::start(area);
                     }
@@ -2386,20 +2484,8 @@ mod image {
                     if on { "on" } else { "off" }
                 );
             }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S
-                && let Some(plugged) = jack.poll(&mut gpio)
+            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio, cpld.as_mut())
             {
-                if let Audio::Ready(codec, ..) = &mut audio {
-                    let _ = codec.route(jack.output());
-                }
-                let _ = writeln!(
-                    log,
-                    "headphones {} (GPIO83 {})",
-                    if plugged { "in" } else { "out" },
-                    u8::from(plugged)
-                );
-            }
-            if rt::ticks().wrapping_sub(last) >= TICK_1S && cf.poll_detect(&mut gpio) {
                 // A card that goes in (or was in at start-up) is attached
                 // at once, as the SD card is, so it shows up next to it.
                 if cf.inserted {
@@ -2412,8 +2498,27 @@ mod image {
                     match (&cf.slot, cf.inserted) {
                         (_, false) => "out",
                         (CfSlot::Card(_), true) => "in: attached",
-                        (CfSlot::Idle(_, _, why), true) => why,
+                        (CfSlot::Idle(_, _, _, why), true) => why,
                         _ => "in: socket unavailable",
+                    }
+                );
+            }
+            // A card that is in but not attached (failed, or dropped as
+            // dead) is taken again, once per insertion.
+            if rt::ticks().wrapping_sub(last) >= TICK_1S
+                && cf.inserted
+                && matches!(cf.slot, CfSlot::Idle(..))
+                && core::mem::take(&mut cf.retry)
+            {
+                cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);
+                msc.medium_changed(1);
+                let _ = writeln!(
+                    log,
+                    "CF card retried: {}",
+                    match &cf.slot {
+                        CfSlot::Card(_) => "attached",
+                        CfSlot::Idle(_, _, _, why) => why,
+                        _ => "socket unavailable",
                     }
                 );
             }
@@ -2506,7 +2611,9 @@ mod image {
         if run.crashed {
             out(b"\r\n[the image crashed: report kept on the card as crashlog.txt]");
         }
-        if !run.returned {
+        if run.handover {
+            out(b"\r\n[the image was a new loader: it took over]");
+        } else if !run.returned {
             out(b"\r\n[the image did not return: it hung and the device was reset]");
         }
         out(b"\r\nRPL END\r\n");
@@ -2530,8 +2637,12 @@ mod image {
                 b"RPD [the image crashed: report kept on the card as crashlog.txt]\r\n",
             ),
             (
-                !run.returned,
+                !run.returned && !run.handover,
                 b"RPD [the image did not return: it hung and the device was reset]\r\n",
+            ),
+            (
+                run.handover,
+                b"RPD [the image was a new loader: it took over]\r\n",
             ),
         ] {
             if on {

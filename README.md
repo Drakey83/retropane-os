@@ -50,13 +50,13 @@ Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** 
 - **Fast on a 624 MHz CPU:** tinted glass with no blur, composed once and
   cached, with only the changed parts redrawn.
 
-Details: [UI direction](docs/ui/README.md).
+Details: [the design area](docs/design/README.md).
 
 ## Documents
 
 - [Design document](docs/DESIGN.md)
 - [Roadmap](docs/ROADMAP.md)
-- [UI direction](docs/ui/README.md)
+- [Design: everything in one place](docs/design/README.md) (UI direction, apps and packs, weather)
 - [Security](docs/security.md)
 - [Architecture decision records](docs/adr/)
 - [Clean-room and reverse-engineering policy](docs/CLEANROOM.md)

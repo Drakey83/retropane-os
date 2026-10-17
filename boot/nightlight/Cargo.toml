@@ -1,0 +1,17 @@
+[package]
+name = "rp-nightlight"
+description = "Night-light experiment for the real X51v: the dimmest backlight steps and picture dimming, for the owner to judge flicker and whine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true

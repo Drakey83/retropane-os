@@ -1,0 +1,22 @@
+[package]
+name = "rp-sdtime"
+description = "Report-only test image (docs/research/storage-speed.md): the SD card's registers (CID, CSD, SCR, SD status, CMD6 functions) and its read and write speeds by size, with and without DMA and pre-erase, where the time goes, the controller's clock codes and the FAT layer's cost; writes only into SDTIME.BIN, its own pattern written back"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-fat = { path = "../../kernel/fat" }
+
+[lints]
+workspace = true

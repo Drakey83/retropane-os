@@ -9,7 +9,7 @@ mod image {
     use core::cell::RefCell;
     use core::fmt::Write;
 
-    use rp_draw::{Frame, Renderer};
+    use rp_draw::Frame;
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::layers::Snapshot;
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
@@ -18,18 +18,44 @@ mod image {
     use rp_drv_pxa_ssp::Ssp;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_tsc2046::Tsc2046;
+    use rp_graphics::{Graphics, Step};
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::soc::irq;
     use rp_hal_pxa27x::{cpu, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_mbx_render::{Layout, LocalMem, Mbx2dRenderer};
+    use rp_mbx3d_render::Clock;
     use rp_shell::{Action, Input, Key, Shell, Time};
     use rp_touch_cal::{Calibration, Filter, Pen, Sample};
+    use rp_vram_map::{POOL, Pool};
 
     use rp_today::{H, Latency, W, clock};
 
     rp_hal_pxa27x::entry!(main);
+
+    /// Microseconds from OSCR0 (3.25 MHz), kept running across its wrap:
+    /// the graphics service's clock.
+    struct TickClock {
+        last: u32,
+        us: u32,
+        rest: u32,
+    }
+
+    impl Clock for TickClock {
+        fn now_us(&mut self) -> u32 {
+            let t = rt::ticks();
+            let d = u64::from(t.wrapping_sub(self.last)) * 4 + u64::from(self.rest);
+            self.last = t;
+            self.us = self.us.wrapping_add((d / 13) as u32);
+            self.rest = (d % 13) as u32;
+            self.us
+        }
+
+        fn delay_us(&mut self, us: u32) {
+            rt::delay_us(us);
+        }
+    }
 
     /// 2700G local memory through the CPU's window onto it.
     struct Vram(&'static mut [u8]);
@@ -104,7 +130,7 @@ mod image {
         let before = Snapshot::take(d.regs());
 
         // ADR-0023: the 2D engine draws; no CPU layer in SDRAM.
-        let mut renderer = Mbx2dRenderer::new(
+        let mut two_d = Mbx2dRenderer::new(
             d.into_inner(),
             Vram(vram),
             Layout::X51V,
@@ -112,7 +138,15 @@ mod image {
             TICKS_MS,
         );
         let t0 = rt::ticks();
-        rp_today::show_gpu(&mut renderer, WALLPAPER, rt::delay_us);
+        rp_today::show_gpu(&mut two_d, WALLPAPER, rt::delay_us);
+        // The graphics service (ADR-0030) owns the engines from here.
+        // It borrows the renderer: both by value overflowed the stack.
+        let mut gfx = Graphics::new(&mut two_d, Pool::new(POOL));
+        let mut gclock = TickClock {
+            last: rt::ticks(),
+            us: 0,
+            rest: 0,
+        };
         let _ = writeln!(
             RunLog,
             "gpu: wallpaper converted to 32 bpp and shown in {} us",
@@ -368,7 +402,7 @@ mod image {
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
                      (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times; \
                      touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}",
-                    renderer.stalls
+                    gfx.two_d().stalls
                 );
                 let _ = writeln!(
                     RunLog,
@@ -386,7 +420,7 @@ mod image {
                         "  {name}: {n} times, median {median} us, worst {worst} us"
                     );
                 }
-                before.restore(&mut renderer.parts().0.regs);
+                before.restore(&mut gfx.two_d().parts().0.regs);
                 rp_hal_x51v::devices::return_to_loader();
                 loop {
                     core::hint::spin_loop();
@@ -395,12 +429,12 @@ mod image {
 
             // A frame the engine finished goes on the screen; the latency
             // counts to then (the flip), not to the end of queueing.
-            if renderer.poll()
+            if !matches!(gfx.poll(&mut gclock), Step::Wait(_))
                 && let Some(at) = showing.take()
             {
                 let total = rt::ticks().wrapping_sub(at) / 13 * 4;
                 latency.add(total);
-                let s = renderer.last;
+                let s = gfx.two_d().last;
                 // A slow answer, taken apart (2026-10-14: one of 57 took
                 // 101 ms on the device, every part's worst far less).
                 if total > SLOW_ANSWER_US {
@@ -418,13 +452,16 @@ mod image {
             if shell.needs_frame() {
                 let t0 = rt::ticks();
                 shell.frame(&mut frame);
-                renderer.draw(&frame);
+                // One job at a time: the frame in flight finishes first (as
+                // the 2D renderer's own draw waited for it).
+                while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                let _ = gfx.frame(&frame, &mut gclock);
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
                 draw_us_worst = draw_us_worst.max(us);
                 queueing.add(us);
                 last_frame_us = us;
-                let s = renderer.last;
+                let s = gfx.two_d().last;
                 if us > SLOW_FRAME_US && frames > 0 {
                     let _ = writeln!(
                         RunLog,
@@ -447,7 +484,7 @@ mod image {
                         PxaUart::new(rt::emergency_uart()),
                         "{} (engine stalls {})",
                         rp_today::MARKER,
-                        renderer.stalls
+                        gfx.two_d().stalls
                     );
                 }
                 if let Some(at) = pending.take() {

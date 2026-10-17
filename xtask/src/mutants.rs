@@ -48,6 +48,36 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "xtask: two emulator runs given the same ports",
+        file: "xtask/src/devlock.rs",
+        from: "        if file.try_lock().is_ok() && (start..start + len).all(is_free) {
+",
+        to: "        if (start..start + len).all(is_free) {
+",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "concurrent_emulator_runs_get_their_own_ports",
+        ]),
+    },
+    Mutant {
+        name: "xtask: a port script run without the Axim lock (two runs overlapped)",
+        file: "xtask/src/usb.rs",
+        from: "    crate::devlock::ensure_held()?;
+",
+        to: "",
+        check: Check::Host(&["-p", "xtask", "only_usb_powershell_reaches_the_device"]),
+    },
+    Mutant {
+        name: "xtask: a busy Axim lock taken as free",
+        file: "xtask/src/devlock.rs",
+        from: "            Err(std::fs::TryLockError::WouldBlock) => {}
+",
+        to: "            Err(std::fs::TryLockError::WouldBlock) => break,
+",
+        check: Check::Host(&["-p", "xtask", "second_caller_waits_until_the_first_is_done"]),
+    },
+    Mutant {
         name: "today: an idle sleep past the run limit (the watchdog reset the device)",
         file: "shell/today/src/main.rs",
         from: "            let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);",
@@ -193,17 +223,50 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
     Mutant {
-        name: "backlight enable not set before the CPLD's 0x18 is written (CF reset darkens the screen)",
-        file: "boot/loader/src/main.rs",
-        from: "        cpld.set_backlight_enable(true);",
-        to: "",
+        name: "CPLD shadow not seeded from Windows Mobile's table (a CF reset darkens the screen)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        Ok(v) => (v, Source::Adopted),",
+        to: "        Ok(_) => ([0; REGS], Source::Adopted),",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "bits_windows_mobile_left_on_survive_our_writes",
+        ]),
+    },
+    Mutant {
+        name: "the loader's CPLD shadow not seeded from Windows Mobile's table in RAM",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        Ok(v) => (v, Source::Adopted),",
+        to: "        Ok(_) => (DEFAULTS, Source::Adopted),",
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "CPLD defaults without the backlight enable (no table: a CF reset darkens the screen)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "    v[reg::CTL18 / 2] = crate::BACKLIGHT_ENABLE;",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "defaults_keep_the_backlight_through_a_cf_reset",
+        ]),
+    },
+    Mutant {
+        name: "CPLD shadow changes not written through to the shared table (the next program loses them)",
+        file: "drivers/cpld/src/handover.rs",
+        from: "        *self.words = encode(&self.values);",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cpld",
+            "adopting_takes_the_table_over_and_writes_changes_through",
+        ]),
     },
     Mutant {
         name: "medium change reported as a unit attention only (Windows keeps its stale view)",
         file: "drivers/usb-msc/src/lib.rs",
-        from: "            u.away = Some(None);",
-        to: "            u.attention = true;",
+        from: "                u.attention = false;\n                u.away = Some(None);",
+        to: "                u.attention = true;",
         check: Check::Host(&[
             "-p",
             "rp-usb-msc",
@@ -253,6 +316,24 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-usb-msc", "a_medium_change_drops_the_read_ahead"]),
     },
     Mutant {
+        name: "a host's view from before the drive started is trusted (its old root directory written back)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_view_from_before_the_drive_started_is_sent_away_first",
+        ]),
+    },
+    Mutant {
+        name: "a host's view from before the loader's restart writes over an image's file (emulator)",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if !unit.vouched && matches!(op, 0x00 | 0x25 | 0x28 | 0x2A | 0x2F | 0x35) {",
+        to: "        if false {",
+        check: Check::Emu(crate::emu::boot_loader_stale_view_alone),
+    },
+    Mutant {
         name: "a write uses the blocks read ahead instead of dropping them",
         file: "drivers/usb-msc/src/lib.rs",
         from: "        if !write\n            && let Some((unit, first, n)) = ahead",
@@ -268,6 +349,31 @@ pub const MUTANTS: &[Mutant] = &[
         file: "boot/loader/src/main.rs",
         from: "                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);",
         to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "CF card in at start-up attached only after the drive is offered (the PC's \"USB Drive\" with no size)",
+        file: "boot/loader/src/main.rs",
+        from: "        if cf_in {\n            cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);\n        }\n",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cf_alone),
+    },
+    Mutant {
+        name: "a medium arriving where the host saw none is kept away for seconds",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "            if u.shown || u.away.is_some() {",
+        to: "            if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-usb-msc",
+            "a_medium_arriving_where_the_host_saw_none_is_offered_at_once",
+        ]),
+    },
+    Mutant {
+        name: "CF card detected by GPIO13 again (it sticks at no card after a removal: a re-inserted card is never seen)",
+        file: "boot/loader/src/main.rs",
+        from: "            Some(c) => c.cf_present(),",
+        to: "            Some(_) => !gpio.read(CF_DETECT),",
         check: Check::Emu(crate::emu::boot_loader_cf_alone),
     },
     Mutant {
@@ -338,6 +444,52 @@ pub const MUTANTS: &[Mutant] = &[
             "rp-ce-setup",
             "setup_xml_outside_the_subset_is_refused",
         ]),
+    },
+    Mutant {
+        name: "pxa-udc: a full OUT packet sized by the byte count (lost when it reads short)",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        let count = if csr & reg::SP == 0 {",
+        to: "        let count = if false {",
+        check: Check::Host(&["-p", "rp-drv-pxa-udc", "a_lagging_byte_count_loses_no_data"]),
+    },
+    Mutant {
+        name: "pxa-udc: the CPU takes OUT packets meant for the DMA controller",
+        file: "drivers/pxa-udc/src/lib.rs",
+        from: "        if self.dma[SLOT_OUT] {\n            return;\n        }\n",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "an_endpoint_under_dma_is_left_to_the_dma_controller",
+        ]),
+    },
+    Mutant {
+        name: "usb-msc: a reset leaves the abandoned command's DMA running",
+        file: "drivers/usb-msc/src/lib.rs",
+        from: "        if self.phase == Phase::Command && (self.send_dma || self.recv_dma.is_some()) {",
+        to: "        if false {",
+        check: Check::Host(&["-p", "rp-usb-msc", "a_reset_aborts_the_transfer_in_flight"]),
+    },
+    Mutant {
+        name: "usbbench: a bench folder holding someone else's files used anyway",
+        file: "xtask/src/usbbench.rs",
+        from: "                if e.file_name() != BENCH_FILE {",
+        to: "                if false {",
+        check: Check::Host(&["-p", "xtask", "the_bench_folder_keeps_off_other_files"]),
+    },
+    Mutant {
+        name: "night light: the picture steps leave the gamma table at full (the picture never dims)",
+        file: "boot/nightlight/src/main.rs",
+        from: "                let t = scale_gamma(&table, step.picture);",
+        to: "                let t = scale_gamma(&table, 256);",
+        check: Check::Emu(crate::emu::boot_loader_nightlight),
+    },
+    Mutant {
+        name: "loader: a new loader sent as an image is reported as a hang (crashlog.txt overwritten)",
+        file: "boot/loader/src/main.rs",
+        from: "                        devices::log_mark_handover();",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_usb_alone),
     },
     Mutant {
         name: "shared OS timer line never dispatched (a claimed channel 5-11 interrupt fires forever)",

@@ -32,6 +32,10 @@ pub mod reg {
     pub const GSCADR: usize = 0x2060;
     /// Graphics stride / position.
     pub const GSADR: usize = 0x20C0;
+    /// The graphics plane's gamma table: [`super::scanout::GAMMA_ENTRIES`]
+    /// words `0x00RRGGBB` from here (`GFXGAM0`-`16`), used while `GSCTRL`
+    /// bit 26 is set.
+    pub const GFXGAM0: usize = 0x2250;
     /// Display sync control.
     pub const DSCTRL: usize = 0x2154;
     /// Horizontal timing 1-3.

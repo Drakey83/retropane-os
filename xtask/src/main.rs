@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod devlock;
 mod emu;
 mod mutants;
 mod policy;
@@ -12,6 +13,7 @@ mod serve;
 mod size;
 mod trace;
 mod usb;
+mod usbbench;
 mod userimg;
 
 use std::path::{Path, PathBuf};
@@ -43,12 +45,21 @@ commands:
   qemu      build the emulator locally in WSL from ../retropane-qemu (fast loop)
   sdkit     SD card kit for the real X51v: HaRET + raw image (target/sdkit)
             (--serve: also serve it over Wi-Fi for the device's browser)
+  axim      who is using the docked Axim, if anyone: every command that
+            talks to it holds a machine-wide lock for its whole run, and
+            waits while another holds it (--no-wait, or RP_AXIM_NO_WAIT=1:
+            fail at once instead; RP_AXIM_WHO=<label> names the holder)
   usb       talk to an X51v running the USB link test (target/sdkit/usb) over
             its sync cable: find the COM port, check the banner and echo
   load      send an image (name, e.g. rp-probe, or a .bin) to an X51v running
             the resident loader (target/sdkit/loader) over USB
             (--setup: create the admin task that lets it re-find the Axim
             after each run without a cable replug; one UAC prompt, once)
+  usbbench  USB throughput through the loader (docs/perf.md, item 74):
+            `usbbench [serial|drive|all] [runs]`; a bad-CRC image frame and a
+            16 MiB unbuffered file written, read back and compared on the card;
+            `usbbench trial [loader image] [runs]` tries a new loader from RAM
+            (probe + benches), then loads the card's loader back
   put       write a file to the X51v's SD card over USB through the resident
             loader (ADR-0013): cargo xtask put <file> [name on the card]
   install   put the kit's loader, HaRET and scripts on the card the same way
@@ -79,17 +90,21 @@ commands:
             lost on the way back; `load` asks for it by itself)
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
-  trace     the last program's trace ring (thread switches, faults,
+  handoff   which DMA channels the loader's start found running, how long
+            it waited for it to stop, and its boot time
+  trace    the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)
   wmbench   build the stock Windows Mobile baseline program (tools/wmbench:
             run by hand under WM; it writes rp-wm-baseline.txt next to itself)
   reboot-wm reset the X51v back into Windows Mobile the way its own
             reboot does (GPIO99; item 64, not yet tried on the device)
-  tone     `tone <hz> <ms>`: a sine through the codec (headphones; the
-            reply names the output and the CPU's busy share)
+  tone     the audio check: loads rp-tone (440 Hz to the speaker or the
+            headphones, then waits 15 s for the jack to change; the run log
+            names the output and the CPU's busy share)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
-            in target/device-check.txt; --with-owner adds CF and a tone
+            in target/device-check.txt; --with-owner adds CF (the tone:
+            `cargo xtask tone`)
   emu-picture  only the rp-picture check (a UI concept on screen, then
             back to the loader): run it before `load rp-picture`
   emu-blend only the rp-blend check (plane blending, three stages
@@ -113,91 +128,45 @@ commands:
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
+  emu-threads only the threads image's check (rp-threads: scheduler, user
+            mode, KData, FCSE in a native slot): run it before `load rp-threads`
+  emu-quantum the time-slice policies' touch, frame and switch-cost tests
+            (rp-quantum: all run; numbers printed): run it before `load rp-quantum`
   emu-usb   only the loader-over-USB check (image in, run log out)
+  emu-loader only the loader's boot check (boot time, an image's round trip)
+  emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
+            wait, the CPLD shadow adopted from Windows Mobile's table)
+  emu-nightlight only the night-light experiment's check (rp-nightlight)
+  emu-cfdetect only the CF detect diagnostic's check (rp-cfdetect)
+  emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
+  emu-usb-suite every emulator check that goes through the USB controller
   emu-fullsize the loader's card commands on 4 GB and 32 GB card images
             (sparse files, 90% full), as the owner's cards (item 57)
   emu-trace only the trace-over-USB check (rp-threads under the loader)
   emu-cf    only the CompactFlash check (slot power through the CPLD,
             the card as the PC's second drive)
+  emu-stale only the stale-view check (a PC write from before an image's
+            run is refused; the drive goes away; no file lost)
+  emu-storfast the storage speed-ups' device test (rp-storfast) under the
+            loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
             --emu adds the slow emulator ones
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
-/// Commands that talk to the Axim over the cable.
-const DEVICE_COMMANDS: &[&str] = &[
-    "usb",
-    "load",
-    "put",
-    "drive",
-    "card",
-    "backlight",
-    "ls",
-    "get",
-    "rm",
-    "cf",
-    "log",
-    "cpld",
-    "trace",
-    "wmbench",
-    "reboot-wm",
-    "tone",
-    "device-check",
-    "install",
-];
-
-/// Takes the machine-wide Axim lock for the whole command, waiting while
-/// another `cargo xtask` (any checkout, any session) holds it. Two loads at
-/// once collided on 2026-10-15: one was lost and the USB link dropped
-/// until the Axim was reseated. The OS releases the lock when the process
-/// ends, so a killed command can't leave it held.
-fn axim_lock() -> Result<std::fs::File> {
-    let dir = std::env::var_os("LOCALAPPDATA")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
-        .join("RetroPane");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let path = dir.join("axim.lock");
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
-    match file.try_lock() {
-        Ok(()) => {}
-        Err(std::fs::TryLockError::WouldBlock) => {
-            eprintln!("    the Axim is busy with another xtask command: waiting for it");
-            file.lock()
-                .map_err(|e| format!("{}: {e}", path.display()))?;
-        }
-        Err(std::fs::TryLockError::Error(e)) => return Err(format!("{}: {e}", path.display())),
-    }
-    Ok(file)
-}
-
 fn main() -> ExitCode {
-    let cmd = std::env::args().nth(1).unwrap_or_default();
-    let flag = std::env::args().nth(2).unwrap_or_default();
-    // Held until main returns.
-    let _axim = if DEVICE_COMMANDS.contains(&cmd.as_str()) {
-        match axim_lock() {
-            Ok(f) => Some(f),
-            Err(e) => {
-                eprintln!("xtask: the Axim lock: {e}");
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
+    let cmd = args().nth(1).unwrap_or_default();
+    let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
         "ci" => ["fmt", "clippy", "lint", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
-        | "emu-noise" | "emu-hang" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-noise" | "emu-hang" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
+        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
+        | "emu-cfdetect" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -210,6 +179,7 @@ fn main() -> ExitCode {
                     }
                 })
         }
+        "axim" => devlock::status(&devlock::dir()).map(|s| println!("{s}")),
         "usb" => {
             eprintln!("==> usb");
             usb::run()
@@ -221,8 +191,23 @@ fn main() -> ExitCode {
             } else if flag.is_empty() {
                 Err("usage: cargo xtask load <image name | file.bin> | --setup".into())
             } else {
-                let force = std::env::args().skip(3).any(|a| a == "--force");
+                let force = args().skip(3).any(|a| a == "--force");
                 usb::load(&workspace_root(), &flag, force)
+            }
+        }
+        "usbbench" => {
+            eprintln!("==> usbbench {flag}");
+            if flag == "drivers" {
+                usbbench::drivers()
+            } else if flag == "latency" {
+                usbbench::latency(&workspace_root())
+            } else if flag == "trial" {
+                let image = args().nth(3).unwrap_or_else(|| "rp-loader".into());
+                let runs = args().nth(4).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::trial(&workspace_root(), &image, runs)
+            } else {
+                let runs = args().nth(3).and_then(|n| n.parse().ok()).unwrap_or(3);
+                usbbench::run(&workspace_root(), &flag, runs)
             }
         }
         "put" => {
@@ -230,7 +215,7 @@ fn main() -> ExitCode {
             if flag.is_empty() {
                 Err("usage: cargo xtask put <file> [name on the card]".into())
             } else {
-                usb::put(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+                usb::put(&workspace_root(), &flag, args().nth(3).as_deref())
             }
         }
         "drive" => {
@@ -244,7 +229,7 @@ fn main() -> ExitCode {
         }
         "card" => {
             // Diagnostics: `cargo xtask card scan <lba> <count>`.
-            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> card {}", rest.join(" "));
             usb::command(&workspace_root(), &format!("card {}", rest.join(" ")))
         }
@@ -261,11 +246,11 @@ fn main() -> ExitCode {
             if flag.is_empty() {
                 Err("usage: cargo xtask get <file on the card> [local name]".into())
             } else {
-                usb::get(&workspace_root(), &flag, std::env::args().nth(3).as_deref())
+                usb::get(&workspace_root(), &flag, args().nth(3).as_deref())
             }
         }
         "rm" => {
-            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let rest: Vec<String> = args().skip(2).collect();
             eprintln!("==> rm {}", rest.join(" "));
             if rest.is_empty() {
                 Err("usage: cargo xtask rm <file or empty folder on the card>".into())
@@ -276,7 +261,7 @@ fn main() -> ExitCode {
         "cf" => {
             // `cf soft`: without the hardware reset; `cf log`: the slot's
             // timestamped events (diagnostics only).
-            let cmd = match std::env::args().nth(2).as_deref() {
+            let cmd = match args().nth(2).as_deref() {
                 Some("soft") => "cf soft",
                 Some("log") => "cf log",
                 _ => "cf",
@@ -288,9 +273,18 @@ fn main() -> ExitCode {
             eprintln!("==> log");
             usb::last_log(&workspace_root())
         }
+        "udc" => {
+            // Diagnostics: `cargo xtask udc stats` (item 74, docs/hw/udc.md).
+            eprintln!("==> udc {flag}");
+            usb::command(&workspace_root(), &format!("udc {flag}"))
+        }
         "cpld" => {
             eprintln!("==> cpld");
             usb::command(&workspace_root(), "cpld")
+        }
+        "handoff" => {
+            eprintln!("==> handoff");
+            usb::command(&workspace_root(), "handoff")
         }
         "trace" => {
             eprintln!("==> trace");
@@ -327,9 +321,8 @@ fn main() -> ExitCode {
             usb::command(&workspace_root(), "reboot wm")
         }
         "tone" => {
-            let rest: Vec<String> = std::env::args().skip(2).collect();
-            eprintln!("==> tone {}", rest.join(" "));
-            usb::command(&workspace_root(), &format!("tone {}", rest.join(" ")))
+            eprintln!("==> tone (rp-tone)");
+            usb::load(&workspace_root(), "rp-tone", false)
         }
         "device-check" => {
             eprintln!("==> device-check {flag}");
@@ -363,6 +356,12 @@ fn main() -> ExitCode {
 
 type Result<T = ()> = std::result::Result<T, String>;
 
+/// The command line without `--no-wait` (devlock reads that one itself),
+/// so it can go anywhere without shifting the positional arguments.
+fn args() -> impl Iterator<Item = String> {
+    std::env::args().filter(|a| a != devlock::NO_WAIT_FLAG)
+}
+
 fn run_step(step: &str) -> Result {
     eprintln!("==> {step}");
     match step {
@@ -389,16 +388,41 @@ fn run_step(step: &str) -> Result {
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
+        "emu-stale" => cross().and_then(|()| emu::boot_loader_stale_view_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
+        "emu-quantum" => cross().and_then(|()| emu::boot_quantum(&workspace_root())),
+        "emu-threads" => cross().and_then(|()| emu::boot_threads(&workspace_root())),
         "emu-trace" => cross().and_then(|()| emu::boot_loader_trace(&workspace_root())),
         "emu-fullsize" => cross().and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "emu-usb" => cross().and_then(|()| emu::boot_loader_usb_alone(&workspace_root())),
-        "mutants" => mutants::run(&workspace_root(), std::env::args().any(|a| a == "--emu")),
+        "emu-loader" => cross().and_then(|()| emu::boot_loader(&workspace_root())),
+        "emu-handover" => cross().and_then(|()| emu::boot_loader_handover(&workspace_root())),
+        "emu-nightlight" => cross().and_then(|()| emu::boot_loader_nightlight(&workspace_root())),
+        "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
+        "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
+        "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
+        // Every check that goes through the USB controller, in `emu`'s order
+        // (UDC work: the rest of the suite doesn't touch it).
+        "emu-usb-suite" => cross()
+            .and_then(|()| emu::boot_loader(&workspace_root()))
+            .and_then(|()| emu::boot_usb_link(&workspace_root()))
+            .and_then(|()| emu::boot_loader_usb(&workspace_root()))
+            .and_then(|()| emu::boot_loader_trace(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put(&workspace_root()))
+            .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cf(&workspace_root()))
+            .and_then(|()| emu::boot_loader_drive(&workspace_root()))
+            .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
+            .and_then(|()| emu::boot_loader_locked(&workspace_root()))
+            .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_full_size(&workspace_root())),
+        "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
         "emu" => cross()
             .and_then(|()| emu::boot_hello(&workspace_root()))
             .and_then(|()| emu::boot_probe(&workspace_root()))
             .and_then(|()| emu::boot_kernel(&workspace_root()))
             .and_then(|()| emu::boot_threads(&workspace_root()))
+            .and_then(|()| emu::boot_quantum(&workspace_root()))
             .and_then(|()| emu::boot_light(&workspace_root()))
             .and_then(|()| emu::boot_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader(&workspace_root()))
@@ -413,6 +437,9 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
             .and_then(|()| emu::boot_loader_today(&workspace_root()))
             .and_then(|()| emu::boot_loader_crash(&workspace_root()))
+            .and_then(|()| emu::boot_loader_handover(&workspace_root()))
+            .and_then(|()| emu::boot_loader_nightlight(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cfdetect(&workspace_root()))
             .and_then(|()| emu::boot_usb_link(&workspace_root()))
             .and_then(|()| emu::boot_loader_usb(&workspace_root()))
             .and_then(|()| emu::boot_loader_trace(&workspace_root()))
@@ -421,6 +448,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
+            .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
@@ -444,6 +472,8 @@ fn run_step(step: &str) -> Result {
             "rp-kernel",
             "--exclude",
             "rp-threads",
+            "--exclude",
+            "rp-quantum",
             // CLI glue; its logic lives in the tested romdump library.
             "--ignore-filename-regex",
             r"romdump.src.main\.rs",

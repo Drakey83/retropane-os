@@ -138,12 +138,21 @@ mod image {
             (0x0000, WHITE),
         );
         let panel = rp_hal_x51v::devices::take_cpld()
-            .map(Cpld::new)
+            .map(|(b, t)| Cpld::adopt(b, t).0)
             .map_or("no CPLD", |mut c| c.panel(&mut TimerDelay).name());
         let mut out = Tee(&mut uart, &mut con);
         let _ = writeln!(out, "RetroPane 26 first light");
         let _ = writeln!(out, "all steps OK");
         let _ = writeln!(out, "display: {note} @{:06X}", plane.offset);
+        if let Some(h) = rp_hal_x51v::devices::mbx_handoff() {
+            let _ = writeln!(
+                out,
+                "2700G at {} us; DMA {:08X} stop {} us",
+                h.at * 4 / 13,
+                h.found.dma_running,
+                h.stopped.waited * 4 / 13
+            );
+        }
         let _ = writeln!(out, "GSCTRL  {gsctrl:08X}");
         let _ = writeln!(out, "GSCADR  {gscadr:08X}");
         let _ = writeln!(out, "GSADR   {gsadr:08X}");

@@ -40,6 +40,19 @@ struct Card {
     accesses: u32,
     /// Hardware resets seen.
     resets: u32,
+    /// The data window (0x400-0x7FF) doesn't alias the data register (a
+    /// card or socket that breaks the CF rule): it reads garbage.
+    window_broken: bool,
+    /// A 32-bit load is one card cycle (one data word), as QEMU's socket
+    /// model had it before rp-v0.16.0.
+    window_one_cycle: bool,
+    /// Data reads by kind: the 16-bit port, the 32-bit window.
+    port_reads: u32,
+    window_reads: u32,
+    /// The simulated clock (µs): every wait adds to it.
+    now_us: u64,
+    /// When RESET was asserted and released.
+    reset_at: Option<(u64, u64)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -104,6 +117,12 @@ impl Card {
             ready_line_dead: false,
             accesses: 0,
             resets: 0,
+            window_broken: false,
+            window_one_cycle: false,
+            port_reads: 0,
+            window_reads: 0,
+            now_us: 0,
+            reset_at: None,
         }
     }
 
@@ -153,6 +172,12 @@ impl Card {
     }
 
     fn command(&mut self, cmd: u8) {
+        // A command written while data is still waiting to be read is
+        // ignored: the card stays in its data phase (as QEMU's IDE model
+        // does; ATA leaves it undefined).
+        if self.phase == Phase::ReadOut {
+            return;
+        }
         self.commands.push(cmd);
         self.regs[reg::STATUS_COMMAND] = 0;
         self.regs[reg::ERROR_FEATURES] = 0;
@@ -251,8 +276,15 @@ struct Lines(Rc<RefCell<Card>>);
 impl CfLines for Lines {
     fn set_reset(&mut self, asserted: bool) {
         let mut c = self.0.borrow_mut();
+        let now = c.now_us;
         if c.in_reset && !asserted {
             c.hard_reset();
+            if let Some((at, _)) = c.reset_at {
+                c.reset_at = Some((at, now));
+            }
+        }
+        if asserted && !c.in_reset {
+            c.reset_at = Some((now, now));
         }
         c.in_reset = asserted;
     }
@@ -309,11 +341,97 @@ impl RegisterBus8 for Common {
 impl RegisterBus16 for Common {
     fn read16(&mut self, offset: usize) -> u16 {
         assert_eq!(offset, reg::DATA);
-        self.0.borrow_mut().read_data()
+        let mut c = self.0.borrow_mut();
+        c.port_reads += 1;
+        c.read_data()
     }
     fn write16(&mut self, offset: usize, value: u16) {
         assert_eq!(offset, reg::DATA);
         self.0.borrow_mut().write_data(value);
+    }
+}
+
+/// 32-bit loads: only across the data window, two card cycles each (the
+/// PXA splits them), low half first.
+impl RegisterBus for Common {
+    fn read32(&mut self, offset: usize) -> u32 {
+        assert!(
+            (reg::DATA_WINDOW..0x800).contains(&offset) && offset.is_multiple_of(4),
+            "32-bit load outside the data window: {offset:#x}"
+        );
+        let mut c = self.0.borrow_mut();
+        c.accesses += 1;
+        c.window_reads += 1;
+        let lo = c.read_data();
+        if c.window_one_cycle {
+            return u32::from(lo);
+        }
+        let hi = c.read_data();
+        if c.window_broken {
+            return 0xFFFF_0000 ^ offset as u32;
+        }
+        u32::from(lo) | u32::from(hi) << 16
+    }
+    fn write32(&mut self, offset: usize, _: u32) {
+        panic!("32-bit store at {offset:#x}: writes use the 16-bit port");
+    }
+}
+
+/// A DMA engine copying from the card's data window as the PXA's does
+/// (a sector of half-word reads), or misbehaving as told.
+struct FakeDma {
+    card: Rc<RefCell<Card>>,
+    armed: bool,
+    /// Refuse every arm (the driver then loads 32-bit words itself).
+    refuse: bool,
+    /// Copy wrong bytes (a DMA that reads the window wrongly).
+    corrupt: bool,
+    /// Report a bus error after this many good sectors.
+    fail_after: Option<u32>,
+    sectors: u32,
+    src: Vec<u32>,
+}
+
+impl FakeDma {
+    fn new(card: &Rc<RefCell<Card>>) -> Self {
+        Self {
+            card: card.clone(),
+            armed: false,
+            refuse: false,
+            corrupt: false,
+            fail_after: None,
+            sectors: 0,
+            src: Vec::new(),
+        }
+    }
+}
+
+impl WindowDma for FakeDma {
+    fn arm_from_window(&mut self, src: u32, window: usize, buf: &mut [u8]) -> bool {
+        assert!(!self.armed, "armed twice");
+        assert_eq!(window, SECTOR);
+        if self.refuse || !(buf.as_ptr() as usize).is_multiple_of(32) {
+            return false;
+        }
+        self.src.push(src);
+        let mut c = self.card.borrow_mut();
+        for pair in buf.as_chunks_mut::<2>().0 {
+            *pair = c.read_data().to_le_bytes();
+        }
+        if self.corrupt {
+            buf[7] ^= 0x10;
+        }
+        self.armed = true;
+        true
+    }
+    fn done(&mut self) -> Option<bool> {
+        assert!(self.armed, "polled while disarmed");
+        self.armed = false;
+        self.sectors += 1;
+        Some(self.fail_after.is_none_or(|n| self.sectors <= n))
+    }
+    fn abort(&mut self) {
+        self.armed = false;
     }
 }
 
@@ -435,11 +553,11 @@ fn a_card_that_never_gets_ready_times_out() {
     let (c, attr, common) = card();
     c.borrow_mut().never_ready = true;
     let mut waited = 0u32;
-    let r = CfCard::init(attr, common, &mut Lines(c.clone()), &mut |ms| waited += ms);
+    let r = CfCard::init(attr, common, &mut Lines(c.clone()), &mut |us| waited += us);
     assert!(matches!(r, Err((CfError::Timeout, _, _))));
     assert!(
-        waited <= RESET_HOLD_MS + RESET_SETUP_MS + READY_MS + 2,
-        "waited {waited} ms"
+        waited <= RESET_HOLD_US + (RESET_SETUP_MS + READY_MS + 2) * 1000,
+        "waited {waited} us"
     );
 }
 
@@ -479,11 +597,204 @@ fn a_card_that_never_comes_out_of_reset_is_never_accessed() {
     let (c, attr, common) = card();
     c.borrow_mut().ready_line_dead = true;
     let mut waited = 0u32;
-    let r = CfCard::init(attr, common, &mut Lines(c.clone()), &mut |ms| waited += ms);
+    let r = CfCard::init(attr, common, &mut Lines(c.clone()), &mut |us| waited += us);
     assert!(matches!(r, Err((CfError::Timeout, _, _))));
     assert_eq!(c.borrow().accesses, 0);
     assert!(!c.borrow().in_reset, "RESET released before giving up");
-    assert!(waited <= RESET_HOLD_MS + RESET_SETUP_MS + READY_MS);
+    assert!(waited <= RESET_HOLD_US + (RESET_SETUP_MS + READY_MS) * 1000);
+}
+
+/// Item 4 of the storage report: RESET is a pulse of at least the CF
+/// specification's 10 µs, with margin, not Windows Mobile's 100 ms; the
+/// rest of the attach waits on the card (READY, then BSY), not the clock.
+#[test]
+fn reset_is_a_short_pulse_then_the_card_is_waited_for() {
+    let (c, attr, common) = card();
+    let clock = c.clone();
+    let (_, seen) = CfCard::init(attr, common, &mut Lines(c.clone()), &mut |us| {
+        clock.borrow_mut().now_us += u64::from(us);
+    })
+    .ok()
+    .unwrap();
+    let (on, off) = c.borrow().reset_at.unwrap();
+    let held = off - on;
+    assert!((50..=1000).contains(&held), "RESET held {held} us");
+    assert_eq!(seen.ready_ms, 0);
+    // The whole attach: the pulse, the set-up time, the soft reset's
+    // millisecond; no other fixed wait.
+    let total = c.borrow().now_us;
+    assert!(total <= 22_000, "attach waited {total} us");
+}
+
+/// The window paths: 32-bit loads once IDENTIFY reads the same through
+/// them as through the port, then DMA once it does too; every byte right.
+#[test]
+fn reads_take_the_fastest_path_that_reads_identify_right() {
+    let (c, attr, common) = card_with_data();
+    let mut cf = init(&c, attr, common).ok().unwrap();
+    assert_eq!(cf.read_path(), ReadPath::Window32);
+    assert_eq!(cf.path_mismatches(), 0);
+    let mut buf = vec![0u8; 300 * SECTOR];
+    let ports = c.borrow().port_reads;
+    cf.read_blocks(100, &mut buf).unwrap();
+    assert_eq!(buf[..], c.borrow().disk[100 * SECTOR..400 * SECTOR]);
+    assert_eq!(c.borrow().port_reads, ports, "no 16-bit reads");
+    assert_eq!(c.borrow().window_reads % 128, 0);
+    // With DMA: its copy is checked against the port, then used.
+    let cf = cf.with_dma(FakeDma::new(&c), 0x3C00_0000);
+    let mut cf = cf;
+    assert_eq!(cf.read_path(), ReadPath::Dma);
+    let window = c.borrow().window_reads;
+    let mut aligned = Aligned([0; 64 * SECTOR]);
+    cf.read_blocks(7, &mut aligned.0).unwrap();
+    assert_eq!(aligned.0[..], c.borrow().disk[7 * SECTOR..71 * SECTOR]);
+    assert_eq!(c.borrow().window_reads, window, "every sector by DMA");
+    let (_, _, dma) = cf.into_parts();
+    assert!(dma.src.iter().all(|&s| s == 0x3C00_0400));
+    assert_eq!(dma.sectors, 1 + 64, "the check, then each sector");
+}
+
+/// `init_with` (the engine from the start: one copy of the driver per
+/// image) ends where `init` then `with_dma` does: the same path, the same
+/// check, the same reads.
+#[test]
+fn init_with_an_engine_matches_init_then_with_dma() {
+    let (c, attr, common) = card_with_data();
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(
+        attr,
+        common,
+        FakeDma::new(&c),
+        Some(0x3C00_0000),
+        lines,
+        &mut no_wait(),
+    )
+    .ok()
+    .unwrap();
+    let mut cf = cf;
+    assert_eq!(cf.read_path(), ReadPath::Dma);
+    assert_eq!(cf.path_mismatches(), 0);
+    let mut aligned = Aligned([0; 64 * SECTOR]);
+    cf.read_blocks(7, &mut aligned.0).unwrap();
+    assert_eq!(aligned.0[..], c.borrow().disk[7 * SECTOR..71 * SECTOR]);
+    let (_, _, dma) = cf.into_parts();
+    assert_eq!(dma.sectors, 1 + 64, "the check, then each sector");
+    // No address: the engine isn't tried; a broken window keeps the port
+    // and the engine comes back untried.
+    let (c, attr, common) = card_with_data();
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(attr, common, FakeDma::new(&c), None, lines, &mut no_wait())
+        .ok()
+        .unwrap();
+    assert_eq!(cf.read_path(), ReadPath::Window32);
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().window_broken = true;
+    let lines = &mut Lines(c.clone());
+    let (cf, _) = CfCard::init_with(
+        attr,
+        common,
+        FakeDma::new(&c),
+        Some(0x3C00_0000),
+        lines,
+        &mut no_wait(),
+    )
+    .ok()
+    .unwrap();
+    assert_eq!(
+        (cf.read_path(), cf.path_mismatches()),
+        (ReadPath::Port16, 1)
+    );
+    assert_eq!(cf.into_parts().2.sectors, 0, "DMA not tried");
+}
+
+#[repr(C, align(32))]
+struct Aligned([u8; 64 * SECTOR]);
+
+/// A card (or socket) whose window doesn't repeat the data register keeps
+/// the 16-bit port: the check catches it before any sector is read wrong.
+#[test]
+fn a_window_that_reads_wrong_keeps_the_port() {
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().window_broken = true;
+    let cf = init(&c, attr, common).ok().unwrap();
+    assert_eq!(cf.read_path(), ReadPath::Port16);
+    assert_eq!(cf.path_mismatches(), 1);
+    let mut cf = cf.with_dma(FakeDma::new(&c), 0x3C00_0000);
+    assert_eq!(cf.read_path(), ReadPath::Port16, "DMA not tried");
+    let mut buf = vec![0u8; 8 * SECTOR];
+    let windows = c.borrow().window_reads;
+    cf.read_blocks(3, &mut buf).unwrap();
+    assert_eq!(buf[..], c.borrow().disk[3 * SECTOR..11 * SECTOR]);
+    assert_eq!(c.borrow().window_reads, windows);
+}
+
+/// Class guard (found in the emulator, 2026-10-16): a window path that
+/// moves too little leaves the card mid-transfer, and the next command read
+/// the leftovers (sector 0 came back as IDENTIFY's tail). The check drains
+/// what's left and refuses the path; sectors read right after it.
+#[test]
+fn a_window_that_moves_too_little_is_refused_and_leaves_nothing_behind() {
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().window_one_cycle = true;
+    let mut cf = init(&c, attr, common).ok().unwrap();
+    assert_eq!(cf.read_path(), ReadPath::Port16);
+    assert_eq!(cf.path_mismatches(), 1);
+    let mut buf = vec![0u8; 3 * SECTOR];
+    cf.read_blocks(0, &mut buf).unwrap();
+    assert_eq!(buf[..], c.borrow().disk[..3 * SECTOR]);
+}
+
+/// A DMA engine that copies wrongly is never used; one that refuses a
+/// buffer costs the 32-bit path for that sector, counted; one that fails
+/// mid-transfer kills the card (its data phase is unknown), so the next
+/// attach resets it.
+#[test]
+fn a_dma_that_misreads_refuses_or_fails_is_handled() {
+    let (c, attr, common) = card_with_data();
+    let cf = init(&c, attr, common).ok().unwrap();
+    let mut dma = FakeDma::new(&c);
+    dma.corrupt = true;
+    let mut cf = cf.with_dma(dma, 0);
+    assert_eq!(cf.read_path(), ReadPath::Window32);
+    assert!(!cf.set_read_path(ReadPath::Dma), "an unproven path");
+    assert_eq!(cf.read_path(), ReadPath::Window32);
+    assert_eq!(cf.path_mismatches(), 1);
+    let mut aligned = Aligned([0; 64 * SECTOR]);
+    cf.read_blocks(0, &mut aligned.0).unwrap();
+    assert_eq!(aligned.0[..], c.borrow().disk[..64 * SECTOR]);
+
+    let (attr, common) = cf.into_inner();
+    let cf = init(&c, attr, common).ok().unwrap();
+    let mut cf = cf.with_dma(FakeDma::new(&c), 0);
+    assert_eq!(cf.read_path(), ReadPath::Dma);
+    // Diagnostics may step down to a slower proven path, never up past one.
+    assert!(cf.set_read_path(ReadPath::Port16));
+    let mut buf = vec![0u8; 2 * SECTOR];
+    cf.read_blocks(9, &mut buf).unwrap();
+    assert_eq!(buf[..], c.borrow().disk[9 * SECTOR..11 * SECTOR]);
+    assert!(cf.set_read_path(ReadPath::Dma));
+    // An odd buffer (not whole cache lines): refused, read by the CPU.
+    let mut odd = vec![0u8; 4 * SECTOR + 1];
+    let at = if (odd.as_ptr() as usize).is_multiple_of(32) {
+        1
+    } else {
+        0
+    };
+    cf.read_blocks(5, &mut odd[at..at + 4 * SECTOR]).unwrap();
+    assert_eq!(
+        odd[at..at + 4 * SECTOR],
+        c.borrow().disk[5 * SECTOR..9 * SECTOR]
+    );
+    assert_eq!(cf.dma_refused(), 4);
+
+    let (attr, common, _) = cf.into_parts();
+    let cf = init(&c, attr, common).ok().unwrap();
+    let mut dma = FakeDma::new(&c);
+    dma.fail_after = Some(3);
+    let mut cf = cf.with_dma(dma, 0);
+    assert_eq!(cf.read_path(), ReadPath::Dma);
+    assert_eq!(cf.read_blocks(0, &mut aligned.0), Err(BlockError::Device));
+    assert!(cf.is_dead());
 }
 
 /// Class guard for the stalled USB loop: a card that stops answering costs

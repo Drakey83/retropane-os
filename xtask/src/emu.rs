@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.14.0";
+pub const QEMU_RELEASE: &str = "rp-v0.19.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -29,7 +29,14 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 
 /// Where `cargo xtask qemu` builds inside WSL.
-const WSL_QEMU: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+const WSL_QEMU_DEFAULT: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
+
+/// The WSL emulator binary: `RETROPANE_WSL_QEMU` (a fork branch built in
+/// its own directory, without replacing the shared build other sessions
+/// use), else `cargo xtask qemu`'s.
+fn wsl_qemu() -> String {
+    std::env::var("RETROPANE_WSL_QEMU").unwrap_or_else(|_| WSL_QEMU_DEFAULT.into())
+}
 
 const EMU_ARGS: &str = "-M x51v -display none";
 
@@ -41,12 +48,42 @@ fn serial_port() -> u16 {
 }
 
 /// Local TCP port for QEMU's monitor (screenshots). `RETROPANE_MONITOR_PORT` overrides.
+///
+/// Every port a run uses is an offset from this one, inside a block of
+/// [`PORT_BLOCK`] this process reserved (`devlock::reserve_ports`): serial
+/// one below, QMP one above, the USB chardevs after that. Two `emu` runs at
+/// once (two sessions) once shared fixed ports and failed.
 fn monitor_port() -> u16 {
-    std::env::var("RETROPANE_MONITOR_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(45_455)
+    // The block's lock lives here until the process ends; the OS frees
+    // the block then.
+    static BASE: std::sync::OnceLock<(u16, Option<std::fs::File>)> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
+        if let Some(p) = std::env::var("RETROPANE_MONITOR_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+        {
+            return (p, None);
+        }
+        let (start, lock) = crate::devlock::reserve_ports(
+            &crate::devlock::dir(),
+            PORT_FIRST,
+            PORT_BLOCK,
+            PORT_BLOCKS,
+            &crate::devlock::port_is_free,
+        )
+        .unwrap_or_else(|e| panic!("emulator ports: {e}"));
+        (start + 1, Some(lock))
+    })
+    .0
 }
+
+/// The emulator's port blocks: `PORT_BLOCKS` blocks of `PORT_BLOCK` ports
+/// from `PORT_FIRST`. A block holds serial, monitor, QMP and
+/// [`USB_PORTS`] USB chardevs.
+const PORT_FIRST: u16 = 45_440;
+const PORT_BLOCK: u16 = 20;
+const PORT_BLOCKS: u16 = 64;
+const USB_PORTS: u16 = PORT_BLOCK - 3;
 
 struct Platform {
     asset: &'static str,
@@ -105,7 +142,7 @@ fn wsl_bash(script: &str) -> Command {
 
 fn wsl_build_exists() -> bool {
     cfg!(windows)
-        && wsl_bash(&format!("test -x {WSL_QEMU}"))
+        && wsl_bash(&format!("test -x {}", wsl_qemu()))
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -383,6 +420,8 @@ const KERNEL_EXPECT: &[&str] = &[
     "IPC service manager OK",
     "IPC supervised restart OK",
     "IPC spawn and exit OK",
+    "IPC native slots OK",
+    "IPC handle pages OK",
     // A real driver in a host (item 46): the compiled display host runs the
     // backlight on its granted PWM window, restarts after a fault in a
     // call and in its own thread, and keeps the level the hardware shows.
@@ -464,6 +503,7 @@ const THREADS_EXPECT: &[&str] = &[
     "USER fault contained OK",
     "USER iWMMXt lazy switch OK",
     "USER KData OK",
+    "THREADS FCSE native slot OK",
 ];
 
 /// Boots the threads image: scheduler, context switch, events, sleeping and
@@ -495,8 +535,53 @@ pub fn boot_threads(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData"
+        "    threads OK: context switches, events, sleeps, tickless idle, user mode, syscalls, preemption, KData, FCSE in a native slot"
     );
+    Ok(())
+}
+
+/// Must match `rp_quantum::MARKER`.
+const QUANTUM_MARKER: &str = "RETROPANE-QUANTUM-OK";
+
+/// Boots the quantum image (ADR-0010 amendment): every time-slice policy
+/// runs its touch, frame, busy-loop and switch-cost tests. The emulator's
+/// timing isn't the device's, so only that each ran is checked; the numbers
+/// are printed (the device's come from `cargo xtask load rp-quantum`).
+pub fn boot_quantum(root: &Path) -> Result<(), String> {
+    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-quantum");
+    let output = boot(
+        root,
+        &Boot {
+            image: &image,
+            marker: QUANTUM_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: None,
+            during: None,
+            then: None,
+            // Eight policies of ~2.5 s each, in real time (~21 s), with
+            // room for a loaded host.
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    eprint!("{output}");
+    if !output.ends_with('\n') {
+        eprintln!();
+    }
+    for test in ["touch", "anim", "busy", "hogs"] {
+        let runs = output
+            .lines()
+            .filter(|l| l.starts_with("QT q") && l.contains(&format!(" {test} ")))
+            .count();
+        if runs != 8 {
+            return Err(format!(
+                "quantum check failed: {runs} `{test}` results, not 8"
+            ));
+        }
+    }
+    eprintln!("    quantum OK: eight time-slice policies measured");
     Ok(())
 }
 
@@ -537,11 +622,12 @@ const LOADER_MARKER: &str = "RPLOAD1 READY";
 /// are loose: they catch a regression of many times, not 10%. The device's
 /// numbers are what count, and go in docs/perf.md.
 const BOOT_BUDGETS_MS: &[(&str, f64)] = &[
-    // The loader: 500 ms of it is the display's settle time after the
-    // hand-off (an unexplained hang on the device, `devices::take_mbx`);
-    // GPIO, the card, the DMA self-test and the USB detach run inside it.
-    // Was 742 ms before (a 16 MiB beacon fill, then everything in turn).
-    ("boot_loader_ready", 560.0),
+    // The loader: 200 ms of it is the USB detach (the PC must see the
+    // device leave); GPIO, the card and the DMA self-test run inside it.
+    // Was 742 ms (a 16 MiB beacon fill, then everything in turn), then
+    // 504 ms (a fixed 500 ms 2700G settle, replaced by waiting for the
+    // hand-off's DMA to stop: `devices::take_mbx`): 204 ms in the emulator.
+    ("boot_loader_ready", 260.0),
     // The kernel's frame allocator, page tables and device map.
     ("boot_kernel_tables", 100.0),
 ];
@@ -617,6 +703,221 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
         "    loader OK: moved itself home, took a {} byte image over serial, CRC checked, \
          started it, and sent its run log back when it returned",
         payload.len()
+    );
+    Ok(())
+}
+
+/// Hand-over facts (items 72 and 77): `rp-handover` under the loader, with
+/// Windows Mobile's CPLD shadow table in RAM as at HaRET's hand-off. The
+/// loader adopts the table first (its start), so the image finds
+/// RetroPane's table with Windows Mobile's bits in it; the hand-off record
+/// shows no DMA left running (the loader stops its own) and the 2700G
+/// handed out with no fixed wait.
+pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-handover.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-handover"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let args = wm_cpld_table_args();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("handover: no run log after the image returned")?;
+    for want in [
+        "handoff: DMA running 00000000, stopped",
+        "table @A8001320: 53435052",
+        "shadow from RetroPane's table:",
+        " 02=00FD",
+        " 10=1000",
+        " 12=000F",
+        " 16=0003",
+        " 18=0004",
+        " 1C=000C",
+        "HANDOVER-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("handover: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprint!("    run log:{log}");
+    eprintln!(
+        "    hand-over OK: no fixed wait for the 2700G; the CPLD shadow adopted from Windows Mobile's table by the loader, then shared with the image"
+    );
+    Ok(())
+}
+
+/// The CF detect diagnostic (`rp-cfdetect`) under the loader: it reads the
+/// three detect signals as found, with the slot off through its 30 s watch,
+/// and powered again, logs each, and returns with the slot powered. (The
+/// emulator's slot is empty and its GPIO13 works unpowered, so this checks
+/// the image's run, not the device's answer: docs/hw/emulator.md.)
+pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-cfdetect.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-cfdetect"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL END")),
+            during: None,
+            then: None,
+            timeout: BOOT_TIMEOUT + Duration::from_secs(40),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("cfdetect: no run log after the image returned")?;
+    for want in [
+        " ms as found: GPIO13 ",
+        " ms slot off: GPIO13 ",
+        "PULL THE CF CARD OUT NOW",
+        "PUSH IT BACK IN NOW",
+        " ms end, slot off: GPIO13 ",
+        " ms powered 1 s: GPIO13 ",
+        "CFDETECT-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("cfdetect: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!("    cf detect OK: every stage ran and was logged, back at the loader");
+    Ok(())
+}
+
+/// The night-light experiment (item 76) under the loader: every step runs
+/// and the channel is put back. The emulator's 2700G applies the graphics
+/// gamma table at scan-out (Windows Mobile's grey ramp at reset, gamma off
+/// as on a cold display: the image switches it on), so the picture steps
+/// run: the screen's grey ramp is seen at full, 1/2 and 1/4 through the
+/// table, pixel for pixel as RetroPane's reference (`scanout::gamma` of
+/// `scale_gamma`).
+pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::scanout::{WM_GAMMA, gamma, scale_gamma};
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-nightlight.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-nightlight"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let shot = root.join("target/emulator/nightlight-screen.ppm");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    // The image's ramp: grey bar `i` (of 16, 30 pixels wide) from y = 400,
+    // in RGB565, then through the table scaled to `picture`/256.
+    let bar = |i: u32, picture: u32| {
+        let g8 = i * 255 / 15;
+        let (r, g) = (((g8 >> 3) << 3) as u8, ((g8 >> 2) << 2) as u8);
+        let t = scale_gamma(&WM_GAMMA, picture);
+        (gamma(&t, r, 16), gamma(&t, g, 8), gamma(&t, r, 0))
+    };
+    let pictures = [256, 128, 64, 32];
+    let check = || -> Result<(), String> {
+        let mut seen = [false; 4];
+        let mut last = None;
+        let until = Instant::now() + Duration::from_secs(120);
+        while !seen.iter().all(|s| *s) {
+            if Instant::now() > until {
+                return Err(format!(
+                    "nightlight: picture steps not all seen through the gamma table (full, 1/2, 1/4, 1/8: {seen:?}); last bars 15 and 8: {last:?}, want {:?}",
+                    pictures.map(|p| (bar(15, p), bar(8, p)))
+                ));
+            }
+            let _ = std::fs::remove_file(&shot);
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            mon.screendump(&guest, &shot)?;
+            let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+            if img.width >= 480 && img.height >= 640 {
+                let px = |x: u32, y: u32| {
+                    let o = ((y * img.width + x) * 3) as usize;
+                    (img.rgb[o], img.rgb[o + 1], img.rgb[o + 2])
+                };
+                let got = (px(15 * 30 + 15, 520), px(8 * 30 + 15, 520));
+                for (k, p) in pictures.iter().enumerate() {
+                    if got == (bar(15, *p), bar(8, *p)) {
+                        seen[k] = true;
+                    }
+                }
+                last = Some(got);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("nightlight: no run log after the image returned")?;
+    for want in [
+        "gamma: off, switched on for the steps",
+        "step 4: 1/432, picture 1/2",
+        "step 5: 1/432, picture 1/4",
+        "step 8: 108/216 (WM): whine?",
+        "NIGHTLIGHT-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("nightlight: no {want:?} in the run log:{log}"));
+        }
+    }
+    if log.contains("skipped") {
+        return Err(format!("nightlight: a step was skipped:{log}"));
+    }
+    eprintln!(
+        "    night light OK: every step ran; the picture steps dimmed the screen through Windows Mobile's gamma table (full, 1/2, 1/4, 1/8), pixel for pixel as the reference"
     );
     Ok(())
 }
@@ -1574,32 +1875,128 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
         return Err(format!("mbx3d: didn't return cleanly:{log}"));
     }
-    // The fork doesn't model the 3D core (docs/hw/emulator.md): the image
-    // must try the parameter memory set-up without and with the 3D clock, get no "ready",
-    // try no render, and come back.
-    for want in [
-        "core ID 0x01020000",
-        "P: parameter memory set-up, MBXCLK",
-        "(3D clock on)",
-        "the parameter memory never said ready: no render tried",
-        "RETROPANE-MBX3D: nothing drawn",
-    ] {
+    let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    // Without the fork's 3D model (before rp-v0.15.0) the image must try
+    // the parameter memory set-up without and with the 3D clock, get no
+    // "ready", try no render, and come back. With it: the memory manager
+    // is ready only with the 3D clock on (as on the device), and the red
+    // triangle draws with the target register set (try A' or B).
+    let want: &[&str] = if modelled {
+        &[
+            "core ID 0x01020000",
+            "(3D clock on)",
+            "drawn 480 px across, 640 down",
+            "RETROPANE-MBX3D: DREW",
+        ]
+    } else {
+        &[
+            "core ID 0x01020000",
+            "P: parameter memory set-up, MBXCLK",
+            "(3D clock on)",
+            "the parameter memory never said ready: no render tried",
+            "RETROPANE-MBX3D: nothing drawn",
+        ]
+    };
+    for want in want {
         if !log.contains(want) {
             return Err(format!("mbx3d: the run log has no `{want}`:{log}"));
         }
     }
+    // With the fork's render-done interrupt and texel model (mbx-3d-irq,
+    // rp-v0.16.0): what version 24 saw on the device.
+    // (Version 24's stages only: later versions ask other questions.)
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("T10 MINTENABLE") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            ("MINTENABLE 0x800f, 0x130 0x0004:", "edges 0"),
+            ("MINTENABLE 0x800f, 0x130 0x8004:", "edges 1"),
+            ("MINTENABLE 0x8001, 0x130 0x8004:", "edges 0"),
+            ("MINTENABLE 0x8004, 0x130 0x8004:", "edges 1"),
+            (
+                "T12 TEX1 bit 31 (linear)",
+                "ffff3f3f, ffff7f7f, ffffbfbf, ffffffff, ffffbfbf",
+            ),
+            (
+                "T13 PVRTC 4 bpp (code 28), red",
+                "[ffff0000, ffff0000, ffff0000, ffff0000]",
+            ),
+            (
+                "T13 PVRTC 4 bpp, words swapped",
+                "[ff000000, ff000000, ff000000, ff000000]",
+            ),
+            ("T13 32-bit texels", "[ffff0000, ff00ff00, ff0000ff"),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
+    // Version 25's stages, likewise (mipmaps and PVRTC's block order,
+    // from rp-v0.16.0's model).
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("T12b") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            (
+                "T12b layout B, TEX0 bits 12-9 = 7:",
+                "16 px quad 0xff0000ff, of the 8 px quad 0xffffff00",
+            ),
+            (
+                "T12b layout A, TEX0 bits 12-9 = 7:",
+                "16 px quad 0xffff0000, of the 8 px quad 0xffff0000",
+            ),
+            (
+                "T13b PVRTC 4 bpp",
+                "[[00, 21, 84, a5], [10, 31, 94, b5], [42, 63, c6, e7], [52, 73, d6, f7]]",
+            ),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
+    // Version 26's 16-bit targets, likewise.
+    if modelled && device_has(root, "intel-2700g", "mbx-3d-irq") && log.contains("S26b") {
+        let line = |key: &str| log.lines().find(|l| l.contains(key)).unwrap_or("");
+        for (key, want) in [
+            (
+                "S26b 0x650 1, 0x660 240:",
+                "(2,2) 0xf800 (18,2) 0x07e0 (2,34) 0x001f (18,34) 0xffff; drawn to x Some(32) on row 2, y Some(64)",
+            ),
+            (
+                "S26b 0x650 3, 0x660 240:",
+                "(2,2) 0xfc00 (18,2) 0x83e0 (2,34) 0x801f (18,34) 0xffff",
+            ),
+        ] {
+            if !line(key).contains(want) {
+                return Err(format!(
+                    "mbx3d: `{key}` should show `{want}` as on the device:{log}"
+                ));
+            }
+        }
+    }
     eprintln!(
-        "    mbx3d OK: ran every try safely (the 3D core isn't modelled), back at the loader on a button press"
+        "    mbx3d OK: {}, back at the loader on a button press",
+        if modelled {
+            "the red triangle drawn by the modelled 3D core"
+        } else {
+            "ran every try safely (the 3D core isn't modelled)"
+        }
     );
     Ok(())
 }
 
 /// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
-/// runs under the loader; the fork doesn't model the 3D core, so the
-/// renderer's set-up never hears "ready" and every frame is refused
-/// (`NoCore`) without a fault; the clock, plane and core are put back and
-/// it returns on a button. The 3D results themselves are checked by the
-/// host model (`cargo test -p rp-mbx3d-render`).
+/// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.15.0)
+/// every counted check must pass, as on the device (run 3: 0 BAD), and
+/// every T9 try draw right (the model keeps the core's state across the
+/// clock: an assumption until run 4). Without it, the renderer's set-up
+/// never hears "ready" and every frame is refused (`NoCore`) without a
+/// fault. Either way the clock, plane and core are put back and it returns
+/// on a button.
 pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx3d-api: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -1631,7 +2028,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
             input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX3D-API: ")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(180),
+            timeout: Duration::from_secs(600),
         },
     )?;
     let log = output
@@ -1641,19 +2038,43 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
         return Err(format!("mbx3d-api: didn't return cleanly:{log}"));
     }
-    for want in [
-        "S1 (T1)",
-        "whole screen: NoCore",
-        "S7: the 3D clock gate",
-        "everything given back: true",
-        "RETROPANE-MBX3D-API: ",
-    ] {
+    let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    let want: &[&str] = if modelled {
+        &[
+            "S1 (T1)",
+            "S9 (T9)",
+            "everything given back: true",
+            " checks, 0 BAD",
+        ]
+    } else {
+        &[
+            "S1 (T1)",
+            "whole screen: NoCore",
+            "S7: the 3D clock gate",
+            "everything given back: true",
+            "RETROPANE-MBX3D-API: ",
+        ]
+    };
+    for want in want {
         if !log.contains(want) {
             return Err(format!("mbx3d-api: the run log has no `{want}`:{log}"));
         }
     }
+    if modelled {
+        let tries = log.matches("    T9 ").count();
+        if tries != 6 || log.contains("WRONG") || log.contains("    BAD ") {
+            return Err(format!(
+                "mbx3d-api: {tries} T9 tries, every one must draw right, no check BAD:{log}"
+            ));
+        }
+    }
     eprintln!(
-        "    mbx3d-api OK: every stage ran, every frame refused safely (the 3D core isn't modelled), back at the loader on a button press"
+        "    mbx3d-api OK: {}, back at the loader on a button press",
+        if modelled {
+            "every check passed on the modelled 3D core, as on the device"
+        } else {
+            "every stage ran, every frame refused safely (the 3D core isn't modelled)"
+        }
     );
     Ok(())
 }
@@ -2076,6 +2497,7 @@ fn expected_picture(root: &Path) -> Result<Vec<u8>, String> {
 /// Port of the emulated USB serial port (the UDC model's chardev); each test
 /// gets its own (`n`), so one can never reach another test's emulator.
 fn usb_port(n: u16) -> u16 {
+    assert!(n < USB_PORTS, "usb_port({n}): past this run's port block");
     monitor_port() + 2 + n
 }
 
@@ -2115,11 +2537,60 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
             .args(["-M", "x51v", "-device", &format!("{device},help")])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device {device},help")).output()
+            wsl_bash(&format!("{} -M x51v -device {device},help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("{prop}=")))
+}
+
+/// Whether the emulator starts with `-global <setting>`: an emulator whose
+/// device lacks the property refuses to start. For devices whose `,help`
+/// can't be asked (the PC Card socket's instantiates it outside a machine,
+/// which asserts in QEMU's memory code).
+fn emulator_accepts_global(root: &Path, setting: &str) -> bool {
+    let args = format!("-M x51v -display none -S -monitor stdio -serial null -global {setting}");
+    let child = match emulator(root) {
+        Ok(Emulator::Native(exe)) => {
+            // Windows QEMU never reads a stdin pipe (item 61), so `quit`
+            // can't end it: it waited forever (2026-10-16, emu-cf on the
+            // rp-v0.17.0 Windows release). A rejected setting ends QEMU at
+            // once with an error; one still paused after the wait was taken.
+            let native = args.replace("-monitor stdio", "-monitor none");
+            let Ok(mut child) = Command::new(exe)
+                .args(native.split(' '))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            else {
+                return false;
+            };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok(Some(status)) = child.try_wait() {
+                    return status.success();
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            return true;
+        }
+        Ok(Emulator::Wsl) => wsl_bash(&format!("echo quit | {} {args}", wsl_qemu()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn(),
+        Err(_) => return false,
+    };
+    let Ok(mut child) = child else {
+        return false;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"quit\n");
+    }
+    child.wait().is_ok_and(|s| s.success())
 }
 
 /// Whether a device at `path` in the running emulator has `prop`.
@@ -2147,7 +2618,7 @@ fn has_usb_model(root: &Path) -> bool {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(_) => return false,
     };
@@ -2200,6 +2671,40 @@ fn usb_read_until(s: &mut std::net::TcpStream, want: &str, secs: u64) -> Result<
     ))
 }
 
+/// Reads until `start` and the end of its line: the reply's whole line
+/// (with whatever came before it), however the bytes were split into reads.
+/// (Reading until `start` and then until a newline waited for a second
+/// line whenever the reply arrived in one piece.)
+fn usb_read_line(s: &mut std::net::TcpStream, start: &str, secs: u64) -> Result<String, String> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut got = Vec::new();
+    let mut buf = [0u8; 256];
+    while Instant::now() < deadline {
+        match s.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                got.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&got);
+                if let Some(at) = text.find(start)
+                    && text[at..].contains('\n')
+                {
+                    return Ok(text.into_owned());
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err(format!(
+        "no whole `{start}` line on the emulated USB port; got {:?}",
+        String::from_utf8_lossy(&got)
+    ))
+}
+
 /// The USB link test end to end: the emulator's host enumerates rp-usb,
 /// opens the port (the banner arrives) and gets its echo back.
 pub fn boot_usb_link(root: &Path) -> Result<(), String> {
@@ -2241,13 +2746,26 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
 /// port, its run log back the same way.
 /// `cargo xtask emu-usb`: the loader-over-USB check on its own.
 pub fn boot_loader_usb_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_usb(root)
+}
+
+/// `cargo xtask emu-drive`: the drive check alone (item 74: its blocks go
+/// by the UDC's DMA both ways).
+pub fn boot_loader_drive_alone(root: &Path) -> Result<(), String> {
+    usb_images(root)?;
+    boot_loader_drive(root)
+}
+
+/// The raw images the USB checks send.
+fn usb_images(root: &Path) -> Result<(), String> {
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     for image in ["rp-loader", "rp-light"] {
         crate::sdkit::raw_binary(&release.join(image), &dir.join(format!("{image}.bin")))?;
     }
-    boot_loader_usb(root)
+    Ok(())
 }
 
 pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
@@ -2265,8 +2783,7 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(1)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        let ok = usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
-        let ok = usb_read_until(&mut s, "\n", 10).map(|t| ok + &t)?;
+        let ok = usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         let theirs = ok.rsplit("RPL OK sha256 ").next().unwrap_or("").trim();
         crate::usb::check_digest(theirs, &payload, "image over USB")?;
         // The loader disconnects to run the image and reconnects when it
@@ -2275,6 +2792,21 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         let log = usb_read_until(&mut s, "RPL END", 30)?;
         if !log.contains("all steps OK") {
             return Err(format!("run log over USB incomplete: {log:?}"));
+        }
+        // A new loader sent as an image takes over; its predecessor's run is
+        // no hang (2026-10-16: the device saved a 45-byte "did not return"
+        // report over crashlog.txt each time a loader was tried from RAM).
+        let new_loader =
+            std::fs::read(&loader).map_err(|e| format!("{}: {e}", loader.display()))?;
+        s.write_all(&rp_loadproto::frame(&new_loader))
+            .map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // The new loader sends the run's log by itself once the port is open.
+        let run = usb_read_until(&mut s, "RPL END", 30)?;
+        if !run.contains("[the image was a new loader: it took over]")
+            || run.contains("did not return")
+        {
+            return Err(format!("loader hand-over reported as: {run:?}"));
         }
         Ok(())
     };
@@ -2502,6 +3034,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
             let (_, scan_t) = step(&scan, "4096: 0 failed", "scan of the last blocks")?;
             // The PC's view: the whole card, its last block readable.
             let mut bot = Bot::connect(13)?;
+            bot.mount()?;
             let deadline = Instant::now() + Duration::from_secs(30);
             while bot.command(&[0; 6], 0, false, &[])?.status != 0 {
                 let _ = bot.sense()?;
@@ -2594,6 +3127,113 @@ fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String
     Ok(format!("if={interface},format=raw,file={p}"))
 }
 
+/// `cargo xtask emu-storfast`: the storage speed-ups' device test
+/// (`rp-storfast`, docs/research/storage-speed.md) started by the loader
+/// with a 128 MiB FAT32 SD card and a CF card, as on the device. The card
+/// swap and lock steps aren't modelled (the image waits for them and
+/// carries on); everything else must pass: CF paths equal, 20 attach
+/// cycles, SD reads of every size class by one DMA transfer, the DMA write
+/// soak exact, the test files removed.
+pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-storfast.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-storfast"), &image)?;
+    let sd = root.join("target/emulator/sd-storfast.img");
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 128 * 2048,
+        sectors_per_cluster: 1,
+        // The quick-run file: the emulated FIFO moves bytes slowly.
+        files: &[
+            rp_fat::format::Entry {
+                name: "retropane.bin",
+                data: b"kit stand-in",
+            },
+            rp_fat::format::Entry {
+                name: "storfast-quick.txt",
+                data: b"short run",
+            },
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let cf = root.join("target/emulator/cf-storfast.img");
+    let cf_data: Vec<u8> = (0..16u32 << 20)
+        .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect();
+    std::fs::write(&cf, cf_data).map_err(|e| format!("{}: {e}", cf.display()))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let input = rp_loadproto::frame(&payload);
+    let cf_drive = drive_arg(root, "ide", &cf)?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &["-drive", &cf_drive],
+            input: Some((&input, "RPL END")),
+            during: None,
+            then: None,
+            timeout: Duration::from_secs(900),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("storfast: no run log")?;
+    if log.contains("FAULT") || log.contains("PANIC") || !log.contains("RETROPANE-STORFAST: done") {
+        return Err(format!("storfast: didn't finish cleanly:{log}"));
+    }
+    let dma_window = emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on");
+    let mut want = vec![
+        "storfast-quick.txt found",
+        "C3 3 attach cycles: all good",
+        "KiB): all right, one transfer each",
+        "S2 the speed writes read back: 0 blocks differ",
+        "of the last writes read back, 0 blocks differ",
+        "S9 test files and folder removed",
+    ];
+    if dma_window {
+        want.push("reads by DMA from the window (0 paths refused)");
+        want.push("C2 read 1024 KiB by DMA from the window: ");
+    }
+    for w in want {
+        if !log.contains(w) {
+            return Err(format!("storfast: no `{w}` in the run log:{log}"));
+        }
+    }
+    for line in log
+        .lines()
+        .filter(|l| l.starts_with("S3") && l.contains("blocks differ"))
+    {
+        if !line.ends_with(" 0 blocks differ") {
+            return Err(format!("storfast: {line}"));
+        }
+    }
+    for line in log
+        .lines()
+        .filter(|l| l.starts_with("S2 soak") || l.starts_with("C2 read"))
+    {
+        let clean = line.contains(" 0 write errors, 0 read errors, 0 blocks differ")
+            || (line.contains("0 commands failed, 0 sectors differ"));
+        if !clean {
+            return Err(format!("storfast: {line}"));
+        }
+    }
+    eprintln!(
+        "    storfast OK (short run): CF read paths equal, attach cycles good; SD every size class by one DMA transfer; the DMA write soak read back exact; test files removed; run log:{log}"
+    );
+    Ok(())
+}
+
 /// `cargo xtask emu-cf`: the CompactFlash check on its own.
 pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     let dir = root.join("target/emu");
@@ -2607,9 +3247,11 @@ pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
 
 /// The CompactFlash slot (docs/hw/cf.md): a CF card image in socket 1 and
 /// no SD card, so the CF path stands alone. The emulated slot starts
-/// unpowered, as Windows Mobile hands it over; the loader attaches the
-/// card on its own (powered through the CPLD, reset, identified) and the
-/// PC sees it as the second drive; `cf` reports it (capacity, write cache
+/// powered, as Windows Mobile hands it over (its CPLD table, measured);
+/// the loader attaches the card on its own (powered through the CPLD,
+/// reset, identified) before it
+/// offers the drive, so the PC's first question finds the second drive
+/// ready; `cf` reports it (capacity, write cache
 /// off, partition) without taking it again; the CPLD writes leave the
 /// backlight on (its registers don't read back, docs/hw/cpld.md); pulled
 /// out, the slot is switched off, and pushed back in, attached again.
@@ -2635,6 +3277,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
     args.extend(msc_args(3));
     args.push("-drive".into());
     args.push(drive_arg(root, "ide", &cf)?);
+    args.extend(wm_cpld_table_args());
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let via_drive: Vec<u8> = (0..4096u32).map(|i| (i * 29 + 3) as u8).collect();
     let check = || -> Result<(), String> {
@@ -2658,14 +3301,40 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(200));
             }
         };
-        ready(&mut bot, "card in at start-up, not attached on its own")?;
+        // The card in the slot at start-up is attached before the PC can
+        // see the drive: a fresh mount's first question (READ CAPACITY)
+        // finds it, with no "no medium" or "medium changed" first (the
+        // owner's flaky "USB Drive (J:)": Explorer drew the drive empty, its
+        // icon minutes later).
+        let first = bot.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+        if first.status != 0 {
+            let sense = bot.sense()?;
+            return Err(format!(
+                "CF unit not ready at the PC's first question (sense {sense:?}): the card in the slot at start-up must be attached before the drive is offered"
+            ));
+        }
         // `cf` reports the card the loader attached, without taking it again.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "model", 20)?;
-        let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, FAT32 partition";
-        if !reply.contains(want) || !reply.contains("was card") {
-            return Err(format!("unexpected reply to cf: {reply:?}"));
+        let reply = usb_read_line(&mut s, "RPL ", 20)?;
+        // Reads come by DMA from the card's data window once IDENTIFY read
+        // through it matched the 16-bit port (docs/research/storage-speed.md):
+        // on a fork modelling the PXA's two card cycles per 32-bit access
+        // (rp-v0.17.0's `word-cycles`). On one that doesn't, the window
+        // reads wrong and the driver must keep the port: the check is the
+        // guard, so a wrong window never reaches a sector.
+        let path = if emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on") {
+            "reads by DMA from the window (0 paths refused)"
+        } else {
+            "reads by 16-bit port (1 paths refused)"
+        };
+        let want = "RPL OK cf: 16 MB (32768 sectors), write cache off, ";
+        if !reply.contains(want)
+            || !reply.contains(path)
+            || !reply.contains("FAT32 partition")
+            || !reply.contains("was card")
+        {
+            return Err(format!("unexpected reply to cf (want {path:?}): {reply:?}"));
         }
         // The power sequence and the card's reset went through the CPLD,
         // whose registers don't read back: the backlight enable sharing
@@ -2675,6 +3344,39 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
             let lit = mon.query("qom-get /machine/peripheral/mbx2700g backlight")?;
             if lit != "true" {
                 return Err(format!("CF: the backlight went off ({lit})"));
+            }
+        }
+        // The shadow came from Windows Mobile's table, and the bits it had
+        // on in the registers the CF attach wrote are still on (item 77):
+        // SD power (0x16 bit 0) and the backlight (0x18 bit 2) beside the
+        // slot's own.
+        s.write_all(&rp_loadproto::control_frame("cpld"))
+            .map_err(|e| e.to_string())?;
+        let mut reply = usb_read_until(&mut s, "shadow from", 10)?;
+        if !reply.rsplit("shadow from").next().is_some_and(|t| {
+            t.contains(
+                "
+",
+            )
+        }) {
+            reply += &usb_read_until(
+                &mut s, "
+", 10,
+            )?;
+        }
+        for want in [
+            "shadow from WM's table:",
+            " 02=00fd",
+            " 10=1000",
+            " 12=000f",
+            " 16=0003",
+            " 18=0004",
+            " 1c=000c",
+        ] {
+            if !reply.contains(want) {
+                return Err(format!(
+                    "CF: the CPLD's shadow isn't Windows Mobile's table with its bits kept (no {want:?}): {reply:?}"
+                ));
             }
         }
         let r = bot.command(&[0x12, 0, 0, 0, 36, 0], 36, true, &[])?;
@@ -2782,20 +3484,59 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
         return Err("CF: the drive's write isn't in the card image".into());
     }
     eprintln!(
-        "    CF card OK: attached on its own from an unpowered slot, powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
+        "    CF card OK: attached on its own as Windows Mobile left the slot, before the drive is offered (ready at the PC's first question), powered through the CPLD with the backlight kept on; identified in socket 1 (16 MB, write cache off) by cf without a remount, the PC's second drive: read, refused while read-only, written after drive rw, checked in the image; pulled out: slot powered off, attached again on re-insert (no READY before)"
     );
     Ok(())
 }
 
-/// Audio: `tone 440 500` through the loader (WM8750 over I2C, I2S fed by a DMA ring),
-/// recorded by the emulator to a wav file, and the recording's pitch
-/// measured from its zero crossings.
+/// Windows Mobile's shared CPLD shadow table as it is in RAM at HaRET's
+/// hand-off (docs/hw/cpld.md "Shadow at hand-over"; slots in Windows
+/// Mobile's order: 0x02, 0x10, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E,
+/// 0x08), as QEMU arguments that put it there before the loader starts:
+/// the emulator otherwise starts from reset, with nothing in RAM. The
+/// values measured on the owner's X51v (`rp-handover`, 2026-10-16), the
+/// same the emulated CPLD's latches start with: backlight on, the SD and
+/// CF slots powered.
+fn wm_cpld_table_args() -> Vec<String> {
+    const TABLE: u32 = 0xA800_1320;
+    const SLOTS: [u32; 10] = [
+        0x00FD, 0x1000, 0x000F, 0x0008, 0x0003, 0x0004, 0x0006, 0x000C, 0, 0,
+    ];
+    SLOTS
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != 0)
+        .flat_map(|(i, v)| {
+            [
+                "-device".to_string(),
+                format!(
+                    "loader,addr={:#x},data={v:#x},data-len=4",
+                    TABLE + 4 * i as u32
+                ),
+            ]
+        })
+        .collect()
+}
+
+/// Audio: `rp-tone` under the loader over USB (WM8750 over I2C, I2S fed by
+/// a DMA ring): 440 Hz for 500 ms to the speaker, then, with the headphones
+/// plugged in while it waits, 1000 Hz for 50 ms to them. The emulator records
+/// to a wav file, and the first tone's pitch is measured from its zero
+/// crossings.
 pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    tone: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let loader = root.join("target/emu/rp-loader.bin");
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-tone.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-tone"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
     let wav = root.join("target/emulator/tone.wav");
     let _ = std::fs::remove_file(&wav);
     let wav_path = match emulator(root)? {
@@ -2814,26 +3555,30 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
-        s.write_all(&rp_loadproto::control_frame("tone 440 500"))
-            .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "\n", 20)?;
-        if !reply.contains("RPL OK tone 440 Hz 500 ms (24000 frames")
-            || !reply.contains("by DMA")
-            || !reply.contains("to speaker")
-        {
-            return Err(format!("unexpected reply to tone: {reply:?}"));
-        }
-        eprintln!("    loader: {}", reply.trim());
-        // Headphones in: the next tone goes to them (the speaker muted).
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // Headphones in while the image waits for the jack (after its
+        // first tone): the second tone goes to them.
+        std::thread::sleep(Duration::from_secs(4));
         let mut mon = crate::screen::Monitor::connect(port)?;
         mon.query("qom-set /machine/peripheral/jack pressed true")?;
-        std::thread::sleep(Duration::from_millis(2500));
-        s.write_all(&rp_loadproto::control_frame("tone 1000 50"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "to headphones", 20)?;
-        s.write_all(&rp_loadproto::control_frame("tone 5 5"))
-            .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL ERR usage", 10)?;
+        let log = usb_read_until(&mut s, "RPL END", 40)?;
+        for want in [
+            "tone 440 Hz 500 ms (24000 frames",
+            "by DMA",
+            "to speaker",
+            "headphones in (GPIO83 1)",
+            "tone 1000 Hz 50 ms",
+            "to headphones",
+            "TONE-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("tone: no {want:?} in the run log:{log}"));
+            }
+        }
+        if let Some(line) = log.lines().find(|l| l.starts_with("tone 440")) {
+            eprintln!("    rp-tone: {}", line.trim());
+        }
         // Let the backend write out what it has.
         std::thread::sleep(Duration::from_millis(500));
         Ok(())
@@ -2850,7 +3595,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             input: None,
             during: Some(&check),
             then: None,
-            timeout: Duration::from_secs(60),
+            timeout: Duration::from_secs(90),
         },
     )?;
     let data = std::fs::read(&wav).map_err(|e| format!("{}: {e}", wav.display()))?;
@@ -2865,9 +3610,25 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         .collect();
     // The tone: the stretch between the first and last loud samples.
     let loud = |s: &i16| s.unsigned_abs() > 2000;
-    let (Some(start), Some(end)) = (left.iter().position(loud), left.iter().rposition(loud)) else {
+    let Some(start) = left.iter().position(loud) else {
         return Err("tone: the recording is silent".into());
     };
+    // The first tone only: it ends at the first tenth of a second of quiet
+    // (the second, to the headphones, comes seconds later).
+    let gap = (rate / 10) as usize;
+    let mut end = start;
+    let mut quiet = 0;
+    for (k, s) in left.iter().enumerate().skip(start) {
+        if loud(s) {
+            end = k;
+            quiet = 0;
+        } else {
+            quiet += 1;
+            if quiet > gap {
+                break;
+            }
+        }
+    }
     let tone = &left[start..=end];
     let crossings = tone.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
     let seconds = tone.len() as f64 / f64::from(rate);
@@ -2922,8 +3683,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         s.write_all(&rp_loadproto::file_frame("retropane.bin", &new))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         let line = reply
             .lines()
             .find(|l| l.starts_with("RPL "))
@@ -2944,8 +3704,7 @@ pub fn boot_loader_put_exfat(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPL OK 1 bytes", 20)?;
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check clean") || !reply.contains(" 0 lost") {
             return Err(format!("exFAT card check after the writes: {reply:?}"));
         }
@@ -3055,27 +3814,26 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
-        // No CF card in this machine: the slot reads empty and the socket
-        // is never touched.
+        // No CF card in this machine: the slot reads empty (CPLD 0x04 bit 1)
+        // and the socket is never touched.
         s.write_all(&rp_loadproto::control_frame("cf"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL ERR cf: no card (GPIO13 high)", 20)?;
-        // SD DMA: reads on after the start-up self-test, writes only when
-        // asked; the puts below then write by DMA and are checked in the
-        // image afterwards.
+        usb_read_until(&mut s, "RPL ERR cf: no card\r\n", 20)?;
+        // SD DMA: reads and writes on after the start-up self-test (writes
+        // since rp-storfast's device soak); `card dma writes` still answers;
+        // the puts below write by DMA and are checked in the image afterwards.
         s.write_all(&rp_loadproto::control_frame("card dma"))
             .map_err(|e| e.to_string())?;
         usb_read_until(
             &mut s,
-            "RPL OK dma reads on (self-test passed), writes off",
+            "RPL OK dma reads on (self-test passed), writes on",
             20,
         )?;
         s.write_all(&rp_loadproto::control_frame("card dma writes"))
             .map_err(|e| e.to_string())?;
         usb_read_until(&mut s, "writes on", 20)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|tail| reply + &tail)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         let line = reply
             .lines()
             .find(|l| l.starts_with("RPL "))
@@ -3120,8 +3878,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         }
         s.write_all(&rp_loadproto::control_frame("get retropane.bin"))
             .map_err(|e| e.to_string())?;
-        let text = usb_read_until(&mut s, "RPL OK 70000 bytes crc", 40)?;
-        let text = usb_read_until(&mut s, "\n", 10).map(|t| text + &t)?;
+        let text = usb_read_line(&mut s, "RPL OK 70000 bytes crc", 40)?;
         let (lines, reply) = crate::usb::parse_query(&text, "get")?;
         if crate::usb::decode_file(&lines, &reply)? != new {
             return Err("get: the file fetched isn't the one put".into());
@@ -3132,8 +3889,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         // The check finds the FAT sector this card was given damaged.
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check PROBLEMS") || !reply.contains("FAT copies differ 1,") {
             return Err(format!(
                 "card check didn't find the damaged FAT sector: {reply:?}"
@@ -3178,8 +3934,7 @@ pub fn boot_loader_put(root: &Path) -> Result<(), String> {
         // Repaired, and after every write: clean.
         s.write_all(&rp_loadproto::control_frame("card check"))
             .map_err(|e| e.to_string())?;
-        let reply = usb_read_until(&mut s, "RPL ", 40)?;
-        let reply = usb_read_until(&mut s, "\n", 10).map(|t| reply + &t)?;
+        let reply = usb_read_line(&mut s, "RPL ", 40)?;
         if !reply.contains("RPL OK check clean") {
             return Err(format!("card check after the repair: {reply:?}"));
         }
@@ -3354,6 +4109,27 @@ impl Bot {
         }
     }
 
+    /// A fresh host's mount: READ CAPACITY first (as Windows, Linux and
+    /// macOS mount), until the unit answers (a change reported once, or a
+    /// card still being attached), so the drive takes the view as current.
+    fn mount(&mut self) -> Result<u32, String> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let r = self.command(&[0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8, true, &[])?;
+            if r.status == 0 && r.data.len() == 8 {
+                return Ok(u32::from_be_bytes([r.data[0], r.data[1], r.data[2], r.data[3]]) + 1);
+            }
+            let _ = self.sense()?;
+            if Instant::now() > deadline {
+                return Err(format!(
+                    "drive: unit {} never answered READ CAPACITY",
+                    self.lun
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
     fn sense(&mut self) -> Result<(u8, u8, u8), String> {
         let r = self.command(&[0x03, 0, 0, 0, 18, 0], 18, true, &[])?;
         if r.data.len() < 14 {
@@ -3438,6 +4214,152 @@ fn expect_away_then_back(bot: &mut Bot, after: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The first block of a FAT32 volume's root directory, from its boot
+/// sector (read through the drive, as the PC would).
+fn root_dir_lba(bot: &mut Bot) -> Result<u32, String> {
+    let ps = rp_fat::format::PARTITION_START;
+    let mut b = [0u8; 512];
+    rp_hal_api::BlockDevice::read_blocks(bot, ps, &mut b)
+        .map_err(|_| "drive: boot sector unreadable".to_string())?;
+    let le16 = |o: usize| u32::from(u16::from_le_bytes([b[o], b[o + 1]]));
+    let le32 = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    let (spc, reserved, fats, fat_size, root) = (
+        u32::from(b[13]),
+        le16(14),
+        u32::from(b[16]),
+        le32(36),
+        le32(44),
+    );
+    Ok(ps + reserved + fats * fat_size + (root - 2) * spc)
+}
+
+/// `cargo xtask emu-stale`: the stale-view check on its own.
+pub fn boot_loader_stale_view_alone(root: &Path) -> Result<(), String> {
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &dir.join("rp-loader.bin"),
+    )?;
+    boot_loader_stale_view(root)
+}
+
+/// The stale-view class (noise-ri.bin lost, 2026-10-15): the PC writes the
+/// card through the drive, then something writes it while the loader isn't
+/// running (here the crash report the loader keeps after rp-crash; on the
+/// device an image such as rp-noise, or Windows Mobile). The X51v's pull-up
+/// is hard-wired, so Windows can re-attach without noticing the device went
+/// and keep its cached root directory. Its first write after the loader is
+/// back (that old root directory) must be refused with the card untouched,
+/// the drive must go away and come back changed, and after re-reading, the
+/// PC's next file must leave every entry in place: the PC's first file, the
+/// crash report and the new one, checked in the card image.
+pub fn boot_loader_stale_view(root: &Path) -> Result<(), String> {
+    if !has_msc_model(root) {
+        eprintln!("    stale view: skipped (this emulator's USB model has no mass storage bridge)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    let crash = dir.join("rp-crash.bin");
+    crate::sdkit::raw_binary(&release.join("rp-crash"), &crash)?;
+    let payload = std::fs::read(&crash).map_err(|e| format!("{}: {e}", crash.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let loader = dir.join("rp-loader.bin");
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 32 * 1024,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let sd = root.join("target/emulator/sd-stale.img");
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let before = b"written by the PC before the image ran\r\n";
+    let after = b"written by the PC after the loader came back\r\n";
+    let mut args: Vec<String> = usb_args(14).to_vec();
+    args.extend(msc_args(15));
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut bot = Bot::connect(15)?;
+        let mut s = usb_connect(14)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        bot.mount()?;
+        let mut scratch = vec![0u8; 32 * 1024];
+        {
+            let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
+                .map_err(|e| format!("stale view: mount: {}", e.name()))?;
+            vol.put("pc-before.txt", before, &mut scratch)
+                .map_err(|e| format!("stale view: put: {}", e.name()))?;
+        }
+        // The root directory as the PC caches it.
+        let root_lba = root_dir_lba(&mut bot)?;
+        let mut stale = vec![0u8; 512];
+        rp_hal_api::BlockDevice::read_blocks(&mut bot, root_lba, &mut stale)
+            .map_err(|_| "stale view: root directory unreadable".to_string())?;
+        // An image that crashes: the loader comes back and keeps the
+        // report on the card before it offers the drive again.
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_until(&mut s, "RPL OK sha256 ", 15)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 60)?;
+        // The PC kept its view and writes its old root directory back.
+        let r = bot.command(&rw10(0x2A, root_lba, 1), 512, false, &stale)?;
+        if r.status == 0 {
+            return Err(
+                "stale view: the PC's root directory from before the image was written back (the crash report's entry is lost)"
+                    .into(),
+            );
+        }
+        let sense = bot.sense()?;
+        if sense != (0x02, 0x3A, 0x00) {
+            return Err(format!(
+                "stale view: the old view's write failed with {sense:x?}, not \"no medium\""
+            ));
+        }
+        expect_away_then_back(&mut bot, "the image's run")?;
+        // Re-read (a fresh view): the report is there; the next file
+        // goes next to it.
+        bot.mount()?;
+        let report = drive_file(&mut bot, "crashlog.txt")?;
+        if report.is_empty() {
+            return Err("stale view: crashlog.txt is empty".into());
+        }
+        let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
+            .map_err(|e| format!("stale view: mount after: {}", e.name()))?;
+        vol.put("pc-after.txt", after, &mut scratch)
+            .map_err(|e| format!("stale view: put after: {}", e.name()))?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(90),
+        },
+    )?;
+    for (name, want) in [("pc-before.txt", &before[..]), ("pc-after.txt", &after[..])] {
+        if card_file(&sd, name)? != want {
+            return Err(format!("stale view: {name} differs in the card image"));
+        }
+    }
+    if card_file(&sd, "crashlog.txt")?.is_empty() {
+        return Err("stale view: crashlog.txt lost from the card image".into());
+    }
+    eprintln!(
+        "    stale view OK: after the image's run (crash report kept on the card) the PC's old root directory was refused with no medium, the drive went away and came back changed, and the PC's files and the report all stayed"
+    );
+    Ok(())
+}
+
 /// Reads `name` from the card through the drive.
 fn drive_file(bot: &mut Bot, name: &str) -> Result<Vec<u8>, String> {
     let mut vol = rp_fat::Volume::mount(&mut *bot, rp_fat::format::PARTITION_START)
@@ -3504,6 +4426,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         let mut bot = Bot::connect(6)?;
         let mut serial = usb_connect(5)?;
         usb_read_until(&mut serial, "RPLOAD1 READY", 10)?;
+        bot.mount()?;
         // The drive becomes ready.
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
@@ -3592,8 +4515,7 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         }
         // The device refuses to write while the PC just wrote...
         serial.write_all(&put).map_err(|e| e.to_string())?;
-        let r = usb_read_until(&mut serial, "RPL ", 20)?;
-        let r = r + &usb_read_until(&mut serial, "\n", 5)?;
+        let r = usb_read_line(&mut serial, "RPL ", 20)?;
         if !r.contains("RPL ERR card busy") {
             return Err(format!("serial put during a drive write: {r:?}"));
         }
@@ -3729,7 +4651,7 @@ pub fn boot_loader_fallback(root: &Path) -> Result<(), String> {
             .args(["-M", "x51v", "-device", "pxa27x-udc,help"])
             .output(),
         Ok(Emulator::Wsl) => {
-            wsl_bash(&format!("{WSL_QEMU} -M x51v -device pxa27x-udc,help")).output()
+            wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
         Err(e) => return Err(e),
     };
@@ -3833,7 +4755,8 @@ pub fn boot_loader_locked(root: &Path) -> Result<(), String> {
 }
 
 /// The backlight through the loader: `backlight 30` must fade PWM0 to the
-/// perceptual 30% (9% duty: 19 of 216 counts) and `backlight 100` to full
+/// perceptual 30% (9% duty: 38 of RetroPane's 432 counts, prescale 0: the
+/// same 30.09 kHz as Windows Mobile's 216 at prescale 1) and `backlight 100` to full
 /// duty, checked in the emulator's PWM registers through the monitor.
 pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) || !device_has(root, "pxa27x-pwm", "dcr0") {
@@ -3867,20 +4790,52 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             "    idle OK: the waiting loader was {idle}% asleep and answered in {} ms",
             took.as_millis()
         );
+        // Boot time by stage (`handoff`): each stage ends after the one
+        // before it, and all before the 2700G is taken and the loader ready.
+        s.write_all(&rp_loadproto::control_frame("handoff"))
+            .map_err(|e| e.to_string())?;
+        let reply = usb_read_until(
+            &mut s, " ms
+", 10,
+        )?;
+        let after = |key: &str| -> Option<u32> {
+            reply
+                .split(key)
+                .nth(1)?
+                .split(" ms")
+                .next()?
+                .trim()
+                .parse()
+                .ok()
+        };
+        let times = [
+            after("card "),
+            after("dma+fat "),
+            after("cf "),
+            after("2700G at "),
+            after("ready at "),
+        ];
+        if times.iter().any(Option::is_none) || !times.windows(2).all(|w| w[0] <= w[1]) {
+            return Err(format!(
+                "handoff: stages missing or out of order in {reply:?}"
+            ));
+        }
+        eprintln!("    boot stages OK: {}", reply.trim());
         s.write_all(&rp_loadproto::control_frame("backlight 30"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK backlight 30% (duty 19/216)", 10)?;
+        usb_read_until(&mut s, "RPL OK backlight 30% (duty 38/432)", 10)?;
         let mut mon = crate::screen::Monitor::connect(port)?;
         let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
         let pcr = mon.query("qom-get /machine/peripheral/pwm pcr0")?;
-        if dcr != "19" || pcr != "215" {
+        let cr = mon.query("qom-get /machine/peripheral/pwm cr0")?;
+        if dcr != "38" || pcr != "431" || cr != "0" {
             return Err(format!(
-                "backlight: PWM0 duty {dcr}, period {pcr}; wanted 19, 215"
+                "backlight: PWM0 duty {dcr}, period {pcr}, prescale {cr}; wanted 38, 431, 0"
             ));
         }
         s.write_all(&rp_loadproto::control_frame("backlight 100"))
             .map_err(|e| e.to_string())?;
-        usb_read_until(&mut s, "RPL OK backlight 100% (duty 216/216)", 10)?;
+        usb_read_until(&mut s, "RPL OK backlight 100% (duty 432/432)", 10)?;
         let dcr = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
         if dcr != "1024" {
             return Err(format!("backlight: 100% isn't full duty (DCR {dcr})"));
@@ -3902,10 +4857,10 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
             let off = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
             press(&mut mon)?;
             let on = mon.query("qom-get /machine/peripheral/pwm dcr0")?;
-            // 60% -> 0.36 of 216 counts = 77.
-            if off != "0" || on != "77" {
+            // 60% -> 0.36 of 432 counts = 155.
+            if off != "0" || on != "155" {
                 return Err(format!(
-                    "power button: screen off/on gave DCR {off} then {on}; wanted 0, 77"
+                    "power button: screen off/on gave DCR {off} then {on}; wanted 0, 155"
                 ));
             }
             eprintln!("    power button OK: press turned the screen off, the next back on at 60%");
@@ -4174,7 +5129,13 @@ pub fn bench(root: &Path, update: bool) -> Result<(), String> {
     }
     eprintln!("    fault path OK: deliberate unmapped read reported as a data abort");
     // Checks that must have run (and passed), not merely not failed.
-    for check in ["mem", "crypto", "sd_multi_block_matches", "gfx"] {
+    for check in [
+        "mem",
+        "crypto",
+        "sd_multi_block_matches",
+        "sd_dma_past_chain",
+        "gfx",
+    ] {
         if !output.contains(&format!("CHECK {check} OK")) {
             return Err(format!(
                 "on-target check `{check}` missing or failed:\n{output}"
@@ -4355,8 +5316,9 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
             let sd = sd_image
                 .map(|p| format!(" -drive 'if=sd,format=raw,file={}'", to_wsl_path(p)))
                 .unwrap_or_default();
+            let wsl_qemu = wsl_qemu();
             wsl_bash(&format!(
-                "exec timeout {} {WSL_QEMU} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                "exec timeout {} {wsl_qemu} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 timeout.as_secs() + 10,
                 extra.join(" "),
                 to_wsl_path(image)
@@ -4415,8 +5377,14 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let _ = child.wait();
     if wsl {
         // Killing wsl.exe may not reach the Linux process at once; make sure
-        // it's gone before the next test binds the same ports.
-        let _ = wsl_bash("pkill -x qemu-system-arm; sleep 0.3; true").status();
+        // it's gone before the next test binds the same ports. Only this
+        // run's emulator, found by its own serial port: other sessions run
+        // emulators at the same time on their own port blocks.
+        let _ = wsl_bash(&format!(
+            "pkill -f -- '-serial tcp:127.0.0.1:{},'; sleep 0.3; true",
+            serial_port()
+        ))
+        .status();
     }
     // Whatever the guest printed while `during` ran is still queued: keep it,
     // so a test can check what happened after its own waiting.
@@ -4635,6 +5603,25 @@ mod tests {
             u32::from(probe_checksum("CPU ID 69054117      ")),
             sum % 256
         );
+    }
+
+    /// Every USB chardev a test names fits in the run's port block, so no
+    /// test reaches past it into another run's ports.
+    #[test]
+    fn usb_ports_fit_the_port_block() {
+        let src = include_str!("emu.rs");
+        let mut seen = 0;
+        for call in ["usb_connect(", "usb_args(", "msc_args(", "usb_port("] {
+            for rest in src.split(call).skip(1) {
+                let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                if let Ok(n) = digits.parse::<u16>() {
+                    assert!(n < USB_PORTS, "{call}{n}): past the port block");
+                    seen += 1;
+                }
+            }
+        }
+        assert!(seen > 10, "the scan found the calls");
+        assert!(PORT_FIRST as u32 + PORT_BLOCK as u32 * PORT_BLOCKS as u32 <= 49_152);
     }
 
     #[test]

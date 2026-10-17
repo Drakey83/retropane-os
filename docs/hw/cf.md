@@ -45,7 +45,7 @@ clear), and what RetroPane's loader now does before it touches the card:
 |---|---|---|
 | 1 | Power off: clear CPLD `0x10` bit 12, ~10 ms, clear CPLD `0x16` bit 1 | 308 ms |
 | 2 | Power on: set CPLD `0x16` bit 1, ~10 ms, set CPLD `0x10` bit 12 | 100 ms |
-| 3 | Hold RESET: set CPLD `0x18` bit 1 | 100 ms |
+| 3 | Hold RESET: set CPLD `0x18` bit 1 | 100 ms (Windows Mobile); RetroPane: **100 µs** (2026-10-16) |
 | 4 | Release RESET: clear CPLD `0x18` bit 1 | until GPIO84 is high |
 
 Power-down is step 1 alone. The CPLD's registers are shared with other
@@ -93,6 +93,14 @@ for the driver's set-up.
 | `MCATT0`, `MCATT1` | `0x00020E08` | SET 8, ASST 28, HOLD 8 |
 | `MCIO0`, `MCIO1` | `0x00020510` | SET 16, ASST 10, HOLD 8 |
 
+In time at CLK_MEM 208 MHz (decode calibrated on the device,
+docs/research/storage-speed.md): common memory 260 ns a cycle (444 ns a
+CPU access), attribute 519 ns, I/O 298 ns. The owner's card rates its
+common memory at 80 ns (CIS device speed, IDENTIFY word 164). GPIO84
+follows the card's RDY/-BSY in memory mode (low while it prepares a
+sector), and the common-memory window 0x400-0x7FF reads the data register
+at every address (32-bit loads and DMA from it work: measured).
+
 ## Card side (CF)
 
 - Attribute memory holds the Card Information Structure: tuples from
@@ -122,6 +130,22 @@ card (the crash-safe file system order needs that), refused by cards with
 no cache, which is fine. READ / WRITE SECTORS move up to 256 sectors a
 command, polled per sector (DRQ), every wait bounded.
 
+**Read paths (2026-10-16, docs/research/storage-speed.md):** in memory
+mode the card answers its data register at every address of 0x400-0x7FF,
+and the PXA splits a 32-bit access into two 16-bit card cycles, so sectors
+can come off by 32-bit loads across that window (+18% measured) or by a
+memory-to-memory DMA copy from it (+25%; the PXA has no request line for
+the socket, so the copy starts once DRQ is up, one sector at a time).
+Neither changes a socket timing. At attach the driver reads IDENTIFY
+through the 16-bit port and again through each faster path, and uses the
+fastest whose bytes match; afterwards the card must have no data left
+(DRQ clear), and any left over is drained through the port, so a path
+that moves too little can't leave the card mid-transfer for the next
+command (found in the emulator, whose socket took one card cycle per
+32-bit load: sector 0 came back as IDENTIFY's tail). Every read command
+ends with the same check. The loader gives the CF card DMA channel 2;
+`cf` reports the path (`reads by ...`). Writes still use the 16-bit port.
+
 `devices::take_cf()` (board HAL) sets socket 1's timing registers to the
 values Windows Mobile used and `MECR` to two sockets / card inserted, then
 hands out the attribute and common windows. The loader's `cf` command
@@ -135,13 +159,22 @@ when it goes in (or was in at start-up), as the SD card is, read-only until
 `drive rw` (as the SD card), and back to empty when GPIO13 says the card
 left. Windows shows it as a second removable drive. `cf` reports an
 attached card without taking it again (and without a medium change, which
-would make Windows remount it). A card that fails to attach or stops
-answering stays idle until it is re-inserted or `cf` is sent: never an
-automatic retry loop, which would power-cycle a broken card forever.
+would make Windows remount it). A card in the slot at start-up is attached
+before the USB pull-up goes on (2026-10-15), so the PC's first question
+finds it ready, as the SD card: attached later in the loop, it was "no
+medium" while Windows enumerated, then away for seconds, and the attach
+stalled the PC's requests meanwhile; Explorer drew a bare "USB Drive (J:)"
+with no size, or the label with a broken icon for minutes. A card that
+fails to attach or stops answering is taken again once on its own (one
+retry per insertion, a second later), then stays idle until it is
+re-inserted or `cf` is sent: never a retry loop, which would power-cycle a
+broken card forever.
 
 Taking the card (2026-10-12, item 62): the loader power-cycles the slot
 (steps 1-2 above), then `CfCard::init` holds RESET (CPLD `0x18` bit 1)
-for 100 ms, waits 20 ms, then waits up to 3 s for READY (GPIO84)
+for 100 µs (since 2026-10-16; Windows Mobile held it 100 ms, which no
+source explains: the CF specification's minimum pulse, tw(RESET), is
+10 µs, and card makers' data sheets agree), waits 20 ms, then waits up to 3 s for READY (GPIO84)
 without touching either window (a card in reset or busy may hold the
 bus), then reads the CIS. A card that runs out a wait during a transfer is
 **dead**: every later transfer fails at once without touching it, and the
@@ -161,8 +194,10 @@ Windows Mobile left on in an empty socket is left alone.
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
 CF cards).
 
-The emulator (rp-v0.11.0) models the slot as the device has it: unpowered
-at start, answering only after the CPLD power sequence, reset through
+The emulator (rp-v0.11.0) models the slot as the device has it: as
+Windows Mobile hands it over (powered since rp-v0.18.0, its CPLD table as
+measured by `rp-handover`), answering only while both power bits are set
+and RESET is released, reset through
 `0x18` bit 1, GPIO84 high while powered; `cargo xtask emu-cf` checks
 that the card in the slot at start-up is attached on its own (so the power
 sequence works), `cf` reports it without a remount, the backlight stays
@@ -250,6 +285,8 @@ card that times out is now dropped after one timeout.
 | Question | How to settle |
 |---|---|
 | GPIO13 polarity (present = 0 or 1?) | probe with and without a card (owner: one swap). Hint (P): WM arms only GPIO13's *rising* edge (`GRER0` bit 13 set, `GFER0` bit 13 clear); if that is the insertion event, present = 1 and the 0 read on 2026-10-12 means an empty slot |
+| The reset set-up time after RESET is released (20 ms here, as Windows Mobile; data sheets give 20 ms or 100 ms for tsu(RESET)) | GPIO84 doesn't fall during reset on the X51v, so the card's own busy can't be seen there; settle from the CF specification's table, or by measuring how soon after release the task file answers with BSY |
 | ~~Which CPLD bit powers the slot~~ | settled: `0x16` bit 1 + `0x10` bit 12 (D, P) |
-| ~~Power the slot down when the card leaves~~ | done (2026-10-13, emulator-tested): the loader switches it off whenever no card is attached. Not yet seen on the device |
+| ~~Power the slot down when the card leaves~~ | done (2026-10-13, emulator-tested): the loader switches it off whenever no card is attached. **Seen on the device 2026-10-16: it breaks re-insertion.** The owner pulled the card and pushed it fully back in; GPIO13 then read "no card" and stayed so (`cf`: "no card (GPIO13 high)"), as on 2026-10-12: the detect line needs the slot powered. A soft reset (Windows Mobile powers the slot) brought it back. **Settled 2026-10-16 (`rp-cfdetect`, `local/rp-cfdetect-run2.txt`):** with the slot off, a pull-out set both GPIO13 and CPLD `0x04` bit 1 to "no card"; on the push back in, the CPLD bit returned to "card" while GPIO13 stayed "no card", even after the slot was powered again for 1 s. **Fix (main, same day):** the loader detects the card by the CPLD bit (`cf_card_in`; GPIO13 only without a CPLD), so slot power stays off when empty and re-insertion is seen. **Device check passed (same day):** with the fixed loader running, the owner pulled the card and pushed it back in; the loader counted both changes and attached the card again on its own (`cf`: "was card", detect changes 2), no soft reset. Emulator: GPIO13's stickiness is fork work (emulator.md) |
+| A card misread at start-up, now and then (2026-10-16) | Same loader, same card, two boots: the first time Windows found no partition table on the CF unit (one "FAT16" partition from offset 0, the whole card: what Windows does when sector 0 lacks `55 aa`), the next time it mounted the FAT32 partition at 32,256. The loader's own `cf` read sector 0 right both times. Fits the 2026-10-12 reads of sector 0 "with its end zeroed". To settle: when it happens, read the CF disk's sector 0 raw on the PC (admin, read-only: the owner allowed it) and compare with `cf`'s dump; then the drive's first CF reads (timing after attach, the read path) |
 | Whether WM's `CIT` reflects socket 1 | probe with and without a card |

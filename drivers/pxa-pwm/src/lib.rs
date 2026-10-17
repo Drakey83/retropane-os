@@ -3,9 +3,13 @@
 //!
 //! Each channel has three registers: control (prescale), duty cycle (10
 //! bits, plus a full-duty bit) and period (10 bits): the output is high for
-//! `duty / (period + 1)` of each cycle. Windows Mobile leaves the backlight
-//! at period 0xD7 (216 counts); [`Backlight`] keeps whatever period it
-//! finds (and sets that one if none is set up) and only moves the duty.
+//! `duty / (period + 1)` of each cycle. Windows Mobile runs the backlight
+//! at prescale 1 and 216 counts (30.09 kHz); [`Backlight`] takes the channel
+//! over at prescale 0 and [`COUNTS`] = 432 counts: the same 30.09 kHz, so
+//! nothing new to hear, with steps half the size (the dimmest is half
+//! Windows Mobile's). The brightness it finds is kept across the switch.
+//! Below the light's dimmest step, [`split`] says how much to dim the
+//! picture instead (the display's gamma table, item 76).
 //!
 //! Levels are perceptual: brightness looks roughly like the square of the
 //! duty cycle, so `level` percent maps to `level²` of full duty and 50%
@@ -30,11 +34,21 @@ pub mod reg {
 
 const FULL_DUTY: u32 = 1 << 10;
 const DUTY_MASK: u32 = 0x3FF;
-/// The period Windows Mobile uses for the backlight (and the default when
-/// none is set up): 216 counts.
+/// The period Windows Mobile uses for the backlight: 216 counts.
 pub const WM_PERIOD: u32 = 0xD7;
-/// The prescale Windows Mobile uses.
+/// The prescale Windows Mobile uses (a 6.5 MHz count).
 pub const WM_PRESCALE: u32 = 1;
+/// RetroPane's prescale: the 13 MHz clock itself, the finest count.
+pub const PRESCALE: u32 = 0;
+/// RetroPane's cycle: 432 counts at 13 MHz = 30.09 kHz, Windows Mobile's
+/// frequency (13 MHz / 2 / 216), so a whine-free choice stays whine-free.
+/// A longer cycle would mean a lower frequency, towards the audible range.
+pub const COUNTS: u32 = 432;
+/// The picture's scale at full, in 1/256ths ([`split`]).
+pub const PICTURE_FULL: u32 = 256;
+/// The darkest the picture is scaled for brightness: 1/8 (the panel shows
+/// 6 bits a channel, so 3 are kept; the 2D engine's dither hides the rest).
+pub const PICTURE_MIN: u32 = PICTURE_FULL / 8;
 /// Fade steps.
 const STEPS: u32 = 16;
 /// Microseconds between fade steps (16 steps: about a quarter second).
@@ -46,14 +60,27 @@ pub struct Backlight<B> {
 }
 
 impl<B: RegisterBus> Backlight<B> {
-    /// Takes the channel; if no period is set up (cold start, the
-    /// emulator), sets Windows Mobile's period and prescale, light off.
+    /// Takes the channel over at [`PRESCALE`] and [`COUNTS`], keeping the
+    /// brightness it finds (Windows Mobile's, or a previous program's); a
+    /// channel never set up (cold start, the emulator) starts dark.
     pub fn new(mut bus: B) -> Self {
-        if bus.read32(reg::PCR) & DUTY_MASK == 0 {
-            bus.write32(reg::CR, WM_PRESCALE);
-            bus.write32(reg::PCR, WM_PERIOD);
-            bus.write32(reg::DCR, 0);
-        }
+        let pcr = bus.read32(reg::PCR) & DUTY_MASK;
+        let d = bus.read32(reg::DCR);
+        // The same fraction of the cycle, never off if it was on; a period
+        // of 0 is a channel never set up. Written even when already ours
+        // (the same values: nothing changes on screen), which keeps this
+        // small enough for the display host's budget.
+        let on = if pcr == 0 {
+            0
+        } else if d & FULL_DUTY != 0 {
+            FULL_DUTY
+        } else {
+            let found = d & DUTY_MASK;
+            (found * COUNTS / (pcr + 1)).max(u32::from(found != 0))
+        };
+        bus.write32(reg::CR, PRESCALE);
+        bus.write32(reg::PCR, COUNTS - 1);
+        bus.write32(reg::DCR, on);
         Self { bus }
     }
 
@@ -138,6 +165,44 @@ impl<B: RegisterBus> Backlight<B> {
     }
 }
 
+/// What a brightness asks of the light and of the picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Split {
+    /// Counts on per [`COUNTS`]-count cycle.
+    pub duty: u32,
+    /// The picture's scale in 1/256ths ([`PICTURE_FULL`] = untouched).
+    pub picture: u32,
+}
+
+/// Two-stage brightness for `permille` (0..=1000, perceptual like the
+/// levels: light = permille² of full). Down to the light's dimmest step only
+/// the light moves; below it the light stays at one count and the picture
+/// is scaled down instead, to [`PICTURE_MIN`]: a night mode far below
+/// Windows Mobile's dimmest (one count of 216) at no CPU cost, with nothing
+/// flickering and nothing new to hear. 0 is off.
+#[must_use]
+pub fn split(permille: u32) -> Split {
+    let p = permille.min(1000);
+    if p == 0 {
+        return Split {
+            duty: 0,
+            picture: PICTURE_FULL,
+        };
+    }
+    // Light wanted, in 1/(COUNTS * 256) of full.
+    let want = (u64::from(p * p) * u64::from(COUNTS * PICTURE_FULL) / 1_000_000) as u32;
+    if want >= PICTURE_FULL {
+        return Split {
+            duty: (want + PICTURE_FULL / 2) / PICTURE_FULL,
+            picture: PICTURE_FULL,
+        };
+    }
+    Split {
+        duty: 1,
+        picture: want.max(PICTURE_MIN),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,46 +217,129 @@ mod tests {
     }
 
     #[test]
-    fn keeps_windows_mobiles_set_up_and_reads_its_level() {
+    fn takes_windows_mobiles_light_over_at_the_same_frequency_and_brightness() {
         let mut bl = Backlight::new(wm());
-        assert_eq!(bl.duty(), (137, 216));
-        // 137/216 = 63% of full duty, which looks like ~80%.
+        // 137/216 becomes 274/432: the same light at the same 30.09 kHz.
+        assert_eq!(bl.duty(), (274, 432));
+        // 63% of full duty, which looks like ~80%.
         assert_eq!(bl.level(), 80);
-        let bus = bl.into_inner();
-        assert!(bus.writes().is_empty(), "nothing changed just by taking it");
+        let w = bl.into_inner().writes();
+        assert_eq!(w, [(reg::CR, 0), (reg::PCR, 431), (reg::DCR, 274)]);
+        assert_eq!(
+            13_000_000 / (PRESCALE + 1) / COUNTS,
+            13_000_000 / (WM_PRESCALE + 1) / (WM_PERIOD + 1)
+        );
     }
 
     #[test]
-    fn a_cold_channel_gets_windows_mobiles_period_and_starts_dark() {
+    fn taking_it_again_keeps_the_values_and_the_ends_are_kept() {
+        let mut b = MockBus::new();
+        b.preset(reg::CR, 0);
+        b.preset(reg::DCR, 5);
+        b.preset(reg::PCR, 431);
+        assert_eq!(
+            Backlight::new(b).into_inner().writes(),
+            [(reg::CR, 0), (reg::PCR, 431), (reg::DCR, 5)]
+        );
+        let mut b = MockBus::new();
+        b.preset(reg::CR, 1);
+        b.preset(reg::DCR, 1);
+        b.preset(reg::PCR, 0xD7);
+        assert_eq!(
+            Backlight::new(b).duty(),
+            (2, 432),
+            "Windows Mobile's dimmest"
+        );
+        let mut b = MockBus::new();
+        b.preset(reg::CR, 1);
+        b.preset(reg::DCR, FULL_DUTY);
+        b.preset(reg::PCR, 0xD7);
+        assert_eq!(Backlight::new(b).duty(), (432, 432), "full stays full");
+    }
+
+    #[test]
+    fn a_cold_channel_gets_retropanes_cycle_and_starts_dark() {
         let bl = Backlight::new(MockBus::new());
         let w = bl.into_inner().writes();
-        assert_eq!(w, [(reg::CR, 1), (reg::PCR, 0xD7), (reg::DCR, 0)]);
+        assert_eq!(w, [(reg::CR, 0), (reg::PCR, 431), (reg::DCR, 0)]);
+    }
+
+    #[test]
+    fn split_moves_the_light_then_the_picture() {
+        let full = PICTURE_FULL;
+        assert_eq!(
+            split(0),
+            Split {
+                duty: 0,
+                picture: full
+            }
+        );
+        assert_eq!(
+            split(1000),
+            Split {
+                duty: 432,
+                picture: full
+            }
+        );
+        assert_eq!(
+            split(500),
+            Split {
+                duty: 108,
+                picture: full
+            },
+            "half looks half"
+        );
+        // One count: the light's floor, half Windows Mobile's dimmest.
+        assert_eq!(
+            split(49),
+            Split {
+                duty: 1,
+                picture: full
+            }
+        );
+        // Below it the picture dims, down to 1/8 of the floor.
+        let s = split(30);
+        assert_eq!(s.duty, 1);
+        assert!(s.picture < full && s.picture > PICTURE_MIN, "{s:?}");
+        assert_eq!(
+            split(1),
+            Split {
+                duty: 1,
+                picture: PICTURE_MIN
+            }
+        );
+        // Never brighter for a lower setting.
+        let light = |s: Split| s.duty * s.picture;
+        for p in 1..1000 {
+            assert!(light(split(p)) <= light(split(p + 1)), "{p}");
+        }
     }
 
     #[test]
     fn levels_are_perceptual_with_a_floor_and_full_duty_at_100() {
-        assert_eq!(Backlight::<MockBus>::duty_for(0, 216), 0);
+        assert_eq!(Backlight::<MockBus>::duty_for(0, 432), 0);
         assert_eq!(
-            Backlight::<MockBus>::duty_for(1, 216),
+            Backlight::<MockBus>::duty_for(1, 432),
             1,
             "never black above 0"
         );
         assert_eq!(
-            Backlight::<MockBus>::duty_for(50, 216),
-            54,
+            Backlight::<MockBus>::duty_for(50, 432),
+            108,
             "half looks half"
         );
-        assert_eq!(Backlight::<MockBus>::duty_for(100, 216), 216);
-        assert_eq!(Backlight::<MockBus>::duty_for(250, 216), 216, "clamped");
+        assert_eq!(Backlight::<MockBus>::duty_for(100, 432), 432);
+        assert_eq!(Backlight::<MockBus>::duty_for(250, 432), 432, "clamped");
         let mut bl = Backlight::new(wm());
         bl.set(100);
-        assert_eq!(bl.duty(), (216, 216));
+        assert_eq!(bl.duty(), (432, 432));
         assert!(bl.into_inner().writes().contains(&(reg::DCR, FULL_DUTY)));
         // Every level reads back as one that sets the same duty: the
-        // period has 216 counts, so the lowest levels share 1 count (one
-        // count already looks like ~7%). The period isn't lengthened for
-        // finer steps: that would lower the PWM frequency towards the
-        // audible range, where backlight circuits whine.
+        // cycle has 432 counts, so the lowest levels share 1 count (one
+        // count looks like ~5%; below it, `split` dims the picture). The
+        // cycle isn't lengthened further: at the finest count that would
+        // lower the PWM frequency towards the audible range, where
+        // backlight circuits whine.
         let mut bl = Backlight::new(wm());
         for l in [1, 5, 10, 33, 50, 64, 80, 99, 100] {
             bl.set(l);
@@ -211,6 +359,7 @@ mod tests {
     #[test]
     fn fades_monotonically_in_steps_and_lands_exactly() {
         let mut bl = Backlight::new(wm());
+        let taken = bl.duty().0;
         let mut delays = 0;
         bl.fade_to(20, &mut |us| {
             assert_eq!(us, STEP_US);
@@ -224,11 +373,14 @@ mod tests {
             .filter(|(o, _)| *o == reg::DCR)
             .map(|&(_, v)| v)
             .collect();
+        // The take-over's write (the same light at 432 counts), then the fade.
+        assert_eq!(duties[0], taken);
+        let duties = &duties[1..];
         assert_eq!(duties.len(), STEPS as usize);
         assert!(duties.windows(2).all(|w| w[1] <= w[0]), "{duties:?}");
         assert_eq!(
             *duties.last().unwrap(),
-            Backlight::<MockBus>::duty_for(20, 216)
+            Backlight::<MockBus>::duty_for(20, 432)
         );
     }
 }

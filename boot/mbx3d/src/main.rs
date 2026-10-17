@@ -1,5 +1,42 @@
 //! Test image (ADR-0024 M4): the first triangle drawn by the 2700G's MBX
-//! 3D core, under the loader. Version 23: the GLES driver's own forms,
+//! 3D core, under the loader. Version 27 (ADR-0026: version 26 found the
+//! MBX cores clock-bound, at half a 99.67 MHz core PLL): S27 the core PLL
+//! stepped to 110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock" is
+//! 133 MHz; the cores at half, under Dell's 75 MHz cap), as Dell's driver
+//! changes it (the system clock on the 13 MHz reference, the PLL written,
+//! its lock awaited); at each step a 256 KiB memory pattern, a 2D fill and
+//! ten 3D renders whose samples must match those at WM's clock, timed. The
+//! first failure, and the end, put WM's PLL back. 149.5 MHz is compiled
+//! out until the owner decides. S26 is done.
+//! Version 26 (ADR-0026, the GPU's clock and a
+//! 16-bit target, from static reading 2026-10-15): S26a the MBX clock's
+//! divider (Windows Mobile's `MBXCLK` `0x5` is divide-by-2: Dell's driver
+//! picks the smallest divider keeping the cores at or under 75 MHz) at 2,
+//! 3 and 4, a full-screen and a 600-tile render and a full-screen 2D fill
+//! timed at each (divide-by-1 is over Dell's cap: compiled out until the
+//! owner decides); S26b (T4) a 16-bit target, `0x650` 1 or 3 and `0x660`
+//! in pixels or words, colours, extent and time; S26c (last) the PLLs and
+//! clock registers read (never read before), for the system clock.
+//! T11b-T13b are done (version 25: mipmaps work, PVRTC's blocks twiddled,
+//! depth storage parked).
+//! Version 25 (ADR-0026, version 24's open
+//! questions, from static reading 2026-10-15): T11b depth stored across
+//! renders with the GLES driver's full register set (`0x648` and `0x6D0`
+//! 1 and its other extras; `n` 16 and 2400); T12b mipmaps with TEX0 bits
+//! 12-9 set (the GLES upload puts `0xB` there without levels, the level
+//! value with; version 24 left them 0: run last, the riskiest); T13b
+//! PVRTC's block order.
+//! T10-T13 are done (version 24: interrupt, bilinear, 32-bit, PVRTC).
+//! Version 24 (ADR-0026 T10-T13, from static
+//! reading 2026-10-15): T10 render done on GPIO85 with `0x130` bit 15 (Dell
+//! enables `0x87F5`; T2 had bit 2 alone after a reset), the line quieted
+//! first, then which `MINTENABLE` bit routes the MBX core; T11 depth kept
+//! across renders (`0x674`, `0x610` store then load); T12 bilinear
+//! filtering (TEX1 bit 31) and mipmaps (TEX1 bits 30-29) with two level
+//! layouts and a level-of-detail sweep; T13 32-bit texels (TEX0 code 12)
+//! and PVRTC 4 bpp (28) and 2 bpp (16) from hand-made blocks. T5-T7 are
+//! done (version 23) and gone.
+//! Version 23: the GLES driver's own forms,
 //! read statically: blending sets TSP bit 13, a texture with alpha takes a
 //! combine word (TEX2) with bit 13 clear, and depth compare and write mask
 //! sit in the TSP's low bits (Dell's `0x0E80`: always, no write). T5c tries
@@ -223,7 +260,7 @@ mod image {
     /// The 3D core's clock (system block, read fine under WM).
     /// This image's version, in its first log line (kept here so the
     /// banner can't fall behind the module notes again).
-    const VERSION: u32 = 23;
+    const VERSION: u32 = 27;
     const MBXCLK: usize = rp_drv_mbx_display::clock::MBXCLK;
     /// The PLLs' status (system block): bit 2 the core PLL locked, bit 0
     /// the display PLL locked (Linux mbxfb).
@@ -359,66 +396,6 @@ mod image {
         n
     }
 
-    /// Where stage T6 keeps its 8 x 8 texture (free 2700G memory).
-    const TEX: usize = 0x00E0_0000;
-
-    /// A scene of `objs` (each its words and list pointer flags) in the
-    /// parameter memory, in that order, every tile listing them all;
-    /// rendered with `table`. True if it finished.
-    #[inline(never)]
-    fn scene(
-        e: &mut Engine<Mmio>,
-        vram: &mut [u8],
-        table: &[(usize, u32)],
-        objs: &[(&[u32], u32)],
-    ) -> bool {
-        let mut at = OBJECT;
-        let mut list = [m3::END; 16];
-        let n = objs.len().min(15);
-        for (k, (w, flags)) in objs[..n].iter().enumerate() {
-            store(vram, at, w);
-            list[k] = flags | ((at - PARAMS) / 4) as u32;
-            at += 4 * w.len();
-        }
-        store(vram, PARAMS, &list[..=n]);
-        regions(vram, |_, _| true);
-        let done = run(e, vram, table, RENDER_DONE, None, 200_000).0.is_some();
-        if !done {
-            // A bad word can hang the core (version 21: TSP bit 16 voided
-            // every render after it): reset it and set the memory manager
-            // up again, so the next try starts clean.
-            e.reset(rt::delay_us);
-            let ok = pm_init(e, vram);
-            log!("  (timed out: core reset, memory manager ready again: {ok})");
-        }
-        done
-    }
-
-    /// A flat square (two triangles) from `(x0, y0)` to `(x1, y1)`.
-    #[allow(clippy::too_many_arguments)]
-    fn square(
-        x0: f32,
-        y0: f32,
-        x1: f32,
-        y1: f32,
-        argb: u32,
-        z: f32,
-        isp: u32,
-        tsp: u32,
-    ) -> [[u32; m3::TRIANGLE_WORDS]; 2] {
-        let v = |x, y| Vertex {
-            x,
-            y,
-            z,
-            rhw: 1.0,
-            argb,
-        };
-        [
-            m3::triangle(isp, tsp, &[v(x0, y0), v(x1, y0), v(x0, y1)]),
-            m3::triangle(isp, tsp, &[v(x1, y0), v(x1, y1), v(x0, y1)]),
-        ]
-    }
-
     /// The full-screen background triangle in `argb` at depth `z`.
     fn background(argb: u32, z: f32) -> [u32; m3::TRIANGLE_WORDS] {
         background_tsp(argb, z, TSP_DELL)
@@ -440,146 +417,221 @@ mod image {
         )
     }
 
-    /// T5c: the GLES driver's blending form (`0x02267700`): factors in
-    /// TSP bits 31-26 plus **TSP bit 13**, and for a texture with alpha a
-    /// combine word with **TEX2 bit 13 clear** (its table `0x0225D3A0`: RGBA
-    /// rows `0x86084610`, RGB rows `0x86086610`; Dell's `0xD6886610` says
-    /// "no alpha"). Source alpha / inverse (4/5), over red.
-    #[inline(never)]
-    fn t5(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let bg = background(0xFFFF_0000, 0.0);
-        let blend = 4u32 << 29 | 5 << 26;
-        let p = m3::STRIP_ONE_TRIANGLE;
-        for (name, tsp) in [
-            ("flat, bit 13", blend | (TSP_DELL & 0x03FF_FFFF) | 1 << 13),
-            (
-                "flat, Gouraud + bit 13",
-                blend | (TSP_DELL & 0x03FF_FFFF) | TSP_GOURAUD | 1 << 13,
-            ),
-        ] {
-            rt::check_in();
-            let sq = square(
-                100.0,
-                100.0,
-                300.0,
-                300.0,
-                0x8000_00FF,
-                0.0,
-                ISP_ALWAYS,
-                tsp,
-            );
-            let done = scene(e, vram, table, &[(&bg, p), (&sq[0], p), (&sq[1], p)]);
-            log!(
-                "  T5 {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
-                px(vram, 200, 200)
-            );
+    /// `objs` into the parameter memory (one list, at its start) and the
+    /// region array for the tiles `keep` says.
+    fn load(vram: &mut [u8], objs: &[(&[u32], u32)], keep: fn(u32, u32) -> bool) {
+        let mut at = OBJECT;
+        let mut list = [m3::END; 16];
+        let n = objs.len().min(15);
+        for (k, (w, flags)) in objs[..n].iter().enumerate() {
+            store(vram, at, w);
+            list[k] = flags | ((at - PARAMS) / 4) as u32;
+            at += 4 * w.len();
         }
-        // An 8 x 8 ARGB4444 texture, every texel blue with alpha 8.
-        for k in 0..32 {
-            let _ = store32_volatile(vram, TEX + 4 * k, 0x800F_800F);
+        store(vram, PARAMS, &list[..=n]);
+        regions(vram, keep);
+    }
+
+    /// The clock registers (system block; Linux mbxfb's names). The PLLs
+    /// give `13 MHz x M / (N x 2^P)`: M bits 12-7, N 6-4, P 3-1, enable 0.
+    const COREPLL: usize = 0x038;
+    const SYSCLKSRC: usize = 0x02C;
+    /// `PLLSTAT` bit 2: the core PLL locked (Dell polls it after a change).
+    const CORE_LOCKED: u32 = 1 << 2;
+    /// Windows Mobile's core PLL: M 23, N 3, P 0 = 99.67 MHz (run 26).
+    const WM_COREPLL: u32 = 0xBB1;
+    /// The steps: (name, M, N), P 0, the PLL's 13 x M / N inside Dell's
+    /// search range (47-168 MHz). 133.25 MHz is Dell's default
+    /// "CoreClock" (133 MHz); all share Dell's bus-timing tier (99 MHz and
+    /// up); the cores run at half (`MBXCLK` divide by 2), at most 66.6 MHz,
+    /// under Dell's 75 MHz cap.
+    const STEPS: [(&str, u32, u32); 3] = [
+        ("110.50 MHz", 17, 2),
+        ("121.33 MHz", 28, 3),
+        ("133.25 MHz", 41, 4),
+    ];
+    /// 149.5 MHz (cores at 74.75 MHz, at Dell's cap; the 2700G's memory
+    /// past Dell's default): off until the owner decides.
+    const TRY_149_5: bool = false;
+    /// Scratch 2700G memory for the pattern test (256 KiB).
+    const SCRATCH: usize = 0x00A0_0000;
+    const SCRATCH_WORDS: usize = 256 * 1024 / 4;
+
+    const fn pll_word(m: u32, n: u32) -> u32 {
+        m << 7 | n << 4 | 1
+    }
+
+    /// The core PLL set to `word` as Dell's driver does it (`0x0211faf0`,
+    /// `0x02120440`): the system clock on the 13 MHz reference, the PLL
+    /// written, its lock awaited (50 ms at most), the system clock back on
+    /// it. Returns the lock time in microseconds, or `None` (then WM's PLL
+    /// is put back).
+    fn set_core_pll(e: &mut Engine<Mmio>, word: u32) -> Option<u32> {
+        e.regs.write32(SYSCLKSRC, 0);
+        rt::delay_us(250);
+        e.regs.write32(COREPLL, word);
+        let t0 = rt::ticks();
+        let mut locked = None;
+        while us_since(t0) < 50_000 {
+            if e.regs.read32(PLLSTAT) & CORE_LOCKED != 0 {
+                locked = Some(us_since(t0));
+                break;
+            }
+            rt::delay_us(20);
+        }
+        if locked.is_none() {
+            e.regs.write32(COREPLL, WM_COREPLL);
+            let t1 = rt::ticks();
+            while us_since(t1) < 50_000 && e.regs.read32(PLLSTAT) & CORE_LOCKED == 0 {
+                rt::delay_us(20);
+            }
+        }
+        e.regs.write32(SYSCLKSRC, 2);
+        rt::delay_us(250);
+        locked
+    }
+
+    /// One step's checks: a 256 KiB pattern written and read back by the
+    /// CPU (`seed` varies it), a full-screen 2D fill timed and checked, ten
+    /// full-screen 3D renders timed, each one's samples summed against
+    /// `want` (the sum at Windows Mobile's clock; `None`: set it). Returns
+    /// (all good, the sum).
+    fn step_checks(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        table: &[(usize, u32)],
+        seed: u32,
+        want: Option<u32>,
+        name: &str,
+    ) -> (bool, u32) {
+        let pat = |k: usize| (k as u32).wrapping_mul(0x9E37_79B9) ^ seed;
+        for k in 0..SCRATCH_WORDS {
+            let _ = store32_volatile(vram, SCRATCH + 4 * k, pat(k));
         }
         cpu::drain_write_buffer();
-        let v = |x, y, u, v| m3::tex::Vertex {
+        let bad = (0..SCRATCH_WORDS)
+            .filter(|&k| load32_volatile(vram, SCRATCH + 4 * k) != Some(pat(k)))
+            .count();
+        rt::check_in();
+        let t0 = rt::ticks();
+        let filled = clear(e, vram, GREY);
+        let fill = us_since(t0);
+        let fill_ok = filled && px(vram, 100, 100) == GREY && px(vram, 479, 639) == GREY;
+        // The scene: a red background and a shaded triangle (Gouraud
+        // exercises the core's arithmetic).
+        let bg = background(0xFFFF_0000, 0.0);
+        let v = |x, y, argb| Vertex {
             x,
             y,
             z: 0.0,
             rhw: 1.0,
-            argb: 0xFFFF_FFFF,
-            u,
-            v,
+            argb,
         };
-        let tsp_t = blend | (m3::ta::TSP_DELL_TEXTURED & 0x03FF_FFFF) | 1 << 13;
-        for (name, tex2, tsp) in [
-            (
-                "TEX2 RGBA modulate 0x86084610, TSP bit 13",
-                0x8608_4610u32,
-                tsp_t,
-            ),
-            ("TEX2 Dell's minus bit 13, TSP bit 13", 0xD688_4610, tsp_t),
-            ("TEX2 RGBA, no TSP bit 13", 0x8608_4610, tsp_t & !(1 << 13)),
-        ] {
-            rt::check_in();
-            let mut texw = m3::ta::dell_texture(TEX as u32);
-            texw[0] = m3::tex::tex0(0, m3::tex::ARGB4444);
-            texw[2] = tex2;
-            let a = m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[
-                    v(100.0, 100.0, 0.0, 0.0),
-                    v(300.0, 100.0, 1.0, 0.0),
-                    v(100.0, 300.0, 0.0, 1.0),
-                ],
-            );
-            let b = m3::tex::triangle(
-                ISP_ALWAYS,
-                texw,
-                tsp,
-                &[
-                    v(300.0, 100.0, 1.0, 0.0),
-                    v(300.0, 300.0, 1.0, 1.0),
-                    v(100.0, 300.0, 0.0, 1.0),
-                ],
-            );
-            let t = m3::tex::STRIP_GAME;
-            let done = scene(e, vram, table, &[(&bg, p), (&a, t), (&b, t)]);
-            log!(
-                "  T5 textured ARGB4444 alpha 8, {name}, TSP 0x{tsp:08x}: done {done}; square (200,200) 0x{:08x}",
-                px(vram, 200, 200)
-            );
-        }
-    }
-
-    /// T7b: depth with writes on, as the GLES driver forms it
-    /// (`glDepthFunc` stores (mode << 9), `glDepthMask(false)` bit 7, both
-    /// into the TSP's low bits: Dell's `0x0E80` = always, no write). Every
-    /// object: ISP bits 31-29 and TSP bits 11-9 the same mode, TSP bit 7
-    /// clear. Background z 0.1 and red z 0.5 "always"; blue z 0.3 or 0.8
-    /// with each mode.
-    #[inline(never)]
-    fn t7(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
-        let tsp = |mode: u32| (TSP_DELL & !0x0F80) | mode << 9;
-        let bg = background_tsp(0xFF20_2020, 0.1, tsp(7));
-        let a = square(
-            100.0,
-            100.0,
-            300.0,
-            300.0,
-            0xFFFF_0000,
-            0.5,
+        let tri = m3::triangle(
             ISP_ALWAYS,
-            tsp(7),
+            TSP_DELL | TSP_GOURAUD,
+            &[
+                v(240.0, 40.0, 0xFFFF_0000),
+                v(460.0, 600.0, 0xFF00_FF00),
+                v(20.0, 600.0, 0xFF00_00FF),
+            ],
         );
         let p = m3::STRIP_ONE_TRIANGLE;
-        for (zb, tenths) in [(0.3f32, 3u32), (0.8, 8)] {
-            for mode in [1u32, 4, 6] {
-                rt::check_in();
-                let b = square(
-                    200.0,
-                    200.0,
-                    400.0,
-                    400.0,
-                    0xFF00_00FF,
-                    zb,
-                    mode << 29,
-                    tsp(mode),
-                );
-                let done = scene(
-                    e,
-                    vram,
-                    table,
-                    &[(&bg, p), (&a[0], p), (&a[1], p), (&b[0], p), (&b[1], p)],
-                );
-                log!(
-                    "  T7 blue z 0.{tenths} mode {mode}, TSP 0x{:08x}: done {done}; overlap (250,250) 0x{:08x}, blue alone (350,350) 0x{:08x}, red alone (150,150) 0x{:08x}",
-                    tsp(mode),
-                    px(vram, 250, 250),
-                    px(vram, 350, 350),
-                    px(vram, 150, 150)
-                );
+        let (mut matched, mut sum0, mut worst) = (0u32, 0u32, 0u32);
+        for k in 0..10 {
+            rt::check_in();
+            load(vram, &[(&bg, p), (&tri, p)], |_, _| true);
+            let t = run_quiet(e, table);
+            worst = worst.max(t.unwrap_or(u32::MAX));
+            let mut sum = 0u32;
+            for i in 0..256u32 {
+                let (x, y) = ((i * 37) % 480, (i * 101) % 640);
+                sum = sum.rotate_left(5) ^ px(vram, x, y);
+            }
+            if k == 0 {
+                sum0 = sum;
+            }
+            if want.unwrap_or(sum0) == sum {
+                matched += 1;
             }
         }
+        let ok = bad == 0 && fill_ok && matched == 10 && worst != u32::MAX;
+        log!(
+            "  S27 {name}: memory words wrong {bad} of {SCRATCH_WORDS}; 2D fill {fill} us (right {fill_ok}); 3D 2400 tiles, the slowest of 10 {worst} us; sums matching {matched}/10 (0x{sum0:08x}); {}",
+            if ok { "GOOD" } else { "BAD" }
+        );
+        (ok, sum0)
+    }
+
+    /// A render with `table`, timed by polling status bit 2 (no logging):
+    /// microseconds, or `None` after 200 ms (the core reset and set up
+    /// again).
+    fn run_quiet(e: &mut Engine<Mmio>, table: &[(usize, u32)]) -> Option<u32> {
+        let en = e.regs.read32(ENABLE);
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en | RENDER_DONE);
+        let t0 = rt::ticks();
+        for &(off, v) in table {
+            e.regs.write32(MBX + off, v);
+        }
+        let mut done = None;
+        while us_since(t0) < 200_000 {
+            if e.regs.read32(STATUS) & RENDER_DONE != 0 {
+                done = Some(us_since(t0));
+                break;
+            }
+        }
+        e.regs.write32(CLEAR, RENDER_DONE);
+        e.regs.write32(ENABLE, en);
+        done
+    }
+
+    /// S27: the core PLL stepped up from Windows Mobile's 99.67 MHz (the
+    /// cores at half: `MBXCLK` divide by 2), each step checked; the first
+    /// failure, and the end, put WM's PLL back.
+    #[inline(never)]
+    fn s27(e: &mut Engine<Mmio>, vram: &mut [u8], table: &[(usize, u32)]) {
+        log!(
+            "  S27 as found: COREPLL 0x{:x}, PLLSTAT 0x{:x}, SYSCLKSRC 0x{:x}, MBXCLK 0x{:x}",
+            e.regs.read32(COREPLL),
+            e.regs.read32(PLLSTAT),
+            e.regs.read32(SYSCLKSRC),
+            e.regs.read32(MBXCLK)
+        );
+        let (ok0, want) = step_checks(e, vram, table, 0, None, "99.67 MHz (WM's)");
+        if !ok0 {
+            log!("  S27 the reference itself failed: no steps");
+            return;
+        }
+        let n = if TRY_149_5 { 4 } else { 3 };
+        let steps = [STEPS[0], STEPS[1], STEPS[2], ("149.50 MHz", 23, 2)];
+        for (k, &(name, m, nn)) in steps[..n].iter().enumerate() {
+            rt::check_in();
+            let lock = set_core_pll(e, pll_word(m, nn));
+            log!(
+                "  S27 {name}: COREPLL 0x{:x} locked after {lock:?} us, PLLSTAT 0x{:x}",
+                e.regs.read32(COREPLL),
+                e.regs.read32(PLLSTAT)
+            );
+            if lock.is_none() {
+                log!("  S27 no lock: WM's PLL back, stepping stopped");
+                break;
+            }
+            let (ok, _) = step_checks(e, vram, table, k as u32 + 1, Some(want), name);
+            if !ok {
+                let back = set_core_pll(e, WM_COREPLL);
+                log!(
+                    "  S27 {name} failed a check: WM's PLL back (locked {back:?} us), stepping stopped"
+                );
+                break;
+            }
+        }
+        let back = set_core_pll(e, WM_COREPLL);
+        let _ = step_checks(e, vram, table, 9, Some(want), "back at 99.67 MHz");
+        log!(
+            "  S27 WM's PLL back: locked {back:?} us, COREPLL 0x{:x}",
+            e.regs.read32(COREPLL)
+        );
     }
 
     /// Dell's start table (level 0), with the likely target register (1),
@@ -768,18 +820,13 @@ mod image {
             );
         }
 
-        // T5-T7 (ADR-0026): blending, texture filtering and clamping (and
-        // the hand-written textured path), depth compare.
+        // S27 (ADR-0026): the core PLL stepped up, each step checked.
         if drew {
             let (t, n) = table(level);
             log!(
-                "T5c: alpha as the GLES driver forms it (TSP bit 13; TEX2 bit 13 clear), blend 4/5 over red"
+                "S27: the core PLL from 99.67 MHz to 133.25 MHz (Dell's default), checked at each step"
             );
-            t5(&mut e, vram, &t[..n]);
-            log!(
-                "T7b: depth with writes on (TSP bits 11-9 mode, bit 7 clear), red z 0.5, blue z 0.3/0.8"
-            );
-            t7(&mut e, vram, &t[..n]);
+            s27(&mut e, vram, &t[..n]);
         }
 
         let saved = show_target(&mut e.regs);

@@ -75,7 +75,30 @@ model with a built-in host that enumerates like Windows.
      is pulled from a reader and pushed back. Windows drops its cached view
      only once it has seen the medium gone: a unit attention alone left
      Explorer showing the old root (item 65, 2026-10-12; amended
-     2026-10-13);
+     2026-10-13). A unit the host last saw empty, or never asked about,
+     skips the away time (nothing cached): the unit attention alone
+     (2026-10-15, the CF card's flaky drive);
+   - changes made while the loader isn't running (an image writing the
+     card, the crash report the loader keeps on return, Windows Mobile):
+     the X51v's pull-up is hard-wired, so Windows can re-attach without
+     noticing the device went and keep its cached FAT and directories;
+     writing them back lost a file (noise-ri.bin, 2026-10-15). So each
+     unit's first poll, read or write after the loader starts that doesn't
+     follow a READ CAPACITY (which every fresh mount sends first) is
+     answered "no medium" and the medium goes away as above, with the card
+     untouched; a fresh mount sees no delay (amended 2026-10-15). On the
+     device (2026-10-15, loader from RAM, Explorer open on the card,
+     drive read-write): after `rp-crash` the drive went away and came back
+     in ~3-6 s, Windows' next write landed, and every root file hashed the
+     same as before (only the new crash report differed). Windows logs
+     each refusal as disk event 51 ("error during a paging operation"):
+     expected, not a fault. Open: on the first try the device came back
+     and Windows never configured the serial + drive layout (13 bus
+     resets, 91 setups, then the serial-only fallback; a reseat didn't
+     help, a soft reset into the card's loader did). Five later runs
+     (main's and this loader, normal return and crash, read-only and
+     read-write with Explorer open) didn't reproduce it; that try alone
+     had Windows write and read ~20 MB through the drive just before;
    - the loader refuses a `put` while the PC wrote to the card in the last
      2 s (`RPL ERR card busy: the PC is writing`), so the two never
      interleave writes.

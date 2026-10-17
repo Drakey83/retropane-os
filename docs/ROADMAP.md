@@ -19,7 +19,7 @@ built for the CPU and retrofitted. Before the UI (Phase 5) and the CE
 Personality's drawing (Phase 4) are designed:
 
 - [ ] **RE:** the MBX core's command interface, step by step on the device (clear, triangle, textured quad, blend), pulled forward from Phase 7 (`docs/research/imitation-audit.md`, item 69)
-- [ ] The CPU's unused features measured (performance monitor, cache locking, mini-data cache, SRAM, clocks and power states, memory timings: items 67, 68, 80)
+- [ ] The CPU's unused features measured (performance monitor, cache locking, mini-data cache, SRAM, clocks and power states, memory timings: items 67, 68, 80). Memory timings follow the owner's brief (2026-10-15): find the X51v's SDRAM chips and their datasheet timings, and compare them with Dell's `MDCNFG`/`MDREFR` (probe 2026-10-11). Report only, with alternatives and a risk calibration; tighter timings fail by silently corrupting data, so a stress-test plan comes before any change, and the owner decides. Report done 2026-10-15: docs/research/memory-timing.md
 - [ ] The compositor/UI and GDI designs written GPU-first, with the CPU as fallback
 
 ---
@@ -102,7 +102,10 @@ Personality's drawing (Phase 4) are designed:
 ## Phase 5 — Shell and UI
 **Goal:** the "modern take on Windows Mobile" experience.
 
-- [ ] UI design spec and mock-ups approved (`docs/ui/`) *before* code
+All design decisions (UI, apps, themes, weather, packs, game ports) are
+gathered in [design/README.md](design/README.md).
+
+- [ ] UI design spec and mock-ups approved (`docs/design/`) *before* code
 - [ ] GWES window manager, compositor, theme engine (Modern + Classic)
 - [ ] Today screen, Start menu, task switcher, notifications, SIP keyboard
 - [ ] Settings, file manager, notes

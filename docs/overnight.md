@@ -1417,6 +1417,9 @@ comes before the UI and GDI designs, which are written GPU-first.
     (`MDCNFG`, `MDREFR`, the "alternate memory clock" bit) and
     static-memory timings (`MSC1`: the 2700G's bus, framebuffer writes at
     ~41 MB/s), with a watchdog-guarded step-and-verify test.
+    **Investigated 2026-10-15, report only** (docs/research/memory-timing.md):
+    SDRAM is at the PXA's clock limit with 1.2%-margin CL2 headroom (keep);
+    the `MSC1` experiment and the owner's chip markings are the open steps.
 69. **MBX core bring-up, GPU-first.** From Dell's 3D drivers, step by step
     on the device: power the core, clear the screen with it, then a
     triangle, a textured quad, blending; each measured against the CPU.
@@ -1429,7 +1432,13 @@ comes before the UI and GDI designs, which are written GPU-first.
     plane as a free small overlay.
 71. **iWMMXt pixel paths:** blend, dither, tint, `memcpy`/`memset`.
 72. **Own the display set-up** (PLL, timings, plane) instead of adopting
-    WM's; find the cause of the 2700G's 500 ms "settle".
+    WM's; find the cause of the 2700G's 500 ms "settle". **Settle done
+    2026-10-15:** its cause was Windows Mobile's leftover DMA (stopped by
+    `_start` since 2026-10-11); replaced by waiting for those channels to
+    report stopped (bounded 10 ms), recorded per start (`cargo xtask
+    handoff`); loader 504 -> 204 ms in the emulator, images reach the 2700G
+    at once (docs/hw/2700g.md "After the hand-off"). Device check of the
+    HaRET path pending. The display set-up itself remains.
 73. **Interrupts and DMA in every OS driver** (DESIGN §11's own rule):
     completion interrupts, the CPU asleep during transfers, memory-to-
     memory DMA for page pre-zeroing; an emulator check that the CPU idles
@@ -1440,9 +1449,18 @@ comes before the UI and GDI designs, which are written GPU-first.
     MULTIPLE, the card's interrupt, DMA from the socket window.
 76. **Touch and light feel:** oversampled, filtered touch with pressure, a
     calibration screen, SSP DMA; backlight low steps by temporal
-    dithering of the duty.
+    dithering of the duty. **Backlight 2026-10-15:** not dithering (a CPU
+    timer thousands of times a second, audible modulation) but prescale 0
+    and 432 counts (same 30.09 kHz, half-size steps) and, below one count,
+    the picture dimmed by the display's gamma table (backlight.md "Finer
+    and lower steps"). Pending: `rp-nightlight` with the owner, then the
+    gamma stage once its format is read.
 77. **CPLD shadow from WM's** (its shadow copies in RAM from `0xA8001320`)
-    at hand-over, and the remaining slots mapped.
+    at hand-over, and the remaining slots mapped. **Shadow done
+    2026-10-15** (cpld.md "Shadow at hand-over"): adopted with checks, then
+    one shared table for the loader and every image, defaults for the
+    flash build; the CTL18 workaround removed. Pending: the device's table
+    values (`rp-handover`); the guessed slots still to map.
 78. **ADR-0006's measured wins** (page tables and hot data in SRAM: 5.2x
     cheaper TLB misses measured; DMA pre-zeroing; large pages), and the
     CE5 layout limits re-examined with data (31 processes: CE's shared-file
@@ -1482,3 +1500,56 @@ comes before the UI and GDI designs, which are written GPU-first.
     early boot and through suspend. Done when no reachable state shows the
     pop-up, checked on the device in each. Meanwhile, debugging never
     queries the device while a test image runs.
+
+83. **The CF card's drive flaky in Explorer** (owner, 2026-10-15: a bare
+    "USB Drive (J:)" with no size, or the label with a broken icon that
+    fixes itself minutes later; "very flaky" since the drive was built).
+    **Fixed in the emulator, device check pending.** Cause: the loader
+    attached a CF card that was in at start-up only on its second detect
+    poll (~1 s into the loop, after the pull-up), so Windows enumerated
+    LUN 1 as "no medium", the attach then stalled every USB request for
+    0.5-3.5 s, and `medium_changed` kept the new card away 2-10 s more.
+    Each image run (the RNG restart loop: every ~9 s) did it again.
+    Class fixes: (1) the card is attached before the pull-up, as the SD
+    card; (2) `rp-usb-msc` skips the away time when the host last saw the
+    unit empty or never asked (it has nothing cached), so an inserted or
+    re-attached card is offered at once with a unit attention; (3) a card
+    that fails to attach or stops answering is retried once per
+    insertion (then idle, never a loop). Guards: emu-cf needs LUN 1 ready
+    at the PC's first question; a unit test for the away skip; two
+    mutants (both killed). Not covered by the emulator: the one retry
+    (the fork can't make a card fail once). **Device check:** with a CF
+    card in, `cargo xtask load` any returning image a few times with
+    Explorer open: J: should come back each time with its label, size and
+    icon at once; `cargo xtask cf log` should show no `dead` events.
+
+84. **A PC write after an image's run lost a file** (2026-10-15:
+    noise-ri.bin, 591 rows, gone after a drive bench). **Fixed in the
+    emulator, device check pending.** Cause: the X51v's pull-up is
+    hard-wired, so when the loader comes back after an image Windows can
+    re-attach the drive without noticing it went (the disk log shows no
+    SD events across image runs) and keep its cached FAT and root
+    directory; an image (rp-noise), the crash report the loader saves, or
+    Windows Mobile had written the card meanwhile, and the next PC write
+    put the old root directory back. Class fix in `rp-usb-msc` (every
+    unit, every way the card changes outside the loader's life): a unit's
+    first poll, read or write after the loader starts that doesn't follow
+    a READ CAPACITY (a fresh mount always sends one first) is a view from
+    before: "no medium" with the card untouched, then the usual away
+    window and "medium changed", so Windows re-reads before it writes. A
+    fresh mount sees no delay (the CF fix, item 83, holds). In-loader
+    writes (`put`, `rm`, card repair/scrub, `drive rw/ro`) already
+    announce a change (audited). Guards: `cargo xtask emu-stale` (the PC
+    writes a file, rp-crash runs and the loader keeps its report, the PC's
+    old root directory is refused, the drive goes away and back, all
+    three files stay in the card image); host tests for both paths; two
+    mutants (both killed). The emulator's simulated PC now mounts as a
+    real one does (READ CAPACITY first). **Device check:** run an image
+    that writes the card (rp-noise) with Explorer open on I:; after it,
+    the drive should blink away ~2 s and show the new file; a PC write
+    then keeps it. Not covered: whether Windows' re-attach really sends a
+    poll before any READ CAPACITY (if it re-reads the capacity first, this
+    misses it; the disk log after the device check tells). The other way
+    round: if a fresh Windows mount polls before READ CAPACITY, both
+    drives would arrive empty for ~2 s (item 83's symptom);
+    Explorer would show it (each drive briefly without its size).

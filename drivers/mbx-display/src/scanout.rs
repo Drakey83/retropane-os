@@ -11,6 +11,13 @@
 //! `out = (src * k + out * (255 - k) + 127) / 255`, where `k` is 255
 //! (opaque), the pixel's alpha, 255 minus it (inverse), or the plane's
 //! global alpha. YUV is BT.601 studio range.
+//!
+//! Gamma (graphics plane, while `GSCTRL` bit 26 is set): each 8-bit lane
+//! of the plane's pixel goes through the 17-entry table `GFXGAM0`-`16`
+//! (`0x00RRGGBB`, one 8-bit point per lane every 16 levels, entry 16 at
+//! 256) before mixing, linear between points ([`gamma`]). The table's form
+//! and Windows Mobile's grey ramp are measured (`rp-nightlight`,
+//! 2026-10-16); the interpolation is this model's assumption.
 
 use crate::layers::reg as lreg;
 use crate::reg;
@@ -53,6 +60,45 @@ pub const fn rgb_to_yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     )
 }
 
+/// Entries in the gamma table.
+pub const GAMMA_ENTRIES: usize = 17;
+
+/// Windows Mobile's gamma table as it leaves it on the X51v (a grey ramp,
+/// `rp-nightlight` 2026-10-16).
+pub const WM_GAMMA: [u32; GAMMA_ENTRIES] = {
+    const L: [u32; GAMMA_ENTRIES] = [
+        0x00, 0x0F, 0x1F, 0x2F, 0x3F, 0x4F, 0x5F, 0x6F, 0x7F, 0x8E, 0x9E, 0xAE, 0xBE, 0xCE, 0xDE,
+        0xEE, 0xFD,
+    ];
+    let mut t = [0; GAMMA_ENTRIES];
+    let mut i = 0;
+    while i < GAMMA_ENTRIES {
+        t[i] = L[i] * 0x01_0101;
+        i += 1;
+    }
+    t
+};
+
+/// Lane `shift` (16 red, 8 green, 0 blue) of `v` through `table`: linear
+/// between the points at `16 * i`, truncated toward zero.
+#[must_use]
+pub fn gamma(table: &[u32; GAMMA_ENTRIES], v: u8, shift: u32) -> u8 {
+    let lane = |i: usize| (table[i] >> shift & 0xFF) as i32;
+    let (i, f) = (usize::from(v >> 4), i32::from(v & 15));
+    (lane(i) + (lane(i + 1) - lane(i)) * f / 16) as u8
+}
+
+/// Each lane of `t` scaled by `s`/256 (`s` up to 256): the picture
+/// dimmed through the gamma table, as brightness's picture stage
+/// (rp-drv-pxa-pwm's `split`) and `rp-nightlight` use it.
+#[must_use]
+pub fn scale_gamma(t: &[u32; GAMMA_ENTRIES], s: u32) -> [u32; GAMMA_ENTRIES] {
+    core::array::from_fn(|i| {
+        let lane = |shift: u32| ((t[i] >> shift & 0xFF) * s.min(256) / 256) << shift;
+        lane(16) | lane(8) | lane(0)
+    })
+}
+
 /// One step of the mix: `src` over `dst` with weight `k` (0..=255).
 #[must_use]
 pub const fn mix(src: u8, dst: u8, k: u8) -> u8 {
@@ -77,6 +123,7 @@ struct Plane {
     mode: u32,
     slot: u32,
     glalpha: u8,
+    gamma: Option<[u32; GAMMA_ENTRIES]>,
 }
 
 const fn bytes_per_pixel(fmt: u32) -> usize {
@@ -113,6 +160,8 @@ fn plane(read: &impl Fn(usize) -> u32, vram_len: usize, video: bool) -> Option<P
         mode: scadr >> 27 & 3,
         slot: scadr >> 24 & 3,
         glalpha: (bbase >> 24) as u8,
+        gamma: (!video && sctrl >> 26 & 1 != 0)
+            .then(|| core::array::from_fn(|i| read(reg::GFXGAM0 + 4 * i))),
     };
     let video_fmt = fmt == 9 || fmt >= 0xC;
     let on = scadr >> 31 != 0
@@ -258,7 +307,12 @@ pub fn compose(read: impl Fn(usize) -> u32, vram: &[u8], out: &mut [u8]) {
                 if px >= p.width || py >= p.height {
                     continue;
                 }
-                let s = pixel(p, vram, px, py);
+                let mut s = pixel(p, vram, px, py);
+                if let Some(t) = &p.gamma {
+                    s.r = gamma(t, s.r, 16);
+                    s.g = gamma(t, s.g, 8);
+                    s.b = gamma(t, s.b, 0);
+                }
                 let k = match p.mode {
                     3 => s.a,
                     1 => 255 - s.a,
@@ -295,6 +349,54 @@ mod tests {
         // Studio range: black is 16, white 235.
         assert_eq!(rgb_to_yuv(0, 0, 0), (16, 128, 128));
         assert_eq!(rgb_to_yuv(255, 255, 255), (235, 128, 128));
+    }
+
+    #[test]
+    fn gamma_is_linear_between_the_points() {
+        let identity: [u32; GAMMA_ENTRIES] =
+            core::array::from_fn(|i| (i as u32 * 16).min(255) * 0x01_0101);
+        for v in 0..=239u8 {
+            assert_eq!(gamma(&identity, v, 8), v);
+        }
+        // Windows Mobile's ramp: black stays black, white loses a little.
+        assert_eq!(gamma(&WM_GAMMA, 0, 16), 0);
+        assert_eq!(gamma(&WM_GAMMA, 16, 16), 0x0F);
+        assert_eq!(gamma(&WM_GAMMA, 255, 0), 0xEE + 15 * 15 / 16);
+        // Lanes are apart: red only.
+        let red: [u32; GAMMA_ENTRIES] = core::array::from_fn(|i| identity[i] & 0xFF_0000);
+        assert_eq!((gamma(&red, 200, 16), gamma(&red, 200, 8)), (200, 0));
+    }
+
+    #[test]
+    fn compose_applies_gamma_to_the_graphics_plane_only_while_enabled() {
+        // A 1 x 1 RGB565 white graphics plane, sync on.
+        let vram = [0xFF, 0xFF];
+        let mut regs = [0u32; 0x4000 / 4];
+        regs[reg::GSCTRL / 4] = 7 << 27;
+        regs[reg::GSCADR / 4] = 1 << 31;
+        regs[reg::DSCTRL / 4] = 1 << 31;
+        let half = scale_gamma(&WM_GAMMA, 128);
+        assert_eq!(half[16], 0x7E_7E7E);
+        assert_eq!(scale_gamma(&WM_GAMMA, 256), WM_GAMMA);
+        for (i, w) in half.iter().enumerate() {
+            regs[reg::GFXGAM0 / 4 + i] = *w;
+        }
+        let shot = |regs: &[u32]| {
+            let mut out = [0u8; 3];
+            compose(|o| regs[o / 4], &vram, &mut out);
+            out
+        };
+        assert_eq!(shot(&regs), [248, 252, 248]);
+        regs[reg::GSCTRL / 4] |= 1 << 26;
+        assert_eq!(
+            shot(&regs),
+            [
+                gamma(&half, 248, 16),
+                gamma(&half, 252, 8),
+                gamma(&half, 248, 0)
+            ]
+        );
+        assert!(shot(&regs)[1] < 128);
     }
 
     #[test]

@@ -81,7 +81,7 @@ pub const CLOCK_IDLE_US: u32 = 100_000;
 
 /// Texel formats (TEX0 bits 15-13, version 18).
 pub mod format {
-    pub use rp_drv_mbx3d::tex::{ARGB1555, ARGB4444, RGB332, RGB565};
+    pub use rp_drv_mbx3d::tex::{ARGB1555, ARGB4444, ARGB8888, PVRTC2, PVRTC4, RGB332, RGB565};
 }
 /// What a texture coordinate past the texture does (TEX0 bits 31-28,
 /// version 22).
@@ -96,20 +96,31 @@ pub const TEX2_OPAQUE: u32 = 0xD688_6610;
 /// 23: an ARGB4444 texture at alpha 8/15 blended exactly).
 pub const TEX2_ALPHA: u32 = 0x8608_4610;
 
-/// What the renderer redoes when the 3D clock comes back on (ADR-0026 D8,
-/// device test T9: whether the core keeps its state across the clock off
-/// is what `rp-mbx3d-api` stage S9 measures).
+/// What the renderer redoes when the 3D clock comes back on (ADR-0026 D8).
+/// Device test T9 (`rp-mbx3d-api` run 4, S9): the core keeps its registers
+/// and the memory manager's set-up across `MBXCLK` 2 -> 1 -> 2 (1 ms and
+/// 300 ms off), so nothing is redone by default: a clock-on frame's render
+/// call took ~1.0 ms instead of ~5.6 ms with the set-up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ClockPolicy {
-    /// A core reset and the memory manager's set-up (~4.5 ms; safe).
-    #[default]
+    /// A core reset and the memory manager's set-up (~4.6 ms).
     SetUpAgain,
-    /// Every state register written again on the next frame (the memory
-    /// manager's set-up assumed kept).
+    /// Every state register written again on the next frame.
     RewriteRegisters,
-    /// Nothing (registers and set-up assumed kept).
+    /// Nothing: the core keeps its state (T9, measured).
+    #[default]
     KeepAll,
 }
+
+/// `0x130` bit 15: the MBX core's interrupts on (Dell's `0x87F5`; version
+/// 24: without it render done never reached GPIO85).
+pub const IRQ_MASTER: u32 = 1 << 15;
+/// The 2700G's system interrupt enable (write-only: never read).
+pub const MINTENABLE: usize = 0x018;
+/// `MINTENABLE` as Dell writes it: bit 15 the master, bit 2 routes the MBX
+/// core (version 24: 0x8004 and 0x800F edged GPIO85, 0x8001/2/8 and 0x000F
+/// didn't), bits 0, 1, 3 the display's.
+pub const MINTENABLE_DELL: u32 = 0x800F;
 
 /// Time and waiting, in microseconds (any wrapping clock).
 pub trait Clock {
@@ -152,6 +163,12 @@ pub struct Texture {
     pub u_mode: u8,
     /// Down: one of [`address`].
     pub v_mode: u8,
+    /// Bilinear filtering (TEX1 bit 31, `rp-mbx3d` version 24), or point
+    /// sampling.
+    pub linear: bool,
+    /// Mip levels, the base included (1: none). Each level follows the
+    /// larger one, the base first (version 25).
+    pub levels: u8,
 }
 
 impl Texture {
@@ -161,10 +178,35 @@ impl Texture {
         8 << self.code
     }
 
-    /// Bytes it takes.
+    /// Bytes it takes, its mip levels included.
     #[must_use]
     pub const fn bytes(&self) -> u32 {
-        self.side() * self.side() * 2
+        let mut total = 0;
+        let mut k = 0;
+        let levels = if self.levels == 0 {
+            1
+        } else {
+            self.levels as u32
+        };
+        while k < levels {
+            let side = self.side() >> k;
+            let texels = side * side;
+            total += match self.format as u32 {
+                tex::ARGB8888 => texels * 4,
+                tex::PVRTC4 => texels / 2,
+                tex::PVRTC2 => texels / 4,
+                _ => texels * 2,
+            };
+            k += 1;
+        }
+        // Whole words: a 1 x 1 level is half a word.
+        (total + 3) & !3
+    }
+
+    /// The same texture filtered bilinearly (`true`) or point sampled.
+    #[must_use]
+    pub const fn with_linear(self, linear: bool) -> Self {
+        Self { linear, ..self }
     }
 
     /// The same texture with other address modes.
@@ -183,15 +225,26 @@ impl Texture {
         matches!(self.format as u32, tex::ARGB1555 | tex::ARGB4444)
     }
 
-    /// TEX0, TEX1 and TEX2.
+    /// TEX0, TEX1 and TEX2. A mipmapped texture: TEX0 bits 12-9 its
+    /// highest level index (version 25: 0 drew only the base, 3-11 the
+    /// right level), TEX1 the nearest level (bit 29; bit 30 hung the core,
+    /// bilinear with levels untested: point within the level).
     #[must_use]
     pub fn words(&self) -> [u32; 3] {
-        let tex0 = tex::with_address(
+        let mut tex0 = tex::with_address(
             tex::tex0(self.code as u32, self.format as u32),
             self.u_mode as u32,
             self.v_mode as u32,
         );
-        let tex1 = m3::ta::dell_texture(self.at)[1];
+        let filter = if self.levels > 1 {
+            tex0 |= (u32::from(self.levels) - 1) << 9;
+            tex::TEX1_MIP_NEAREST
+        } else if self.linear {
+            tex::TEX1_LINEAR
+        } else {
+            0
+        };
+        let tex1 = tex::tex1(self.at, tex::TEX1_LOD, filter);
         let tex2 = if self.has_alpha() {
             TEX2_ALPHA
         } else {
@@ -314,6 +367,42 @@ pub struct Picture {
     pub w: u16,
     /// Height in pixels.
     pub h: u16,
+    /// Its pixels.
+    pub format: PixelFormat,
+}
+
+/// The pixels a target holds (`0x650`, `rp-mbx3d` version 26: tiles stay
+/// 8 x 16 in every format, `0x660` the stride in bytes / 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// 32-bit `0xAARRGGBB` (`0x650` 6: Dell's).
+    Argb8888,
+    /// 16-bit RGB565 (`0x650` 1: the panel's own depth, half the bytes to
+    /// write and keep).
+    Rgb565,
+    /// 16-bit ARGB1555 (`0x650` 3; opaque pixels with the alpha bit set).
+    Argb1555,
+}
+
+impl PixelFormat {
+    /// `0x650`.
+    #[must_use]
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Argb8888 => 6,
+            Self::Rgb565 => 1,
+            Self::Argb1555 => 3,
+        }
+    }
+
+    /// Bytes a pixel.
+    #[must_use]
+    pub const fn bytes(self) -> u32 {
+        match self {
+            Self::Argb8888 => 4,
+            _ => 2,
+        }
+    }
 }
 
 impl Picture {
@@ -325,6 +414,19 @@ impl Picture {
             stride: 480 * 4,
             w: 480,
             h: 640,
+            format: PixelFormat::Argb8888,
+        }
+    }
+
+    /// A `w` x `h` picture of `format` at `at`, its lines packed.
+    #[must_use]
+    pub const fn packed(at: u32, w: u16, h: u16, format: PixelFormat) -> Self {
+        Self {
+            at,
+            stride: w as u32 * format.bytes(),
+            w,
+            h,
+            format,
         }
     }
 }
@@ -345,7 +447,9 @@ impl Target {
     /// The rectangle's first pixel (`0x65C`).
     #[must_use]
     pub const fn addr(&self) -> u32 {
-        self.picture.at + self.y as u32 * self.picture.stride + self.x as u32 * 4
+        self.picture.at
+            + self.y as u32 * self.picture.stride
+            + self.x as u32 * self.picture.format.bytes()
     }
 }
 
@@ -583,9 +687,23 @@ pub const fn untwiddle(i: u32) -> (u32, u32) {
     (x, y)
 }
 
+/// A texture of side `8 << code` in `format`, not yet placed.
+const fn texture(code: u8, format: u32) -> Texture {
+    Texture {
+        at: 0,
+        code,
+        format: format as u8,
+        u_mode: tex::CLAMP as u8,
+        v_mode: tex::CLAMP as u8,
+        linear: false,
+        levels: 1,
+    }
+}
+
 /// Uploads a square texture of side `8 << code` (`texels` in rows, 16 bits
-/// each, `format` one of [`format`]) into a block from `pool`, twiddled.
-/// Clamped at both edges (Dell's); see [`Texture::with_modes`].
+/// each, `format` one of [`format`]'s 16-bit ones) into a block from
+/// `pool`, twiddled. Clamped at both edges (Dell's), point sampled; see
+/// [`Texture::with_modes`] and [`Texture::with_linear`].
 pub fn upload<M: LocalMem>(
     pool: &mut Pool,
     mem: &mut M,
@@ -601,13 +719,7 @@ pub fn upload<M: LocalMem>(
     {
         return None;
     }
-    let t = Texture {
-        at: 0,
-        code,
-        format: format as u8,
-        u_mode: tex::CLAMP as u8,
-        v_mode: tex::CLAMP as u8,
-    };
+    let t = texture(code, format);
     let side = t.side();
     if texels.len() != (side * side) as usize {
         return None;
@@ -629,6 +741,173 @@ pub fn upload<M: LocalMem>(
         mem.store((at + 4 * m) as usize, &buf[..n as usize]);
         m += n;
     }
+    mem.sync();
+    Some(Texture { at, ..t })
+}
+
+/// The bits of a 16-bit texel's channels (alpha, red, green, blue), from
+/// the bottom: RGB332 in the low byte.
+const fn channel_bits(format: u32) -> [u32; 4] {
+    match format {
+        tex::RGB565 => [0, 5, 6, 5],
+        tex::ARGB1555 => [1, 5, 5, 5],
+        tex::ARGB4444 => [4, 4, 4, 4],
+        _ => [0, 3, 3, 2],
+    }
+}
+
+/// The average of four 16-bit texels, channel by channel (rounded).
+fn average4(format: u32, t: [u16; 4]) -> u16 {
+    let bits = channel_bits(format);
+    let mut out = 0u32;
+    let mut shift = 0;
+    for &b in bits.iter().rev() {
+        let mask = (1 << b) - 1;
+        let sum: u32 = t.iter().map(|&v| (u32::from(v) >> shift) & mask).sum();
+        out |= ((sum + 2) / 4) << shift;
+        shift += b;
+    }
+    out as u16
+}
+
+/// Uploads a square texture of 16-bit texels with its mip levels down to
+/// 1 x 1, each made from the larger one by averaging 2 x 2 texels (on the
+/// CPU, integer only): the base first, each level after the larger one,
+/// each twiddled on its own (`rp-mbx3d` version 25: the 16 and 8 px quads
+/// of a 64 x 64 texture drew the 16 and 8 levels). A third more memory
+/// than the base alone; scaled-down pictures stop shimmering.
+pub fn upload_mipmapped<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    format: u32,
+    texels: &[u16],
+) -> Option<Texture> {
+    if code > 7
+        || !matches!(
+            format,
+            tex::ARGB1555 | tex::RGB565 | tex::ARGB4444 | tex::RGB332
+        )
+    {
+        return None;
+    }
+    let side = 8u32 << code;
+    if texels.len() != (side * side) as usize {
+        return None;
+    }
+    let levels = code + 4; // 8 << code down to 1
+    let t = Texture {
+        levels,
+        ..texture(code, format)
+    };
+    let at = pool.alloc(t.bytes(), 128)?;
+    // Each level in a scratch row of at most 1024 texels: the base is read
+    // from `texels`, smaller levels from the level above (kept in 2700G
+    // memory and read back, so no level-sized buffer on the stack).
+    let mut offset = 0u32;
+    for k in 0..u32::from(levels) {
+        let s = side >> k;
+        let texel = |mem: &M, x: u32, y: u32| -> u16 {
+            if k == 0 {
+                return texels[(y * side + x) as usize];
+            }
+            // The level above, twiddled, 2 x 2 averaged.
+            let above = offset - (2 * s) * (2 * s) * 2;
+            let read = |x: u32, y: u32| {
+                let a = at + above + 2 * tex::twiddle(x, y);
+                let w = mem.load((a & !3) as usize).unwrap_or(0);
+                (if a & 2 == 0 { w } else { w >> 16 }) as u16
+            };
+            average4(
+                format,
+                [
+                    read(2 * x, 2 * y),
+                    read(2 * x + 1, 2 * y),
+                    read(2 * x, 2 * y + 1),
+                    read(2 * x + 1, 2 * y + 1),
+                ],
+            )
+        };
+        if s == 1 {
+            // One texel: half a word (the next half is padding).
+            let w = u32::from(texel(mem, 0, 0));
+            mem.store((at + offset) as usize, &[w]);
+        } else {
+            let mut buf = [0u32; 32];
+            let words = s * s / 2;
+            let mut m = 0;
+            while m < words {
+                let n = (words - m).min(32);
+                for (j, w) in buf[..n as usize].iter_mut().enumerate() {
+                    let i = 2 * (m + j as u32);
+                    let (x0, y0) = untwiddle(i);
+                    let (x1, y1) = untwiddle(i + 1);
+                    *w = u32::from(texel(mem, x0, y0)) | u32::from(texel(mem, x1, y1)) << 16;
+                }
+                mem.store((at + offset + 4 * m) as usize, &buf[..n as usize]);
+                m += n;
+            }
+        }
+        mem.sync();
+        offset += s * s * 2;
+    }
+    Some(Texture { at, ..t })
+}
+
+/// Uploads a square texture of 32-bit texels, `0xAARRGGBB` (TEX0 code 12:
+/// `rp-mbx3d` version 24 decoded red, green and blue exactly; its alpha in
+/// blending is untested, so it's drawn opaque), in rows, twiddled.
+pub fn upload32<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    texels: &[u32],
+) -> Option<Texture> {
+    let t = texture(code, tex::ARGB8888);
+    let side = t.side();
+    if code > 7 || texels.len() != (side * side) as usize {
+        return None;
+    }
+    let at = pool.alloc(t.bytes(), 128)?;
+    let mut buf = [0u32; 32];
+    let words = side * side;
+    let mut m = 0;
+    while m < words {
+        let n = (words - m).min(32);
+        for (k, w) in buf[..n as usize].iter_mut().enumerate() {
+            let (x, y) = untwiddle(m + k as u32);
+            *w = texels[(y * side + x) as usize];
+        }
+        mem.store((at + 4 * m) as usize, &buf[..n as usize]);
+        m += n;
+    }
+    mem.sync();
+    Some(Texture { at, ..t })
+}
+
+/// Uploads a PVRTC texture (`format` [`format::PVRTC4`] or
+/// [`format::PVRTC2`]) of side `8 << code` as compressed on the PC: its
+/// 64-bit blocks as pairs of words, the modulation word first (version 24:
+/// the other way round drew black), in the order the encoder writes them
+/// (PVRTC's twiddled block order; the device test couldn't tell it from
+/// row order). 4 or 2 bits a texel: a 256 x 256 picture in 32 or 16 KiB
+/// instead of 128.
+pub fn upload_pvrtc<M: LocalMem>(
+    pool: &mut Pool,
+    mem: &mut M,
+    code: u8,
+    format: u32,
+    blocks: &[u32],
+) -> Option<Texture> {
+    if code > 7 || !matches!(format, tex::PVRTC4 | tex::PVRTC2) {
+        return None;
+    }
+    let t = texture(code, format);
+    if blocks.len() * 4 != t.bytes() as usize {
+        return None;
+    }
+    let at = pool.alloc(t.bytes(), 128)?;
+    mem.store(at as usize, blocks);
     mem.sync();
     Some(Texture { at, ..t })
 }
@@ -674,6 +953,10 @@ pub struct Renderer {
     mem_words: u32,
     resets: u32,
     clock_policy: ClockPolicy,
+    /// Render done raises the 2700G's interrupt (GPIO85).
+    irq: bool,
+    /// `irq` changed since the enables were last written.
+    irq_stale: bool,
 }
 
 impl Renderer {
@@ -734,7 +1017,9 @@ impl Renderer {
             pending: None,
             mem_words: 0,
             resets: 0,
-            clock_policy: ClockPolicy::SetUpAgain,
+            clock_policy: ClockPolicy::KeepAll,
+            irq: false,
+            irq_stale: false,
         })
     }
 
@@ -761,6 +1046,20 @@ impl Renderer {
     #[must_use]
     pub const fn core_resets(&self) -> u32 {
         self.resets
+    }
+
+    /// Render done raises the 2700G's interrupt line, GPIO85 (`rp-mbx3d`
+    /// version 24: an edge the moment status bit 2 sets, with `0x130` bits
+    /// 15 and 2 and `MINTENABLE` bits 15 and 2). The caller then sleeps
+    /// until the interrupt instead of the predicted time, and calls
+    /// [`Self::poll`] (one status read, which also clears it). The line
+    /// also carries the display's events: a wake-up without render done
+    /// polls `Wait`. Off by default.
+    pub fn set_interrupt(&mut self, on: bool) {
+        if on != self.irq {
+            self.irq = on;
+            self.irq_stale = true;
+        }
     }
 
     /// What to redo when the 3D clock comes back on ([`ClockPolicy`]).
@@ -909,9 +1208,10 @@ impl Renderer {
         let pic = target.picture;
         if u32::from(target.x) + u32::from(self.w) > u32::from(pic.w)
             || u32::from(target.y) + u32::from(self.h) > u32::from(pic.h)
-            || pic.stride < u32::from(pic.w) * 4
+            || pic.stride < u32::from(pic.w) * pic.format.bytes()
             || !pic.stride.is_multiple_of(4)
             || !pic.at.is_multiple_of(4)
+            || !target.addr().is_multiple_of(2)
         {
             return Err(Error::BadTarget);
         }
@@ -944,6 +1244,9 @@ impl Renderer {
         if self.bg_stale {
             self.write_background(mem);
         }
+        if self.irq_stale {
+            self.write_irq_enables(bus);
+        }
         if self.arena - ARENA_AT > (self.params.size - ARENA_AT) / 2 {
             // Lists are referenced only by the frame being built: reclaim
             // them all between frames before space runs short.
@@ -967,6 +1270,7 @@ impl Renderer {
             pic.stride,
         );
         for &(off, v) in &t[..14] {
+            let v = if off == 0x650 { pic.format.code() } else { v };
             self.shadow.write(bus, off, v);
         }
         self.shadow.write(bus, 0x65C, addr);
@@ -1085,8 +1389,24 @@ impl Renderer {
         };
         bus.write32(MBX + reg::CLEAR, m3::PM_READY);
         bus.write32(MBX + reg::ENABLE, en | m3::RENDER_DONE);
+        self.write_irq_enables(bus);
         self.ready = ok;
         if ok { Ok(()) } else { Err(Error::NoCore) }
+    }
+
+    /// `0x130` bit 15 (the MBX core's master enable) and `MINTENABLE`
+    /// as Dell writes it (`0x800F`: bit 15 the master, bit 2 the MBX core,
+    /// bits 0, 1, 3 the display's) when interrupts are on; bit 15 off when
+    /// not (render done still sets the status bit).
+    fn write_irq_enables<B: RegisterBus>(&mut self, bus: &mut B) {
+        let en = bus.read32(MBX + reg::ENABLE);
+        if self.irq {
+            bus.write32(MBX + reg::ENABLE, en | IRQ_MASTER | m3::RENDER_DONE);
+            bus.write32(MINTENABLE, MINTENABLE_DELL);
+        } else {
+            bus.write32(MBX + reg::ENABLE, en & !IRQ_MASTER);
+        }
+        self.irq_stale = false;
     }
 
     fn write_background<M: LocalMem>(&mut self, mem: &mut M) {

@@ -103,6 +103,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-cfdetect"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-cpld",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-cftime"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-cf",
+ "rp-drv-cpld",
+ "rp-drv-pxa-gpio",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [
@@ -115,6 +139,17 @@ dependencies = [
 [[package]]
 name = "rp-crypto"
 version = "0.0.0"
+
+[[package]]
+name = "rp-cs3bus"
+version = "0.0.0"
+dependencies = [
+ "rp-hal-api",
+ "rp-hal-mem",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-vram-map",
+]
 
 [[package]]
 name = "rp-display-host"
@@ -276,6 +311,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-graphics"
+version = "0.0.0"
+dependencies = [
+ "rp-draw",
+ "rp-drv-blit2d",
+ "rp-drv-mbx-display",
+ "rp-hal-api",
+ "rp-mbx-render",
+ "rp-mbx3d-render",
+ "rp-vram-map",
+]
+
+[[package]]
 name = "rp-hal-api"
 version = "0.0.0"
 
@@ -311,6 +359,17 @@ name = "rp-hal-x51v"
 version = "0.0.0"
 dependencies = [
  "rp-hal-pxa27x",
+]
+
+[[package]]
+name = "rp-handover"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-cpld",
+ "rp-drv-mbx-display",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
 ]
 
 [[package]]
@@ -408,14 +467,11 @@ dependencies = [
  "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
- "rp-drv-pxa-i2c",
- "rp-drv-pxa-i2s",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-pwm",
  "rp-drv-pxa-uart",
  "rp-drv-pxa-udc",
  "rp-drv-sdcard",
- "rp-drv-wm8750",
  "rp-fat",
  "rp-hal-api",
  "rp-hal-pxa27x",
@@ -517,6 +573,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-nightlight"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-noise"
 version = "0.0.0"
 dependencies = [
@@ -566,6 +632,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-quantum"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+ "rp-kernel-sched",
+]
+
+[[package]]
 name = "rp-reconnect"
 version = "0.0.0"
 dependencies = [
@@ -580,12 +656,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-sdtime"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-cpld",
+ "rp-drv-pxa-mmc",
+ "rp-drv-sdcard",
+ "rp-fat",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
 name = "rp-shell"
 version = "0.0.0"
 dependencies = [
  "rp-draw",
  "rp-gfx",
  "rp-touch-cal",
+]
+
+[[package]]
+name = "rp-storfast"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-cf",
+ "rp-drv-cpld",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-mmc",
+ "rp-drv-sdcard",
+ "rp-fat",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
 ]
 
 [[package]]
@@ -611,13 +716,30 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-drv-tsc2046",
  "rp-gfx",
+ "rp-graphics",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-mbx-render",
+ "rp-mbx3d-render",
  "rp-shell",
  "rp-touch-cal",
+ "rp-vram-map",
+]
+
+[[package]]
+name = "rp-tone"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-i2c",
+ "rp-drv-pxa-i2s",
+ "rp-drv-wm8750",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
 ]
 
 [[package]]

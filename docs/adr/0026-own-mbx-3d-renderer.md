@@ -205,7 +205,7 @@ gauge (Phase 9); the switch itself costs microseconds (version 3: PM ready
 | T6 | TEX0 bits 31-28 (filtering, clamping: version 18 saw them change sampling) | texture quality (version 21, on a hand-written textured object) |
 | T7 | Depth: `0x674` and `0x610` with depth-writing objects (ISP bit 26) | **passed within a render** (version 23: TSP bits 11-9 mode, bit 7 no-write; larger z nearer); storing depth across renders (`0x674`) still open |
 | T8 | 2D engine and TA in the same FIFO, interleaved | one queue for both |
-| T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: what the gate must redo after switching on |
+| T9 | 3D clock off and on again (`MBXCLK` 2 -> 1 -> 2): does the core keep the parameter memory set-up and its registers? | D8: **kept** (`rp-mbx3d-api` run 4: nothing redone, 1 ms and 300 ms off, drew right); the renderer redoes nothing (`ClockPolicy::KeepAll`), a clock-on frame ~1.0 ms instead of ~5.6 ms |
 
 **Version 21 on the device (2026-10-15, `local/rp-mbx3d-run21.txt`):**
 
@@ -358,6 +358,131 @@ needs only "greater". S8 is removed; S5 checks the refusal.
 **Open, found while modelling:** "less" never passed on the device, not
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.
+
+## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
+
+The GPU facts that shape the OS's design, before any interface design
+(owner, 2026-10-15). One `rp-mbx3d` version (24) runs them all, on the
+owner's go:
+
+| Test | Question | Decides |
+|---|---|---|
+| T10 | Render done on GPIO85 with `0x130` bit 15 set (Dell's `0x87F5`; T2 had bit 2 alone after a reset), every other source masked and cleared first; which `MINTENABLE` bit 0-3 routes the MBX core | D3: sleeping waits instead of the timer |
+| T11 | Depth kept across renders: `0x674` a buffer, `0x610 = (tiles - 1) << 7 \| 2` (store), then `\| 1` (load) on the next render | depth for partial renders and games |
+| T12 | Bilinear filtering (TEX1 bit 31) and mipmaps (TEX1 bits 30-29, LOD bits 28-25), the level layout (smallest or largest first) | interface image quality when scaled |
+| T13 | PVRTC 4 bpp (TEX0 code 28) and 2 bpp (code 16) from known blocks; 32-bit texels (code 12) | the 64 MB budget: 4-8x less texture memory |
+
+**`rp-mbx3d` version 24 on the device (2026-10-15,
+`local/rp-mbx3d-run24.txt`; the image as first built, `6f6557e`: T10
+counted edges through GPIO85's interrupt, the reviewed polling-only form
+came after the run).**
+
+- **T10, render done reaches GPIO85: yes.** With the line quieted
+  (`0x130` 0, all status cleared, the display's events off), a full-screen
+  render set status bit 2 at 12,484-12,492 us and GPIO85 edged **at the
+  same microsecond**, once, with `0x130` = `0x8004` or Dell's `0x87F5`;
+  **none with `0x0004`** (T2's form: bit 15 is the MBX core's master
+  enable). `MINTENABLE` `0x8004` and `0x800F` edged, `0x8001`, `0x8002`,
+  `0x8008` and `0x000F` didn't: **bit 2 routes the MBX core, bit 15 is the
+  master**. The level never read low between samples (a pulse) and was
+  high after the clear. **3D waits can sleep on the interrupt**: built
+  (`Renderer::set_interrupt`).
+- **T11, depth across renders: not stored as tried.** With `0x674` a
+  buffer and `0x610 = 15 << 7 | 2`, render A left all 2048 words at the
+  fill (`0xAAAAAAAA`); render B drew blue everywhere, with and without the
+  load bit. Open (static reading next: what else the GLES scene routine
+  sets with a depth buffer).
+- **T12, bilinear: works.** TEX1 bit 31 turned the checker's step into a
+  ramp `0xFF3F3F`, `0x7F7F`, `0xBFBF` at pixels 106, 108, 110 (texel 0's
+  centre at 104, texel 1's at 112): **weights linear between texel
+  centres, the pixel sampled at its corner (not its centre), each channel
+  truncated**. Built (`Texture::with_linear`; the model matches the run's
+  pixels exactly). **Mipmaps: not engaged.** Bit 29 drew the base level at
+  every size (64 to 8 px), in both layouts, at every LOD value 0-15;
+  **bit 30 alone hung the core** (recovered). Open (static reading next:
+  the upload's level layout and what else enables levels).
+- **T13, 32-bit and PVRTC: work.** Code 12 decoded ARGB8888 (red, green,
+  blue exact; drawn opaque, its alpha in blending untested). **PVRTC
+  4 bpp (code 28) and 2 bpp (code 16) decoded** solid red blocks exactly;
+  the words swapped drew black (modulation word first, confirmed);
+  half-red, half-green blocks drew red left, green right (the samples fit
+  both twiddled and row block order: open). Built (`upload32`,
+  `upload_pvrtc` for blocks compressed on the PC).
+
+**Next: `rp-mbx3d` version 25** (static reading in `docs/hw/2700g.md`,
+"Depth buffers, mipmap levels and the target format"): T11b depth stored
+with the GLES driver's full register set (`0x648` and `0x6D0` 1, `n` 16
+and 2400); T12b mipmaps with TEX0 bits 12-9 set; T13b PVRTC's block order.
+
+**`rp-mbx3d` version 25 on the device (2026-10-15,
+`local/rp-mbx3d-run25.txt`).**
+
+- **T12b, mipmaps: work.** With TEX0 bits 12-9 non-zero (3, 6, 7 or
+  `0xB`: all alike) and TEX1 nearest-mipmap (bit 29), **layout B** (the
+  base first, each level after the larger one) drew the 16 x 16 level on a
+  16 px quad and the 8 x 8 on an 8 px quad (a 64 x 64 texture); layout A
+  (the PowerVR2's, smallest first) always drew the base. Version 24 left
+  bits 12-9 at 0 and drew only the base: **bits 12-9 are the highest level
+  index allowed**. Built (`upload_mipmapped`: levels made on the CPU by
+  2 x 2 averages, integer only; both models select levels as measured).
+- **T13b, PVRTC's block order: twiddled like texels** (x in the odd bits):
+  each block's centre showed row 0 = blocks 0, 2, 8, 10, row 1 = 1, 3, 9,
+  11. Both models had assumed it; now measured.
+- **T11b, depth stored across renders: still nothing** with the GLES
+  driver's full register set (`0x648`, `0x6D0`, the rest), `n` 16 or
+  2400, load bit on or off: the buffer untouched, B drew everywhere. The
+  GLES scene routine (`0x0225e5c4`), with a depth buffer, also sets **bit
+  19 of the tile accelerator's configuration word** (`0x85C`, ours never
+  written on the direct path) and `0x610`'s store bit: depth storage may
+  belong to the TA path. **Parked** until the TA path is built for games
+  (ADR-0026 D7); then one try with `0x85C` bit 19 settles it. The
+  interface doesn't need it (each render's depth starts from the
+  background).
+
+**Next: `rp-mbx3d` version 26** (static reading in `docs/hw/2700g.md`,
+"The MBX cores' clock"): S26a render and fill times at `MBXCLK` divide-by
+2 (WM's), 3 and 4 (all within Dell's 75 MHz cap; divide-by-1 exceeds it
+and waits for the owner), S26b (T4) a 16-bit target (`0x650` 1 or 3,
+`0x660` in pixels or words), S26c the PLLs read (last).
+
+**`rp-mbx3d` version 26 on the device (2026-10-15,
+`local/rp-mbx3d-run26.txt`).**
+
+- **S26a, the cores are clock-bound.** At `MBXCLK` divide by 2, 3 and 4:
+  2400 tiles 12,484 / 18,724 / 24,968 us, 600 tiles 3,132 / 4,692 / 6,256
+  us, a full-screen 2D fill 6,180 / 9,268 / 12,360 us: **exactly in
+  proportion to the divider**, 3D and 2D alike. Every MHz of the cores'
+  clock is speed.
+- **S26c, the clocks:** `COREPLL` `0xBB1` = 13 MHz x 23 / 3 = **99.67 MHz**
+  (mbxfb's own "100 MHz" setting), `DISPPLL` `0xEC5` = 23.56 MHz (the
+  pixel clock), `PLLSTAT` 7 (both locked), `SYSCLKSRC` 2, `MEMCLK` 1,
+  `M24CLK` 2. So **Windows Mobile runs the MBX cores at 49.8 MHz**, a
+  third under the 75 MHz Dell's driver allows them; **Dell's default
+  "CoreClock" is 133 MHz** (`0x021220f4`), which at divide by 2 gives 66.5
+  MHz. Dell's driver sets the PXA's bus timing (`MSC1`) for the 2700G by
+  the same clock: one setting for 99 MHz and up, which 133 MHz shares.
+  Next: the core PLL stepped up, `rp-mbx3d` version 27.
+- **S26b (T4), a 16-bit target: works.** `0x650` 1 wrote RGB565 (red
+  `0xF800`, green `0x07E0`, blue `0x001F`, white `0xFFFF`), 3 wrote
+  ARGB1555 with the alpha bit set (`0xFC00`, `0x83E0`, `0x801F`); tiles
+  stay 8 x 16; **`0x660` is the stride in bytes / 4** in every format (240
+  for 960 bytes; 480 skipped every other line). The 16-tile block took 120
+  us, no faster than 32 bits as measured (a cost per tile, not per
+  byte). Built: `PixelFormat` on the renderer's `Picture` (both models
+  write 16-bit targets as measured). The interface's screen pictures stay
+  32-bit (ADR-0023's choice, for exact 2D blending and dithering); making
+  them RGB565 is an ADR-0023 change for the owner (half the memory and
+  bus traffic of every picture; the 2D engine's blends onto 565 need
+  their own device check).
+
+**Next: `rp-mbx3d` version 27:** the core PLL stepped from 99.67 MHz to
+110.5, 121.3 and 133.25 MHz (Dell's default "CoreClock"; the cores at
+half, at most 66.6 MHz, under Dell's 75 MHz cap; Dell's bus-timing tier
+unchanged), changed as Dell's driver does it (system clock on the 13 MHz
+reference, PLL written, lock awaited), each step checked (a 256 KiB
+memory pattern, a 2D fill, ten 3D renders matching WM's pixels) and
+timed; WM's PLL back on any failure and at the end. 149.5 MHz waits for
+the owner.
 
 ## The four lenses
 

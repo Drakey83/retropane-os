@@ -231,7 +231,7 @@ mod image {
             let _ = writeln!(log, "RetroPane 26 probe {}", super::BUILD);
             let _ = writeln!(log, "display: {display_note}");
 
-            let mut cpld = rp_hal_x51v::devices::take_cpld().map(Cpld::new);
+            let mut cpld = rp_hal_x51v::devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
             if let Some(c) = cpld.as_mut() {
                 panel_name = c.panel(&mut TimerDelay).name();
             }
@@ -239,9 +239,11 @@ mod image {
 
             let _ = writeln!(log, "SD...");
             let mut card = None;
-            if let (Some(c), Some(mmc), Some(dma)) =
-                (cpld.as_mut(), rt::take_mmc(), rt::take_dma(0))
-            {
+            if let (Some(c), Some(mmc), Some(dma)) = (
+                cpld.as_mut(),
+                rt::take_mmc(),
+                rt::take_dma(rp_hal_pxa27x::dma_map::SD),
+            ) {
                 c.set_sd_power(true);
                 rt::delay_us(10_000);
                 // DMA-capable, but off: every row is first measured through

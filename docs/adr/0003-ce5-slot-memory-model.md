@@ -42,3 +42,9 @@ A Linux-style model with cache flushing: simpler, but much slower and less compa
 ## Consequences
 
 32 MB per process and a limited number of slots. Neither matters with 64 MB of RAM.
+
+> **Note (2026-10-15):** the slot limit did matter: RetroPane's own
+> services are processes (ADR-0016) and took about a third of CE's 31.
+> FCSE has 128 slots, so RetroPane's own processes now use slots 96-126
+> above the kernel and CE programs keep all of CE's layout: 62 processes
+> (docs/research/process-limit.md).

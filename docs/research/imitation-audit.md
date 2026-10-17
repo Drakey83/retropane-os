@@ -115,6 +115,17 @@ with the performance monitor built first to measure everything else).
   flush's speed), the CF socket's timings (below).
 - **Verdict:** 🔧 **item 68** (bounded: device runs with a fallback; a
   watchdog-guarded test that steps timings and verifies memory).
+- **Investigated 2026-10-15** (docs/research/memory-timing.md, report
+  only, nothing changed). The SDRAM clock is already at the PXA270's
+  104 MHz maximum. Dell uses CL3/tRCD 3/tRP 3; the likely chips (Infineon
+  HYB25L256160AC-7.5, confirmed on the X50) allow CL2/2/2 with only 1.2%
+  margin, worth ~3-8% on memory-bound work. Refresh is within 4% of the
+  rated interval. The 2700G's bus (`MSC1` CS3) is ~2x slower than the
+  PXA's legal minimum: flushes might go ~41 to 60-75 MB/s if the 2700G
+  doesn't stretch cycles with RDY. That needs one measured run.
+  Recommendation: keep SDRAM as is; a bounded `MSC1` experiment if the
+  owner agrees; PASR in sleep goes to item 67; DRI must be rewritten on
+  any memory-clock change (item 67).
 
 ### Display and drawing (2700G)
 
@@ -140,8 +151,10 @@ with the performance monitor built first to measure everything else).
   5. **The cursor plane as a free small overlay** (a spinner, a drag
      handle) that never touches the main plane.
   6. **iWMMXt** for the CPU paths that remain (blend, dither, tint).
-  7. **Own the display set-up** (PLL, timings) instead of adopting WM's,
-     which also removes the unexplained 500 ms settle.
+  7. **Own the display set-up** (PLL, timings) instead of adopting WM's.
+     The 500 ms settle is already gone (2026-10-15): its cause was Windows
+     Mobile's leftover DMA, and the 2700G now waits only for those
+     channels to stop.
 - **Verdict:** 🔧 **items 69 (MBX bring-up: clear), 70 (DMA flush +
   double buffering at vsync + hardware scroll), 71 (iWMMXt pixel paths),
   72 (own the display set-up; find the settle cause)**. ✅ plane
@@ -175,6 +188,18 @@ with the performance monitor built first to measure everything else).
   CF drive measured 0.6 MB/s end to end).
 - **Verdict:** 🔧 **item 74** (with the SD overlap from item 58, the drive
   could reach the USB limit).
+- **Done (2026-10-16, measured on the device; `perf.md`, `udc.md`
+  "Throughput"):** double-buffered bulk endpoints, every waiting packet
+  drained, OUT reads that wait for the controller's status to settle, the
+  drive's blocks by DMA both ways overlapping the card, the UDC interrupt
+  waking the waiting loader. Image loading 514 -> 1,048 KB/s, drive reads
+  765 -> 1,146 KB/s (the USB ceiling), writes 411 -> 856 KB/s (now the
+  card's write time: the first and last half of each 64 KiB command can't
+  overlap), idle round trip 1,170 -> ~300 us. Image loading stays on the
+  CPU path: it already reaches the ceiling (DMA measured 2% faster, and its
+  payload isn't cache-line aligned). Open: CPU-written IN packets into both
+  buffers (low value now), the OS's own UDC driver thread (item 73's rule;
+  the driver's interrupt mode is ready for it).
 
 ### SD
 
@@ -185,6 +210,12 @@ with the performance monitor built first to measure everything else).
   limits; polling is a choice (above).
 - **Verdict:** ✅ well past WM; remaining interrupt/DMA-writes work is in
   items 58 and 73.
+- **Measured 2026-10-15 (docs/research/storage-speed.md, part B):** not
+  maxed after all. 19.5 MHz is confirmed the top (the reserved clock code
+  is slower), but DMA writes are built and off (+52%: 1.9 -> 2.9 MB/s),
+  DMA quietly falls back to PIO above 128 KiB (1 MiB reads 1.9 against
+  5.2 MB/s), and single-block writes cost 10.8 ms on the owner's card,
+  which is the FAT layer's metadata cost. ACMD23 measured no gain.
 
 ### CompactFlash
 
@@ -199,6 +230,18 @@ with the performance monitor built first to measure everything else).
   MULTIPLE; the card's interrupt instead of polling DRQ; DMA
   memory-to-memory from the socket window.
 - **Verdict:** 🔧 **item 75**.
+- **Measured 2026-10-15 (docs/research/storage-speed.md, part A):** WM's
+  timings decode to a 260 ns common-memory cycle at CLK_MEM 208 MHz
+  (calibrated on the device), a generic table (529 ns at WM's 104 MHz
+  points); the card rates itself 80 ns (CIS and IDENTIFY word 164): 3x
+  headroom per field, ~2x on the bus if tuned, at the price of silent
+  corruption if wrong (validation plan in the report). Without touching
+  timings: 4.1 MB/s today, 4.9 with 32-bit loads from the 0x400-0x7FF
+  data window, 5.2 by DMA from it (both checked byte for byte). READ
+  MULTIPLE gives nothing on this card (1 sector); GPIO84 is the card's
+  busy line (an interrupt for writes; reads wait only 2%). The drive's
+  0.6 MB/s is the USB side, not the socket. **Status: report delivered,
+  owner decides.**
 
 ### Touch screen
 
@@ -225,7 +268,12 @@ with the performance monitor built first to measure everything else).
   frequency; check whether a *shorter* period (higher frequency) is
   clean.
 - **Verdict:** 🔧 small, folded into **item 76's** device session (input
-  and light feel), measured on the device.
+  and light feel), measured on the device. **Built 2026-10-15:** prescale 0
+  and 432 counts (Windows Mobile's 30.09 kHz, steps half the size), then
+  the picture dimmed through the display's gamma table below the light's
+  floor (no CPU, no flicker, nothing new to hear) instead of CPU dithering;
+  `rp-nightlight` for the owner's eyes and ears; the gamma stage waits for
+  the table's format from the device.
 
 ### Keypad and buttons
 
@@ -246,7 +294,12 @@ with the performance monitor built first to measure everything else).
 
 ### CPLD
 
-- **Today:** our shadow starts at zero and sets the bits we know.
+- **Today (2026-10-15):** the shadow is seeded from Windows Mobile's own
+  table at hand-over (checked: 16-bit slots, backlight on, no momentary
+  bit), then shared by every RetroPane program as RetroPane's table; with
+  no table, RetroPane's own known-good defaults (the flash-installed OS's
+  path). Remaining: the device's table values (`rp-handover`), and the
+  guessed slots mapped.
 - **Better ways:** start from Windows Mobile's own shadow copies at hand-
   over (found in item 64: RAM from `0xA8001320`), so nothing WM left on is
   switched off by accident, and map the remaining slots.
@@ -297,6 +350,14 @@ with the performance monitor built first to measure everything else).
   justified by legacy binaries; the quantum to be measured for
   interactivity when the UI exists (item 67's work measures switch costs
   first).
+- **Done (2026-10-15):** measured on the device (`rp-quantum`): CE's 100 ms
+  kept a touch waiting up to 102 ms behind a busy program. Replaced by a
+  20 ms quantum and a 1 ms wake slice (touch 5.1 ms worst; ADR-0010
+  amendment). The 31-process limit: design note
+  docs/research/process-limit.md; by the owner's vote, RetroPane's own
+  processes now use native slots 96-126 above the kernel (62 processes,
+  CE's layout untouched), handle tables grow on demand, and 255 threads
+  (built 2026-10-15).
 
 ### IPC, processes, driver hosts (ADR-0016, item 46)
 
@@ -346,7 +407,7 @@ with the performance monitor built first to measure everything else).
   (they don't, cpld.md).
 - `kernel/fat/src/lib.rs` "not here yet: subdirectories, deleting" (both
   exist); ADR-0013 "not yet: creating files".
-- docs/ui/README.md's 600 KB RGB565 desktop cache vs the two-plane
+- docs/design/ui.md's 600 KB RGB565 desktop cache vs the two-plane
   ARGB8888 design (item 60).
 - `drivers/pxa-keypad` "polling now, interrupts later" (interrupts exist).
 - DESIGN.md "Duktape" vs §10.1 "QuickJS-class".
@@ -364,13 +425,13 @@ more found the same day: docs/hw/2700g.md's "WM draws 2D on the CPU"
 | 1 | 67 Own the clocks and power states | Every other number improves with it; battery |
 | 2 | 69 MBX bring-up (clear the screen), then triangle, texture, blend | Opens GPU drawing and composition |
 | 3 | 70 DMA flush, double buffering at vsync, hardware scroll | Tear-free, CPU free, no MBX needed |
-| 4 | 68 Memory and bus timings | Every memory access and every flush |
+| 4 | 68 Memory and bus timings (investigated 2026-10-15: SDRAM near its limits, keep; the 2700G bus is the one real lead) | Every memory access and every flush |
 | 5 | 73 Interrupts and DMA in every OS driver | CPU sleeps; latency; battery |
 | 6 | 74 USB double buffering and DMA | The development loop's speed, and the OS's |
 | 7 | 76 Touch quality (and backlight low steps) | How the device *feels* |
 | 8 | 71 iWMMXt pixel paths | What stays on the CPU, faster |
 | 9 | 72 Own the display set-up | Removes the 500 ms settle and WM's state |
-| 10 | 75 CF tuned timings, multiple-sector, interrupts | The CF drive's speed |
+| 10 | 75 CF tuned timings, multiple-sector, interrupts (measured: docs/research/storage-speed.md) | The CF card's speed for the OS (not the USB drive's) |
 | 11 | 77 CPLD shadow from WM's | Removes a bug class |
 | 12 | 78 ADR-0006's measured wins; CE5 layout limits | Memory speed; process limits |
 | 13 | 79 Fix the documents above | Truth in the docs |

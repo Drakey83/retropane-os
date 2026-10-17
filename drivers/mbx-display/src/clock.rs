@@ -6,10 +6,10 @@
 //! `0x5` (2D only) and Dell's driver writes the 3D enable before 3D work;
 //! the 3D core drew only after it was set (`rp-mbx3d` version 3).
 //!
-//! Unmeasured: whether the 3D core keeps its state (the parameter memory
-//! manager's set-up, registers) across a clock off and on. Until a device
-//! test says so, a caller that switches the clock on ([`Gate::work`]
-//! returning true) redoes the 3D set-up.
+//! Measured (ADR-0026 T9, `rp-mbx3d-api` run 4, 2026-10-15): the 3D core
+//! keeps its state (the parameter memory manager's set-up, its registers)
+//! across a clock off and on, so a caller that switches the clock on
+//! ([`Gate::work`] returning true) needs to redo nothing.
 
 use rp_hal_api::RegisterBus;
 

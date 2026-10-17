@@ -1,0 +1,24 @@
+[package]
+name = "rp-graphics"
+description = "The graphics service (ADR-0030, ADR-0026 D6): one owner for the 2700G's 2D engine and 3D core, one queue, coordinated resets and clock, clients' 2700G memory by handle under quotas; a library now, the display host's later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-draw = { path = "../../drivers/draw" }
+rp-mbx-render = { path = "../../drivers/mbx-render" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+
+[dev-dependencies]
+rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render", features = ["model"] }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true

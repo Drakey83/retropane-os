@@ -30,9 +30,55 @@ status bits.
 **Lesson (P, 2026-10-12):** RetroPane's CPLD driver kept its own shadow
 starting at zero. Holding the CF card's reset (`0x18` bit 1) wrote `0x0002`
 to `0x18`, clearing the backlight enable (bit 2) that Windows Mobile had
-set: the panel went dark but kept its picture. The driver now sets every
-bit the loader depends on (the backlight enable) before its first write
-to a shared register.
+set: the panel went dark but kept its picture. Fixed then by setting the
+backlight enable before the first write; fixed as a class on 2026-10-15
+by seeding the shadow from Windows Mobile's own table ("Shadow at
+hand-over" below).
+
+## Shadow at hand-over (item 77, 2026-10-15)
+
+| Fact | Confidence | Evidence |
+|---|---|---|
+| Windows Mobile's shared shadow is ten 32-bit slots in RAM at physical `0xA8001320`-`0xA8001347` (its drivers use the uncached view `0xAC001320`). Slot *i* holds register `0x02, 0x10, 0x12, 0x14, 0x16, 0x18, 0x1A, 0x1C, 0x1E, 0x08` for *i* = 0-9; offsets `0x00`, `0x04`-`0x06`, `0x0A`-`0x0E` have none | confirmed (code) | D (`Backlight`, `ddi`: the helper's 10-way switch and its address pool; the kernel's reboot uses the last slot for `0x08`) |
+| Each change is an interlocked compare-and-exchange of the whole slot, then a 16-bit store of its low half to the register. The upper half of a slot is never set | likely | D (the helpers OR or clear the caller's 16-bit bits) |
+| The LCD-type readout's enable (`0x1E` bit 3) and the reboot bit (`0x08` bit 1) are set only for a moment: Dell sets the enable, waits ~1 ms (a 1 ms sleep), reads, clears it at once; the panel type is read once and cached | confirmed (code) | D (`Backlight`); AxDroid (C) waits 1 ms before and after |
+| The table's values on the owner's X51v at hand-over (after a soft reset into Windows Mobile, then the card's loader): `02=00FD 10=1000 12=000F 14=0008 16=0003 18=0004 1A=0006 1C=000C 1E=0000 08=0000`; it passed every check and was adopted, backlight (`0x18` bit 2), SD and CF power kept. The next program resumed RetroPane's table (`RPCS`, check valid) with the same values. The LCD-type readout reads `0` at 0, 1 and 2 ms (Sharp 3.7" VGA) | confirmed | P, 2026-10-16, `rp-handover` runs 1-2 (`local/rp-handover-run1.txt`, `-run2.txt`) |
+
+**RetroPane (2026-10-15, `rp_drv_cpld::handover`):** every program takes
+the CPLD with the table (`devices::take_cpld` hands out the register window
+and the 40 bytes at `0xA8001320`, reserved in memory-map.md; `Cpld::adopt`):
+
+1. **RetroPane's table** (word 0 = `"RPCS"`, words 1-8 the sixteen registers,
+   word 9 an FNV-1a check of words 0-8): resumed as is. The loader adopts
+   first; every image it starts finds its table, and every change is
+   written through, so one program's CF reset can't undo another's SD
+   power.
+2. **Windows Mobile's table**, adopted when it passes every check: no slot
+   above 16 bits, the backlight enable on (HaRET runs with the screen lit),
+   neither momentary bit set. Nothing Windows Mobile left on is switched off
+   by accident: the whole class behind the blackout, not just its bit.
+3. **Neither** (the emulator's empty RAM, a damaged table): RetroPane's own
+   known-good defaults, `DEFAULTS`: backlight enable and SD power on (the
+   two bits RetroPane needs that are confirmed on the device), all else off
+   until a driver that owns it sets it. In this case nothing is written:
+   registers no driver writes keep what is latched.
+
+**The flash-installed OS (the end state):** no Windows Mobile runs, so
+there is no table to adopt and nothing is latched but the CPLD's power-on
+state. One CPLD driver (one owner, in the kernel's driver host) keeps its
+shadow in its own memory (`Own`), writes `DEFAULTS` to every register at
+start-up so the shadow is true from the first instruction, and the drivers
+that own the rest add their bits in their own power-up sequences (the
+display's guessed sequence bits in `0x12`, `0x14` bit 3, `0x18` bit 3 come
+from item 72's own display set-up, measured, not copied). Same code paths
+as today's: only the seed differs. Before that build, the remaining guessed
+bits need their device experiments (open questions below).
+
+**LCD-type wait:** one wait before the read (Dell's ~1 ms; AxDroid's second
+wait after it is dropped: nothing reads after it). The shortest working wait
+can't be measured on the owner's X51v: its Sharp panel reads `0`, the same
+as an enable that hasn't taken effect yet. Copied, tagged open: measure on a
+Samsung panel (ID 2), if one turns up.
 
 ## Register bits
 
@@ -92,12 +138,11 @@ between steps.
 
 ## Open questions
 
-- What Windows Mobile leaves on at hand-over, register by register: the
-  registers don't read back. Windows Mobile's shared shadow copies are 32-bit
-  slots in RAM from physical `0xA8001320` (the kernel's slot at `0xA8001344`
-  is CPLD `0x08`'s; the other slots' registers not yet mapped, D). Reading
-  them at hand-over would let RetroPane start its shadow from Windows
-  Mobile's exact state, if HaRET and the loader leave that page alone.
+- ~~What Windows Mobile leaves on at hand-over, register by register~~:
+  measured (`rp-handover` 2026-10-16, "Shadow at hand-over"; HaRET leaves
+  the table intact); the emulator's CPLD latches and `emu-cf` /
+  `emu-handover`'s table use those values (rp-v0.18.0).
+- The LCD-type readout's shortest wait (needs a panel whose ID isn't 0).
 - The guessed rows (Bluetooth, audio, display, battery, notification):
   each needs a device experiment before a driver relies on it.
 - `0x08` bit 1: set by the kernel's reboot before its board reset; what it does.

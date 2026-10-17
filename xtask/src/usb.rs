@@ -33,6 +33,10 @@ const RESTART_TASK: &str = "RetroPane USB restart";
 const RESTART_SCRIPT: &str = "xtask/scripts/usb-restart.ps1";
 
 /// Finds and opens the port (prints `PORT COMn`, or `NOPORT` and exits).
+pub(crate) fn open_port_script() -> String {
+    open_port()
+}
+
 fn open_port() -> String {
     format!(
         r#"$ErrorActionPreference = 'Stop'
@@ -42,6 +46,14 @@ if (-not $dev) {{ 'NOPORT'; exit 0 }}
 $port = [regex]::Match($dev.Name, 'COM\d+').Value
 "PORT $port"
 $sp = New-Object System.IO.Ports.SerialPort $port, 115200
+# Windows can take a moment to release the port after the previous
+# command closed it (seen as a script dying right after PORT): retry.
+function Open-Port {{
+    for ($i = 0; $i -lt 20; $i++) {{
+        try {{ $sp.Open(); return }} catch {{ Start-Sleep -Milliseconds 250 }}
+    }}
+    $sp.Open()
+}}
 "#
     )
 }
@@ -53,7 +65,7 @@ fn script() -> String {
 $sp.RtsEnable = $true
 $sp.ReadTimeout = 3000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 try {{ "BANNER " + $sp.ReadLine() }} catch {{ 'NOBANNER' }}
 $sp.WriteLine('{PROBE}')
 try {{ "ECHO " + $sp.ReadLine() }} catch {{ 'NOECHO' }}
@@ -72,7 +84,7 @@ $sp.RtsEnable = $true
 $sp.ReadTimeout = 5000
 $sp.WriteTimeout = 20000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 $sp.DiscardInBuffer()
 $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
@@ -141,7 +153,7 @@ $sp.RtsEnable = $true
 $sp.ReadTimeout = 5000
 $sp.WriteTimeout = 30000
 $sp.NewLine = "`r`n"
-$sp.Open()
+Open-Port
 # A loader holding a run log sends it by itself when the port opens: pass
 # it on (EARLY/PUSHED lines, kept by the PC side), never discard it.
 Start-Sleep -Milliseconds 300
@@ -384,7 +396,11 @@ fn parse(output: &str) -> Outcome {
     o
 }
 
-fn powershell(script: &str) -> Result<std::process::Output, String> {
+/// Runs a script on the device's port. The one way xtask reaches the Axim,
+/// so it takes the machine-wide lock first and keeps it until the process
+/// ends (crate::devlock; a test keeps this the only way).
+pub(crate) fn powershell(script: &str) -> Result<std::process::Output, String> {
+    crate::devlock::ensure_held()?;
     Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
         .arg(encode_command(script))
@@ -433,6 +449,13 @@ pub fn setup_restart_task(root: &Path) -> Result<(), String> {
 
 /// Sends the image `what` (an image name, built first, or a `.bin` file) to
 /// the resident loader.
+/// Whether an image is a resident loader (by name or as a `.bin`, e.g. the
+/// card's loader put back from RAM): it carries the READY line it sends.
+fn is_loader(image: &[u8]) -> bool {
+    let ready = rp_loadproto::READY.trim_end().as_bytes();
+    image.windows(ready.len()).any(|w| w == ready)
+}
+
 pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
     // An image that never returns would run into the watchdog on the
     // device (found 2026-10-12: rp-bench reset the Axim into Dell's
@@ -529,7 +552,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                     payload.len()
                 );
             }
-            if what == "rp-loader" && (restarted || returned) {
+            if is_loader(&payload) && (restarted || returned) {
                 // A new loader sent as an image replaces the running one in
                 // RAM (it moves itself home first) and announces itself; it
                 // never "returns", so the run log says the image didn't,
@@ -540,39 +563,24 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                 return Ok(());
             }
             if restarted {
-                return Err(
-                    "the image hung: the watchdog reset the device and the loader came \
-                     back without a run log (the reset cleared it)"
-                        .into(),
-                );
+                // READY before any run log says only that the log didn't come
+                // first: it may have gone out before the PC reopened the port.
+                // The loader knows what happened; ask it (2026-10-15: a
+                // deliberate crash was reported here as a watchdog reset).
+                eprintln!("    the loader is back with no run log first; asking it for the run");
+                let lines = after_restart(query(root, "log").map(|(lines, _)| lines))?;
+                eprintln!("    the run log, from the loader:");
+                for l in &lines {
+                    println!("{l}");
+                }
+                return run_verdict(&lines);
             }
             if returned {
                 eprintln!("    the image returned to the loader; its run log:");
                 for l in &log {
                     println!("{l}");
                 }
-                if log.iter().any(|l| l.contains("did not return")) {
-                    return Err("the image hung: the watchdog reset the device (log above)".into());
-                }
-                if log.iter().any(|l| l.contains("[the image crashed")) {
-                    return Err(
-                        "the image crashed (log above; also on the card as crashlog.txt)".into(),
-                    );
-                }
-                // A probe report: every line's checksum, checked here.
-                let text = log.join("\n");
-                if text.contains("P1|") {
-                    let bad: Vec<&String> = log
-                        .iter()
-                        .filter(|l| l.starts_with('P') && l.contains('|'))
-                        .filter(|l| crate::emu::check_report_line(l).is_err())
-                        .collect();
-                    if bad.is_empty() {
-                        eprintln!("    probe report: every line's checksum is valid");
-                    } else {
-                        return Err(format!("probe report lines with bad checksums: {bad:?}"));
-                    }
-                }
+                run_verdict(&log)?;
             } else {
                 if log.is_empty() {
                     eprintln!("    no run log within {LOG_WAIT_SECS} s; asking the loader for it");
@@ -592,6 +600,50 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
             Ok(())
         }
         Some(r) => Err(format!("the loader refused the image: {r}")),
+    }
+}
+
+/// What a run log says about the run: `Err` for a hang the watchdog reset
+/// (the loader's note), a crash, or a probe report with bad lines.
+fn run_verdict(log: &[String]) -> Result<(), String> {
+    if log.iter().any(|l| l.contains("did not return")) {
+        return Err("the image hung: the watchdog reset the device (log above)".into());
+    }
+    if log.iter().any(|l| l.contains("[the image crashed")) {
+        return Err("the image crashed (log above; also on the card as crashlog.txt)".into());
+    }
+    // A probe report: every line's checksum, checked here.
+    if log.iter().any(|l| l.contains("P1|")) {
+        let bad: Vec<&String> = log
+            .iter()
+            .filter(|l| l.starts_with('P') && l.contains('|'))
+            .filter(|l| crate::emu::check_report_line(l).is_err())
+            .collect();
+        if bad.is_empty() {
+            eprintln!("    probe report: every line's checksum is valid");
+        } else {
+            return Err(format!("probe report lines with bad checksums: {bad:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// The run's log after the loader came back with READY first, from the
+/// loader's answer to `log`: its lines, or what the answer says happened.
+/// Only a loader with no record of any run means the device was reset; a
+/// loader that can't be asked proves nothing either way.
+fn after_restart(answer: Result<Vec<String>, String>) -> Result<Vec<String>, String> {
+    match answer {
+        Ok(lines) => Ok(lines),
+        Err(e) if e.contains("no image has run") => Err(
+            "the loader has no record of the run: the device was reset (a hang the \
+             watchdog caught, or power) and the reset cleared the log"
+                .into(),
+        ),
+        Err(e) => Err(format!(
+            "no run log, and the loader couldn't be asked for one ({e}): the device's \
+             screen says what happened; once the PC sees the loader again: cargo xtask log"
+        )),
     }
 }
 
@@ -707,8 +759,8 @@ pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {
 /// the loader's run limit, and writes a report (target/device-check.txt):
 /// the drive's counters, the SD DMA self-test verdict, the backlight level,
 /// and a scan of the card's blocks not yet scanned, in short chunks. With
-/// `with_owner` (someone at the device: it makes sound and touches the CF
-/// socket): the CF card and a tone.
+/// `with_owner` (someone at the device: it touches the CF socket): the CF
+/// card. The audio check is an image of its own (`cargo xtask tone`).
 pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     let mut steps: Vec<(String, String)> = vec![
         ("drive".into(), "drive status".into()),
@@ -726,7 +778,6 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     }
     if with_owner {
         steps.push(("CF card".into(), "cf".into()));
-        steps.push(("tone".into(), "tone 440 500".into()));
     }
     let mut report = String::new();
     let mut failed = 0;
@@ -748,7 +799,7 @@ pub fn device_check(root: &Path, with_owner: bool) -> Result<(), String> {
     }
     if !with_owner {
         report.push_str(
-            "(CF and tone skipped: run with --with-owner when someone is at the device)\n",
+            "(CF skipped: run with --with-owner when someone is at the device; the tone: cargo xtask tone)\n",
         );
     }
     let path = root.join("target/device-check.txt");
@@ -863,6 +914,35 @@ mod tests {
         assert_eq!(encode_command("ab"), "YQBiAA==");
     }
 
+    /// READY before the run log is not a hang (2026-10-15: a deliberate
+    /// crash was reported as a watchdog reset): only the loader's own
+    /// record decides.
+    #[test]
+    fn a_restart_is_judged_by_the_loaders_record_not_by_a_missing_log() {
+        let crashed = vec![
+            "PANIC deliberate test panic".to_string(),
+            "[the image crashed: report kept on the card as crashlog.txt]".to_string(),
+        ];
+        let lines = after_restart(Ok(crashed)).unwrap();
+        let verdict = run_verdict(&lines).unwrap_err();
+        assert!(verdict.contains("crashed"), "{verdict}");
+        assert!(!verdict.contains("watchdog"), "{verdict}");
+        assert!(run_verdict(&after_restart(Ok(vec!["all steps OK".into()])).unwrap()).is_ok());
+        let hung = vec!["[the image did not return: it hung and the device was reset]".into()];
+        assert!(run_verdict(&hung).unwrap_err().contains("watchdog"));
+        let reset = after_restart(Err(
+            "the loader refused `log`: RPL ERR log: no image has run since the loader started"
+                .into(),
+        ))
+        .unwrap_err();
+        assert!(reset.contains("device was reset"), "{reset}");
+        let unknown = after_restart(Err("no reply from the loader".into())).unwrap_err();
+        assert!(
+            !unknown.contains("watchdog") && !unknown.contains("hung"),
+            "{unknown}"
+        );
+    }
+
     #[test]
     fn parses_a_good_run() {
         let o = parse(
@@ -912,6 +992,12 @@ mod tests {
             let skip = s.find("if ($pushed)").expect("pushed log skipped");
             assert!(skip < s.find("-match '^RPL (OK|ERR)'").unwrap());
         }
+    }
+
+    #[test]
+    fn a_loader_is_known_by_its_ready_line() {
+        assert!(is_loader(b"..\x00RPLOAD1 READY\r\n.."));
+        assert!(!is_loader(b"RPLOAD1 READ"));
     }
 
     #[test]
