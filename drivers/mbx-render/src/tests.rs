@@ -327,3 +327,46 @@ fn glass_goes_in_the_background_once() {
     assert!(r.poll());
     assert!(r.last.background);
 }
+
+#[test]
+fn a_new_wallpaper_redraws_everything_and_no_cached_area_shows_the_old_one() {
+    let (mut r, mem) = gpu();
+    let mut f = Frame::new();
+    // The same frame, again and again: its areas are kept, then reused.
+    let mut hits = 0;
+    for _ in 0..4 {
+        scene(&mut f, 0);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        hits += r.last.cache_hits;
+    }
+    assert!(hits > 0, "the cache was used before the change");
+    let before = shown(&mut r, &mem);
+    // Where the wallpaper shows through untouched.
+    let bare: std::vec::Vec<usize> = (0..before.len())
+        .filter(|&i| before[i] == wall((i % 480) as u16, (i / 480) as u16) & 0xFF_FFFF)
+        .collect();
+    assert!(bare.len() > 10_000);
+    // A new wallpaper: one colour.
+    let row = [0xFF10_2030u32; W as usize];
+    for y in 0..H {
+        r.wallpaper_row(y, &row);
+    }
+    r.wallpaper_changed();
+    for k in 0..2 {
+        scene(&mut f, 0);
+        f.damage(Rect::new(0, 0, W, H));
+        r.draw(&f);
+        assert!(r.poll());
+        if k == 0 {
+            assert!(r.last.background, "the background is made again");
+        }
+        let now = shown(&mut r, &mem);
+        let stale = bare.iter().filter(|&&i| now[i] != 0x10_2030).count();
+        assert_eq!(
+            stale, 0,
+            "frame {k}: pixels still showing the old wallpaper"
+        );
+    }
+}

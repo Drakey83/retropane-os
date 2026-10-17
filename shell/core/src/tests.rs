@@ -560,3 +560,48 @@ fn pictures_replace_the_outlines_and_still_fit_a_frame() {
         0
     );
 }
+
+#[test]
+fn the_wallpaper_comparison_switches_depth_and_shows_the_wallpaper_alone() {
+    // Only in test images, and the test image's menu stays above the
+    // softkeys.
+    let s = shell(false);
+    assert!((0..s.menu_len()).all(|i| s.menu_label(i) != WALLPAPER_COMPARE));
+    let mut s = shell(true);
+    assert!(s.menu_rect().bottom() <= SOFTKEYS.y, "{:?}", s.menu_rect());
+    let entry = (0..s.menu_len())
+        .find(|&i| s.menu_label(i) == WALLPAPER_COMPARE)
+        .map(Shell::menu_entry)
+        .expect("entry in the test image's menu");
+    drawn(&mut s);
+
+    // The wallpaper alone: nothing over it once the depth's notice has gone.
+    tap(&mut s, START);
+    assert_eq!(tap(&mut s, entry), Action::Redraw);
+    assert!(s.wallpaper_only());
+    assert_eq!(s.notice(), Some(SHOWING_32));
+    let f = drawn(&mut s);
+    assert!(f.dirty().contains(&Rect::new(0, 0, W, H)));
+    assert!(f.cmds().count() > 0, "the depth's notice");
+    s.tick(NOTICE_MS + 1);
+    assert_eq!(drawn(&mut s).cmds().count(), 0);
+    // A tap anywhere switches the depth, and back; nothing else acts.
+    assert_eq!(tap(&mut s, START), Action::WallpaperDepth { sixteen: true });
+    assert_eq!(s.notice(), Some(SHOWING_16));
+    assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
+    assert_eq!(
+        tap(&mut s, SOFT_RIGHT),
+        Action::WallpaperDepth { sixteen: false }
+    );
+    assert_eq!(
+        tap(&mut s, SOFT_RIGHT),
+        Action::WallpaperDepth { sixteen: true }
+    );
+    assert!(s.wallpaper_only());
+    assert_eq!(s.input(Input::Key(Key::Down)), Action::Nothing);
+    // Home goes back to the Today screen, at the depth chosen (named).
+    assert_eq!(s.input(Input::Key(Key::Home)), Action::Redraw);
+    assert!(!s.wallpaper_only());
+    assert_eq!(s.notice(), Some(SHOWING_16));
+    assert!(drawn(&mut s).cmds().count() > 20);
+}

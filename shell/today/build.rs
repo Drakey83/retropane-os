@@ -1,10 +1,12 @@
 //! Links the image with the shared `boot/link.x` when building for the X51v,
 //! and supplies:
 //!
-//! - the wallpaper: `local/wallpapers/pier/pier.yuv` (made by
-//!   `tools/shell-assets/wallpaper.py` from the CC0 pier photo; `local/` is
-//!   never committed) or, when that's absent, a generated dusk sky, so the
-//!   image always builds;
+//! - the wallpaper: `local/wallpapers/<name>/<name>.yuv`, `<name>` from
+//!   `RP_TODAY_WALLPAPER` (default `pier`; made by
+//!   `tools/shell-assets/wallpaper.py` from the photo; `local/` is never
+//!   committed) or, when that's absent, a generated dusk sky, so the image
+//!   always builds. A test image holds one (950 KiB image area), so the
+//!   16-bit comparison is one build per wallpaper;
 //! - the weather pictures (`local/icons/icons.rs`, else empty);
 //! - the clock's start: the build machine's local time (there is no RTC
 //!   driver yet), as minutes since 1970 plus the UTC offset. The clock is
@@ -19,7 +21,13 @@ const BYTES: usize = W * H * 3 / 2;
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     let out = std::env::var("OUT_DIR").expect("set by cargo");
-    let source = Path::new(&dir).join("../../local/wallpapers/pier/pier.yuv");
+    println!("cargo:rerun-if-env-changed=RP_TODAY_WALLPAPER");
+    let name = std::env::var("RP_TODAY_WALLPAPER").unwrap_or_else(|_| "pier".into());
+    assert!(
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
+        "RP_TODAY_WALLPAPER: a folder name under local/wallpapers"
+    );
+    let source = Path::new(&dir).join(format!("../../local/wallpapers/{name}/{name}.yuv"));
     println!("cargo:rerun-if-changed={}", source.display());
     if let Some(folder) = source.parent().filter(|f| f.is_dir()) {
         println!("cargo:rerun-if-changed={}", folder.display());
@@ -27,8 +35,18 @@ fn main() {
     let wall = match std::fs::read(&source) {
         Ok(p) if p.len() == BYTES => p,
         Ok(p) => panic!("{}: {} bytes, want {BYTES}", source.display(), p.len()),
-        Err(_) => sky(),
+        Err(_) => {
+            // Asked for by name: say it isn't there (CI has none, quietly).
+            if std::env::var("RP_TODAY_WALLPAPER").is_ok() {
+                println!(
+                    "cargo:warning=no {}: the generated sky instead",
+                    source.display()
+                );
+            }
+            sky()
+        }
     };
+    println!("cargo:rustc-env=RP_TODAY_WALLPAPER_NAME={name}");
     std::fs::write(Path::new(&out).join("wallpaper.yuv"), wall).expect("OUT_DIR writable");
 
     // The weather pictures: `local/icons/icons.rs` (made by

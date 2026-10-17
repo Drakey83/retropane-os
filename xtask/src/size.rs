@@ -368,11 +368,13 @@ pub const BUDGETS: &[Budget] = &[
     // `rt::Slot`s in `.bss` now (19 KiB, counted here) and the stack is 12
     // KiB, 6.0 of it used (50%): 32.8 KiB in all, + ~10%. Then 36 -> 31 KiB:
     // the graphics service's 3D state (~5 KiB, unused here) is lent only by
-    // programs that use 3D: 27.9 KiB, + ~11%.
+    // programs that use 3D: 27.9 KiB, + ~11%. Then 31 -> 40 KiB: the owner's
+    // 16-bit wallpaper comparison keeps its dither rows in `.bss` (7.5 KiB,
+    // off the 12 KiB stack): 35.4 KiB, + ~13%.
     Budget {
         image: "rp-today",
         max_load: 900 * 1024,
-        max_zero: 31 * 1024,
+        max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (item 69): the first GPU-drawn rectangle (MBX 2D engine),

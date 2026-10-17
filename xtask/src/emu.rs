@@ -2110,7 +2110,7 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
         || 0,
         1,
     );
-    rp_today::show_gpu(&mut gpu, wall, |_| {});
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut rp_today::WallScratch::new());
     let mut shell = rp_shell::Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
     shell.set_time(rp_shell::Time {
         hour: 12,
@@ -2140,6 +2140,68 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
         screens.push(out);
     }
     screens
+}
+
+/// The wallpaper comparison's screens (the test image's "Wallpaper
+/// compare", the owner's 16-bit check): the wallpaper alone at full depth,
+/// then at 16 bits, each once its notice has gone, through the same shell
+/// and renderer code as the image.
+fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
+    use rp_draw::{Frame, Renderer};
+    use rp_mbx_render::model::{self, Bus, Mem};
+    use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES};
+    use rp_shell::{Action, Input, Shell};
+
+    let mem = model::memory();
+    let mut gpu = Mbx2dRenderer::new(
+        Bus::new(mem.clone()),
+        Mem(mem.clone()),
+        Layout::X51V,
+        || 0,
+        1,
+    );
+    let mut scratch = rp_today::WallScratch::new();
+    rp_today::show_gpu(&mut gpu, wall, |_| {}, &mut scratch);
+    let mut shell = Shell::new(rp_today::shell_fonts(), rp_today::icons(), true);
+    let mut frame = Frame::new();
+    let mut step = |shell: &mut Shell, gpu: &mut Mbx2dRenderer<Bus, Mem>| -> Vec<u8> {
+        shell.frame(&mut frame);
+        gpu.draw(&frame);
+        while !gpu.poll() {}
+        let scadr = gpu.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
+        let base = ((scadr & 0x7F_FFFF) * 16) as usize;
+        let m = mem.borrow();
+        m[base..base + SCREEN_BYTES]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .flat_map(|p| [p[2], p[1], p[0]])
+            .collect()
+    };
+    let tap = |shell: &mut Shell, r: rp_draw::Rect| {
+        let (x, y) = (r.x + r.w / 2, r.y + r.h / 2);
+        shell.input(Input::PenDown { x, y });
+        shell.input(Input::PenUp { x, y })
+    };
+    step(&mut shell, &mut gpu);
+    tap(&mut shell, rp_shell::START);
+    step(&mut shell, &mut gpu);
+    tap(&mut shell, Shell::menu_entry(Shell::menu_entries(true) - 3));
+    assert!(
+        shell.wallpaper_only(),
+        "the compare entry is third from the end"
+    );
+    step(&mut shell, &mut gpu);
+    shell.tick(10_000);
+    let full = step(&mut shell, &mut gpu);
+    let act = tap(&mut shell, rp_draw::Rect::new(200, 300, 80, 40));
+    assert_eq!(act, Action::WallpaperDepth { sixteen: true });
+    rp_today::load_wallpaper(&mut gpu, wall, rp_today::Depth::Rgb565, &mut scratch);
+    gpu.wallpaper_changed();
+    step(&mut shell, &mut gpu);
+    shell.tick(20_000);
+    let low = step(&mut shell, &mut gpu);
+    [full, low]
 }
 
 /// Pixels that differ outside the clock's areas (their text depends on
@@ -2185,6 +2247,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             Input::PenUp { x: sx, y: sy },
         ],
     );
+    let bare = compare_screens(&wall);
     let wsl = matches!(emulator(root)?, Emulator::Wsl);
     let dump = |name: &str| -> Result<Vec<u8>, String> {
         let shot = root.join(format!("target/emulator/today-{name}.ppm"));
@@ -2266,6 +2329,26 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         // taps land where they should through the new calibration).
         tap(&mut qmp, sx, sy)?;
         until("menu-aligned", &want[2])?;
+        // The wallpaper comparison (the owner's 16-bit check, the third
+        // entry from the end): the wallpaper alone, pixel-exact at full
+        // depth and at 16 bits once each notice has gone; a tap flips the
+        // depth, Home goes back. Ends at full depth, so the menu below
+        // matches as before.
+        let compare = rp_shell::Shell::menu_entry(entries - 3);
+        tap(
+            &mut qmp,
+            compare.x + compare.w / 2,
+            compare.y + compare.h / 2,
+        )?;
+        until("bare-32", &bare[0])?;
+        tap(&mut qmp, 240, 320)?;
+        until("bare-16", &bare[1])?;
+        tap(&mut qmp, 240, 320)?;
+        until("bare-32-again", &bare[0])?;
+        crate::screen::Monitor::connect(monitor_port())?.command("sendkey f4")?;
+        std::thread::sleep(Duration::from_millis(500));
+        tap(&mut qmp, sx, sy)?;
+        until("menu-after-compare", &want[2])?;
         // The last menu entry is "Back to loader" (test images only).
         let back = rp_shell::Shell::menu_entry(entries - 1);
         tap(&mut qmp, back.x + back.w / 2, back.y + back.h / 2)?;
@@ -2326,7 +2409,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let stack =
         check_stack(log)?.ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, Back to loader returned; {}; stack {} of {} bytes",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact at 32 and 16 bits, Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
         line.trim(),
         stack.0,

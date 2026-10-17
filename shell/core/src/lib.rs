@@ -116,6 +116,12 @@ pub enum Action {
     BackToLoader,
     /// The align screen finished: map touches with this from now on.
     Calibrated(Calibration),
+    /// The test image's wallpaper comparison: show the wallpaper at 16 bits
+    /// (dithered) or at full depth from now on, then redraw everything.
+    WallpaperDepth {
+        /// 16 bits (RGB565) rather than full depth.
+        sixteen: bool,
+    },
 }
 
 /// Wall-clock time as the shell shows it.
@@ -215,8 +221,19 @@ const MENU: [&str; 10] = [
 const BACK_TO_LOADER: &str = "Back to loader";
 /// The test image's way to the align screen (the OS's is Settings).
 const ALIGN_SCREEN: &str = "Align screen";
+/// The test image's wallpaper comparison (the owner's side-by-side check
+/// of a 16-bit wallpaper, 2026-10-17): the wallpaper with nothing over it,
+/// where a tap switches between 32 and 16 bits and Home goes back to the
+/// Today screen at the depth chosen. One entry: 13 rows is all the menu
+/// has between the title bar and the softkeys.
+const WALLPAPER_COMPARE: &str = "Wallpaper compare";
+/// The notice naming the depth after a switch (it goes after NOTICE_MS).
+const SHOWING_32: &str = "32-bit wallpaper";
+const SHOWING_16: &str = "16-bit wallpaper";
+/// The notice's backing in the wallpaper-only view (readable on any picture).
+const NOTICE_BACK: Argb = 0xB000_0000;
 /// The test image's extra Start menu entries, after the OS's.
-const DEV_MENU: [&str; 2] = [ALIGN_SCREEN, BACK_TO_LOADER];
+const DEV_MENU: [&str; 3] = [WALLPAPER_COMPARE, ALIGN_SCREEN, BACK_TO_LOADER];
 const MENU_X: u16 = 0;
 const MENU_Y: u16 = 36;
 const MENU_W: u16 = 280;
@@ -262,6 +279,10 @@ pub struct Shell {
     damaged: usize,
     /// The align screen, while it runs (over everything).
     align: Option<align::Align>,
+    /// The test image's comparison: the wallpaper at 16 bits.
+    wall16: bool,
+    /// The test image's comparison: the wallpaper alone, nothing over it.
+    bare: bool,
 }
 
 impl Shell {
@@ -281,6 +302,8 @@ impl Shell {
             damage: [Rect::default(); MAX_DAMAGE],
             damaged: 0,
             align: None,
+            wall16: false,
+            bare: false,
         };
         s.dirty(Rect::new(0, 0, W, H));
         s
@@ -361,6 +384,28 @@ impl Shell {
             .or_else(|| DEV_MENU.get(i - MENU.len()))
             .copied()
             .unwrap_or(BACK_TO_LOADER)
+    }
+
+    /// Whether the wallpaper-only view is up (the test image's comparison).
+    #[must_use]
+    pub fn wallpaper_only(&self) -> bool {
+        self.bare
+    }
+
+    /// The notice naming the comparison's wallpaper depth.
+    fn show_depth(&mut self) {
+        self.show_notice(if self.wall16 { SHOWING_16 } else { SHOWING_32 });
+    }
+
+    /// Switches the comparison's wallpaper depth: everything is redrawn
+    /// over the new wallpaper, and a notice names the depth.
+    fn switch_depth(&mut self) -> Action {
+        self.wall16 = !self.wall16;
+        self.show_depth();
+        self.dirty(Rect::new(0, 0, W, H));
+        Action::WallpaperDepth {
+            sixteen: self.wall16,
+        }
     }
 
     /// Where a target is on screen.
@@ -492,6 +537,15 @@ impl Shell {
                     self.start_align();
                     return Action::Redraw;
                 }
+                if label == WALLPAPER_COMPARE {
+                    self.set_menu(false);
+                    self.set_focus(None);
+                    self.pressed = None;
+                    self.bare = true;
+                    self.show_depth();
+                    self.dirty(Rect::new(0, 0, W, H));
+                    return Action::Redraw;
+                }
                 self.set_menu(false);
                 if label != "Today" {
                     self.show_notice(not_yet(label));
@@ -556,6 +610,19 @@ impl Shell {
     pub fn input(&mut self, e: Input) -> Action {
         if self.align.is_some() {
             return self.align_input(e);
+        }
+        if self.bare {
+            // The wallpaper alone: a tap switches the depth, Home goes back.
+            return match e {
+                Input::PenUp { .. } => self.switch_depth(),
+                Input::Key(Key::Home) => {
+                    self.bare = false;
+                    self.show_depth();
+                    self.dirty(Rect::new(0, 0, W, H));
+                    Action::Redraw
+                }
+                _ => Action::Nothing,
+            };
         }
         let before = self.damaged;
         let act = match e {
@@ -756,6 +823,18 @@ impl Shell {
     fn scene(&self, f: &mut Frame) {
         if let Some(a) = &self.align {
             self.align_scene(f, a);
+            return;
+        }
+        if self.bare {
+            // Nothing over the wallpaper but the depth's notice, for its
+            // two seconds.
+            if let Some(n) = self.notice() {
+                f.push(Cmd::Fill {
+                    r: NOTICE,
+                    color: NOTICE_BACK,
+                });
+                self.centred(f, NOTICE, H - 14, self.fonts.ui, TEXT, n.as_bytes());
+            }
             return;
         }
         let (ui, label, big) = (self.fonts.ui, self.fonts.label, self.fonts.big);

@@ -282,6 +282,10 @@ pub struct Mbx2dRenderer<R, M> {
     vsync_due: bool,
     /// The background's hash (None: not built).
     bg_hash: Option<u32>,
+    /// Bumped by [`Self::wallpaper_changed`]: part of the background's hash,
+    /// so the background and every cached area made over the old wallpaper
+    /// are made again.
+    wall_gen: u32,
     /// Per command: in the background (scratch for `draw`).
     hoist: [bool; MAX_CMDS],
     /// Per command: its bounds (scratch for `draw`).
@@ -337,6 +341,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             pending: None,
             vsync_due: false,
             bg_hash: None,
+            wall_gen: 0,
             front_whole: false,
             pending_whole: false,
             cached: [(0, Rect::new(0, 0, 0, 0), 0); CACHED],
@@ -361,6 +366,15 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     #[must_use]
     pub fn landed(&self) -> Option<usize> {
         self.landed.map(|k| self.l.screens[k])
+    }
+
+    /// The wallpaper was rewritten ([`Self::wallpaper_row`], with no frame
+    /// in flight): the background and the area cache are made again, and the
+    /// whole screen is drawn afresh.
+    pub fn wallpaper_changed(&mut self) {
+        self.wall_gen = self.wall_gen.wrapping_add(1);
+        self.bg_hash = None;
+        self.fresh = 2;
     }
 
     /// Draws the whole screen afresh on the next two frames (an area that
@@ -978,7 +992,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let stalls0 = self.stalls;
         // Which commands go in the background, and has it changed?
         let cmds = frame.cmds().count().min(MAX_CMDS);
-        let mut hash = 0x811C_9DC5u32;
+        let mut hash = fnv(0x811C_9DC5u32, self.wall_gen);
         for (i, c) in frame.cmds().take(MAX_CMDS).enumerate() {
             let b = c.bounds(frame);
             self.bounds[i] = b;

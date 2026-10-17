@@ -77,29 +77,199 @@ pub const H: usize = 640;
 /// ADR-0023's set-up: `wallpaper` (planar 4:2:0) converted to XRGB8888
 /// into the renderer's wallpaper, the engine reset and the first picture
 /// shown as an opaque 32 bpp plane. Shared by the image and the emulator
-/// check's reference.
+/// check's reference. `scratch` is the caller's (the image's is in `.bss`).
 pub fn show_gpu<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
     wallpaper: &[u8],
     delay_us: fn(u32),
+    scratch: &mut WallScratch,
+) {
+    load_wallpaper(r, wallpaper, Depth::Full, scratch);
+    r.show(delay_us);
+}
+
+/// The wallpaper's colour depth, for the owner's side-by-side check of a
+/// 16-bit wallpaper (docs/design/ui.md, 2026-10-17).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Depth {
+    /// 8 bits a channel, as converted from the picture.
+    Full,
+    /// RGB565, dithered once on the CPU (Floyd-Steinberg), shown as the
+    /// engine would show a 16-bit wallpaper if it widens 5 and 6 bits by
+    /// repeating their top bits (the run's probe measures what it does).
+    Rgb565,
+}
+
+/// Room for [`load_wallpaper`]'s work: a row, and the error the 16-bit
+/// dither carries to the next row (~8 KiB: the image keeps it in `.bss`).
+pub struct WallScratch {
+    row: [u32; W],
+    /// Error per channel for this row and the next, one column of margin
+    /// each side.
+    err: [[[i16; 3]; W + 2]; 2],
+}
+
+impl Default for WallScratch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WallScratch {
+    /// Zeroed.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            row: [0; W],
+            err: [[[0; 3]; W + 2]; 2],
+        }
+    }
+}
+
+/// A channel `v` (with error) to `bits`, then widened back to 8 bits by
+/// repeating its top bits: (the shown value, the error left).
+fn quantise(v: i16, bits: u32) -> (u8, i16) {
+    let v = v.clamp(0, 255);
+    let max = (1i16 << bits) - 1;
+    let q = (v * max + 127) / 255;
+    let shown = (q << (8 - bits)) | (q >> (2 * bits - 8));
+    (shown as u8, v - shown)
+}
+
+/// `wallpaper` (planar 4:2:0) into the renderer's wallpaper at `depth`.
+/// The caller then calls `wallpaper_changed` if a frame was drawn before.
+pub fn load_wallpaper<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    wallpaper: &[u8],
+    depth: Depth,
+    s: &mut WallScratch,
 ) {
     use rp_drv_mbx_display::scanout::yuv_to_rgb;
     let (luma, chroma) = wallpaper.split_at((W * H).min(wallpaper.len()));
     let (u, v) = chroma.split_at((W * H / 4).min(chroma.len()));
-    let mut row = [0u32; W];
+    s.err = [[[0; 3]; W + 2]; 2];
     for y in 0..H {
-        for (x, p) in row.iter_mut().enumerate() {
+        let (cur, next) = (y % 2, (y + 1) % 2);
+        s.err[next] = [[0; 3]; W + 2];
+        for x in 0..W {
             let c = (y / 2) * (W / 2) + x / 2;
-            let (r, g, b) = yuv_to_rgb(
+            let (r8, g8, b8) = yuv_to_rgb(
                 luma.get(y * W + x).copied().unwrap_or(16),
                 u.get(c).copied().unwrap_or(128),
                 v.get(c).copied().unwrap_or(128),
             );
-            *p = 0xFF00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
+            let px = match depth {
+                Depth::Full => [r8, g8, b8],
+                Depth::Rgb565 => {
+                    let mut out = [0u8; 3];
+                    for (k, (v8, bits)) in [(r8, 5), (g8, 6), (b8, 5)].into_iter().enumerate() {
+                        let (shown, e) = quantise(i16::from(v8) + s.err[cur][x + 1][k] / 16, bits);
+                        out[k] = shown;
+                        // Floyd-Steinberg: 7 right, 3 below left, 5 below,
+                        // 1 below right (sixteenths, divided on use).
+                        s.err[cur][x + 2][k] += e * 7;
+                        s.err[next][x][k] += e * 3;
+                        s.err[next][x + 1][k] += e * 5;
+                        s.err[next][x + 2][k] += e;
+                    }
+                    out
+                }
+            };
+            s.row[x] =
+                0xFF00_0000 | u32::from(px[0]) << 16 | u32::from(px[1]) << 8 | u32::from(px[2]);
         }
-        r.wallpaper_row(y as u16, &row);
+        r.wallpaper_row(y as u16, &s.row);
     }
-    r.show(delay_us);
+}
+
+/// The probe's test pixels: every red and blue level, and every green one.
+pub const PROBE_PIXELS: usize = 64;
+
+/// Test pixel `i` of the probe, RGB565.
+#[must_use]
+pub const fn probe_pixel(i: usize) -> u16 {
+    let (r, g, b) = ((i & 31) as u16, (i & 63) as u16, (31 - (i & 31)) as u16);
+    r << 11 | g << 5 | b
+}
+
+/// `p` (RGB565) widened to XRGB8888 two ways: (repeating the top bits,
+/// filling with zeros).
+#[must_use]
+pub fn widened(p: u16) -> (u32, u32) {
+    let (r, g, b) = (
+        u32::from(p >> 11),
+        u32::from((p >> 5) & 63),
+        u32::from(p & 31),
+    );
+    let rep = (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2);
+    let zero = (r << 3) << 16 | (g << 2) << 8 | (b << 3);
+    (rep, zero)
+}
+
+/// What the engine made of the probe's pixels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Widen {
+    /// Widened by repeating the top bits (and not by zeros).
+    pub replicated: u32,
+    /// Widened by zeros (and not by repeating).
+    pub zero_filled: u32,
+    /// The same both ways (the low levels).
+    pub either: u32,
+    /// Neither: (the source pixel, what came out), the first one.
+    pub other: u32,
+    /// The first pixel that was neither.
+    pub first_other: Option<(u16, u32)>,
+}
+
+/// Sorts what came out for each probe pixel (`got(i)`, colour bits only).
+pub fn classify(mut got: impl FnMut(usize) -> u32) -> Widen {
+    let mut w = Widen::default();
+    for i in 0..PROBE_PIXELS {
+        let p = probe_pixel(i);
+        let g = got(i) & 0xFF_FFFF;
+        let (rep, zero) = widened(p);
+        match (g == rep, g == zero) {
+            (true, true) => w.either += 1,
+            (true, false) => w.replicated += 1,
+            (false, true) => w.zero_filled += 1,
+            (false, false) => {
+                w.other += 1;
+                w.first_other.get_or_insert((p, g));
+            }
+        }
+    }
+    w
+}
+
+/// Asks the 2D engine how it widens a 16-bit source copied into 32 bits
+/// (read-only for the screen: it uses `at`, 2700G memory nothing else
+/// holds, and 64 words after it). `None` if the engine didn't finish.
+pub fn probe_widen<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
+    r: &mut rp_mbx_render::Mbx2dRenderer<R, M>,
+    at: usize,
+) -> Option<Widen> {
+    use rp_drv_blit2d::{Format, ROP_SRCCOPY, blit};
+    let (e, mem) = r.parts();
+    let mut words = [0u32; PROBE_PIXELS / 2];
+    for (k, w) in words.iter_mut().enumerate() {
+        *w = u32::from(probe_pixel(2 * k)) | u32::from(probe_pixel(2 * k + 1)) << 16;
+    }
+    mem.store(at, &words);
+    let out = at + 256;
+    mem.store(out, &[0x5A5A_5A5A; PROBE_PIXELS]);
+    mem.sync();
+    let (w, n) = blit(
+        (Format::BPP32, out, (PROBE_PIXELS * 4) as i32),
+        (Format::RGB565, at, (PROBE_PIXELS * 2) as i32),
+        (0, 0),
+        (0, 0, PROBE_PIXELS as u16, 1),
+        ROP_SRCCOPY,
+        0,
+        0,
+    );
+    e.submit(&w[..n]).ok()?;
+    e.finish_with(20_000, |a| mem.load(a)).ok()?;
+    Some(classify(|i| mem.load(out + 4 * i).unwrap_or(0)))
 }
 
 /// Latencies kept for the median (the rest only count towards the worst).
@@ -156,6 +326,95 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_probe_tells_repeating_from_zeros() {
+        // Repeating the top bits: white stays white; zeros: it doesn't.
+        assert_eq!(widened(0xFFFF), (0xFF_FFFF, 0xF8_FCF8));
+        assert_eq!(widened(0), (0, 0));
+        let rep = classify(|i| widened(probe_pixel(i)).0);
+        let zero = classify(|i| widened(probe_pixel(i)).1);
+        assert_eq!(rep.replicated + rep.either, PROBE_PIXELS as u32);
+        assert_eq!(zero.zero_filled + zero.either, PROBE_PIXELS as u32);
+        assert!(
+            rep.replicated > 50 && zero.zero_filled > 50,
+            "{rep:?} {zero:?}"
+        );
+        let odd = classify(|_| 0x12_3456);
+        assert_eq!(odd.other, PROBE_PIXELS as u32);
+        assert_eq!(odd.first_other, Some((probe_pixel(0), 0x12_3456)));
+    }
+
+    /// The 16-bit wallpaper holds only colours RGB565 can hold (as the
+    /// engine would show them, top bits repeated) and, dithered, keeps
+    /// the picture's average: a smooth gradient's 16 x 16 blocks within a
+    /// level of the full-depth picture's (a block's error partly leaves it
+    /// across its edges, so smaller blocks drift more).
+    #[test]
+    fn the_16_bit_wallpaper_is_rgb565_and_keeps_the_average() {
+        use rp_mbx_render::model::{self, Bus, Mem};
+        use rp_mbx_render::{Layout, Mbx2dRenderer, STRIDE};
+
+        // A slow diagonal gradient in every channel (luma, then U and V).
+        let mut wall = vec![0u8; W * H * 3 / 2];
+        for y in 0..H {
+            for x in 0..W {
+                wall[y * W + x] = (40 + (x + y) * 160 / (W + H)) as u8;
+            }
+        }
+        for (i, b) in wall[W * H..].iter_mut().enumerate() {
+            *b = (110 + (i % (W / 2)) * 40 / (W / 2)) as u8;
+        }
+        let read = |depth| {
+            let mem = model::memory();
+            let mut r = Mbx2dRenderer::new(
+                Bus::new(mem.clone()),
+                Mem(mem.clone()),
+                Layout::X51V,
+                || 0,
+                1,
+            );
+            load_wallpaper(&mut r, &wall, depth, &mut WallScratch::new());
+            let at = Layout::X51V.wallpaper;
+            let m = mem.borrow();
+            (0..W * H)
+                .map(|i| {
+                    let a = at + (i / W) * STRIDE + (i % W) * 4;
+                    u32::from_le_bytes(m[a..a + 4].try_into().unwrap())
+                })
+                .collect::<Vec<u32>>()
+        };
+        let full = read(Depth::Full);
+        let low = read(Depth::Rgb565);
+        for &p in &low {
+            let r5 = (p >> 19) & 31;
+            let g6 = (p >> 10) & 63;
+            let b5 = (p >> 3) & 31;
+            let as565 = (r5 << 11 | g6 << 5 | b5) as u16;
+            assert_eq!(
+                p & 0xFF_FFFF,
+                widened(as565).0,
+                "{p:08x} isn't a 16-bit colour"
+            );
+        }
+        for by in (0..H).step_by(16) {
+            for bx in (0..W).step_by(16) {
+                for sh in [16, 8, 0] {
+                    let sum = |v: &[u32]| -> i64 {
+                        (0..16)
+                            .flat_map(|dy| (0..16).map(move |dx| (by + dy) * W + bx + dx))
+                            .map(|i| i64::from((v[i] >> sh) & 0xFF))
+                            .sum()
+                    };
+                    let d = (sum(&low) - sum(&full)).abs();
+                    assert!(
+                        d <= 256,
+                        "block ({bx}, {by}) channel {sh}: off by {d} / 256"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn latency_summary() {
         let mut l = Latency::new();
         assert_eq!(l.summary(), (0, 0, 0));
@@ -202,7 +461,7 @@ mod tests {
             || 0,
             1,
         );
-        show_gpu(&mut gpu, &wall, |_| {});
+        show_gpu(&mut gpu, &wall, |_| {}, &mut WallScratch::new());
         gpu.dither = false;
         let mut work = vec![0u8; SCREEN_BYTES];
         let mut plane = vec![0u8; SCREEN_BYTES];
@@ -297,7 +556,7 @@ mod tests {
             || 0,
             1,
         );
-        show_gpu(&mut gpu, &wall, |_| {});
+        show_gpu(&mut gpu, &wall, |_| {}, &mut WallScratch::new());
         let mut shell = Shell::new(shell_fonts(), icons(), true);
         let mut f = Frame::new();
         let s = rp_shell::START;

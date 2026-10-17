@@ -30,7 +30,7 @@ mod image {
     use rp_touch_cal::{Calibration, Filter, Pen, Sample};
     use rp_vram_map::{POOL, Pool};
 
-    use rp_today::{H, Latency, W, clock};
+    use rp_today::{Depth, H, Latency, W, WallScratch, clock};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -86,6 +86,10 @@ mod image {
     /// Touch to flush, then its parts: landing to verdict, frame + queueing,
     /// queue to flip.
     static LATENCY: rt::Slot<[Latency; 4]> = rt::Slot::new();
+    /// The wallpaper's conversion rows (the 16-bit comparison's dither).
+    static WALL: rt::Slot<WallScratch> = rt::Slot::new();
+    /// The wallpaper this image was built with (`RP_TODAY_WALLPAPER`).
+    const WALL_NAME: &str = env!("RP_TODAY_WALLPAPER_NAME");
 
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
@@ -152,8 +156,27 @@ mod image {
         }) else {
             crash(format_args!("started twice"))
         };
+        let Some(wall) = WALL.put_with(WallScratch::new) else {
+            crash(format_args!("started twice"))
+        };
         let t0 = rt::ticks();
-        rp_today::show_gpu(two_d, WALLPAPER, rt::delay_us);
+        rp_today::show_gpu(two_d, WALLPAPER, rt::delay_us, wall);
+        let shown_us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+        // The 16-bit comparison's fact: how the engine widens a 16-bit
+        // source into 32 bits (in the pool, which this 2D-only image leaves
+        // unused).
+        match rp_today::probe_widen(two_d, POOL.at as usize) {
+            Some(w) => {
+                let _ = writeln!(
+                    RunLog,
+                    "probe: the engine widens RGB565 to 32 bpp: by repeating the top bits {}, by zeros {}, either {}, neither {} (first: {:?})",
+                    w.replicated, w.zero_filled, w.either, w.other, w.first_other
+                );
+            }
+            None => {
+                let _ = writeln!(RunLog, "probe: the engine didn't finish the 16-bit copy");
+            }
+        }
         // The graphics service (ADR-0030) owns the engines from here; 2D
         // only, so no 3D state is lent (ThreeD: ~5 KiB).
         let Some(gfx) = GFX.put_with(|| Graphics::new(two_d, Pool::new(POOL), None)) else {
@@ -166,9 +189,10 @@ mod image {
         };
         let _ = writeln!(
             RunLog,
-            "gpu: wallpaper converted to 32 bpp and shown in {} us",
-            rt::ticks().wrapping_sub(t0) / 13 * 4
+            "gpu: wallpaper ({WALL_NAME}) converted to 32 bpp and shown in {shown_us} us"
         );
+        // The comparison's frame after a depth switch: its time is logged.
+        let mut compare_frame = false;
         let (Some(shell), Some(frame)) = (
             SHELL.put_with(|| Shell::new(rp_today::shell_fonts(), rp_today::icons(), true)),
             FRAME.put_with(Frame::new),
@@ -420,6 +444,27 @@ mod image {
                 Action::Redraw => {
                     pending.get_or_insert(since);
                 }
+                Action::WallpaperDepth { sixteen } => {
+                    // The frame in flight may be reading the wallpaper.
+                    while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
+                    let t0 = rt::ticks();
+                    let depth = if sixteen { Depth::Rgb565 } else { Depth::Full };
+                    rp_today::load_wallpaper(gfx.two_d(), WALLPAPER, depth, wall);
+                    gfx.two_d().wallpaper_changed();
+                    let _ = writeln!(
+                        RunLog,
+                        "compare: {WALL_NAME} at {}, {}: converted in {} us",
+                        if sixteen { "16-bit" } else { "32-bit" },
+                        if shell.wallpaper_only() {
+                            "wallpaper only"
+                        } else {
+                            "Today screen"
+                        },
+                        rt::ticks().wrapping_sub(t0) / 13 * 4
+                    );
+                    compare_frame = true;
+                    pending.get_or_insert(since);
+                }
                 Action::Nothing => {}
             }
 
@@ -486,6 +531,12 @@ mod image {
                 let _ = gfx.frame(frame, &mut gclock);
                 let t1 = rt::ticks();
                 let us = t1.wrapping_sub(t0) / 13 * 4;
+                if core::mem::take(&mut compare_frame) {
+                    let _ = writeln!(
+                        RunLog,
+                        "compare: the whole screen redrawn over it: CPU {us} us"
+                    );
+                }
                 draw_us_worst = draw_us_worst.max(us);
                 queueing.add(us);
                 last_frame_us = us;

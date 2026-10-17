@@ -17,6 +17,7 @@ rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-gfx = { path = "../../drivers/gfx" }
 rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
 
 [dev-dependencies]
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
