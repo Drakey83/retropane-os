@@ -220,10 +220,12 @@ The owner uses Tailscale all the time and wants it for reaching the home
 libraries and servers (§7b) when out. This is a plan for a vote, not built;
 it needs the Wi-Fi, TCP/IP and TLS work of Phase 6 first.
 
-Tailscale is built on WireGuard. Its official client is open source (written
-in Go, too heavy for 64 MB of RAM); the service that hands out keys and the map
-of your devices is Tailscale's own (Headscale is an open-source stand-in for
-it). Three ways for the X51v to use it, smallest first:
+Tailscale is built on WireGuard. Its client is open source (BSD licence,
+written in Go, too heavy to run as it is on 64 MB of RAM, but free to read and
+learn from, with the licence notice kept wherever code is copied); the
+service that hands out keys and the map of your devices (the coordination
+server) is Tailscale's own and is not open. Headscale is an open-source
+stand-in for that server. Three ways for the X51v to use it, smallest first:
 
 | Way | What it is | Pros | Cons |
 |---|---|---|---|
@@ -245,8 +247,9 @@ measured, not guessed.
 **Terms check (2026-10-17, reading Tailscale's customer terms; not legal advice):**
 nothing in them mentions third-party clients, for or against. They forbid
 reverse engineering or copying "the Services" and commercially exploiting them;
-the official client is open source and shows how it talks to the service, but
-whether an unofficial client is welcome is **not stated**. So before stage T2
+the client's source is open (so writing our own client from it is allowed by its
+licence), but whether an unofficial client may use Tailscale's hosted service is
+**not stated**. So before stage T2
 the owner (or a note from the project) asks Tailscale, and Headscale is the
 fallback that needs no one's permission. Stage T1 (a gateway) uses the official
 client on a home machine and has no such question.
