@@ -123,7 +123,36 @@ Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
 
-## 7. More ideas to modernize
+## 7. Connected services (owner, 2026-10-17)
+
+The owner wants the apps to reach modern services; the first example is the
+Calendar app and Google Calendar. This is a plan for a vote, not built.
+
+**Ways to reach a calendar, simplest first:**
+
+| Way | What it is | Pros | Cons |
+|---|---|---|---|
+| A. Secret iCal address | Paste the calendar's private `.ics` link; the device downloads it on a timer | No login, no account on the device, a small parser, works for Google, Outlook, iCloud and Nextcloud | Read-only; the link is a secret (anyone with it can read the calendar); a long link is hard to type, so it is copied from the PC over USB or a file on the card |
+| B. CalDAV | The standard calendar protocol | One piece of code for many services (Nextcloud, iCloud with an app password, Fastmail, Google with OAuth); read and write | Heavier than A (XML, sync tokens); Google needs OAuth anyway |
+| C. Google sign-in (OAuth device flow) | The device shows a short code, you approve it on a phone or PC, the device keeps a revocable token | First-class Google, read and write, no password on the device, you can revoke it from your Google account | Needs a Google Cloud project; Google's check of the app for calendar access (until then "unverified", limited test users, and tokens that expire in 7 days); TLS 1.3 on a 624 MHz CPU (fine once per sync) |
+| D. Through the PC | LegacySync (ADR-0028) or a home server does the cloud side; the device talks only to it on the home network | Lightest for the device, the PC holds the Google secrets | Needs the PC or server on; not "connect from anywhere" |
+
+**Recommendation:** A first (small, safe, useful at once), then B as the
+generic layer, then C for Google read and write. D stays an option for anyone
+who prefers it. Sync runs on a timer and on opening the app, never as a live
+connection, to save battery and RAM.
+
+**Rules that apply to every service** ([security.md](../security.md)): tokens
+live in the encrypted store, never in plain files on the card; the smallest
+permission that does the job (events only, never the whole account); TLS only,
+certificates checked, no password stored for Google; one switch in Settings
+removes an account and wipes its token and cached data; a failed sync never
+loses local events. Contacts stay out (RetroPane is not a phone).
+
+Other apps follow the same pattern later (Tasks, Reader feeds, weather
+providers); each gets its own line here when picked up.
+
+## 8. More ideas to modernize
 
 To be gathered as they come (owner and Claude): each new idea gets a line
 here, then a design doc when it's picked up.
