@@ -3,6 +3,15 @@
 A new, open-source operating system for the **Dell Axim X51v**: a modern take
 on Windows Mobile. The first release is **RetroPane 26**.
 
+**The look we are going for** (design mock-ups, not screenshots: the shell is
+still in design):
+
+<img src="docs/design/mockups/themes-montage.jpg" width="100%" alt="Six mock-ups of the RetroPane Today screen: smoked-glass panels with a large weather forecast, a five-day row, today's calendar and quick buttons, over six different wallpapers, with VClouds' weather icons">
+
+The weather icons are by **VClouds**, used with his permission
+([credits](#credits)); the wallpapers are public-domain photographs. Wallpapers
+and icon packs are swappable from the SD or CF card.
+
 - **Native drivers for all of the hardware**, reverse-engineered where no
   documentation exists, including the Intel 2700G 3D, 2D and video blocks and
   the built-in Wi-Fi.
@@ -50,11 +59,6 @@ Everything is judged through four lenses: 🔁 **iterate** · ✨ **modernize** 
   Windows Mobile.
 - **Fast on a 624 MHz CPU:** tinted glass with no blur, composed once and
   cached, with only the changed parts redrawn.
-
-**Make it yours.** The same screen with six wallpapers and four weather icon
-packs (the default is VClouds', used with his permission). These are design mock-ups, not screenshots: the shell is still in design.
-
-<img src="docs/design/mockups/themes-montage.jpg" width="100%" alt="Six mock-ups of the RetroPane Today screen: the default VClouds weather icons on a mountain lake, a forest mist and an aurora wallpaper, then the Golden Hour, Frosted and Noir icon packs on sunset, ocean and graphite wallpapers">
 
 Details: [the design area](docs/design/README.md).
 
