@@ -372,6 +372,18 @@ repeats T7b with those bits "always" and the mode only in the TSP; if
 and `DEPTH_MODES` can grow. A measurement first; the change is the
 owner's call.
 
+**`rp-glesfeat` result (device, 2026-10-18): "less" works.** With the
+alpha bits "always" and the mode only in TSP bits 11-9, "less" and "less
+or equal" drew exactly (smaller z passes), "greater" the reverse;
+version 23's form hid the object again. The alpha test itself is
+confirmed (bits 31-29 comparison, 28-21 reference; TSP bit 14 not needed).
+**Options for the owner** (a measurement, not a decision): (a) the
+renderer writes the alpha test (default "always") into those bits and the
+depth mode only into the TSP, and `DEPTH_MODES` takes all eight modes;
+(b) keep "greater" only (works today) and just stop writing the depth
+mode into the alpha bits; (c) leave it as is until the GLES layer needs
+"less" (DoomGLES and most GL games use `GL_LESS`/`GL_LEQUAL`).
+
 ## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
 
 The GPU facts that shape the OS's design, before any interface design
