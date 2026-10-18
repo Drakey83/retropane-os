@@ -109,5 +109,15 @@ critical path.
   version" (2026-10-18; `VPMobile.exe` 696,320 bytes, built 2005-05-22, no
   version resource):** GAPI (`gx.dll`) only; it doesn't import
   `LoadLibrary`, and its folder holds no DLLs: it can't use GLES at all.
-  The GLES build, if one exists, is a different release (to identify).
+  It is **Dell's own bundled copy** (the companion CD's
+  `EXTRAS\DEVICE\VirtualPoolMobilepmdelltrial.exe`, a trial, 2005-05-24),
+  and it is fast on the X51v because of **Dell's GAPI**: Dell's `gx.dll`
+  (8.7 KB) asks the display driver for escape `0x20000` (`GETGXINFO`,
+  through `ExtEscape` with `QUERYESCSUPPORT` first), which returns a
+  132-byte description of the 2700G frame buffer (address, stride, format),
+  and uses `ChangeDisplaySettingsEx` for rotation. The game draws in its own
+  software engine straight into that frame buffer; the 2700G's 3D core
+  isn't used. **For RetroPane's CE personality:** answer `GETGXINFO` with
+  our frame buffer and support the rotation, and every GAPI game gets the
+  same direct path.
 
