@@ -34,6 +34,28 @@ hardware datasheet); nothing is built yet.
    headset's microphone; one session rule (I2S on through a session) holds.
 5. **Battery**: radio and USB power policies, measured.
 
+## Modern options to weigh (owner: "the best way, with 2026 engineering and modern software")
+
+- **The built-in radio is ~2005 (Bluetooth 1.2/2.0, to confirm): no
+  Bluetooth Low Energy.** Most current keyboards, mice and earbuds are BLE
+  (4.0+), and LE Audio (LC3) needs 5.2. The built-in radio still reaches
+  classic devices: older keyboards and mice, and A2DP/HFP headsets (most
+  current headsets keep both).
+- **A USB Bluetooth 5.x dongle** on the USB host port would bring BLE
+  keyboards, mice and earbuds, and perhaps LE Audio, through the same host
+  stack (HCI over USB instead of the UART). Weigh: VBUS power, battery,
+  which dongles (a short tested list).
+- **The stack:** our own in Rust (small, memory-safe, no_std, fitted to
+  64 MB, every parser hardened: docs/security.md) against porting one
+  (Zephyr's or Android's Bluetooth host: Apache 2.0, C; BlueZ: GPL and
+  Linux-bound; BTstack: non-commercial licence). Compare size, safety,
+  licence, profiles covered, test suites we can reuse.
+- **Codecs:** SBC (mandatory), then AAC or LC3 for better sound where the
+  CPU budget allows (measured on the device).
+- **Iterate:** each step proven on the device and modelled in the emulator
+  before the next (the project's rules), with the four lenses (iterate,
+  modernize, legacy support, better and faster) applied per choice.
+
 **Order (proposed, for the vote):** the hardware checks above (read-only and
 under Windows Mobile first), then the audio service design (headsets need
 it), then the input layer and USB HID, then the Bluetooth stack.
