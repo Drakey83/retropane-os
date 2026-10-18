@@ -553,11 +553,19 @@ of 5 render checksums right**: the 3D core gives wrong pictures undivided at
 setting measured in the same run: 5 of 5, 33.3 MB/s flush. The long CS3
 start (`0x79D4`) halves the flush (18.0 MB/s) for nothing at 99.67 MHz.
 WM's state came back (`MSC1` `0x24842481`, `COREPLL` `0xBB1`, `MBXCLK`
-`0x6`) and measured GOOD again; the image returned by itself. **Result:
-option A is rejected as built.** The 3D core needs its divider at this
-clock (or a lower core clock); the memory and the 2D engine were fine.
-Open, for the owner: try the 3D core at 74.75 MHz divided by 2 (37 MHz,
-slower than today: no gain), or keep today's 99.67 MHz divide by 2.
+`0x6`) and measured GOOD again; the image returned by itself.
+
+**What the run shows (a measurement, not a decision):** in this run, at
+74.75 MHz undivided, 3 of 5 3D renders came out wrong while memory and the
+2D engine were right. One run; the cause isn't known yet (the 3D core's
+own limit, its memory timing at this clock, or the render test itself at
+a new clock). **Decision open for the owner.** Options, each its own run:
+1. Retry option A with the memory timing a step longer (CL3, or `LMTIM`
+   with more margin), to tell a memory-timing cause from the core's limit.
+2. Retry option A with a longer render timeout and the checksums logged
+   per render, to see whether the wrong ones are partial (timing) or
+   garbled (the core).
+3. Keep today's 99.67 MHz divided by 2 for now.
 
 ## The four lenses
 
