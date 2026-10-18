@@ -65,6 +65,14 @@ mod image {
     /// The codec's power: CPLD `0x1C` bit 1, set by Windows Mobile's audio
     /// power-up, off at hand-over (docs/hw/audio.md, likely).
     const CODEC_POWER: (usize, u16) = (0x1C, 1 << 1);
+    /// The I2S pins as Windows Mobile sets them: (GPIO, function, output).
+    const I2S_PINS: [(u8, u8, bool); 5] = [
+        (28, 1, true),
+        (29, 2, false),
+        (30, 1, true),
+        (31, 1, true),
+        (113, 1, true),
+    ];
     /// After switching it on, before the first I2C write.
     const POWER_SETTLE_US: u32 = 50_000;
 
@@ -258,6 +266,22 @@ mod image {
             let _ = writeln!(out, "tone: I2C or I2S unavailable");
             finish(&mut power)
         };
+        // As Windows Mobile's power-up (docs/hw/audio.md, "Power-up order"):
+        // the I2S pins (BITCLK, SDATA_IN, SDATA_OUT, SYNC, SYSCLK), then
+        // the controller running, so the codec has its master clock
+        // (SYSCLK, GPIO113) before the first I2C write; then 1 ms.
+        for (pin, function, output) in I2S_PINS {
+            gpio.set_function(pin, function);
+            if output {
+                gpio.make_output(pin, false);
+            } else {
+                gpio.make_input(pin);
+            }
+        }
+        let mut i2s = PxaI2s::new(i2s);
+        i2s.start(Rate::Khz48);
+        rt::delay_us(1_000);
+        let _ = writeln!(out, "I2S running before the codec (SYSCLK on GPIO113)");
         let gated = Gated {
             bus: PxaI2c::new(i2c),
             gate: Pins(gpio),
@@ -278,7 +302,6 @@ mod image {
             let _ = writeln!(out, "tone: no DMA channel");
             finish(&mut power)
         };
-        let mut i2s = PxaI2s::new(i2s);
         let ring = &mut scratch[..RING];
         play(&mut out, &codec, &mut i2s, &mut dma, ring, 440, 500);
 

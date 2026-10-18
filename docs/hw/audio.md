@@ -136,6 +136,35 @@ static read of what wavedev.dll does between power-on and its first I2C
 write (clocks: `CKEN` for I2C/I2S, a SYSCLK/MCLK the codec may need, the
 power I2C unit instead of the standard one).
 
+**Power-up order (static, 2026-10-18, option (c) above, from `wavedev.dll`
+`0x02464A54`-`0x02464AF0`).** Windows Mobile never talks to the codec
+before its master clock runs:
+
+1. CPLD `0x1C` bit 1 on (slot 7, the shared shadow); 1 ms.
+2. The I2S pins: GPIO28 (BITCLK) function 1 out, GPIO29 (SDATA_IN)
+   function 2 in, GPIO30 (SDATA_OUT) and GPIO31 (SYNC) function 1 out,
+   **GPIO113 (I2S SYSCLK, the codec's MCLK) function 1 out** (`0x02464654`).
+3. `CKEN` bit 8 (I2S clock) on, through a helper keeping a shadow
+   (`0x02467838`, `CKEN` at `0x41300004`).
+4. `SACR1 |= 0x18` (record and replay held off), `SADIV = 0x0D`, then
+   `SACR0 = 0x8805` (enable, bit clock driven, FIFO thresholds), polled
+   until enable reads back (`0x024643F0`).
+5. 1 ms; then the first I2C writes: **register 15 (reset)**, register 25
+   (power management 1) = `0x1C2`; then 75 ms.
+6. Then it reads GPIO83 (`GPLR2` bit 19) and GPIO96 (`GPLR3` bit 0, the
+   jack).
+
+**rp-tone run 1 did it the other way round:** it looked for the codec
+(step 5) before the I2S pins were set or the controller ran (it starts
+I2S only to play), so the codec had power but no MCLK on GPIO113, and its
+I2S pins were whatever Windows Mobile left after powering audio down.
+Likely the reason nothing answered (whether the WM8750's control
+interface needs MCLK is not settled from here; Dell's order is the
+evidence). **rp-tone now follows Dell's order** (pins, I2S running at 48
+kHz, 1 ms, then the probe; `emu-tone` passes). The next owner-watched run
+switches the same one board bit as run 1 (`0x1C` bit 1, already shown to
+return cleanly); the pin functions are Dell's own and can't hold the bus.
+
 **What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
 around each codec write and lowers it after, as Windows Mobile does (never
 leaving it high: the line is shared with another device, the lock's other
