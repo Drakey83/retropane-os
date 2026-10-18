@@ -105,4 +105,9 @@ critical path.
   the data. So, as with DoomGLES, the muddy parts are compressed in the
   game's own data: no driver undoes PVRTC; better textures need new data.
 - **Virtual Pool Mobile v1.78** as installed: GAPI (`gx.dll`), no GLES.
+- **Virtual Pool Mobile, the copy the owner installed as "the GLES
+  version" (2026-10-18; `VPMobile.exe` 696,320 bytes, built 2005-05-22, no
+  version resource):** GAPI (`gx.dll`) only; it doesn't import
+  `LoadLibrary`, and its folder holds no DLLs: it can't use GLES at all.
+  The GLES build, if one exists, is a different release (to identify).
 
