@@ -239,6 +239,9 @@ pub enum I2cError {
     Nak,
     /// The bus never finished (held, or lost to another master).
     Bus,
+    /// A transfer this controller can't do (the PXA27x: one with no data
+    /// bytes, measured on the X51v 2026-10-18).
+    Unsupported,
 }
 
 /// A contiguous bit field inside a 32-bit register.

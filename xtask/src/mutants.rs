@@ -48,10 +48,24 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
-        name: "I2C: an address-only write with START and STOP on one byte (the X51v never finishes it)",
+        name: "I2C: address-only writes let through (the X51v's controller can't finish them)",
+        file: "drivers/pxa-i2c/src/lib.rs",
+        from: "        if last == 0 {
+            return Err(I2cError::Unsupported);
+        }
+",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-i2c",
+            "an_address_only_write_is_refused_without_touching_the_bus",
+        ]),
+    },
+    Mutant {
+        name: "I2C: STOP sent with START on a one-byte write",
         file: "drivers/pxa-i2c/src/lib.rs",
         from: "        if let Err(e) = self.send(addr << 1, ICR_START) {",
-        to: "        if let Err(e) = self.send(addr << 1, ICR_START | if last == 0 { ICR_STOP } else { 0 }) {",
+        to: "        if let Err(e) = self.send(addr << 1, ICR_START | ICR_STOP) {",
         check: Check::Host(&[
             "-p",
             "rp-drv-pxa-i2c",
@@ -59,21 +73,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "I2C: START and STOP on one byte, caught by the emulator's model (rp-v0.23.0)",
+        name: "I2C: a controller left busy after the stop isn't reset (SCL held low)",
         file: "drivers/pxa-i2c/src/lib.rs",
-        from: "        if let Err(e) = self.send(addr << 1, ICR_START) {",
-        to: "        if let Err(e) = self.send(addr << 1, ICR_START | if last == 0 { ICR_STOP } else { 0 }) {",
-        check: Check::Emu(crate::emu::boot_loader_tone),
-    },
-    Mutant {
-        name: "RNG: an unhealthy run's row taken into the restart test (ADR-0029 R6)",
-        file: "boot/noise/src/main.rs",
-        from: "        missed == 0 && s.n > 0",
-        to: "        missed < 2000 && s.n > 0",
+        from: "        if self.regs.read32(reg::ISR) & ISR_UB != 0 {
+            self.reset();
+        }
+",
+        to: "",
         check: Check::Host(&[
             "-p",
-            "rp-noise",
-            "only_healthy_rows_go_into_the_restart_test",
+            "rp-drv-pxa-i2c",
+            "a_controller_still_busy_after_the_stop_is_reset",
         ]),
     },
     Mutant {

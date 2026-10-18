@@ -126,12 +126,25 @@ impl<B: RegisterBus> PxaI2c<B> {
         Err(I2cError::Bus)
     }
 
-    /// Ends a refused transaction with a stop, and waits for the bus.
+    /// Ends a refused transaction with a stop, and waits for the bus. A
+    /// controller still busy after it (seen on the X51v: SCL held low after
+    /// an acknowledged byte) is reset, so the bus is always left free.
     fn abort(&mut self) {
         self.regs
             .write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed | ICR_MA);
         self.idle();
+        if self.regs.read32(reg::ISR) & ISR_UB != 0 {
+            self.reset();
+        }
         self.regs.write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed);
+    }
+
+    /// The unit reset (its own address 0); the caller enables it again.
+    fn reset(&mut self) {
+        self.regs.write32(reg::ICR, ICR_UR);
+        self.regs.write32(reg::ISR, ISR_CLEAR);
+        self.regs.write32(reg::ICR, 0);
+        self.regs.write32(reg::ISAR, 0);
     }
 
     fn idle(&mut self) {
@@ -146,11 +159,15 @@ impl<B: RegisterBus> PxaI2c<B> {
 impl<B: RegisterBus> I2cBus for PxaI2c<B> {
     fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
         let last = data.len();
-        // Never START and STOP on one byte: the X51v's controller never
-        // finishes such a byte (measured 2026-10-18: an address-only write
-        // timed out every time while a START alone was answered at once;
-        // docs/hw/audio.md). An address-only transfer (a presence check)
-        // sends the address with START and ends with a separate stop.
+        // No address-only transfers (measured on the X51v, 2026-10-18,
+        // docs/hw/audio.md): with START and STOP on the address byte the
+        // controller never finishes it, and after an acknowledged address a
+        // master abort leaves SCL held low. Callers write a register instead
+        // (as Windows Mobile does). STOP goes with the last data byte, never
+        // with START.
+        if last == 0 {
+            return Err(I2cError::Unsupported);
+        }
         if let Err(e) = self.send(addr << 1, ICR_START) {
             self.abort();
             return Err(if e == I2cError::Nak {
@@ -158,10 +175,6 @@ impl<B: RegisterBus> I2cBus for PxaI2c<B> {
             } else {
                 e
             });
-        }
-        if last == 0 {
-            self.abort();
-            return Ok(());
         }
         for (i, &b) in data.iter().enumerate() {
             let flags = if i + 1 == last { ICR_STOP } else { 0 };
@@ -262,14 +275,25 @@ mod tests {
     }
 
     #[test]
-    fn a_presence_check_is_the_address_then_a_separate_stop() {
+    fn an_address_only_write_is_refused_without_touching_the_bus() {
         let mut i2c = with_status(ISR_ITE);
-        i2c.write(0x1A, &[]).unwrap();
+        let before = i2c.regs.writes().len();
+        assert_eq!(i2c.write(0x1A, &[]), Err(I2cError::Unsupported));
+        assert_eq!(i2c.regs.writes().len(), before);
+    }
+
+    #[test]
+    fn a_controller_still_busy_after_the_stop_is_reset() {
+        // The X51v after an acknowledged address and a master abort: SCL
+        // held low, the unit busy.
+        let mut i2c = with_status(ISR_ITE | ISR_ACKNAK | ISR_UB);
+        assert_eq!(i2c.write(0x1B, &[1]), Err(I2cError::NoDevice));
         let w = i2c.regs.writes();
-        assert!(w.contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_TB | ICR_START)));
-        assert!(
-            w.contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_MA)),
-            "stop sent"
+        assert!(w.contains(&(reg::ICR, ICR_UR)), "unit reset");
+        assert_eq!(
+            w.last(),
+            Some(&(reg::ICR, ICR_IUE | ICR_SCLE)),
+            "enabled again"
         );
     }
 
@@ -278,7 +302,7 @@ mod tests {
         // The class of 2026-10-18's silent codec: the controller never
         // finishes such a byte.
         for status in [ISR_ITE, ISR_ITE | ISR_ACKNAK | ISR_BED] {
-            for data in [&[][..], &[1][..], &[1, 2][..]] {
+            for data in [&[1][..], &[1, 2][..], &[1, 2, 3][..]] {
                 for fast in [false, true] {
                     let mut i2c = with_status(status);
                     i2c.set_fast(fast);

@@ -90,7 +90,14 @@ impl<I: I2cBus> Wm8750<I> {
     /// 48 kHz 16-bit I2S playback from a 12.288 MHz master clock (256 fs),
     /// outputs at `level` (0-100). The bus comes back if no codec answers.
     pub fn init(mut i2c: I, level: u32) -> Result<Self, (I2cError, I)> {
-        let Some(addr) = ADDRESSES.into_iter().find(|&a| i2c.write(a, &[]).is_ok()) else {
+        // Found by its first set-up write, the reset (as Windows Mobile
+        // starts; the X51v's controller can't do address-only transfers:
+        // docs/hw/audio.md).
+        let reset = word(reg::RESET, 0);
+        let Some(addr) = ADDRESSES
+            .into_iter()
+            .find(|&a| i2c.write(a, &reset).is_ok())
+        else {
             return Err((I2cError::NoDevice, i2c));
         };
         let mut codec = Self {
@@ -100,7 +107,6 @@ impl<I: I2cBus> Wm8750<I> {
             output: Output::Speaker,
         };
         let setup = [
-            (reg::RESET, 0),
             // VMID 50k divider (playback), VREF on.
             (reg::PWR1, 0x0C0),
             // DACs, both output pairs.
@@ -185,9 +191,14 @@ impl<I: I2cBus> Wm8750<I> {
     }
 
     fn set(&mut self, r: u8, v: u16) -> Result<(), I2cError> {
-        self.i2c
-            .write(self.addr, &[(r << 1) | (v >> 8) as u8 & 1, v as u8])
+        self.i2c.write(self.addr, &word(r, v))
     }
+}
+
+/// A register write's two bytes: the 7-bit register and the 9-bit value's
+/// top bit, then its low 8 bits.
+fn word(r: u8, v: u16) -> [u8; 2] {
+    [(r << 1) | (v >> 8) as u8 & 1, v as u8]
 }
 
 /// The output volume code for `level` (0-100, already clamped).

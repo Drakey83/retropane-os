@@ -90,6 +90,10 @@ mod image {
     /// (Dell's driver).
     const SPEAKER_AMP: (usize, u16) = (0x14, 1 << 1);
     const AMP_SETTLE_US: u32 = 70_000;
+    /// The codec's reset (register 15 = 0), the probe write: the X51v's
+    /// controller can't do address-only transfers (docs/hw/audio.md), and
+    /// Windows Mobile's driver starts with this write too.
+    const RESET_WORD: [u8; 2] = [0x0F << 1, 0x00];
     /// The probe tries: name, fast mode, earliest time after power (ms).
     const TRIES: [(&str, bool, u32); 4] = [
         ("standard, as run 2", false, 0),
@@ -341,7 +345,7 @@ mod image {
         let _ = writeln!(out);
         log_bus(&mut out, "after the traced start", &mut gated.bus);
         let t = rt::ticks();
-        let r = gated.bus.write(rp_drv_wm8750::ADDRESSES[0], &[]);
+        let r = gated.bus.write(rp_drv_wm8750::ADDRESSES[0], &RESET_WORD);
         log_try(
             &mut out,
             "controller check, gate closed, no power",
@@ -350,7 +354,7 @@ mod image {
             &mut gated.bus,
         );
         let t = rt::ticks();
-        let r = gated.write(rp_drv_wm8750::ADDRESSES[0], &[]);
+        let r = gated.write(rp_drv_wm8750::ADDRESSES[0], &RESET_WORD);
         log_try(
             &mut out,
             "controller check, gate open, no power",
@@ -393,7 +397,7 @@ mod image {
             let _ = writeln!(out, "probe {name} ({ms} ms after power):");
             let answered = rp_drv_wm8750::ADDRESSES.map(|a| {
                 let t = rt::ticks();
-                let r = gated.write(a, &[]);
+                let r = gated.write(a, &RESET_WORD);
                 log_try(
                     &mut out,
                     if a == 0x1A { "  0x1a" } else { "  0x1b" },
@@ -485,6 +489,7 @@ mod image {
             Err(rp_hal_api::I2cError::NoDevice) => "no acknowledge",
             Err(rp_hal_api::I2cError::Nak) => "data refused",
             Err(rp_hal_api::I2cError::Bus) => "bus never finished (timeout)",
+            Err(rp_hal_api::I2cError::Unsupported) => "unsupported transfer",
         };
         let _ = writeln!(out, "{what}: {kind} in {us} us");
         log_bus(out, "after", bus);
