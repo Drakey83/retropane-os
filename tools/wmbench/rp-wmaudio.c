@@ -216,10 +216,12 @@ static short pcm[RATE * SECS * 2];
 
 static void make_tone(void)
 {
-    /* 441 Hz square-ish wave, quiet (about -30 dB of full scale). */
+    /* 441 Hz square-ish wave at about -12 dB of full scale: loud enough to
+     * judge by ear at volume 50% (the first version's -30 dB at 12.5% was
+     * inaudible: quality-audit C8). */
     unsigned k;
     for (k = 0; k < RATE * SECS; k++) {
-        short v = (short)(((k / 25) & 1) ? 1000 : -1000);
+        short v = (short)(((k / 25) & 1) ? 8000 : -8000);
         pcm[2 * k] = v;
         pcm[2 * k + 1] = v;
     }
@@ -259,7 +261,7 @@ static void play(const char *what, int watch_open)
         flush();
         return;
     }
-    waveOutSetVolume(wo, 0x20002000);
+    waveOutSetVolume(wo, 0x80008000);
     memset(&hdr, 0, sizeof hdr);
     hdr.lpData = (LPSTR)pcm;
     hdr.dwBufferLength = sizeof pcm;
