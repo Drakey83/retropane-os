@@ -415,6 +415,55 @@ minutes, program 1,884 of 8,192 bytes. The pseudo-console has not yet run
 `spotread` with the Spyder (the instrument wasn't plugged in): the first
 profiling run is its test.
 
+### C6 profiling runs (2026-10-17, owner's Spyder under a thick cover)
+
+- **Run 1:** the pseudo-console worked first time: **about 2.4 s a reading**
+  (10 s before), 5 s for black. 205 of 233 good, then `rp-screen-measure`
+  **froze 22 minutes in**: `OSCR0` (32 bits at 3.25 MHz) wraps every 1,321.5 s,
+  its next patch was due just past the wrap, and "milliseconds since the
+  start" fell back to 0 and never got there (the PC read the frozen dark red
+  patch 28 more times: "drift 970%"). Home still worked (the wait loop checks
+  it): everything put back, loader back, no reset. **Fixed as a class**
+  (`42fff26`): `rt::Elapsed` and `rt::uptime_ms` count through the wrap; the
+  audit found the same fault in the loader's `now_ms` (`ticks() / 3250`,
+  falling to 0 every 22 minutes under the PC-write guard, the media-change
+  timer and `reboot wm`: now `uptime_ms`, +24 B, card loader to reinstall) and
+  in the I2S stream totals; host tests through one, three and ten wraps.
+  Run 1's white also read 61.2 cd/m2 against about 57 in every other run:
+  the sensor sat differently.
+- **Run 2:** stopped by the PC after 17 readings for a sensor check (the
+  owner's cat); seated properly.
+- **Run 3 (`local/screen-measure/c6/profile-1792284643.*`), the profile:** all
+  233 read in about 26 minutes, none needing a second pass, the patches past
+  22 minutes changing as they should. White fell steadily 57.8 to 55.3 cd/m2
+  over the run (4.6%: the LEDs dimming as they warm at full duty; corrected
+  from the drift whites). Panel: **white 56.0 cd/m2 at about 13,600 K, black
+  2.52, 22:1.** Argyll profiles from the `.ti3`: the **table-based (LUT)
+  profile fits every reading to 0.18 Delta E 2000 on average, 0.62 at
+  worst** (`axim-lut.icm`: the source for the 3D colour tables of step 5); a
+  shaper/matrix one only to 1.45 average, 9.5 worst (this panel's channels
+  don't add up simply). `calibrate`'s own additive model: 1.51 average, 4.17
+  worst on the mixed patches (it is used for greys, which are then measured).
+  Whites and what they cost: native 56.0 cd/m2 (100%), 9,000 K 45.9 (82%),
+  7,500 K 44.5 (79%), **D65 43.6 (78%)**.
+- **Verify run 1 (`calibrate --verify native,9000,6504`, about 20 minutes
+  hands-free, `profile-1792284643-verify.md`):** each white's table shown,
+  33 greys read, corrected, read again. Greys' error from the BT.1886 target
+  at that white, mean (worst) Delta E 2000:
+  | White | Pass 1 (model's table) | Pass 2 (once corrected) |
+  |---|---|---|
+  | native (about 13,600 K) | 2.91 (4.55) | **1.54** (3.06) |
+  | 9,000 K | 3.62 (6.10) | **1.34** (3.38) |
+  | D65 | 3.88 (6.80) | **1.57** (4.18) |
+  One correction brings every white to about 1.5 on average (under 2 counts
+  as a good professional calibration); the worst left are single greys and
+  white itself. The **black end stays very blue** (about 28,000 K at 0, still
+  15,000 K at 24): that is the panel's own glow, which no table can take blue
+  out of, since the table can't go below zero. **The panel kept dimming**:
+  white 55.2 cd/m2 at the start of the check, 53.3 at its end (after about an
+  hour at full backlight in all, about 8% below run 3's start); the check
+  scales targets to it. Third-pass refined tables written, not yet measured.
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings
