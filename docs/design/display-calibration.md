@@ -530,6 +530,10 @@ it). The brightness slider still works: the curve is kept at any backlight.
   (power 1.3), **current** (1.6, the pick) and **strong** (2.0), all at full
   backlight; same pages (both photos, chart, ramps with the stretched
   0-63 shadow band).
+- **Strength run (looks v3, 2026-10-17, the owner): "Contrast strong by
+  far"** (S-curve power 2.0). The strongest tested won, so the best may lie
+  further: the next test spans 2.0 and up, with the shadow and highlight
+  detail checked on the ramps and the Milky Way.
 
 ## Measured with a colorimeter (2026-10-17)
 
