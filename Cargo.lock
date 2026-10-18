@@ -502,7 +502,11 @@ name = "rp-looks"
 version = "0.0.0"
 dependencies = [
  "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
+ "rp-drv-pxa-mmc",
+ "rp-drv-sdcard",
+ "rp-fat",
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",

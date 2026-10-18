@@ -1,6 +1,6 @@
 [package]
 name = "rp-looks"
-description = "Display calibration C6 looks test for the real X51v: real photos, a colour chart and ramps in 32 bpp under the measured calibration tables (native, 9000 K, D65) against the original, judged by eye"
+description = "Display calibration C6 looks test for the real X51v: photos from the SD card, a colour chart and ramps under a contrast-strength dial, dithered in 32 bpp, against the original, judged by eye"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,10 @@ rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-fat = { path = "../../kernel/fat" }
 
 [lints]
 workspace = true

@@ -513,10 +513,10 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_display_cal),
     },
     Mutant {
-        name: "looks: a look change never reaches the picture (every look shows the original)",
+        name: "looks: the strength dial never reaches the picture (every strength shows the original)",
         file: "boot/looks/src/main.rs",
-        from: "                draw(fb, page, photos, &look_table(l, &found), 0..H);",
-        to: "                draw(fb, page, photos, &found, 0..H);",
+        from: "                draw(fb, kind, photo, &t, 0..H);",
+        to: "                draw(fb, kind, photo, &found, 0..H);",
         check: Check::Emu(crate::emu::boot_loader_looks),
     },
     Mutant {

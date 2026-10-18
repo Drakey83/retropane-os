@@ -1074,16 +1074,82 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The C6 looks test under the loader (`rp-looks`): each page pixel-exact
-/// below the caption, each look's table applied in the picture and
-/// dithered, driven by keys: the original, the picked contrast on both
-/// photos and the chart, strong contrast on the chart, the original again
-/// by compare, the ramps;
-/// Home puts everything back.
+/// The C6 looks test under the loader (`rp-looks`), twice: with no card
+/// (the built-in photos) and with a card whose `rp-looks` folder holds two
+/// photos stored out of name order and a file of the wrong size (ignored).
+/// Each time every page pixel-exact below the caption, the strength dial
+/// applied in the picture and dithered, driven by keys: 2.00, 2.25 on both
+/// photos and the chart, 1.00, the original by compare, the ramps; Home
+/// puts everything back.
 pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
+    looks_run(root, None)?;
+    let card = looks_card(&root.join("target/emulator/looks-card.img"))?;
+    looks_run(root, Some(&card))
+}
+
+/// A card image with `rp-looks/b.yuv` (the Milky Way), `rp-looks/a.yuv`
+/// (the pier), written in that order, and `rp-looks/short.yuv` (too small).
+fn looks_card(path: &Path) -> Result<PathBuf, String> {
+    use rp_hal_api::{BlockDevice, BlockError};
+    use rp_looks::{PHOTOS, YUV_BYTES, unpack};
+    struct Mem(Vec<u8>);
+    impl BlockDevice for Mem {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
+            let o = lba as usize * 512;
+            let src = self.0.get(o..o + buf.len()).ok_or(BlockError::OutOfRange)?;
+            buf.copy_from_slice(src);
+            Ok(())
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
+            let o = lba as usize * 512;
+            let dst = self
+                .0
+                .get_mut(o..o + buf.len())
+                .ok_or(BlockError::OutOfRange)?;
+            dst.copy_from_slice(buf);
+            Ok(())
+        }
+    }
+    let mut photos = [vec![0u8; YUV_BYTES], vec![0u8; YUV_BYTES]];
+    for (p, out) in PHOTOS.iter().zip(photos.iter_mut()) {
+        unpack(p, out).map_err(|e| format!("looks: a photo did not unpack: {e:?}"))?;
+    }
+    let img = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: (SD_IMAGE_BYTES / 512) as u32,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut disk = Mem(img);
+    {
+        let mut vol = rp_fat::Volume::mount(&mut disk, rp_fat::format::PARTITION_START)
+            .map_err(|e| format!("looks card: mount: {}", e.name()))?;
+        let mut scratch = vec![0u8; 64 * 1024];
+        vol.mkdir("rp-looks", &mut scratch)
+            .map_err(|e| format!("looks card: mkdir: {}", e.name()))?;
+        for (name, data) in [
+            ("rp-looks/b.yuv", &photos[1][..]),
+            ("rp-looks/a.yuv", &photos[0][..]),
+            ("rp-looks/short.yuv", &photos[0][..1000]),
+        ] {
+            vol.put(name, data, &mut scratch)
+                .map_err(|e| format!("looks card: {name}: {}", e.name()))?;
+        }
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, &disk.0).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// One run of the looks test, with `card` in the SD slot or none.
+fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     use rp_looks::{
-        CAPTION_H, H, PHOTOS, W, YUV_BYTES, look_table, page_pixel, shown, straight, unpack,
+        CAPTION_H, H, PHOTOS, Page, START, W, YUV_BYTES, dial_table, page_pixel, shown, straight,
+        unpack,
     };
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
@@ -1107,18 +1173,27 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
     // Page `page` below the caption: `t` applied in the picture and
     // dithered, then the straight hardware table.
     let st = straight();
+    // No card in the emulator: the built-in photos, then the chart and
+    // the ramps.
     let want = |page: usize, t: &[u32; GAMMA_ENTRIES]| -> Vec<u8> {
+        let (kind, photo): (Page, &[u8]) = match page {
+            0 | 1 => (Page::Photo, &photos[page]),
+            2 => (Page::Chart, &photos[0]),
+            _ => (Page::Ramps, &photos[0]),
+        };
         let mut v = Vec::with_capacity((W * (H - CAPTION_H) * 3) as usize);
         for y in CAPTION_H..H {
             for x in 0..W {
-                let (r, g, b) = shown(t, page_pixel(page, [&photos[0], &photos[1]], x, y), x, y);
+                let (r, g, b) = shown(t, page_pixel(kind, photo, x, y), x, y);
                 v.extend_from_slice(&[gamma(&st, r, 16), gamma(&st, g, 8), gamma(&st, b, 0)]);
             }
         }
         v
     };
-    let until = |name: &str, page: usize, look: usize| -> Result<(), String> {
-        let want = want(page, &look_table(look, &WM_GAMMA));
+    // `step` None: the original.
+    let until = |name: &str, page: usize, step: Option<usize>| -> Result<(), String> {
+        let t = step.map_or(WM_GAMMA, |s| dial_table(s, &WM_GAMMA));
+        let want = want(page, &t);
         let deadline = Instant::now() + Duration::from_secs(90);
         loop {
             let _ = std::fs::remove_file(&shot);
@@ -1159,21 +1234,21 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
             std::thread::sleep(Duration::from_millis(150));
             Ok(())
         };
-        until("original-pier", 0, 0)?;
-        for _ in 0..3 {
-            key("right")?;
-        }
-        until("contrast-pick-pier", 0, 3)?;
-        key("down")?;
-        until("contrast-pick-milkyway", 1, 3)?;
-        key("down")?;
-        until("contrast-pick-chart", 2, 3)?;
+        until("strength-2-pier", 0, Some(START))?;
         key("right")?;
-        until("contrast-strong-chart", 2, 4)?;
-        key("ret")?;
-        until("compare-original-chart", 2, 0)?;
+        until("strength-2.25-pier", 0, Some(START + 1))?;
         key("down")?;
-        until("original-ramps", 3, 0)?;
+        until("strength-2.25-milkyway", 1, Some(START + 1))?;
+        key("down")?;
+        until("strength-2.25-chart", 2, Some(START + 1))?;
+        for _ in 0..5 {
+            key("left")?;
+        }
+        until("strength-1-chart", 2, Some(0))?;
+        key("ret")?;
+        until("compare-original-chart", 2, None)?;
+        key("down")?;
+        until("original-ramps", 3, None)?;
         key("f4")
     };
     let output = boot(
@@ -1182,7 +1257,7 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
             image: &loader,
             marker: LOADER_MARKER,
             screenshot: None,
-            sd_image: None,
+            sd_image: card,
             steps: &[],
             extra: &[],
             input: Some((&frame, "RPL OK")),
@@ -1195,11 +1270,19 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("looks: no run log after the image returned")?;
+    let source = if card.is_some() {
+        "2 photos from the card"
+    } else {
+        "2 photos from the image"
+    };
+    if !log.contains(source) {
+        return Err(format!("looks: no {source:?} in the run log:{log}"));
+    }
     for want in [
         "page drawn in",
-        "Contrast strong (showing the original), Colour chart",
-        "done (Home) after 8 changes",
-        "last look: Contrast strong, Ramps",
+        "1.00 full (showing the original), Colour chart",
+        "done (Home) after 10 changes",
+        "last: 1.00, Ramps",
         "LOOKS-OK",
     ] {
         if !log.contains(want) {
@@ -1207,7 +1290,12 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    looks OK: both photos, the chart and the ramps pixel-exact, each look's table applied in the picture and dithered (original, the picked and the strong contrast), compare back to the original; Home put back and returned"
+        "    looks OK ({}): both photos in name order, the chart and the ramps pixel-exact, the strength dial applied in the picture and dithered (2.00, 2.25, 1.00, original); Home put back and returned",
+        if card.is_some() {
+            "photos from the card's rp-looks folder, the wrong-sized file ignored"
+        } else {
+            "no card: the built-in photos"
+        }
     );
     Ok(())
 }

@@ -534,6 +534,26 @@ it). The brightness slider still works: the curve is kept at any backlight.
   far"** (S-curve power 2.0). The strongest tested won, so the best may lie
   further: the next test spans 2.0 and up, with the shadow and highlight
   detail checked on the ramps and the Milky Way.
+- **Owner (2026-10-17):** more pictures to judge by (detail possibly lost
+  in the pier picture), gentler strengths kept for comparison, and how much
+  full backlight costs in battery (estimate given: the Sharp's LED string is
+  about 0.45 W at full and 0.3 W at Windows Mobile's 63%, so about 0.2 W
+  more, roughly 15-20% less screen-on time; to measure from the battery's
+  current).
+- **Looks test v4 (built 2026-10-17): the strength dial.** Left/right moves
+  the S-curve from 1.00 (no curve) to 4.00 in quarter steps from 2.00
+  (curves made by `build.rs`, so the image needs no floating point);
+  up/down the pages; centre the original; **Calendar** switches the
+  backlight between full and Windows Mobile's level (the battery question);
+  Home ends. The photos come **from the SD card's `rp-looks` folder** (every
+  480 x 640 4:2:0 `.yuv` file there, name order, read only, one per page,
+  PIO reads), else the two built in. The owner's 15 approved wallpaper
+  photos (ui.md "Wallpaper provenance", ten kept plus the five cut, all from
+  Wikimedia Commons' 1280-pixel versions; `local/wallpapers/c6/`, sources in
+  `SOURCES.txt`, never committed) plus the pier and Milky Way: 17 photos.
+  `emu-looks` runs it twice, pixel-exact: no card (built-in photos), and a
+  card made on the host whose folder holds two photos out of name order and
+  a wrong-sized file (ignored); mutant: the dial never reaches the picture.
 
 ## Measured with a colorimeter (2026-10-17)
 

@@ -2,13 +2,13 @@
 //! shared by the image and the emulator check, which builds its reference
 //! pictures from the same functions.
 //!
-//! Four pages, each a full 480 x 640 screen: the owner's two photos (Pier,
-//! Milky Way: packed by `build.rs`), a colour chart (the 24 patches of the
-//! classic colour checker at their usual sRGB values, the six full primaries
-//! and secondaries, a grey step wedge) and smooth ramps (banding shows here
-//! first, where a calibrated table turns a channel down). Five looks: the
-//! original as found, the original at full backlight (a fair brightness
-//! comparison) and the three measured calibration tables at full backlight.
+//! Version 4, the strength dial: photos (the card's `rp-looks` folder, or
+//! the two built in when there is no card), a colour chart (the 24-patch
+//! colour checker at its usual sRGB values, the six full primaries and
+//! secondaries, a grey step wedge) and smooth ramps, under an S-curve of
+//! strength 1.0 (none) to 4.0 through the table as found ([`dial_table`]),
+//! or the original. Every look is applied in the picture and dithered
+//! ([`shown`]).
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -31,80 +31,28 @@ pub enum Light {
     Full,
 }
 
-/// Where a look's table comes from.
-#[derive(Clone, Copy, Debug)]
-pub enum Base {
-    /// The table as found (Windows Mobile's).
-    Found,
-    /// The table as found after a tone curve: point `i` of the curve is the
-    /// input sent through the found table for input `16 * i`.
-    Curved([u8; GAMMA_ENTRIES]),
-    /// A measured calibration table.
-    Measured([u32; GAMMA_ENTRIES]),
+include!(concat!(env!("OUT_DIR"), "/curves.rs"));
+
+/// Dial positions: strength 1.0 to 4.0 in quarter steps.
+pub const STEPS: usize = CURVES.len();
+/// Where the dial starts: 2.0, the owner's pick of the strength run.
+pub const START: usize = 4;
+
+/// Dial position `s` as hundredths: 100 (1.00) to 400 (4.00).
+#[must_use]
+pub const fn strength(s: usize) -> u32 {
+    100 + 25 * s as u32
 }
 
-/// One look: a name, its table and a backlight.
-#[derive(Clone, Copy, Debug)]
-pub struct Look {
-    /// Shown in the caption and the run log.
-    pub name: &'static str,
-    /// Its table.
-    pub table: Base,
-    /// The backlight.
-    pub light: Light,
+/// The table for dial position `s`: the curve, then the table as found.
+#[must_use]
+pub fn dial_table(s: usize, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
+    let c = CURVES[s.min(STEPS - 1)];
+    core::array::from_fn(|k| {
+        let lane = |shift: u32| u32::from(gamma(found, c[k], shift)) << shift;
+        lane(16) | lane(8) | lane(0)
+    })
 }
-
-/// The looks, in order (left/right). Run 1 (2026-10-17): the owner's son
-/// picked Original at full light, his wife Original, the owner in between;
-/// nobody a calibrated white; the owner asked for darker darks at full
-/// light, hence the two curves after it: deeper darks (input to the power
-/// 1.35) and more contrast (an S-curve, power 1.6 each side of the middle),
-/// both through the table as found. Run 2: the owner picked more contrast
-/// "by far" and made it the default look; version 3 (these looks) tests its
-/// strength: mild, the pick, strong, against the original and full light
-/// with no curve.
-pub const LOOKS: [Look; 5] = [
-    Look {
-        name: "Original",
-        table: Base::Found,
-        light: Light::Found,
-    },
-    Look {
-        name: "Full light",
-        table: Base::Found,
-        light: Light::Full,
-    },
-    Look {
-        name: "Contrast mild",
-        table: Base::Curved(CONTRAST[0]),
-        light: Light::Full,
-    },
-    Look {
-        name: "Contrast (pick)",
-        table: Base::Curved(CONTRAST[1]),
-        light: Light::Full,
-    },
-    Look {
-        name: "Contrast strong",
-        table: Base::Curved(CONTRAST[2]),
-        light: Light::Full,
-    },
-];
-
-/// The S-curves (point `i` for input `16 * i`): each half of the range bent
-/// to the power 1.3 (mild), 1.6 (the owner's pick in run 2) and 2.0
-/// (strong), meeting at the middle.
-pub const CONTRAST: [[u8; GAMMA_ENTRIES]; 3] = [
-    [
-        0, 9, 21, 36, 52, 70, 88, 108, 128, 149, 168, 187, 204, 220, 235, 247, 255,
-    ],
-    [
-        0, 5, 14, 27, 42, 60, 81, 104, 128, 153, 175, 196, 214, 229, 242, 251, 255,
-    ],
-    [
-        0, 2, 8, 18, 32, 50, 72, 98, 128, 158, 184, 206, 224, 238, 247, 253, 255,
-    ],
-];
 
 /// The measured calibration tables of verify run 1 (second pass), kept for
 /// the record: looks run 1 and 2 showed them; the family never picked them.
@@ -134,19 +82,6 @@ pub const MEASURED: [(&str, [u32; GAMMA_ENTRIES]); 3] = [
         ],
     ),
 ];
-
-/// Look `i`'s table, `found` being the table as found.
-#[must_use]
-pub fn look_table(i: usize, found: &[u32; GAMMA_ENTRIES]) -> [u32; GAMMA_ENTRIES] {
-    match LOOKS[i % LOOKS.len()].table {
-        Base::Found => *found,
-        Base::Measured(t) => t,
-        Base::Curved(c) => core::array::from_fn(|k| {
-            let lane = |shift: u32| u32::from(gamma(found, c[k], shift)) << shift;
-            lane(16) | lane(8) | lane(0)
-        }),
-    }
-}
 
 /// The hardware table while this test runs: straight (output = input), so
 /// what reaches the panel is exactly what [`shown`] stored.
@@ -182,10 +117,21 @@ pub fn shown(t: &[u32; GAMMA_ENTRIES], (r, g, b): (u8, u8, u8), x: u32, y: u32) 
     (lane(r, 16), lane(g, 8), lane(b, 0))
 }
 
-/// The pages, in order (up/down).
-pub const PAGES: [&str; 4] = ["Pier", "Milky Way", "Colour chart", "Ramps"];
+/// What a page shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    /// A photo (unpacked 4:2:0).
+    Photo,
+    /// The colour chart.
+    Chart,
+    /// The ramps.
+    Ramps,
+}
 
-/// The photos, packed by `build.rs` (LZ4 blocks).
+/// The built-in photos' names (with no card).
+pub const BUILT_IN: [&str; 2] = ["Pier", "Milky Way"];
+
+/// The built-in photos, packed by `build.rs` (LZ4 blocks).
 pub const PHOTOS: [&[u8]; 2] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/pier.lz4")),
     include_bytes!(concat!(env!("OUT_DIR"), "/milkyway.lz4")),
@@ -323,13 +269,13 @@ pub fn ramp_pixel(x: u32, y: u32) -> (u8, u8, u8) {
     }
 }
 
-/// Pixel `(x, y)` of page `page`, `photos` being the unpacked photos.
+/// Pixel `(x, y)` of a page, `photo` being the unpacked photo it shows.
 #[must_use]
-pub fn page_pixel(page: usize, photos: [&[u8]; 2], x: u32, y: u32) -> (u8, u8, u8) {
+pub fn page_pixel(page: Page, photo: &[u8], x: u32, y: u32) -> (u8, u8, u8) {
     match page {
-        0 | 1 => photo_pixel(photos[page], x, y),
-        2 => chart_pixel(x, y),
-        _ => ramp_pixel(x, y),
+        Page::Photo => photo_pixel(photo, x, y),
+        Page::Chart => chart_pixel(x, y),
+        Page::Ramps => ramp_pixel(x, y),
     }
 }
 
@@ -369,19 +315,27 @@ mod tests {
     }
 
     #[test]
-    fn looks_are_the_original_and_three_contrast_strengths() {
-        let found = [0x123456; GAMMA_ENTRIES];
-        assert_eq!(look_table(0, &found), found);
-        assert_eq!(look_table(1, &found), found);
-        assert_eq!(LOOKS[0].light, Light::Found);
-        assert!(LOOKS[1..].iter().all(|l| l.light == Light::Full));
-        // Through a straight table each curve is itself: rising, black and
-        // the middle fixed, white at the table's 254 (its squeezed top).
+    fn the_dial_runs_from_no_curve_to_strength_four() {
+        assert_eq!(STEPS, 13);
+        assert_eq!(strength(0), 100);
+        assert_eq!(strength(START), 200);
+        assert_eq!(strength(STEPS - 1), 400);
         let ramp: [u32; GAMMA_ENTRIES] =
             core::array::from_fn(|i| ((16 * i as u32).min(255)) * 0x01_0101);
-        let mut darks = [0u32; 3];
-        for (k, look) in (2..5).enumerate() {
-            let t = look_table(look, &ramp);
+        // 1.0 is no curve: the found table itself (point 16 is the found
+        // table at 255: a straight 17-point table's squeezed 254).
+        assert_eq!(dial_table(0, &ramp)[..16], ramp[..16]);
+        assert_eq!(dial_table(0, &ramp)[16], 254 * 0x01_0101);
+        // 2.0 is run 3's "strong", which the owner picked.
+        assert_eq!(
+            CURVES[START],
+            [
+                0, 2, 8, 18, 32, 50, 72, 98, 128, 158, 184, 206, 224, 238, 247, 253, 255
+            ]
+        );
+        let mut prev_dark = u32::MAX;
+        for s in 0..STEPS {
+            let t = dial_table(s, &ramp);
             for c in [16, 8, 0] {
                 assert!(
                     t.windows(2)
@@ -389,13 +343,13 @@ mod tests {
                 );
             }
             assert_eq!(t[0] & 0xFF, 0);
-            assert_eq!(t[8] & 0xFF, 128);
-            assert_eq!(t[16] & 0xFF, 254);
+            // The middle stays (input 128 is just above the exact middle).
+            assert!((128..=130).contains(&(t[8] & 0xFF)), "{}", t[8] & 0xFF);
             assert!(t.iter().all(|w| w >> 24 == 0));
-            darks[k] = t[3] & 0xFF;
+            // Stronger is darker in the shadows (or as dark).
+            assert!(t[3] & 0xFF <= prev_dark);
+            prev_dark = t[3] & 0xFF;
         }
-        // Stronger is darker in the shadows.
-        assert!(darks[0] > darks[1] && darks[1] > darks[2], "{darks:?}");
         // The kept measured tables never fall.
         for (_, t) in MEASURED {
             for c in [16, 8, 0] {

@@ -3,7 +3,8 @@
 //! planar 4:2:0, made by `tools/shell-assets/wallpaper.py`) for `pier` and
 //! `milkyway`. `local/` is never committed (the owner's photos stay out of
 //! the repository); a missing photo becomes a generated one so the image
-//! always builds. Each is LZ4-compressed in 64 KiB blocks (a loaded image
+//! always builds (the card's `\rp-looks\` folder holds the full set: these
+//! two are the fallback with no card). Each is LZ4-compressed in 64 KiB blocks (a loaded image
 //! must stay under 950 KB; two raw photos alone are 900 KB): `u32` block
 //! count, `u32` packed size per block, then the blocks.
 
@@ -27,9 +28,44 @@ fn main() {
         std::fs::write(Path::new(&out).join(format!("{name}.lz4")), pack(&yuv))
             .expect("OUT_DIR writable");
     }
+    curves(&out);
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../link.x");
     }
+}
+
+/// The strength dial's S-curves, made here so the image needs no floating
+/// point: strength 1.0 to 4.0 in quarter steps, each half of the range bent
+/// to that power and meeting at the middle (1.0 is a straight line). Point
+/// `i` is the curve at input `16 * i` (point 16 at 255).
+fn curves(out: &str) {
+    let mut src = String::from(
+        "/// The strength dial's curves (`build.rs`): strength `1 + s / 4` for `s` in 0..13.
+         pub const CURVES: [[u8; 17]; 13] = [
+",
+    );
+    for s in 0..13 {
+        let k = 1.0 + f64::from(s) / 4.0;
+        let row: Vec<String> = (0..17)
+            .map(|i| {
+                let x = f64::from((16 * i).min(255)) / 255.0;
+                let y = if x < 0.5 {
+                    0.5 * (2.0 * x).powf(k)
+                } else {
+                    1.0 - 0.5 * (2.0 * (1.0 - x)).powf(k)
+                };
+                format!("{}", (255.0 * y).round() as u8)
+            })
+            .collect();
+        src += &format!(
+            "    [{}],
+",
+            row.join(", ")
+        );
+    }
+    src += "];
+";
+    std::fs::write(Path::new(out).join("curves.rs"), src).expect("OUT_DIR writable");
 }
 
 fn pack(data: &[u8]) -> Vec<u8> {
