@@ -92,6 +92,32 @@ pub mod stats {
         }
     }
 
+    /// Whether a series of tick intervals is fit for the restart test: no
+    /// tick missed, more than one value, none zero, and all within 2,048
+    /// cycles of each other (one tick is ~19,000 at 624 MHz; a stuck or
+    /// broken timestamp gives 0s or wild values).
+    #[must_use]
+    pub fn row_healthy(s: &Summary, missed: u32) -> bool {
+        missed == 0 && s.n > 0 && s.distinct > 1 && s.min > 0 && s.max - s.min < 2048
+    }
+
+    /// The restart test's file (`noise-ri.bin`, ADR-0029 R6) with one more
+    /// row: `have` bytes of it already in `rows` (a tail shorter than a row,
+    /// cut by hand, is dropped), the row's samples' low bytes appended.
+    /// The new length, or `None` if the buffer (the file's cap) is full.
+    #[must_use]
+    pub fn append_row(rows: &mut [u8], have: usize, row: &[u16]) -> Option<usize> {
+        let have = have - have % row.len().max(1);
+        let end = have.checked_add(row.len())?;
+        if end > rows.len() {
+            return None;
+        }
+        for (d, s) in rows[have..end].iter_mut().zip(row) {
+            *d = *s as u8;
+        }
+        Some(end)
+    }
+
     /// SP 800-90B §6.3.1: with `count` of `n` samples the most common value,
     /// `p_u = min(1, p + 2.576 sqrt(p (1 - p) / (n - 1)))` and the estimate
     /// is `-log2(p_u)` bits a sample; returned in thousandths of a bit.
@@ -190,6 +216,42 @@ pub mod stats {
             // Twelve-bit readings use the whole value.
             let s = summarise(&[1, 2, 4095, 4095], 0xFFF, &mut hist);
             assert_eq!((s.distinct, s.mcv, s.min, s.max), (3, 2, 1, 4095));
+        }
+
+        #[test]
+        fn only_healthy_rows_go_into_the_restart_test() {
+            let mut hist = vec![0u32; 256];
+            let good: Vec<u16> = (0..1000).map(|i| 18_984 + 24 * (i % 5)).collect();
+            let s = summarise(&good, 0xFF, &mut hist);
+            assert!(row_healthy(&s, 0));
+            // A missed tick, the dead row seen on the device, a stuck
+            // value, a wild one.
+            assert!(!row_healthy(&s, 1));
+            let dead = summarise(&[0; 1000], 0xFF, &mut hist);
+            assert!(!row_healthy(&dead, 1));
+            assert!(!row_healthy(&dead, 0));
+            let stuck = summarise(&[19_032; 1000], 0xFF, &mut hist);
+            assert!(!row_healthy(&stuck, 0));
+            let mut wild = good.clone();
+            wild[500] = 40_000;
+            assert!(!row_healthy(&summarise(&wild, 0xFF, &mut hist), 0));
+            let mut zero = good;
+            zero[3] = 0;
+            assert!(!row_healthy(&summarise(&zero, 0xFF, &mut hist), 0));
+            assert!(!row_healthy(&Summary::default(), 0));
+        }
+
+        #[test]
+        fn a_row_is_appended_whole_and_a_full_file_refused() {
+            let row: Vec<u16> = (0..4).map(|i| 0x1200 + i).collect();
+            let mut rows = [0u8; 10];
+            // Empty, then a hand-cut tail of 2 bytes dropped.
+            assert_eq!(append_row(&mut rows, 0, &row), Some(4));
+            assert_eq!(rows[..4], [0, 1, 2, 3]);
+            assert_eq!(append_row(&mut rows, 6, &row), Some(8));
+            assert_eq!(rows[4..8], [0, 1, 2, 3]);
+            // 8 + 4 > 10: full.
+            assert_eq!(append_row(&mut rows, 8, &row), None);
         }
 
         #[test]
@@ -467,7 +529,20 @@ mod image {
                     save(&mut out, card.as_mut(), file, series, fat);
                 }
                 if k == 1 {
-                    save_restart_row(&mut out, card.as_mut(), series, restart, fat);
+                    // A row goes into the restart test only if its run was
+                    // healthy (ADR-0029 R6: a source that failed its checks
+                    // earns nothing): on 2026-10-15 one run's timestamps all
+                    // read the same (every interval 0, a tick missed) and
+                    // the row went in.
+                    if stats::row_healthy(&sum, missed) {
+                        save_restart_row(&mut out, card.as_mut(), series, restart, fat);
+                    } else {
+                        let _ = writeln!(
+                            out,
+                            "  noise-ri.bin: row REFUSED (unhealthy run: {} distinct, {}..{}, {missed} missed)",
+                            sum.distinct, sum.min, sum.max
+                        );
+                    }
                 }
             }
             if let Some(ms) = limit {
@@ -721,16 +796,13 @@ mod image {
                 fits = false;
             }
         });
-        // Only whole rows count (a file cut short by hand loses its tail).
-        have -= have % RESTART_ROW;
-        if !fits || have >= rows.len() {
+        let Some(have) = fits
+            .then(|| stats::append_row(rows, have, &a[..RESTART_ROW]))
+            .flatten()
+        else {
             let _ = writeln!(out, "  noise-ri.bin: full ({RESTART_ROWS} rows): not added");
             return;
-        }
-        for (d, s) in rows[have..have + RESTART_ROW].iter_mut().zip(a) {
-            *d = *s as u8;
-        }
-        have += RESTART_ROW;
+        };
         let ok = vol.put("noise-ri.bin", &rows[..have], fat);
         let _ = writeln!(
             out,

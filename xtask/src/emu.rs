@@ -2420,8 +2420,10 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "T VBAT: 1000000 samples",
         "T AUX: 1000000 samples",
         "T TEMP1: 1000000 samples",
-        "noise-ri.bin: row added",
-        "restart rows: 3 of 1000",
+        // The emulator's ticks follow the PC's clock: never a healthy run,
+        // so the restart test must refuse the row (ADR-0029 R6); the
+        // append itself is host-tested (`append_row`).
+        "noise-ri.bin: row REFUSED (unhealthy run",
         "noise.txt: saved",
         "RETROPANE-NOISE: done",
     ] {
@@ -2454,9 +2456,9 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         }
     }
     let rows = card_file(&sd, "noise-ri.bin")?;
-    if rows.len() != 3000 || rows[..2000] != earlier[..] {
+    if rows[..] != earlier[..] {
         return Err(format!(
-            "noise: noise-ri.bin is {} bytes, want the 2 earlier rows kept and 1 added",
+            "noise: noise-ri.bin is {} bytes, want the 2 earlier rows untouched (row refused)",
             rows.len()
         ));
     }
@@ -2503,8 +2505,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         .ok_or("noise quick: never came back to the loader")?;
     for want in [
         "quick mode (noise-quick.txt)",
-        "noise-ri.bin: row added",
-        "restart rows: 2 of 1000",
+        "noise-ri.bin: row REFUSED (unhealthy run",
     ] {
         if !log.contains(want) {
             return Err(format!("noise quick: the run log has no `{want}`:{log}"));
@@ -2516,14 +2517,14 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         ));
     }
     let rows = card_file(&sd, "noise-ri.bin")?;
-    if rows.len() != 2000 || rows[..1000] != earlier[..1000] {
+    if rows[..] != earlier[..1000] {
         return Err(format!(
-            "noise quick: noise-ri.bin is {} bytes, want 2,000",
+            "noise quick: noise-ri.bin is {} bytes, want it untouched (row refused)",
             rows.len()
         ));
     }
     eprintln!(
-        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, restart row appended, quick mode adds only its row, back at the loader (timing in the emulator is the PC's: plumbing only)"
+        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, the restart row refused as unhealthy (the emulator's ticks are the PC's) and the file untouched, quick mode does only that, back at the loader"
     );
     Ok(())
 }

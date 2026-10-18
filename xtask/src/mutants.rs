@@ -48,6 +48,17 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "RNG: an unhealthy run's row taken into the restart test (ADR-0029 R6)",
+        file: "boot/noise/src/main.rs",
+        from: "        missed == 0 && s.n > 0",
+        to: "        missed < 2000 && s.n > 0",
+        check: Check::Host(&[
+            "-p",
+            "rp-noise",
+            "only_healthy_rows_go_into_the_restart_test",
+        ]),
+    },
+    Mutant {
         name: "renderer: the depth mode written into the alpha-test bits again (2026-10-15's mistake)",
         file: "drivers/mbx3d-render/src/lib.rs",
         from: "        None => m3::ISP_ALWAYS,
