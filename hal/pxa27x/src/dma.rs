@@ -122,6 +122,19 @@ impl Dma {
         }
     }
 
+    /// The channel's registers, read only (for logs): `DCSR`, `DDADR`,
+    /// `DSADR`, `DTADR`, and the paced request's `DRCMR`.
+    #[must_use]
+    pub fn registers(&self) -> [u32; 5] {
+        [
+            read(dcsr(self.ch)),
+            read(ddadr(self.ch)),
+            read(dsadr(self.ch)),
+            read(dtadr(self.ch)),
+            read(drcmr(self.request)),
+        ]
+    }
+
     /// Stops the channel and waits until it says it has stopped
     /// (`DCSR.STOPINTR`, bounded). A channel only stops once its current
     /// transfer step ends; until then it still reads its descriptors and

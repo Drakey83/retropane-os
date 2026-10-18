@@ -237,7 +237,12 @@ mod image {
                     StreamError::Refused => "refused",
                     StreamError::Stalled => "stalled",
                 };
-                let _ = writeln!(out, "tone: DMA stream {why}");
+                let [dcsr, ddadr, dsadr, dtadr, drcmr] = dma.registers();
+                let [sacr0, sacr1, sasr0] = i2s.status();
+                let _ = writeln!(
+                    out,
+                    "tone {hz} Hz: DMA stream {why}: DCSR {dcsr:x} DDADR {ddadr:x} DSADR {dsadr:x} DTADR {dtadr:x} DRCMR {drcmr:x}; SACR0 {sacr0:x} SACR1 {sacr1:x} SASR0 {sasr0:x}"
+                );
             }
         }
     }
@@ -436,8 +441,24 @@ mod image {
             finish(&mut power)
         };
         let ring = &mut scratch[..RING];
-        for hz in NOTES {
-            play(&mut out, &codec, &mut i2s, &mut dma, ring, hz, NOTE_MS);
+        // The first note, then the second three ways, one change each
+        // (run 7: every note after the first stalled at once).
+        play(
+            &mut out, &codec, &mut i2s, &mut dma, ring, NOTES[0], NOTE_MS,
+        );
+        for (name, gap_ms, reset) in [
+            ("A: at once (control)", 0u32, false),
+            ("B: after 200 ms", 200, false),
+            ("C: at once, I2S reset first", 0, true),
+        ] {
+            let _ = writeln!(out, "second note {name}");
+            rt::delay_us(gap_ms * 1_000);
+            if reset {
+                i2s.reset();
+            }
+            play(
+                &mut out, &codec, &mut i2s, &mut dma, ring, NOTES[1], NOTE_MS,
+            );
         }
 
         // The jack: a change that holds over two polls 1 s apart.

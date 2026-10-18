@@ -195,6 +195,21 @@ impl<B: RegisterBus> PxaI2s<B> {
         true
     }
 
+    /// `SACR0`, `SACR1`, `SASR0`, read only (for logs).
+    pub fn status(&mut self) -> [u32; 3] {
+        [
+            self.regs.read32(reg::SACR0),
+            self.regs.read32(reg::SACR1),
+            self.regs.read32(reg::SASR0),
+        ]
+    }
+
+    /// The controller reset (its FIFOs emptied) and left off.
+    pub fn reset(&mut self) {
+        self.regs.write32(reg::SACR0, SACR0_RST);
+        self.regs.write32(reg::SACR0, 0);
+    }
+
     /// Stops playback (clocks off).
     pub fn stop(&mut self) {
         self.regs.write32(reg::SACR0, 0);
