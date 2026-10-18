@@ -146,7 +146,8 @@ gathered in [design/README.md](design/README.md).
 
 ## Phase 9 — Power, Bluetooth, flash install and release
 - [ ] **RE:** power/battery IC; suspend/resume; battery gauge
-- [ ] Bluetooth (BTUART) with a modern host stack
+- [ ] Bluetooth (BTUART) with a modern host stack *(owner 2026-10-18: keyboards and mice (HID) and headsets (A2DP stereo, HFP/HSP calls with the mic, AVRCP buttons): docs/design/peripherals.md)*
+- [ ] USB host: keyboards and mice (HID) on the PXA27x host controller *(owner 2026-10-18; VBUS on the connector to check: docs/design/peripherals.md)*
 - [ ] Flash install via Dell's bootloader mode (reset button). The Dell bootloader region is **never written** (enforced by tests); recovery means reflashing a stock or LennySh ROM. Full ROM backup first
 - [ ] Lock down the development loader before any public build (ADR-0017: pairing confirmed on screen, authenticated frames; or the loader left out of release images)
 - [ ] Installer; v1.0 public release with SD and flash images
