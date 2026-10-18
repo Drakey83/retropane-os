@@ -500,6 +500,19 @@ and the 0-reset case after a watchdog reboot. Checks: an emulator host that
 ignores the first plug-in (`emu-usb` variant) must get configured by the
 retry; the mutant without the retry must fail; on the device, one hand-over
 with Device Center connected, then the card install (owner go each).
+**Built and installed (2026-10-18, `pxa-udc` `unplug::Patience`, card
+loader `c3ccdb4f`, 113,956 B; old boot files backed up in
+`retropane-backups/2026-10-18/card-boot-before-silent-pc-retry-install/`).**
+Proven by `reboot-wm` with ActiveSync connected (08:32:41 Windows Mobile's
+device arrived), then the owner started the loader: at 09:23:30 Windows
+removed `413C:4011` with the same `RapiMgr` "connection aborted" as the
+failing night, and at 09:23:32 the composite was configured (loader screen:
+configured yes, 2 resets, 36 setups, no "PC silent" line). So a cut
+ActiveSync session doesn't always silence the PC; the failure is
+intermittent and didn't recur here. The card loader starts and the retry
+does no harm; its rescue of a silent PC is unproven until the case
+recurs (look for "PC silent: plugged in again" on the loader's screen).
+
 Alongside, cheaper still: start the loader from Windows Mobile only after
 ending the ActiveSync connection (Device Center's disconnect, or the
 cradle's cable out while it starts).
