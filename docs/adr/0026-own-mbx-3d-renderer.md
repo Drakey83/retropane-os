@@ -384,6 +384,17 @@ depth mode only into the TSP, and `DEPTH_MODES` takes all eight modes;
 mode into the alpha bits; (c) leave it as is until the GLES layer needs
 "less" (DoomGLES and most GL games use `GL_LESS`/`GL_LEQUAL`).
 
+**Decided (owner, 2026-10-18): option a, built and proven.** The second
+object word carries only the alpha test (`Draw::alpha`, `Quad::alpha` in
+the graphics service; default "always"), the depth mode goes only into
+the TSP, and all eight modes are accepted (`Error::Unsupported` only past
+them). The Rust model and the fork's model (rp-v0.22.0, `mbx-3d-alpha`)
+draw as the X51v did (`emu-glesfeat` checks its pixels word for word); a
+mutant puts the old mistake back and the host test catches it.
+`rp-mbx3d-api` on the device the same day: **104 checks, 0 BAD**, S5's
+"less", "less or equal" and alpha-test cases among them, render times
+within 1% of the prediction.
+
 ## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
 
 The GPU facts that shape the OS's design, before any interface design
