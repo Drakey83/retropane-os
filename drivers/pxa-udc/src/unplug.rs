@@ -68,6 +68,55 @@ pub mod uhc {
 #[repr(C, align(256))]
 struct Hcca([u32; 64]);
 
+/// When to unplug again because the PC went silent (docs/hw/udc.md, "Seen
+/// again, 2026-10-18"). After an unplug the PC normally resets the port
+/// within a second; once (after a cut ActiveSync session) Windows saw the
+/// old device leave and then never asked again, and only a real unplug 10
+/// minutes later brought it back. Not configured **and** no bus reset for
+/// 10 s since the last plug-in → plug in again; then wait 20 s, 40 s, and
+/// every 60 s after. A PC that talks (a reset) or a configured device
+/// starts the count over, so a working link is never touched. Shared by the
+/// loader and the OS's USB service; times in milliseconds, wrapping.
+pub struct Patience {
+    since_ms: u32,
+    resets: u32,
+    wait_ms: u32,
+}
+
+impl Patience {
+    /// The first wait, and the longest.
+    pub const FIRST_MS: u32 = 10_000;
+    /// See [`Self::FIRST_MS`].
+    pub const MAX_MS: u32 = 60_000;
+
+    /// Starts counting at a plug-in (`now_ms`), with the bus resets seen so
+    /// far (`Stats::resets`).
+    pub const fn new(now_ms: u32, resets: u32) -> Self {
+        Self {
+            since_ms: now_ms,
+            resets,
+            wait_ms: Self::FIRST_MS,
+        }
+    }
+
+    /// Called from the waiting loop: true when the caller should unplug and
+    /// plug in again now (it has then restarted the count itself).
+    pub fn due(&mut self, now_ms: u32, configured: bool, resets: u32) -> bool {
+        if configured || resets != self.resets {
+            self.since_ms = now_ms;
+            self.resets = resets;
+            self.wait_ms = Self::FIRST_MS;
+            return false;
+        }
+        if now_ms.wrapping_sub(self.since_ms) < self.wait_ms {
+            return false;
+        }
+        self.since_ms = now_ms;
+        self.wait_ms = (self.wait_ms * 2).min(Self::MAX_MS);
+        true
+    }
+}
+
 /// Port 2 resets driven (each ~10 ms of SE0), and the gap after each.
 const RESETS: u32 = 5;
 const RESET_GAP_US: u32 = 30_000;
@@ -246,5 +295,44 @@ mod tests {
         let (log, waited) = run(0, HXOE | HXS);
         assert_eq!(writes(&log).last(), Some(&('u', UP2OCR, HXOE)));
         assert!((150_000..200_000).contains(&waited), "{waited} us");
+    }
+
+    /// The 2026-10-18 case: unplugged, then the PC never resets the port.
+    #[test]
+    fn a_silent_pc_gets_plugged_in_again_with_growing_waits() {
+        let mut p = Patience::new(0, 2);
+        let mut plugs = Vec::new();
+        for now in (0..300_000).step_by(100) {
+            if p.due(now, false, 2) {
+                plugs.push(now);
+            }
+        }
+        assert_eq!(plugs, [10_000, 30_000, 70_000, 130_000, 190_000, 250_000]);
+    }
+
+    #[test]
+    fn a_pc_that_talks_or_a_configured_device_is_never_unplugged() {
+        let mut p = Patience::new(0, 0);
+        for now in (0..300_000u32).step_by(100) {
+            // A reset every 5 s (enumeration retries), never configured.
+            let resets = now / 5_000;
+            assert!(!p.due(now, false, resets), "at {now}");
+        }
+        let mut p = Patience::new(0, 0);
+        for now in (0..300_000).step_by(100) {
+            assert!(!p.due(now, true, 0), "at {now}");
+        }
+    }
+
+    #[test]
+    fn talking_starts_the_count_over_and_the_clock_may_wrap() {
+        let start = u32::MAX - 5_000;
+        let mut p = Patience::new(start, 0);
+        assert!(!p.due(start.wrapping_add(9_999), false, 0));
+        assert!(p.due(start.wrapping_add(10_000), false, 0));
+        // A reset after the plug-in: back to the first wait.
+        assert!(!p.due(start.wrapping_add(12_000), false, 1));
+        assert!(!p.due(start.wrapping_add(21_999), false, 1));
+        assert!(p.due(start.wrapping_add(22_000), false, 1));
     }
 }

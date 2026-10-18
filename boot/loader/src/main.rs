@@ -1987,6 +1987,9 @@ mod image {
         // already knows, so no host can lock the loop out; and back again.
         let mut layout_since = rt::ticks();
         let mut layout_resets = udc.stats().resets;
+        // A PC that goes silent after the plug-in gets it again (docs/hw/udc.md,
+        // "Seen again, 2026-10-18"): the fallback above waits for resets.
+        let mut patience = rp_drv_pxa_udc::unplug::Patience::new(now_ms(), layout_resets);
         // The SD guard needs rebuilding (something may have written the card).
         let mut guard_due = false;
         // `reboot wm`: when to reset (after the reply has reached the PC).
@@ -2042,6 +2045,10 @@ mod image {
             }
             if udc.take_msc_reset() {
                 msc.reset();
+            }
+            if patience.due(now_ms(), udc.configured(), udc.stats().resets) {
+                replug(&mut udc, uhc.as_mut());
+                let _ = writeln!(log, "PC silent: plugged in again");
             }
             if udc.configured() {
                 layout_since = rt::ticks();
