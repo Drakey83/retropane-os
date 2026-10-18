@@ -752,7 +752,7 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
 /// handed out with no fixed wait.
 pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-handover.bin");
@@ -811,7 +811,7 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
 /// the image's run, not the device's answer: docs/hw/emulator.md.)
 pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-cfdetect.bin");
@@ -865,7 +865,7 @@ pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
 pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::scanout::{WM_GAMMA, gamma, scale_gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-nightlight.bin");
@@ -873,8 +873,7 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-nightlight"), &image)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
-    let shot = root.join("target/emulator/nightlight-screen.ppm");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let shot = scratch(root, "nightlight-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -974,7 +973,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     };
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-display-cal.bin");
@@ -982,8 +981,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-display-cal"), &image)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
-    let shot = root.join("target/emulator/display-cal-screen.ppm");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let shot = scratch(root, "display-cal-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -1024,10 +1022,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
                 }
             }
             if Instant::now() > deadline {
-                let _ = std::fs::copy(
-                    &shot,
-                    root.join(format!("target/emulator/display-cal-{name}.ppm")),
-                );
+                let _ = std::fs::copy(&shot, scratch(root, &format!("display-cal-{name}.ppm"))?);
                 return Err(format!(
                     "display-cal: the {name} screen differs from the reference in {differ} pixels (target/emulator/display-cal-{name}.ppm)"
                 ));
@@ -1120,7 +1115,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
 /// puts everything back.
 pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
     looks_run(root, None)?;
-    let card = looks_card(&root.join("target/emulator/looks-card.img"))?;
+    let card = looks_card(&scratch(root, "looks-card.img")?)?;
     looks_run(root, Some(&card))
 }
 
@@ -1189,7 +1184,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
         unpack,
     };
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-looks.bin");
@@ -1197,8 +1192,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
     crate::sdkit::raw_binary(&release.join("rp-looks"), &image)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let frame = rp_loadproto::frame(&payload);
-    let shot = root.join("target/emulator/looks-screen.ppm");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let shot = scratch(root, "looks-screen.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -1254,10 +1248,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
                 }
             }
             if Instant::now() > deadline {
-                let _ = std::fs::copy(
-                    &shot,
-                    root.join(format!("target/emulator/looks-{name}.ppm")),
-                );
+                let _ = std::fs::copy(&shot, scratch(root, &format!("looks-{name}.ppm"))?);
                 return Err(format!(
                     "looks: the {name} screen differs from the reference in {differ} pixels (target/emulator/looks-{name}.ppm)"
                 ));
@@ -1347,7 +1338,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
 pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
     use rp_screen_measure::program::{PROGRAM_BYTES, Step, StepLight, encode};
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-screen-measure.bin");
@@ -1388,8 +1379,7 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
     let starts: Vec<u32> = (0..steps.len())
         .map(|i| lead + steps[..i].iter().map(|s| s.ms).sum::<u32>())
         .collect();
-    let shot = root.join("target/emulator/screen-measure.ppm");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let shot = scratch(root, "screen-measure.ppm")?;
     let guest = match emulator(root)? {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
@@ -1514,7 +1504,7 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
 /// then after D-pad centre); Home puts everything back.
 pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-refresh.bin");
@@ -1757,7 +1747,7 @@ pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let light = dir.join("rp-light.bin");
@@ -2373,7 +2363,7 @@ fn noise_timer_ways(log: &str) -> Result<(), String> {
 
 pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-noise.bin");
@@ -2393,8 +2383,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
         ballast: 0,
     });
-    let sd = root.join("target/emulator/sd-noise.img");
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let sd = scratch(root, "sd-noise.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
         root,
@@ -2546,7 +2535,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
 /// the image is safe to send.
 pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-unplug.bin");
@@ -2776,7 +2765,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
 /// log is shown for reading, and a fault, a panic or no verdict fail.
 pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-clocks.bin");
@@ -2926,7 +2915,7 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mved.bin");
@@ -3831,7 +3820,7 @@ pub fn boot_loader_drive_alone(root: &Path) -> Result<(), String> {
 
 /// The raw images the USB checks send.
 fn usb_images(root: &Path) -> Result<(), String> {
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     for image in ["rp-loader", "rp-light"] {
@@ -4217,14 +4206,13 @@ fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String
 /// soak exact, the test files removed.
 pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
     let loader = dir.join("rp-loader.bin");
     let image = dir.join("rp-storfast.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
     crate::sdkit::raw_binary(&release.join("rp-storfast"), &image)?;
-    let sd = root.join("target/emulator/sd-storfast.img");
+    let sd = scratch(root, "sd-storfast.img")?;
     let card = rp_fat::format::build(&rp_fat::format::Image {
         total_sectors: 128 * 2048,
         sectors_per_cluster: 1,
@@ -4243,7 +4231,7 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         ballast: 0,
     });
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
-    let cf = root.join("target/emulator/cf-storfast.img");
+    let cf = scratch(root, "cf-storfast.img")?;
     let cf_data: Vec<u8> = (0..16u32 << 20)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
@@ -4317,7 +4305,7 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
 
 /// `cargo xtask emu-cf`: the CompactFlash check on its own.
 pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
@@ -5353,7 +5341,7 @@ fn root_dir_lba(bot: &mut Bot) -> Result<u32, String> {
 
 /// `cargo xtask emu-stale`: the stale-view check on its own.
 pub fn boot_loader_stale_view_alone(root: &Path) -> Result<(), String> {
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
@@ -5378,7 +5366,7 @@ pub fn boot_loader_stale_view(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let release = root.join("target/armv5te-x51v-none-eabi/release");
-    let dir = root.join("target/emu");
+    let dir = emu_dir(root)?;
     let crash = dir.join("rp-crash.bin");
     crate::sdkit::raw_binary(&release.join("rp-crash"), &crash)?;
     let payload = std::fs::read(&crash).map_err(|e| format!("{}: {e}", crash.display()))?;
@@ -5391,8 +5379,7 @@ pub fn boot_loader_stale_view(root: &Path) -> Result<(), String> {
         blocked_clusters: &[],
         ballast: 0,
     });
-    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
-    let sd = root.join("target/emulator/sd-stale.img");
+    let sd = scratch(root, "sd-stale.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let before = b"written by the PC before the image ran\r\n";
     let after = b"written by the PC after the loader came back\r\n";
