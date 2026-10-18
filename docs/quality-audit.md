@@ -45,6 +45,7 @@ depends on them proves less than it looks):
 | C3 | emu-glesfeat checked no pixels | Checks the device's pixels with rp-v0.22.0 | **fixed** 2026-10-18 |
 | C4 | emu-noise could only check plumbing; with the R6 health rule the emulator can't make a healthy run | The append is host-tested (`append_row`); the emulator proves the refusal and that the file stays untouched | **fixed** 2026-10-18 |
 | C6 | `rp-wmaudio`'s first version read clocked units without checking `CKEN` and froze Windows Mobile on every start (2026-10-18) | Reads each unit only with its clock on (`read_reg`); the fact is in `docs/hw/README.md`; every new probe checks `CKEN` before a clocked unit | **fixed** 2026-10-18 |
+| C7 | A `put` over USB stopped 64 bytes (one packet) short once (13,274 of 13,338 bytes, then nothing for 2 s; count mismatches 0, `out csr 4`), right after a soft reset and the loader's start (2026-10-18 ~17:20); the retry passed. The loader refused it cleanly (nothing written) | Find where the last OUT packet went: reproduce with repeated `put`s of odd sizes after a fresh loader start; check the OUT endpoint's short-packet path (`SP`) and the PC side | open |
 | C5 | Mutants exist for some guards, not all | Every guard added since 2026-10-10 gets a mutant; list the ones missing | open |
 
 ## D. Copied values and housekeeping
