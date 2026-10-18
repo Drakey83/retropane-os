@@ -35,9 +35,9 @@ mod image {
     use rp_drv_mbx_display::{Display, crash};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_i2c::PxaI2c;
-    use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, Tone, stream};
+    use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, TX_PORT, Tone, stream};
     use rp_drv_wm8750::{Gate, Gated, Output, Wm8750};
-    use rp_hal_api::I2cBus;
+    use rp_hal_api::{DmaRing, I2cBus};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -54,6 +54,14 @@ mod image {
     /// `RP_TONE_CHECK_ONLY` at build time: the I2C controller checked and
     /// nothing else (no board bit: runs without the owner watching).
     const CHECK_ONLY: bool = option_env!("RP_TONE_CHECK_ONLY").is_some();
+    /// `RP_TONE_I2S_GAPS` at build time: how long I2S must be off before it
+    /// sends again (quality-audit B8), and nothing else: no codec, no I2C,
+    /// no board bit (runs without the owner watching).
+    const I2S_GAPS: bool = option_env!("RP_TONE_I2S_GAPS").is_some();
+    /// The off times tried, in milliseconds.
+    const GAPS_MS: [u32; 12] = [0, 1, 2, 5, 10, 20, 50, 100, 150, 200, 300, 500];
+    /// How long to wait for the DMA to move after I2S comes back on.
+    const MOVE_WAIT_MS: u32 = 1_000;
     /// Output volume, 0-100: 60, or `RP_TONE_LEVEL` at build time (a quiet
     /// run at night, 2026-10-18).
     const LEVEL: u32 = match option_env!("RP_TONE_LEVEL") {
@@ -332,9 +340,16 @@ mod image {
             }
         }
         let mut i2s = PxaI2s::new(i2s);
-        i2s.start(Rate::Khz48);
+        if !i2s.start(Rate::Khz48) {
+            let _ = writeln!(out, "tone: I2S didn't come on (SACR0 without its enable)");
+        }
         rt::delay_us(1_000);
         let _ = writeln!(out, "I2S running before the codec (SYSCLK on GPIO113)");
+        if I2S_GAPS {
+            i2s_gaps(&mut out, &mut i2s, &mut scratch[..RING]);
+            i2s.stop();
+            finish(&mut power)
+        }
         let mut gated = Gated {
             bus: PxaI2c::new(i2c),
             gate: Pins(gpio),
@@ -486,6 +501,73 @@ mod image {
         // The session's end: I2S off once, then the power.
         i2s.stop();
         finish(&mut power)
+    }
+
+    /// Milliseconds until the DMA ring into I2S first moves (it reads from
+    /// the ring only as the transmitter takes samples), or `None` within
+    /// `limit_ms`; the ring stopped after.
+    fn first_move(dma: &mut Dma, ring: &mut [u8], limit_ms: u32) -> Option<u32> {
+        if !dma.start(TX_PORT, ring) {
+            return None;
+        }
+        let t0 = rt::ticks();
+        let from = dma.position();
+        let mut moved = None;
+        loop {
+            let ms = rt::ticks().wrapping_sub(t0) / (TICK_1S / 1000);
+            if dma.position() != from {
+                moved = Some(ms);
+                break;
+            }
+            if ms > limit_ms {
+                break;
+            }
+            rt::check_in();
+        }
+        dma.stop();
+        moved
+    }
+
+    /// Quality-audit B8: I2S switched off, left off `gap` ms, on again;
+    /// how long until it takes samples (the DMA moves). The order as
+    /// `play` had it: the DMA stopped first, then I2S.
+    fn i2s_gaps(out: &mut impl Write, i2s: &mut PxaI2s<Mmio>, ring: &mut [u8]) {
+        let Some(mut dma) = rt::take_dma(dma_map::AUDIO) else {
+            let _ = writeln!(out, "gaps: no DMA channel");
+            return;
+        };
+        ring.fill(0);
+        let warm = first_move(&mut dma, ring, MOVE_WAIT_MS);
+        let _ = writeln!(
+            out,
+            "gaps: I2S on from the start, first move after {warm:?} ms"
+        );
+        for gap in GAPS_MS {
+            rt::check_in();
+            // Running before each try, as a note would be.
+            let _ = first_move(&mut dma, ring, MOVE_WAIT_MS);
+            rt::delay_us(20_000);
+            i2s.stop();
+            rt::delay_us(gap * 1_000);
+            let took = i2s.start(Rate::Khz48);
+            let moved = first_move(&mut dma, ring, MOVE_WAIT_MS);
+            let _ = writeln!(out, "gaps: off {gap} ms: switch-on taken: {took}");
+            let [sacr0, _, sasr0] = i2s.status();
+            match moved {
+                Some(ms) => {
+                    let _ = writeln!(
+                        out,
+                        "gaps: off {gap} ms -> moved after {ms} ms (SACR0 {sacr0:x}, SASR0 {sasr0:x})"
+                    );
+                }
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "gaps: off {gap} ms -> no move in {MOVE_WAIT_MS} ms (SACR0 {sacr0:x}, SASR0 {sasr0:x})"
+                    );
+                }
+            }
+        }
     }
 
     /// The bus lines and the controller's registers.

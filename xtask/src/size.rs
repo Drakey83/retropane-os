@@ -564,10 +564,12 @@ pub const BUDGETS: &[Budget] = &[
     // 2026-10-18: + the codec's power (CPLD 0x1C bit 1 through the shared
     // shadow) and its I2C gate: 26.1 KB measured, 25 -> 28 KiB; then run 3
     // (four probe ways, the speaker amplifier, the jack on GPIO83): 27.7 KiB
-    // measured, 28 -> 31 KiB.
+    // measured, 28 -> 31 KiB; then 31 -> 35 KiB for the I2C and DMA
+    // diagnostics and the I2S off-time measurement (quality-audit B8),
+    // 31.6 KiB measured.
     Budget {
         image: "rp-tone",
-        max_load: 31 * 1024,
+        max_load: 35 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

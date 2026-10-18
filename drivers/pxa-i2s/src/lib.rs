@@ -178,12 +178,18 @@ impl<B: RegisterBus> PxaI2s<B> {
         Self { regs }
     }
 
-    /// Starts playback at `rate`: clocks out, FIFO draining.
-    pub fn start(&mut self, rate: Rate) {
+    /// Starts playback at `rate`: clocks out, FIFO draining. `false` if
+    /// the controller didn't take it (`SACR0` read back without its enable):
+    /// on the X51v a switch-on within ~645 ms of a [`Self::stop`] is
+    /// ignored entirely (measured 2026-10-18, docs/hw/audio.md), so keep
+    /// I2S on through a session rather than stopping between sounds.
+    #[must_use]
+    pub fn start(&mut self, rate: Rate) -> bool {
         self.regs.write32(reg::SADIV, rate.sadiv());
         self.regs.write32(reg::SACR1, SACR1_DREC);
         self.regs
             .write32(reg::SACR0, SACR0_ENB | SACR0_BCKD | SACR0_TFTH_8);
+        self.regs.read32(reg::SACR0) & SACR0_ENB != 0
     }
 
     /// Queues one stereo frame (left in the low half) if the FIFO has room.
@@ -210,7 +216,8 @@ impl<B: RegisterBus> PxaI2s<B> {
         self.regs.write32(reg::SACR0, 0);
     }
 
-    /// Stops playback (clocks off).
+    /// Stops playback (clocks off). A [`Self::start`] within ~645 ms after
+    /// is ignored on the X51v.
     pub fn stop(&mut self) {
         self.regs.write32(reg::SACR0, 0);
     }
@@ -281,9 +288,17 @@ mod tests {
     use rp_hal_mock::MockBus;
 
     #[test]
+    fn a_switch_on_the_controller_ignored_is_reported() {
+        // The X51v within ~645 ms of a stop: SACR0 reads back 0.
+        let mut i2s = PxaI2s::new(MockBus::new());
+        i2s.regs.script_reads(reg::SACR0, &[0]);
+        assert!(!i2s.start(Rate::Khz48));
+    }
+
+    #[test]
     fn start_sets_rate_master_clocks_and_playback_only() {
         let mut i2s = PxaI2s::new(MockBus::new());
-        i2s.start(Rate::Khz48);
+        assert!(i2s.start(Rate::Khz48));
         let w = i2s.regs.writes();
         assert!(w.contains(&(reg::SADIV, 0x0C)));
         assert!(w.contains(&(reg::SACR1, SACR1_DREC)));

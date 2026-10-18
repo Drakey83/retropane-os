@@ -239,6 +239,18 @@ to the headphones and three to the speaker (run 9). Design rule for the
 OS's audio service: I2S on for the whole session, off only when audio
 powers down after an idle time, as Windows Mobile does.
 
+**How long I2S ignores a switch-on (2026-10-18, `RP_TONE_I2S_GAPS`, no
+codec, no board bit):** I2S stopped (DMA first, then `SACR0` = 0), left off
+0-500 ms, switched on again, the DMA timed to its first move. The tries
+alternated: every other one moved at once (`SACR0` `0x805`); in the
+others **`SACR0` read 0 (the switch-on write was ignored)** and the DMA
+moved only ~645 ms after the stop whatever the gap (0 ms off: 645; 50:
+595; 150: 495; 300: 345). The working tries followed a failed one (I2S
+really off well over 645 ms). So: **after I2S is switched off, a write
+switching it on within ~645 ms is dropped**. Run 8's "200 ms off plays"
+followed a failed try. `PxaI2s::start` now reads `SACR0` back and reports
+a dropped switch-on; the OS keeps I2S on through a session.
+
 Remaining difference between Windows Mobile's working transfer and
 `rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
 after power (~260 ms vs 50 ms). Next run (owner watching): each alone,

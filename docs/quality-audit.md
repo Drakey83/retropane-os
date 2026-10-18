@@ -32,7 +32,7 @@ depends on them proves less than it looks):
 | B2 | Alpha test, all depth modes, code 10 grey | Fork rp-v0.22.0 (`mbx-3d-alpha`), `emu-glesfeat` checks the device's pixels | **fixed** 2026-10-18 |
 | B3 | Fog (TSP bit 24, colour `0x63C`) and the second texture unit | Device test first (needs the TA's vertex and state formats read statically), then model | open |
 | B4 | Codec power (CPLD `0x1C` bit 1) and speaker amp (`0x14` bit 1): the model's codec answers with power off | Model after the owner-watched run decides what the codec needs | open |
-| B8 | I2S re-enabled right after being switched off sends nothing (measured 2026-10-18, run 8); the fork's I2S restarts at once | Model it (after a disable, the transmitter stays silent until it has been off ~200 ms; the exact time to measure), with `emu-tone` running a stop-start case that fails without the model | open |
+| B8 | I2S re-enabled right after being switched off sends nothing; measured: a switch-on within ~645 ms of the switch-off is dropped (`SACR0` reads 0); the fork's I2S restarts at once | Model it in the fork (a switch-on within 645 ms of a switch-off ignored), with a check that runs a stop-start and fails without the model; `PxaI2s::start` reports a dropped switch-on | in progress |
 | B5 | The 60 Hz display PLL (`DISPPLL`) | Model the PLL so `emu-refresh` checks the real switch | open |
 | B6 | GPIO pin functions (touch CS on GPIO24) | Model `GAFR`, start from WM's values | open |
 | B7 | The CF socket in the X51v machine; MVED decoder registers; clocks' relock time and `MDCNFG`; timer channels' odd modes; 2D engine format code 4 | One fork change each, listed in `emulator.md` | open |
