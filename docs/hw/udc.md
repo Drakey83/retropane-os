@@ -483,9 +483,14 @@ silent after the unplug leaves the loader waiting forever, and the owner
 re-docks. That is the class: the loader has no answer to "unplugged, but
 nobody came".
 
-**Proposed fix (owner's vote; not built).** In the waiting loop: not
-configured, **no bus reset for 10 s** since the last plug-in → `replug`
-again (the same SE0 the start uses, proven five times), then wait 20 s,
+**Proposed fix (owner's vote; not built).** It belongs in the shared
+driver (`drivers/pxa-udc`), not in the loader alone: the development
+loader isn't in release images (ROADMAP, ADR-0017) and the flash-booted
+OS has no hand-over from Windows Mobile, but its USB service (LegacySync,
+the card drive) can meet the same silent PC (a PC waking from sleep, a cut
+sync session). One rule in the driver, used by the loader now and the OS
+later: not configured, **no bus reset for 10 s** since the last plug-in →
+unplug and present again (the same SE0 the start uses, proven five times), then wait 20 s,
 40 s, then every 60 s. It never fires while the PC is talking or the device
 is configured, so a working link is untouched; the cost is a counter and a
 time stamp (tens of bytes; the loader's budget has room for this only with
