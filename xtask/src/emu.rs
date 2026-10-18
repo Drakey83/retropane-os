@@ -1076,8 +1076,9 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
 
 /// The C6 looks test under the loader (`rp-looks`): each page pixel-exact
 /// below the caption, each look's table applied in the picture and
-/// dithered, driven by keys: the original, deeper darks on both photos and
-/// the chart, D65 on the chart, the original again by compare, the ramps;
+/// dithered, driven by keys: the original, the picked contrast on both
+/// photos and the chart, strong contrast on the chart, the original again
+/// by compare, the ramps;
 /// Home puts everything back.
 pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
@@ -1159,17 +1160,16 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
             Ok(())
         };
         until("original-pier", 0, 0)?;
-        key("right")?;
-        key("right")?;
-        until("deeper-darks-pier", 0, 2)?;
-        key("down")?;
-        until("deeper-darks-milkyway", 1, 2)?;
-        key("down")?;
-        until("deeper-darks-chart", 2, 2)?;
-        for _ in 0..4 {
+        for _ in 0..3 {
             key("right")?;
         }
-        until("d65-chart", 2, 6)?;
+        until("contrast-pick-pier", 0, 3)?;
+        key("down")?;
+        until("contrast-pick-milkyway", 1, 3)?;
+        key("down")?;
+        until("contrast-pick-chart", 2, 3)?;
+        key("right")?;
+        until("contrast-strong-chart", 2, 4)?;
         key("ret")?;
         until("compare-original-chart", 2, 0)?;
         key("down")?;
@@ -1197,9 +1197,9 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         .ok_or("looks: no run log after the image returned")?;
     for want in [
         "page drawn in",
-        "D65 (6500 K) (showing the original), Colour chart",
-        "done (Home) after 10 changes",
-        "last look: D65 (6500 K), Ramps",
+        "Contrast strong (showing the original), Colour chart",
+        "done (Home) after 8 changes",
+        "last look: Contrast strong, Ramps",
         "LOOKS-OK",
     ] {
         if !log.contains(want) {
@@ -1207,7 +1207,7 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    looks OK: both photos, the chart and the ramps pixel-exact, each look's table applied in the picture and dithered (original, deeper darks, D65), compare back to the original; Home put back and returned"
+        "    looks OK: both photos, the chart and the ramps pixel-exact, each look's table applied in the picture and dithered (original, the picked and the strong contrast), compare back to the original; Home put back and returned"
     );
     Ok(())
 }

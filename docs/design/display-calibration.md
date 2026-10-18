@@ -514,6 +514,23 @@ profiling run is its test.
   light tones up.) Run 1's log: Original 94 s and Original full light 96 s
   on screen, the calibrated whites 15-31 s each, 213 changes.
 
+**Decided (owner, 2026-10-17, after looks run 2; replaces "Original is the
+default" above): RetroPane's default look is "Full light, more contrast"**:
+the backlight at full, the panel's own white, and an S-curve through Windows
+Mobile's table, applied before the dither (in the picture or the renderer's
+dither step, never in the hardware table after it). **Original stays a
+choice in Settings > Display**; Everyday and Dark games stay offered there
+until the strength test settles the curve. Costs to watch: battery at full
+backlight (unmeasured), the LEDs' heat and wear (white dims about 8% over an
+hour at full), and shadow detail in dark scenes (the strength test checks
+it). The brightness slider still works: the curve is kept at any backlight.
+
+- **Strength test (looks v3, built 2026-10-17):** `rp-looks` with five
+  looks: Original, Full light (no curve), and the S-curve at **mild**
+  (power 1.3), **current** (1.6, the pick) and **strong** (2.0), all at full
+  backlight; same pages (both photos, chart, ramps with the stretched
+  0-63 shadow band).
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings

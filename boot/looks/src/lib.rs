@@ -59,64 +59,80 @@ pub struct Look {
 /// nobody a calibrated white; the owner asked for darker darks at full
 /// light, hence the two curves after it: deeper darks (input to the power
 /// 1.35) and more contrast (an S-curve, power 1.6 each side of the middle),
-/// both through the table as found. The three measured tables are the second pass
-/// of `cargo xtask calibrate --verify` on profile run 3 (2026-10-17,
-/// `local/screen-measure/c6/profile-1792284643-verify.md`): measured greys
-/// within about 1.5 Delta E 2000 of BT.1886 at their white on average. Two
-/// blue points are brought down to the next one, as `calibrate` now does
-/// (a table must never fall): native point 15 E0 to DE, D65 point 0 6 to 0.
-pub const LOOKS: [Look; 7] = [
+/// both through the table as found. Run 2: the owner picked more contrast
+/// "by far" and made it the default look; version 3 (these looks) tests its
+/// strength: mild, the pick, strong, against the original and full light
+/// with no curve.
+pub const LOOKS: [Look; 5] = [
     Look {
         name: "Original",
         table: Base::Found,
         light: Light::Found,
     },
     Look {
-        name: "Original, full light",
+        name: "Full light",
         table: Base::Found,
         light: Light::Full,
     },
     Look {
-        name: "Full light, deeper darks",
-        table: Base::Curved([
-            0, 6, 15, 27, 39, 53, 68, 84, 101, 118, 136, 155, 174, 194, 214, 235, 255,
-        ]),
+        name: "Contrast mild",
+        table: Base::Curved(CONTRAST[0]),
         light: Light::Full,
     },
     Look {
-        name: "Full light, more contrast",
-        table: Base::Curved([
-            0, 5, 14, 27, 42, 60, 81, 104, 128, 153, 175, 196, 214, 229, 242, 251, 255,
-        ]),
+        name: "Contrast (pick)",
+        table: Base::Curved(CONTRAST[1]),
         light: Light::Full,
     },
     Look {
-        name: "Native white",
-        table: Base::Measured([
+        name: "Contrast strong",
+        table: Base::Curved(CONTRAST[2]),
+        light: Light::Full,
+    },
+];
+
+/// The S-curves (point `i` for input `16 * i`): each half of the range bent
+/// to the power 1.3 (mild), 1.6 (the owner's pick in run 2) and 2.0
+/// (strong), meeting at the middle.
+pub const CONTRAST: [[u8; GAMMA_ENTRIES]; 3] = [
+    [
+        0, 9, 21, 36, 52, 70, 88, 108, 128, 149, 168, 187, 204, 220, 235, 247, 255,
+    ],
+    [
+        0, 5, 14, 27, 42, 60, 81, 104, 128, 153, 175, 196, 214, 229, 242, 251, 255,
+    ],
+    [
+        0, 2, 8, 18, 32, 50, 72, 98, 128, 158, 184, 206, 224, 238, 247, 253, 255,
+    ],
+];
+
+/// The measured calibration tables of verify run 1 (second pass), kept for
+/// the record: looks run 1 and 2 showed them; the family never picked them.
+pub const MEASURED: [(&str, [u32; GAMMA_ENTRIES]); 3] = [
+    (
+        "Native white",
+        [
             0x0B0006, 0x29281B, 0x3B3D2B, 0x49503A, 0x556146, 0x6A7152, 0x76805E, 0x828C6C,
             0x8A997B, 0xA1A981, 0xA8B796, 0xB7C8A0, 0xC3D3B1, 0xD8E0C0, 0xE5ECCF, 0xF3F6DE,
             0xFFFFDE,
-        ]),
-        light: Light::Full,
-    },
-    Look {
-        name: "9000 K",
-        table: Base::Measured([
+        ],
+    ),
+    (
+        "9000 K",
+        [
             0x0B0005, 0x23280B, 0x333D15, 0x435022, 0x51612C, 0x597131, 0x687F3B, 0x708A46,
             0x7A9C53, 0x86A656, 0x91B764, 0xA3C472, 0xA5D376, 0xB3DD7D, 0xC4EB89, 0xC9F799,
             0xD5FFA4,
-        ]),
-        light: Light::Full,
-    },
-    Look {
-        name: "D65 (6500 K)",
-        table: Base::Measured([
+        ],
+    ),
+    (
+        "D65 (6500 K)",
+        [
             0x0C0000, 0x262800, 0x364000, 0x4B4F00, 0x525F03, 0x626E09, 0x6B8012, 0x7C8C18,
             0x849921, 0x91A727, 0x9BB731, 0xA6C53C, 0xAECF47, 0xC1DD4B, 0xC7E959, 0xD6F062,
             0xE3FF76,
-        ]),
-        light: Light::Full,
-    },
+        ],
+    ),
 ];
 
 /// Look `i`'s table, `found` being the table as found.
@@ -353,31 +369,41 @@ mod tests {
     }
 
     #[test]
-    fn looks_are_the_measured_tables() {
+    fn looks_are_the_original_and_three_contrast_strengths() {
         let found = [0x123456; GAMMA_ENTRIES];
         assert_eq!(look_table(0, &found), found);
         assert_eq!(look_table(1, &found), found);
-        assert_eq!(LOOKS[1].light, Light::Full);
-        // The curves darken the darks through the found table.
+        assert_eq!(LOOKS[0].light, Light::Found);
+        assert!(LOOKS[1..].iter().all(|l| l.light == Light::Full));
+        // Through a straight table each curve is itself: rising, black and
+        // the middle fixed, white at the table's 254 (its squeezed top).
         let ramp: [u32; GAMMA_ENTRIES] =
             core::array::from_fn(|i| ((16 * i as u32).min(255)) * 0x01_0101);
-        let deeper = look_table(2, &ramp);
-        assert_eq!(deeper[8] & 0xFF, 101);
-        // 255 through a straight 17-point table: its top segment's 254.
-        assert_eq!(deeper[16] & 0xFF, 254);
-        let contrast = look_table(3, &ramp);
-        assert!(contrast[4] & 0xFF < 64 && contrast[12] & 0xFF > 192);
-        for i in 4..LOOKS.len() {
-            let t = look_table(i, &found);
-            assert_ne!(t, found);
-            // Rising in every channel, the spare byte clear.
+        let mut darks = [0u32; 3];
+        for (k, look) in (2..5).enumerate() {
+            let t = look_table(look, &ramp);
             for c in [16, 8, 0] {
                 assert!(
                     t.windows(2)
                         .all(|w| (w[0] >> c) & 0xFF <= (w[1] >> c) & 0xFF)
                 );
             }
+            assert_eq!(t[0] & 0xFF, 0);
+            assert_eq!(t[8] & 0xFF, 128);
+            assert_eq!(t[16] & 0xFF, 254);
             assert!(t.iter().all(|w| w >> 24 == 0));
+            darks[k] = t[3] & 0xFF;
+        }
+        // Stronger is darker in the shadows.
+        assert!(darks[0] > darks[1] && darks[1] > darks[2], "{darks:?}");
+        // The kept measured tables never fall.
+        for (_, t) in MEASURED {
+            for c in [16, 8, 0] {
+                assert!(
+                    t.windows(2)
+                        .all(|w| (w[0] >> c) & 0xFF <= (w[1] >> c) & 0xFF)
+                );
+            }
         }
     }
 
