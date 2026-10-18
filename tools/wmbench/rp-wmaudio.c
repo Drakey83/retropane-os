@@ -83,6 +83,37 @@ static volatile unsigned long *shadow;  /* 0xA8001000: WM's CPLD shadow at +0x32
 
 #define R(p, off) ((p) ? (p)[(off) / 4] : 0xDEADDEADul)
 
+/*
+ * A unit whose clock is off hangs the bus when read (2026-10-18: the first
+ * version froze Windows Mobile on its first snapshot, audio idle, I2S and
+ * I2C clocks off). So every read of a clocked unit asks CKEN first:
+ * I2S bit 8, I2C bit 14, power I2C bit 15. The GPIO block, the clock
+ * manager and RAM are always readable.
+ */
+#define CKEN_I2S (1ul << 8)
+#define CKEN_I2C (1ul << 14)
+#define CKEN_PI2C (1ul << 15)
+
+static unsigned long clock_bit(volatile unsigned long *const *block)
+{
+    if (block == &i2s)
+        return CKEN_I2S;
+    if (block == &i2c)
+        return CKEN_I2C;
+    if (block == &pwr)
+        return CKEN_PI2C;
+    return 0;
+}
+
+/* The register, or 0xC10CC0FF ("clock off") without touching the unit. */
+static unsigned long read_reg(volatile unsigned long *const *block, DWORD off)
+{
+    unsigned long bit = clock_bit(block);
+    if (bit && !(R(clk, 0x004) & bit))
+        return 0xC10CC0FFul;
+    return R(*block, off);
+}
+
 /* Registers read in every snapshot: block, offset, name. Only registers
  * with no read side effect (no data FIFOs). */
 struct reg {
@@ -119,9 +150,9 @@ static int gpio_level(unsigned pin)
 static void snapshot(const char *phase)
 {
     unsigned k;
-    out("== %s", phase);
+    out("== %s (CKEN %08lx; c10cc0ff = clock off, not read)", phase, R(clk, 0x004));
     for (k = 0; k < NREGS; k++)
-        out("  %-10s %08lx", REGS[k].name, R(*REGS[k].block, REGS[k].off));
+        out("  %-10s %08lx", REGS[k].name, read_reg(REGS[k].block, REGS[k].off));
     for (k = 0; k < 10; k++)
         out("  CPLD %02x   %08lx", CPLD_REG[k], R(shadow, 0x320 + 4 * k));
     out("  GPIO82 %d  GPIO83 %d  GPIO96 %d  GPIO113 %d  GPIO117 %d  GPIO118 %d",
@@ -155,12 +186,12 @@ static DWORD WINAPI watcher(LPVOID arg)
     (void)arg;
     memset(&last, 0xFF, sizeof last);
     while (watching) {
-        now.icr = R(i2c, 0x690);
-        now.isr = R(i2c, 0x698);
-        now.idbr = R(i2c, 0x688);
-        now.picr = R(pwr, 0x190);
-        now.pisr = R(pwr, 0x198);
-        now.pidbr = R(pwr, 0x188);
+        now.icr = read_reg(&i2c, 0x690);
+        now.isr = read_reg(&i2c, 0x698);
+        now.idbr = read_reg(&i2c, 0x688);
+        now.picr = read_reg(&pwr, 0x190);
+        now.pisr = read_reg(&pwr, 0x198);
+        now.pidbr = read_reg(&pwr, 0x188);
         /* GPIO82 (the gate), 83 and 95-ish lines live in GPLR2. */
         now.gplr2 = R(gpio, 0x008);
         if (memcmp(&now.icr, &last.icr, sizeof now - sizeof now.t_us) != 0) {
@@ -288,6 +319,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     GetLocalTime(&st);
     out("# rp-wmaudio run %04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour,
         st.wMinute, st.wSecond);
+    flush();
 
     gpio = map_phys(0x40E00000, 0x1000);
     clk = map_phys(0x41300000, 0x1000);

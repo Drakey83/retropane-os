@@ -51,6 +51,7 @@ booted through HaRET. Details in the per-block files.
 | Fact | Value | Meaning | Confidence | Evidence |
 |---|---|---|---|---|
 | CPU ID (CP15 c0) | `0x69054117` | Intel XScale, PXA27x core, revision 7 | confirmed | rp-light on device |
+| A peripheral read with its clock off (`CKEN`) | the first `rp-wmaudio` (2026-10-18) read the I2S and I2C registers while Windows Mobile had their clocks off (audio idle): **Windows Mobile froze on every start** | Read `CKEN` first; never touch a clocked unit (I2S bit 8, I2C 14, power I2C 15, ...) whose bit is clear | likely (froze at the first snapshot, before its first box; one cause read in the code) | owner, 2026-10-18 |
 | CP15 c1 at handoff | `0x00002A7A` | MMU, D-cache and I-cache off; alignment checking **on**; write buffer, branch prediction and high vectors set (HaRET's state) | confirmed | rp-light on device |
 | Panel (CPLD ID) | 3.7" Sharp VGA | `cpld.md` panel ID decode is right | confirmed | rp-light on device |
 | Power button | GPIO0, reads 0 at rest; WM arms both edges (`GRER0`/`GFER0` bit 0) | the button's line; pressed level unconfirmed (the loader doesn't depend on it) | likely | probe via the loader, 2026-10-12 |

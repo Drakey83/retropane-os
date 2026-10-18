@@ -44,6 +44,7 @@ depends on them proves less than it looks):
 | C2 | 27 fixed sleeps of 500 ms or more remain in `xtask/src/emu.rs` (e.g. "press a key, sleep 4 s" in emu-mbx3d, emu-mbx3d-api, emu-glesfeat) | Each sleep replaced by a wait on the image (a serial marker, the screen, a register) or a guest-time hold; a test that forbids new ones | open |
 | C3 | emu-glesfeat checked no pixels | Checks the device's pixels with rp-v0.22.0 | **fixed** 2026-10-18 |
 | C4 | emu-noise could only check plumbing; with the R6 health rule the emulator can't make a healthy run | The append is host-tested (`append_row`); the emulator proves the refusal and that the file stays untouched | **fixed** 2026-10-18 |
+| C6 | `rp-wmaudio`'s first version read clocked units without checking `CKEN` and froze Windows Mobile on every start (2026-10-18) | Reads each unit only with its clock on (`read_reg`); the fact is in `docs/hw/README.md`; every new probe checks `CKEN` before a clocked unit | **fixed** 2026-10-18 |
 | C5 | Mutants exist for some guards, not all | Every guard added since 2026-10-10 gets a mutant; list the ones missing | open |
 
 ## D. Copied values and housekeeping
