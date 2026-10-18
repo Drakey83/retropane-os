@@ -222,6 +222,16 @@ and the game looks right unchanged; if the game itself sends 4-bit data,
 the lost shades can't be recovered (only the curve helps). Which applies
 to each title is read from its texture uploads (open; DoomGLES first).
 
+**Decided (owner, 2026-10-18): texture work only for our own ports.** The
+closed titles read so far send their textures already reduced, in their
+own data (Enigmo and Virtual Pool PVRTC 4 bpp, THPS2 PVRTC 2 bpp, Call of
+Duty 2 RGB565 + ARGB4444: [research/gles-games.md](../research/gles-games.md)).
+Options considered for them (replacement texture packs, decoding PVRTC and
+re-uploading smoothed RGB565 with mipmaps, debanding 4444) are **not
+pursued**: our GLES layer gives each closed game exactly what it asks for.
+The quality work above is for the GLES ports we rebuild natively (DOOM,
+DOOM II, Heretic, Quake 1-3), which load the games' original art.
+
 **Open, to try later:** the panel's own contrast. Dell's display driver
 sets PWM1 to a panel-specific constant (70 of 216 on the owner's Sharp),
 most likely the panel's bias or contrast voltage, not the backlight
