@@ -286,7 +286,11 @@ mod tests {
     fn a_controller_still_busy_after_the_stop_is_reset() {
         // The X51v after an acknowledged address and a master abort: SCL
         // held low, the unit busy.
-        let mut i2c = with_status(ISR_ITE | ISR_ACKNAK | ISR_UB);
+        let mut i2c = PxaI2c::new(MockBus::new());
+        // Busy for every read the driver can make (the wait for the bus
+        // gives up after SPIN_LIMIT reads).
+        let busy = vec![ISR_ITE | ISR_ACKNAK | ISR_UB; SPIN_LIMIT as usize + 16];
+        i2c.regs.script_reads(reg::ISR, &busy);
         let set_up = i2c.regs.writes().len();
         assert_eq!(i2c.write(0x1B, &[1]), Err(I2cError::NoDevice));
         let w = i2c.regs.writes();
