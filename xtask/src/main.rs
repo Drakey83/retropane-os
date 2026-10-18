@@ -117,6 +117,8 @@ commands:
             engine, edges exact): run it before `load rp-mbx`
   emu-mbx-blend  only the blend and display-event probe (rp-mbx-blend:
             every stage runs, state put back): run it before `load rp-mbx-blend`
+  emu-glesfeat the alpha test, depth 'less' and grey textures (rp-glesfeat:
+            every case runs and returns): run it before `load rp-glesfeat`
   emu-mbx3d the 3D core's first-triangle test (rp-mbx3d: runs and returns;
             the 3D core isn't modelled): run it before `load rp-mbx3d`
   emu-unplug only the USB disconnect hunt's safety check (rp-unplug: every
@@ -143,8 +145,8 @@ commands:
             (rp-quantum: all run; numbers printed): run it before `load rp-quantum`
   emu-usb   only the loader-over-USB check (image in, run log out)
   emu-loader only the loader's boot check (boot time, an image's round trip)
-  emu-keepfed after an image returns, the loader keeps the watchdog fed with no PC program (150 s;
-              needs the fork's timer fix, branch timer-match-one: not in `emu` until it's released)
+  emu-keepfed after an image returns, the loader keeps the watchdog fed with no PC
+            program (150 s; needs rp-v0.21.0's timer fix)
   emu-handover only the hand-over check (rp-handover: the 2700G with no fixed
             wait, the CPLD shadow adopted from Windows Mobile's table)
   emu-nightlight only the night-light experiment's check (rp-nightlight)
@@ -196,13 +198,13 @@ fn main() -> ExitCode {
             .iter()
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-mbx3d-api"
-        | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-cf"
-        | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize"
-        | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast"
-        | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal"
-        | "emu-looks" | "emu-tone" | "emu-refresh" | "emu-screen-measure" | "emu-unplug"
-        | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
+        | "emu-mbx3d-api" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash"
+        | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
+        | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
+        | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
+        | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-refresh" | "emu-screen-measure"
+        | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -460,6 +462,7 @@ fn run_step(step: &str) -> Result {
         "emu-mbx" => cross().and_then(|()| emu::boot_loader_mbx(&workspace_root())),
         "emu-mbx-blend" => cross().and_then(|()| emu::boot_loader_mbx_blend(&workspace_root())),
         "emu-mbx3d" => cross().and_then(|()| emu::boot_loader_mbx3d(&workspace_root())),
+        "emu-glesfeat" => cross().and_then(|()| emu::boot_loader_glesfeat(&workspace_root())),
         "emu-unplug" => cross().and_then(|()| emu::boot_loader_unplug(&workspace_root())),
         "emu-mbx3d-api" => cross().and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root())),
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
@@ -521,6 +524,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_mbx(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx_blend(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx3d(&workspace_root()))
+            .and_then(|()| emu::boot_loader_glesfeat(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
             .and_then(|()| emu::boot_loader_mved(&workspace_root()))
             .and_then(|()| emu::boot_loader_clocks(&workspace_root()))

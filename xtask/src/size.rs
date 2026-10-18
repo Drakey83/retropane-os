@@ -418,6 +418,15 @@ pub const BUDGETS: &[Budget] = &[
     // raised to 44 KiB for version 29 (option A's clock and CS3 bus-timing
     // steps: per-step flush, read-back, all-free-memory patterns, the
     // report lines), 41.0 KiB measured.
+    // Test image (ADR-0026, 2026-10-18): the alpha test, depth "less"
+    // without it and 8-bit grey textures; rp-mbx3d's proven set-up only.
+    // 20.3 KiB measured, + ~15%.
+    Budget {
+        image: "rp-glesfeat",
+        max_load: 24 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-mbx3d",
         max_load: 44 * 1024,

@@ -359,6 +359,19 @@ needs only "greater". S8 is removed; S5 checks the refusal.
 even blue at 0.3 over red at 0.5 with writes on (version 23, T7b), where it
 should have; "greater" behaved exactly. The model keeps it as measured.
 
+**Lead (static, 2026-10-18, docs/hw/2700g.md "Alpha test, fog, the second
+texture unit"):** the GLES driver puts the **alpha test** in the second
+object word's bits 31-29 (comparison) and 28-21 (reference). Version 23
+wrote the depth mode there too (`mode << 29`, reference 0), so "less" asked
+"alpha < 0" and "less or equal" "alpha <= 0": never true for opaque
+pixels, while "greater", "greater or equal" and "always" always pass. That
+fits every measurement above. The renderer still writes the depth mode
+into those bits (`encode`: `(dp.mode & 7) << 29`). `rp-glesfeat` (test D)
+repeats T7b with those bits "always" and the mode only in the TSP; if
+"less" then works, the renderer's ISP word becomes the alpha test alone
+and `DEPTH_MODES` can grow. A measurement first; the change is the
+owner's call.
+
 ## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
 
 The GPU facts that shape the OS's design, before any interface design

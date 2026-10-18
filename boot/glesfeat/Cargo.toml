@@ -1,0 +1,23 @@
+[package]
+name = "rp-glesfeat"
+description = "Test image (ADR-0026): the MBX 3D core's alpha test, depth \"less\" without it, and 8-bit grey textures, as Intel's GLES driver forms them (static reading 2026-10-18); results logged as pixels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+
+[lints]
+workspace = true

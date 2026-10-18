@@ -182,7 +182,9 @@ pub fn one_triangle_list(params_offset: u32) -> [u32; 2] {
 /// (`libGLES_CL.dll` `0x02267434`): format and size, address, combine.
 pub mod tex {
     /// The ISP word DoomGLES's textured objects carry (our flat ones:
-    /// `0xE0000000`; bits 27, 26 and 23 more, meaning not yet known).
+    /// `0xE0000000`): bits 31-29 and 28-21 are the alpha test, read from
+    /// the GLES driver (2026-10-18, docs/hw/2700g.md): "always", reference
+    /// 100 (`glAlphaFuncx` packs `func << 29 | ref << 21`).
     pub const ISP_GAME: u32 = 0xEC80_0000;
     /// The TSP word of most of DoomGLES's objects: Gouraud (bit 22) and
     /// `0x0200` where untextured ones have `0x0E80`. Neither the TA nor

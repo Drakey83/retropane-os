@@ -2582,6 +2582,62 @@ pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The alpha test, depth "less" and 8-bit grey textures (rp-glesfeat,
+/// ADR-0026, 2026-10-18): every case runs and is logged, back at the loader
+/// on a button. The fork's 3D model knows none of the three features yet,
+/// so pixels aren't checked (docs/hw/emulator.md).
+pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-3d") {
+        eprintln!("    glesfeat: skipped (this emulator release doesn't model the MBX 3D core)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let bin = raw_image(root, "rp-glesfeat")?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        std::thread::sleep(Duration::from_secs(4));
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-GLESFEAT: ")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(180),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("glesfeat: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("glesfeat: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "parameter memory ready: true",
+        "A always, ref 0 (control)",
+        "A less 0 (version 23's depth 'less')",
+        "D blue z 0.8 mode 1 (version 23's form)",
+        "L code 10, texels 0x60, TEX2 0x86086610",
+        "RETROPANE-GLESFEAT: DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("glesfeat: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
+    Ok(())
+}
+
 /// The MBX 3D core's first-triangle test (rp-mbx3d, ADR-0024 M4): runs
 /// under the loader, every try timed out (no 3D model), back on a button.
 pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
