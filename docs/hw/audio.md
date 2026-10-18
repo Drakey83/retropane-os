@@ -180,6 +180,28 @@ answers what Dell's state is when audio works); (c) further static reading
 of the I2C path Dell's codec writes take (`0x02467640`: which I2C unit,
 which address, which gate).
 
+**Windows Mobile's working state, measured (`rp-wmaudio`, 2026-10-18 ~17:20,
+two runs alike; log `local/wmaudio/rp-wm-audio-run1.txt`):** read-only,
+while Windows Mobile played its own quiet tone (`waveOutOpen` returned 0
+both times; the owner heard only a slight click, but the tone was far too
+quiet to judge by ear: about -30 dB at 12.5% volume, a test-design
+mistake, so this is no evidence that audio is broken under Windows
+Mobile).
+
+| Fact | Confidence | Evidence |
+|---|---|---|
+| **The codec is on the standard I2C unit at address `0x1A`, and it acknowledges Windows Mobile**: the watcher caught `IDBR` `0x34` (address `0x1A`, write) then `0x32`, `ISR` `0x44` (unit busy, transmit empty, ACK) with GPIO82 (the gate) high during the transfer and low after | confirmed (device) | `rp-wmaudio` bus watcher |
+| **Windows Mobile drives I2C in fast mode**: `ICR` `0x8061`/`0x8060` (bit 15 FM, 400 kHz; unit and SCL enabled); RetroPane's driver uses standard mode. The I2C clock (`CKEN` bit 14) is on only around transfers | confirmed (device) | same |
+| Windows Mobile talked to the codec ~260 ms after opening the device (open at ~76 ms, the transfer at ~338 ms, just before the tone started); `rp-tone` waits 50 ms after power | confirmed (device; earlier transfers may have been missed: 1 kHz sampling) | same |
+| While audio plays: CPLD `0x1C` `0x0D` -> `0x0F` (**bit 1, codec power: confirmed**), and for the speaker only CPLD `0x14` `0x08` -> `0x0A` (**bit 1, speaker amplifier: confirmed**); `CKEN` bit 8 on; I2S pins GPIO28-31 and 113 to their functions (`GAFR0_U` `0x591A851A`, `GAFR3_U` bit 1), `SACR0` `0x8805`, `SACR1` `0x08`, `SADIV` `0x0D` | confirmed (device) | snapshots "playing" |
+| **The headphone jack is GPIO83, high = plugged in, valid only while audio is powered** (idle it reads 0 either way). **GPIO96 is not the jack**: it reads 1 whenever audio is powered, plugged or not (so `rp-tone`'s "headphones out" was GPIO96, wrongly read as the jack) | confirmed (device, both states) | snapshots with headphones in and out |
+| Idle (audio off): `CKEN` `0x00D91AA3` (I2S, I2C, power I2C clocks off), CPLD `0x1C` `0x0D`, `0x14` `0x08` | confirmed | snapshot "start" |
+
+Remaining difference between Windows Mobile's working transfer and
+`rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
+after power (~260 ms vs 50 ms). Next run (owner watching): each alone,
+then both, in one run (one variable per try).
+
 **What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
 around each codec write and lowers it after, as Windows Mobile does (never
 leaving it high: the line is shared with another device, the lock's other
