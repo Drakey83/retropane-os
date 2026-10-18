@@ -287,9 +287,10 @@ mod tests {
         // The X51v after an acknowledged address and a master abort: SCL
         // held low, the unit busy.
         let mut i2c = with_status(ISR_ITE | ISR_ACKNAK | ISR_UB);
+        let set_up = i2c.regs.writes().len();
         assert_eq!(i2c.write(0x1B, &[1]), Err(I2cError::NoDevice));
         let w = i2c.regs.writes();
-        assert!(w.contains(&(reg::ICR, ICR_UR)), "unit reset");
+        assert!(w[set_up..].contains(&(reg::ICR, ICR_UR)), "unit reset");
         assert_eq!(
             w.last(),
             Some(&(reg::ICR, ICR_IUE | ICR_SCLE)),
