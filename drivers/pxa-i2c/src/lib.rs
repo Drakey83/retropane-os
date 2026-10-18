@@ -24,6 +24,9 @@ const ICR_MA: u32 = 1 << 4;
 const ICR_SCLE: u32 = 1 << 5;
 const ICR_IUE: u32 = 1 << 6;
 const ICR_UR: u32 = 1 << 14;
+/// Fast mode, 400 kHz (Windows Mobile drives the X51v's codec bus so:
+/// `ICR` `0x8060`, measured 2026-10-18, docs/hw/audio.md).
+const ICR_FM: u32 = 1 << 15;
 
 const ISR_ACKNAK: u32 = 1 << 1;
 const ISR_UB: u32 = 1 << 2;
@@ -40,6 +43,8 @@ const SPIN_LIMIT: u32 = 200_000;
 /// The controller.
 pub struct PxaI2c<B> {
     regs: B,
+    /// [`ICR_FM`] or 0, in every control write.
+    speed: u32,
 }
 
 impl<B: RegisterBus> PxaI2c<B> {
@@ -52,14 +57,20 @@ impl<B: RegisterBus> PxaI2c<B> {
         regs.write32(reg::ICR, 0);
         regs.write32(reg::ISAR, 0);
         regs.write32(reg::ICR, ICR_IUE | ICR_SCLE);
-        Self { regs }
+        Self { regs, speed: 0 }
+    }
+
+    /// Fast mode (400 kHz) on or off; standard (100 kHz) from [`Self::new`].
+    pub fn set_fast(&mut self, fast: bool) {
+        self.speed = if fast { ICR_FM } else { 0 };
+        self.regs.write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed);
     }
 
     /// Sends the byte in IDBR with `flags` and waits for it to go.
     fn send(&mut self, byte: u8, flags: u32) -> Result<(), I2cError> {
         self.regs.write32(reg::IDBR, u32::from(byte));
         self.regs
-            .write32(reg::ICR, ICR_IUE | ICR_SCLE | ICR_TB | flags);
+            .write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed | ICR_TB | flags);
         for _ in 0..SPIN_LIMIT {
             let s = self.regs.read32(reg::ISR);
             if s & ISR_ALD != 0 {
@@ -80,9 +91,10 @@ impl<B: RegisterBus> PxaI2c<B> {
 
     /// Ends a refused transaction with a stop, and waits for the bus.
     fn abort(&mut self) {
-        self.regs.write32(reg::ICR, ICR_IUE | ICR_SCLE | ICR_MA);
+        self.regs
+            .write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed | ICR_MA);
         self.idle();
-        self.regs.write32(reg::ICR, ICR_IUE | ICR_SCLE);
+        self.regs.write32(reg::ICR, ICR_IUE | ICR_SCLE | self.speed);
     }
 
     fn idle(&mut self) {
@@ -127,6 +139,24 @@ impl<B: RegisterBus> I2cBus for PxaI2c<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn fast_mode_is_in_every_control_write() {
+        let mut i2c = PxaI2c::new(MockBus::new());
+        i2c.regs.script_reads(reg::ISR, &[ISR_ITE; 64]);
+        i2c.set_fast(true);
+        i2c.write(0x1A, &[0x1E, 0x00]).unwrap();
+        let icr: Vec<u32> = i2c
+            .regs
+            .writes()
+            .iter()
+            .filter(|w| w.0 == reg::ICR)
+            .map(|w| w.1)
+            .skip_while(|&v| v & ICR_FM == 0)
+            .collect();
+        assert!(icr.len() > 3);
+        assert!(icr.iter().all(|&v| v & ICR_FM != 0), "{icr:x?}");
+    }
 
     /// A controller whose status register keeps reading `status` (the
     /// mock stores writes; the hardware's status bits clear on a 1).

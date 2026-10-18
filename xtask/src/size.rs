@@ -562,10 +562,12 @@ pub const BUDGETS: &[Budget] = &[
     // command) in the loader diet of 2026-10-16. Set at its first build:
     // 22.7 KiB measured, +~10%.
     // 2026-10-18: + the codec's power (CPLD 0x1C bit 1 through the shared
-    // shadow) and its I2C gate: 26.1 KB measured, 25 -> 28 KiB.
+    // shadow) and its I2C gate: 26.1 KB measured, 25 -> 28 KiB; then run 3
+    // (four probe ways, the speaker amplifier, the jack on GPIO83): 27.7 KiB
+    // measured, 28 -> 31 KiB.
     Budget {
         image: "rp-tone",
-        max_load: 28 * 1024,
+        max_load: 31 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

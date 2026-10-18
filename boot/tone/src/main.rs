@@ -4,16 +4,20 @@
 //!
 //! 1. The WM8750 is looked for on I2C (at 0x1A, with its I2C gate,
 //!    GPIO82, open for each write as Windows Mobile does: docs/hw/audio.md)
-//!    and routed to the speaker or the headphones by the jack (GPIO96, low
-//!    = plugged in).
+//!    four ways, one change each against run 2's: standard mode ~50 ms
+//!    after power (run 2), fast mode (Windows Mobile's, measured), standard
+//!    300 ms after power (Windows Mobile talked to it ~260 ms after), and
+//!    fast at 300 ms. Then routed by the jack (GPIO83, high = plugged in,
+//!    valid only with audio powered: measured under Windows Mobile).
 //! 2. 440 Hz for 500 ms at 48 kHz, streamed through I2S by DMA from a ring
 //!    the CPU refills by halves; the log says how long it really took (the
 //!    codec's clock paces it) and how much of that the CPU was busy.
 //! 3. Up to 15 s for the jack to change (plug the headphones in or out);
 //!    on a change, 1000 Hz for 50 ms to the new output.
 //!
-//! The speaker amplifier (unknown: CPLD `0x14` bit 3 is a candidate) is
-//! left alone.
+//! The speaker amplifier (CPLD `0x14` bit 1, measured under Windows
+//! Mobile: on only for the speaker) is switched on for the speaker, 70 ms
+//! settle, and put back as found at the end, as the codec's power is.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -33,6 +37,7 @@ mod image {
     use rp_drv_pxa_i2c::PxaI2c;
     use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, Tone, stream};
     use rp_drv_wm8750::{Gate, Gated, Output, Wm8750};
+    use rp_hal_api::I2cBus;
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -40,9 +45,12 @@ mod image {
 
     rp_hal_pxa27x::entry!(main);
 
-    /// Headphone jack (docs/hw/audio.md, Dell's driver): low = plugged in
-    /// (likely; the level is logged).
-    const HP_DETECT: u8 = 96;
+    /// Headphone jack: GPIO83, high = plugged in, read only with the codec
+    /// powered (measured under Windows Mobile, `rp-wmaudio` 2026-10-18;
+    /// GPIO96, taken for it before, reads 1 whenever audio is powered).
+    const HP_DETECT: u8 = 83;
+    /// The line taken for the jack before, logged beside it.
+    const WAS_JACK: u8 = 96;
     /// Output volume, 0-100: 60, or `RP_TONE_LEVEL` at build time (a quiet
     /// run at night, 2026-10-18).
     const LEVEL: u32 = match option_env!("RP_TONE_LEVEL") {
@@ -75,16 +83,51 @@ mod image {
     ];
     /// After switching it on, before the first I2C write.
     const POWER_SETTLE_US: u32 = 50_000;
+    /// The speaker amplifier: CPLD `0x14` bit 1 (measured), 70 ms to settle
+    /// (Dell's driver).
+    const SPEAKER_AMP: (usize, u16) = (0x14, 1 << 1);
+    const AMP_SETTLE_US: u32 = 70_000;
+    /// The probe tries: name, fast mode, earliest time after power (ms).
+    const TRIES: [(&str, bool, u32); 4] = [
+        ("standard, as run 2", false, 0),
+        ("fast mode", true, 0),
+        ("standard, 300 ms after power", false, 300),
+        ("fast, 300 ms after power", true, 300),
+    ];
 
     /// The board's CPLD, and whether this run switched the codec's power on
     /// (then it switches it off again before returning).
     struct Power {
         cpld: Option<Cpld<Mmio, handover::Table<'static>>>,
         ours: bool,
+        /// Whether this run switched the speaker amplifier on.
+        amp: bool,
     }
 
     impl Power {
+        /// The speaker amplifier on for the speaker, off for headphones.
+        fn speaker(&mut self, on: bool) {
+            let Some(c) = self.cpld.as_mut() else { return };
+            if on && c.shadow(SPEAKER_AMP.0) & SPEAKER_AMP.1 == 0 {
+                c.set(SPEAKER_AMP.0, SPEAKER_AMP.1);
+                self.amp = true;
+                rt::delay_us(AMP_SETTLE_US);
+                let _ = writeln!(devices::RunLog, "speaker amplifier on (CPLD 14 bit 1)");
+            } else if !on && self.amp {
+                c.clear(SPEAKER_AMP.0, SPEAKER_AMP.1);
+                self.amp = false;
+                let _ = writeln!(devices::RunLog, "speaker amplifier off (headphones)");
+            }
+        }
+
         fn off(&mut self) {
+            if self.amp
+                && let Some(c) = self.cpld.as_mut()
+            {
+                c.clear(SPEAKER_AMP.0, SPEAKER_AMP.1);
+                self.amp = false;
+                let _ = writeln!(devices::RunLog, "speaker amplifier put back off");
+            }
             if self.ours
                 && let Some(c) = self.cpld.as_mut()
             {
@@ -210,7 +253,9 @@ mod image {
         let mut power = Power {
             cpld: devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0),
             ours: false,
+            amp: false,
         };
+        let powered_at = rt::ticks();
         if let Some(c) = power.cpld.as_mut() {
             let (r14, r1c) = (c.shadow(0x14), c.shadow(CODEC_POWER.0));
             let _ = writeln!(out, "CPLD found: 14={r14:04X} 1C={r1c:04X}");
@@ -254,13 +299,13 @@ mod image {
         }
         gpio.set_function(I2C_GATE, 0);
         gpio.make_output(I2C_GATE, false);
-        let level = gpio.read(HP_DETECT);
-        let mut plugged = !level;
+        let mut plugged = gpio.read(HP_DETECT);
         let _ = writeln!(
             out,
-            "headphones {} (GPIO96 {})",
+            "headphones {} (GPIO83 {}; GPIO96 {})",
             if plugged { "in" } else { "out" },
-            u8::from(level)
+            u8::from(plugged),
+            u8::from(gpio.read(WAS_JACK))
         );
         let (Some(i2c), Some(i2s)) = (rt::take_i2c(), rt::take_i2s()) else {
             let _ = writeln!(out, "tone: I2C or I2S unavailable");
@@ -282,21 +327,43 @@ mod image {
         i2s.start(Rate::Khz48);
         rt::delay_us(1_000);
         let _ = writeln!(out, "I2S running before the codec (SYSCLK on GPIO113)");
-        let gated = Gated {
+        let mut gated = Gated {
             bus: PxaI2c::new(i2c),
             gate: Pins(gpio),
         };
+        // Each try an address-only probe at both addresses, logged with its
+        // time after power; every try runs, so each change is seen alone.
+        let mut first = None;
+        for (k, &(name, fast, after_ms)) in TRIES.iter().enumerate() {
+            rt::check_in();
+            while rt::ticks().wrapping_sub(powered_at) < after_ms * (TICK_1S / 1000) {}
+            gated.bus.set_fast(fast);
+            let ms = rt::ticks().wrapping_sub(powered_at) / (TICK_1S / 1000);
+            let answered = rp_drv_wm8750::ADDRESSES.map(|a| gated.write(a, &[]).is_ok());
+            let _ = writeln!(
+                out,
+                "probe {name} ({ms} ms after power): 0x1a {}, 0x1b {}",
+                if answered[0] { "ACK" } else { "no answer" },
+                if answered[1] { "ACK" } else { "no answer" }
+            );
+            if first.is_none() && answered.contains(&true) {
+                first = Some(k);
+            }
+        }
+        let Some(k) = first else {
+            let _ = writeln!(out, "tone: no codec answered any of the four ways");
+            finish(&mut power)
+        };
+        gated.bus.set_fast(TRIES[k].1);
         let mut codec: Codec = match Wm8750::init(gated, LEVEL) {
             Ok(c) => c,
             Err(_) => {
-                let _ = writeln!(
-                    out,
-                    "tone: no codec answered on I2C (0x1a, 0x1b) with GPIO82 open"
-                );
+                let _ = writeln!(out, "tone: the codec answered the probe but not its set-up");
                 finish(&mut power)
             }
         };
         let _ = writeln!(out, "codec at {:#04x}", codec.address());
+        power.speaker(!plugged);
         let _ = codec.route(output(plugged));
         let Some(mut dma) = rt::take_dma(dma_map::AUDIO) else {
             let _ = writeln!(out, "tone: no DMA channel");
@@ -312,7 +379,7 @@ mod image {
         for _ in 0..JACK_WAIT_S {
             rt::check_in();
             rt::delay_us(1_000_000);
-            let now = !codec.bus_mut().gate.0.read(HP_DETECT);
+            let now = codec.bus_mut().gate.0.read(HP_DETECT);
             if now == seen && now != plugged {
                 plugged = now;
                 changed = true;
@@ -323,10 +390,11 @@ mod image {
         if changed {
             let _ = writeln!(
                 out,
-                "headphones {} (GPIO96 {})",
+                "headphones {} (GPIO83 {})",
                 if plugged { "in" } else { "out" },
-                u8::from(!plugged)
+                u8::from(plugged)
             );
+            power.speaker(!plugged);
             let _ = codec.route(output(plugged));
             play(&mut out, &codec, &mut i2s, &mut dma, ring, 1000, 50);
         } else {

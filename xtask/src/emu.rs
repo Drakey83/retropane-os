@@ -4770,29 +4770,36 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         // first tone): the second tone goes to them.
         std::thread::sleep(Duration::from_secs(4));
         let mut mon = crate::screen::Monitor::connect(port)?;
-        // An emulator with the board's audio wiring as Dell's driver drives
-        // it (fork after rp-v0.20.0: the codec's GPIO82 I2C gate, the GPIO96
-        // jack low when plugged in) says so; an older one has neither, and
-        // only the first tone is checked there.
-        let wired = mon.query("qom-get /machine codec-gate")?.contains("true");
+        // An emulator with the audio wiring as measured under Windows
+        // Mobile (rp-v0.23.0, `codec-power`: the codec answers only while
+        // CPLD 0x1C bit 1 powers it, the jack on GPIO83 high when plugged in)
+        // checks the jack too; an older one modelled the jack on GPIO96,
+        // which the image no longer reads, and only the first tone is
+        // checked there.
+        let wired = mon.query("qom-get /machine codec-power")?.contains("true");
         mon.query("qom-set /machine/peripheral/jack pressed true")?;
         let log = usb_read_until(&mut s, "RPL END", 40)?;
         let mut wants = vec![
+            "probe standard, as run 2",
             "tone 440 Hz 500 ms (24000 frames",
             "by DMA",
             "to speaker",
             "codec at 0x1a",
+            "speaker amplifier on (CPLD 14 bit 1)",
+            "codec power put back off",
             "TONE-OK",
         ];
         if wired {
             wants.extend([
-                "headphones in (GPIO96 0)",
+                "headphones out (GPIO83 0; GPIO96 1)",
+                "headphones in (GPIO83 1)",
+                "speaker amplifier off (headphones)",
                 "tone 1000 Hz 50 ms",
                 "to headphones",
             ]);
         } else {
             eprintln!(
-                "    tone: this emulator has no codec gate or GPIO96 jack (a release before them): the jack part is skipped"
+                "    tone: this emulator's jack is the old GPIO96 model (before rp-v0.23.0): the jack part is skipped"
             );
         }
         for want in wants {
