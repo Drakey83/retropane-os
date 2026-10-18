@@ -210,6 +210,21 @@ Mobile has set the codec up. Next run logs the bus lines (`IBMR`), the
 controller's registers and each failure's kind and time, first with the
 codec unpowered.
 
+**SOUND WORKS (2026-10-18 ~18:00, `rp-tone` run 6, owner listening).**
+The cause was ours: the I2C driver checked for the codec with an
+address-only transfer. The X51v's controller never finishes a byte sent
+with START and STOP together (runs 2-4: every probe timed out, 92 ms, while
+a START alone was answered in ~120 us), and after an acknowledged address a
+master abort left SCL held low (run 5). Fixed as a class (`pxa-i2c`:
+address-only writes refused as `Unsupported`, STOP only with the last data
+byte, a controller left busy is reset; the WM8750 found by its reset write,
+as Windows Mobile starts; guard tests and mutants; the fork's I2C model
+does the same). Run 6: the codec acknowledged at `0x1a` in standard and
+fast mode, 1 ms and 300 ms after power (neither speed nor timing
+mattered); 440 Hz for 514 ms to the headphones by DMA, CPU 0% busy; the
+owner unplugged and GPIO83 went low; the speaker amplifier (CPLD `0x14`
+bit 1, 70 ms) on and 1000 Hz on the speaker; both board bits put back.
+
 Remaining difference between Windows Mobile's working transfer and
 `rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
 after power (~260 ms vs 50 ms). Next run (owner watching): each alone,
