@@ -513,10 +513,10 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_display_cal),
     },
     Mutant {
-        name: "looks: a look change never reaches the gamma table (every look shows the original)",
+        name: "looks: a look change never reaches the picture (every look shows the original)",
         file: "boot/looks/src/main.rs",
-        from: "            write_gamma(display.regs(), &look_table(l, &found));",
-        to: "            write_gamma(display.regs(), &found);",
+        from: "                draw(fb, page, photos, &look_table(l, &found), 0..H);",
+        to: "                draw(fb, page, photos, &found, 0..H);",
         check: Check::Emu(crate::emu::boot_loader_looks),
     },
     Mutant {

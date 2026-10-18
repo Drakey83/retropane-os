@@ -486,6 +486,28 @@ profiling run is its test.
   the caption through the original, native and D65 tables, with a mutant.
   The tables are 1D (tone and white): saturation and colour accuracy come
   with step 5's 3D tables, after this pick.
+- **Looks run 1 (2026-10-17, the owner's family, off the dock):** the owner
+  saw **banding** on the photos, the same in Original as in the calibrated
+  looks: the test's fault. It drew 8-bit pictures with no dither, and the
+  18-bit panel keeps 6 bits a channel (the lesson ADR-0023 already
+  recorded). Picks: the owner's son **Original, full light**, his wife
+  **Original**, the owner in between; the calibrated whites "just looked
+  yellow" (eyes used to the panel's 13,600 K white). The owner asked for
+  **darker darks at full light** without the washed-out look, and whether a
+  contrast pin was missed: no (the panel's 51 pins have none; PWM1 is VCOM,
+  whose sweep may lower black a little).
+- **Version 2 (built 2026-10-17):** every look's table is **applied in the
+  picture at full precision, then ordered-dithered** (4 x 4) to the panel's
+  64 levels a channel, with the hardware table straight (`shown`: each
+  stored byte is its level x 4 + 2, so the straight table's squeezed top
+  segment can't move it); a change redraws into the other screen, then
+  shows it. Two looks added after full light: **deeper darks** (input to
+  the power 1.35) and **more contrast** (S-curve), both through the table
+  as found at full backlight: white stays full, darks and mid-tones come
+  down. emu-looks pixel-exact through Original, deeper darks and D65, with
+  a mutant. **Design consequence for the OS:** on this 6-bit panel a
+  calibration or night curve belongs before the dither (in content, or in
+  the renderer's dither step), not in the hardware table after it.
 
 ## Measured with a colorimeter (2026-10-17)
 

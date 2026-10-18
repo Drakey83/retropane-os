@@ -1,11 +1,12 @@
 //! RetroPane looks test (display calibration C6, docs/design/display-calibration.md):
-//! the owner's photos, a colour chart and ramps under the measured
-//! calibration tables, against the original, judged by eye.
+//! the owner's photos, a colour chart and ramps under each look, against
+//! the original, judged by eye.
 //!
-//! Every page is drawn once at start into its own 32 bpp screen in 2700G
-//! memory ([`rp_looks::page_pixel`]); a look changes only the gamma table
-//! and the backlight, a page only the plane's address, so every flip is
-//! instant.
+//! Version 2 (after run 1 banded): every look's table is applied in the
+//! picture, at full precision, then dithered to the panel's 64 levels a
+//! channel ([`rp_looks::shown`]); the hardware table stays straight. A
+//! change redraws the page into the other of two screens and then shows
+//! it, so nothing tears.
 //!
 //! | Input | Does |
 //! |---|---|
@@ -41,9 +42,10 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, RunLog};
     use rp_looks::{
-        CAPTION_H, H, LOOKS, Light, PAGES, PHOTOS, W, YUV_BYTES, look_table, page_pixel, unpack,
+        CAPTION_H, H, LOOKS, Light, PAGES, PHOTOS, W, YUV_BYTES, look_table, page_pixel, shown,
+        straight, unpack,
     };
-    use rp_vram_map::{BACKGROUND, CACHE, POOL, SCREENS, WALLPAPER};
+    use rp_vram_map::{CACHE, SCREENS};
 
     rp_hal_pxa27x::entry!(main);
 
@@ -62,12 +64,6 @@ mod image {
     const CAPTION_MS: u64 = 3_000;
     const STRIDE: usize = W as usize * 4;
     const PAGE_BYTES: usize = STRIDE * H as usize;
-    const STRIP_BYTES: usize = STRIDE * CAPTION_H as usize;
-
-    /// Where each page lives in 2700G memory (all below the photo scratch).
-    fn page_at(page: usize) -> usize {
-        [SCREENS[0].at, SCREENS[1].at, WALLPAPER.at, BACKGROUND.at][page] as usize
-    }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
@@ -88,6 +84,22 @@ mod image {
     fn put(fb: &mut [u8], x: u32, y: u32, (r, g, b): (u8, u8, u8)) {
         let o = y as usize * STRIDE + x as usize * 4;
         fb[o..o + 4].copy_from_slice(&[b, g, r, 0xFF]);
+    }
+
+    /// Rows `rows` of page `page` through table `t`, dithered.
+    fn draw(
+        fb: &mut [u8],
+        page: usize,
+        photos: [&[u8]; 2],
+        t: &[u32; GAMMA_ENTRIES],
+        rows: core::ops::Range<u32>,
+    ) {
+        for y in rows {
+            for x in 0..W {
+                put(fb, x, y, shown(t, page_pixel(page, photos, x, y), x, y));
+            }
+            rt::check_in();
+        }
     }
 
     /// Text at `(x, y)`, `scale` times the font's size, on black.
@@ -139,11 +151,12 @@ mod image {
         }
     }
 
-    /// The caption over the top of page `fb`.
+    /// The caption over the top of `fb`.
     fn caption(fb: &mut [u8], look: usize, page: usize, original: bool) {
-        fb[..STRIP_BYTES].fill(0);
-        for px in fb[..STRIP_BYTES].chunks_exact_mut(4) {
-            px[3] = 0xFF;
+        for y in 0..CAPTION_H {
+            for x in 0..W {
+                put(fb, x, y, (0, 0, 0));
+            }
         }
         let mut top = Line::new();
         let mut low = Line::new();
@@ -176,13 +189,28 @@ mod image {
         let _ = writeln!(RunLog);
     }
 
-    fn plane(page: usize) -> Plane {
+    fn plane(screen: usize) -> Plane {
         Plane {
             format: PixelFormat::Argb8888,
             width: W as u16,
             height: H as u16,
-            offset: page_at(page),
+            offset: SCREENS[screen].at as usize,
             stride: STRIDE,
+        }
+    }
+
+    fn set_light<B: RegisterBus>(pwm: &mut B, l: Light, found: (u32, u32, u32)) {
+        match l {
+            Light::Found => {
+                pwm.write32(CR, found.0);
+                pwm.write32(PCR, found.2);
+                pwm.write32(DCR, found.1);
+            }
+            Light::Full => {
+                pwm.write32(CR, 0);
+                pwm.write32(PCR, COUNTS - 1);
+                pwm.write32(DCR, COUNTS);
+            }
         }
     }
 
@@ -207,46 +235,32 @@ mod image {
         );
         log_table("gamma found", &found);
 
-        // Every page once: the photos unpacked into the scratch above the
-        // pages, then converted; the caption strip of each kept in the pool.
-        let (pages, high) = vram.split_at_mut(CACHE.at as usize);
-        let (scratch, rest) = high.split_at_mut(POOL.at as usize - CACHE.at as usize);
-        let strips = &mut rest[..4 * STRIP_BYTES];
-        for page in 0..PAGES.len() {
-            let photo = page < PHOTOS.len();
-            if photo && let Err(e) = unpack(PHOTOS[page], &mut scratch[..YUV_BYTES]) {
-                crash_out(format_args!("photo {} damaged: {e:?}", PAGES[page]))
+        // Both photos unpacked once into the scratch above the screens.
+        let (screens, high) = vram.split_at_mut(CACHE.at as usize);
+        let (pier, rest) = high.split_at_mut(YUV_BYTES);
+        let milkyway = &mut rest[..YUV_BYTES];
+        for (photo, out) in PHOTOS.iter().zip([&mut *pier, &mut *milkyway]) {
+            if let Err(e) = unpack(photo, out) {
+                crash_out(format_args!("a photo is damaged: {e:?}"))
             }
-            let at = page_at(page);
-            let fb = &mut pages[at..at + PAGE_BYTES];
-            let yuv: &[u8] = &scratch[..YUV_BYTES];
-            for y in 0..H {
-                for x in 0..W {
-                    put(fb, x, y, page_pixel(page, [yuv, yuv], x, y));
-                }
-                rt::check_in();
-            }
-            strips[page * STRIP_BYTES..(page + 1) * STRIP_BYTES]
-                .copy_from_slice(&fb[..STRIP_BYTES]);
         }
-        let _ = writeln!(RunLog, "pages drawn in {} ms", clock.ms());
+        let photos: [&[u8]; 2] = [pier, milkyway];
+        let screen_at = |s: usize| SCREENS[s].at as usize;
 
         let (mut look, mut page, mut original) = (0usize, 0usize, false);
-        let show = |display: &mut Display<_>, pwm: &mut _, look: usize, original: bool| {
-            let l = if original { 0 } else { look };
-            write_gamma(display.regs(), &look_table(l, &found));
-            set_light(pwm, LOOKS[l].light, light);
-        };
-        caption(
-            &mut pages[page_at(page)..page_at(page) + PAGE_BYTES],
-            look,
-            page,
-            original,
-        );
-        display.set_graphics(&plane(page), Layer::SOLO);
+        let mut screen = 0usize;
+        let t0 = clock.ms();
+        {
+            let fb = &mut screens[screen_at(screen)..screen_at(screen) + PAGE_BYTES];
+            draw(fb, page, photos, &look_table(look, &found), 0..H);
+            caption(fb, look, page, original);
+        }
+        let _ = writeln!(RunLog, "page drawn in {} ms", clock.ms() - t0);
+        display.set_graphics(&plane(screen), Layer::SOLO);
+        write_gamma(display.regs(), &straight());
         let on = display.regs().read32(GSCTRL) | GSCTRL_GAMMA;
         display.regs().write32(GSCTRL, on);
-        show(&mut display, &mut pwm, look, original);
+        set_light(&mut pwm, LOOKS[look].light, light);
 
         let Some(kp) = rt::take_keypad() else {
             crash_out(format_args!("no keypad"))
@@ -291,13 +305,7 @@ mod image {
             }
             if by != 0 || go != 0 || flip {
                 seen[if original { 0 } else { look }] += now - since;
-                since = now;
-                last_input = now;
                 changes += 1;
-                // The strip of the page leaving goes back first.
-                let at = page_at(page);
-                pages[at..at + STRIP_BYTES]
-                    .copy_from_slice(&strips[page * STRIP_BYTES..(page + 1) * STRIP_BYTES]);
                 if by != 0 {
                     look = (look as i32 + by).rem_euclid(LOOKS.len() as i32) as usize;
                     original = false;
@@ -306,14 +314,22 @@ mod image {
                     page = (page as i32 + go).rem_euclid(PAGES.len() as i32) as usize;
                 }
                 original ^= flip;
-                let at = page_at(page);
-                caption(&mut pages[at..at + PAGE_BYTES], look, page, original);
-                display.set_graphics(&plane(page), Layer::SOLO);
-                show(&mut display, &mut pwm, look, original);
-                caption_until = Some(now + CAPTION_MS);
+                let l = if original { 0 } else { look };
+                // The new picture into the hidden screen, then shown.
+                screen ^= 1;
+                let fb = &mut screens[screen_at(screen)..screen_at(screen) + PAGE_BYTES];
+                draw(fb, page, photos, &look_table(l, &found), 0..H);
+                caption(fb, look, page, original);
+                display.set_graphics(&plane(screen), Layer::SOLO);
+                set_light(&mut pwm, LOOKS[l].light, light);
+                let after = clock.ms();
+                since = after;
+                last_input = after;
+                caption_until = Some(after + CAPTION_MS);
                 let _ = writeln!(
                     RunLog,
-                    "at {now} ms: {}{}, {}",
+                    "at {now} ms ({} ms to draw): {}{}, {}",
+                    after - now,
                     LOOKS[look].name,
                     if original {
                         " (showing the original)"
@@ -325,9 +341,9 @@ mod image {
             }
             if caption_until.is_some_and(|t| now >= t) {
                 caption_until = None;
-                let at = page_at(page);
-                pages[at..at + STRIP_BYTES]
-                    .copy_from_slice(&strips[page * STRIP_BYTES..(page + 1) * STRIP_BYTES]);
+                let l = if original { 0 } else { look };
+                let fb = &mut screens[screen_at(screen)..screen_at(screen) + PAGE_BYTES];
+                draw(fb, page, photos, &look_table(l, &found), 0..CAPTION_H);
             }
         };
         let now = clock.ms();
@@ -353,21 +369,6 @@ mod image {
             devices::return_to_loader();
         }
         halt()
-    }
-
-    fn set_light<B: RegisterBus>(pwm: &mut B, l: Light, found: (u32, u32, u32)) {
-        match l {
-            Light::Found => {
-                pwm.write32(CR, found.0);
-                pwm.write32(PCR, found.2);
-                pwm.write32(DCR, found.1);
-            }
-            Light::Full => {
-                pwm.write32(CR, 0);
-                pwm.write32(PCR, COUNTS - 1);
-                pwm.write32(DCR, COUNTS);
-            }
-        }
     }
 
     fn halt() -> ! {

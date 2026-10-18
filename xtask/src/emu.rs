@@ -1075,12 +1075,15 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
 }
 
 /// The C6 looks test under the loader (`rp-looks`): each page pixel-exact
-/// below the caption through each look's table, driven by keys: the
-/// original, a measured table on both photos and the chart, the original
-/// again by compare, the ramps; Home puts everything back.
+/// below the caption, each look's table applied in the picture and
+/// dithered, driven by keys: the original, deeper darks on both photos and
+/// the chart, D65 on the chart, the original again by compare, the ramps;
+/// Home puts everything back.
 pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
-    use rp_looks::{CAPTION_H, H, PHOTOS, W, YUV_BYTES, look_table, page_pixel, unpack};
+    use rp_looks::{
+        CAPTION_H, H, PHOTOS, W, YUV_BYTES, look_table, page_pixel, shown, straight, unpack,
+    };
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = root.join("target/emu");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1100,13 +1103,15 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
     for (p, out) in PHOTOS.iter().zip(photos.iter_mut()) {
         unpack(p, out).map_err(|e| format!("looks: a photo did not unpack: {e:?}"))?;
     }
-    // Page `page` below the caption, through `t`.
+    // Page `page` below the caption: `t` applied in the picture and
+    // dithered, then the straight hardware table.
+    let st = straight();
     let want = |page: usize, t: &[u32; GAMMA_ENTRIES]| -> Vec<u8> {
         let mut v = Vec::with_capacity((W * (H - CAPTION_H) * 3) as usize);
         for y in CAPTION_H..H {
             for x in 0..W {
-                let (r, g, b) = page_pixel(page, [&photos[0], &photos[1]], x, y);
-                v.extend_from_slice(&[gamma(t, r, 16), gamma(t, g, 8), gamma(t, b, 0)]);
+                let (r, g, b) = shown(t, page_pixel(page, [&photos[0], &photos[1]], x, y), x, y);
+                v.extend_from_slice(&[gamma(&st, r, 16), gamma(&st, g, 8), gamma(&st, b, 0)]);
             }
         }
         v
@@ -1156,14 +1161,15 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         until("original-pier", 0, 0)?;
         key("right")?;
         key("right")?;
-        until("native-pier", 0, 2)?;
+        until("deeper-darks-pier", 0, 2)?;
         key("down")?;
-        until("native-milkyway", 1, 2)?;
+        until("deeper-darks-milkyway", 1, 2)?;
         key("down")?;
-        until("native-chart", 2, 2)?;
-        key("right")?;
-        key("right")?;
-        until("d65-chart", 2, 4)?;
+        until("deeper-darks-chart", 2, 2)?;
+        for _ in 0..4 {
+            key("right")?;
+        }
+        until("d65-chart", 2, 6)?;
         key("ret")?;
         until("compare-original-chart", 2, 0)?;
         key("down")?;
@@ -1190,9 +1196,9 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         .map(|(_, l)| l)
         .ok_or("looks: no run log after the image returned")?;
     for want in [
-        "pages drawn in",
+        "page drawn in",
         "D65 (6500 K) (showing the original), Colour chart",
-        "done (Home) after 8 changes",
+        "done (Home) after 10 changes",
         "last look: D65 (6500 K), Ramps",
         "LOOKS-OK",
     ] {
@@ -1201,7 +1207,7 @@ pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
         }
     }
     eprintln!(
-        "    looks OK: both photos, the chart and the ramps pixel-exact through the original and the native and D65 tables, compare back to the original; Home put back and returned"
+        "    looks OK: both photos, the chart and the ramps pixel-exact, each look's table applied in the picture and dithered (original, deeper darks, D65), compare back to the original; Home put back and returned"
     );
     Ok(())
 }
