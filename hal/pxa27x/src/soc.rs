@@ -329,6 +329,92 @@ impl Dispatch {
     }
 }
 
+/// OS timer channels 5-11 (counter `OSCRx` at `0x40 + 4x`, match control
+/// `OMCRx` at `0xC0 + 4x`, x = 4..11), raw, for finding how to run one on
+/// the 32.768 kHz oscillator: a clock from a different crystal than the
+/// core's and OSCR0's 13 MHz, for measuring jitter between the two
+/// (ADR-0029, `rp-noise`). Channel 4 is the run limit's and is refused.
+/// On the X51v, `OMCR5 = 0x81` with `OSCR5` written before or after it
+/// never counted (2026-10-15, `rp-noise` runs 1 and 2); the emulator
+/// counts with either.
+pub struct OstChannels<B>(pub B);
+
+impl<B: RegisterBus> OstChannels<B> {
+    fn ok(ch: u8) -> bool {
+        (5..=11).contains(&ch)
+    }
+
+    /// Writes `OMCRx` (ignored for channels outside 5-11).
+    pub fn set_mode(&mut self, ch: u8, value: u32) {
+        if Self::ok(ch) {
+            self.0.write32(0xC0 + 4 * usize::from(ch - 4), value);
+        }
+    }
+
+    /// Reads `OMCRx` back (0 outside 5-11).
+    pub fn mode(&mut self, ch: u8) -> u32 {
+        if Self::ok(ch) {
+            self.0.read32(0xC0 + 4 * usize::from(ch - 4))
+        } else {
+            0
+        }
+    }
+
+    /// Writes `OSCRx` (ignored outside 5-11).
+    pub fn set_count(&mut self, ch: u8, value: u32) {
+        if Self::ok(ch) {
+            self.0
+                .write32(ost_reg::OSCR4 + 4 * usize::from(ch - 4), value);
+        }
+    }
+
+    /// Reads `OSCRx` (0 outside 5-11).
+    pub fn count(&mut self, ch: u8) -> u32 {
+        if Self::ok(ch) {
+            self.0.read32(ost_reg::OSCR4 + 4 * usize::from(ch - 4))
+        } else {
+            0
+        }
+    }
+
+    /// Arms channel `ch`'s match at count `at`: its status bit cleared,
+    /// its interrupt enabled (the shared `irq::OST_4_11`). `OIER` is shared:
+    /// call with IRQs masked.
+    pub fn arm_match(&mut self, ch: u8, at: u32) {
+        if Self::ok(ch) {
+            self.0.write32(ost_reg::OSMR4 + 4 * usize::from(ch - 4), at);
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+            let oier = self.0.read32(ost_reg::OIER) | 1 << ch;
+            self.0.write32(ost_reg::OIER, oier);
+        }
+    }
+
+    /// Clears channel `ch`'s match status.
+    pub fn ack(&mut self, ch: u8) {
+        if Self::ok(ch) {
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+        }
+    }
+
+    /// Disables channel `ch`'s match interrupt and clears its status.
+    pub fn disarm_match(&mut self, ch: u8) {
+        if Self::ok(ch) {
+            let oier = self.0.read32(ost_reg::OIER) & !(1 << ch);
+            self.0.write32(ost_reg::OIER, oier);
+            self.0.write32(ost_reg::OSSR, 1 << ch);
+        }
+    }
+
+    /// Stops channels 5-11 and their match interrupts (as the loader
+    /// leaves them).
+    pub fn stop_all(&mut self) {
+        for ch in 5..=11 {
+            self.disarm_match(ch);
+            self.set_mode(ch, 0);
+        }
+    }
+}
+
 /// OS timer match channel 2: a one-shot timer interrupt for kernel use
 /// (the scheduler's alarm is channel 1). Its interrupt is claimed and
 /// waited for like any device's (`rt::take_irq(irq::OST2)`).

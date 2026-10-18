@@ -29,6 +29,10 @@ the Dell bootloader region** (DESIGN.md §10c).
   serial (`cargo xtask load`) and, since ADR-0013, files for the SD card
   (`cargo xtask put`, `cargo xtask install`): the loader, HaRET and its
   script are updated over the cable, nobody copies files.
+- `noise/`: the random number generator's noise sources measured
+  (ADR-0029): clock set-up, two-crystal and one-clock jitter, the touch
+  controller's battery, temperature and spare inputs; raw samples to the
+  card for NIST's tools (docs/hw/entropy.md).
 - `light/`, `usb/`, `reconnect/`: first light, the USB link test and the
   reconnect experiment, each a bring-up image with its own budget.
 

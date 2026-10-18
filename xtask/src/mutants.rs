@@ -547,6 +547,13 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Emu(crate::emu::boot_loader_usb_alone),
     },
+    Mutant {
+        name: "shared OS timer line never dispatched (a claimed channel 5-11 interrupt fires forever)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "    let other = pending & !(1 << crate::soc::irq::OST1);",
+        to: "    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::OST_4_11);",
+        check: Check::Emu(crate::emu::boot_loader_noise),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

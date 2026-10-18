@@ -1675,15 +1675,22 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
 /// loader starts again and reports that the run didn't return. The emulator
 /// restarts the loader itself; on the device Windows Mobile's StartUp
 /// folder does (docs: SD kit README, loader/). A 1 s limit keeps the
-/// backstop at 31 s.
+/// backstop at 31 s. The image starts the cycle counter first (`PMNC` bit 0,
+/// as rp-noise leaves it): emulator releases before rp-v0.14.0 aborted on
+/// the reset with the counter running instead of rebooting as the device does.
 pub fn boot_loader_hang(root: &Path) -> Result<(), String> {
-    let loader = root.join("target/emu/rp-loader.bin");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
     crate::sdkit::raw_binary(
         &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
         &loader,
     )?;
     let mut hang = rp_loadproto::control_frame("limit 1");
-    hang.extend(rp_loadproto::frame(&0xEAFF_FFFEu32.to_le_bytes()));
+    // mov r0, #1; mcr p14, 0, r0, c0, c1, 0 (PMNC: count); b .
+    let words = [0xE3A0_0001u32, 0xEE00_0E11, 0xEAFF_FFFE];
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    hang.extend(rp_loadproto::frame(&code));
     let output = boot(
         root,
         &Boot {
@@ -2280,6 +2287,233 @@ fn strip_tail(v: &str) -> String {
 /// emulator that models the blend and the display's events (`mbx-blend`,
 /// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
 /// device's run (docs/hw/emulator.md).
+/// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
+/// loader starts it; it must run every stage to its verdict without a
+/// fault, put the blend state and the display registers back, and return
+/// on a button. Under `-icount` (the event stages time scan lines), on an
+/// emulator that models the blend and the display's events (`mbx-blend`,
+/// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
+/// device's run (docs/hw/emulator.md).
+/// The noise-source measurement (rp-noise, ADR-0029): under the loader it
+/// must read the clocks, collect every source, save each to the card
+/// whole (1,000,000 16-bit samples), append its restart row to the rows
+/// already there, and return. The emulator's timing comes from the PC, so
+/// its numbers say nothing about the Axim's noise (docs/hw/emulator.md):
+/// this checks the plumbing only.
+/// The ways rp-noise tries to run an OS timer channel on the 32 kHz clock
+/// must count as they did on the X51v (rp-noise run 3, docs/hw/entropy.md):
+/// only channel 5 with `OMCR5` bit 6 (`0xC1`). Channel 11 with `0x81` isn't
+/// checked: it counted in run 3 and not in run 4. An emulator that counts
+/// every way (rp-v0.13.0 and older) fails here.
+fn noise_timer_ways(log: &str) -> Result<(), String> {
+    const WAYS: &[(&str, bool)] = &[
+        ("channel 5 OMCR 0x81 mode first", false),
+        ("channel 5 OMCR 0x81 counter first", false),
+        ("channel 5 OMCR 0x01 mode first", false),
+        ("channel 5 OMCR 0xc1 mode first", true),
+        ("channel 5 OMCR 0x82 mode first", false),
+        ("channel 5 OMCR 0x84 mode first", false),
+        ("channel 6 OMCR 0x81 mode first", false),
+        ("channel 8 OMCR 0x81 mode first", false),
+    ];
+    for &(way, counts) in WAYS {
+        let prefix = format!("timer: {way}:");
+        let line = log
+            .lines()
+            .find(|l| l.trim_start().starts_with(&prefix))
+            .ok_or_else(|| format!("noise: the run log has no `{prefix}`:{log}"))?;
+        // "... count {c0} -> {c1} in 2 ms ..."
+        let counted = line
+            .split_once(", count ")
+            .and_then(|(_, r)| r.split_once(" in "))
+            .and_then(|(r, _)| r.split_once(" -> "))
+            .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
+            .map(|(c0, c1)| c1.wrapping_sub(c0))
+            .ok_or_else(|| format!("noise: can't read the counts in `{line}`"))?;
+        // 32,768 Hz is ~65 counts in 2 ms; the device's other ways stayed at 0 (runs 3 and 4).
+        let ok = if counts {
+            (40..=100).contains(&counted)
+        } else {
+            counted == 0
+        };
+        if !ok {
+            return Err(format!(
+                "noise: {way} counted {counted} in 2 ms; on the X51v it {} (rp-noise run 3): `{line}`",
+                if counts { "counts ~65" } else { "never counts" }
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-noise.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-noise"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    // Two restart rows from "earlier runs": the run must keep them and add
+    // its own after them.
+    let earlier: Vec<u8> = (0..2000u32).map(|i| (i * 7) as u8).collect();
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "noise-ri.bin",
+            data: &earlier,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = root.join("target/emulator/sd-noise.img");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-NOISE: done")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("noise: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        return Err(format!("noise: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "clocks: OSCC",
+        "clocks: core measured",
+        "card: ready",
+        "timer: sampling with channel 5, OMCR 0xc1",
+        "A interrupt (cycles between 32 kHz tick interrupts): 1000000 samples",
+        "A spaced (cycles across 16 tick interrupts, low 16 bits): 100000 samples",
+        "ticks missed and resynchronised:",
+        "B one-clock (cycles for 64 SDRAM reads): 1000000 samples",
+        "T TEMP0: 1000000 samples",
+        "T VBAT: 1000000 samples",
+        "T AUX: 1000000 samples",
+        "T TEMP1: 1000000 samples",
+        "noise-ri.bin: row added",
+        "restart rows: 3 of 1000",
+        "noise.txt: saved",
+        "RETROPANE-NOISE: done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("noise: the run log has no `{want}`:{log}"));
+        }
+    }
+    noise_timer_ways(log)?;
+    let spaced = card_file(&sd, "noise-as.bin")?;
+    if spaced.len() != 200_000 {
+        return Err(format!(
+            "noise: noise-as.bin is {} bytes, want 200,000",
+            spaced.len()
+        ));
+    }
+    for name in [
+        "noise-ai.bin",
+        "noise-b.bin",
+        "noise-t0.bin",
+        "noise-vb.bin",
+        "noise-ax.bin",
+        "noise-t1.bin",
+    ] {
+        let data = card_file(&sd, name)?;
+        if data.len() != 2_000_000 {
+            return Err(format!(
+                "noise: {name} is {} bytes, want 2,000,000",
+                data.len()
+            ));
+        }
+    }
+    let rows = card_file(&sd, "noise-ri.bin")?;
+    if rows.len() != 3000 || rows[..2000] != earlier[..] {
+        return Err(format!(
+            "noise: noise-ri.bin is {} bytes, want the 2 earlier rows kept and 1 added",
+            rows.len()
+        ));
+    }
+    let text = card_file(&sd, "noise.txt")?;
+    if !String::from_utf8_lossy(&text).contains("MCV min-entropy") {
+        return Err("noise: noise.txt has no summaries".into());
+    }
+    // Quick mode: with `noise-quick.txt` on the card, only the restart row.
+    let image = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[
+            rp_fat::format::Entry {
+                name: "noise-quick.txt",
+                data: b"restart rows only",
+            },
+            rp_fat::format::Entry {
+                name: "noise-ri.bin",
+                data: &earlier[..1000],
+            },
+        ],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: Some(&sd),
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-NOISE: done")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("noise quick: never came back to the loader")?;
+    for want in [
+        "quick mode (noise-quick.txt)",
+        "noise-ri.bin: row added",
+        "restart rows: 2 of 1000",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("noise quick: the run log has no `{want}`:{log}"));
+        }
+    }
+    if log.contains("B one-clock") || log.contains("FAULT") || log.contains("PANIC") {
+        return Err(format!(
+            "noise quick: did more than the restart row, or crashed:{log}"
+        ));
+    }
+    let rows = card_file(&sd, "noise-ri.bin")?;
+    if rows.len() != 2000 || rows[..1000] != earlier[..1000] {
+        return Err(format!(
+            "noise quick: noise-ri.bin is {} bytes, want 2,000",
+            rows.len()
+        ));
+    }
+    eprintln!(
+        "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, restart row appended, quick mode adds only its row, back at the loader (timing in the emulator is the PC's: plumbing only)"
+    );
+    Ok(())
+}
+
 /// The USB disconnect hunt (rp-unplug, docs/hw/udc.md T4): every candidate
 /// tried and undone, the host controller's port 2 reached, the run back at
 /// the loader with no fault. The emulator can't say which candidate

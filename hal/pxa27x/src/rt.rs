@@ -734,6 +734,50 @@ pub fn take_spare_timer() -> Option<crate::soc::SpareTimer<Mmio>> {
     Some(t)
 }
 
+static mut OST_CHANNELS_TAKEN: bool = false;
+
+/// Hands out OS timer channels 5-11 once ([`crate::soc::OstChannels`]).
+pub fn take_ost_channels() -> Option<crate::soc::OstChannels<Mmio>> {
+    // SAFETY: single core; called during setup.
+    let taken = unsafe { core::ptr::addr_of_mut!(OST_CHANNELS_TAKEN).replace(true) };
+    if taken {
+        return None;
+    }
+    // SAFETY: the OS timer's register window. `OstChannels` touches only
+    // channels 5-11's counters and match controls, which nothing else uses
+    // (the run limit is channel 4, the alarm 1, the spare 2, the watchdog 3).
+    Some(crate::soc::OstChannels(unsafe {
+        Mmio::new(NonNull::new_unchecked(va(OST_BASE) as *mut u32), 0xE0)
+    }))
+}
+
+/// Starts the XScale's cycle counter (CP14 `PMNC`: enable, reset `CCNT`, a
+/// count every cycle, not every 64th). Privileged modes only.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn cycle_counter_start() {
+    // SAFETY: writes the performance monitor's control register (PXA27x:
+    // CP14 c0, c1); it only starts and resets the counters, which nothing
+    // else in RetroPane uses yet. No interrupts are enabled (INTEN stays 0).
+    unsafe {
+        core::arch::asm!("mcr p14, 0, {v}, c0, c1, 0", v = in(reg) 0b101u32, options(nostack, nomem))
+    }
+}
+
+/// The XScale's cycle counter (CP14 `CCNT`, c1, c1): core clock cycles
+/// since [`cycle_counter_start`], wrapping. A few cycles to read, against
+/// ~846 ns for an OS timer register.
+#[inline]
+#[must_use]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn cycles() -> u32 {
+    let c: u32;
+    // Not `nomem`: the compiler must not move memory accesses across it
+    // (timed loops would time nothing).
+    // SAFETY: a read of the cycle counter; no side effects.
+    unsafe { core::arch::asm!("mrc p14, 0, {c}, c1, c1, 0", c = out(reg) c, options(nostack)) }
+    c
+}
+
 /// The whole OS timer block (channels 0-11), for the run limit.
 fn ost_block() -> Mmio {
     // SAFETY: the OS timer's register window, channels 0-11 (0xE0 bytes).
@@ -1206,8 +1250,23 @@ pub fn set_preempt_hook(f: fn()) {
     unsafe { core::ptr::addr_of_mut!(PREEMPT_HOOK).write(Some(f)) }
 }
 
+/// The cycle counter when the last IRQ reached [`rp_irq_frame`] (0 until
+/// [`cycle_counter_start`]): interrupt timing for the random number
+/// generator's collector (ADR-0029 R1) and its measurement (`rp-noise`).
+static mut IRQ_CYCLES: u32 = 0;
+
+/// The cycle counter's value when the last IRQ was entered.
+#[must_use]
+pub fn last_irq_cycles() -> u32 {
+    // SAFETY: a plain read of a word the IRQ path writes whole.
+    unsafe { core::ptr::addr_of!(IRQ_CYCLES).read_volatile() }
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn rp_irq_frame(frame: *const u32) {
+    // First, before any dispatch: the timestamp.
+    // SAFETY: IRQs are masked in the handler; the only writer.
+    unsafe { core::ptr::addr_of_mut!(IRQ_CYCLES).write_volatile(cycles()) };
     rp_irq();
     // SAFETY: `frame` is the 18-word frame the IRQ entry built; word 17 is
     // the interrupted CPSR.
@@ -1272,8 +1331,11 @@ fn rp_irq() {
         }
     }
     // Everything else: mask and signal its owner, or mask and record it as
-    // unclaimed (ADR-0007). No driver code runs here.
-    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::OST_4_11);
+    // unclaimed (ADR-0007). No driver code runs here. That includes the
+    // shared OS timer line when it isn't the run limit (channels 5-11 as an
+    // IRQ, `rp-noise`): left out, it was never masked and fired forever
+    // (2026-10-15, found in the emulator).
+    let other = pending & !(1 << crate::soc::irq::OST1);
     if other != 0 {
         // SAFETY: we're in the IRQ handler with IRQs masked, and main code
         // only touches DISPATCH with IRQs masked, so this access is exclusive.

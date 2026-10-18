@@ -365,10 +365,24 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
 ## Open questions
 
 1. Is the X51v's 32.768 kHz clock its own crystal (`OSCC`)? Everything in
-   R1 leans on it.
+   R1 leans on it. **Likely yes** (found 2026-10-15 in the probe's
+   2026-10-11 run: `OSCC = 0x0F`, the oscillator on and stable;
+   docs/hw/entropy.md); `rp-noise` reads it again. **Confirmed**
+   2026-10-15 (runs 1-3). But sampled by polling a 32 kHz timer channel,
+   the jitter shows in 504-cycle steps and the sequence is almost all a
+   predictable beat: at most ~0.02 bit a sample (run 3). Taken as an
+   interrupt and timestamped on entry (run 4), ~0.06 bit a sample (upper
+   estimate), ~2,000 bits a second: the first candidate to carry the
+   generator. **NIST's `ea_non_iid` agrees: 0.0629 bit a sample** (~2,060
+   bits a second; at half credit 256 bits in ~0.25 s). Pending: the
+   restart test (power-ups) before the kernel credits it. Spacing samples out
+   added nothing (the noise is per interrupt, not drift), so the collector
+   takes every tick.
 2. Are the TSC2046's `VBAT` and `AUX` inputs wired to anything on the X51v?
 3. The measured entropy per sample of each source, and so the real time to
-   "ready".
+   "ready". Runs 1-3 (2026-10-15): B (SDRAM timing) at most 0.2 bit with a
+   32-sample period, the TSC2046's inputs weak (`VBAT` unwired, the
+   temperatures drifting), A as polled ~0.02 bit. None creditable yet.
 4. Whether the PXA270 in the X51v has Intel's trusted module.
 5. Where the device's long-term private key lives at stage 2 (device-link
    K3); shares R5's answer at stage 3.
@@ -380,6 +394,9 @@ Thumb (ADR-0015): the generator is warm code when TLS is busy.
 2. Emulator noise device (deterministic, stuck, biased) and the kernel's
    collector and boot wait; emulator tests.
 3. `rp-noise` test image. **Device runs only when the owner says go.**
+   Built 2026-10-15 (the owner's go on the measurements): checked in the
+   emulator (`cargo xtask emu-noise`, plumbing only); the device run waits
+   for the owner.
 4. The measured credit table, `docs/hw/entropy.md`; the generator becomes
    ready on the device; LegacySync's device side may use it.
 5. Seed file (SD stand-in), then the flash record with the installer at
