@@ -283,3 +283,17 @@ ms settle, the DB2-clearing order, `PSLR`, `PCFR`, the sleep wake masks.
 - Battery measurement needs a gauge driver: a new RE lead (`battdrvr.dll`).
 - The QEMU fork models the clock arithmetic and the cycle counter, or lists
   them (docs/hw/emulator.md, "PXA270 clocks").
+
+**`rp-clocks` version 3, run 1 (2026-10-18 ~00:20, unattended with the
+owner's permission; `local/rp-clocks-run3.txt`):** sent and started; it
+never returned to the loader. The hardware watchdog reset the Axim to
+Dell's restore-factory-settings screen (the owner pressed Mail and started
+the loader). No run log survived (the loader's in-memory log is lost in a
+reset; `CRASHLOG.TXT` holds only its 45-byte header), and Windows
+Mobile's boot overwrote the breadcrumbs in 2700G memory. So which step
+stopped it is unknown. **Measurement only; the next step is the owner's
+decision.** Options: run it again with the owner watching the stripes (one
+per step, painted before each change) and counting them; or keep the
+breadcrumbs somewhere a reset can't clear them (the PXA's internal SRAM or
+the card) before running again.
+

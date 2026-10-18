@@ -435,3 +435,17 @@ the first that settles it):
   resets it either way (UDE off, then a fresh table).
 - Whether the X51v routes the UDC through port 2 (`UP2OCR`): add `UP2OCR` to
   the probe if enumeration fails.
+
+**Lead (owner, 2026-10-18): an ActiveSync session just before.** After the
+owner used ActiveSync (Windows Mobile Device Center) on the Windows 11 PC to
+install a game, then went to the loader (through a watchdog reset and
+Dell's restore screen), the loader reported "PC didn't configure the
+device: offering the serial drive layout" and Windows registered nothing
+for the Axim at all (no device, failed or otherwise, and no Plug and Play
+event), through two re-docks. A soft reset in the cradle fixed it: the full
+composite device (COM4 and the drive) at once. Likely: Windows kept the
+port in the state ActiveSync's session left when the device vanished
+without ending it. To test when it happens again: re-plug the cradle's
+cable on the PC side instead of resetting, and look at the PC's USB port
+in Device Manager before re-docking.
+
