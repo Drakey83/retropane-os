@@ -234,6 +234,9 @@ macro_rules! entry {
 /// The OS timer when the image's code started.
 static mut START: u32 = 0;
 
+/// Time since the image started, past the OS timer's wrap ([`uptime_ms`]).
+static mut UPTIME: crate::clock::Elapsed = crate::clock::Elapsed::starting_at(0);
+
 /// DMA channels found running at the image's first instruction (one bit
 /// each), recorded by `_start` before it stopped them.
 #[unsafe(export_name = "rp_handoff_dma")]
@@ -311,7 +314,27 @@ pub fn wait_handoff_dma(timeout_us: u32) -> DmaStopped {
 #[doc(hidden)]
 pub fn mark_start() {
     // SAFETY: written once, before anything else runs.
-    unsafe { core::ptr::addr_of_mut!(START).write(ticks()) }
+    unsafe {
+        let now = ticks();
+        core::ptr::addr_of_mut!(START).write(now);
+        core::ptr::addr_of_mut!(UPTIME).write(crate::clock::Elapsed::starting_at(now));
+    }
+}
+
+/// Milliseconds since the image started, counting smoothly through the OS
+/// timer's 22-minute wrap and wrapping only at 2^32 ms (49.7 days), so
+/// `uptime_ms().wrapping_sub(then)` is right for any span under that. For
+/// a long-running program's deadlines and windows: `ticks() / 3250` drops
+/// back to 0 every 22 minutes instead. It must be called at least once per
+/// 22 minutes (a main loop calls it every pass); not from interrupt handlers.
+#[must_use]
+#[inline(never)]
+pub fn uptime_ms() -> u32 {
+    // SAFETY: single-threaded main-line use only (documented); the value is
+    // a plain struct updated in place.
+    let ms = unsafe { (*core::ptr::addr_of_mut!(UPTIME)).ms_at(ticks()) };
+    // Keeping the low 32 bits is the wrap described above.
+    ms as u32
 }
 
 /// OS timer ticks (3.25 MHz) since the image's code started: boot time.
@@ -391,7 +414,23 @@ const OSCR0: usize = 0x40A0_0010;
 const OSCR_TICKS_PER_US_X4: u32 = 13;
 
 /// OS timer frequency.
-pub const TICK_HZ: u32 = 3_250_000;
+pub const TICK_HZ: u32 = crate::clock::TICK_HZ;
+
+pub use crate::clock::Elapsed;
+
+impl Elapsed {
+    /// Starts counting now. For any span that can exceed a few minutes:
+    /// `ticks().wrapping_sub(t0)` wraps after 22 minutes (see [`crate::clock`]).
+    #[must_use]
+    pub fn start() -> Self {
+        Self::starting_at(ticks())
+    }
+
+    /// Milliseconds since [`Elapsed::start`]; read at least once per 22 minutes.
+    pub fn ms(&mut self) -> u64 {
+        self.ms_at(ticks())
+    }
+}
 
 /// The free-running OS timer (3.25 MHz), for timing and benchmarks.
 #[inline]

@@ -63,17 +63,14 @@ mod image {
         halt()
     }
 
-    /// Milliseconds since `t0` (OS timer ticks).
-    fn ms_since(t0: u32) -> u32 {
-        rt::ticks().wrapping_sub(t0) / (rt::TICK_HZ / 1000)
-    }
-
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
         // The schedule counts from here: the loader's reply to the PC came
         // just before the jump.
-        let t0 = rt::ticks();
+        // A run lasts longer than the timer's 22-minute wrap: `Elapsed`, never
+        // a 32-bit tick difference (that froze run 1 of the profile at 22 min).
+        let mut clock = rt::Elapsed::start();
         let (Some((regs, vram)), Some(mut pwm), Some(kp)) =
             (devices::take_mbx(), rt::take_pwm0(), rt::take_keypad())
         else {
@@ -120,8 +117,8 @@ mod image {
         display.regs().write32(GSCTRL, on);
 
         let mut stopped = false;
-        let wait_until = |until_ms: u32, keypad: &mut Keypad<_>| -> bool {
-            while ms_since(t0) < until_ms {
+        let wait_until = |until_ms: u32, keypad: &mut Keypad<_>, clock: &mut rt::Elapsed| -> bool {
+            while clock.ms() < u64::from(until_ms) {
                 rt::check_in();
                 keypad.acknowledge();
                 if keypad.pressed().contains(Button::Home) {
@@ -149,7 +146,7 @@ mod image {
                     }
                 );
                 let mut at_ms = schedule.lead_ms();
-                stopped |= wait_until(at_ms, &mut keypad);
+                stopped |= wait_until(at_ms, &mut keypad, &mut clock);
                 for i in 0..schedule.len() {
                     if stopped {
                         break;
@@ -176,9 +173,9 @@ mod image {
                             pwm.write32(DCR, u32::from(n).min(COUNTS));
                         }
                     }
-                    let _ = writeln!(RunLog, "step {i} at {} ms (planned {at_ms})", ms_since(t0));
+                    let _ = writeln!(RunLog, "step {i} at {} ms (planned {at_ms})", clock.ms());
                     at_ms += s.ms;
-                    stopped |= wait_until(at_ms, &mut keypad);
+                    stopped |= wait_until(at_ms, &mut keypad, &mut clock);
                 }
             }
         }
@@ -192,7 +189,7 @@ mod image {
             } else {
                 "all patches shown"
             },
-            ms_since(t0)
+            clock.ms()
         );
 
         // Everything back as found.

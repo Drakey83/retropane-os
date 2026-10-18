@@ -45,9 +45,11 @@ pub struct Streamed {
     /// Halves of the ring played (each refilled once).
     pub halves: u32,
     /// Ticks (the caller's clock) spent filling: the CPU's share.
-    pub busy: u32,
-    /// Ticks from start to stop.
-    pub total: u32,
+    pub busy: u64,
+    /// Ticks from start to stop. Summed a half at a time, so a stream longer
+    /// than the caller's 32-bit clock's wrap (22 minutes on the PXA27x's OS
+    /// timer) still adds up.
+    pub total: u64,
 }
 
 /// Why a stream stopped early.
@@ -93,30 +95,38 @@ pub fn stream(
             *f = v.to_le_bytes();
         }
     };
-    let t0 = now();
+    let mut last = now();
+    // Every reading adds its step to the total, so the total stays right past
+    // the caller's 32-bit clock's wrap however long the stream runs.
+    let mut stats = Streamed::default();
+    let mut read = |total: &mut u64| {
+        let t = now();
+        *total += u64::from(t.wrapping_sub(last));
+        last = t;
+        t
+    };
     fill(&mut ring[..], &mut left);
     dma.filled(ring);
     if !dma.start(TX_PORT, ring) {
         return Err(StreamError::Refused);
     }
-    let mut stats = Streamed::default();
     let mut next = 0usize; // the half to refill once the engine leaves it
-    let mut since = now();
+    let mut since = read(&mut stats.total);
     while stats.halves < halves {
         let Some(pos) = dma.position() else {
             dma.stop();
             return Err(StreamError::Stalled);
         };
         if pos / half != next {
-            let t = now();
+            let t = read(&mut stats.total);
             let at = next * half;
             fill(&mut ring[at..at + half], &mut left);
             dma.filled(&ring[at..at + half]);
-            stats.busy = stats.busy.wrapping_add(now().wrapping_sub(t));
+            since = read(&mut stats.total);
+            stats.busy += u64::from(since.wrapping_sub(t));
             stats.halves += 1;
             next ^= 1;
-            since = now();
-        } else if now().wrapping_sub(since) > stall {
+        } else if read(&mut stats.total).wrapping_sub(since) > stall {
             dma.stop();
             return Err(StreamError::Stalled);
         } else {
@@ -124,7 +134,7 @@ pub fn stream(
         }
     }
     dma.stop();
-    stats.total = now().wrapping_sub(t0);
+    read(&mut stats.total);
     Ok(stats)
 }
 
@@ -370,6 +380,36 @@ mod tests {
         // Everything in order, nothing lost or repeated, then zeros.
         assert_eq!(dma.heard[..5000], (1..=5000).collect::<Vec<u32>>()[..]);
         assert!(dma.heard[5000..].iter().all(|&x| x == 0));
+        assert!(stats.busy < stats.total);
+    }
+
+    /// A stream longer than the caller's 32-bit clock's wrap (22 minutes on
+    /// the OS timer) still adds up: the clock here jumps a quarter-wrap a call.
+    #[test]
+    fn totals_survive_the_clocks_wrap() {
+        let mut dma = fake(256);
+        let mut ring = vec![0u8; 8192];
+        let mut source = std::iter::repeat(7u32);
+        let mut t = 0u32;
+        let calls = core::cell::Cell::new(0u64);
+        let mut clock = || {
+            calls.set(calls.get() + 1);
+            t = t.wrapping_add(1 << 30);
+            t
+        };
+        let stats = stream(
+            &mut dma,
+            &mut ring,
+            &mut source,
+            5000,
+            &mut clock,
+            u32::MAX,
+            &mut || {},
+        )
+        .unwrap();
+        assert!(stats.total > u64::from(u32::MAX), "total {}", stats.total);
+        // Every tick from the first reading to the last is counted once.
+        assert_eq!(stats.total, (calls.get() - 1) << 30);
         assert!(stats.busy < stats.total);
     }
 

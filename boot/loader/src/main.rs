@@ -395,8 +395,12 @@ mod image {
         }
     }
 
+    /// Milliseconds, smooth through the OS timer's 22-minute wrap (the
+    /// loader runs for hours: `ticks() / 3250` fell back to 0 every 22
+    /// minutes, breaking the host-write guard and the media-change timer).
+    #[inline(always)]
     fn now_ms() -> u32 {
-        rt::ticks() / (TICK_1S / 1000)
+        rt::uptime_ms()
     }
 
     /// A reply line built on the stack.
@@ -2008,6 +2012,9 @@ mod image {
         let started = rt::ticks();
         let mut link_proven = false;
         loop {
+            // Keeps `now_ms` counting through the timer's wrap (it must be
+            // read at least once per 22 minutes).
+            let _ = now_ms();
             // Armed by an earlier run (it can't be disarmed): keep it fed
             // while waiting (a loader tried from RAM: once its link works).
             link_proven |= udc.host_open();

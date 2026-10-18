@@ -97,8 +97,8 @@ mod image {
                 let _ = writeln!(
                     out,
                     "tone {hz} Hz {ms} ms ({frames} frames in {} ms, by DMA, CPU busy {}%), codec at {:#04x}, to {}",
-                    s.total / (TICK_1S / 1000),
-                    u64::from(s.busy) * 100 / u64::from(s.total.max(1)),
+                    s.total / u64::from(TICK_1S / 1000),
+                    s.busy * 100 / s.total.max(1),
                     codec.address(),
                     if codec.output() == Output::Headphones {
                         "headphones"
