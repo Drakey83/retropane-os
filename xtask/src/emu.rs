@@ -4783,9 +4783,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             "probe standard, as run 2",
             "tone 440 Hz 1000 ms (48000 frames",
             "tone 660 Hz 1000 ms (48000 frames",
-            "second note A: at once (control)",
-            "second note B: after 200 ms",
-            "second note C: at once, I2S reset first",
+            "tone 880 Hz 1000 ms (48000 frames",
             "by DMA",
             "to speaker",
             "codec at 0x1a",
@@ -4867,18 +4865,16 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     }
     let tones = &left[start..=end];
     let seconds = tones.len() as f64 / f64::from(rate);
-    // The first output: 440 Hz, then 660 Hz three ways (at once, after a
-    // 200 ms gap, after an I2S reset): four 1 s notes, the gap within the
-    // tenth of a second of quiet that ends the stretch.
-    const WANT: [f64; 4] = [440.0, 660.0, 660.0, 660.0];
-    if !(3.8..=4.6).contains(&seconds) {
+    // The first output's three notes, back to back (I2S stays on).
+    const WANT: [f64; 3] = [440.0, 660.0, 880.0];
+    if !(2.8..=3.4).contains(&seconds) {
         return Err(format!(
-            "tone: recorded {seconds:.3} s of sound (wanted four 1 s notes)"
+            "tone: recorded {seconds:.3} s of sound (wanted three 1 s notes)"
         ));
     }
     // Each quarter, its middle 80% (away from the joins).
     let third = tones.len() / WANT.len();
-    let mut found = [0.0f64; 4];
+    let mut found = [0.0f64; 3];
     for (k, want) in WANT.into_iter().enumerate() {
         let part = &tones[k * third + third / 10..(k + 1) * third - third / 10];
         let crossings = part.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
@@ -4892,8 +4888,8 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         found[k] = hz;
     }
     eprintln!(
-        "    tone OK: WM8750 found on I2C, four notes through I2S, recorded at {:.1}, {:.1}, {:.1} and {:.1} Hz over {seconds:.3} s",
-        found[0], found[1], found[2], found[3]
+        "    tone OK: WM8750 found on I2C, three notes through I2S, recorded at {:.1}, {:.1} and {:.1} Hz over {seconds:.3} s",
+        found[0], found[1], found[2]
     );
     Ok(())
 }

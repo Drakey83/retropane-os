@@ -206,7 +206,12 @@ mod image {
         let rate = Rate::Khz48;
         let frames = rate.hz() / 1000 * ms;
         let mut source = Tone::new(hz, rate.hz(), 12_000);
-        i2s.start(rate);
+        // I2S stays on between notes (started once in `main`): re-enabled
+        // right after it was switched off it sends nothing (measured
+        // 2026-10-18: the FIFO stays full, the DMA never leaves its first
+        // descriptor; after 200 ms off it plays; a reset doesn't help), and
+        // Windows Mobile keeps it on through a whole session (SACR0 0x8805
+        // even after the device closes). It goes off once, at the end.
         let r = stream(
             dma,
             ring,
@@ -216,7 +221,6 @@ mod image {
             TICK_1S / 5,
             &mut rt::check_in,
         );
-        i2s.stop();
         match r {
             Ok(s) => {
                 let _ = writeln!(
@@ -441,24 +445,8 @@ mod image {
             finish(&mut power)
         };
         let ring = &mut scratch[..RING];
-        // The first note, then the second three ways, one change each
-        // (run 7: every note after the first stalled at once).
-        play(
-            &mut out, &codec, &mut i2s, &mut dma, ring, NOTES[0], NOTE_MS,
-        );
-        for (name, gap_ms, reset) in [
-            ("A: at once (control)", 0u32, false),
-            ("B: after 200 ms", 200, false),
-            ("C: at once, I2S reset first", 0, true),
-        ] {
-            let _ = writeln!(out, "second note {name}");
-            rt::delay_us(gap_ms * 1_000);
-            if reset {
-                i2s.reset();
-            }
-            play(
-                &mut out, &codec, &mut i2s, &mut dma, ring, NOTES[1], NOTE_MS,
-            );
+        for hz in NOTES {
+            play(&mut out, &codec, &mut i2s, &mut dma, ring, hz, NOTE_MS);
         }
 
         // The jack: a change that holds over two polls 1 s apart.
@@ -495,6 +483,8 @@ mod image {
         } else {
             let _ = writeln!(out, "jack: no change in {JACK_WAIT_S} s");
         }
+        // The session's end: I2S off once, then the power.
+        i2s.stop();
         finish(&mut power)
     }
 
