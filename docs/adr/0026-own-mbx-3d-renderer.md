@@ -393,7 +393,11 @@ draw as the X51v did (`emu-glesfeat` checks its pixels word for word); a
 mutant puts the old mistake back and the host test catches it.
 `rp-mbx3d-api` on the device the same day: **104 checks, 0 BAD**, S5's
 "less", "less or equal" and alpha-test cases among them, render times
-within 1% of the prediction.
+within 1% of the prediction. **The partial-render case too (quality-audit
+A3, same evening):** S5 now renders only blue's tiles with blue "less" over
+red; red stayed inside a blue tile and alone, blue won the overlap: **107
+checks, 0 BAD**. Run 3's "an 'always' quad vanished in a partial render"
+was the alpha-bits mistake as well.
 
 ## Next device tests (static reading 2026-10-15, `docs/hw/2700g.md` "The 3D core's interrupt, filtering, mipmaps and texture formats")
 

@@ -520,6 +520,26 @@ mod image {
             g.check("blue alone", 350, 350, alone);
             g.check("red alone", 150, 150, RED);
         }
+        // A partial render (quality-audit A3): run 3 saw "less" in a frame
+        // rendering only blue's tiles make the "always" red below vanish;
+        // the depth mode was in the alpha bits then. Blue plain first (a
+        // full frame), then blue "less" at 0.3: only its tiles render.
+        // (250,195) is red, inside a tile of blue's but outside blue.
+        g.set(&mut r, 1, Some(rect(200, 200, 200, 200, BLUE)));
+        g.frame(&mut r, FULL, "partial: blue plain first");
+        g.set(
+            &mut r,
+            1,
+            Some(rect(200, 200, 200, 200, BLUE).with_depth(Depth {
+                mode: depth::LESS,
+                write: true,
+                z: z(3),
+            })),
+        );
+        g.frame(&mut r, FULL, "partial: blue 'less' z 0.3, only its tiles");
+        g.check("overlap", 250, 250, BLUE);
+        g.check("red in a blue tile, outside blue", 250, 195, RED);
+        g.check("red alone", 150, 150, RED);
         let bad = rect(200, 200, 200, 200, BLUE).with_depth(Depth {
             mode: 8,
             write: true,
