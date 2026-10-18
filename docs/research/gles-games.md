@@ -100,6 +100,19 @@ units, PVRTC upload, blending, alpha test, culling, scissor, depth mask,
 matrices: the T5-T7 device tests (blending, filtering, depth) are on its
 critical path.
 
+## The owner's second batch (2026-10-18 evening, read-only)
+
+105 installed programs (`\Games`, `\Program Files`) and 66 installers
+(CABs unpacked into a scratch folder; cracked or keygen files and folders
+skipped, as always) scanned for their graphics imports. **No new GLES
+program**: GLES remains Enigmo, Geo Rally, Virtual Pool GLES, Call of
+Duty 2 and THPS2 among the owner's games. **GAPI** (`gx.dll`, direct
+frame-buffer drawing) in about 30 (Tomb Raider, Doom, Pocket UFO, Zuma,
+Bejeweled 2, Arvale 2, Sky Force, ...); **DirectDraw** in two (Galaxies,
+`cod6`); the rest draw through GDI. Tomb Raider (2002) predates Pocket PC
+GLES: GAPI only. For RetroPane this makes the GAPI path (ADR-0026's
+`GETGXINFO` answer) the one most of the library needs.
+
 ## Texture formats, checked on the owner's cards (2026-10-18, read-only)
 
 - **DoomGLES** (`\Games\Pocket Doom\OpenGLES` on the CF card): 645 PVR v1

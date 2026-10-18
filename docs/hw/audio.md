@@ -251,6 +251,13 @@ switching it on within ~645 ms is dropped**. Run 8's "200 ms off plays"
 followed a failed try. `PxaI2s::start` now reads `SACR0` back and reports
 a dropped switch-on; the OS keeps I2S on through a session.
 
+**Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
+`WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
+block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
+WM8750's bass/treble (tone) controls. The CE personality's `WAV1:` must
+answer them for X50Mix and anything else that uses them
+(docs/design/apps-and-packs.md §6b).
+
 Remaining difference between Windows Mobile's working transfer and
 `rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
 after power (~260 ms vs 50 ms). Next run (owner watching): each alone,

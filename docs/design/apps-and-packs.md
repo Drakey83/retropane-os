@@ -178,6 +178,25 @@ page <https://www.pocketcult.com/mame.php>.
 0.4a, 0.5 WIP or both; a device check of its 2700G mode under Windows
 Mobile, then under the CE personality when that exists.
 
+**X50Mix 0.10 (owner, 2026-10-18: add it to the pack).** A tuner for the
+X50 series' hardware equalizer (bass and treble), with separate headphone
+and speaker profiles; by Jonathan Misurda after a discovery by "Emulamer"
+on Aximsite, who released his first version's source
+(<https://people.cs.pitt.edu/~jmisurda/ppc/mobile.htm>; the owner's copy:
+`x50mix.ARM.10.CAB` on the SD card, 2005-01-23). Read only (facts, no code
+taken): it opens Dell's sound driver as `WAV1:` and sends it two private
+control codes with a 9-byte settings block, **`0x1D2000`** (set) and
+**`0x1D2004`** (get); Dell's `wavedev.dll` handles both in one routine
+(`0x02463E54`, a set/get flag). **For RetroPane:** as a legacy program it
+runs only if the CE personality's `WAV1:` answers those two codes with
+the same 9-byte block, mapped onto the WM8750's bass and treble registers
+(the block's layout to read from Dell's routine when the CE audio layer is
+built; docs/hw/audio.md). Licence: none stated for 0.10 (the page offers
+the CAB; the first version's source was published by its author): to
+confirm before the pack ships it. The same page also lists **PocketNester
+0.8beta** (an NES emulator with X50v screen rendering): a candidate for
+the pack too.
+
 ## 6a. Picture quality in every game (owner, 2026-10-17)
 
 **Why.** DoomGLES under Windows Mobile is hard to see: dark, with walls,
