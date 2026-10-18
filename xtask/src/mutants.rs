@@ -513,6 +513,13 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_display_cal),
     },
     Mutant {
+        name: "tone: the codec's I2C gate (GPIO82) never opens: the codec is never found (the first device run)",
+        file: "boot/tone/src/main.rs",
+        from: "            self.0.write(I2C_GATE, open);",
+        to: "            self.0.write(I2C_GATE, false);",
+        check: Check::Emu(crate::emu::boot_loader_tone),
+    },
+    Mutant {
         name: "looks: the strength dial never reaches the picture (every strength shows the original)",
         file: "boot/looks/src/main.rs",
         from: "                draw(fb, kind, photo, &t, 0..H);",

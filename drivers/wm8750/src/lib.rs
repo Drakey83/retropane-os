@@ -6,6 +6,11 @@
 //!
 //! Registers are write-only: each write is two bytes, the 7-bit register
 //! number and the 9-bit value. The driver keeps what it wrote.
+//!
+//! On the X51v the codec's I2C lines are gated by GPIO82: Windows Mobile's
+//! driver drives it high for each transfer and low after (docs/hw/audio.md,
+//! static read 2026-10-17); without it the codec never answers. [`Gated`]
+//! does that around every write.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -45,6 +50,31 @@ pub enum Output {
     Headphones,
     /// The speaker (and the headphone pair, harmlessly, with nothing in).
     Speaker,
+}
+
+/// A line that must be open for the codec to hear the bus.
+pub trait Gate {
+    /// Opens (`true`) or closes the gate.
+    fn set(&mut self, open: bool);
+}
+
+/// An I2C bus behind a [`Gate`]: open for each write, closed after it,
+/// whether the write succeeded or not (as Windows Mobile does: the lines
+/// are shared with another device, so the gate is never left open).
+pub struct Gated<I, G> {
+    /// The bus.
+    pub bus: I,
+    /// The gate.
+    pub gate: G,
+}
+
+impl<I: I2cBus, G: Gate> I2cBus for Gated<I, G> {
+    fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
+        self.gate.set(true);
+        let r = self.bus.write(addr, data);
+        self.gate.set(false);
+        r
+    }
 }
 
 /// The codec, found and set up.
@@ -148,6 +178,12 @@ impl<I: I2cBus> Wm8750<I> {
         self.i2c
     }
 
+    /// The bus, between writes (for a board line kept in it, such as the
+    /// gate's GPIO block).
+    pub fn bus_mut(&mut self) -> &mut I {
+        &mut self.i2c
+    }
+
     fn set(&mut self, r: u8, v: u16) -> Result<(), I2cError> {
         self.i2c
             .write(self.addr, &[(r << 1) | (v >> 8) as u8 & 1, v as u8])
@@ -196,6 +232,65 @@ mod tests {
             regs: Vec::new(),
             checks: Vec::new(),
         }
+    }
+
+    /// The X51v's case (docs/hw/audio.md): the codec answers only while
+    /// the gate is open, and the gate is closed after every write, a
+    /// refused one included.
+    #[test]
+    fn a_gated_codec_is_found_and_the_gate_never_stays_open() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Behind {
+            inner: Bus,
+            open: Rc<Cell<bool>>,
+        }
+        impl I2cBus for Behind {
+            fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
+                if !self.open.get() {
+                    return Err(I2cError::NoDevice);
+                }
+                self.inner.write(addr, data)
+            }
+        }
+        struct Pin {
+            open: Rc<Cell<bool>>,
+            opens: u32,
+        }
+        impl Gate for Pin {
+            fn set(&mut self, open: bool) {
+                self.opens += u32::from(open);
+                self.open.set(open);
+            }
+        }
+        let open = Rc::new(Cell::new(false));
+        // Ungated, the codec looks absent: the first device run's result.
+        let mut ungated = Behind {
+            inner: bus(0x1A),
+            open: open.clone(),
+        };
+        assert_eq!(ungated.write(0x1A, &[]), Err(I2cError::NoDevice));
+        let gated = Gated {
+            bus: Behind {
+                inner: bus(0x1A),
+                open: open.clone(),
+            },
+            gate: Pin {
+                open: open.clone(),
+                opens: 0,
+            },
+        };
+        let mut codec = Wm8750::init(gated, 60).ok().unwrap();
+        assert_eq!(codec.address(), 0x1A);
+        assert!(!open.get(), "gate left open after set-up");
+        assert!(codec.route(Output::Headphones).is_ok());
+        assert!(!open.get(), "gate left open after a route change");
+        let g = codec.into_inner();
+        assert!(g.gate.opens as usize >= g.bus.inner.regs.len());
+        // A write to nobody fails and still closes the gate.
+        let mut g = g;
+        assert_eq!(g.write(0x55, &[0, 0]), Err(I2cError::NoDevice));
+        assert!(!open.get());
     }
 
     #[test]

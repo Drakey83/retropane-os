@@ -42,7 +42,7 @@ mod image {
     use rp_drv_pxa_mmc::PxaMmc;
     use rp_drv_sdcard::{BLOCK, SdCard, mbr_partitions};
     use rp_fat::Volume;
-    use rp_hal_api::{BlockDevice, RegisterBus};
+    use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::{Mmio, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, RunLog};

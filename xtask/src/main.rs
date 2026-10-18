@@ -161,6 +161,8 @@ commands:
             switch without Windows Mobile's value): run it before `load rp-refresh`
   emu-display-cal the display calibration image's check (rp-display-cal: the
             picture pixel-exact through each gamma table its dials set)
+  emu-tone  the audio test image (rp-tone): the codec behind its GPIO82 gate,
+            440 Hz to the speaker, the GPIO96 jack, 1000 Hz to headphones
   emu-looks the C6 looks test's check (rp-looks: photos, chart and ramps
             pixel-exact through each measured table)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
@@ -191,7 +193,7 @@ fn main() -> ExitCode {
         | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
         | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-refresh"
+        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-refresh"
         | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => {
             run_step(&cmd)
         }
@@ -471,6 +473,7 @@ fn run_step(step: &str) -> Result {
         "emu-cfdetect" => cross().and_then(|()| emu::boot_loader_cfdetect(&workspace_root())),
         "emu-display-cal" => cross().and_then(|()| emu::boot_loader_display_cal(&workspace_root())),
         "emu-looks" => cross().and_then(|()| emu::boot_loader_looks(&workspace_root())),
+        "emu-tone" => cross().and_then(|()| emu::boot_loader_tone(&workspace_root())),
         "emu-refresh" => cross().and_then(|()| emu::boot_loader_refresh(&workspace_root())),
         "emu-screen-measure" => {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))

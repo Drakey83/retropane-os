@@ -84,3 +84,26 @@ line Windows Mobile switches on with sound), and the codec's identity and
 address on the X51v. Next step: a read-only probe image that reports the
 pins' functions, CKEN and an I2C address scan, run once with sound playing
 in Windows Mobile just before (HaRET) and once without.
+
+## Dell's audio driver, static read (2026-10-17, facts only)
+
+Source (D): `wavedev.dll` from the A08 ROM (`local/imgfs-a08`), disassembled
+with llvm-objdump (`local/re/wavedev/wavedev.asm`). No code copied.
+
+| Fact | Confidence | Evidence |
+|---|---|---|
+| The codec is on the PXA27x **standard I2C** unit (`IDBR` 0x40301688, `ICR` 0x40301690, `ISR` 0x40301698): AxDroid's bus is right | confirmed (code) | (D): the only I2C registers it touches |
+| Its address is **0x1A**; register writes are two bytes (register << 1 \| value bit 8, then value bits 7-0), registers 0-42 (the WM8750's) | confirmed (code) | (D): the register-write routine passes 26 to the I2C write, refuses registers ≥ 43 |
+| **GPIO82 is driven high for every codec I2C transfer and low after it**, inside a lock shared with another driver (`CI2C_Mutex_H`): a gate or switch on the codec's I2C lines (likely), **not** the speaker amplifier AxDroid named. Without it the codec can't hear the bus: the first device run's "no codec at 0x1a or 0x1b" | confirmed (code); its circuit role likely | (D): the transfer routine sets GPIO82 to 1 before START and to 0 after STOP, on success and failure alike |
+| The I2C unit's clock (`CKEN` bit 14) is switched on before each transfer and off after it (on request) | confirmed (code) | (D) |
+| Fast mode: `ICR` = 0x8060 (fast mode, unit enable, SCL enable); `ISR` cleared with 0x6F0 | confirmed (code) | (D) |
+| **Headphone detect is GPIO96, low = plugged in**, not GPIO83 high: the first run's "GPIO83 0 with headphones in" fits | likely (the flag's meaning is inferred from its use) | (D): `GPLR3` bit 0 tested, the "in" state set when it reads 0 |
+| The driver keeps DMA buffers or descriptors in the PXA27x's **internal SRAM** (0x5C038000-0x5C03E90C) and feeds `SADR` (0x40400080) | confirmed (addresses) | (D) |
+
+**What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
+around each codec write and lowers it after, as Windows Mobile does (never
+leaving it high: the line is shared with another device, the lock's other
+user unknown); the jack is GPIO96, low = in. The speaker amplifier's line
+is open again (GPIO82 was AxDroid's guess; CPLD 0x14 bit 3 remains a
+candidate). The emulator's codec answers without GPIO82: add the gate to
+the fork's model (docs/hw/emulator.md).

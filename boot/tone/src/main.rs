@@ -2,15 +2,18 @@
 //! as a test image of its own, so the loader doesn't carry the audio drivers
 //! (the loader diet, 2026-10-16).
 //!
-//! 1. The WM8750 is looked for on I2C and routed to the speaker or the
-//!    headphones by the jack (GPIO83).
+//! 1. The WM8750 is looked for on I2C (at 0x1A, with its I2C gate,
+//!    GPIO82, open for each write as Windows Mobile does: docs/hw/audio.md)
+//!    and routed to the speaker or the headphones by the jack (GPIO96, low
+//!    = plugged in).
 //! 2. 440 Hz for 500 ms at 48 kHz, streamed through I2S by DMA from a ring
 //!    the CPU refills by halves; the log says how long it really took (the
 //!    codec's clock paces it) and how much of that the CPU was busy.
 //! 3. Up to 15 s for the jack to change (plug the headphones in or out);
 //!    on a change, 1000 Hz for 50 ms to the new output.
 //!
-//! The speaker amplifier (GPIO82, CPLD `0x14`) is left alone.
+//! The speaker amplifier (unknown: CPLD `0x14` bit 3 is a candidate) is
+//! left alone.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -27,7 +30,7 @@ mod image {
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_i2c::PxaI2c;
     use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, Tone, stream};
-    use rp_drv_wm8750::{Output, Wm8750};
+    use rp_drv_wm8750::{Gate, Gated, Output, Wm8750};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -35,9 +38,22 @@ mod image {
 
     rp_hal_pxa27x::entry!(main);
 
-    /// Headphone jack (docs/hw/audio.md): high = plugged in (assumed;
-    /// unconfirmed on the device, so the level is logged).
-    const HP_DETECT: u8 = 83;
+    /// Headphone jack (docs/hw/audio.md, Dell's driver): low = plugged in
+    /// (likely; the level is logged).
+    const HP_DETECT: u8 = 96;
+    /// The codec's I2C gate: high for each transfer, low after.
+    const I2C_GATE: u8 = 82;
+
+    /// The GPIO block, holding the codec's I2C gate.
+    struct Pins(Gpio<Mmio>);
+
+    impl Gate for Pins {
+        fn set(&mut self, open: bool) {
+            self.0.write(I2C_GATE, open);
+        }
+    }
+
+    type Codec = Wm8750<Gated<PxaI2c<Mmio>, Pins>>;
     /// OS timer ticks per second (3.25 MHz).
     const TICK_1S: u32 = 3_250_000;
     /// How long to wait for the jack to change.
@@ -71,7 +87,7 @@ mod image {
     /// Plays `hz` for `ms` and logs how it went.
     fn play(
         out: &mut impl Write,
-        codec: &Wm8750<PxaI2c<Mmio>>,
+        codec: &Codec,
         i2s: &mut PxaI2s<Mmio>,
         dma: &mut Dma,
         ring: &mut [u8],
@@ -141,21 +157,35 @@ mod image {
         };
         let mut gpio = Gpio::new(gpio_bus);
         gpio.make_input(HP_DETECT);
-        let mut plugged = gpio.read(HP_DETECT);
+        // Closed until a write opens it.
+        gpio.make_output(I2C_GATE, false);
+        let level = gpio.read(HP_DETECT);
+        let mut plugged = !level;
         let _ = writeln!(
             out,
-            "headphones {} (GPIO83 {})",
+            "headphones {} (GPIO96 {})",
             if plugged { "in" } else { "out" },
-            u8::from(plugged)
+            u8::from(level)
         );
         let (Some(i2c), Some(i2s)) = (rt::take_i2c(), rt::take_i2s()) else {
             let _ = writeln!(out, "tone: I2C or I2S unavailable");
             finish()
         };
-        let Ok(mut codec) = Wm8750::init(PxaI2c::new(i2c), 60) else {
-            let _ = writeln!(out, "tone: no codec answered on I2C (0x1a, 0x1b)");
-            finish()
+        let gated = Gated {
+            bus: PxaI2c::new(i2c),
+            gate: Pins(gpio),
         };
+        let mut codec: Codec = match Wm8750::init(gated, 60) {
+            Ok(c) => c,
+            Err(_) => {
+                let _ = writeln!(
+                    out,
+                    "tone: no codec answered on I2C (0x1a, 0x1b) with GPIO82 open"
+                );
+                finish()
+            }
+        };
+        let _ = writeln!(out, "codec at {:#04x}", codec.address());
         let _ = codec.route(output(plugged));
         let Some(mut dma) = rt::take_dma(dma_map::AUDIO) else {
             let _ = writeln!(out, "tone: no DMA channel");
@@ -172,7 +202,7 @@ mod image {
         for _ in 0..JACK_WAIT_S {
             rt::check_in();
             rt::delay_us(1_000_000);
-            let now = gpio.read(HP_DETECT);
+            let now = !codec.bus_mut().gate.0.read(HP_DETECT);
             if now == seen && now != plugged {
                 plugged = now;
                 changed = true;
@@ -183,9 +213,9 @@ mod image {
         if changed {
             let _ = writeln!(
                 out,
-                "headphones {} (GPIO83 {})",
+                "headphones {} (GPIO96 {})",
                 if plugged { "in" } else { "out" },
-                u8::from(plugged)
+                u8::from(!plugged)
             );
             let _ = codec.route(output(plugged));
             play(&mut out, &codec, &mut i2s, &mut dma, ring, 1000, 50);

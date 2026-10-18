@@ -4195,17 +4195,32 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         // first tone): the second tone goes to them.
         std::thread::sleep(Duration::from_secs(4));
         let mut mon = crate::screen::Monitor::connect(port)?;
+        // An emulator with the board's audio wiring as Dell's driver drives
+        // it (fork after rp-v0.20.0: the codec's GPIO82 I2C gate, the GPIO96
+        // jack low when plugged in) says so; an older one has neither, and
+        // only the first tone is checked there.
+        let wired = mon.query("qom-get /machine codec-gate")?.contains("true");
         mon.query("qom-set /machine/peripheral/jack pressed true")?;
         let log = usb_read_until(&mut s, "RPL END", 40)?;
-        for want in [
+        let mut wants = vec![
             "tone 440 Hz 500 ms (24000 frames",
             "by DMA",
             "to speaker",
-            "headphones in (GPIO83 1)",
-            "tone 1000 Hz 50 ms",
-            "to headphones",
+            "codec at 0x1a",
             "TONE-OK",
-        ] {
+        ];
+        if wired {
+            wants.extend([
+                "headphones in (GPIO96 0)",
+                "tone 1000 Hz 50 ms",
+                "to headphones",
+            ]);
+        } else {
+            eprintln!(
+                "    tone: this emulator has no codec gate or GPIO96 jack (a release before them): the jack part is skipped"
+            );
+        }
+        for want in wants {
             if !log.contains(want) {
                 return Err(format!("tone: no {want:?} in the run log:{log}"));
             }
