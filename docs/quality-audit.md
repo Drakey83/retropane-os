@@ -52,12 +52,12 @@ depends on them proves less than it looks):
 |---|---|---|---|
 | D1 | Values copied from Dell/WM carry no `inherited:` tag (0 tags in the code), so the open-copied-values count the owner asked for can't be given | Tag every copied value (`// inherited: <audit item>, <source>`), an `xtask` lint counts them, every summary reports the count; work them down (imitation audit) | open |
 | D2 | The card's loader is one change behind main (the drive's naps counter) | Install with the next loader change, backup first | open |
-| D3 | 26 old branches and their worktrees, all merged | Delete after the current work (owner, 2026-10-18); backup bundle and the worktrees' `local/` files saved | open |
+| D3 | 26 old branches and their worktrees, all merged | Deleted (29 local branches, 3 on GitHub; only `main` left) after a full bundle (`retropane-backups/2026-10-18/retropane-os-all-before-branch-cleanup.bundle`) and the worktrees' `local/` files saved and copied into `local/`; 15 empty worktree folders stay until the app releases them | **fixed** 2026-10-18 |
 | D4 | The RNG restart-test health rule sat unfinished on a branch | Finished into main with tests and a mutant | **fixed** 2026-10-18 |
 
 ## Order
 
-1. Finish what's in progress: A4 (owner-watched audio run), D3.
+1. Finish what's in progress: A4 (owner-watched audio run).
 2. The ones that can hide wrong conclusions: A3, A5, C2, C5.
 3. Emulator debt by what the next work needs: B1, B3, B4, then B5-B7.
 4. D1 (the copied-values count), D2 with the next loader change.
