@@ -32,14 +32,17 @@ git).
 | Geo Rally | closed | installed on the owner's card | `libGLES_CL.dll`, 48 | |
 | Solterra | closed | installed on the owner's card | `libGLES_CL.dll`, 50 | found 2026-10-15, unknown to us before |
 | Stuntcar Extreme (Fathammer) | closed | Axim X50 Game CD (`SCERC0B.exe`, InstallShield: not unpacked) | unknown | not installed |
-| Virtual Pool Mobile | closed | installed build is v1.78, **software rendered** (GAPI, no GLES); the GLES build v1.29 is a CAB on the owner's CF card, not installed | (v1.29) to read | |
+| Virtual Pool Mobile | closed | installed build is v1.78, **software rendered** (GAPI, no GLES); Dell's CD trial is GAPI too | — | the GLES build is its own program, next row |
+| Virtual Pool Mobile GLES (Celeris) | closed | installed on the owner's SD card (`\Program Files\Games\Virtual Pool Mobile GLES\VPMobileGLES.exe`, 760,832 bytes, built 2005-09-06) | `libGLES_CL.dll`, 48 by ordinal | `gx.dll` for input and suspend/resume only; `aygshell`, `ceshell`; no DLLs of its own (sound and Ogg video built in). Data in its own `.ark` packs |
+| Call of Duty 2 Pocket PC (Activision) | closed | installed on the owner's SD card (`\Program Files\COD2\cod2.exe`, 350,720 bytes, built 2006-12-06; the program calls itself `cod2_gles`) | `libGLES_CL.dll`, 40 by ordinal | `gx.dll` incl. `GXOpenDisplay` (input, suspend/resume); data in `.pk2` packs; a `LOWRES_TEXTURES` option |
+| Tony Hawk's Pro Skater 2 (Activision, 2005) | closed | installed on the owner's SD card (`\Program Files\THPS2\THPS2.exe`, 1,669,936 bytes, built 2005-10-27) | `libGLES_CL.dll`, 45 by ordinal | ships `fmodce.dll` (FMOD 3, 20 calls), `zlibce.dll`, and `x0__ar10dll.dll` (Intel compiler's float/maths runtime: our CE layer loads it like any DLL); `MMTimer.dll` timers; a Direct3D 8-style texture layer inside (`IDirect3DTexture8` names) |
 | Toy Golf | closed | owner looking for it | to read | |
 | Quake Mobile | Quake engine (GPL) | installer only on the card, not installed | to read | |
 | DoomGLES, Doom2GLES, HereticGLES (Kokak) | open engines (GPL) | installed on the card | `libGLES_CL.dll`, 59 each | native ports planned (brightness control first)  Textures come from `.pvr` files whose header picks the format: on the card 443 PVRTC 4 bpp + 202 RGBA 5551, none 4444 (checked 2026-10-17): see design/display-calibration.md, Games |
 | Quake III Arena (Q3CE) | open engine (GPL) | installed on the card | `libGLES_CL.dll`, 57 | its own `libGLES_CM_NoE.dll` (+ `libEGL.dll`) looks like a software fallback (it imports JIT helpers: `eglAllocExecutable`...); on the 2700G Q3CE uses Intel's DLL. Native port planned |
 | Pocket Cube (Cube engine) | open engine | installed on the card | `libGLES_CL.dll`: game and server 35 each, its SDL port 14 (EGL) | |
 
-## The union: 76 functions (owner's cards, 2026-10-15)
+## The union: 77 functions (owner's cards, 2026-10-15, +1 on 2026-10-18)
 
 Ten programs scanned (the games above with GLES imports). Together they
 import **76** functions from `libGLES_CL.dll`, all by ordinal: the binary
@@ -63,6 +66,14 @@ glTexParameterx glTexSubImage2D glTranslatex glVertexPointer glViewport`
 
 Used by one program only: `eglGetCurrentContext glDepthRangex
 glLightModelx glStencilFunc glStencilOp glTexSubImage2D`.
+
+**2026-10-18: Virtual Pool GLES, Call of Duty 2 and THPS2 added (77).**
+Their 62 distinct functions are all in the 76 except **`glScalex`**
+(Virtual Pool and THPS2), so the union is **77**. Every ordinal they import
+resolves to a named export of Intel's `libGLES_CL.dll` (ROM A08): the
+"keep Intel's ordinals" rule holds for them too. `glDepthRangex` now has a
+second user (THPS2). No new DLL beyond what the table names; none of the
+three loads GLES dynamically for its 3D calls.
 
 Also found: two games draw through DirectDraw (`ddraw.dll`) instead: CE
 personality 2D work, not GLES. Most of the owner's other games use GAPI
@@ -129,3 +140,37 @@ critical path.
   release, possibly the "v1.29" on the owner's list); its imports confirm
   it in a minute.
 
+- **Found (2026-10-18): the GLES build is on the owner's SD card**
+  (`VPMobileGLES.exe`, row above), and it is a real `libGLES_CL.dll`
+  program. Its textures (read-only, from the card's `.ark` packs and the
+  program's upload code): the loader knows four formats, RGB 565, ARGB
+  4444, PVRTC 4 bpp RGB and PVRTC 4 bpp RGBA (`glCompressedTexImage2D`
+  `0x8C00`/`0x8C02`). The six pool rooms hold **546 PVRTC 4 bpp opaque +
+  61 PVRTC 4 bpp with alpha** (4 bits per pixel measured from the sizes);
+  the interface pack `res.ark` holds **139 16-bit opaque + 24 16-bit with
+  alpha**, which the upload code can only send as RGB 565 and ARGB 4444.
+  Both in Celeris's own container (`0xABCD0001` rooms, `0xABCD0002`
+  interface: 52-byte header, width, height, a type 3 opaque / 4 alpha).
+  Movies are Ogg-in-AVI decoded on the CPU.
+- **Call of Duty 2** (`.pk2` packs: tagged records, a name, zlib data;
+  images are chunked `HEAD` + `DATA`, 16 bits per pixel): every texture
+  goes up through `glTexImage2D`, never compressed. The upload code picks
+  by the image's kind: opaque **RGB 565**, with alpha **ARGB 4444**; one
+  more upload is 8-bit `GL_LUMINANCE` (128 or 256 wide). 492 images in the
+  three packs (the 16 `IMMP` records in `maps_release.pk2` not decoded).
+- **Tony Hawk's Pro Skater 2** (`All.pkr`: Neversoft's `PKR2` pack, 21
+  folders, 3,274 files, zlib or stored): **927 `.PVR` textures, all PVRTC
+  2 bpp** (legacy 44-byte header, type `0x0C`, twiddled, no mipmaps; 32x32
+  498, 64x64 408, 128x128 15, 16x16 6), uploaded as `0x8C03` (PVRTC RGBA
+  2 bpp). Uncompressed textures go through the game's Direct3D 8-style
+  layer and up as **RGBA 5551** (`GL_RGBA` + `0x8034`) from its 1555
+  formats; the pack's 1,477 `.BMP`s (931 8-bit palette, 533 24-bit, 13
+  4-bit) are converted on the CPU before that.
+- **What this means for the texture rule** (design/apps-and-packs.md §6a:
+  RGB 565 dithered or better, never ARGB 4444 colour): legacy games keep
+  their own data, so ARGB 4444 arrives from Virtual Pool's 24 interface
+  pictures and Call of Duty 2's alpha textures, and PVRTC 2 bpp (the
+  muddiest mode) is all of THPS2's world. Our GLES layer can't add detail
+  that isn't there; what it can do is the same as for DoomGLES: hand the
+  game what it asks for, apply the per-game picture curve, and leave
+  better textures to new data packs (owner's choice per game).

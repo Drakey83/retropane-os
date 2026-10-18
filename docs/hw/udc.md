@@ -449,3 +449,53 @@ without ending it. To test when it happens again: re-plug the cradle's
 cable on the PC side instead of resetting, and look at the PC's USB port
 in Device Manager before re-docking.
 
+**Seen again, 2026-10-18 01:22-01:33, with Windows' side read** (no admin:
+`Get-PnpDevice` arrival/removal times, the System log; the Axim docked on
+hub 1 port 2 throughout):
+
+| Time | What happened |
+|---|---|
+| 00:20:50-00:20:53 | "Device Descriptor Request Failed" (`VID_0000&PID_0002`) on port 2 for 3 s: the rp-clocks v3 run that never returned |
+| 00:29:07 | Windows Mobile Device Center's two services (`RapiMgr`, `WcesComm`) **terminated unexpectedly** and restarted at 00:30:07 |
+| 00:34-01:22 | `RapiMgr` event 8, "failed to connect due to communication (0x80072745)" (connection aborted) five times: ActiveSync sessions with the Axim in Windows Mobile, each ending badly |
+| 01:19:25 | Windows Mobile's "Remote Adapter" (`413C:4011`) arrives |
+| **01:22:55** | `413C:4011` **removed**, in the same second as a `RapiMgr` "failed to connect": the owner started the loader and its start-up unplug worked (Windows saw the device leave) |
+| 01:22:55-01:33:23 | **nothing**: no new device, no descriptor failure. The loader counted no bus reset in this time (`udc stats` afterwards: 2 resets in all, both from the re-dock), so its layout fallback, which waits for the PC to try, never fired |
+| 01:33:23 | the owner lifted and re-docked: the composite (COM4 + both drives) at once, 0 errors since |
+
+So the unplug did reach Windows (the old device left), but **Windows never
+enumerated the device that came back**, and nothing more happened until a
+real unplug 10 minutes later. Every case so far has an ActiveSync session
+(an RNDIS network link that Windows Mobile Device Center keeps open) cut by
+the hand-over: Step B's five clean hand-overs had Windows Mobile's device
+idle. Leading reading: the loader's SE0 is short (5 resets 30 ms apart,
+~155 ms), so the PC's hub sees the "plug-in" while Windows is still tearing
+down the old RNDIS device under a Device Center whose session was cut (its
+services had already crashed once tonight). The port's new connection
+arrives during that teardown and is dropped; the hub reports no further
+change, so nothing retries it. A re-dock 10 minutes later is a fresh
+change on an idle port. Not proven: that needs the USB trace (T1 above,
+admin) across one hand-over made with Device Center connected.
+
+**The gap in the loader, whatever the PC's reason.** The layout fallback
+only acts when the PC *tries* (`resets != layout_resets`). A PC that goes
+silent after the unplug leaves the loader waiting forever, and the owner
+re-docks. That is the class: the loader has no answer to "unplugged, but
+nobody came".
+
+**Proposed fix (owner's vote; not built).** In the waiting loop: not
+configured, **no bus reset for 10 s** since the last plug-in → `replug`
+again (the same SE0 the start uses, proven five times), then wait 20 s,
+40 s, then every 60 s. It never fires while the PC is talking or the device
+is configured, so a working link is untouched; the cost is a counter and a
+time stamp (tens of bytes; the loader's budget has room for this only with
+the owner's OK, as for any loader byte). It covers this case if the PC
+takes a second plug-in once its teardown is done (what the re-dock showed),
+and the 0-reset case after a watchdog reboot. Checks: an emulator host that
+ignores the first plug-in (`emu-usb` variant) must get configured by the
+retry; the mutant without the retry must fail; on the device, one hand-over
+with Device Center connected, then the card install (owner go each).
+Alongside, cheaper still: start the loader from Windows Mobile only after
+ending the ActiveSync connection (Device Center's disconnect, or the
+cradle's cable out while it starts).
+
