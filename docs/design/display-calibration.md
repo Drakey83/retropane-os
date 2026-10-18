@@ -508,6 +508,11 @@ profiling run is its test.
   a mutant. **Design consequence for the OS:** on this 6-bit panel a
   calibration or night curve belongs before the dither (in content, or in
   the renderer's dither step), not in the hardware table after it.
+- **Looks run 2 (2026-10-17, v2, the owner): "Full light, more contrast
+  looks the best by far."** (The S-curve through Windows Mobile's table at
+  full backlight: the panel's native blue white, darks and mid-tones down,
+  light tones up.) Run 1's log: Original 94 s and Original full light 96 s
+  on screen, the calibrated whites 15-31 s each, 213 changes.
 
 ## Measured with a colorimeter (2026-10-17)
 
