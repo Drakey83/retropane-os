@@ -570,6 +570,22 @@ Mobile's backlight (274 of 432)**, applied before the dither. The
 brightness slider moves the light as before; the curve stays at any
 brightness. Original stays a choice in Settings > Display.
 
+**Decided (owner, 2026-10-17): Settings > Display gets a contrast slider
+next to the brightness slider**, so every owner can fit the picture to their
+own (aged) screen: the same choices the owner judged by, **strength 1.00
+(no curve) to 4.00 in quarter steps, 1.75 by default**. Original (the
+Windows Mobile picture) stays a choice there. The owner: "already it's 100
+times better than it was". Design notes for when Settings is built:
+- The curve is applied before the dither (picture loading, theme colours,
+  the renderer's dither step), never in the hardware table after it
+  (banding, looks run 1).
+- The two sliders are independent: brightness moves the backlight (and the
+  night range below it, backlight.md), contrast moves the curve; the curve
+  stays at any brightness.
+- A change shows at once on the real screen; the 13 curves are a 221-byte
+  table made at build time (`rp-looks`' `build.rs` is the reference).
+- Games keep their own per-game curve (apps-and-packs §6a) on top.
+
 ## Measured with a colorimeter (2026-10-17)
 
 The owner has a Datacolor Spyder4, which takes the eye out of the readings

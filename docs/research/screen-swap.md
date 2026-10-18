@@ -295,6 +295,76 @@ search: check before layout).
 | Compared with doing nothing | the owner's main complaint (DoomGLES dark, details blending) is mostly the game's 4-bit textures; RetroPane's own Doom and the gamma table fix that on the **existing** screen. A new panel helps viewing angle and contrast, not that |
 | Cheapest improvement | a new LS037V7DD05 (~US$15) if the owner's panel or backlight has aged: zero design work |
 
+## 5b. Later candidates (2026-10-17, owner's finds; desk research)
+
+The owner found three more panels after the first survey. Measured against
+the owner's aged Sharp (C6 colorimeter runs: **57 cd/m2 at full backlight,
+22:1, white 13,600 K**, docs/design/display-calibration.md), not only the
+new Sharp's datasheet.
+
+| | C. DisplayModule DMKTT0350VGNA | D. "3.5 inch 640x480 RGB" listings | **E. Yada/ADIA YT035G003 (leading)** |
+|---|---|---|---|
+| Source | datasheet V1.0.0, 2025-12-18 (owner's copy) | shop listings (Youritech, Shenzhen LCD Mall), US$8-20 | product page <https://www.tftlcd-displays.com/sale-13551372-3-5-300cd-m2-industrial-tft-display-18-bit-rgb-interface-for-pos-device.html>, spec table only (no datasheet there) |
+| Pixels | 480 x 640 **portrait** | 640 x 480 **landscape** | 480 x 640 **portrait** |
+| Interface | 2-lane MIPI DSI (80-500 Mbit/s a lane) | 24-bit parallel RGB + SPI set-up | **18-bit parallel RGB** + SPI set-up (ILI9806E, no frame memory) |
+| Driver | ILI9806E | NV3052C / ST7701S class (likely) | ILI9806E (same glass family as C) |
+| Brightness, contrast | 900 cd/m2, 600:1, NTSC 51.7%, white x 0.303 y 0.339 | IPS on some (unverified) | 300 cd/m2 typ., 400:1 min, MVA (wide, even viewing) |
+| Backlight | 6 white LEDs, 18 V at 20 mA | varies | 6 white LEDs |
+| Module | 61.00 x 81.75 x 2.6 mm, no touch | ~3.5" | 60.00 x 82.90 x 2.5 mm; resistive touch offered by the supplier |
+| Active area | 53.28 x 71.04 mm | ~3.5" | 53.28 x 71.04 mm (Sharp: 56.16 x 74.88) |
+| Price | US$69 | US$8-20 | US$11-12, minimum 10; samples offered |
+
+**C, MIPI (portrait):** needs an RGB-to-DSI bridge on the adapter (Solomon
+SSD2828 or Toshiba TC358768A/TC358778 class: parallel RGB in, DSI out,
+set up over SPI or I2C) plus the adapter's microcontroller to set up the
+bridge and send the panel's start-up list at every power-on and wake (the
+connector has no SPI). Timing fits RetroPane (25.19 MHz and 60.3 Hz inside
+16.2-26.3 MHz and 57-63 Hz); Windows Mobile's 56.4 Hz is just under 57
+(likely works, to test). About 275-300 Mbit/s a lane at 60 Hz. The
+18-bit source is padded to 24 by the bridge, so dithering stays. The
+start-up list is **not** in the datasheet (ask the vendor). Matched
+100-ohm differential traces on the flex.
+
+**D, landscape parallel RGB: not recommended.** Turning the glass doesn't
+turn the data: the panel scans 480 lines of 640 pixels, the 2700G sends 640
+lines of 480, and these panels can mirror but not swap rows and columns (no
+frame memory). Every frame would have to be rotated before it leaves:
+Windows Mobile, Dell's boot and recovery screens unreadable, RetroPane
+drawing everything sideways (2D engine rotation unknown) and legacy
+direct-to-screen games (GAPI, DirectDraw) needing emulated rotation. Still
+needs the set-up microcontroller and a touch layer. Only for an Axim that
+would run RetroPane alone, forever.
+
+**E, YT035G003: the easiest real path found so far.** Portrait and 18-bit
+parallel RGB is exactly what the Axim already sends (no bridge, no
+rotation; Windows Mobile and Dell's screens unchanged), 18x the contrast of
+the owner's panel and about 5x its brightness, MVA viewing angles, and the
+supplier offers a resistive touch panel and custom flex cables. Still
+needed: the adapter's microcontroller for the ILI9806E's SPI start-up list
+(option A's design), and from the supplier: the full specification
+(pinout, timing, power sequence, connector), **the start-up code for 18-bit
+RGB mode**, the backlight's voltage and current, colour figures. The
+listing is inconsistent (its headline says 320x480 "SPI RGB"; its table
+480x640, "SPI+SPI 18BIT"): confirm the exact part before ordering.
+
+**For C and E alike:**
+- **Backlight:** the Axim's own LED boost driver regulates current, so a
+  6-LED, ~18 V string should run from it as is (the Sharp's is 8-9 LEDs,
+  ~28 V); **measure** its current and open-circuit voltage first (a new
+  boost converter is likely unnecessary).
+- **Touch:** neither module has one built in (E's supplier can laminate
+  one); the Sharp's touch layer comes with the Sharp.
+- **The CPLD's LCD-type ID** must read as the Sharp's (type 0) through the
+  adapter.
+- **Fit:** the active area is about 1.4 mm smaller each side and 1.9 mm top
+  and bottom than the Sharp's: a thin black mask or frame; depth fits (2.5-2.6
+  mm plus a touch layer, under the Sharp's 4.4); where the adapter sits:
+  measure on the spare X50v.
+- **First steps** when the swap comes off the parking list: ask the
+  supplier (E) for the datasheet and RGB start-up code; measure the
+  Axim's backlight current and bezel depth on the spare X50v; order E's
+  samples with the resistive touch option.
+
 ## 6. As a kit
 
 **Bill of materials (guess):** panel US$15-30, adapter (assembled flex)
