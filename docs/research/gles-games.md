@@ -88,3 +88,21 @@ So one closed game already needs: fixed-function lighting, two texture
 units, PVRTC upload, blending, alpha test, culling, scissor, depth mask,
 matrices: the T5-T7 device tests (blending, filtering, depth) are on its
 critical path.
+
+## Texture formats, checked on the owner's cards (2026-10-18, read-only)
+
+- **DoomGLES** (`\Games\Pocket Doom\OpenGLES` on the CF card): 645 PVR v1
+  files, 443 PVRTC 4 bpp, 202 RGBA 5551, none RGBA 4444
+  (design/display-calibration.md, Games).
+- **Enigmo** (`\Program Files\Enigmo\Data`, from Dell's Axim game CD):
+  Pangea's own packs (`.bg3d` models, `.sprites`), big-endian. Their format
+  fields name **PVRTC RGBA 4 bpp** (`0x8C02`) for the models
+  (`Global.bg3d` 62, `Droplets.bg3d` 24) and most interface art (`Infobar`
+  98), and plain **RGBA** for the font (110) and small sprites (likely:
+  fields counted, the pack layout not decoded). `Enigmo.exe` uploads
+  `0x8C02` through `glCompressedTexImage2D` (import ordinal 38) and the
+  rest through `glTexImage2D` (ordinal 97) with the format and type from
+  the data. So, as with DoomGLES, the muddy parts are compressed in the
+  game's own data: no driver undoes PVRTC; better textures need new data.
+- **Virtual Pool Mobile v1.78** as installed: GAPI (`gx.dll`), no GLES.
+
