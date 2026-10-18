@@ -255,16 +255,10 @@ mod image {
             ours: false,
             amp: false,
         };
-        let powered_at = rt::ticks();
-        if let Some(c) = power.cpld.as_mut() {
+
+        if let Some(c) = power.cpld.as_ref() {
             let (r14, r1c) = (c.shadow(0x14), c.shadow(CODEC_POWER.0));
             let _ = writeln!(out, "CPLD found: 14={r14:04X} 1C={r1c:04X}");
-            if r1c & CODEC_POWER.1 == 0 {
-                c.set(CODEC_POWER.0, CODEC_POWER.1);
-                power.ours = true;
-                rt::delay_us(POWER_SETTLE_US);
-                let _ = writeln!(out, "codec power on (CPLD 1C bit 1)");
-            }
         } else {
             let _ = writeln!(out, "tone: no CPLD");
         }
@@ -299,14 +293,7 @@ mod image {
         }
         gpio.set_function(I2C_GATE, 0);
         gpio.make_output(I2C_GATE, false);
-        let mut plugged = gpio.read(HP_DETECT);
-        let _ = writeln!(
-            out,
-            "headphones {} (GPIO83 {}; GPIO96 {})",
-            if plugged { "in" } else { "out" },
-            u8::from(plugged),
-            u8::from(gpio.read(WAS_JACK))
-        );
+
         let (Some(i2c), Some(i2s)) = (rt::take_i2c(), rt::take_i2s()) else {
             let _ = writeln!(out, "tone: I2C or I2S unavailable");
             finish(&mut power)
@@ -331,6 +318,47 @@ mod image {
             bus: PxaI2c::new(i2c),
             gate: Pins(gpio),
         };
+        // The controller alone, before the codec's power: a working one
+        // reports "nobody" within a millisecond (gate closed, then open).
+        log_bus(&mut out, "idle, before any transfer", &mut gated.bus);
+        let t = rt::ticks();
+        let r = gated.bus.write(rp_drv_wm8750::ADDRESSES[0], &[]);
+        log_try(
+            &mut out,
+            "controller check, gate closed, no power",
+            r,
+            t,
+            &mut gated.bus,
+        );
+        let t = rt::ticks();
+        let r = gated.write(rp_drv_wm8750::ADDRESSES[0], &[]);
+        log_try(
+            &mut out,
+            "controller check, gate open, no power",
+            r,
+            t,
+            &mut gated.bus,
+        );
+        // Now the codec's power (CPLD 0x1C bit 1, measured under Windows
+        // Mobile), as runs 1-3.
+        if let Some(c) = power.cpld.as_mut()
+            && c.shadow(CODEC_POWER.0) & CODEC_POWER.1 == 0
+        {
+            c.set(CODEC_POWER.0, CODEC_POWER.1);
+            power.ours = true;
+            rt::delay_us(POWER_SETTLE_US);
+            let _ = writeln!(out, "codec power on (CPLD 1C bit 1)");
+        }
+        let powered_at = rt::ticks();
+        let mut plugged = gated.gate.0.read(HP_DETECT);
+        let _ = writeln!(
+            out,
+            "headphones {} (GPIO83 {}; GPIO96 {})",
+            if plugged { "in" } else { "out" },
+            u8::from(plugged),
+            u8::from(gated.gate.0.read(WAS_JACK))
+        );
+        log_bus(&mut out, "codec powered", &mut gated.bus);
         // Each try an address-only probe at both addresses, logged with its
         // time after power; every try runs, so each change is seen alone.
         let mut first = None;
@@ -339,13 +367,19 @@ mod image {
             while rt::ticks().wrapping_sub(powered_at) < after_ms * (TICK_1S / 1000) {}
             gated.bus.set_fast(fast);
             let ms = rt::ticks().wrapping_sub(powered_at) / (TICK_1S / 1000);
-            let answered = rp_drv_wm8750::ADDRESSES.map(|a| gated.write(a, &[]).is_ok());
-            let _ = writeln!(
-                out,
-                "probe {name} ({ms} ms after power): 0x1a {}, 0x1b {}",
-                if answered[0] { "ACK" } else { "no answer" },
-                if answered[1] { "ACK" } else { "no answer" }
-            );
+            let _ = writeln!(out, "probe {name} ({ms} ms after power):");
+            let answered = rp_drv_wm8750::ADDRESSES.map(|a| {
+                let t = rt::ticks();
+                let r = gated.write(a, &[]);
+                log_try(
+                    &mut out,
+                    if a == 0x1A { "  0x1a" } else { "  0x1b" },
+                    r,
+                    t,
+                    &mut gated.bus,
+                );
+                r.is_ok()
+            });
             if first.is_none() && answered.contains(&true) {
                 first = Some(k);
             }
@@ -401,6 +435,36 @@ mod image {
             let _ = writeln!(out, "jack: no change in {JACK_WAIT_S} s");
         }
         finish(&mut power)
+    }
+
+    /// The bus lines and the controller's registers.
+    fn log_bus(out: &mut impl Write, what: &str, bus: &mut PxaI2c<Mmio>) {
+        let [ibmr, icr, isr] = bus.snapshot();
+        let _ = writeln!(
+            out,
+            "  bus {what}: SCL {} SDA {} (IBMR {ibmr:x}), ICR {icr:x}, ISR {isr:x}",
+            (ibmr >> 1) & 1,
+            ibmr & 1
+        );
+    }
+
+    /// One transfer's outcome: what kind, how long, the controller after.
+    fn log_try(
+        out: &mut impl Write,
+        what: &str,
+        r: Result<(), rp_hal_api::I2cError>,
+        t0: u32,
+        bus: &mut PxaI2c<Mmio>,
+    ) {
+        let us = rt::ticks().wrapping_sub(t0) / 13 * 4;
+        let kind = match r {
+            Ok(()) => "ACK",
+            Err(rp_hal_api::I2cError::NoDevice) => "no acknowledge",
+            Err(rp_hal_api::I2cError::Nak) => "data refused",
+            Err(rp_hal_api::I2cError::Bus) => "bus never finished (timeout)",
+        };
+        let _ = writeln!(out, "{what}: {kind} in {us} us");
+        log_bus(out, "after", bus);
     }
 
     fn finish(power: &mut Power) -> ! {

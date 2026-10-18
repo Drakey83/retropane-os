@@ -197,6 +197,19 @@ Mobile).
 | **The headphone jack is GPIO83, high = plugged in, valid only while audio is powered** (idle it reads 0 either way). **GPIO96 is not the jack**: it reads 1 whenever audio is powered, plugged or not (so `rp-tone`'s "headphones out" was GPIO96, wrongly read as the jack) | confirmed (device, both states) | snapshots with headphones in and out |
 | Idle (audio off): `CKEN` `0x00D91AA3` (I2S, I2C, power I2C clocks off), CPLD `0x1C` `0x0D`, `0x14` `0x08` | confirmed | snapshot "start" |
 
+**The owner confirms Windows Mobile's sound works on this X51v**
+(2026-10-18): the codec and its wiring are good. **`rp-tone` run 3**
+(standard and fast mode, ~50 and 300+ ms after power): no answer any of
+the four ways, and **each probe took ~185 ms: the driver's timeout, not a
+refusal** (an absent device is refused within a millisecond). So
+RetroPane's I2C controller never finished its first byte: the fault is on
+our side of the bus (the controller, its pins, or the lines held), not
+the codec. GPIO83 read 0 with headphones in while powered: the jack line
+is likely the codec's own jack-detect output, valid only once Windows
+Mobile has set the codec up. Next run logs the bus lines (`IBMR`), the
+controller's registers and each failure's kind and time, first with the
+codec unpowered.
+
 Remaining difference between Windows Mobile's working transfer and
 `rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
 after power (~260 ms vs 50 ms). Next run (owner watching): each alone,

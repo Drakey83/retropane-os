@@ -10,6 +10,7 @@ use rp_hal_api::{I2cBus, I2cError, RegisterBus};
 
 /// Register offsets from IBMR.
 mod reg {
+    pub const IBMR: usize = 0x00;
     pub const IDBR: usize = 0x08;
     pub const ICR: usize = 0x10;
     pub const ISR: usize = 0x18;
@@ -58,6 +59,17 @@ impl<B: RegisterBus> PxaI2c<B> {
         regs.write32(reg::ISAR, 0);
         regs.write32(reg::ICR, ICR_IUE | ICR_SCLE);
         Self { regs, speed: 0 }
+    }
+
+    /// The bus lines and the controller's state, read only (for logs):
+    /// `IBMR` (bit 1 SCL, bit 0 SDA as the controller sees them), `ICR`,
+    /// `ISR`.
+    pub fn snapshot(&mut self) -> [u32; 3] {
+        [
+            self.regs.read32(reg::IBMR),
+            self.regs.read32(reg::ICR),
+            self.regs.read32(reg::ISR),
+        ]
     }
 
     /// Fast mode (400 kHz) on or off; standard (100 kHz) from [`Self::new`].
