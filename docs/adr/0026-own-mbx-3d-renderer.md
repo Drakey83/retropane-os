@@ -542,6 +542,23 @@ the memory past its 100 MHz rating.
 - **Report:** the ADR records our measured limit and the value chosen
   with margin.
 
+**Version 29 ran (2026-10-18 night, unattended with the owner's
+permission; `local/rp-mbx3d-run29.txt`): option A draws wrong.** At 74.75
+MHz with `MBXCLK` divide by 1 (PLL locked in 20 us, `LMTIM` `0x62272`,
+refresh `0x48F`): memory perfect (2 x 12.5 MiB pattern and inverse, 0
+wrong; flush and read-back right), the 2D fill faster (4.57 ms against
+6.18) and the slowest 3D render faster (8.97 ms against 12.5), **but only 2
+of 5 render checksums right**: the 3D core gives wrong pictures undivided at
+74.75 MHz, so the stepping stopped there (BAD) and no soak ran. Today's
+setting measured in the same run: 5 of 5, 33.3 MB/s flush. The long CS3
+start (`0x79D4`) halves the flush (18.0 MB/s) for nothing at 99.67 MHz.
+WM's state came back (`MSC1` `0x24842481`, `COREPLL` `0xBB1`, `MBXCLK`
+`0x6`) and measured GOOD again; the image returned by itself. **Result:
+option A is rejected as built.** The 3D core needs its divider at this
+clock (or a lower core clock); the memory and the 2D engine were fine.
+Open, for the owner: try the 3D core at 74.75 MHz divided by 2 (37 MHz,
+slower than today: no gain), or keep today's 99.67 MHz divide by 2.
+
 ## The four lenses
 
 | Lens | Effect |
