@@ -123,6 +123,61 @@ Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
 
+## 6b. The Emulation pack (owner, 2026-10-18)
+
+**Owner:** an **emulation program pack** as a download pack on the card
+(§5), starting with **PocketCultMAME**, which the owner uses for GLES
+games on the Axim. "At the very least, document my emulation program
+pack."
+
+**PocketCultMAME (researched 2026-10-18, desk only).** Site:
+<https://www.pocketcult.com/> (`pocketcultmame.com` doesn't resolve), MAME
+page <https://www.pocketcult.com/mame.php>.
+
+| Fact | Source |
+|---|---|
+| A Pocket PC port of **MAME 0.34-0.36** ("opens the way to MAME 0.36"), with fast cores DrZ80 (Z80) and Cyclone (68000); ARM, Windows Mobile 2003 or later | pocketcult.com |
+| Versions: **0.4a** (full release; `pcmame04a.zip`, and `pcmame04a_noasm.zip` with the original CPU cores), **0.5 WIP** (`pcmame05wip.zip`), a NeoGeo add-on for Metal Slug (`pcneomame05wip.zip`, "very unstable", needs 500 MHz or more) | mame.php |
+| An **"Intel 2700g double pixel"** mode for the Dell Axim X51v. GLES or OpenGL ES isn't named on the pages read; the double pixel is likely the 2700G's scaler, not its 3D core (to check on the device) | mame.php |
+| **No source code published.** Licence: "not licensed yet, but can be freely distributed and copied". MAME of that age also carries the old MAME licence's non-commercial terms | pocketcult.com; HPC:Factor's listing of 0.4a |
+| Same site: **PocketCaprice** (Amstrad CPC), **GPL with source** | pocketcult.com |
+
+**What that means for RetroPane:**
+- **As a legacy program in the pack: yes.** It runs as a Windows CE binary
+  under RetroPane's CE personality (§4; its 2700G mode through our GPU
+  driver's legacy path), shipped as the author's original archive, since
+  "freely distributed and copied" allows it non-commercially.
+- **As a native RetroPane emulator: no.** Without source it can't be
+  ported, fixed or made to use our renderer.
+- **Native emulators** come from open sources instead, built for
+  RetroPane's 2700G driver like the game ports (§6), with the §6a rule
+  (RGB565 dithered or better, a picture curve per emulator). Candidates,
+  each licence to confirm against its own source before use:
+
+| System | Candidate | Licence |
+|---|---|---|
+| Arcade | MAME 0.37b5-era ports (MAME4ALL lineage): sized for 200-600 MHz ARM | old MAME licence, non-commercial (to verify) |
+| Arcade, NeoGeo | FinalBurn Neo | non-commercial (to verify) |
+| NES | FCEUX | GPL-2.0 |
+| Game Boy / Color | Gambatte | GPL-2.0 |
+| Game Boy Advance | gpSP | GPL-2.0 |
+| SNES | Snes9x | its own non-commercial licence |
+| Mega Drive / Master System | PicoDrive (ARM-tuned) | non-commercial (to verify) |
+| Amstrad CPC | PocketCaprice / Caprice32 | GPL |
+
+**Rules for the pack:**
+- **ROMs and BIOS files are the user's own;** the pack ships none.
+- **Every emulator treats a ROM as untrusted input** (docs/security.md): a
+  damaged or hostile file must fail safely, never run code outside the
+  emulator. Native ones get the same parser rules as everything else.
+- **Signed and checked** before install, like every pack (§5).
+- **Licences recorded per program**; non-commercial ones are marked, since
+  they bind how the pack may be shared.
+
+**Next (owner):** which systems first; whether to include PocketCultMAME
+0.4a, 0.5 WIP or both; a device check of its 2700G mode under Windows
+Mobile, then under the CE personality when that exists.
+
 ## 6a. Picture quality in every game (owner, 2026-10-17)
 
 **Why.** DoomGLES under Windows Mobile is hard to see: dark, with walls,
