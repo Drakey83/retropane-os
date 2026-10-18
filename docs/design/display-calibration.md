@@ -554,6 +554,21 @@ it). The brightness slider still works: the curve is kept at any backlight.
   `emu-looks` runs it twice, pixel-exact: no card (built-in photos), and a
   card made on the host whose folder holds two photos out of name order and
   a wrong-sized file (ignored); mutant: the dial never reaches the picture.
+- **Strength run 4 (2026-10-17, the owner, 17 photos from the card, 343
+  changes): the pick is strength 1.75 at Windows Mobile's backlight.** With
+  many photos to judge by, a gentler curve than run 3's 2.00 won, and at the
+  backlight Windows Mobile uses (63%) rather than full: the black glows less
+  at the lower light, so less curve is needed, and **it costs no extra
+  battery**. Log (`local/rp-looks-run4-log.txt`): 17 photos read from the
+  card, page drawn in 803 ms, 186 s at Windows Mobile's light, 85 s at
+  2.00 full, 35 s on the original; ended at 1.75 with Windows Mobile's light.
+
+**Decided (owner, 2026-10-17, replaces "Full light, more contrast" above):
+RetroPane's default picture is the S-curve at strength 1.75 (each half of
+the range to the power 1.75) through Windows Mobile's table, at Windows
+Mobile's backlight (274 of 432)**, applied before the dither. The
+brightness slider moves the light as before; the curve stays at any
+brightness. Original stays a choice in Settings > Display.
 
 ## Measured with a colorimeter (2026-10-17)
 
