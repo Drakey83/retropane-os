@@ -48,6 +48,9 @@ const DCSR_RUN: u32 = 1 << 31;
 /// Descriptor-fetch mode is the reset default (NODESCFETCH clear).
 const DCSR_BUSERR: u32 = 1 << 0;
 const DCSR_STOPINTR: u32 = 1 << 3;
+/// `DCSR` reads before a stopping channel is given up on (a 32-byte step
+/// takes a few microseconds; this is ~10 ms).
+const HALT_POLLS: u32 = 50_000;
 const DRCMR_MAPVLD: u32 = 1 << 7;
 const DCMD_INCSRC: u32 = 1 << 31;
 const DCMD_INCTRG: u32 = 1 << 30;
@@ -119,6 +122,22 @@ impl Dma {
         }
     }
 
+    /// Stops the channel and waits until it says it has stopped
+    /// (`DCSR.STOPINTR`, bounded). A channel only stops once its current
+    /// transfer step ends; until then it still reads its descriptors and
+    /// takes no new descriptor address, so nothing may rewrite its chain or
+    /// registers before this (2026-10-18: a ring restarted right after a
+    /// stop stalled on the X51v, where one restarted seconds later played).
+    fn halt(&mut self) -> bool {
+        write(dcsr(self.ch), 0);
+        for _ in 0..HALT_POLLS {
+            if read(dcsr(self.ch)) & DCSR_STOPINTR != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     /// This channel's ring of descriptor slots (its slice of the shared
     /// array).
     fn chain(&mut self) -> &'static mut [[u32; 4]] {
@@ -137,6 +156,7 @@ impl Dma {
     /// Fills the chain with a ring of `len` bytes (whole chunks, at most
     /// the chain) at `addr` looped into `port`, and starts the channel.
     fn program_ring(&mut self, port: Port, addr: u32, len: u32) {
+        self.halt();
         let chain = self.chain();
         let n = len / CHUNK;
         let base = chain.as_ptr() as u32;
@@ -162,6 +182,7 @@ impl Dma {
     /// cleaned, the channel run from its first slot, paced by `request` or
     /// memory to memory. `false` if the shape is refused.
     fn begin(&mut self, shape: Shape, request: Option<u8>) -> bool {
+        self.halt();
         let chain = self.chain();
         let base = chain.as_ptr() as u32;
         let Some(stream) = Stream::start(shape, chain, base) else {
@@ -321,7 +342,7 @@ impl Dma {
     // its size budget).
     #[inline(never)]
     fn stop(&mut self) {
-        write(dcsr(self.ch), 0);
+        self.halt();
         if self.paced {
             write(drcmr(self.request), 0);
         }
@@ -455,7 +476,7 @@ impl DmaRing for Dma {
 
     fn stop(&mut self) {
         if self.ring.take().is_some() {
-            write(dcsr(self.ch), 0);
+            self.halt();
             write(drcmr(self.request), 0);
         }
     }
