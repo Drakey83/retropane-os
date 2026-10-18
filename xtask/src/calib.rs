@@ -329,6 +329,7 @@ pub fn table(m: &Model, w: White) -> Table {
     for c in 0..3 {
         t[16][c] = (t[15][c] + (top[c] - t[15][c]) * 16.0 / 15.0).clamp(0.0, 255.0);
     }
+    rising(&mut t);
     t
 }
 
@@ -382,7 +383,22 @@ pub fn refine(m: &Model, w: White, t: &Table, readings: &[(u8, Xyz)]) -> Table {
             out[i][c] = (t[i][c] + d[c] * k).clamp(0.0, 255.0);
         }
     }
+    rising(&mut out);
     out
+}
+
+/// Keeps every channel of `t` from falling between points: a correction
+/// (each point moved on its own reading's noise) can leave a point below
+/// the one before it, and a falling table shows a brighter input darker.
+/// The earlier point comes down to the later one (never adding light: at
+/// the black end that keeps the panel's already blue blacks from getting
+/// bluer).
+pub fn rising(t: &mut Table) {
+    for c in 0..3 {
+        for i in (0..t.len() - 1).rev() {
+            t[i][c] = t[i][c].min(t[i + 1][c]);
+        }
+    }
 }
 
 /// CIE Lab of `v` against white `w`.
@@ -790,6 +806,29 @@ pub mod tests {
         // The native white keeps every channel's top.
         let n = words(&table(&m, White::Native));
         assert_eq!(n[16] & 0x00FF00, 0x00FF00);
+    }
+
+    #[test]
+    fn refined_tables_never_fall() {
+        // Two neighbouring points corrected in opposite directions (noisy
+        // readings) must still leave the channel rising: 2026-10-17's
+        // native and D65 refinements each had a point 2-12 levels below the
+        // one before.
+        let mut t: Table = core::array::from_fn(|i| [i as f64 * 16.0; 3]);
+        t[14][0] = 230.0;
+        t[15][0] = 228.0;
+        t[16][2] = 200.0;
+        rising(&mut t);
+        for c in 0..3 {
+            assert!(
+                t.windows(2).all(|w| w[0][c] <= w[1][c]),
+                "channel {c} falls"
+            );
+        }
+        assert_eq!(t[14][0], 228.0);
+        assert_eq!(t[15][0], 228.0);
+        assert_eq!(t[15][2], 200.0);
+        assert_eq!(t[16][2], 200.0);
     }
 
     #[test]

@@ -44,6 +44,7 @@ members = [
     "boot/handover",
     "boot/nightlight",
     "boot/display-cal",
+    "boot/looks",
     "boot/screen-measure",
     "boot/refresh",
     "boot/cfdetect",

@@ -551,6 +551,16 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image: the C6 looks test (two LZ4-packed photos, chart, ramps
+    // under the measured tables). Set at its first build on 2026-10-17 to
+    // the loader's own ceiling for a loaded image (928 KiB): the owner's
+    // photos decide its size, and a test image's size doesn't matter.
+    Budget {
+        image: "rp-looks",
+        max_load: 928 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
 ];
 
 /// The device's RAM (docs/memory-budget.md).

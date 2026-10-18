@@ -1,0 +1,26 @@
+[package]
+name = "rp-looks"
+description = "Display calibration C6 looks test for the real X51v: real photos, a colour chart and ramps in 32 bpp under the measured calibration tables (native, 9000 K, D65) against the original, judged by eye"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Also on the host: the emulator check builds its reference pictures from it.
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-lz4 = { path = "../../kernel/lz4" }
+
+[build-dependencies]
+rp-lz4 = { path = "../../kernel/lz4" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+
+[lints]
+workspace = true

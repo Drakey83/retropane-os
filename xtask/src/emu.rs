@@ -1074,6 +1074,138 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The C6 looks test under the loader (`rp-looks`): each page pixel-exact
+/// below the caption through each look's table, driven by keys: the
+/// original, a measured table on both photos and the chart, the original
+/// again by compare, the ramps; Home puts everything back.
+pub fn boot_loader_looks(root: &Path) -> Result<(), String> {
+    use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
+    use rp_looks::{CAPTION_H, H, PHOTOS, W, YUV_BYTES, look_table, page_pixel, unpack};
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = root.join("target/emu");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let loader = dir.join("rp-loader.bin");
+    let image = dir.join("rp-looks.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-looks"), &image)?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let shot = root.join("target/emulator/looks-screen.ppm");
+    std::fs::create_dir_all(root.join("target/emulator")).map_err(|e| e.to_string())?;
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
+    let mut photos = [vec![0u8; YUV_BYTES], vec![0u8; YUV_BYTES]];
+    for (p, out) in PHOTOS.iter().zip(photos.iter_mut()) {
+        unpack(p, out).map_err(|e| format!("looks: a photo did not unpack: {e:?}"))?;
+    }
+    // Page `page` below the caption, through `t`.
+    let want = |page: usize, t: &[u32; GAMMA_ENTRIES]| -> Vec<u8> {
+        let mut v = Vec::with_capacity((W * (H - CAPTION_H) * 3) as usize);
+        for y in CAPTION_H..H {
+            for x in 0..W {
+                let (r, g, b) = page_pixel(page, [&photos[0], &photos[1]], x, y);
+                v.extend_from_slice(&[gamma(t, r, 16), gamma(t, g, 8), gamma(t, b, 0)]);
+            }
+        }
+        v
+    };
+    let until = |name: &str, page: usize, look: usize| -> Result<(), String> {
+        let want = want(page, &look_table(look, &WM_GAMMA));
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            let _ = std::fs::remove_file(&shot);
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            mon.screendump(&guest, &shot)?;
+            let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
+            let mut differ = usize::MAX;
+            if img.width >= W && img.height >= H {
+                let mut got = Vec::with_capacity(want.len());
+                for y in CAPTION_H..H {
+                    let o = ((y * img.width) * 3) as usize;
+                    got.extend_from_slice(&img.rgb[o..o + (W * 3) as usize]);
+                }
+                differ = got
+                    .chunks(3)
+                    .zip(want.chunks(3))
+                    .filter(|(a, b)| a != b)
+                    .count();
+                if differ == 0 {
+                    return Ok(());
+                }
+            }
+            if Instant::now() > deadline {
+                let _ = std::fs::copy(
+                    &shot,
+                    root.join(format!("target/emulator/looks-{name}.ppm")),
+                );
+                return Err(format!(
+                    "looks: the {name} screen differs from the reference in {differ} pixels (target/emulator/looks-{name}.ppm)"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(400));
+        }
+    };
+    let check = || -> Result<(), String> {
+        let key = |k: &str| -> Result<(), String> {
+            crate::screen::Monitor::connect(monitor_port())?.query(&format!("sendkey {k} 200"))?;
+            std::thread::sleep(Duration::from_millis(150));
+            Ok(())
+        };
+        until("original-pier", 0, 0)?;
+        key("right")?;
+        key("right")?;
+        until("native-pier", 0, 2)?;
+        key("down")?;
+        until("native-milkyway", 1, 2)?;
+        key("down")?;
+        until("native-chart", 2, 2)?;
+        key("right")?;
+        key("right")?;
+        until("d65-chart", 2, 4)?;
+        key("ret")?;
+        until("compare-original-chart", 2, 0)?;
+        key("down")?;
+        until("original-ramps", 3, 0)?;
+        key("f4")
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RPL OK")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("looks: no run log after the image returned")?;
+    for want in [
+        "pages drawn in",
+        "D65 (6500 K) (showing the original), Colour chart",
+        "done (Home) after 8 changes",
+        "last look: D65 (6500 K), Ramps",
+        "LOOKS-OK",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("looks: no {want:?} in the run log:{log}"));
+        }
+    }
+    eprintln!(
+        "    looks OK: both photos, the chart and the ramps pixel-exact through the original and the native and D65 tables, compare back to the original; Home put back and returned"
+    );
+    Ok(())
+}
+
 /// The screen measurement image under the loader, driven by a measurement
 /// program written into it (C6, `rp_screen_measure::program`) as `cargo
 /// xtask measure --profile` does: grey 128 through the straight table shows

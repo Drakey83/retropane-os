@@ -15,6 +15,7 @@ rp-gfx = { path = "../drivers/gfx" }
 rp-shell = { path = "../shell/core" }
 rp-today = { path = "../shell/today" }
 rp-display-cal = { path = "../boot/display-cal" }
+rp-looks = { path = "../boot/looks" }
 rp-screen-measure = { path = "../boot/screen-measure" }
 rp-mbx-render = { path = "../drivers/mbx-render", features = ["model"] }
 rp-loadproto = { path = "../boot/loadproto", features = ["std"] }

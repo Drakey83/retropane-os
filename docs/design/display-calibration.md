@@ -463,6 +463,29 @@ profiling run is its test.
   white 55.2 cd/m2 at the start of the check, 53.3 at its end (after about an
   hour at full backlight in all, about 8% below run 3's start); the check
   scales targets to it. Third-pass refined tables written, not yet measured.
+  Found while building the looks test: two of those tables (and two refined
+  ones) had a point lower than the one before (native blue E0 then DE at
+  white, D65 blue 6 then 0 at black): a falling table shows a brighter
+  input darker. `calibrate` now keeps every table rising, bringing the
+  earlier point down (never adding light: at the black end that keeps the
+  blue blacks from getting bluer); guard test `refined_tables_never_fall`.
+- **Looks test, `rp-looks` (built 2026-10-17; `cargo xtask load rp-looks`,
+  owner watching):** four full-screen pages drawn once in 32 bpp: the
+  owner's **Pier** and **Milky Way** photos (from `local/wallpapers`, never
+  committed; LZ4-packed at build, 612 KB for both, under the loader's
+  928 KiB for a loaded image), a **colour chart** (the 24-patch colour
+  checker at its usual sRGB values: skin, sky, foliage, flowers, saturated
+  colours, greys; the six full primaries and secondaries; a 16-step grey
+  wedge) and **ramps** (grey, R, G, B, C, M, Y, and grey 0-63 stretched:
+  banding and shadow detail). Five looks: **Original** (as found),
+  **Original, full light**, **Native white**, **9000 K**, **D65** (the
+  verified tables, at full backlight). D-pad left/right look, up/down
+  page, centre flips to the original, Home ends; the caption shows for 3 s
+  after a change; the log keeps every change and the seconds each look was
+  on screen. `cargo xtask emu-looks` checks every page pixel-exact below
+  the caption through the original, native and D65 tables, with a mutant.
+  The tables are 1D (tone and white): saturation and colour accuracy come
+  with step 5's 3D tables, after this pick.
 
 ## Measured with a colorimeter (2026-10-17)
 
