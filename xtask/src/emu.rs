@@ -3229,6 +3229,19 @@ fn today_differ(got: &[u8], want: &[u8]) -> usize {
         .count()
 }
 
+/// Pixels that differ within 32 px of a press at (`x`, `y`), unmasked.
+fn press_answer(got: &[u8], want: &[u8], x: u16, y: u16) -> usize {
+    let near = rp_draw::Rect::new(x.saturating_sub(32), y.saturating_sub(32), 64, 64);
+    got.chunks(3)
+        .zip(want.chunks(3))
+        .enumerate()
+        .filter(|(i, (a, b))| {
+            let (px, py) = ((i % rp_today::W) as u16, (i / rp_today::W) as u16);
+            a != b && near.contains_point(px, py)
+        })
+        .count()
+}
+
 /// How long emu-today waits for the image to answer a press on screen: a
 /// backstop only, never a timing (the press waits for the answer).
 const PRESS_ANSWER: Duration = Duration::from_secs(60);
@@ -3330,6 +3343,23 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(200));
             }
         };
+        // A press's answer shows where the pen is (a pressed target, a
+        // target turning green): only pixels within 32 px of it count, so
+        // the clock's areas needn't be masked (the align screen's centre
+        // target lies inside them, and a masked answer was never seen).
+        let answered = |name: &str, from: &[u8], x: u16, y: u16| -> Result<Vec<u8>, String> {
+            let deadline = Instant::now() + PRESS_ANSWER;
+            loop {
+                let now = dump(name)?;
+                if press_answer(&now, from, x, y) > 0 {
+                    return Ok(now);
+                }
+                if Instant::now() > deadline {
+                    return Err(format!("today: no answer on screen to the {name}"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        };
         // Guest time: held until the image's own timer (OSCR0, 3.25 MHz,
         // read through the monitor) has moved `ms` on, for presses the
         // image answers only on the lift (the bare wallpaper's depth flip).
@@ -3363,7 +3393,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
                 let before = dump(name)?;
                 touch(qmp, &Action::TouchDown(x, y))?;
                 let held = match guest_ms {
-                    None => changed(&format!("{name}-down"), &before),
+                    None => answered(&format!("{name}-down"), &before, x, y),
                     Some(ms) => guest_hold(ms).map(|()| before),
                 };
                 touch(qmp, &Action::TouchUp)?;
@@ -3414,8 +3444,15 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         until("bare-16", &bare[1])?;
         press(&mut qmp, "flip-32", 240, 320, Some(TAP_GUEST_MS))?;
         until("bare-32-again", &bare[0])?;
-        crate::screen::Monitor::connect(monitor_port())?.command("sendkey f4")?;
-        std::thread::sleep(Duration::from_millis(500));
+        // Home, held in the image's own time (a `sendkey` hold is wall
+        // clock, and under load the image never sampled it).
+        qmp.key("f4", true)?;
+        guest_hold(TAP_GUEST_MS)?;
+        qmp.key("f4", false)?;
+        // Home leaves the wallpaper alone: wait for the Today screen (its
+        // depth notice gone), not for a time (under load 500 ms wasn't
+        // enough and Start was pressed on the bare wallpaper).
+        until("today-after-compare", &want[0])?;
         press(&mut qmp, "start-after-compare", sx, sy, None)?;
         until("menu-after-compare", &want[2])?;
         // The last menu entry is "Back to loader" (test images only).
@@ -6916,6 +6953,20 @@ mod tests {
     /// action with a fixed sleep (a busy host starved the align screen of
     /// samples in a 700 ms hold); and its guest keeps instruction time, so
     /// a starved guest can't overrun the run limit.
+    #[test]
+    fn a_press_answer_counts_only_near_the_pen() {
+        let w = rp_today::W;
+        let blank = vec![0u8; w * rp_today::H * 3];
+        let mut green = blank.clone();
+        // The centre target turning green (inside the masked clock areas
+        // of the Today screen, 2026-10-18), and a clock tick far away.
+        green[(320 * w + 240) * 3 + 1] = 0xFF;
+        assert_eq!(super::press_answer(&green, &blank, 240, 320), 1);
+        let mut tick = blank.clone();
+        tick[(10 * w + 460) * 3] = 0xFF;
+        assert_eq!(super::press_answer(&tick, &blank, 240, 320), 0);
+    }
+
     #[test]
     fn today_presses_wait_for_the_screen() {
         let src = include_str!("emu.rs");

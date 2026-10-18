@@ -227,6 +227,19 @@ impl Qmp {
         Ok(())
     }
 
+    /// A key down or up by QEMU key code (`"f4"`: the Home button), so a
+    /// caller can hold it for the guest's own time rather than `sendkey`'s
+    /// fixed wall-clock hold (missed under load, 2026-10-18).
+    pub fn key(&mut self, qcode: &str, down: bool) -> Result<(), String> {
+        self.execute(&serde_json::json!({
+            "execute": "input-send-event",
+            "arguments": { "events": [{
+                "type": "key",
+                "data": { "down": down, "key": { "type": "qcode", "data": qcode } }
+            }] }
+        }))
+    }
+
     /// Stylus down at absolute pointer position `(x, y)` (0..0x7FFF), or up.
     pub fn touch(&mut self, at: Option<(u32, u32)>) -> Result<(), String> {
         let mut events = Vec::new();
