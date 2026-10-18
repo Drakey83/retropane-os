@@ -225,6 +225,20 @@ mattered); 440 Hz for 514 ms to the headphones by DMA, CPU 0% busy; the
 owner unplugged and GPIO83 went low; the speaker amplifier (CPLD `0x14`
 bit 1, 70 ms) on and 1000 Hz on the speaker; both board bits put back.
 
+**I2S must stay on through a session (2026-10-18, owner listening).**
+With `play` switching I2S off after each note, every note after the first
+stalled (run 7, twice): the DMA channel never left its first descriptor
+and the I2S FIFO sat full (level 15), so no samples left the controller.
+One change each in run 8: the next note **at once: stalled; after 200 ms
+off: played; at once after an I2S reset: stalled**. A DMA halt that
+waits for the channel's stop (added the same day, kept: a correct start)
+didn't change it. Windows Mobile never switches I2S off between sounds
+(`SACR0` `0x8805` even after the device closes: `rp-wmaudio`). With I2S
+started once and stopped once at the end, **all six notes played**, three
+to the headphones and three to the speaker (run 9). Design rule for the
+OS's audio service: I2S on for the whole session, off only when audio
+powers down after an idle time, as Windows Mobile does.
+
 Remaining difference between Windows Mobile's working transfer and
 `rp-tone`'s unanswered one: the I2C speed (fast vs standard) and the wait
 after power (~260 ms vs 50 ms). Next run (owner watching): each alone,
