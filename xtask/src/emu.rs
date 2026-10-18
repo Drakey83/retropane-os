@@ -4791,6 +4791,11 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             "codec power put back off",
             "TONE-OK",
         ];
+        // A release with the measured I2S restart rule (rp-v0.24.0) drops
+        // the switch-on straight after a stop, as the X51v does.
+        if mon.query("qom-get /machine i2s-restart")?.contains("true") {
+            wants.push("I2S switched on again at once after a stop: taken false");
+        }
         if wired {
             wants.extend([
                 "headphones out (GPIO83 0; GPIO96 1)",

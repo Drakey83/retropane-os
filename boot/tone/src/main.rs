@@ -498,7 +498,15 @@ mod image {
         } else {
             let _ = writeln!(out, "jack: no change in {JACK_WAIT_S} s");
         }
-        // The session's end: I2S off once, then the power.
+        // The session's end: I2S off once, then the power. Before that, the
+        // one known trap checked: switched straight back on after a stop,
+        // the X51v drops the switch-on (quality-audit B8).
+        i2s.stop();
+        let again = i2s.start(Rate::Khz48);
+        let _ = writeln!(
+            out,
+            "I2S switched on again at once after a stop: taken {again}"
+        );
         i2s.stop();
         finish(&mut power)
     }
