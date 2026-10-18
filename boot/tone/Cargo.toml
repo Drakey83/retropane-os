@@ -16,6 +16,7 @@ rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-i2c = { path = "../../drivers/pxa-i2c" }
 rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
 rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
 
 [lints]
 workspace = true

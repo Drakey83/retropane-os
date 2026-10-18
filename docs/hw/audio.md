@@ -100,6 +100,27 @@ with llvm-objdump (`local/re/wavedev/wavedev.asm`). No code copied.
 | **Headphone detect is GPIO96, low = plugged in**, not GPIO83 high: the first run's "GPIO83 0 with headphones in" fits | likely (the flag's meaning is inferred from its use) | (D): `GPLR3` bit 0 tested, the "in" state set when it reads 0 |
 | The driver keeps DMA buffers or descriptors in the PXA27x's **internal SRAM** (0x5C038000-0x5C03E90C) and feeds `SADR` (0x40400080) | confirmed (addresses) | (D) |
 
+**Device run 2 and 3 (2026-10-18 night, `rp-tone` quiet at level 20,
+`local/rp-tone-run2/3-console.txt`): still no codec** with GPIO82 open, and
+with GPIO117/118 confirmed in I2C mode (found: GPIO117 fn 1 out, GPIO118 fn
+1 out, GPIO82 fn 0 out; GPIO96 read 0). So the gate alone is not enough;
+the static read below found why.
+
+**Power, from the same driver (static, 2026-10-18):**
+
+| Fact | Confidence | Evidence |
+|---|---|---|
+| The driver changes CPLD bits through Windows Mobile's shared shadow (cpld.md): a set helper and a clear helper indexed by slot (3 = `0x14`, 7 = `0x1C`) | confirmed (code) | (D): the 10-way switches over `0xAC001320`-`0xAC001344`, compare-and-swap, then the register write |
+| **CPLD `0x1C` bit 1 is the codec's power** (or its I2C side's): set on the driver's power-up path; cleared together with turning GPIO117/118 into plain outputs held low and a 15 ms wait, on power-down | likely (role inferred from the sequence) | (D): set at `0x02464a5c`, cleared at `0x024653cc` |
+| **CPLD `0x14` bit 1 is the speaker amplifier**: set once when output starts, then a **70 ms** wait (an amplifier's settle), flagged so it isn't set twice | likely | (D): `0x02465678` |
+| At hand-over both are **off** (`14=0008`, `1C=000C`: bit 1 clear in both): an unpowered codec can't answer, which fits every device run | confirmed (values) | cpld.md, `rp-handover` |
+| On audio power-down Windows Mobile turns GPIO117/118 into plain outputs held low (function 0) and on power-up back to function 1 (I2C); on the owner's X51v they were already function 1 at hand-over | confirmed (code + device) | (D) `0x02465380`; run 3 |
+
+**Next device step (owner watching, one board bit per run):** set CPLD
+`0x1C` bit 1 through the shared shadow (`Cpld::adopt`), wait, look for the
+codec; put the bit back as found at the end. Only if the codec then answers:
+a second run that also sets `0x14` bit 1 (70 ms settle) for the speaker.
+
 **What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
 around each codec write and lowers it after, as Windows Mobile does (never
 leaving it high: the line is shared with another device, the lock's other

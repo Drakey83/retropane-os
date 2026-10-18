@@ -25,6 +25,8 @@ pub const MARKER: &str = "RETROPANE-TONE-OK";
 mod image {
     use core::fmt::Write;
 
+    use rp_drv_cpld::Cpld;
+    use rp_drv_cpld::handover;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::{Display, crash};
     use rp_drv_pxa_gpio::Gpio;
@@ -41,6 +43,50 @@ mod image {
     /// Headphone jack (docs/hw/audio.md, Dell's driver): low = plugged in
     /// (likely; the level is logged).
     const HP_DETECT: u8 = 96;
+    /// Output volume, 0-100: 60, or `RP_TONE_LEVEL` at build time (a quiet
+    /// run at night, 2026-10-18).
+    const LEVEL: u32 = match option_env!("RP_TONE_LEVEL") {
+        Some(v) => parse(v),
+        None => 60,
+    };
+
+    /// A decimal number at compile time (100 at most).
+    const fn parse(v: &str) -> u32 {
+        let b = v.as_bytes();
+        let mut i = 0;
+        let mut n = 0u32;
+        while i < b.len() {
+            n = n * 10 + (b[i] - b'0') as u32;
+            i += 1;
+        }
+        if n > 100 { 100 } else { n }
+    }
+
+    /// The codec's power: CPLD `0x1C` bit 1, set by Windows Mobile's audio
+    /// power-up, off at hand-over (docs/hw/audio.md, likely).
+    const CODEC_POWER: (usize, u16) = (0x1C, 1 << 1);
+    /// After switching it on, before the first I2C write.
+    const POWER_SETTLE_US: u32 = 50_000;
+
+    /// The board's CPLD, and whether this run switched the codec's power on
+    /// (then it switches it off again before returning).
+    struct Power {
+        cpld: Option<Cpld<Mmio, handover::Table<'static>>>,
+        ours: bool,
+    }
+
+    impl Power {
+        fn off(&mut self) {
+            if self.ours
+                && let Some(c) = self.cpld.as_mut()
+            {
+                c.clear(CODEC_POWER.0, CODEC_POWER.1);
+                self.ours = false;
+                let _ = writeln!(devices::RunLog, "codec power put back off");
+            }
+        }
+    }
+
     /// The codec's I2C gate: high for each transfer, low after.
     const I2C_GATE: u8 = 82;
 
@@ -151,13 +197,54 @@ mod image {
         );
         let mut out = Tee(&mut con);
         let _ = writeln!(out, "RetroPane 26 tone");
+        // The codec's power, through the shared shadow (one unknown board
+        // bit: an owner-watched run).
+        let mut power = Power {
+            cpld: devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0),
+            ours: false,
+        };
+        if let Some(c) = power.cpld.as_mut() {
+            let (r14, r1c) = (c.shadow(0x14), c.shadow(CODEC_POWER.0));
+            let _ = writeln!(out, "CPLD found: 14={r14:04X} 1C={r1c:04X}");
+            if r1c & CODEC_POWER.1 == 0 {
+                c.set(CODEC_POWER.0, CODEC_POWER.1);
+                power.ours = true;
+                rt::delay_us(POWER_SETTLE_US);
+                let _ = writeln!(out, "codec power on (CPLD 1C bit 1)");
+            }
+        } else {
+            let _ = writeln!(out, "tone: no CPLD");
+        }
         let (Some(gpio_bus), Some(scratch)) = (rt::take_gpio(), devices::take_scratch()) else {
             let _ = writeln!(out, "tone: GPIO or scratch unavailable");
-            finish()
+            finish(&mut power)
         };
         let mut gpio = Gpio::new(gpio_bus);
         gpio.make_input(HP_DETECT);
-        // Closed until a write opens it.
+        // The pins as found: Windows Mobile turns the I2C pins into plain
+        // outputs held low when it powers audio down (docs/hw/audio.md).
+        let _ = writeln!(
+            out,
+            "found: GPIO117 fn {} {}, GPIO118 fn {} {}, GPIO82 fn {} {}",
+            gpio.function(117),
+            if gpio.is_output(117) { "out" } else { "in" },
+            gpio.function(118),
+            if gpio.is_output(118) { "out" } else { "in" },
+            gpio.function(I2C_GATE),
+            if gpio.is_output(I2C_GATE) {
+                "out"
+            } else {
+                "in"
+            },
+        );
+        // As Windows Mobile's audio power-up: the I2C pins to function 1
+        // (SCL, SDA), outputs; the gate a plain GPIO, closed until a write
+        // opens it.
+        for pin in [117, 118] {
+            gpio.set_function(pin, 1);
+            gpio.make_output(pin, true);
+        }
+        gpio.set_function(I2C_GATE, 0);
         gpio.make_output(I2C_GATE, false);
         let level = gpio.read(HP_DETECT);
         let mut plugged = !level;
@@ -169,27 +256,27 @@ mod image {
         );
         let (Some(i2c), Some(i2s)) = (rt::take_i2c(), rt::take_i2s()) else {
             let _ = writeln!(out, "tone: I2C or I2S unavailable");
-            finish()
+            finish(&mut power)
         };
         let gated = Gated {
             bus: PxaI2c::new(i2c),
             gate: Pins(gpio),
         };
-        let mut codec: Codec = match Wm8750::init(gated, 60) {
+        let mut codec: Codec = match Wm8750::init(gated, LEVEL) {
             Ok(c) => c,
             Err(_) => {
                 let _ = writeln!(
                     out,
                     "tone: no codec answered on I2C (0x1a, 0x1b) with GPIO82 open"
                 );
-                finish()
+                finish(&mut power)
             }
         };
         let _ = writeln!(out, "codec at {:#04x}", codec.address());
         let _ = codec.route(output(plugged));
         let Some(mut dma) = rt::take_dma(dma_map::AUDIO) else {
             let _ = writeln!(out, "tone: no DMA channel");
-            finish()
+            finish(&mut power)
         };
         let mut i2s = PxaI2s::new(i2s);
         let ring = &mut scratch[..RING];
@@ -222,10 +309,11 @@ mod image {
         } else {
             let _ = writeln!(out, "jack: no change in {JACK_WAIT_S} s");
         }
-        finish()
+        finish(&mut power)
     }
 
-    fn finish() -> ! {
+    fn finish(power: &mut Power) -> ! {
+        power.off();
         let _ = writeln!(devices::RunLog, "{}", super::MARKER);
         if devices::loader_present() {
             rt::delay_us(1_000_000);
