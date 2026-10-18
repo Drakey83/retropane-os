@@ -121,6 +121,21 @@ the static read below found why.
 codec; put the bit back as found at the end. Only if the codec then answers:
 a second run that also sets `0x14` bit 1 (70 ms settle) for the speaker.
 
+**Run (2026-10-18 ~10:00, `RP_TONE_LEVEL=20`, owner present at the
+start):** CPLD found `14=0008 1C=000C`; codec power on (`0x1C` bit 1), 50 ms
+settle; GPIO117/118 function 1 outputs, GPIO82 function 0 output; GPIO96
+read 1 (headphones out); **no codec answered on I2C at `0x1a` or `0x1b`**
+with the gate (GPIO82) driven; power put back off; clean return to the
+loader, no reset. A measurement, not a decision. Options for the owner:
+(a) a longer settle (500 ms) and the amplifier bit `0x14` bit 1 as well,
+one more board bit, owner watching; (b) a read-only `rp-probe` from HaRET
+**while Windows Mobile is playing a sound**, recording the CPLD, GPIO
+functions/levels and I2C/I2S registers as Dell leaves them when audio
+works, then match exactly (no board bit switched; best evidence); (c) a
+static read of what wavedev.dll does between power-on and its first I2C
+write (clocks: `CKEN` for I2C/I2S, a SYSCLK/MCLK the codec may need, the
+power I2C unit instead of the standard one).
+
 **What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
 around each codec write and lowers it after, as Windows Mobile does (never
 leaving it high: the line is shared with another device, the lock's other
