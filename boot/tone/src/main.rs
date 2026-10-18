@@ -51,6 +51,9 @@ mod image {
     const HP_DETECT: u8 = 83;
     /// The line taken for the jack before, logged beside it.
     const WAS_JACK: u8 = 96;
+    /// `RP_TONE_CHECK_ONLY` at build time: the I2C controller checked and
+    /// nothing else (no board bit: runs without the owner watching).
+    const CHECK_ONLY: bool = option_env!("RP_TONE_CHECK_ONLY").is_some();
     /// Output volume, 0-100: 60, or `RP_TONE_LEVEL` at build time (a quiet
     /// run at night, 2026-10-18).
     const LEVEL: u32 = match option_env!("RP_TONE_LEVEL") {
@@ -321,6 +324,22 @@ mod image {
         // The controller alone, before the codec's power: a working one
         // reports "nobody" within a millisecond (gate closed, then open).
         log_bus(&mut out, "idle, before any transfer", &mut gated.bus);
+        let _ = writeln!(
+            out,
+            "  CKEN {:08x} (I2C clock bit 14: {})",
+            rt::clock_enables(),
+            (rt::clock_enables() >> 14) & 1
+        );
+        let mut seen = [(0u32, 0u32); 12];
+        let n = gated
+            .bus
+            .trace_start(rp_drv_wm8750::ADDRESSES[0], &mut seen, 20_000);
+        let _ = write!(out, "  traced start (ICR/ISR):");
+        for (icr, isr) in &seen[..n] {
+            let _ = write!(out, " {icr:x}/{isr:x}");
+        }
+        let _ = writeln!(out);
+        log_bus(&mut out, "after the traced start", &mut gated.bus);
         let t = rt::ticks();
         let r = gated.bus.write(rp_drv_wm8750::ADDRESSES[0], &[]);
         log_try(
@@ -339,6 +358,10 @@ mod image {
             t,
             &mut gated.bus,
         );
+        if CHECK_ONLY {
+            let _ = writeln!(out, "check only: no codec power, no probes");
+            finish(&mut power)
+        }
         // Now the codec's power (CPLD 0x1C bit 1, measured under Windows
         // Mobile), as runs 1-3.
         if let Some(c) = power.cpld.as_mut()

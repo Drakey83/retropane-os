@@ -460,6 +460,14 @@ const KEYPAD_BASE: usize = 0x4150_0000;
 /// `CKEN` bit for the FFUART.
 pub const CKEN_FFUART: u32 = 6;
 
+/// The peripheral clock enables (`CKEN`), read only (for logs).
+#[must_use]
+pub fn clock_enables() -> u32 {
+    // SAFETY: CKEN is the clock manager's clock enable register, identity-
+    // mapped; a read has no side effect.
+    unsafe { (va(CKEN) as *const u32).read_volatile() }
+}
+
 /// Enables a peripheral clock (`CKEN` bit `bit`).
 pub fn enable_clock(bit: u32) {
     let cken = va(CKEN) as *mut u32;

@@ -72,6 +72,31 @@ impl<B: RegisterBus> PxaI2c<B> {
         ]
     }
 
+    /// A diagnostic start: the address byte `addr` sent with a start, the
+    /// first distinct (`ICR`, `ISR`) pairs read back into `seen` (at most
+    /// `polls` reads), then the transaction aborted with a stop. Returns
+    /// how many pairs it kept.
+    pub fn trace_start(&mut self, addr: u8, seen: &mut [(u32, u32)], polls: u32) -> usize {
+        self.regs.write32(reg::IDBR, u32::from(addr << 1));
+        self.regs.write32(
+            reg::ICR,
+            ICR_IUE | ICR_SCLE | self.speed | ICR_TB | ICR_START,
+        );
+        let mut n = 0;
+        let mut last = None;
+        for _ in 0..polls {
+            let now = (self.regs.read32(reg::ICR), self.regs.read32(reg::ISR));
+            if last != Some(now) && n < seen.len() {
+                seen[n] = now;
+                n += 1;
+                last = Some(now);
+            }
+        }
+        self.abort();
+        self.regs.write32(reg::ISR, ISR_CLEAR);
+        n
+    }
+
     /// Fast mode (400 kHz) on or off; standard (100 kHz) from [`Self::new`].
     pub fn set_fast(&mut self, fast: bool) {
         self.speed = if fast { ICR_FM } else { 0 };
@@ -121,14 +146,22 @@ impl<B: RegisterBus> PxaI2c<B> {
 impl<B: RegisterBus> I2cBus for PxaI2c<B> {
     fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
         let last = data.len();
-        let first_flags = ICR_START | if last == 0 { ICR_STOP } else { 0 };
-        if let Err(e) = self.send(addr << 1, first_flags) {
+        // Never START and STOP on one byte: the X51v's controller never
+        // finishes such a byte (measured 2026-10-18: an address-only write
+        // timed out every time while a START alone was answered at once;
+        // docs/hw/audio.md). An address-only transfer (a presence check)
+        // sends the address with START and ends with a separate stop.
+        if let Err(e) = self.send(addr << 1, ICR_START) {
             self.abort();
             return Err(if e == I2cError::Nak {
                 I2cError::NoDevice
             } else {
                 e
             });
+        }
+        if last == 0 {
+            self.abort();
+            return Ok(());
         }
         for (i, &b) in data.iter().enumerate() {
             let flags = if i + 1 == last { ICR_STOP } else { 0 };
@@ -151,6 +184,22 @@ impl<B: RegisterBus> I2cBus for PxaI2c<B> {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn a_traced_start_keeps_each_change_once_and_ends_with_a_stop() {
+        let mut i2c = PxaI2c::new(MockBus::new());
+        i2c.regs
+            .script_reads(reg::ISR, &[0, 0, ISR_UB, ISR_UB, ISR_UB | ISR_ITE]);
+        let mut seen = [(0, 0); 8];
+        let n = i2c.trace_start(0x1A, &mut seen, 5);
+        assert!(n >= 2, "{seen:x?}");
+        assert!(i2c.regs.writes().contains(&(reg::IDBR, 0x34)));
+        assert!(
+            i2c.regs
+                .writes()
+                .contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_MA))
+        );
+    }
 
     #[test]
     fn fast_mode_is_in_every_control_write() {
@@ -213,11 +262,38 @@ mod tests {
     }
 
     #[test]
-    fn a_presence_check_is_address_and_stop() {
+    fn a_presence_check_is_the_address_then_a_separate_stop() {
         let mut i2c = with_status(ISR_ITE);
         i2c.write(0x1A, &[]).unwrap();
         let w = i2c.regs.writes();
-        assert!(w.contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_TB | ICR_START | ICR_STOP)));
+        assert!(w.contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_TB | ICR_START)));
+        assert!(
+            w.contains(&(reg::ICR, ICR_IUE | ICR_SCLE | ICR_MA)),
+            "stop sent"
+        );
+    }
+
+    #[test]
+    fn no_write_ever_puts_start_and_stop_on_one_byte() {
+        // The class of 2026-10-18's silent codec: the controller never
+        // finishes such a byte.
+        for status in [ISR_ITE, ISR_ITE | ISR_ACKNAK | ISR_BED] {
+            for data in [&[][..], &[1][..], &[1, 2][..]] {
+                for fast in [false, true] {
+                    let mut i2c = with_status(status);
+                    i2c.set_fast(fast);
+                    let _ = i2c.write(0x1A, data);
+                    for (off, v) in i2c.regs.writes() {
+                        if off == reg::ICR {
+                            assert!(
+                                v & (ICR_START | ICR_STOP) != ICR_START | ICR_STOP,
+                                "ICR {v:x} for {data:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
