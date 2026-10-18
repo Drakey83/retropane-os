@@ -120,4 +120,12 @@ critical path.
   isn't used. **For RetroPane's CE personality:** answer `GETGXINFO` with
   our frame buffer and support the rotation, and every GAPI game gets the
   same direct path.
+- **A GLES Virtual Pool did exist:** Celeris ran a beta of an **OpenGL ES
+  version for the Axim X50v** in 2005, with the Xbox and PS2 releases'
+  graphics (<https://www.eyeonmobility.com/2005/virtual-pool-beta-for-dell-axim-x50v/>;
+  also listed among 2700G games: <https://www.etcwiki.org/wiki/Intel_2700g_games>).
+  The owner knows the game as 3D-accelerated; the Dell CD's trial is not
+  that build. Next: the owner looks for the GLES build (the beta or a later
+  release, possibly the "v1.29" on the owner's list); its imports confirm
+  it in a minute.
 
