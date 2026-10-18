@@ -161,7 +161,12 @@ mod image {
     /// OS timer ticks per second (3.25 MHz).
     const TICK_1S: u32 = 3_250_000;
     /// How long to wait for the jack to change.
-    const JACK_WAIT_S: u32 = 15;
+    const JACK_WAIT_S: u32 = 30;
+    /// What each output plays: three rising notes, a second each (long
+    /// enough to hear and to tell apart: the owner heard run 6's 500 ms
+    /// tone as a little beep and its 50 ms speaker beep not at all).
+    const NOTES: [u32; 3] = [440, 660, 880];
+    const NOTE_MS: u32 = 1_000;
     /// The streaming ring (the CPU refills it by halves).
     const RING: usize = 8192;
 
@@ -431,10 +436,16 @@ mod image {
             finish(&mut power)
         };
         let ring = &mut scratch[..RING];
-        play(&mut out, &codec, &mut i2s, &mut dma, ring, 440, 500);
+        for hz in NOTES {
+            play(&mut out, &codec, &mut i2s, &mut dma, ring, hz, NOTE_MS);
+        }
 
         // The jack: a change that holds over two polls 1 s apart.
-        let _ = writeln!(out, "PLUG HEADPHONES IN OR OUT NOW ({JACK_WAIT_S} s)");
+        let _ = writeln!(
+            out,
+            "{} THE HEADPHONES NOW ({JACK_WAIT_S} s)",
+            if plugged { "UNPLUG" } else { "PLUG IN" }
+        );
         let mut seen = plugged;
         let mut changed = false;
         for _ in 0..JACK_WAIT_S {
@@ -457,7 +468,9 @@ mod image {
             );
             power.speaker(!plugged);
             let _ = codec.route(output(plugged));
-            play(&mut out, &codec, &mut i2s, &mut dma, ring, 1000, 50);
+            for hz in NOTES {
+                play(&mut out, &codec, &mut i2s, &mut dma, ring, hz, NOTE_MS);
+            }
         } else {
             let _ = writeln!(out, "jack: no change in {JACK_WAIT_S} s");
         }

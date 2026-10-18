@@ -4781,7 +4781,9 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         let log = usb_read_until(&mut s, "RPL END", 40)?;
         let mut wants = vec![
             "probe standard, as run 2",
-            "tone 440 Hz 500 ms (24000 frames",
+            "tone 440 Hz 1000 ms (48000 frames",
+            "tone 660 Hz 1000 ms (48000 frames",
+            "tone 880 Hz 1000 ms (48000 frames",
             "by DMA",
             "to speaker",
             "codec at 0x1a",
@@ -4794,7 +4796,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
                 "headphones out (GPIO83 0; GPIO96 1)",
                 "headphones in (GPIO83 1)",
                 "speaker amplifier off (headphones)",
-                "tone 1000 Hz 50 ms",
+                "PLUG IN THE HEADPHONES NOW (30 s)",
                 "to headphones",
             ]);
         } else {
@@ -4844,8 +4846,9 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     let Some(start) = left.iter().position(loud) else {
         return Err("tone: the recording is silent".into());
     };
-    // The first tone only: it ends at the first tenth of a second of quiet
-    // (the second, to the headphones, comes seconds later).
+    // The first output's three notes (each a second, back to back): they
+    // end at the first tenth of a second of quiet (the second output's
+    // come seconds later).
     let gap = (rate / 10) as usize;
     let mut end = start;
     let mut quiet = 0;
@@ -4860,17 +4863,31 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             }
         }
     }
-    let tone = &left[start..=end];
-    let crossings = tone.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
-    let seconds = tone.len() as f64 / f64::from(rate);
-    let hz = crossings as f64 / 2.0 / seconds;
-    if !(425.0..=455.0).contains(&hz) || !(0.4..=0.6).contains(&seconds) {
+    let tones = &left[start..=end];
+    let seconds = tones.len() as f64 / f64::from(rate);
+    if !(2.8..=3.4).contains(&seconds) {
         return Err(format!(
-            "tone: recorded {hz:.1} Hz for {seconds:.3} s (wanted 440 Hz, 0.5 s)"
+            "tone: recorded {seconds:.3} s of sound (wanted three 1 s notes)"
         ));
     }
+    // Each third, its middle 80% (away from the joins).
+    let third = tones.len() / 3;
+    let mut found = [0.0f64; 3];
+    for (k, want) in [440.0f64, 660.0, 880.0].into_iter().enumerate() {
+        let part = &tones[k * third + third / 10..(k + 1) * third - third / 10];
+        let crossings = part.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+        let hz = crossings as f64 / 2.0 / (part.len() as f64 / f64::from(rate));
+        if (hz - want).abs() > want * 0.04 {
+            return Err(format!(
+                "tone: note {} recorded at {hz:.1} Hz, wanted {want} Hz",
+                k + 1
+            ));
+        }
+        found[k] = hz;
+    }
     eprintln!(
-        "    tone OK: WM8750 found on I2C, 440 Hz through I2S, recorded at {hz:.1} Hz for {seconds:.3} s"
+        "    tone OK: WM8750 found on I2C, three notes through I2S, recorded at {:.1}, {:.1} and {:.1} Hz over {seconds:.3} s",
+        found[0], found[1], found[2]
     );
     Ok(())
 }
