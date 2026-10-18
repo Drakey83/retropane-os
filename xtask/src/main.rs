@@ -546,6 +546,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_locked(&workspace_root()))
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
             .and_then(|()| emu::boot_loader_full_size(&workspace_root()))
+            .and_then(|()| emu::boot_loader_keeps_feeding(&workspace_root()))
             // The benchmark image's on-target checks (pixel paths, memory,
             // crypto, SD) and no regression past the baseline.
             .and_then(|()| emu::bench(&workspace_root(), false)),
