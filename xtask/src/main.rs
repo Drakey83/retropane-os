@@ -702,6 +702,21 @@ fn lint() -> Result {
             violations.extend(policy::check_unsafe_policy(&c.name, c.place, &src));
         }
     }
+    // Every tracked text file: no merge-conflict markers.
+    let tracked = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git ls-files: {e}"))?;
+    for path in String::from_utf8_lossy(&tracked.stdout).split('\0') {
+        if path.is_empty() {
+            continue;
+        }
+        // Binary or unreadable files are skipped: markers are text.
+        if let Ok(text) = std::fs::read_to_string(workspace_root().join(path)) {
+            violations.extend(policy::check_conflict_markers(path, &text));
+        }
+    }
     if violations.is_empty() {
         eprintln!("    {} crates, no policy violations", crates.len());
         Ok(())

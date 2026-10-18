@@ -94,6 +94,20 @@ pub fn check_unsafe_policy(name: &str, place: Placement, lib_source: &str) -> Op
     }
 }
 
+/// Checks one tracked file for merge-conflict markers left in by a bad
+/// resolution (2026-10-17: a doc was committed with them mid-merge). A
+/// line starting with seven `<` or seven `>` and a space is a marker.
+#[must_use]
+pub fn check_conflict_markers(path: &str, text: &str) -> Option<String> {
+    let line = text
+        .lines()
+        .position(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))?;
+    Some(format!(
+        "{path}:{}: a merge-conflict marker was committed",
+        line + 1
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +115,20 @@ mod tests {
     const HAL: Placement = Placement::Os(Layer::Hal);
     const CORE: Placement = Placement::Os(Layer::Core);
     const APPS: Placement = Placement::Os(Layer::Apps);
+
+    #[test]
+    fn conflict_markers_are_caught_and_lookalikes_are_not() {
+        // Built at run time, so this file itself holds no markers.
+        let (open, close) = ("<".repeat(7), ">".repeat(7));
+        let bad = format!("a\n{open} HEAD\nours\n=======\ntheirs\n{close} 1234 (x)\n");
+        assert_eq!(
+            check_conflict_markers("docs/perf.md", &bad).as_deref(),
+            Some("docs/perf.md:2: a merge-conflict marker was committed")
+        );
+        // Setext headings, arrows and quoted text are fine.
+        let fine = format!("Title\n=======\n> quote\n>>> not a marker\n{open}no space\n");
+        assert_eq!(check_conflict_markers("README.md", &fine), None);
+    }
 
     #[test]
     fn classifies_directories() {
