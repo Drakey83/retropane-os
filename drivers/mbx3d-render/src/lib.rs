@@ -286,9 +286,10 @@ impl Paint {
     }
 }
 
-/// A depth test (version 23: larger z is nearer). Only the modes the
-/// device showed working are accepted ([`DEPTH_MODES`]: "greater",
-/// "greater or equal", "always"); [`Renderer::set`] refuses the others.
+/// A depth test: the quad's z against the depth stored at each pixel, by
+/// `mode` ([`depth`], GL order: "less" passes a smaller z, "greater" a
+/// larger). All eight modes behave on the device (`rp-glesfeat` D,
+/// 2026-10-18).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Depth {
     /// One of [`depth`].
@@ -299,13 +300,17 @@ pub struct Depth {
     pub z: u16,
 }
 
-/// The depth modes [`Renderer::set`] accepts: the ones that behaved as a
-/// compare on the device. "Less" and "less or equal" never passed in any
-/// test (`rp-mbx3d-api` run 3, S8: whatever the floor's z, with and without
-/// writes), and in a frame rendering only some tiles one of them under
-/// another quad's tiles made an "always" quad below it vanish (runs 1-3);
-/// "never", "equal" and "not equal" were never tried.
-pub const DEPTH_MODES: [u32; 3] = [depth::GREATER, depth::GEQUAL, depth::ALWAYS];
+/// An alpha test: the quad's pixels are drawn only where their alpha
+/// (after the texture) compares true against `reference` by `func` (GL
+/// order, as [`depth`]). Cut-out shapes: leaves, fences, icons
+/// (`rp_drv_mbx3d::alpha_test`, confirmed on the device 2026-10-18).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AlphaTest {
+    /// One of [`depth`]'s modes.
+    pub func: u32,
+    /// 0-255.
+    pub reference: u8,
+}
 
 /// One quad of the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -318,6 +323,8 @@ pub struct Draw {
     pub blend: Option<(u32, u32)>,
     /// A depth test, or none (drawn over whatever is there).
     pub depth: Option<Depth>,
+    /// An alpha test, or none (every pixel drawn).
+    pub alpha: Option<AlphaTest>,
 }
 
 impl Draw {
@@ -334,6 +341,7 @@ impl Draw {
             paint,
             blend: None,
             depth: None,
+            alpha: None,
         }
     }
 
@@ -351,6 +359,15 @@ impl Draw {
     pub const fn with_depth(self, d: Depth) -> Self {
         Self {
             depth: Some(d),
+            ..self
+        }
+    }
+
+    /// With an alpha test.
+    #[must_use]
+    pub const fn with_alpha_test(self, a: AlphaTest) -> Self {
+        Self {
+            alpha: Some(a),
             ..self
         }
     }
@@ -468,7 +485,7 @@ pub enum Error {
     NoCore,
     /// The frame's object lists don't fit the parameter memory.
     TooComplex,
-    /// A depth mode outside [`DEPTH_MODES`].
+    /// A depth or alpha-test mode that isn't one of [`depth`]'s eight.
     Unsupported,
 }
 
@@ -604,10 +621,13 @@ fn hash(words: &[u32], tiles: TileRect) -> u64 {
 
 /// A quad's two objects: the words and their kind.
 fn encode(d: &Draw) -> ([u32; SLOT_WORDS], usize, Kind) {
-    let (isp, z) = match d.depth {
-        Some(dp) => ((dp.mode & 7) << 29, fixed::f32_bits(i32::from(dp.z), 16)),
-        None => (m3::ISP_ALWAYS, 0),
+    // The second word is the alpha test only; the depth mode goes in the
+    // TSP (writing it here too made "less" test "alpha < 0": ADR-0026).
+    let isp = match d.alpha {
+        Some(a) => m3::alpha_test(a.func, u32::from(a.reference)),
+        None => m3::ISP_ALWAYS,
     };
+    let z = d.depth.map_or(0, |dp| fixed::f32_bits(i32::from(dp.z), 16));
     let state = |tsp: u32| {
         let tsp = match d.depth {
             Some(dp) => m3::depth_test(tsp, dp.mode, dp.write),
@@ -1104,10 +1124,10 @@ impl Renderer {
             return Err(Error::Busy);
         }
         let old = *self.slots.get(slot).ok_or(Error::BadSlot)?;
-        if draw
-            .and_then(|d| d.depth)
-            .is_some_and(|d| !DEPTH_MODES.contains(&d.mode))
-        {
+        if draw.is_some_and(|d| {
+            d.depth.is_some_and(|dp| dp.mode > depth::ALWAYS)
+                || d.alpha.is_some_and(|a| a.func > depth::ALWAYS)
+        }) {
             return Err(Error::Unsupported);
         }
         let new = match draw {

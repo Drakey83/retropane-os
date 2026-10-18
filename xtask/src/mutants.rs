@@ -48,6 +48,21 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "renderer: the depth mode written into the alpha-test bits again (2026-10-15's mistake)",
+        file: "drivers/mbx3d-render/src/lib.rs",
+        from: "        None => m3::ISP_ALWAYS,
+",
+        to: "        None => d.depth.map_or(m3::ISP_ALWAYS, |dp| (dp.mode & 7) << 29),
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx3d-render",
+            "--features",
+            "model",
+            "the_depth_mode_never_reaches_the_alpha_bits",
+        ]),
+    },
+    Mutant {
         name: "xtask: two emulator runs given the same ports",
         file: "xtask/src/devlock.rs",
         from: "        if file.try_lock().is_ok() && (start..start + len).all(is_free) {

@@ -28,7 +28,7 @@ use rp_draw::{Frame, Renderer as _};
 use rp_hal_api::RegisterBus;
 use rp_mbx_render::{LocalMem, Mbx2dRenderer};
 use rp_mbx3d_render::{
-    self as r3d, Clock, Depth, Draw, Paint, Picture, Point, Poll, Target, Texture,
+    self as r3d, AlphaTest, Clock, Depth, Draw, Paint, Picture, Point, Poll, Target, Texture,
 };
 use rp_vram_map::Pool;
 
@@ -125,6 +125,8 @@ pub struct Quad {
     pub blend: Option<(u32, u32)>,
     /// A depth test, or none.
     pub depth: Option<Depth>,
+    /// An alpha test (cut-out shapes), or none.
+    pub alpha: Option<AlphaTest>,
 }
 
 impl Quad {
@@ -137,6 +139,7 @@ impl Quad {
             fill,
             blend: None,
             depth: None,
+            alpha: None,
         }
     }
 }
@@ -550,6 +553,7 @@ impl<'a, R: RegisterBus, M: LocalMem> Graphics<'a, R, M> {
                     paint,
                     blend: q.blend,
                     depth: q.depth,
+                    alpha: q.alpha,
                 })
             }
         };

@@ -389,8 +389,7 @@ fn alpha_blends_as_measured() {
 #[test]
 fn depth_larger_z_is_nearer() {
     // Version 23's T7b and rp-mbx3d-api run 2, through the API: red at 0.5
-    // writing depth, blue at 0.3 or 0.8 with "greater" ("less" is
-    // unreliable on the device: the model refuses it).
+    // writing depth, blue at 0.3 or 0.8 with "greater".
     let z = |tenths: u32| (tenths * 65536 / 10) as u16;
     let red = |z0| {
         square(100, 100, 200, Paint::Flat(RED)).with_depth(Depth {
@@ -769,24 +768,110 @@ fn the_prediction_fits_run_2s_exact_times() {
 }
 
 #[test]
-fn depth_modes_the_device_broke_are_refused() {
-    // Run 3 (S8): "less" and "less or equal" never passed, and in a partial
-    // render one made an "always" quad under it vanish; the others untried.
+fn every_depth_and_alpha_mode_is_accepted_and_only_those() {
+    // rp-glesfeat (2026-10-18): all eight behave; version 23's "less"
+    // failure was the depth mode written into the alpha-test bits.
     let mut g = rig(480, 640);
-    for mode in 0..8 {
+    for mode in 0..10 {
+        let want = if mode <= depth::ALWAYS {
+            Ok(())
+        } else {
+            Err(Error::Unsupported)
+        };
         let d = square(0, 0, 8, Paint::Flat(BLUE)).with_depth(Depth {
             mode,
             write: true,
             z: 1,
         });
-        let want = if DEPTH_MODES.contains(&mode) {
-            Ok(())
-        } else {
-            Err(Error::Unsupported)
-        };
-        assert_eq!(g.r.set(&mut g.mem, 0, Some(&d)), want, "mode {mode}");
+        assert_eq!(g.r.set(&mut g.mem, 0, Some(&d)), want, "depth {mode}");
+        let a = square(0, 0, 8, Paint::Flat(BLUE)).with_alpha_test(AlphaTest {
+            func: mode,
+            reference: 1,
+        });
+        assert_eq!(g.r.set(&mut g.mem, 0, Some(&a)), want, "alpha {mode}");
     }
-    assert_eq!(DEPTH_MODES, [depth::GREATER, depth::GEQUAL, depth::ALWAYS]);
+}
+
+#[test]
+fn the_depth_mode_never_reaches_the_alpha_bits() {
+    // The class of 2026-10-15's mistake: the second word carries only the
+    // alpha test, whatever the depth test.
+    for mode in 0..8 {
+        for paint in [Paint::Flat(RED), Paint::Gouraud([RED; 4])] {
+            let (w, _, _) = encode(&square(0, 0, 8, paint).with_depth(Depth {
+                mode,
+                write: true,
+                z: 1,
+            }));
+            assert_eq!(w[0], m3::ISP_ALWAYS, "mode {mode}");
+        }
+    }
+    let (w, _, _) = encode(
+        &square(0, 0, 8, Paint::Flat(RED)).with_alpha_test(AlphaTest {
+            func: depth::GREATER,
+            reference: 128,
+        }),
+    );
+    assert_eq!(w[0], 0x9000_0000);
+}
+
+#[test]
+fn depth_less_passes_the_smaller_z() {
+    // rp-glesfeat D on the device: red at 0.5 writing, the background at 0
+    // writing; blue with "less" over red where its z is smaller, never
+    // over the background.
+    let z = |tenths: u32| (tenths * 65536 / 10) as u16;
+    let red = square(100, 100, 200, Paint::Flat(RED)).with_depth(Depth {
+        mode: depth::ALWAYS,
+        write: true,
+        z: z(5),
+    });
+    for (mode, zb, overlap, alone) in [
+        (depth::LESS, 3, BLUE, GREY),
+        (depth::LEQUAL, 3, BLUE, GREY),
+        (depth::LESS, 8, RED, GREY),
+        (depth::GREATER, 8, BLUE, BLUE),
+    ] {
+        let mut g = rig(480, 640);
+        g.r.set_background(Some(GREY)).unwrap();
+        g.set(0, Some(red));
+        g.set(
+            1,
+            Some(square(200, 200, 200, Paint::Flat(BLUE)).with_depth(Depth {
+                mode,
+                write: true,
+                z: z(zb),
+            })),
+        );
+        g.frame();
+        assert_eq!(g.px(250, 250), overlap, "mode {mode} z 0.{zb}");
+        assert_eq!(g.px(350, 350), alone, "mode {mode} z 0.{zb}");
+    }
+}
+
+#[test]
+fn the_alpha_test_cuts_out_pixels() {
+    // rp-glesfeat A on the device: alpha 64 over grey.
+    for (func, reference, drawn) in [
+        (depth::ALWAYS, 0, true),
+        (depth::GREATER, 128, false),
+        (depth::GREATER, 32, true),
+        (depth::LESS, 128, true),
+        (depth::LESS, 0, false),
+    ] {
+        let mut g = rig(480, 640);
+        g.r.set_background(Some(GREY)).unwrap();
+        g.set(
+            0,
+            Some(
+                square(100, 100, 200, Paint::Flat(0x40FF_0000))
+                    .with_alpha_test(AlphaTest { func, reference }),
+            ),
+        );
+        g.frame();
+        let want = if drawn { 0x40FF_0000 } else { GREY };
+        assert_eq!(g.px(200, 200), want, "func {func} ref {reference}");
+    }
 }
 
 #[test]

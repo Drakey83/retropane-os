@@ -55,8 +55,8 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
     const RENDER_DONE: u32 = 1 << 2;
     use rp_mbx3d_render::{
-        self as r3d, Clock, ClockPolicy, Depth, Draw, Error, FrameStats, LocalMem, Paint, Picture,
-        Poll, Renderer, Target, UV_ONE, address, depth, factor, format,
+        self as r3d, AlphaTest, Clock, ClockPolicy, Depth, Draw, Error, FrameStats, LocalMem,
+        Paint, Picture, Poll, Renderer, Target, UV_ONE, address, depth, factor, format,
     };
     use rp_vram_map::{self as map, Pool};
 
@@ -481,7 +481,7 @@ mod image {
     /// S5 (T7): depth.
     #[inline(never)]
     fn s5(g: &mut Rig) {
-        log!("S5 (T7): depth, larger z nearer; red z 0.5 writing, blue over it");
+        log!("S5 (T7): depth, every mode as GL; red z 0.5 writing, blue over it; the alpha test");
         let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
             return;
         };
@@ -500,6 +500,11 @@ mod image {
             ("greater, z 0.8", depth::GREATER, 8, BLUE, BLUE),
             ("greater, z 0.3", depth::GREATER, 3, RED, BLUE),
             ("greater or equal, z 0.3", depth::GEQUAL, 3, RED, BLUE),
+            // rp-glesfeat (2026-10-18): "less" works once the depth mode
+            // stays out of the alpha-test bits.
+            ("less, z 0.3", depth::LESS, 3, BLUE, GREY),
+            ("less or equal, z 0.3", depth::LEQUAL, 3, BLUE, GREY),
+            ("less, z 0.8", depth::LESS, 8, RED, GREY),
         ] {
             g.set(
                 &mut r,
@@ -515,13 +520,31 @@ mod image {
             g.check("blue alone", 350, 350, alone);
             g.check("red alone", 150, 150, RED);
         }
-        let less = rect(200, 200, 200, 200, BLUE).with_depth(Depth {
-            mode: depth::LESS,
+        let bad = rect(200, 200, 200, 200, BLUE).with_depth(Depth {
+            mode: 8,
             write: true,
             z: z(3),
         });
-        let refused = r.set(&mut g.mem, 1, Some(&less)) == Err(Error::Unsupported);
-        g.expect("\"less\" refused (run 3: broken on the device)", refused);
+        let refused = r.set(&mut g.mem, 1, Some(&bad)) == Err(Error::Unsupported);
+        g.expect("a mode past the eight refused", refused);
+        // The alpha test (rp-glesfeat A): alpha 64 over grey.
+        let _ = r.set(&mut g.mem, 0, None);
+        for (name, func, reference, want) in [
+            ("alpha test greater 128", depth::GREATER, 128, GREY),
+            ("alpha test greater 32", depth::GREATER, 32, 0x40FF_0000),
+            ("alpha test less 128", depth::LESS, 128, 0x40FF_0000),
+        ] {
+            g.set(
+                &mut r,
+                1,
+                Some(
+                    rect(200, 200, 200, 200, 0x40FF_0000)
+                        .with_alpha_test(AlphaTest { func, reference }),
+                ),
+            );
+            g.frame(&mut r, FULL, name);
+            g.check("square", 300, 300, want);
+        }
         let _ = r.release(&mut g.pool);
     }
 

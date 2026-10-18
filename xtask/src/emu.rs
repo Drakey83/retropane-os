@@ -2584,8 +2584,8 @@ pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
 
 /// The alpha test, depth "less" and 8-bit grey textures (rp-glesfeat,
 /// ADR-0026, 2026-10-18): every case runs and is logged, back at the loader
-/// on a button. The fork's 3D model knows none of the three features yet,
-/// so pixels aren't checked (docs/hw/emulator.md).
+/// on a button; with the fork's model of them (`mbx-3d-alpha`, rp-v0.22.0)
+/// every pixel as the X51v drew it (docs/hw/emulator.md).
 pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-3d") {
         eprintln!("    glesfeat: skipped (this emulator release doesn't model the MBX 3D core)");
@@ -2633,6 +2633,30 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         if !log.contains(want) {
             return Err(format!("glesfeat: the run log has no `{want}`:{log}"));
         }
+    }
+    // With the model of the device's results (rp-v0.22.0): the pixels the
+    // X51v drew (2026-10-18), word for word.
+    if device_has(root, "intel-2700g", "mbx-3d-alpha") {
+        for want in [
+            "A always, ref 0 (control): ISP 0xe0000000 TSP 0x22200e80: done true; square (200,200) 0x40ff0000",
+            "A greater 128: ISP 0x90000000 TSP 0x22200e80: done true; square (200,200) 0xff202020",
+            "A greater 32: ISP 0x84000000 TSP 0x22200e80: done true; square (200,200) 0x40ff0000",
+            "A less 128: ISP 0x30000000 TSP 0x22200e80: done true; square (200,200) 0x40ff0000",
+            "A less 0 (version 23's depth 'less'): ISP 0x20000000 TSP 0x22200e80: done true; square (200,200) 0xff202020",
+            "D blue z 0.3 mode 1 (alpha always), ISP 0xe0000000 TSP 0x22200200: done true; overlap (250,250) 0xff0000ff, blue alone (350,350) 0xff202020, red alone (150,150) 0xffff0000",
+            "D blue z 0.3 mode 4 (alpha always), ISP 0xe0000000 TSP 0x22200800: done true; overlap (250,250) 0xffff0000, blue alone (350,350) 0xff0000ff",
+            "D blue z 0.3 mode 1 (version 23's form), ISP 0x20000000 TSP 0x22200200: done true; overlap (250,250) 0xffff0000, blue alone (350,350) 0xff202020",
+            "D blue z 0.8 mode 1 (alpha always), ISP 0xe0000000 TSP 0x22200200: done true; overlap (250,250) 0xffff0000, blue alone (350,350) 0xff202020",
+            "L code 10, texels 0x60, TEX2 0x86084610: done true; square (200,200) 0x60606060",
+            "L code 10, texels 0xc0, TEX2 0x86084610: done true; square (200,200) 0xc0c0c0c0",
+            "L code 10, texels 0x60, TEX2 0x86086610: done true; square (200,200) 0xff606060",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("glesfeat: not as on the device, no `{want}`:{log}"));
+            }
+        }
+        eprintln!("    glesfeat OK: every case drew as on the X51v, back at the loader");
+        return Ok(());
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
     Ok(())

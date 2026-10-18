@@ -23,9 +23,24 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-/// ISP word "depth compare always" (bits 31-29 = 7), as Dell's driver
-/// writes it for its background and minimal objects.
-pub const ISP_ALWAYS: u32 = 0xE000_0000;
+/// The object's second word ("ISP" in our early notes) with the alpha
+/// test "always", reference 0: Dell's driver's background and minimal
+/// objects. Its bits 31-29 and 28-21 are the alpha test ([`alpha_test`]),
+/// not a depth compare (`rp-glesfeat`, 2026-10-18).
+pub const ISP_ALWAYS: u32 = alpha_test(depth::ALWAYS, 0);
+
+/// The second object word's alpha test: a pixel is drawn only if its alpha
+/// compares true against `reference` (0-255) by `func` (the same GL order
+/// as [`depth`]: never, less, equal, less or equal, greater, not equal,
+/// greater or equal, always). As `glAlphaFuncx` packs it
+/// (`libGLES_CL.dll` `0x02262060`); confirmed on the device (`rp-glesfeat`
+/// A, 2026-10-18: alpha 64 drawn with "greater 32" and "less 128", hidden
+/// with "greater 128" and "less 0"). No TSP bit is needed to enable it
+/// (the GLES driver's TSP bit 14 changed nothing there).
+#[must_use]
+pub const fn alpha_test(func: u32, reference: u32) -> u32 {
+    (func & 7) << 29 | (reference & 0xFF) << 21
+}
 /// TSP word bit 22: Gouraud shading, colours blended between the vertices
 /// (confirmed on the device 2026-10-14: the corners came out near their
 /// vertex colours, the middle a third of each).
@@ -68,18 +83,22 @@ pub const fn blend(tsp: u32, src: u32, dst: u32) -> u32 {
     (tsp & 0x03FF_FFFF) | (src & 7) << 29 | (dst & 7) << 26 | TSP_BLEND
 }
 
-/// Depth compare modes (PowerVR2 numbering; larger z is nearer: version
-/// 23).
+/// Compare modes in GL order, for the depth test (TSP bits 11-9: the new
+/// z against the stored one) and the alpha test ([`alpha_test`]). All
+/// behave as their names on the device (`rp-glesfeat` D, 2026-10-18:
+/// "less" and "less or equal" pass a smaller z, "greater" a larger;
+/// version 23's "less never works" was the depth mode written into the
+/// alpha-test bits).
 pub mod depth {
     /// Never passes.
     pub const NEVER: u32 = 0;
-    /// Less (farther: larger z is nearer).
+    /// Less: the smaller value passes.
     pub const LESS: u32 = 1;
     /// Equal.
     pub const EQUAL: u32 = 2;
     /// Less or equal.
     pub const LEQUAL: u32 = 3;
-    /// Greater: nearer.
+    /// Greater: the larger value passes.
     pub const GREATER: u32 = 4;
     /// Not equal.
     pub const NOT_EQUAL: u32 = 5;

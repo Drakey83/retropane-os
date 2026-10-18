@@ -449,10 +449,11 @@ pub const BUDGETS: &[Budget] = &[
     // (2026-10-15), + ~10%; then 56 -> 70 KiB for run 3 (S8, the "less"
     // exploration, and exact render times), 64.8 KiB measured, + ~8%; then
     // tightened 70 -> 66 KiB for run 4 (S8 done and removed), 60.0 KiB
-    // measured, + ~10%.
+    // measured, + ~10%; then 66 -> 72 KiB for S5's "less" and alpha-test
+    // cases (ADR-0026 option a, 2026-10-18), 66.0 KiB measured, + ~9%.
     Budget {
         image: "rp-mbx3d-api",
-        max_load: 66 * 1024,
+        max_load: 72 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

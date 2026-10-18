@@ -384,6 +384,8 @@ struct V {
 }
 
 struct Obj {
+    /// The second word: the alpha test (bits 31-29 and 28-21).
+    isp: u32,
     tsp: u32,
     tex: Option<[u32; 3]>,
     v: [V; 3],
@@ -405,6 +407,7 @@ impl Obj {
             v: 0.0,
         });
         Self {
+            isp: w(0),
             tsp: w(1),
             tex: None,
             v,
@@ -422,6 +425,7 @@ impl Obj {
             v: f(w(19 + 3 * k)),
         });
         Self {
+            isp: w(0),
             tsp: w(4),
             tex: Some([w(1), w(2), w(3)]),
             v,
@@ -455,18 +459,9 @@ impl Obj {
                 }
                 let k = (py * m3::TILE_W + px) as usize;
                 let z = w[0] * v[0].z + w[1] * v[1].z + w[2] * v[2].z;
-                let mode = (self.tsp >> 9) & 7;
-                let pass = match mode {
-                    // "Less" and "less or equal" never passed on the device
-                    // and, in partial renders, hid an "always" object below
-                    // (run 3, S8): the renderer refuses them.
-                    1 | 3 => panic!("depth mode {mode}: broken on the device (ADR-0026)"),
-                    4 => z > t.z[k],
-                    6 => z >= t.z[k],
-                    7 => true,
-                    m => panic!("depth mode {m} never measured"),
-                };
-                if !pass {
+                // The depth test, TSP bits 11-9, in GL order (all eight
+                // as their names: `rp-glesfeat` D, 2026-10-18).
+                if !compare((self.tsp >> 9) & 7, z, t.z[k]) {
                     continue;
                 }
                 let mut src = if self.tsp & m3::TSP_GOURAUD != 0 {
@@ -519,6 +514,12 @@ impl Obj {
                         t |= 0xFF00_0000;
                     }
                     src = modulate(t, src);
+                }
+                // The alpha test (the second word; `rp-glesfeat` A): a
+                // pixel that fails is neither drawn nor writes its depth.
+                let alpha = f64::from(src >> 24);
+                if !compare(self.isp >> 29, alpha, f64::from((self.isp >> 21) & 0xFF)) {
+                    continue;
                 }
                 t.c[k] = blend(self.tsp, src, t.c[k]);
                 if self.tsp & (1 << 7) == 0 {
@@ -692,6 +693,20 @@ fn modulate(t: u32, c: u32) -> u32 {
             ((((t >> sh) & 0xFF) * ((c >> sh) & 0xFF) + 127) / 255) << sh
         })
         .fold(0, |a, b| a | b)
+}
+
+/// A compare mode in GL order: `new` against `stored`.
+fn compare(mode: u32, new: f64, stored: f64) -> bool {
+    match mode & 7 {
+        0 => false,
+        1 => new < stored,
+        2 => new == stored,
+        3 => new <= stored,
+        4 => new > stored,
+        5 => new != stored,
+        6 => new >= stored,
+        _ => true,
+    }
 }
 
 fn blend(tsp: u32, s: u32, d: u32) -> u32 {
