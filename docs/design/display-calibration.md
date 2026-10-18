@@ -707,3 +707,16 @@ DoomGLES. Converting the textures again from the WADs at 565/8888 would
 (the native port does that anyway). Closed games must be checked one by
 one: those that ship 4444 data stay 4444 whatever the driver does. The
 game's only picture setting is `usegamma` 0-4 in `doomgles.cfg`.
+
+**Checked on the card (2026-10-17 night, read-only, the CF card as Windows
+drive J: through the loader): not 4444 at all.** All 645 `.pvr` files in
+`\Games\Pocket Doom\OpenGLES` have PVR version 1 headers (44 bytes; the
+pixel type at offset 16, bits per pixel at 24): **443 are PVRTC 4 bpp**
+(type 0x19, 59 MB: PowerVR's lossy block compression at 4 bits a *pixel*,
+the blotchy, muddy look) and **202 are RGBA 5551** (type 0x11, 16 bpp, 6.5
+MB); none is RGBA 4444. So the "4-bit" textures are compressed, not 4 bits
+a channel. The conclusion stands and gets stronger: no driver can undo
+PVRTC's loss; only textures converted again from the WADs (the native port
+does) fix DoomGLES. Virtual Pool (also on the owner's list as GLES): the
+installed v1.78 imports GAPI (`gx.dll`) and no GLES library: it draws in
+software; its copy came from a cracked package, so nothing more was read.
