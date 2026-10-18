@@ -165,6 +165,21 @@ kHz, 1 ms, then the probe; `emu-tone` passes). The next owner-watched run
 switches the same one board bit as run 1 (`0x1C` bit 1, already shown to
 return cleanly); the pin functions are Dell's own and can't hold the bus.
 
+**Run 2 (2026-10-18 ~17:00, `0ea7387`, owner watching, headphones in at
+low volume):** CPLD found `14=0008 1C=000D` (bit 0 of `0x1C` now set,
+`000C` in run 1: Windows Mobile booted in between; meaning unknown);
+codec power on; I2S pins and the controller running first (SYSCLK on
+GPIO113), then 1 ms: **still no codec on I2C at `0x1a` or `0x1b`**; clean
+return. **GPIO96 read 1 ("out") with the owner's headphones plugged in**:
+either the jack reads the other way round, or GPIO96 isn't the jack
+(Dell's driver reads `GPLR3` bit 0 and `GPLR2` bit 19 = GPIO83 after
+power-up). A measurement. Ruled out now: the power-up order and the
+codec's master clock. Options for the owner: (b) above, a read-only probe
+under Windows Mobile while it plays a sound (recommended: no board bit,
+answers what Dell's state is when audio works); (c) further static reading
+of the I2C path Dell's codec writes take (`0x02467640`: which I2C unit,
+which address, which gate).
+
 **What changes:** `rp-drv-wm8750`'s caller raises GPIO82 (as an output)
 around each codec write and lowers it after, as Windows Mobile does (never
 leaving it high: the line is shared with another device, the lock's other
