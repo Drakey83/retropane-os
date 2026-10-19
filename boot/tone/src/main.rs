@@ -15,6 +15,11 @@
 //! 3. Up to 15 s for the jack to change (plug the headphones in or out);
 //!    on a change, 1000 Hz for 50 ms to the new output.
 //!
+//! Built with `RP_TONE_DMA_RESTART`, it runs ADR-0032 A6's two device
+//! measurements instead (no codec, no I2C, no board bit): the audio DMA
+//! channel stopped at a STOP link while I2S runs, restarted as A6's option
+//! B would restart it, timed to its first move.
+//!
 //! The speaker amplifier (CPLD `0x14` bit 1, measured under Windows
 //! Mobile: on only for the speaker) is switched on for the speaker, 70 ms
 //! settle, and put back as found at the end, as the codec's power is.
@@ -37,7 +42,7 @@ mod image {
     use rp_drv_pxa_i2c::PxaI2c;
     use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, TX_PORT, Tone, stream};
     use rp_drv_wm8750::{Gate, Gated, Output, Wm8750};
-    use rp_hal_api::{DmaRing, I2cBus};
+    use rp_hal_api::{DmaEngine, DmaRing, I2cBus};
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -58,6 +63,24 @@ mod image {
     /// sends again (quality-audit B8), and nothing else: no codec, no I2C,
     /// no board bit (runs without the owner watching).
     const I2S_GAPS: bool = option_env!("RP_TONE_I2S_GAPS").is_some();
+    /// `RP_TONE_DMA_RESTART` at build time: ADR-0032 A6's measurements 1
+    /// and 2 (a DMA-only restart while I2S runs, and how long it takes),
+    /// and nothing else: no codec, no I2C, no board bit (runs without the
+    /// owner watching, once the owner says go).
+    const DMA_RESTART: bool = option_env!("RP_TONE_DMA_RESTART").is_some();
+    /// How long the channel is left stopped before each restart (ms).
+    const STOPPED_MS: [u32; 5] = [0, 1, 10, 100, 1_000];
+    /// Tries for each stop length.
+    const RESTART_TRIES: u32 = 3;
+    /// A6's pass criterion: a restart moves within this (us).
+    const RESTART_PASS_US: u32 = 500;
+    /// The transfer: eight descriptors longer than the channel's chain, so
+    /// the chain's last descriptor carries STOP and the channel stops there
+    /// while nothing polls it.
+    const RESTART_LEN: usize = (dma_map::descriptors(dma_map::AUDIO) + 8) * dma_map::CHUNK;
+    /// `DCSR` stop interrupt, `SACR0` enable (PXA27x manual).
+    const DCSR_STOPINTR: u32 = 1 << 3;
+    const SACR0_ENB: u32 = 1;
     /// The off times tried, in milliseconds.
     const GAPS_MS: [u32; 12] = [0, 1, 2, 5, 10, 20, 50, 100, 150, 200, 300, 500];
     /// How long to wait for the DMA to move after I2S comes back on.
@@ -340,11 +363,21 @@ mod image {
             }
         }
         let mut i2s = PxaI2s::new(i2s);
-        if !i2s.start(Rate::Khz48) {
+        // A6's measurements at the rate the service runs (44.1 kHz).
+        if !i2s.start(if DMA_RESTART {
+            Rate::Khz44_1
+        } else {
+            Rate::Khz48
+        }) {
             let _ = writeln!(out, "tone: I2S didn't come on (SACR0 without its enable)");
         }
         rt::delay_us(1_000);
         let _ = writeln!(out, "I2S running before the codec (SYSCLK on GPIO113)");
+        if DMA_RESTART {
+            dma_restart(&mut out, &mut i2s, &mut scratch[..RESTART_LEN]);
+            i2s.stop();
+            finish(&mut power)
+        }
         if I2S_GAPS {
             i2s_gaps(&mut out, &mut i2s, &mut scratch[..RING]);
             i2s.stop();
@@ -576,6 +609,123 @@ mod image {
                 }
             }
         }
+    }
+
+    /// Microseconds in `t` OS timer ticks.
+    fn us(t: u32) -> u32 {
+        t / 13 * 4
+    }
+
+    /// ADR-0032 A6, measurements 1 and 2: the audio channel stopped at a
+    /// STOP link while I2S keeps running (its FIFO empties), left stopped,
+    /// restarted as option B would (`DDADR` at the next descriptor, then
+    /// `RUN`, the request line still mapped), timed to its first move. A
+    /// transfer longer than the channel's chain does exactly that:
+    /// `dmachain` writes the chain's last descriptor with STOP, the channel
+    /// stops there while nothing polls, and the next poll resumes it.
+    fn dma_restart(out: &mut impl Write, i2s: &mut PxaI2s<Mmio>, buf: &mut [u8]) {
+        let Some(mut dma) = rt::take_dma(dma_map::AUDIO) else {
+            let _ = writeln!(out, "restart: no DMA channel");
+            return;
+        };
+        let chain = (dma_map::descriptors(dma_map::AUDIO) * dma_map::CHUNK) as u32;
+        buf.fill(0);
+        let [sacr0, _, sasr0] = i2s.status();
+        let _ = writeln!(
+            out,
+            "restart: I2S at 44.1 kHz (SACR0 {sacr0:x} SASR0 {sasr0:x}); {} bytes of silence, the chain stops at {chain}",
+            buf.len()
+        );
+        let (mut tries, mut misses, mut worst) = (0u32, 0u32, 0u32);
+        for stopped in STOPPED_MS {
+            for k in 1..=RESTART_TRIES {
+                tries += 1;
+                rt::check_in();
+                if !dma.arm_to_device(TX_PORT, buf) {
+                    let _ = writeln!(
+                        out,
+                        "restart: stopped {stopped} ms try {k}: the channel refused the transfer"
+                    );
+                    misses += 1;
+                    continue;
+                }
+                // Nothing polls: the channel runs the chain to its STOP.
+                let armed = rt::ticks();
+                let mut stop_at = None;
+                while rt::ticks().wrapping_sub(armed) < 2 * TICK_1S {
+                    if dma.registers()[0] & DCSR_STOPINTR != 0 {
+                        stop_at = Some(rt::ticks());
+                        break;
+                    }
+                    rt::check_in();
+                }
+                let Some(stop_at) = stop_at else {
+                    let [dcsr, ddadr, dsadr, ..] = dma.registers();
+                    let _ = writeln!(
+                        out,
+                        "restart: stopped {stopped} ms try {k}: never stopped in 2 s (DCSR {dcsr:x} DDADR {ddadr:x} DSADR {dsadr:x})"
+                    );
+                    dma.abort();
+                    misses += 1;
+                    continue;
+                };
+                let at = dma.moved().unwrap_or(0);
+                let [_, _, sasr_stop] = i2s.status();
+                while rt::ticks().wrapping_sub(stop_at) < stopped * (TICK_1S / 1000) {
+                    rt::check_in();
+                }
+                let [_, _, sasr_before] = i2s.status();
+                // The restart: the poll sees the stop short of the end, tops
+                // the chain up and writes DDADR and RUN.
+                let call = rt::ticks();
+                let first = dma.done();
+                let called = rt::ticks();
+                let mut moved_at = None;
+                while rt::ticks().wrapping_sub(call) < TICK_1S / 10 {
+                    if dma.moved().is_some_and(|m| m > at) {
+                        moved_at = Some(rt::ticks());
+                        break;
+                    }
+                }
+                // Let it finish (the rest of the transfer, polled).
+                let mut end = first;
+                let t = rt::ticks();
+                while end.is_none() && rt::ticks().wrapping_sub(t) < TICK_1S {
+                    end = dma.done();
+                    rt::check_in();
+                }
+                if end.is_none() {
+                    dma.abort();
+                }
+                let [sacr0, _, sasr_after] = i2s.status();
+                let on = sacr0 & SACR0_ENB != 0;
+                let restart = us(called.wrapping_sub(call));
+                let Some(moved_at) = moved_at else {
+                    let _ = writeln!(
+                        out,
+                        "restart: stopped {stopped} ms try {k}: stopped at byte {at}; NO MOVE in 100 ms after the restart (the poll said {first:?}); SASR0 at the stop {sasr_stop:x}, before {sasr_before:x}, after {sasr_after:x}; SACR0 {sacr0:x}"
+                    );
+                    misses += 1;
+                    continue;
+                };
+                let to_move = us(moved_at.wrapping_sub(call));
+                let from_stop = us(moved_at.wrapping_sub(stop_at));
+                worst = worst.max(to_move);
+                let met = to_move < RESTART_PASS_US && on && at == chain && end == Some(true);
+                if !met {
+                    misses += 1;
+                }
+                let _ = writeln!(
+                    out,
+                    "restart: stopped {stopped} ms try {k}: stopped at byte {at}, restart call {restart} us, moved {to_move} us after it ({from_stop} us after the stop was seen); SASR0 at the stop {sasr_stop:x}, before {sasr_before:x}, after {sasr_after:x}; I2S on {on}; finished {end:?}; {}",
+                    if met { "within 0.5 ms" } else { "MISSED" }
+                );
+            }
+        }
+        let _ = writeln!(
+            out,
+            "restart: {tries} tries, {misses} missed (0.5 ms, I2S on, the stop at the chain's end, the transfer finished); worst move {worst} us after a restart"
+        );
     }
 
     /// The bus lines and the controller's registers.

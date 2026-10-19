@@ -4999,6 +4999,92 @@ pub fn boot_loader_audio_sleep(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// ADR-0032 A6's device bench (`rp-tone` built with `RP_TONE_DMA_RESTART`):
+/// the audio DMA channel stops at its chain's STOP link while I2S runs,
+/// stays stopped 0-1,000 ms, and is restarted as option B would restart
+/// it. Here every try must stop at the chain's end, move again, finish and
+/// leave I2S on; the timings are the device's to measure (the emulator's
+/// DMA restarts in no time), so none is checked.
+pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    dma restart: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let image = variant_image(root, "rp-tone", ("RP_TONE_DMA_RESTART", "1"))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    // The model's I2S drains its FIFO only into an audio backend (without
+    // one the DMA moves a burst and waits): a recording nobody checks.
+    let wav = scratch(root, "dma-restart.wav")?;
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend([
+        "-audiodev".into(),
+        format!("wav,id=snd,path={wav_path}"),
+        "-machine".into(),
+        "audiodev=snd".into(),
+    ]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        let log = usb_read_until(&mut s, "RPL END", 90)?;
+        for want in [
+            "restart: I2S at 44.1 kHz",
+            "restart: 15 tries",
+            "RETROPANE-TONE-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("dma restart: no {want:?} in the run log:{log}"));
+            }
+        }
+        let tries = log.lines().filter(|l| l.contains(" try ")).count();
+        let moved = log
+            .lines()
+            .filter(|l| l.contains(" try ") && l.contains("I2S on true; finished Some(true)"))
+            .count();
+        let chain_end = log
+            .lines()
+            .filter(|l| l.contains(" try ") && l.contains("stopped at byte 131072,"))
+            .count();
+        if tries != 15 || moved != 15 || chain_end != 15 {
+            return Err(format!(
+                "dma restart: {tries} tries, {moved} moved and finished with I2S on, {chain_end} stopped at the chain's end (wanted 15 each):{log}"
+            ));
+        }
+        if log.contains("NO MOVE") || log.contains("never stopped") || log.contains("refused") {
+            return Err(format!("dma restart: a try failed:{log}"));
+        }
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(150),
+        },
+    )?;
+    eprintln!(
+        "    dma restart OK: 15 stops at the chain's end with I2S running, every restart moved and finished"
+    );
+    Ok(())
+}
+
 /// Audio service step S1 (ADR-0032, `rp-audio-s1`): audio up at 44.1 kHz
 /// through the service, three notes to the speaker (pitch checked in the
 /// recording: a codec set to another rate than I2S would shift it), the

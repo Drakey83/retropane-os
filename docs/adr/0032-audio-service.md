@@ -653,7 +653,14 @@ stalls; its failure is the loud one.
 
 ### What must be measured first (device, before B is built on)
 
-Each its own short bench test, owner watching, only when the owner says go:
+Each its own short bench test, owner watching, only when the owner says go.
+**Written 2026-10-19: `rp-tone` built with `RP_TONE_DMA_RESTART`** (both
+measurements in one run, 44.1 kHz, no codec, no I2C, no board bit: a
+transfer one chain plus eight descriptors long stops at the chain's STOP
+while I2S runs; each of 0, 1, 10, 100 and 1,000 ms stopped, three tries;
+each line says whether it met the criteria). **Not yet run anywhere:** its
+emulator check `emu-dma-restart` waits for the fork to drain I2S with the
+codec off, as the X51v does (quality audit C14).
 
 1. **Restarting the I2S DMA channel while I2S keeps running**: the channel
    stopped at a STOP link, left stopped 0, 10, 100 and 1,000 ms, restarted;
