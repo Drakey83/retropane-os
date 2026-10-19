@@ -384,7 +384,9 @@ every run again, **every unheard speaker note was 440 Hz**, the lowest
 pitch played on the speaker (amplifier test 1; runs 2-3's step 3, so their
 missing note was step 3's, not step 2's), while 523-880 Hz were always
 heard. The likely cause: the small speaker gives little output at 440 Hz,
-too little to hear at level 60. A measurement, not a decision; to confirm
+too little to hear at level 60. **It is the speaker, not the listener's
+hearing:** the owner heard 440 Hz in the headphones (runs 2-3, step 1's
+first note) at the same level. A measurement, not a decision; to confirm
 it, a run of numbered notes at falling pitches (e.g. 1000 down to 220 Hz)
 on the speaker, the owner naming the lowest heard. If confirmed, nothing
 in the service is wrong; it bears on A4's speaker tuning (ADR-0032).
