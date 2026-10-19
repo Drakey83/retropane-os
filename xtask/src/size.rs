@@ -585,10 +585,13 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image: audio service step S2 (ADR-0032), the mixer through
     // rp-audio on the X51v's wiring (rp-audio-x51v). Set at its first build
-    // on 2026-10-19: 70.1 KiB measured, +~10%.
+    // on 2026-10-19: 70.1 KiB measured, +~10%. Then 77 -> 90 KiB the same
+    // night: the 48 kHz coefficient table (6.5 KB, read-only), the faster
+    // block path and the measurement modes (cycle counts, the bench):
+    // 81.4 KiB measured.
     Budget {
         image: "rp-audio-s2",
-        max_load: 77 * 1024,
+        max_load: 90 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

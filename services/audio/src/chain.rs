@@ -146,14 +146,19 @@ impl State {
     pub fn run(&mut self, mix: &mut [i32; 2 * BLOCK], speaker: bool, out: &mut [u8]) -> Block {
         debug_assert_eq!(out.len(), 4 * BLOCK);
         if speaker {
-            for (i, s) in mix.iter_mut().enumerate() {
-                *s = biquad(&SPEAKER_HP, &mut self.hp[i & 1], *s);
+            // A channel at a time, its state held in locals.
+            for (c, z) in self.hp.iter_mut().enumerate() {
+                let mut st = *z;
+                for f in 0..BLOCK {
+                    let s = &mut mix[2 * f + c];
+                    *s = biquad(&SPEAKER_HP, &mut st, *s);
+                }
+                *z = st;
             }
         }
         let mut b = self.limit(mix);
         for (f, frame) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-            let l = self.dither(mix[2 * f]);
-            let r = self.dither(mix[2 * f + 1]);
+            let (l, r) = self.dither(mix[2 * f], mix[2 * f + 1]);
             let v = u32::from(l as u16) | u32::from(r as u16) << 16;
             frame.copy_from_slice(&v.to_le_bytes());
         }
@@ -164,10 +169,10 @@ impl State {
     /// The limiter, then the backstop.
     fn limit(&mut self, mix: &mut [i32; 2 * BLOCK]) -> Block {
         // Each sign against its own full scale: -32768 is in range.
-        let peak = mix.iter().fold(0i64, |m, &s| {
-            let s = i64::from(s);
-            m.max(if s < 0 { -s - 256 } else { s })
-        });
+        let peak = i64::from(
+            mix.iter()
+                .fold(0i32, |m, &s| m.max(if s < 0 { -(s + 256) } else { s })),
+        );
         let want = if peak > i64::from(CEIL) {
             ((i64::from(TARGET) << 16) / peak) as i32
         } else {
@@ -206,6 +211,10 @@ impl State {
                 *s = ((i64::from(*s) * g) >> 16) as i32;
             }
         }
+        if from == UNITY && to == UNITY && peak <= i64::from(CEIL) {
+            // Untouched and in range: nothing for the backstop.
+            return b;
+        }
         for s in mix.iter_mut() {
             if *s > CEIL {
                 *s = CEIL;
@@ -218,22 +227,33 @@ impl State {
         b
     }
 
-    /// Q8 to 16 bits: exact if it already is a 16-bit value, else rounded
-    /// with triangular dither of +-1 LSB.
-    fn dither(&mut self, s: i32) -> i16 {
-        if s & 0xFF == 0 {
-            return (s >> 8) as i16;
-        }
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.rng = x;
-        let t = (x & 0xFF) as i32 + ((x >> 8) & 0xFF) as i32 - 255;
-        ((s + 128 + t) >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+    /// A frame from Q8 to 16 bits: each sample exact if it already is a
+    /// 16-bit value, else rounded with triangular dither of +-1 LSB (one
+    /// draw of the generator serves both: 8 bits and 8 bits each).
+    fn dither(&mut self, l: i32, r: i32) -> (i16, i16) {
+        // The generator moves only when a sample needs it.
+        let x = if (l | r) & 0xFF == 0 {
+            0
+        } else {
+            let mut x = self.rng;
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            self.rng = x;
+            x
+        };
+        let one = |s: i32, x: u32| {
+            if s & 0xFF == 0 {
+                return (s >> 8) as i16;
+            }
+            let t = (x & 0xFF) as i32 + ((x >> 8) & 0xFF) as i32 - 255;
+            ((s + 128 + t) >> 8).clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
+        };
+        (one(l, x), one(r, x >> 16))
     }
 }
 
+#[inline(always)]
 fn biquad(c: &Biquad, z: &mut [i32; 4], x: i32) -> i32 {
     let acc = i64::from(c[0]) * i64::from(x)
         + i64::from(c[1]) * i64::from(z[0])

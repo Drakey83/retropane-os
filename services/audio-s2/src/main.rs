@@ -51,7 +51,7 @@ mod image {
     use rp_drv_tsc2046::Tsc2046;
     use rp_drv_wm8750::Output;
     use rp_hal_pxa27x::dma::Dma;
-    use rp_hal_pxa27x::{Mmio, dma_map, rt};
+    use rp_hal_pxa27x::{Mmio, clocks, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices;
 
@@ -71,6 +71,12 @@ mod image {
     const POOL_BYTES: usize = 64 * 1024;
     /// Taps in test 2.
     const TAPS: u32 = 3;
+    /// `RP_AUDIO_BENCH` at build time: the mixer's pieces timed, no sound
+    /// and no board bits touched.
+    const BENCH: bool = option_env!("RP_AUDIO_BENCH").is_some();
+    /// `RP_AUDIO_QUICK` at build time: no step waits for the owner (no
+    /// taps, no headphone change): a measurement run, unattended.
+    const QUICK: bool = option_env!("RP_AUDIO_QUICK").is_some();
     /// How long each "now" step waits for the owner.
     const WAIT_S: u32 = 30;
 
@@ -158,6 +164,10 @@ mod image {
         next: u32,
         /// OS timer ticks spent in the mixer's wakes.
         busy: u64,
+        /// Core cycles spent in them (the cycle counter), and the frames
+        /// they mixed: the cost per frame, whatever the clock.
+        cycles: u64,
+        mixed: u64,
         lead_max: u64,
     }
 
@@ -167,13 +177,19 @@ mod image {
         at: u32,
         busy: u64,
         clock: u64,
+        cycles: u64,
+        mixed: u64,
+        screen: (u32, u32),
     }
 
     impl Rig<'_, '_> {
         fn tick(&mut self) -> rp_audio::mixer::Tick {
             let t0 = rt::ticks();
             let (late, lead, due) = (self.m.stats().late, self.m.lead(), self.next);
+            let c0 = clocks::cycles();
             let t = self.m.tick(&mut self.dma, ms());
+            self.cycles += u64::from(clocks::cycles().wrapping_sub(c0));
+            self.mixed += t.mixed;
             self.busy += u64::from(rt::ticks().wrapping_sub(t0));
             if self.m.stats().late != late {
                 let _ = writeln!(
@@ -254,7 +270,7 @@ mod image {
         /// wrote), a wake when one wrote or when due, the jack watched.
         fn run(
             &mut self,
-            out: &mut impl Write,
+            out: &mut Tee<'_, '_>,
             for_ms: u32,
             act: &mut dyn FnMut(&mut Self) -> bool,
         ) {
@@ -270,7 +286,7 @@ mod image {
         }
 
         /// A jack change while up: the route and the speaker's filter follow.
-        fn jack(&mut self, out: &mut impl Write) -> Option<Output> {
+        fn jack(&mut self, out: &mut Tee<'_, '_>) -> Option<Output> {
             let o = self.a.poll_jack()?;
             self.m.set_speaker(o == Output::Speaker);
             self.tick();
@@ -278,25 +294,41 @@ mod image {
             Some(o)
         }
 
-        fn mark(&self) -> Mark {
+        fn mark(&mut self, out: &Tee<'_, '_>) -> Mark {
             Mark {
                 stats: self.m.stats(),
                 at: rt::ticks(),
                 busy: self.busy,
-                clock: self.m.clock(),
+                clock: self.m.clock_now(&mut self.dma),
+                cycles: self.cycles,
+                mixed: self.mixed,
+                screen: out.screen(),
             }
         }
 
-        fn report(&mut self, out: &mut impl Write, what: &str, from: &Mark) {
+        fn report(&mut self, out: &mut Tee<'_, '_>, what: &str, from: &Mark) {
+            // A full lead ahead before drawing (see `pause`).
+            self.tick();
             let s = self.m.stats();
             let t = rt::ticks().wrapping_sub(from.at).max(1);
             let elapsed = t / TICK_MS;
             let wakes10 =
                 u64::from(s.wakes - from.stats.wakes) * 10_000 / u64::from(elapsed.max(1));
             let cpu10 = (self.busy - from.busy) * 1_000 / u64::from(t);
-            // The DMA's frames against the OS timer (3.25 MHz): the link's
-            // real rate (A1: 44.1 kHz from SADIV 0x0D is approximate).
-            let rate = (self.m.clock() - from.clock) * 3_250_000 / u64::from(t);
+            // The DMA's frames against the OS timer (3.25 MHz), both ends
+            // read fresh: the link's real rate (A1: 44.1 kHz from SADIV 0x0D
+            // is approximate).
+            let now = self.m.clock_now(&mut self.dma);
+            let t = rt::ticks().wrapping_sub(from.at).max(1);
+            let rate = (now - from.clock) * 3_250_000 / u64::from(t);
+            let per_frame = (self.cycles - from.cycles) / (self.mixed - from.mixed).max(1);
+            let (writes, slowest) = out.screen();
+            let _ = writeln!(
+                devices::RunLog,
+                "  {what}: {per_frame} cycles per frame mixed, {} screen writes (slowest {} ms)",
+                writes - from.screen.0,
+                slowest
+            );
             let _ = writeln!(
                 out,
                 "{what} RESULT: {elapsed} ms, {}.{} wakes/s, mixer CPU {}.{}%, lead up to {} ms, rewrites {}, late {}, dry {}, clipped {}, limited {}, DMA at {rate} frames/s",
@@ -349,7 +381,7 @@ mod image {
         /// `volume`, with a second part if `harmony`.
         fn tune(
             &mut self,
-            out: &mut impl Write,
+            out: &mut Tee<'_, '_>,
             notes: &'static [u32],
             rate: u32,
             ch: usize,
@@ -383,6 +415,139 @@ mod image {
         }
     }
 
+    /// A DMA engine that isn't there: its position moves 100 ms a look, so
+    /// the mixer mixes a steady amount each wake; nothing is handed to
+    /// hardware. For timing the mixer's own work.
+    struct NoDma {
+        pos: usize,
+    }
+
+    impl rp_hal_api::DmaRing for NoDma {
+        fn start(&mut self, _: rp_hal_api::Port, _: &[u8]) -> bool {
+            self.pos = 0;
+            true
+        }
+        fn position(&mut self) -> Option<usize> {
+            self.pos = (self.pos + 4_410 * 4) % rp_audio::mixer::DMA_RING_BYTES;
+            Some(self.pos)
+        }
+        fn filled(&mut self, _: &[u8]) {}
+        fn stop(&mut self) {}
+    }
+
+    /// `RP_AUDIO_BENCH`: no sound, no board bits: each piece of the mixer
+    /// timed with the cycle counter, cycles per frame (or per call).
+    fn bench(out: &mut Tee<'_, '_>, scratch: &'static mut [u8]) {
+        use rp_audio::chain::{BLOCK, State};
+        use rp_audio::resample::{MAX_TAPS, Ratio};
+        let _ = writeln!(out, "BENCH: cycles at 624 MHz, no audio hardware used");
+        let frames = |c: u32, n: u32| c / n.max(1);
+        // The chain on one block, three ways.
+        for (what, speaker, exact) in [
+            ("chain, 16-bit values, no filter", false, true),
+            ("chain, dithered, no filter", false, false),
+            ("chain, dithered, speaker filter", true, false),
+        ] {
+            let mut st = State::default();
+            let mut o = [0u8; 4 * BLOCK];
+            let c0 = clocks::cycles();
+            for n in 0..400i32 {
+                let mut mix = [0i32; 2 * BLOCK];
+                for (k, s) in mix.iter_mut().enumerate() {
+                    let v = (n * 977 + k as i32 * 131) % 20_000 - 10_000;
+                    *s = if exact { v << 8 } else { (v << 8) + 77 };
+                }
+                let _ = st.run(&mut mix, speaker, &mut o);
+                if n % 50 == 0 {
+                    rt::check_in();
+                }
+            }
+            let c = clocks::cycles().wrapping_sub(c0);
+            let _ = writeln!(
+                out,
+                "  {what}: {} per frame (fill included)",
+                frames(c, 400 * BLOCK as u32)
+            );
+        }
+        // Coefficients per output frame.
+        for rate in [22_050u32, 11_025, 48_000] {
+            let r = Ratio::new(rate).unwrap_or_else(|_| halt());
+            let (mut l, mut rr) = ([0; MAX_TAPS], [0; MAX_TAPS]);
+            let mut ph = 0u32;
+            let c0 = clocks::cycles();
+            for k in 0..10_000 {
+                r.coefs(ph, &mut l, &mut rr);
+                ph = r.advance(ph).1;
+                if k % 1_000 == 0 {
+                    rt::check_in();
+                }
+            }
+            let c = clocks::cycles().wrapping_sub(c0);
+            let _ = writeln!(
+                out,
+                "  coefficients from {rate} Hz: {} per frame",
+                frames(c, 10_000)
+            );
+        }
+        // The whole mixer, one stream, no hardware: cycles per frame mixed.
+        let (mem, ring) = scratch.split_at_mut(rp_audio::mixer::MIXER_BYTES);
+        for (rate, ch, speaker) in [
+            (44_100u32, 2u8, false),
+            (44_100, 2, true),
+            (22_050, 1, false),
+            (11_025, 1, false),
+            (48_000, 2, false),
+        ] {
+            let mut m = Mixer::new(&mut mem[..], speaker);
+            let mut dma = NoDma { pos: 0 };
+            let cfg = StreamConfig::new(Role::Media, rate, ch, rate / 10);
+            let Ok(id) = m.open(cfg, &mut ring[..2 * 1024 * 1024], 0) else {
+                let _ = writeln!(out, "  {rate} Hz: didn't open");
+                continue;
+            };
+            // Ten seconds of a tone written once (the ring holds it all).
+            let mut s = Synth::new(&TUNE, 250, rate, 9_000, usize::from(ch), 10_000);
+            {
+                let Some((a, b)) = m.writable(id) else {
+                    continue;
+                };
+                let mut w = a
+                    .as_chunks_mut::<2>()
+                    .0
+                    .iter_mut()
+                    .chain(b.as_chunks_mut::<2>().0.iter_mut());
+                let mut k = 0u64;
+                while s.left > 0 {
+                    let v = s.frame().to_le_bytes();
+                    for _ in 0..ch {
+                        if let Some(d) = w.next() {
+                            *d = v;
+                        }
+                    }
+                    k += 1;
+                    if k % 10_000 == 0 {
+                        rt::check_in();
+                    }
+                }
+                let _ = m.commit(id, k, 0);
+            }
+            let _ = m.start(&mut dma, 0);
+            let (c0, f0) = (clocks::cycles(), m.stats().mixed);
+            for t in 0..60u32 {
+                let _ = m.tick(&mut dma, 100 * t);
+                rt::check_in();
+            }
+            let (c, f) = (clocks::cycles().wrapping_sub(c0), m.stats().mixed - f0);
+            let _ = writeln!(
+                out,
+                "  mixer, {rate} Hz {}{}: {} per frame mixed ({f} frames)",
+                if ch == 1 { "mono" } else { "stereo" },
+                if speaker { ", speaker filter" } else { "" },
+                frames(c, f as u32)
+            );
+        }
+    }
+
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
     }
@@ -398,17 +563,21 @@ mod image {
         halt()
     }
 
-    fn pause(out: &mut impl Write, rig: &mut Rig<'_, '_>, ms_: u32) {
+    /// Quiet for `ms_`, then a wake: whatever is drawn next (a console
+    /// line can take ~100 ms, scrolling) starts with the mix a full lead
+    /// ahead, as the audio host's own thread would keep it.
+    fn pause(out: &mut Tee<'_, '_>, rig: &mut Rig<'_, '_>, ms_: u32) {
         rig.run(out, ms_, &mut |_| false);
+        rig.tick();
     }
 
     /// Test 1: the same pitch from two rates, back to back.
-    fn two_notes(out: &mut impl Write, rig: &mut Rig<'_, '_>) {
+    fn two_notes(out: &mut Tee<'_, '_>, rig: &mut Rig<'_, '_>) {
         let _ = writeln!(
             out,
             "TEST 1: TWO NOTES, THE SAME PITCH (FROM 22 kHz, THEN 48 kHz)"
         );
-        let mark = rig.mark();
+        let mark = rig.mark(out);
         let Some(a) = rig.open(StreamConfig::new(Role::Media, 22_050, 1, 2_205)) else {
             let _ = writeln!(out, "  stream didn't open");
             return;
@@ -433,6 +602,7 @@ mod image {
             x | y
         });
         let second = rig.m.status(b, ms()).and_then(|s| s.actual_start);
+        rig.tick();
         let _ = writeln!(
             out,
             "  first note at frame {first}, second asked for {} and got {second:?}",
@@ -445,7 +615,7 @@ mod image {
 
     /// Test 2: a click for each tap, over the tune.
     fn taps(
-        out: &mut impl Write,
+        out: &mut Tee<'_, '_>,
         rig: &mut Rig<'_, '_>,
         touch: &mut Tsc2046<Ssp<Mmio>, GpioPin<'_, Mmio>, GpioPin<'_, Mmio>>,
     ) {
@@ -453,7 +623,11 @@ mod image {
             out,
             "TEST 2: TAP THE SCREEN {TAPS} TIMES: A CLICK AS THE PEN LANDS"
         );
-        let mark = rig.mark();
+        if QUICK {
+            let _ = writeln!(out, "  (quick run: no taps)");
+            return;
+        }
+        let mark = rig.mark(out);
         let cfg = StreamConfig::new(Role::Media, OUT, 2, 1_411);
         let Some(id) = rig.open(cfg) else {
             return;
@@ -514,9 +688,9 @@ mod image {
     }
 
     /// Test 4: clicks every 0.4-0.6 s over the tune.
-    fn clicks(out: &mut impl Write, rig: &mut Rig<'_, '_>) {
+    fn clicks(out: &mut Tee<'_, '_>, rig: &mut Rig<'_, '_>) {
         let _ = writeln!(out, "TEST 4: THE TUNE AND CLICKS");
-        let mark = rig.mark();
+        let mark = rig.mark(out);
         let Some(id) = rig.open(StreamConfig::new(Role::Media, OUT, 2, 1_411)) else {
             return;
         };
@@ -545,6 +719,7 @@ mod image {
             wrote
         });
         let avg = sum / n.max(1);
+        rig.tick();
         let _ = writeln!(
             out,
             "  {n} clicks: first sample after the write {}.{} ms on average, {}.{} ms at worst",
@@ -574,11 +749,32 @@ mod image {
             2,
             (0xFFFF, 0x0000),
         );
-        let mut out = Tee(&mut con);
+        let mut out = Tee(&mut con, 0, 0);
         let _ = writeln!(
             out,
             "RetroPane audio S2: the mixer (44.1 kHz, level {LEVEL})"
         );
+        let raw = clocks::read();
+        let _ = writeln!(
+            devices::RunLog,
+            "core: {} kHz measured (CCCR {:08X}, CLKCFG {:X}: {} kHz by the registers)",
+            clocks::measure_core_khz(20),
+            raw.cccr,
+            raw.clkcfg,
+            raw.point().core_khz()
+        );
+        clocks::cycles_start();
+        if BENCH {
+            let cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
+            match devices::take_scratch() {
+                Some(scratch) => bench(&mut out, scratch),
+                None => {
+                    let _ = writeln!(out, "no scratch");
+                }
+            }
+            let found = found(cpld.as_ref());
+            finish(cpld, found)
+        }
         let cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
         let found = found(cpld.as_ref());
         if found.is_none() {
@@ -649,6 +845,8 @@ mod image {
             a,
             next: 0,
             busy: 0,
+            cycles: 0,
+            mixed: 0,
             lead_max: 0,
         };
         let started = rig.m.start(&mut rig.dma, ms());
@@ -665,7 +863,7 @@ mod image {
         pause(&mut out, &mut rig, 2_000);
 
         let _ = writeln!(out, "TEST 3: THE TUNE ALONE (LONG SLEEPS)");
-        let mark = rig.mark();
+        let mark = rig.mark(&out);
         rig.tune(&mut out, &TUNE, OUT, 2, 9_000, 6_000, UNITY, false);
         rig.report(&mut out, "TEST 3", &mark);
         pause(&mut out, &mut rig, 2_000);
@@ -679,7 +877,7 @@ mod image {
             ("5B 11 kHz", 11_025, 1),
             ("5C 48 kHz", 48_000, 2),
         ] {
-            let mark = rig.mark();
+            let mark = rig.mark(&out);
             let _ = writeln!(out, "TEST {part}");
             rig.tune(&mut out, &TUNE, rate, ch, 9_000, 4_000, UNITY, false);
             rig.report(&mut out, part, &mark);
@@ -687,7 +885,7 @@ mod image {
         }
 
         let _ = writeln!(out, "TEST 6: PULL THE HEADPHONES OUT NOW ({WAIT_S} s)");
-        if rig.a.output() != Some(Output::Speaker) {
+        if rig.a.output() != Some(Output::Speaker) && !QUICK {
             let t0 = ms();
             while ms() - t0 < WAIT_S * 1_000 {
                 if rig.jack(&mut out) == Some(Output::Speaker) {
@@ -700,6 +898,7 @@ mod image {
                 rt::check_in();
             }
         }
+        rig.tick();
         let _ = writeln!(
             out,
             "  sound to the {}",
@@ -707,24 +906,24 @@ mod image {
         );
         pause(&mut out, &mut rig, 2_000);
         let _ = writeln!(out, "TEST 6A: TWO LOUD PARTS TOGETHER (THE LIMITER)");
-        let mark = rig.mark();
+        let mark = rig.mark(&out);
         rig.tune(&mut out, &TUNE, OUT, 2, 30_000, 5_000, UNITY, true);
         rig.report(&mut out, "6A", &mark);
         pause(&mut out, &mut rig, 1_500);
         let _ = writeln!(out, "TEST 6B: THE SAME AT HALF VOLUME");
-        let mark = rig.mark();
+        let mark = rig.mark(&out);
         rig.tune(&mut out, &TUNE, OUT, 2, 30_000, 5_000, UNITY / 2, true);
         rig.report(&mut out, "6B", &mark);
         pause(&mut out, &mut rig, 2_000);
 
         let _ = writeln!(out, "TEST 7A: A LOW TUNE, SPEAKER FILTER ON");
-        let mark = rig.mark();
+        let mark = rig.mark(&out);
         rig.tune(&mut out, &LOW_TUNE, OUT, 2, 30_000, 5_000, UNITY, false);
         rig.report(&mut out, "7A", &mark);
         pause(&mut out, &mut rig, 1_500);
         let _ = writeln!(out, "TEST 7B: THE SAME, SPEAKER FILTER OFF");
         rig.m.set_speaker(false);
-        let mark = rig.mark();
+        let mark = rig.mark(&out);
         rig.tune(&mut out, &LOW_TUNE, OUT, 2, 30_000, 5_000, UNITY, false);
         rig.report(&mut out, "7B", &mark);
         rig.m.set_speaker(rig.a.output() == Some(Output::Speaker));
@@ -768,11 +967,24 @@ mod image {
     }
 
     /// Writes to the screen and the run log.
-    struct Tee<'a, 'b>(&'a mut Console<'b>);
+    struct Tee<'a, 'b>(&'a mut Console<'b>, u32, u32);
+
+    impl Tee<'_, '_> {
+        /// Screen writes so far and the slowest (ms): drawing (and
+        /// scrolling) the console stops everything else, the mixer's wakes
+        /// included.
+        fn screen(&self) -> (u32, u32) {
+            (self.1, self.2)
+        }
+    }
 
     impl Write for Tee<'_, '_> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let t0 = rt::ticks();
             let _ = self.0.write_str(s);
+            let ms = rt::ticks().wrapping_sub(t0) / TICK_MS;
+            self.1 += 1;
+            self.2 = self.2.max(ms);
             devices::log_write(s.as_bytes());
             Ok(())
         }

@@ -566,6 +566,46 @@ clipped), half volume untouched; no late wake, no stream run dry, no lap
 lost over the run. The emulator's DMA ran 42.9-45.3 thousand frames a
 second against its OS timer (its pacing, not a measurement of the link).
 
+**S2 on the device, measurement runs (2026-10-19 night, unattended,
+level 0 so nothing was heard; `RP_AUDIO_LEVEL=0`, the last ones
+`RP_AUDIO_QUICK=1`; logs `local/rp-audio-s2-night*.txt`).** The owner's
+listening run is still to come; these are numbers only.
+
+- **The core runs at 624 MHz** while the images run (`CCCR` `0x02000310`,
+  `CLKCFG` `0xB`, the cycle counter agrees: 623,999 kHz).
+- **The link runs at 44,317-44,319 frames a second** against the OS timer,
+  in every test (4-90 s windows, the DMA position read fresh at both ends),
+  not 44,100: **+0.49%, about 8.5 cents sharp**. `SADIV` `0x0D` can't make
+  44.1 kHz from this clock: with a 147.456 MHz audio clock it gives
+  44,307.7 Hz (the 0.02% left over may be the OS timer's crystal), while
+  `0x0C` gives exactly 48,000 Hz. Windows Mobile uses the same `0x0D`, so
+  stock playback has the same offset. A measurement for ADR-0032 A1, the
+  owner's to weigh (the options are in the ADR).
+- **The mixer's cost, cycles per output frame** (the cycle counter around
+  each wake; first night run, then after the optimisation the same night):
+
+  | Stream | First | Optimised |
+  |---|---|---|
+  | 44.1 kHz stereo (no filter) | 439 | 174 |
+  | 44.1 kHz stereo, speaker filter | 611 | 339 |
+  | 22.05 / 11.025 kHz mono | 2,291 / 2,369 | 431 / 429 |
+  | 48 kHz stereo | 5,473 | 669 |
+
+  At 624 MHz, 174 cycles a frame is 1.2% of the CPU; 669 is 4.7%. (The
+  emulator's figures were 3-6 times too low: its CPU isn't the PXA's.)
+- **Click latency on the device:** 11 clicks over music, the first sample
+  6.1 ms after the write on average, 7.4 ms at worst; the two-rate notes'
+  second started exactly where asked.
+- **Wakes:** music alone 10.3 a second (the timer and the program's
+  write); with clicks every half second 127.6 (the 15 ms interval and the
+  music program writing smaller pieces more often).
+- **Found: drawing a console line takes up to 98 ms** (scrolling), and the
+  test image drew while the mix had only its low-water lead left: six late
+  wakes, each a lost lap (a stall longer than the ring). The image now
+  wakes the mixer just before it draws; then 0 late, 0 laps lost. (The audio
+  host will have its own thread; a single-threaded program stalling the
+  mixer is the image's, but the console's cost is worth knowing.)
+
 **What the device run measures** (`rp-audio-s2`, each test's RESULT line):
 wakes a second, the mixer's CPU share per source rate, how far ahead it
 mixed, rewrites, late wakes, streams run dry, clips and limited blocks,

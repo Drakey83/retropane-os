@@ -387,6 +387,58 @@ fn rewrite_scenario(click_ms: Option<u32>, at: Option<u64>) -> (Vec<(i16, i16)>,
 }
 
 #[test]
+fn the_block_path_gives_exactly_what_the_frame_path_gives() {
+    // Every rate the mixer takes, mono and stereo, at full and other
+    // volumes, through a ramp, from before the stream's start to past its
+    // end (a ring large enough to keep all of it): wherever the block path
+    // applies, its sums equal the frame-by-frame reference's.
+    let mut used = 0;
+    for &rate in &[
+        8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 88_200, 96_000,
+    ] {
+        for ch in [1u8, 2] {
+            for volume in [UNITY, UNITY / 3, 2 * UNITY] {
+                let mut sim = Sim::new(false);
+                let mut cfg = StreamConfig::new(Role::Media, rate, ch, rate / 20);
+                cfg.volume = volume;
+                let frames_in = rate as usize / 2;
+                let n = frames_in * usize::from(ch);
+                let big = min_ring_bytes(&cfg).unwrap().max(2 * n);
+                let id = sim.m.open(cfg, leak(big), 0).unwrap();
+                let x: Vec<i16> = (0..n).map(|k| noise(rate, k as u64, 0, 20_000)).collect();
+                assert_eq!(sim.m.write(id, &x, 0).unwrap() as usize, frames_in);
+                sim.tick();
+                sim.run(100, &mut |_, _| false);
+                sim.m.set_volume(id, UNITY / 2);
+                sim.tick();
+                let start = sim.m.status(id, 0).unwrap().actual_start.unwrap();
+                let s = sim.m.slots.iter_mut().flatten().next().unwrap();
+                assert!(s.ramp.2 > start, "the ramp is inside the stream");
+                for b in (start.saturating_sub(64)..start + frames(600)).step_by(BLOCK / 2) {
+                    let mut fast = [0i32; 2 * BLOCK];
+                    if s.add_fast(b, &mut fast) {
+                        used += 1;
+                        let mut exact = [0i32; 2 * BLOCK];
+                        let starved = s.starved_at;
+                        let r = s.add_exact(b, &mut exact);
+                        s.starved_at = starved;
+                        assert!(
+                            !r,
+                            "{rate}/{ch}: the reference ran dry where the block path applied"
+                        );
+                        assert_eq!(
+                            fast, exact,
+                            "{rate} Hz, {ch} ch, volume {volume}, block {b}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert!(used > 5_000, "the block path applied only {used} times");
+}
+
+#[test]
 fn a_rewrite_sounds_exactly_as_if_the_sound_had_been_known_all_along() {
     // The mix is a function of output time: re-mixing from a rewrite point
     // (resampler, volume ramps, limiter, speaker filter and dither all

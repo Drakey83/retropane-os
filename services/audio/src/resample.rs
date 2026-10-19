@@ -34,6 +34,8 @@ const BETA: f64 = 8.0;
 const CUTOFF: f64 = 0.90;
 /// Points in the wing, one guard point (zero) for the interpolation.
 const LEN: usize = ZEROS * PHASES + 2;
+/// The most taps a wing has (a 96 kHz source: the filter stretched).
+pub const MAX_TAPS: usize = (ZEROS * 96_000).div_ceil(OUT as usize);
 
 /// The wing, Q15.
 pub static WING: [i16; LEN] = wing();
@@ -111,11 +113,80 @@ const fn wing() -> [i16; LEN] {
     w
 }
 
-fn gcd(mut a: u32, mut b: u32) -> u32 {
+const fn gcd(mut a: u32, mut b: u32) -> u32 {
     while b != 0 {
         (a, b) = (b, a % b);
     }
     a
+}
+
+/// Table points the filter spans (past them, 0).
+pub const POINTS: usize = ZEROS * PHASES;
+
+/// 48 kHz's coefficients, worked out at compile time: a 48 kHz source's
+/// instants fall on only 148 phases (multiples of 300 / 44100), so its
+/// wing for phase `300 k` is row `k`; the right wing of phase `p` is the
+/// row of `44100 - p`. The same integers [`Ratio::coefs`] computes (one
+/// formula, [`wing_coefs`]); 6.5 KB read-only, for the commonest
+/// fractional rate.
+pub static T48: [[i16; MAX_TAPS]; 148] = table48();
+
+const fn table48() -> [[i16; MAX_TAPS]; 148] {
+    let r = Ratio::of(48_000);
+    let mut t = [[0i16; MAX_TAPS]; 148];
+    let mut k = 0;
+    while k < 148 {
+        let w = wing_coefs(&r, (k as u32 * 300) * PHASES as u32);
+        let mut i = 0;
+        while i < MAX_TAPS {
+            t[k][i] = w[i] as i16;
+            i += 1;
+        }
+        k += 1;
+    }
+    t
+}
+
+/// One wing's coefficients from table position `start` (in units of
+/// `1 / d` of a table point): the one formula behind [`Ratio::coefs`] and
+/// [`T48`].
+const fn wing_coefs(r: &Ratio, start: u32) -> [i32; MAX_TAPS] {
+    let mut out = [0i32; MAX_TAPS];
+    let (mut l, mut rem) = (start / r.d, start % r.d);
+    let mut i = 0;
+    while i < r.taps as usize {
+        out[i] = if (l as usize) < POINTS {
+            coef_of(r, l, rem)
+        } else {
+            0
+        };
+        l += r.step_l;
+        rem += r.step_r;
+        if rem >= r.d {
+            rem -= r.d;
+            l += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The coefficient at table point `l` and `rem / d` past it, Q15, with the
+/// stretched filter's scale when downsampling (so a sum stays in 32 bits
+/// at every rate).
+const fn coef_of(r: &Ratio, l: u32, rem: u32) -> i32 {
+    let a = WING[l as usize] as i32;
+    let c = if r.exact || rem == 0 {
+        a
+    } else {
+        let diff = (WING[l as usize + 1] as i32 - a) as i64;
+        a + ((diff * rem as i64 * r.inv_d) >> 32) as i32
+    };
+    if r.gain == 32_768 {
+        c
+    } else {
+        ((c as i64 * r.gain) >> 15) as i32
+    }
 }
 
 /// One source rate's conversion: constants worked out once, at open.
@@ -148,25 +219,30 @@ impl Ratio {
         if !(4_000..=96_000).contains(&rate) {
             return Err(BadRate(rate));
         }
-        let d = rate.max(OUT);
+        Ok(Self::of(rate))
+    }
+
+    /// [`Self::new`] without the check (4-96 kHz assumed).
+    const fn of(rate: u32) -> Self {
+        let d = if rate > OUT { rate } else { OUT };
         let step = OUT * PHASES as u32;
         // Upsampling: ZEROS taps a wing; downsampling: the stretched filter
         // reaches ZEROS * rate / OUT source frames.
         let taps = (ZEROS as u32 * d).div_ceil(OUT);
-        Ok(Self {
+        Self {
             rate,
             d,
             taps,
             gain: if rate > OUT {
-                i64::from(OUT) * 32_768 / i64::from(rate)
+                OUT as i64 * 32_768 / rate as i64
             } else {
                 32_768
             },
             step_l: step / d,
             step_r: step % d,
-            inv_d: (1i64 << 32) / i64::from(d),
+            inv_d: (1i64 << 32) / d as i64,
             exact: rate <= OUT && (gcd(rate, OUT) * PHASES as u32).is_multiple_of(OUT),
-        })
+        }
     }
 
     /// No conversion at all: the source is at the session rate.
@@ -211,43 +287,73 @@ impl Ratio {
         (moved, p)
     }
 
+    /// Taps per wing.
+    #[must_use]
+    pub fn taps(&self) -> usize {
+        self.taps as usize
+    }
+
+    /// The filter's coefficients (Q15) for one output instant `phase` (how
+    /// far past the source frame at or before it, in [`OUT`]ths of a
+    /// frame): `left[k]` weighs the frame `k` before that one (`0`: it
+    /// itself), `right[k]` the frame `k + 1` after it. Past [`Self::taps`],
+    /// or past the filter's end, 0. Computed once per instant, shared by
+    /// every channel.
+    pub fn coefs(&self, phase: u32, left: &mut [i32; MAX_TAPS], right: &mut [i32; MAX_TAPS]) {
+        let p = PHASES as u32;
+        *left = wing_coefs(self, phase * p);
+        *right = wing_coefs(self, (OUT - phase) * p);
+    }
+
+    /// For a whole-number step (11.025, 22.05 kHz): the coefficients at
+    /// `phase` are plain table points, every [`PHASES`]th from the first
+    /// one returned for each wing (left, right); a point at or past
+    /// [`POINTS`] counts 0. `None` for any other rate.
+    #[must_use]
+    pub fn stride(&self, phase: u32) -> Option<(usize, usize)> {
+        if !self.exact || self.is_bypass() {
+            return None;
+        }
+        let p = PHASES as u32;
+        Some((
+            (phase * p / OUT) as usize,
+            ((OUT - phase) * p / OUT) as usize,
+        ))
+    }
+
+    /// For 48 kHz: the rows of [`T48`] for `phase` (left, right).
+    #[must_use]
+    pub fn rows48(
+        &self,
+        phase: u32,
+    ) -> Option<(&'static [i16; MAX_TAPS], &'static [i16; MAX_TAPS])> {
+        if self.rate != 48_000 {
+            return None;
+        }
+        let k = (phase / 300) as usize;
+        Some((&T48[k], &T48[147 - k]))
+    }
+
+    /// A sum of samples times [`Self::coefs`] (Q15, under 2^31: see the
+    /// test `the_sum_fits_32_bits`) to the output sample, Q8.
+    #[must_use]
+    pub fn finish(acc: i32) -> i32 {
+        acc >> 7
+    }
+
     /// One output sample, Q8 (a 16-bit sample shifted up 8): the source
     /// frame at or before the instant is `at(0)`, the ones before it
     /// `at(-1)`, `at(-2)`..., after it `at(1)`...; `phase` is how far past
-    /// `at(0)` the instant is, in [`OUT`]ths of a source frame.
+    /// `at(0)` the instant is, in [`OUT`]ths of a source frame. The
+    /// reference the mixer's block path must equal.
     pub fn sample(&self, phase: u32, at: &mut impl FnMut(i32) -> i32) -> i32 {
-        let p = PHASES as u32;
-        let mut acc: i64 = 0;
-        // Left wing: from the instant back; right wing: forward.
-        for (start, dir) in [(phase * p, -1i32), ((OUT - phase) * p, 1)] {
-            let (mut l, mut r) = (start / self.d, start % self.d);
-            let mut off = if dir < 0 { 0 } else { 1 };
-            for _ in 0..self.taps {
-                if l as usize >= ZEROS * PHASES {
-                    break;
-                }
-                let c = self.coef(l, r);
-                acc += i64::from(at(off)) * i64::from(c);
-                l += self.step_l;
-                r += self.step_r;
-                if r >= self.d {
-                    r -= self.d;
-                    l += 1;
-                }
-                off += dir;
-            }
+        let (mut left, mut right) = ([0; MAX_TAPS], [0; MAX_TAPS]);
+        self.coefs(phase, &mut left, &mut right);
+        let mut acc: i32 = 0;
+        for k in 0..self.taps as usize {
+            acc += at(-(k as i32)) * left[k] + at(k as i32 + 1) * right[k];
         }
-        // acc is Q15 in samples; out Q8, scaled for downsampling.
-        ((acc * self.gain) >> 22) as i32
-    }
-
-    fn coef(&self, l: u32, r: u32) -> i32 {
-        let a = i32::from(WING[l as usize]);
-        if self.exact || r == 0 {
-            return a;
-        }
-        let diff = i64::from(i32::from(WING[l as usize + 1]) - a);
-        a + ((diff * i64::from(r) * self.inv_d) >> 32) as i32
+        Self::finish(acc)
     }
 }
 
@@ -458,6 +564,65 @@ mod tests {
         assert!(top > -4.5, "19 kHz kept at {top:.1} dB");
         let mid = level_at(48_000, 15_000.0, 15_000.0);
         assert!(mid.abs() < 0.2, "15 kHz at {mid:.2} dB");
+    }
+
+    #[test]
+    fn the_48k_table_and_the_strides_are_the_computed_coefficients() {
+        let r = Ratio::new(48_000).unwrap();
+        let (mut l, mut rr) = ([0; MAX_TAPS], [0; MAX_TAPS]);
+        for k in 0..148u32 {
+            let phase = k * 300;
+            if phase >= OUT {
+                break;
+            }
+            r.coefs(phase, &mut l, &mut rr);
+            let (tl, tr) = r.rows48(phase).unwrap();
+            for i in 0..MAX_TAPS {
+                assert_eq!(
+                    (i32::from(tl[i]), i32::from(tr[i])),
+                    (l[i], rr[i]),
+                    "phase {phase} tap {i}"
+                );
+            }
+        }
+        for rate in [11_025, 22_050] {
+            let r = Ratio::new(rate).unwrap();
+            let mut ph = 0;
+            for _ in 0..8 {
+                r.coefs(ph, &mut l, &mut rr);
+                let (a, b) = r.stride(ph).unwrap();
+                for i in 0..r.taps() {
+                    let at = |p: usize| if p < POINTS { i32::from(WING[p]) } else { 0 };
+                    assert_eq!(
+                        (at(a + i * PHASES), at(b + i * PHASES)),
+                        (l[i], rr[i]),
+                        "{rate} at {ph}, tap {i}"
+                    );
+                }
+                ph = r.advance(ph).1;
+            }
+        }
+        assert!(Ratio::new(48_000).unwrap().stride(0).is_none());
+        assert!(Ratio::new(OUT).unwrap().stride(0).is_none());
+        assert!(Ratio::new(22_050).unwrap().rows48(0).is_none());
+    }
+
+    #[test]
+    fn the_sum_fits_32_bits() {
+        // Every instant of every rate: the coefficients' magnitudes summed,
+        // times a full-scale sample, stay under 2^31.
+        for rate in [
+            4_000, 8_000, 11_025, 16_000, 22_050, 32_000, 44_000, 48_000, 88_200, 96_000,
+        ] {
+            let r = Ratio::new(rate).unwrap();
+            assert!(r.taps() <= MAX_TAPS);
+            let (mut l, mut rr) = ([0; MAX_TAPS], [0; MAX_TAPS]);
+            for phase in (0..OUT).step_by(7) {
+                r.coefs(phase, &mut l, &mut rr);
+                let sum: i64 = l.iter().chain(&rr).map(|c| i64::from(*c).abs()).sum();
+                assert!(sum * 32_768 < 1 << 31, "{rate} at {phase}: {sum}");
+            }
+        }
     }
 
     #[test]

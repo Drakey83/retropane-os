@@ -36,7 +36,11 @@ use rp_drv_pxa_i2s::{StreamError, TX_PORT};
 use rp_hal_api::DmaRing;
 
 use crate::chain::{self, BLOCK};
-use crate::resample::{OUT, Ratio};
+use crate::resample::{MAX_TAPS, OUT, PHASES, POINTS, Ratio, WING};
+
+/// Source frames a block's fast path decodes at most: a 96 kHz source's
+/// 70 frames a block and both wings of its filter.
+const WINDOW: usize = 128;
 use crate::role::{Role, Unplug, on_unplug};
 
 /// Streams open at once.
@@ -369,6 +373,164 @@ impl Slot<'_> {
     /// Adds this stream into one block starting at output frame `b`.
     /// Returns whether it ran out of data in the block.
     fn add(&mut self, b: u64, acc: &mut [i32; 2 * BLOCK]) -> bool {
+        if self.add_fast(b, acc) {
+            return false;
+        }
+        self.add_exact(b, acc)
+    }
+
+    /// The block in one pass, when nothing changes inside it: placed
+    /// before it, not paused or run dry in it, its volume steady, every
+    /// frame its filter reads written and still in the ring. The stream's
+    /// window is decoded once (no bounds or wrap per tap) and the filter's
+    /// coefficients are worked out once per frame for both channels. Gives
+    /// exactly what [`Self::add_exact`] gives (a test holds them equal);
+    /// false (nothing added) when it doesn't apply.
+    fn add_fast(&self, b: u64, acc: &mut [i32; 2 * BLOCK]) -> bool {
+        let Some((ao, asrc)) = self.anchor else {
+            return false;
+        };
+        let end = b + BLOCK as u64;
+        if ao > b
+            || self.paused_at.is_some_and(|p| p < end)
+            || self.starved_at.is_some_and(|s| s < end)
+        {
+            return false;
+        }
+        let at = self.ramp.2;
+        if !(at + RAMP <= b || at + 1 >= end) {
+            return false;
+        }
+        let ratio = self.ratio;
+        let bypass = ratio.is_bypass();
+        let (i0, ph0) = ratio.locate(b - ao);
+        let (i0, i1) = (asrc + i0, asrc + ratio.locate(end - 1 - ao).0);
+        let reach = u64::from(ratio.reach());
+        if i1 + reach + 1 > self.write {
+            return false;
+        }
+        // The window: from the first frame's left wing to the last's right.
+        let (left, right) = if bypass {
+            (0, 0)
+        } else {
+            (ratio.taps() as u64 - 1, ratio.taps() as u64)
+        };
+        if i0 < self.write.saturating_sub(self.cap) + left {
+            return false;
+        }
+        let g = self.gain_at(b);
+        if g == 0 {
+            return true;
+        }
+        let add = |acc: &mut [i32; 2 * BLOCK], f: usize, c: usize, s: i32| {
+            let v = if g == UNITY {
+                s
+            } else {
+                ((i64::from(s) * i64::from(g)) >> 15) as i32
+            };
+            if self.ch == 1 {
+                acc[2 * f] = acc[2 * f].saturating_add(v);
+                acc[2 * f + 1] = acc[2 * f + 1].saturating_add(v);
+            } else {
+                acc[2 * f + c] = acc[2 * f + c].saturating_add(v);
+            }
+        };
+        if bypass {
+            // Straight from the ring, a frame at a time.
+            let mut pos = (i0 % self.cap) as usize;
+            for f in 0..BLOCK {
+                let at = pos * self.ch * 2;
+                for c in 0..self.ch {
+                    let i = at + 2 * c;
+                    add(
+                        acc,
+                        f,
+                        c,
+                        i32::from(i16::from_le_bytes([self.buf[i], self.buf[i + 1]])) << 8,
+                    );
+                }
+                pos += 1;
+                if pos == self.cap as usize {
+                    pos = 0;
+                }
+            }
+            return true;
+        }
+        let w0 = i0 - left;
+        let n = (i1 + right - w0 + 1) as usize;
+        if n > WINDOW {
+            return false;
+        }
+        let mut win = [[0i32; WINDOW]; 2];
+        let mut pos = (w0 % self.cap) as usize;
+        for k in 0..n {
+            let at = pos * self.ch * 2;
+            for (c, w) in win.iter_mut().enumerate().take(self.ch) {
+                let i = at + 2 * c;
+                w[k] = i32::from(i16::from_le_bytes([self.buf[i], self.buf[i + 1]]));
+            }
+            pos += 1;
+            if pos == self.cap as usize {
+                pos = 0;
+            }
+        }
+        let taps = ratio.taps();
+        // Whole-number steps repeat their coefficients every 2 or 4 frames:
+        // each phase's set is built once a block (by quarters of a frame).
+        let mut quarter = [([0i16; MAX_TAPS], [0i16; MAX_TAPS]); 4];
+        let mut have = [false; 4];
+        let mut general = ([0i16; MAX_TAPS], [0i16; MAX_TAPS]);
+        let (mut idx, mut ph) = (i0, ph0);
+        for f in 0..BLOCK {
+            if f > 0 {
+                let (m, p) = ratio.advance(ph);
+                idx += u64::from(m);
+                ph = p;
+            }
+            let base = (idx - w0) as usize;
+            // The coefficients: table points by stride (whole-number
+            // steps), 48 kHz's table rows, or worked out.
+            let (cl, cr): (&[i16; MAX_TAPS], &[i16; MAX_TAPS]) =
+                if let Some((a, b)) = ratio.stride(ph) {
+                    let q = ph as usize * 4 / OUT as usize;
+                    if !have[q] {
+                        let (l, r) = &mut quarter[q];
+                        for k in 0..taps {
+                            let (p, q) = (a + k * PHASES, b + k * PHASES);
+                            l[k] = if p < POINTS { WING[p] } else { 0 };
+                            r[k] = if q < POINTS { WING[q] } else { 0 };
+                        }
+                        have[q] = true;
+                    }
+                    (&quarter[q].0, &quarter[q].1)
+                } else if let Some(rows) = ratio.rows48(ph) {
+                    rows
+                } else {
+                    let (mut l, mut r) = ([0i32; MAX_TAPS], [0i32; MAX_TAPS]);
+                    ratio.coefs(ph, &mut l, &mut r);
+                    for k in 0..MAX_TAPS {
+                        // Every coefficient fits 16 bits (Q15, at most 0.9).
+                        general.0[k] = l[k] as i16;
+                        general.1[k] = r[k] as i16;
+                    }
+                    (&general.0, &general.1)
+                };
+            for (c, w) in win.iter().enumerate().take(self.ch) {
+                let lw = &w[base + 1 - taps..=base];
+                let rw = &w[base + 1..=base + taps];
+                let mut sum = 0i32;
+                for ((x, y), (cx, cy)) in lw.iter().rev().zip(rw).zip(cl.iter().zip(cr)) {
+                    sum += x * i32::from(*cx) + y * i32::from(*cy);
+                }
+                add(acc, f, c, Ratio::finish(sum));
+            }
+        }
+        true
+    }
+
+    /// The block frame by frame: every case (starts, pauses, running dry,
+    /// ramps, the ring's edges); the reference for [`Self::add_fast`].
+    fn add_exact(&mut self, b: u64, acc: &mut [i32; 2 * BLOCK]) -> bool {
         let Some((ao, asrc)) = self.anchor else {
             return false;
         };
@@ -781,6 +943,17 @@ impl<'a> Mixer<'a> {
     #[must_use]
     pub fn clock(&self) -> u64 {
         self.hw
+    }
+
+    /// The output's clock read fresh from the DMA position (between wakes
+    /// [`Self::clock`] holds the last wake's): for measuring the link's real
+    /// rate. Exact unless a whole ring passed since the last wake.
+    pub fn clock_now(&mut self, dma: &mut dyn DmaRing) -> u64 {
+        if self.running {
+            self.peek_clock(dma)
+        } else {
+            self.hw
+        }
     }
 
     /// Frames mixed ahead of the clock.

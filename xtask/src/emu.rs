@@ -5127,6 +5127,9 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
         eprintln!("    audio S2: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
+    // The clicks the log says were played (taps and timed ones), for the
+    // recording's check.
+    let clicks_seen = std::cell::RefCell::new(0usize);
     let loader = raw_image(root, "rp-loader")?;
     let image = raw_image(root, "rp-audio-s2")?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
@@ -5263,6 +5266,13 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
             .find(|l| l.contains(" clicks: first sample"))
             .ok_or("audio S2: no click summary")?;
         let worst = num(clicks, " ms at worst")?;
+        *clicks_seen.borrow_mut() = clicks
+            .trim()
+            .split(' ')
+            .next()
+            .and_then(|n| n.parse::<usize>().ok())
+            .ok_or(format!("audio S2: unreadable {clicks:?}"))?
+            + taps.len();
         if worst > 10.0 {
             return Err(format!("audio S2: a click {worst} ms late: {clicks:?}"));
         }
@@ -5310,14 +5320,142 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(240),
         },
     )?;
+    let clicks_played = clicks_seen.into_inner();
     // Test 1's notes, the first sound of the run: 880 Hz from 22.05 kHz,
     // then 880 Hz from 48 kHz.
     let (found, seconds) = first_notes(&wav, &[880.0, 880.0], "audio S2")?;
+    // The rest of the recording (one power-up: it holds the whole run).
+    let rest = s2_recording(&wav, clicks_played)?;
     eprintln!(
-        "    audio S2 OK: the two-rate notes recorded at {:.1} and {:.1} Hz over {seconds:.3} s, back to back; taps and clicks within 10 ms; long sleeps with music alone; nothing late or dry; the limiter rode the overload",
+        "    audio S2 OK: the two-rate notes recorded at {:.1} and {:.1} Hz over {seconds:.3} s, back to back; {rest}; taps and clicks within 10 ms; long sleeps with music alone; nothing late or dry",
         found[0], found[1]
     );
     Ok(())
+}
+
+/// A wav's left channel and its rate.
+fn wav_left(wav: &Path, what: &str) -> Result<(Vec<i16>, u32), String> {
+    let data = std::fs::read(wav).map_err(|e| format!("{}: {e}", wav.display()))?;
+    if data.len() < 44 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return Err(format!("{what}: the emulator wrote no wav"));
+    }
+    let rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
+    let channels = usize::from(u16::from_le_bytes([data[22], data[23]]));
+    let left = data[44..]
+        .chunks_exact(2 * channels)
+        .map(|f| i16::from_le_bytes([f[0], f[1]]))
+        .collect();
+    Ok((left, rate))
+}
+
+/// The stretches of sound in `x` (loud samples with less than `gap`
+/// samples of quiet inside), as ranges.
+fn stretches(x: &[i16], gap: usize) -> Vec<std::ops::Range<usize>> {
+    let loud = |s: i16| s.unsigned_abs() > 2000;
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut last = 0;
+    for (k, &s) in x.iter().enumerate() {
+        if loud(s) {
+            if start.is_none() {
+                start = Some(k);
+            }
+            last = k;
+        } else if let Some(st) = start
+            && k - last > gap
+        {
+            out.push(st..last + 1);
+            start = None;
+        }
+    }
+    if let Some(st) = start {
+        out.push(st..last + 1);
+    }
+    out
+}
+
+/// The pitch of `x` by zero crossings.
+fn pitch(x: &[i16], rate: u32) -> f64 {
+    let crossings = x.windows(2).filter(|p| (p[0] < 0) != (p[1] < 0)).count();
+    crossings as f64 / 2.0 / (x.len() as f64 / f64::from(rate))
+}
+
+fn rms(x: &[i16]) -> f64 {
+    (x.iter().map(|&s| f64::from(s) * f64::from(s)).sum::<f64>() / x.len().max(1) as f64).sqrt()
+}
+
+/// `emu-audio-s2`'s recording past test 1 (quality audit C13): nine long
+/// stretches of sound (tests 1, 3, 5A-5C, 6A, 6B, 7A, 7B; the quieter tunes
+/// under tests 2 and 4 fall below the threshold) and one short one per
+/// click the log says was played (`clicks`). The tune (659, 784, 880, 988 Hz... a
+/// quarter second each) from 22.05, 11.025 and 48 kHz (5A-5C) at its
+/// pitch, note by note; 6A (two loud parts, the limiter) with no flat tops
+/// and no louder than 6B (the same at half volume) by more than the
+/// limiter's headroom; 7A (the speaker filter on) quieter than 7B on the
+/// low tune's first note (330 Hz, where the filter cuts about 2 dB) and the
+/// same on its last (659 Hz).
+fn s2_recording(wav: &Path, clicks: usize) -> Result<String, String> {
+    let (x, rate) = wav_left(wav, "audio S2")?;
+    let all = stretches(&x, rate as usize / 10);
+    let (parts, short): (Vec<_>, Vec<_>) = all
+        .iter()
+        .cloned()
+        .partition(|r| r.len() > rate as usize / 2);
+    if parts.len() != 9 || short.len() != clicks {
+        let secs: Vec<String> = all
+            .iter()
+            .map(|r| format!("{:.2}", r.len() as f64 / f64::from(rate)))
+            .collect();
+        return Err(format!(
+            "audio S2: the recording has {} long stretches (wanted 9) and {} clicks (the log played {clicks}); seconds: {}",
+            parts.len(),
+            short.len(),
+            secs.join(", ")
+        ));
+    }
+    let note = rate as usize / 4;
+    // The middle 60% of note `k` of a stretch.
+    let at = |r: &std::ops::Range<usize>, k: usize| {
+        let s = r.start + k * note;
+        &x[s + note / 5..s + note * 4 / 5]
+    };
+    const TUNE: [f64; 8] = [659.0, 784.0, 880.0, 988.0, 1175.0, 988.0, 880.0, 784.0];
+    for (name, r) in [("5A", &parts[2]), ("5B", &parts[3]), ("5C", &parts[4])] {
+        for (k, &want) in TUNE.iter().enumerate() {
+            let hz = pitch(at(r, k), rate);
+            if (hz - want).abs() > want * 0.02 {
+                return Err(format!(
+                    "audio S2: {name} note {} recorded at {hz:.1} Hz, wanted {want} Hz",
+                    k + 1
+                ));
+            }
+        }
+    }
+    // 6A: limited, not clipped: no runs of equal samples at its peak.
+    let (a, b) = (&x[parts[5].clone()], &x[parts[6].clone()]);
+    let peak = |v: &[i16]| v.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+    let (pa, pb) = (peak(a), peak(b));
+    let flat = a
+        .windows(3)
+        .filter(|w| w[0] == w[1] && w[1] == w[2] && w[0].unsigned_abs() >= pa - pa / 64)
+        .count();
+    if flat > 0 || f64::from(pa) > f64::from(pb) * 1.15 {
+        return Err(format!(
+            "audio S2: 6A peaks {pa} against 6B's {pb}, {flat} flat tops (clipped)"
+        ));
+    }
+    // 7A against 7B: the filter's cut at 330 Hz, nothing at 659 Hz.
+    let (fa, fb) = (&parts[7], &parts[8]);
+    let low = 20.0 * (rms(at(fa, 0)) / rms(at(fb, 0))).log10();
+    let high = 20.0 * (rms(at(fa, 5)) / rms(at(fb, 5))).log10();
+    if !(-3.5..=-1.0).contains(&low) || high.abs() > 0.8 {
+        return Err(format!(
+            "audio S2: the speaker filter took {low:.1} dB at 330 Hz and {high:.1} dB at 659 Hz (wanted about -2.3 and 0)"
+        ));
+    }
+    Ok(format!(
+        "{clicks} clicks recorded; the tune at pitch from 22.05, 11.025 and 48 kHz; 6A limited without a flat top (peak {pa}, 6B {pb}); the speaker filter {low:.1} dB at 330 Hz, {high:.1} dB at 659 Hz"
+    ))
 }
 
 /// The first stretch of sound in an emulator recording (`wav`): `want`'s

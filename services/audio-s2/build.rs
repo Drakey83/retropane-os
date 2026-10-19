@@ -4,6 +4,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=../../boot/link.x");
     println!("cargo:rerun-if-env-changed=RP_AUDIO_LEVEL");
+    println!("cargo:rerun-if-env-changed=RP_AUDIO_QUICK");
+    println!("cargo:rerun-if-env-changed=RP_AUDIO_BENCH");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");

@@ -923,7 +923,7 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "chain: -32768 taken for an overload (bit-exact sound limited)",
         file: "services/audio/src/chain.rs",
-        from: "m.max(if s < 0 { -s - 256 } else { s })",
+        from: "m.max(if s < 0 { -(s + 256) } else { s })",
         to: "m.max(s.abs())",
         check: Check::Host(&["-p", "rp-audio", "negative_full_scale_is_not_an_overload"]),
     },
@@ -983,9 +983,62 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mixer: the block path taken across a volume ramp (a step instead of the ramp)",
+        file: "services/audio/src/mixer.rs",
+        from: "if !(at + RAMP <= b || at + 1 >= end) {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_block_path_gives_exactly_what_the_frame_path_gives",
+        ]),
+    },
+    Mutant {
+        name: "mixer: the block path reads before the ring's oldest frame",
+        file: "services/audio/src/mixer.rs",
+        from: "if i0 < self.write.saturating_sub(self.cap) + left {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_block_path_gives_exactly_what_the_frame_path_gives",
+        ]),
+    },
+    Mutant {
+        name: "resampler: downsampling's scale left out of the coefficients (sums overflow 32 bits)",
+        file: "services/audio/src/resample.rs",
+        from: "    if r.gain == 32_768 {
+        c
+    } else {
+        ((c as i64 * r.gain) >> 15) as i32
+    }",
+        to: "    c",
+        check: Check::Host(&["-p", "rp-audio", "the_sum_fits_32_bits"]),
+    },
+    Mutant {
+        name: "resampler: whole-number steps read the wrong table points (the stride's start)",
+        file: "services/audio/src/resample.rs",
+        from: "            ((OUT - phase) * p / OUT) as usize,
+        ))",
+        to: "            ((OUT - phase) * p / OUT) as usize + 1,
+        ))",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_48k_table_and_the_strides_are_the_computed_coefficients",
+        ]),
+    },
+    Mutant {
+        name: "resampler: 48 kHz's right wing read from the wrong row",
+        file: "services/audio/src/resample.rs",
+        from: "Some((&T48[k], &T48[147 - k]))",
+        to: "Some((&T48[k], &T48[k]))",
+        check: Check::Host(&["-p", "rp-audio", "the_block_path_gives_exactly_what_the_frame_path_gives"]),
+    },
+    Mutant {
         name: "resampler: 48 kHz not scaled down (6% loud, overshoot)",
         file: "services/audio/src/resample.rs",
-        from: "i64::from(OUT) * 32_768 / i64::from(rate)",
+        from: "OUT as i64 * 32_768 / rate as i64",
         to: "32_768",
         check: Check::Host(&["-p", "rp-audio", "a_sine_converts_cleanly_from_every_rate"]),
     },
