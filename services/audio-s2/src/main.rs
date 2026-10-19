@@ -435,6 +435,59 @@ mod image {
         fn stop(&mut self) {}
     }
 
+    /// The link's real rate at each divider: I2S on (no codec, no board
+    /// bits, no sound), the DMA looping a silent 8 KiB ring, its frames
+    /// counted for 5 s against the OS timer.
+    fn link_rates(out: &mut Tee<'_, '_>, ring: &mut [u8]) {
+        use rp_drv_pxa_i2s::{PxaI2s, TX_PORT};
+        use rp_hal_api::DmaRing;
+        let (Some(i2s), Some(mut dma)) = (rt::take_i2s(), rt::take_dma(dma_map::AUDIO)) else {
+            let _ = writeln!(out, "  link rates: no I2S or DMA");
+            return;
+        };
+        let mut link = PxaI2s::new(i2s);
+        let ring = &mut ring[..8192];
+        ring.fill(0);
+        // Around the two documented ones (0x0C 48 kHz, 0x0D 44.1 kHz), and
+        // the documented 22.05 and 11.025 kHz ones.
+        for sadiv in [0x0Bu32, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x1A, 0x34] {
+            // A switch-on within ~645 ms of a switch-off is dropped.
+            rt::delay_us(1_000_000);
+            rt::check_in();
+            if !link.start_divider(sadiv) {
+                let _ = writeln!(out, "  SADIV {sadiv:#04x}: I2S didn't start");
+                continue;
+            }
+            dma.filled(ring);
+            if !dma.start(TX_PORT, ring) {
+                let _ = writeln!(out, "  SADIV {sadiv:#04x}: the DMA refused the ring");
+                link.stop();
+                continue;
+            }
+            rt::delay_us(100_000);
+            let frames_in_ring = (ring.len() / 4) as u64;
+            let mut last = (dma.position().unwrap_or(0) / 4) as u64;
+            let t0 = rt::ticks();
+            let mut frames = 0u64;
+            // Polled every 2 ms (the ring is 42 ms at 48 kHz).
+            while rt::ticks().wrapping_sub(t0) < 5 * 3_250_000 {
+                rt::delay_us(2_000);
+                let pos = (dma.position().unwrap_or(0) / 4) as u64;
+                frames += (pos + frames_in_ring - last) % frames_in_ring;
+                last = pos;
+                rt::check_in();
+            }
+            let t = u64::from(rt::ticks().wrapping_sub(t0));
+            dma.stop();
+            link.stop();
+            let _ = writeln!(
+                out,
+                "  link SADIV {sadiv:#04x}: {} frames/s against the OS timer",
+                frames * 3_250_000 / t
+            );
+        }
+    }
+
     /// `RP_AUDIO_BENCH`: no sound, no board bits: each piece of the mixer
     /// timed with the cycle counter, cycles per frame (or per call).
     fn bench(out: &mut Tee<'_, '_>, scratch: &'static mut [u8]) {
@@ -491,6 +544,7 @@ mod image {
         }
         // The whole mixer, one stream, no hardware: cycles per frame mixed.
         let (mem, ring) = scratch.split_at_mut(rp_audio::mixer::MIXER_BYTES);
+        link_rates(out, &mut mem[..]);
         for (rate, ch, speaker) in [
             (44_100u32, 2u8, false),
             (44_100, 2, true),

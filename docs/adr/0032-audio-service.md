@@ -483,15 +483,18 @@ changes a vote or a condition.
   stays bit-exact (strided table points for whole-number steps, a
   compile-time 48 kHz table of its 148 phases, 6.5 KB). iWMMXt is still
   open (quality audit E1).
-- **Measured on the device, for A1:** the link runs at **44,318 Hz**, not
-  44,100 (+0.49%, ~8.5 cents sharp): `SADIV` `0x0D` can't make 44.1 kHz
-  from the PXA's audio clock (`0x0C` makes exactly 48 kHz). Windows Mobile
-  has the same offset. **Options, the owner's to choose:** (a) keep it (as
-  Windows Mobile; a player syncing video to the audio clock doesn't drift;
-  pitch 8.5 cents sharp, below what most notice); (b) convert every stream
-  to 44,318 Hz (no bit-exact 44.1 kHz; a little CPU for all music); (c) run
-  the link at 48 kHz (exact; A1-B, 44.1 kHz content converted, ~669 cycles
-  a frame measured for the reverse direction).
+- **Measured on the device, for A1:** the link runs at **44,317 Hz**, not
+  44,100 (+0.49%, ~8.5 cents sharp), and **no `SADIV` setting is exact**:
+  48 kHz's gives 47,795 (-0.43%), 22.05 kHz's 21,959 (-0.41%)
+  (docs/hw/audio.md). Windows Mobile has the same offset. **Options, the
+  owner's to choose:** (a) keep 44.1 kHz as it is (as Windows Mobile; a
+  player syncing video to the audio clock doesn't drift; music 8.5 cents
+  sharp and 0.5% short, below what most notice); (b) keep the 44.1 kHz
+  setting but treat the link as 44,317 Hz and convert every stream to it
+  (pitch right; no bit-exact 44.1 kHz; the converter's cost for all music,
+  ~430-670 cycles a frame measured); (c) 48 kHz (A1-B: 7.4 cents flat
+  instead, 44.1 kHz content converted). Nothing changes until the owner
+  says.
 - **Memory:** the mixer itself 2.3 KB; its memory block 48.3 KiB (the DMA
   ring 44 KiB and the kept states 4.3 KiB), given by its owner. The image
   `rp-audio-s2` is 70.1 KiB.

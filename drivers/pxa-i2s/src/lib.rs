@@ -192,6 +192,17 @@ impl<B: RegisterBus> PxaI2s<B> {
         self.regs.read32(reg::SACR0) & SACR0_ENB != 0
     }
 
+    /// Switches it on with a raw `SADIV` divider (bits 6:0), for measuring
+    /// what each divider really gives (docs/hw/audio.md); playback uses
+    /// [`Self::start`].
+    pub fn start_divider(&mut self, sadiv: u32) -> bool {
+        self.regs.write32(reg::SADIV, sadiv & 0x7F);
+        self.regs.write32(reg::SACR1, SACR1_DREC);
+        self.regs
+            .write32(reg::SACR0, SACR0_ENB | SACR0_BCKD | SACR0_TFTH_8);
+        self.regs.read32(reg::SACR0) & SACR0_ENB != 0
+    }
+
     /// Queues one stereo frame (left in the low half) if the FIFO has room.
     pub fn try_write(&mut self, frame: u32) -> bool {
         if self.regs.read32(reg::SASR0) & SASR0_TNF == 0 {
@@ -286,6 +297,14 @@ impl Iterator for Tone {
 mod tests {
     use super::*;
     use rp_hal_mock::MockBus;
+
+    #[test]
+    fn a_raw_divider_is_masked_to_its_field() {
+        let mut i2s = PxaI2s::new(MockBus::new());
+        i2s.regs.script_reads(reg::SACR0, &[SACR0_ENB]);
+        assert!(i2s.start_divider(0xFFD));
+        assert!(i2s.regs.writes().contains(&(reg::SADIV, 0x7D)));
+    }
 
     #[test]
     fn a_switch_on_the_controller_ignored_is_reported() {

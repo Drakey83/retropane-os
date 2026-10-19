@@ -160,8 +160,11 @@ watching.
   and a plug while audio is off likely makes no edge (emulator-modelled;
   device run S1 pending). RetroPane's session rate is **44.1 kHz**
   (ADR-0032 A1: `SADIV` `0x0D`, codec register 8 = `0x020`), **measured at
-  44,318 frames a second** (+0.49%, 2026-10-19: `0x0D` gives 44,307.7 Hz
-  from a 147.456 MHz audio clock; `0x0C` gives exactly 48 kHz).
+  44,317 frames a second** (+0.49%, 2026-10-19, against the OS timer).
+  `SADIV` is a choice of fixed settings, not a divider, and none is exact:
+  `0x0C` 47,795 (-0.43%), `0x0D` 44,317 (+0.49%), `0x1A` 21,959 (-0.41%),
+  `0x34` 10,978 (-0.43%); undocumented `0x0B`, `0x0E`-`0x10` act as
+  `0x1A`.
 - **Traps measured on this board:** the I2C controller can't do
   address-only transfers (a byte with START and STOP never finishes; after
   an acknowledged address a master abort holds SCL low); a switch-on of I2S

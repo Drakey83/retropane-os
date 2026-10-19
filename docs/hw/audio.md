@@ -575,12 +575,21 @@ listening run is still to come; these are numbers only.
   `CLKCFG` `0xB`, the cycle counter agrees: 623,999 kHz).
 - **The link runs at 44,317-44,319 frames a second** against the OS timer,
   in every test (4-90 s windows, the DMA position read fresh at both ends),
-  not 44,100: **+0.49%, about 8.5 cents sharp**. `SADIV` `0x0D` can't make
-  44.1 kHz from this clock: with a 147.456 MHz audio clock it gives
-  44,307.7 Hz (the 0.02% left over may be the OS timer's crystal), while
-  `0x0C` gives exactly 48,000 Hz. Windows Mobile uses the same `0x0D`, so
-  stock playback has the same offset. A measurement for ADR-0032 A1, the
-  owner's to weigh (the options are in the ADR).
+  not 44,100: **+0.49%, about 8.5 cents sharp**. Windows Mobile uses the
+  same `0x0D`, so stock playback has the same offset.
+- **Every `SADIV` setting measured** (the bench mode: I2S and the DMA only,
+  no codec power, no sound; 5 s each against the OS timer): `0x0C` (48 kHz)
+  **47,795** (-0.43%), `0x0D` (44.1 kHz) **44,317** (+0.49%), `0x1A`
+  (22.05 kHz) **21,959** (-0.41%), `0x34` (11.025 kHz) **10,978**
+  (-0.43%); the undocumented `0x0B` and `0x0E`-`0x10` give 21,959, as
+  `0x1A`. So the field picks among fixed settings (13/12 apart would be
+  +8.3%; 47,795 / 44,317 is +7.8%), the 48 kHz family runs 0.4% flat and
+  44.1 kHz 0.5% sharp, and **no setting is exact**. The OS timer's own
+  error moves all of them the same way; the opposite signs are the
+  dividers'. (An hour earlier this page said `0x0C` was exact: a
+  calculation from an assumed 147.456 MHz clock, not a measurement;
+  corrected by this one.) A measurement for ADR-0032 A1, the owner's to
+  weigh (the options are in the ADR).
 - **The mixer's cost, cycles per output frame** (the cycle counter around
   each wake; first night run, then after the optimisation the same night):
 
