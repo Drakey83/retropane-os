@@ -135,6 +135,14 @@ pub(crate) fn wsl_run(script: &str) -> Result<(), String> {
 }
 
 fn wsl_bash(script: &str) -> Command {
+    // `wsl.exe` hands its command line through a shell that breaks `$(...)`
+    // (bash then refuses the whole script and nothing runs: the clean-up
+    // killed no emulator for a night, 2026-10-19). Such a script goes on
+    // stdin instead (as `start_load`'s does).
+    assert!(
+        !script.contains("$("),
+        "a `$(...)` in a script for wsl: send it on stdin (see start_load)"
+    );
     let mut c = Command::new("wsl");
     c.args(["-d", &wsl_distro(), "--", "bash", "-lc", script]);
     c
@@ -7526,8 +7534,11 @@ const LOAD_TAG: &str = "rp-emu-load";
 /// port answered by the old emulator and its WAV file still open (no sound
 /// voice, the DMA never drained; 2026-10-19).
 fn stop_own_qemu(monitor_port: u16) -> String {
+    // No `$(...)` in a script for `wsl`: it reaches bash broken (a syntax
+    // error, and then nothing in the script runs at all).
+    let tries = vec!["t"; 100].join(" ");
     format!(
-        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; for i in $(seq 100); do pgrep -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]' >/dev/null || break; sleep 0.1; done; true"
+        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; for i in {tries}; do pgrep -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]' >/dev/null || break; sleep 0.1; done; true"
     )
 }
 
@@ -7805,6 +7816,7 @@ mod tests {
             )
         };
         let stop = super::stop_own_qemu(45_441);
+        assert!(!stop.contains("$("), "it goes through wsl_bash: {stop}");
         let p = pattern(&stop);
         assert!(ere_finds(p, &qemu(45_441)), "{p}");
         assert!(!ere_finds(p, &qemu(45_461)), "another run's emulator");

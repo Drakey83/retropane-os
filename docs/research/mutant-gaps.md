@@ -28,7 +28,7 @@ gaps found and closed: nothing moved a boot file's chain end
 over small ones (`a_large_page_never_lands_on_small_pages`), and the cab
 decompressor's limit was tested only through a match, never a literal
 (`output_limit_is_enforced` now checks both and that nothing past the limit is
-written). One mutant was dropped as a layered guard (FAT's next-cluster
+written). Two older emulator mutants were removed as equivalent (today's run-limit cap, now doubled by the 50 ms pen look; the CF attach on insertion, now doubled by the retry), and one new mutant was dropped as a layered guard (FAT's next-cluster
 range, caught by the next step's own check), not a gap.
 
 ## `xtask/src` (19)

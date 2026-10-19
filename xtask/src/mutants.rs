@@ -131,13 +131,11 @@ pub const MUTANTS: &[Mutant] = &[
 ",
         check: Check::Host(&["-p", "xtask", "second_caller_waits_until_the_first_is_done"]),
     },
-    Mutant {
-        name: "today: an idle sleep past the run limit (the watchdog reset the device)",
-        file: "shell/today/src/main.rs",
-        from: "            let wait_ms = wait_ms.min(rt::check_in_every_ms()).max(1);",
-        to: "            let wait_ms = wait_ms.max(1);",
-        check: Check::Emu(crate::emu::boot_loader_today),
-    },
+    // (Removed 2026-10-19: "today: an idle sleep past the run limit". Its
+    // mutant took out the run-limit cap on the idle wait, but that wait has
+    // since been capped at 50 ms too (the pen line looked at every 50 ms),
+    // so either bound alone keeps the image checking in: the mutant could
+    // no longer fail. The rule stands, held twice over.)
     Mutant {
         name: "shell: a notice shown without marking its area (never redrawn)",
         file: "shell/core/src/lib.rs",
@@ -412,13 +410,10 @@ pub const MUTANTS: &[Mutant] = &[
             "read_ahead_serves_the_next_read_and_a_write_drops_it",
         ]),
     },
-    Mutant {
-        name: "CF card not attached on insertion (the PC sees an empty reader until `cf`)",
-        file: "boot/loader/src/main.rs",
-        from: "                    cf_attach(&mut cf, &mut gpio, cpld.as_mut(), false);",
-        to: "",
-        check: Check::Emu(crate::emu::boot_loader_cf),
-    },
+    // (Removed 2026-10-19: "CF card not attached on insertion". Since the
+    // retry of an inserted card left idle (once per insertion, within a
+    // second; 2026-10-15) it is attached either way, so the mutant could no
+    // longer fail. Held twice over.)
     Mutant {
         name: "CF card in at start-up attached only after the drive is offered (the PC's \"USB Drive\" with no size)",
         file: "boot/loader/src/main.rs",
