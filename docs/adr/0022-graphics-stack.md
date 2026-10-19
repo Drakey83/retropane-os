@@ -229,8 +229,18 @@ fills with the 2D engine, and draws on the CPU last.*
 - **Planes:** the wallpaper and full-screen video on the video plane;
   the interface on the graphics plane; whole-screen moves by changing
   where a plane reads (`GSCADR`), written in the blanking at the frame
-  event (VEVENT0, line 643: a write takes effect at once, measured), in
-  a picture as tall as the move needs.
+  event (VEVENT0, line 643: a write takes effect at once, measured).
+  **Bounded and unbounded content:** content that fits a picture of a
+  fixed, budgeted height (a few screens: a launcher's pages, a settings
+  screen) is drawn once into it and panned by repointing alone. Content
+  taller than that (a long list, a long web page) never gets a taller
+  picture: the picture is a window of fixed height over the content,
+  the rows coming into view are drawn into it ahead of the pan (a
+  480 x 48 16-bit strip 1.4 ms in row order, measured), and when the pan nears
+  the window's end the window is re-based by one 2D-engine copy (a 16-bit full
+  screen 4.2-4.8 ms, measured) and the repointing continues. The window's
+  height and the look-ahead are set by the fastest flick the shell
+  allows, so a long list can't find a gap at run time.
 - **The 3D core:** layers are textures (a 480 x 640 layer in one
   512 x 1024 texture); a frame renders only the changed tiles; the frame
   budget comes from the measured per-tile costs (bare ~5.3 us, textured
@@ -238,12 +248,36 @@ fills with the 2D engine, and draws on the CPU last.*
   animation that would overrun gets fewer layers or a smaller area, never
   a late frame. One screen redrawn in bands behind the scan line, or two
   screens flipped at the frame event (both measured smooth), by what the
-  frame needs.
+  frame needs. **The budget is the measured cost table above, not the
+  renderer's own estimate** (`predict_us`, which quality audit C20 found
+  far under full-tile costs): C20's open status doesn't hold the budget
+  up, but C20 is still fixed wherever the estimate is used (the
+  renderer's poll timing, any scheduler that reads it).
+- **The pathological case, a translucent layer over a pan:** a
+  full-screen translucent layer (glass, a dim) over content that pans
+  changes every tile every frame, which is the full-screen 3D cost again
+  (~20 ms a layer) and can't fit a frame. Chosen behavior: **for the
+  pan's duration the layer's translucency is dropped** (it is shown as an
+  opaque tint of its colour, or hidden if it is purely decorative), and
+  restored with one render when the pan stops; **a layer that moves with
+  the content** is instead frozen into the panned picture (drawn into it
+  once) so it pans with it at no cost. A designed behavior, not whatever
+  the budget happens to cut.
 - **The 2D engine:** copies (negative-stride scrolls), fills, keyed
   copies, glyph runs, as accepted.
 - **The CPU:** text and what no engine draws, uploaded by DMA where the
-  CPU has other work (layers reordered for the 3D core in SDRAM, then
-  copied: measured 37 + 34 ms a full layer, the CPU 79% free).
+  CPU has other work. **A layer's upload is a static cost, not a per-frame
+  one:** reordering a full layer for the 3D core in SDRAM (37 ms) and
+  copying it by DMA (34 ms, the CPU 79% free) is ~71 ms, four frames, paid
+  once when the layer's content changes. Consequence: **a CPU-drawn
+  full-screen layer can't animate its content at 56 frames a second**;
+  only its position, transform and alpha animate (the 3D core), and its
+  content changes in strips (a 480 x 48 strip 3.0 ms in texture order).
+- **The emulator:** the pan path isn't called done until the fork models
+  a `GSCADR` write taking effect at once, mid-frame, as measured
+  (docs/hw/emulator.md lists it to model), with an emulator check that
+  fails without it; the same holds for rectangular textures before the
+  compositor relies on them.
 
 **Pluses:** the SPB look smooth at today's clock (whole-screen motion
 costs no render; partial effects fit the budget); the CPU free most of
