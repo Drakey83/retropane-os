@@ -195,6 +195,8 @@ struct Feeder {
     stall: Option<(u32, u32)>,
     /// Every sample this value instead of the noise.
     constant: Option<i16>,
+    /// One refill per call at most (a player trickling small writes).
+    one_at_a_time: bool,
 }
 
 impl Feeder {
@@ -225,6 +227,9 @@ impl Feeder {
             m.commit(self.id, n, now).unwrap();
             self.written += n;
             wrote = true;
+            if self.one_at_a_time {
+                break;
+            }
         }
         if self.written == self.total {
             m.end(self.id);
@@ -246,6 +251,10 @@ struct Sim {
     next_wake: u32,
     /// The ms of every wake, and its interval.
     wakes: Vec<(u32, u32, bool)>,
+    /// The programs write only this long after a wake (a decoder's
+    /// latency: the room a wake gives takes time to fill).
+    refill_delay: u32,
+    last_wake_ms: u32,
 }
 
 impl Sim {
@@ -261,6 +270,8 @@ impl Sim {
             heard: Vec::new(),
             next_wake: 0,
             wakes: Vec::new(),
+            refill_delay: 0,
+            last_wake_ms: 0,
         };
         let t = s.m.start(&mut s.dma, 0).unwrap();
         s.next_wake = t.next_ms;
@@ -281,6 +292,7 @@ impl Sim {
             self.ms += 1;
         }
         self.next_wake = self.ms + t.next_ms;
+        self.last_wake_ms = self.ms;
         self.wakes.push((self.ms, t.next_ms, t.interactive));
         t
     }
@@ -291,7 +303,8 @@ impl Sim {
         for _ in 0..ms {
             self.ms += 1;
             self.pass_to(frames(self.ms));
-            let acted = act(&mut self.m, self.ms);
+            let ready = self.ms >= self.last_wake_ms + self.refill_delay;
+            let acted = ready && act(&mut self.m, self.ms);
             if acted || self.ms >= self.next_wake {
                 self.tick();
             }
@@ -326,6 +339,7 @@ fn music(sim: &mut Sim, seed: u32, amp: i32, secs: u64) -> Feeder {
         refill: 1_411,
         stall: None,
         constant: None,
+        one_at_a_time: false,
     }
 }
 
@@ -344,6 +358,7 @@ fn steady(sim: &mut Sim, role: Role, legacy: bool, value: i16, secs: u64) -> Fee
         refill: 1_411,
         stall: None,
         constant: Some(value),
+        one_at_a_time: false,
     }
 }
 
@@ -731,6 +746,10 @@ fn a_ring_of_exactly_the_rule_never_runs_dry_across_interval_switches() {
     let modes: Vec<bool> = sim.wakes.iter().map(|w| w.2).collect();
     assert!(modes.contains(&true) && modes.contains(&false));
     assert_eq!(sim.m.stats().starved, 0, "the music ran dry");
+    // Mixed only as far as the data, nothing re-mixed for running dry (4
+    // rewrites: the placements and the interval switches; mixing past the
+    // data re-mixes at every wake: 18).
+    assert!(sim.m.stats().rewrites <= 6, "{:?}", sim.m.stats());
     assert_eq!(sim.m.stats().late, 0);
 }
 
@@ -814,6 +833,8 @@ fn a_wake_that_takes_time_to_mix_still_wakes_again_in_time() {
     sim.run(3_500, &mut |m, now| f.feed(m, now));
     assert_eq!(sim.m.stats().late, 0);
     assert_eq!(sim.m.stats().starved, 0);
+    // One rewrite (the placement); mixing past the data: 37.
+    assert!(sim.m.stats().rewrites <= 3, "{:?}", sim.m.stats());
     assert_eq!(sim.m.stats().stops, 0);
     assert_eq!(sim.m.stats().ring_failed, 0);
     let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
@@ -1179,6 +1200,50 @@ fn after_a_stall_music_stays_music_and_carries_on_in_one_gap() {
     }
     assert_eq!(gaps, 1, "gaps of silence in the music");
     assert!(heard_once(&sim, &f), "lost or repeated frames");
+}
+
+#[test]
+fn a_program_slow_to_refill_has_the_low_water_s_time() {
+    // The mixer wakes with the lead less one interval left (the low-water
+    // mark, 45 ms with music): a program gets its room at a wake and has
+    // that long to fill it. One that writes 40 ms after each wake (a
+    // decoder's latency; past the one write of slack its ring holds) never
+    // runs dry; waking only as the mix runs out would leave it 5 ms.
+    let mut sim = Sim::new(false);
+    sim.refill_delay = 40;
+    let mut f = music(&mut sim, 21, 8_000, 3);
+    sim.run(3_500, &mut |m, now| f.feed(m, now));
+    assert_eq!(sim.m.stats().starved, 0, "{:?}", sim.m.stats());
+    assert_eq!(sim.m.stats().late, 0);
+}
+
+#[test]
+fn a_player_trickling_small_writes_over_a_deep_queue_is_not_interactive() {
+    // Condition 13's queue. While a click's hold keeps the wakes short, a
+    // music player gets its room every 15 ms and tops up one 32 ms write as
+    // soon as there is room: small, close together and level, like a game;
+    // only its deep queue (~250 ms, a game keeps at most 150) tells them
+    // apart. Once the hold ends the interval must go back to the long one.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 22, 8_000, 6);
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    f.one_at_a_time = true;
+    let mut click = steady(&mut sim, Role::System, false, 3_000, 1);
+    click.total = 441;
+    sim.run(2_000, &mut |m, now| f.feed(m, now) | click.feed(m, now));
+    sim.m.close(click.id);
+    let after = sim.wakes.len();
+    sim.run(2_000, &mut |m, now| f.feed(m, now));
+    let late: Vec<_> = sim.wakes[after..]
+        .iter()
+        .filter(|w| w.0 > sim.wakes[after].0 + HOLD_MS + 300)
+        .collect();
+    assert!(!late.is_empty());
+    assert!(
+        late.iter().all(|w| !w.2),
+        "the trickling player taken for a game"
+    );
+    assert_eq!(sim.m.stats().starved, 0);
 }
 
 #[test]

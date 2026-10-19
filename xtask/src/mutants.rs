@@ -839,17 +839,6 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-audio", "a_program_can_only_spoil_its_own_stream"]),
     },
     Mutant {
-        name: "mixer: wakes only when the mix is about to run out (no time for a program to refill)",
-        file: "services/audio/src/mixer.rs",
-        from: "            .min(ahead_ms.saturating_sub(low_water))\n",
-        to: "",
-        check: Check::Host(&[
-            "-p",
-            "rp-audio",
-            "a_wake_that_takes_time_to_mix_still_wakes_again_in_time",
-        ]),
-    },
-    Mutant {
         name: "mixer: the next wake timed from before the mixing, not after it",
         file: "services/audio/src/mixer.rs",
         from: "let ahead_ms = to_ms(self.mixed_to.saturating_sub(now + MARGIN));",
@@ -879,7 +868,7 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&[
             "-p",
             "rp-audio",
-            "music_alone_wakes_every_200_ms_and_mixes_a_ring_ahead",
+            "a_player_trickling_small_writes_over_a_deep_queue_is_not_interactive",
         ]),
     },
     Mutant {

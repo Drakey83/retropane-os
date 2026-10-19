@@ -11,6 +11,19 @@ adding mutants.
 
 **1074 tests, 107 test filters named by mutants, 172 guard-like tests without a mutant naming them.**
 
+**Retired 2026-10-19 late night, as near-equivalent in the host model:**
+"mixer: wakes only when the mix is about to run out" (the low-water mark
+dropped from the wake's timing). Killed until ADR-0032 A6-B's follow-up
+counted a stream dry only when its dry stretch plays. Since then no test
+shows it: a stream's ring holds a write's slack (~32-45 ms) of
+written-but-unmixed sound, and the mixer wakes early on its own whenever
+its mix reaches the data's end, which together give a program the time the
+low-water mark was added for. Not even a program refilling 40 ms after
+every wake (`a_program_slow_to_refill_has_the_low_water_s_time`, kept as a
+test) runs dry without it. The mark stays (the emulator found it, ADR-0032
+"S2 as built"); a test that bites without it (a program whose ring holds
+no slack, or a burst of streams) is quality audit C18.
+
 **Added 2026-10-19 night (43 mutants, all killed):** the load protocol
 (frame size, CRC, file names, base64), the PE loader (section count, order,
 CPU type), LZ4 (match offsets on both paths, the output bound, the fast
