@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 640" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="13">
+  <title>Dell Axim X51v: board blocks and buses</title>
+  <style>
+    .chip { fill: #eef3fb; stroke: #2b4a7a; stroke-width: 1.5; }
+    .cpu  { fill: #dde8f8; stroke: #1a3560; stroke-width: 2.5; }
+    .cpld { fill: #fdf1dc; stroke: #8a5a10; stroke-width: 1.5; }
+    .ext  { fill: #f3f3f3; stroke: #777; stroke-width: 1.2; stroke-dasharray: 4 3; }
+    .bus  { stroke: #2b4a7a; stroke-width: 2; fill: none; }
+    .pwr  { stroke: #b36b00; stroke-width: 1.6; fill: none; stroke-dasharray: 5 3; }
+    .gpio { stroke: #3a8a3a; stroke-width: 1.4; fill: none; }
+    .t    { fill: #111; }
+    .h    { font-weight: 600; font-size: 14px; }
+    .s    { font-size: 11px; fill: #444; }
+    .lbl  { font-size: 11px; fill: #2b4a7a; }
+    .lp   { font-size: 11px; fill: #8a5a10; }
+    .lg   { font-size: 11px; fill: #2e6e2e; }
+  </style>
+  <rect width="960" height="640" fill="#ffffff"/>
+  <text x="20" y="28" class="t h" font-size="17">Dell Axim X51v: what is on the board (RetroPane, 2026-10-18)</text>
+
+  <!-- CPU -->
+  <rect class="cpu" x="340" y="220" width="280" height="200" rx="8"/>
+  <text x="480" y="246" text-anchor="middle" class="t h">Intel PXA270</text>
+  <text x="480" y="264" text-anchor="middle" class="s">XScale ARMv5TE + iWMMXt, 91-624 MHz</text>
+  <text x="480" y="280" text-anchor="middle" class="s">256 KiB SRAM at 0x5C000000</text>
+  <text x="352" y="306" class="s">I2C (GPIO117/118)</text>
+  <text x="352" y="322" class="s">I2S (GPIO28-31, 113)</text>
+  <text x="352" y="338" class="s">SSP1 (GPIO23-26)</text>
+  <text x="352" y="354" class="s">PWM0 / PWM1</text>
+  <text x="352" y="370" class="s">keypad controller</text>
+  <text x="490" y="306" class="s">MMC/SD (4-bit)</text>
+  <text x="490" y="322" class="s">PC Card sockets 0, 1</text>
+  <text x="490" y="338" class="s">USB device (UDC)</text>
+  <text x="490" y="354" class="s">USB host (OHCI)</text>
+  <text x="490" y="370" class="s">FF / BT / ST UARTs</text>
+  <text x="480" y="404" text-anchor="middle" class="s">GPIO3/4/38: core voltage select</text>
+
+  <!-- memory bus side (top) -->
+  <rect class="chip" x="40" y="60" width="190" height="70" rx="6"/>
+  <text x="135" y="86" text-anchor="middle" class="t h">SDRAM 64 MiB</text>
+  <text x="135" y="104" text-anchor="middle" class="s">0xA8000000 (SDCS2)</text>
+  <rect class="chip" x="260" y="60" width="190" height="70" rx="6"/>
+  <text x="355" y="86" text-anchor="middle" class="t h">DiskOnChip G3</text>
+  <text x="355" y="104" text-anchor="middle" class="s">CS0, 0x00000000</text>
+  <rect class="chip" x="480" y="50" width="240" height="90" rx="6"/>
+  <text x="600" y="74" text-anchor="middle" class="t h">Intel 2700G</text>
+  <text x="600" y="92" text-anchor="middle" class="s">MBX Lite 3D, 2D engine, MVED1 video,</text>
+  <text x="600" y="106" text-anchor="middle" class="s">display controller, 16 MiB local memory</text>
+  <text x="600" y="122" text-anchor="middle" class="s">CS3 (VLIO, RDY GPIO18), 0x0C000000</text>
+  <rect class="cpld" x="750" y="60" width="180" height="70" rx="6"/>
+  <text x="840" y="86" text-anchor="middle" class="t h">Board CPLD</text>
+  <text x="840" y="104" text-anchor="middle" class="s">CS4, 0x10000000</text>
+  <text x="840" y="119" text-anchor="middle" class="s">16 write-only latches</text>
+
+  <!-- memory bus -->
+  <path class="bus" d="M135 130 V175 H840 V130 M355 130 V175 M600 140 V175 M480 175 V220"/>
+  <text x="250" y="168" class="lbl">memory / static bus</text>
+
+  <!-- panel -->
+  <rect class="chip" x="760" y="200" width="170" height="80" rx="6"/>
+  <text x="845" y="224" text-anchor="middle" class="t h">3.7" VGA panel</text>
+  <text x="845" y="242" text-anchor="middle" class="s">480 x 640, Sharp (LCD id 0)</text>
+  <text x="845" y="258" text-anchor="middle" class="s">56.46 Hz (WM), 60 Hz tested</text>
+  <path class="bus" d="M720 110 H740 V240 H760"/>
+  <text x="726" y="196" class="lbl">LCD</text>
+
+  <!-- left side: audio, touch -->
+  <rect class="chip" x="40" y="200" width="200" height="96" rx="6"/>
+  <text x="140" y="224" text-anchor="middle" class="t h">Wolfson WM8750</text>
+  <text x="140" y="242" text-anchor="middle" class="s">I2C 0x1A via gate GPIO82</text>
+  <text x="140" y="258" text-anchor="middle" class="s">jack GPIO83 (high = in)</text>
+  <text x="140" y="274" text-anchor="middle" class="s">power CPLD 0x1C bit 1</text>
+  <text x="140" y="289" text-anchor="middle" class="s">speaker amp CPLD 0x14 bit 1</text>
+  <path class="bus" d="M240 240 H340"/>
+  <text x="250" y="234" class="lbl">I2C + I2S</text>
+
+  <rect class="chip" x="40" y="320" width="200" height="70" rx="6"/>
+  <text x="140" y="344" text-anchor="middle" class="t h">TI TSC2046 (touch)</text>
+  <text x="140" y="362" text-anchor="middle" class="s">CS GPIO24, pen GPIO94</text>
+  <path class="bus" d="M240 352 H340"/>
+  <text x="256" y="346" class="lbl">SSP1</text>
+
+  <rect class="chip" x="40" y="410" width="200" height="56" rx="6"/>
+  <text x="140" y="434" text-anchor="middle" class="t h">Keys</text>
+  <text x="140" y="452" text-anchor="middle" class="s">keypad matrix, power GPIO0</text>
+  <path class="gpio" d="M240 438 H265 V398 H340"/>
+
+  <rect class="chip" x="40" y="486" width="200" height="56" rx="6"/>
+  <text x="140" y="510" text-anchor="middle" class="t h">Backlight</text>
+  <text x="140" y="528" text-anchor="middle" class="s">PWM0 GPIO17, enable 0x18 b2</text>
+  <path class="gpio" d="M240 514 H285 V412 H340"/>
+
+  <!-- bottom: SD, CF, Wi-Fi, USB, BT -->
+  <rect class="chip" x="300" y="470" width="150" height="76" rx="6"/>
+  <text x="375" y="494" text-anchor="middle" class="t h">SD slot</text>
+  <text x="375" y="511" text-anchor="middle" class="s">detect GPIO12, WP GPIO27</text>
+  <text x="375" y="526" text-anchor="middle" class="s">power CPLD 0x16 b0</text>
+  <path class="bus" d="M375 470 V420"/>
+
+  <rect class="chip" x="470" y="470" width="150" height="90" rx="6"/>
+  <text x="545" y="494" text-anchor="middle" class="t h">CF slot (socket 1)</text>
+  <text x="545" y="511" text-anchor="middle" class="s">detect GPIO13 / 0x04 b1</text>
+  <text x="545" y="526" text-anchor="middle" class="s">ready GPIO84, reset 0x18 b1</text>
+  <text x="545" y="541" text-anchor="middle" class="s">power 0x16 b1, 0x10 b12</text>
+  <path class="bus" d="M545 470 V420"/>
+
+  <rect class="chip" x="640" y="470" width="150" height="76" rx="6"/>
+  <text x="715" y="494" text-anchor="middle" class="t h">Wi-Fi (socket 0)</text>
+  <text x="715" y="511" text-anchor="middle" class="s">TI ACX100, 802.11b</text>
+  <text x="715" y="526" text-anchor="middle" class="s">reset GPIO89, IRQ GPIO107</text>
+  <path class="bus" d="M715 470 V440 H600 V420"/>
+
+  <rect class="ext" x="760" y="310" width="170" height="70" rx="6"/>
+  <text x="845" y="334" text-anchor="middle" class="t h">Sync connector</text>
+  <text x="845" y="352" text-anchor="middle" class="s">USB device / host port 2</text>
+  <text x="845" y="367" text-anchor="middle" class="s">D+ pull-up hard-wired</text>
+  <path class="bus" d="M620 340 H760"/>
+  <text x="640" y="334" class="lbl">USB (cable GPIO14)</text>
+
+  <rect class="chip" x="810" y="470" width="130" height="76" rx="6"/>
+  <text x="875" y="494" text-anchor="middle" class="t h">Bluetooth</text>
+  <text x="875" y="511" text-anchor="middle" class="s">classic (version</text>
+  <text x="875" y="526" text-anchor="middle" class="s">to confirm)</text>
+  <path class="bus" d="M875 470 V400 H620"/>
+  <text x="760" y="394" class="lbl">BTUART</text>
+
+  <!-- CPLD power lines -->
+  <path class="pwr" d="M930 95 H948 V590 H140 V542"/>
+  <path class="pwr" d="M375 590 V546 M545 590 V560 M715 590 V546"/>
+  <path class="pwr" d="M875 590 V546"/>
+  <path class="pwr" d="M24 590 H140 M24 590 V250 H40"/>
+  <text x="560" y="606" class="lp">CPLD power switches and resets (dashed)</text>
+
+  <!-- legend -->
+  <line x1="40" y1="620" x2="70" y2="620" class="bus"/><text x="76" y="624" class="s">bus / data</text>
+  <line x1="160" y1="620" x2="190" y2="620" class="gpio"/><text x="196" y="624" class="s">GPIO / PWM line</text>
+  <line x1="320" y1="620" x2="350" y2="620" class="pwr"/><text x="356" y="624" class="s">CPLD power / reset</text>
+  <text x="940" y="624" text-anchor="end" class="s">Details: docs/hw/datasheet.md</text>
+</svg>

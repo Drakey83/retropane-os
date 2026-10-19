@@ -1,0 +1,300 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 942 686" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+<title>Dell Axim X51v: PXA270 GPIO map</title>
+<rect width="942" height="686" fill="#fff"/>
+<text x="20" y="32" font-size="17" font-weight="600">PXA270 GPIOs 0-120 on the Dell Axim X51v (RetroPane, 2026-10-18)</text>
+<text x="20" y="50" font-size="11" fill="#444">Lines with a known or suspected job; confidence and evidence per line in docs/hw/datasheet.md section 3. The keypad uses its controller pins (keypad.md).</text>
+<rect x="22" y="62" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="78" font-size="12" font-weight="600">0</text>
+<text x="28" y="94" font-size="10.5" fill="#222">PWR btn</text>
+<rect x="104" y="62" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="78" font-size="12" font-weight="600">1</text>
+<text x="110" y="94" font-size="10.5" fill="#222">wake ?</text>
+<rect x="186" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="78" font-size="12" font-weight="600">2</text>
+<rect x="268" y="62" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="78" font-size="12" font-weight="600">3</text>
+<text x="274" y="94" font-size="10.5" fill="#222">VID</text>
+<rect x="350" y="62" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="78" font-size="12" font-weight="600">4</text>
+<text x="356" y="94" font-size="10.5" fill="#222">VID</text>
+<rect x="432" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="78" font-size="12" font-weight="600">5</text>
+<rect x="514" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="78" font-size="12" font-weight="600">6</text>
+<rect x="596" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="78" font-size="12" font-weight="600">7</text>
+<rect x="678" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="78" font-size="12" font-weight="600">8</text>
+<rect x="760" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="78" font-size="12" font-weight="600">9</text>
+<rect x="842" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="78" font-size="12" font-weight="600">10</text>
+<rect x="22" y="108" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="124" font-size="12" font-weight="600">11</text>
+<text x="28" y="140" font-size="10.5" fill="#222">irq ?</text>
+<rect x="104" y="108" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="124" font-size="12" font-weight="600">12</text>
+<text x="110" y="140" font-size="10.5" fill="#222">SD det</text>
+<rect x="186" y="108" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="124" font-size="12" font-weight="600">13</text>
+<text x="192" y="140" font-size="10.5" fill="#222">CF det</text>
+<rect x="268" y="108" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="124" font-size="12" font-weight="600">14</text>
+<text x="274" y="140" font-size="10.5" fill="#222">USB cbl</text>
+<rect x="350" y="108" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="124" font-size="12" font-weight="600">15</text>
+<text x="356" y="140" font-size="10.5" fill="#222">reboot</text>
+<rect x="432" y="108" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="124" font-size="12" font-weight="600">16</text>
+<rect x="514" y="108" width="78" height="42" rx="4" fill="#c9dcf5" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="124" font-size="12" font-weight="600">17</text>
+<text x="520" y="140" font-size="10.5" fill="#222">PWM0 BL</text>
+<rect x="596" y="108" width="78" height="42" rx="4" fill="#c9dcf5" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="124" font-size="12" font-weight="600">18</text>
+<text x="602" y="140" font-size="10.5" fill="#222">2700G RDY</text>
+<rect x="678" y="108" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="124" font-size="12" font-weight="600">19</text>
+<rect x="760" y="108" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="124" font-size="12" font-weight="600">20</text>
+<rect x="842" y="108" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="124" font-size="12" font-weight="600">21</text>
+<rect x="22" y="154" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="170" font-size="12" font-weight="600">22</text>
+<rect x="104" y="154" width="78" height="42" rx="4" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="170" font-size="12" font-weight="600">23</text>
+<text x="110" y="186" font-size="10.5" fill="#222">SSP1 CLK</text>
+<rect x="186" y="154" width="78" height="42" rx="4" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="170" font-size="12" font-weight="600">24</text>
+<text x="192" y="186" font-size="10.5" fill="#222">touch CS</text>
+<rect x="268" y="154" width="78" height="42" rx="4" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="170" font-size="12" font-weight="600">25</text>
+<text x="274" y="186" font-size="10.5" fill="#222">SSP1 TX</text>
+<rect x="350" y="154" width="78" height="42" rx="4" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="170" font-size="12" font-weight="600">26</text>
+<text x="356" y="186" font-size="10.5" fill="#222">SSP1 RX</text>
+<rect x="432" y="154" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="170" font-size="12" font-weight="600">27</text>
+<text x="438" y="186" font-size="10.5" fill="#222">SD WP</text>
+<rect x="514" y="154" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="170" font-size="12" font-weight="600">28</text>
+<text x="520" y="186" font-size="10.5" fill="#222">I2S BCLK</text>
+<rect x="596" y="154" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="170" font-size="12" font-weight="600">29</text>
+<text x="602" y="186" font-size="10.5" fill="#222">I2S DIN</text>
+<rect x="678" y="154" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="170" font-size="12" font-weight="600">30</text>
+<text x="684" y="186" font-size="10.5" fill="#222">I2S DOUT</text>
+<rect x="760" y="154" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="170" font-size="12" font-weight="600">31</text>
+<text x="766" y="186" font-size="10.5" fill="#222">I2S SYNC</text>
+<rect x="842" y="154" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="170" font-size="12" font-weight="600">32</text>
+<text x="848" y="186" font-size="10.5" fill="#222">MMCLK</text>
+<rect x="22" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="216" font-size="12" font-weight="600">33</text>
+<rect x="104" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="216" font-size="12" font-weight="600">34</text>
+<rect x="186" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="216" font-size="12" font-weight="600">35</text>
+<rect x="268" y="200" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="216" font-size="12" font-weight="600">36</text>
+<text x="274" y="232" font-size="10.5" fill="#222">chg ?</text>
+<rect x="350" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="216" font-size="12" font-weight="600">37</text>
+<rect x="432" y="200" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="216" font-size="12" font-weight="600">38</text>
+<text x="438" y="232" font-size="10.5" fill="#222">VID</text>
+<rect x="514" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="216" font-size="12" font-weight="600">39</text>
+<rect x="596" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="216" font-size="12" font-weight="600">40</text>
+<rect x="678" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="216" font-size="12" font-weight="600">41</text>
+<rect x="760" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="216" font-size="12" font-weight="600">42</text>
+<rect x="842" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="216" font-size="12" font-weight="600">43</text>
+<rect x="22" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="262" font-size="12" font-weight="600">44</text>
+<rect x="104" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="262" font-size="12" font-weight="600">45</text>
+<rect x="186" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="262" font-size="12" font-weight="600">46</text>
+<rect x="268" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="262" font-size="12" font-weight="600">47</text>
+<rect x="350" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="262" font-size="12" font-weight="600">48</text>
+<rect x="432" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="262" font-size="12" font-weight="600">49</text>
+<rect x="514" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="262" font-size="12" font-weight="600">50</text>
+<rect x="596" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="262" font-size="12" font-weight="600">51</text>
+<rect x="678" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="262" font-size="12" font-weight="600">52</text>
+<rect x="760" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="262" font-size="12" font-weight="600">53</text>
+<rect x="842" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="262" font-size="12" font-weight="600">54</text>
+<rect x="22" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="308" font-size="12" font-weight="600">55</text>
+<rect x="104" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="308" font-size="12" font-weight="600">56</text>
+<rect x="186" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="308" font-size="12" font-weight="600">57</text>
+<rect x="268" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="308" font-size="12" font-weight="600">58</text>
+<rect x="350" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="308" font-size="12" font-weight="600">59</text>
+<rect x="432" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="308" font-size="12" font-weight="600">60</text>
+<rect x="514" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="308" font-size="12" font-weight="600">61</text>
+<rect x="596" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="308" font-size="12" font-weight="600">62</text>
+<rect x="678" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="308" font-size="12" font-weight="600">63</text>
+<rect x="760" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="308" font-size="12" font-weight="600">64</text>
+<rect x="842" y="292" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="308" font-size="12" font-weight="600">65</text>
+<rect x="22" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="354" font-size="12" font-weight="600">66</text>
+<rect x="104" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="354" font-size="12" font-weight="600">67</text>
+<rect x="186" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="354" font-size="12" font-weight="600">68</text>
+<rect x="268" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="354" font-size="12" font-weight="600">69</text>
+<rect x="350" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="354" font-size="12" font-weight="600">70</text>
+<rect x="432" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="354" font-size="12" font-weight="600">71</text>
+<rect x="514" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="354" font-size="12" font-weight="600">72</text>
+<rect x="596" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="354" font-size="12" font-weight="600">73</text>
+<rect x="678" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="354" font-size="12" font-weight="600">74</text>
+<rect x="760" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="354" font-size="12" font-weight="600">75</text>
+<rect x="842" y="338" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="354" font-size="12" font-weight="600">76</text>
+<rect x="22" y="384" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="400" font-size="12" font-weight="600">77</text>
+<rect x="104" y="384" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="400" font-size="12" font-weight="600">78</text>
+<rect x="186" y="384" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="400" font-size="12" font-weight="600">79</text>
+<rect x="268" y="384" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="400" font-size="12" font-weight="600">80</text>
+<rect x="350" y="384" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="400" font-size="12" font-weight="600">81</text>
+<rect x="432" y="384" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="400" font-size="12" font-weight="600">82</text>
+<text x="438" y="416" font-size="10.5" fill="#222">codec gate</text>
+<rect x="514" y="384" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="400" font-size="12" font-weight="600">83</text>
+<text x="520" y="416" font-size="10.5" fill="#222">HP jack</text>
+<rect x="596" y="384" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="400" font-size="12" font-weight="600">84</text>
+<text x="602" y="416" font-size="10.5" fill="#222">CF ready</text>
+<rect x="678" y="384" width="78" height="42" rx="4" fill="#c9dcf5" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="400" font-size="12" font-weight="600">85</text>
+<text x="684" y="416" font-size="10.5" fill="#222">2700G irq</text>
+<rect x="760" y="384" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="400" font-size="12" font-weight="600">86</text>
+<text x="766" y="416" font-size="10.5" fill="#222">irq ?</text>
+<rect x="842" y="384" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="400" font-size="12" font-weight="600">87</text>
+<text x="848" y="416" font-size="10.5" fill="#222">irq ?</text>
+<rect x="22" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="446" font-size="12" font-weight="600">88</text>
+<rect x="104" y="430" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="446" font-size="12" font-weight="600">89</text>
+<text x="110" y="462" font-size="10.5" fill="#222">WiFi rst</text>
+<rect x="186" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="446" font-size="12" font-weight="600">90</text>
+<rect x="268" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="446" font-size="12" font-weight="600">91</text>
+<rect x="350" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="446" font-size="12" font-weight="600">92</text>
+<rect x="432" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="446" font-size="12" font-weight="600">93</text>
+<rect x="514" y="430" width="78" height="42" rx="4" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="446" font-size="12" font-weight="600">94</text>
+<text x="520" y="462" font-size="10.5" fill="#222">pen</text>
+<rect x="596" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="446" font-size="12" font-weight="600">95</text>
+<rect x="678" y="430" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="446" font-size="12" font-weight="600">96</text>
+<text x="684" y="462" font-size="10.5" fill="#222">audio on</text>
+<rect x="760" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="446" font-size="12" font-weight="600">97</text>
+<rect x="842" y="430" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="446" font-size="12" font-weight="600">98</text>
+<rect x="22" y="476" width="78" height="42" rx="4" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="492" font-size="12" font-weight="600">99</text>
+<text x="28" y="508" font-size="10.5" fill="#222">board rst</text>
+<rect x="104" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="492" font-size="12" font-weight="600">100</text>
+<rect x="186" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="492" font-size="12" font-weight="600">101</text>
+<rect x="268" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="492" font-size="12" font-weight="600">102</text>
+<rect x="350" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="492" font-size="12" font-weight="600">103</text>
+<rect x="432" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="492" font-size="12" font-weight="600">104</text>
+<rect x="514" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="492" font-size="12" font-weight="600">105</text>
+<rect x="596" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="492" font-size="12" font-weight="600">106</text>
+<rect x="678" y="476" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="492" font-size="12" font-weight="600">107</text>
+<text x="684" y="508" font-size="10.5" fill="#222">WiFi irq</text>
+<rect x="760" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="492" font-size="12" font-weight="600">108</text>
+<rect x="842" y="476" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="492" font-size="12" font-weight="600">109</text>
+<rect x="22" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="538" font-size="12" font-weight="600">110</text>
+<rect x="104" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="110" y="538" font-size="12" font-weight="600">111</text>
+<rect x="186" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="192" y="538" font-size="12" font-weight="600">112</text>
+<rect x="268" y="522" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="274" y="538" font-size="12" font-weight="600">113</text>
+<text x="274" y="554" font-size="10.5" fill="#222">I2S SYSCLK</text>
+<rect x="350" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="356" y="538" font-size="12" font-weight="600">114</text>
+<rect x="432" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="438" y="538" font-size="12" font-weight="600">115</text>
+<rect x="514" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="520" y="538" font-size="12" font-weight="600">116</text>
+<rect x="596" y="522" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="602" y="538" font-size="12" font-weight="600">117</text>
+<text x="602" y="554" font-size="10.5" fill="#222">I2C SCL</text>
+<rect x="678" y="522" width="78" height="42" rx="4" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="684" y="538" font-size="12" font-weight="600">118</text>
+<text x="684" y="554" font-size="10.5" fill="#222">I2C SDA</text>
+<rect x="760" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="538" font-size="12" font-weight="600">119</text>
+<rect x="842" y="522" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="538" font-size="12" font-weight="600">120</text>
+<rect x="20" y="578" width="16" height="16" rx="3" fill="#f6c8d8" stroke="#888" stroke-width="0.8"/>
+<text x="42" y="591" font-size="12">Audio (I2S, I2C, codec)</text>
+<rect x="245" y="578" width="16" height="16" rx="3" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
+<text x="267" y="591" font-size="12">Touch / keys</text>
+<rect x="470" y="578" width="16" height="16" rx="3" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
+<text x="492" y="591" font-size="12">SD / CF / Wi-Fi</text>
+<rect x="695" y="578" width="16" height="16" rx="3" fill="#c9dcf5" stroke="#888" stroke-width="0.8"/>
+<text x="717" y="591" font-size="12">Display (2700G, backlight)</text>
+<rect x="20" y="604" width="16" height="16" rx="3" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>
+<text x="42" y="617" font-size="12">Power, reset, voltage, USB</text>
+<rect x="245" y="604" width="16" height="16" rx="3" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
+<text x="267" y="617" font-size="12">Job unknown (interrupt / wake)</text>
+<rect x="470" y="604" width="16" height="16" rx="3" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="492" y="617" font-size="12">No known job on this board</text>
+<text x="20" y="656" font-size="11" fill="#444">VID = core-voltage select (GPIO3/4/38). GPIO83 high = headphones in (codec powered). GPIO12/13 low = card in. GPIO99 high = board reset.</text>
+</svg>

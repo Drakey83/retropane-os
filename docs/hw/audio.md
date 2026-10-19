@@ -13,8 +13,8 @@
 | Control | PXA27x standard I2C, GPIO117 (SCL) / GPIO118 (SDA) | confirmed (code) |
 | Codec address | 0x1A or 0x1B (the WM8750's CSB pin; not recorded): the driver tries both | unknown |
 | Audio data | PXA27x I2S, GPIO28-31 and GPIO113 (system clock) | confirmed (code) |
-| Speaker amplifier | GPIO82, plus CPLD 0x14 bit 3 ("audio amplifier power") | likely (code); polarity unknown |
-| Headphone detect | GPIO83 | likely (code) |
+| Speaker amplifier | **CPLD `0x14` bit 1** (on only for the speaker, 70 ms to settle); GPIO82 is the codec's I2C gate, not the amplifier | **confirmed** (device: Windows Mobile measured 2026-10-18, `rp-tone` run 9 played on the speaker) |
+| Headphone detect | **GPIO83, high = plugged in, valid only while the codec is powered and set up** (likely the codec's own jack-detect output) | **confirmed** (device, 2026-10-18: under Windows Mobile and `rp-tone` run 9) |
 
 ## PXA27x side (M)
 
@@ -97,7 +97,7 @@ with llvm-objdump (`local/re/wavedev/wavedev.asm`). No code copied.
 | **GPIO82 is driven high for every codec I2C transfer and low after it**, inside a lock shared with another driver (`CI2C_Mutex_H`): a gate or switch on the codec's I2C lines (likely), **not** the speaker amplifier AxDroid named. Without it the codec can't hear the bus: the first device run's "no codec at 0x1a or 0x1b" | confirmed (code); its circuit role likely | (D): the transfer routine sets GPIO82 to 1 before START and to 0 after STOP, on success and failure alike |
 | The I2C unit's clock (`CKEN` bit 14) is switched on before each transfer and off after it (on request) | confirmed (code) | (D) |
 | Fast mode: `ICR` = 0x8060 (fast mode, unit enable, SCL enable); `ISR` cleared with 0x6F0 | confirmed (code) | (D) |
-| **Headphone detect is GPIO96, low = plugged in**, not GPIO83 high: the first run's "GPIO83 0 with headphones in" fits | likely (the flag's meaning is inferred from its use) | (D): `GPLR3` bit 0 tested, the "in" state set when it reads 0 |
+| ~~Headphone detect is GPIO96, low = plugged in~~ **Superseded (measured 2026-10-18):** GPIO96 reads 1 whenever audio is powered, plugged in or not; the jack is GPIO83 (table above). The static reading took the flag for the jack | superseded | `rp-wmaudio`, `rp-tone` runs 3-9 |
 | The driver keeps DMA buffers or descriptors in the PXA27x's **internal SRAM** (0x5C038000-0x5C03E90C) and feeds `SADR` (0x40400080) | confirmed (addresses) | (D) |
 
 **Device run 2 and 3 (2026-10-18 night, `rp-tone` quiet at level 20,

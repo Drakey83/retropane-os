@@ -97,7 +97,7 @@ from its users.
 | `0x10` | `0x2000` | Wi-Fi power sequence step 4 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x10` | `0x8000` | cleared by the notification driver (LED or vibration, guess) | `OemNotify` | guess | D |
 | `0x12` | `0x0001`-`0x0008` | display sequence bits (LCD power-up/down, guess) | `ddi`, `ddi_2700g` | guess | D |
-| `0x14` | `0x0002` | audio (guess: amplifier) | `wavedev` | guess | D |
+| `0x14` | `0x0002` | **Speaker amplifier** (on only for the speaker; 70 ms to settle) | `wavedev` | **confirmed** | D; P (Windows Mobile measured, `rp-wmaudio`; `rp-tone` run 9 played on the speaker, 2026-10-18) |
 | `0x14` | `0x0004` | peripheral / serial (guess) | `peripheral`, `serial32` | guess | D |
 | `0x14` | `0x0008` | display (AxDroid: audio amplifier, set at boot). **Clearing this or `0x1A` bit 1 for 1 s wedged the device** (no check-ins after it; hardware watchdog into Dell's factory prompt; rp-unplug run 1, 2026-10-16, docs/hw/udc.md T4): never cleared outside a run built to find out which | `ddi`, `ddi_2700g` | guess | D; C; P (the hang) |
 | `0x16` | `0x0001` | **SD card power** | `pxa27x_sdhc` | confirmed | D; C; P |
@@ -111,7 +111,7 @@ from its users.
 | `0x1A` | `0x0002` | battery / charger (guess) | `battdrvr` | guess | D |
 | `0x1A` | `0x0008` | notification (guess) | `OemNotify` | guess | D |
 | `0x1C` | `0x0001` | Wi-Fi power sequence step 2 | `pcc_socket`, `tiacxwln` | likely | D; C |
-| `0x1C` | `0x0002` | audio (guess) | `wavedev` | guess | D |
+| `0x1C` | `0x0002` | **Audio codec (WM8750) power** | `wavedev` | **confirmed** | D; P (set by Windows Mobile while audio plays; RetroPane's sound with it set, 2026-10-18) |
 | `0x1C` | `0x0008` | USB (guess; AxDroid: "USB power?") | `usbfndrv` | guess | D; C |
 | `0x1E` | `0x0001`-`0x0004` | battery / charger (guess) | `battdrvr` | guess | D |
 | `0x1E` | `0x0008` | write 1 to enable the LCD-type readout | `AximSDK`, `Backlight`, `battdrvr`, `ddi` | likely | C; D |

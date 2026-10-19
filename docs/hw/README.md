@@ -7,6 +7,12 @@ from these documents only.
 What the emulator reproduces of these facts, and what it can't:
 [`emulator.md`](emulator.md).
 
+**Start here: [`datasheet.md`](datasheet.md)**, the whole board on one
+page: chips, memory map, the GPIO pinout, the CPLD's bits and each device's
+interface, with drawings ([board](img/board.svg),
+[GPIO map](img/gpio-map.svg), [CPLD map](img/cpld-map.svg)) and links to
+the evidence here.
+
 ## Not published anywhere else
 
 Facts about the Dell Axim X50/X50v/X51/X51v that, as far as we know, no
