@@ -658,9 +658,11 @@ Each its own short bench test, owner watching, only when the owner says go.
 measurements in one run, 44.1 kHz, no codec, no I2C, no board bit: a
 transfer one chain plus eight descriptors long stops at the chain's STOP
 while I2S runs; each of 0, 1, 10, 100 and 1,000 ms stopped, three tries;
-each line says whether it met the criteria). **Not yet run anywhere:** its
-emulator check `emu-dma-restart` waits for the fork to drain I2S with the
-codec off, as the X51v does (quality audit C14).
+each line says whether it met the criteria). **Passes in the emulator**
+(`emu-dma-restart`, fork rp-v0.28.0, where the PXA's link clock drains I2S
+with the codec off as the X51v does: every stop at the chain's end, every restart moving and
+finishing; the emulator's timings say nothing about the device's). Not yet
+run on the device.
 
 1. **Restarting the I2S DMA channel while I2S keeps running**: the channel
    stopped at a STOP link, left stopped 0, 10, 100 and 1,000 ms, restarted;

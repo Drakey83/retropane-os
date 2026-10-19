@@ -18,8 +18,15 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// The recording voice's buffer (in us) on every `-audiodev wav`: the link
+/// pushes samples at its own rate (rp-v0.28.0, `i2s-link-clock`) and the
+/// host's audio timer takes them when it runs, every ~30 ms on a Windows
+/// PC (2026-10-19), so the voice holds a quarter second rather than the
+/// default's few periods, and nothing recorded is dropped.
+const WAV_VOICE: &str = ",out.buffer-length=250000";
+
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.26.0";
+pub const QEMU_RELEASE: &str = "rp-v0.28.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -4770,7 +4777,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     let mut args: Vec<String> = usb_args(2).into();
     args.extend([
         "-audiodev".into(),
-        format!("wav,id=snd,path={wav_path}"),
+        format!("wav,id=snd,path={wav_path}{WAV_VOICE}"),
         "-machine".into(),
         "audiodev=snd".into(),
     ]);
@@ -5027,7 +5034,7 @@ pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
     let mut args: Vec<String> = usb_args(2).into();
     args.extend([
         "-audiodev".into(),
-        format!("wav,id=snd,path={wav_path}"),
+        format!("wav,id=snd,path={wav_path}{WAV_VOICE}"),
         "-machine".into(),
         "audiodev=snd".into(),
     ]);
@@ -5090,7 +5097,7 @@ pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
     )?;
     if skipped.get() {
         eprintln!(
-            "    dma restart: skipped (this emulator's I2S drains only into a powered codec: rp-v0.27.0)"
+            "    dma restart: skipped (this emulator's I2S drains only into a powered codec: before rp-v0.28.0)"
         );
         return Ok(());
     }
@@ -5127,7 +5134,7 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
     let mut args: Vec<String> = usb_args(2).into();
     args.extend([
         "-audiodev".into(),
-        format!("wav,id=snd,path={wav_path}"),
+        format!("wav,id=snd,path={wav_path}{WAV_VOICE}"),
         "-machine".into(),
         "audiodev=snd".into(),
     ]);
@@ -5307,7 +5314,7 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
     let mut args: Vec<String> = usb_args(2).into();
     args.extend([
         "-audiodev".into(),
-        format!("wav,id=snd,path={wav_path}"),
+        format!("wav,id=snd,path={wav_path}{WAV_VOICE}"),
         "-machine".into(),
         "audiodev=snd".into(),
     ]);

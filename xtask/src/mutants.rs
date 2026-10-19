@@ -1363,8 +1363,15 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "xtask: the emulator's clean-up ends another run's emulator (a port prefix)",
         file: "xtask/src/emu.rs",
-        from: "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'",
-        to: "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}'",
+        from: "'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'",
+        to: "'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}'",
+        check: Check::Host(&["-p", "xtask", "cleanup_ends_only_this_runs_processes"]),
+    },
+    Mutant {
+        name: "xtask: the emulator's clean-up leaves an emulator that ignores SIGTERM (C15)",
+        file: "xtask/src/emu.rs",
+        from: "pkill -KILL -f {mine}; {wait}; ",
+        to: "",
         check: Check::Host(&["-p", "xtask", "cleanup_ends_only_this_runs_processes"]),
     },
     Mutant {
