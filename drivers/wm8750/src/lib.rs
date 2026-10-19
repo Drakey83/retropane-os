@@ -50,6 +50,13 @@ const PWR1_FAST_START: u16 = 0x1C0;
 /// on.
 const PWR1_PLAYBACK: u16 = 0x0C0;
 
+/// How long VMID charges on its fast-start divider before the set-up
+/// moves it to the playback divider. Copied from Dell's driver (it waits
+/// 75 ms after register 25 = 0x1C2 before reading the jack; imitation
+/// audit); S1 run 2 read the jack right 75 ms after.
+// inherited: imitation-audit Audio, Dell wavedev.dll (75 ms VMID charge)
+pub const VMID_CHARGE_US: u32 = 75_000;
+
 /// DAC soft mute (`DAC_CTRL` bit 3).
 const DAC_MUTE: u16 = 1 << 3;
 
@@ -121,12 +128,21 @@ impl<I: I2cBus> Wm8750<I> {
     /// Finds the codec (whichever address answers) and sets it up for
     /// 48 kHz 16-bit I2S playback from a 12.288 MHz master clock (256 fs),
     /// outputs at `level` (0-100). The bus comes back if no codec answers.
-    pub fn init(i2c: I, level: u32) -> Result<Self, (I2cError, I)> {
-        Self::init_at(i2c, level, SampleRate::Khz48)
+    /// `wait_us` waits that many microseconds: the start-up charges VMID
+    /// on its fast divider for [`VMID_CHARGE_US`], then moves it to the
+    /// playback divider, so the codec comes back complete (no caller can
+    /// leave it half started).
+    pub fn init(i2c: I, level: u32, wait_us: &mut dyn FnMut(u32)) -> Result<Self, (I2cError, I)> {
+        Self::init_at(i2c, level, SampleRate::Khz48, wait_us)
     }
 
     /// As [`Self::init`], at `rate` (the I2S side must run at the same rate).
-    pub fn init_at(mut i2c: I, level: u32, rate: SampleRate) -> Result<Self, (I2cError, I)> {
+    pub fn init_at(
+        mut i2c: I,
+        level: u32,
+        rate: SampleRate,
+        wait_us: &mut dyn FnMut(u32),
+    ) -> Result<Self, (I2cError, I)> {
         // Found by its first set-up write, the reset (as Windows Mobile
         // starts; the X51v's controller can't do address-only transfers:
         // docs/hw/audio.md).
@@ -168,7 +184,12 @@ impl<I: I2cBus> Wm8750<I> {
                 return Err((e, codec.i2c));
             }
         }
-        match codec.set_level(level) {
+        if let Err(e) = codec.set_level(level) {
+            return Err((e, codec.i2c));
+        }
+        // VMID charged on the fast divider, then the playback one.
+        wait_us(VMID_CHARGE_US);
+        match codec.set(reg::PWR1, PWR1_PLAYBACK) {
             Ok(()) => Ok(codec),
             Err(e) => Err((e, codec.i2c)),
         }
@@ -219,12 +240,6 @@ impl<I: I2cBus> Wm8750<I> {
     #[must_use]
     pub fn output(&self) -> Output {
         self.output
-    }
-
-    /// Moves VMID from its fast-start divider to the playback one, once it
-    /// has charged (the datasheet's start-up: 5k to charge, then 50k).
-    pub fn normal_vmid(&mut self) -> Result<(), I2cError> {
-        self.set(reg::PWR1, PWR1_PLAYBACK)
     }
 
     /// The sample rate it was set up for.
@@ -365,7 +380,7 @@ mod tests {
                 opens: 0,
             },
         };
-        let mut codec = Wm8750::init(gated, 60).ok().unwrap();
+        let mut codec = Wm8750::init(gated, 60, &mut |_| {}).ok().unwrap();
         assert_eq!(codec.address(), 0x1A);
         assert!(!open.get(), "gate left open after set-up");
         assert!(codec.route(Output::Headphones).is_ok());
@@ -381,7 +396,7 @@ mod tests {
     #[test]
     fn finds_the_codec_on_either_address_and_sets_up_playback() {
         for addr in ADDRESSES {
-            let codec = Wm8750::init(bus(addr), 100).ok().unwrap();
+            let codec = Wm8750::init(bus(addr), 100, &mut |_| {}).ok().unwrap();
             assert_eq!(codec.address(), addr);
             let regs = codec.into_inner().regs;
             assert_eq!(regs[0], (reg::RESET, 0), "reset first");
@@ -396,7 +411,7 @@ mod tests {
 
     #[test]
     fn no_codec_gives_the_bus_back() {
-        let r = Wm8750::init(bus(0x50), 50);
+        let r = Wm8750::init(bus(0x50), 50, &mut |_| {});
         let Err((e, b)) = r else {
             panic!("found a codec that isn't there")
         };
@@ -406,7 +421,7 @@ mod tests {
 
     #[test]
     fn headphones_mute_the_speaker_and_unplugging_brings_it_back() {
-        let mut codec = Wm8750::init(bus(0x1A), 100).ok().unwrap();
+        let mut codec = Wm8750::init(bus(0x1A), 100, &mut |_| {}).ok().unwrap();
         codec.route(Output::Headphones).unwrap();
         let last =
             |regs: &[(u8, u16)], r: u8| regs.iter().rev().find(|w| w.0 == r).unwrap().1 & 0x7F;
@@ -419,18 +434,38 @@ mod tests {
     }
 
     #[test]
-    fn vmid_starts_fast_then_goes_to_playback() {
-        let mut c = Wm8750::init(bus(0x1A), 50).ok().unwrap();
+    fn vmid_charges_fast_then_the_set_up_moves_it_to_playback() {
+        use std::cell::Cell;
+        let written = Cell::new(0usize);
+        let mut waited_after = None;
+        let mut b = bus(0x1A);
+        // Count writes through a wrapper so the wait's position is known.
+        struct Counting<'a>(Bus, &'a Cell<usize>);
+        impl I2cBus for Counting<'_> {
+            fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
+                self.1.set(self.1.get() + 1);
+                self.0.write(addr, data)
+            }
+        }
+        b.regs.clear();
+        let c = Wm8750::init(Counting(b, &written), 50, &mut |us| {
+            assert_eq!(us, VMID_CHARGE_US);
+            waited_after = Some(written.get());
+        })
+        .ok()
+        .unwrap();
+        let regs = c.into_inner().0.regs;
         // Right after the reset: the 5k fast-start divider.
-        assert_eq!(c.i2c.regs[1], (reg::PWR1, PWR1_FAST_START));
-        c.normal_vmid().unwrap();
-        assert_eq!(c.i2c.regs.last(), Some(&(reg::PWR1, PWR1_PLAYBACK)));
+        assert_eq!(regs[1], (reg::PWR1, PWR1_FAST_START));
+        // The wait, then the playback divider as the last write.
+        assert_eq!(waited_after, Some(regs.len() - 1));
+        assert_eq!(regs.last(), Some(&(reg::PWR1, PWR1_PLAYBACK)));
     }
 
     #[test]
     fn the_rate_goes_to_register_8() {
         let regs = |rate| {
-            Wm8750::init_at(bus(0x1A), 50, rate)
+            Wm8750::init_at(bus(0x1A), 50, rate, &mut |_| {})
                 .ok()
                 .unwrap()
                 .into_inner()
@@ -439,19 +474,22 @@ mod tests {
         assert!(regs(SampleRate::Khz48).contains(&(reg::SRATE, 0x000)));
         // SR = 10000: 44.1 kHz at 256 fs.
         assert!(regs(SampleRate::Khz44_1).contains(&(reg::SRATE, 0x020)));
-        let c = Wm8750::init_at(bus(0x1A), 50, SampleRate::Khz44_1)
+        let c = Wm8750::init_at(bus(0x1A), 50, SampleRate::Khz44_1, &mut |_| {})
             .ok()
             .unwrap();
         assert_eq!(c.rate(), SampleRate::Khz44_1);
         assert_eq!(
-            Wm8750::init(bus(0x1A), 50).ok().unwrap().rate(),
+            Wm8750::init(bus(0x1A), 50, &mut |_| {})
+                .ok()
+                .unwrap()
+                .rate(),
             SampleRate::Khz48
         );
     }
 
     #[test]
     fn power_down_mutes_then_outputs_then_the_reference() {
-        let c = Wm8750::init(bus(0x1A), 80).ok().unwrap();
+        let c = Wm8750::init(bus(0x1A), 80, &mut |_| {}).ok().unwrap();
         let before = c.i2c.regs.len();
         let (r, b) = c.power_down();
         assert_eq!(r, Ok(()));
@@ -487,6 +525,7 @@ mod tests {
                 n: 0,
             },
             80,
+            &mut |_| {},
         )
         .ok()
         .unwrap();
@@ -509,7 +548,7 @@ mod tests {
             assert!(c >= last && (VOL_MIN..=VOL_0DB).contains(&c));
             last = c;
         }
-        let mut codec = Wm8750::init(bus(0x1A), 30).ok().unwrap();
+        let mut codec = Wm8750::init(bus(0x1A), 30, &mut |_| {}).ok().unwrap();
         codec.set_level(250).unwrap();
         assert_eq!(codec.level(), 100);
     }

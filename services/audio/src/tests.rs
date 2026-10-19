@@ -188,15 +188,15 @@ fn the_jack_is_read_only_once_the_set_up_has_settled() {
 }
 
 #[test]
-fn vmid_charges_fast_then_goes_to_playback_after_the_jack_read() {
+fn vmid_charges_fast_and_is_on_playback_before_the_jack_read() {
     let w = world(true);
     let mut a = audio(&w);
     a.up().unwrap();
     let ev = w.borrow().ev.clone();
     let fast = pos(&ev, &Ev::Reg(0x19, 0x1C0));
-    let jack = pos(&ev, &Ev::JackRead);
     let normal = pos(&ev, &Ev::Reg(0x19, 0x0C0));
-    assert!(fast < jack && jack < normal, "{ev:?}");
+    let jack = pos(&ev, &Ev::JackRead);
+    assert!(fast < normal && normal < jack, "{ev:?}");
 }
 
 #[test]

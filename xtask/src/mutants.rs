@@ -687,9 +687,9 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "audio: the jack read before its line has settled after set-up",
-        file: "services/audio/src/lib.rs",
-        from: "        self.board.delay_us(JACK_SETTLE_US);
+        name: "WM8750: the set-up moves VMID to playback without waiting for it to charge",
+        file: "drivers/wm8750/src/lib.rs",
+        from: "        wait_us(VMID_CHARGE_US);
 ",
         to: "",
         check: Check::Host(&[

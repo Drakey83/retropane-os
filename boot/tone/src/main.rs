@@ -445,7 +445,7 @@ mod image {
             finish(&mut power)
         };
         gated.bus.set_fast(TRIES[k].1);
-        let mut codec: Codec = match Wm8750::init(gated, LEVEL) {
+        let mut codec: Codec = match Wm8750::init(gated, LEVEL, &mut |us| rt::delay_us(us)) {
             Ok(c) => c,
             Err(_) => {
                 let _ = writeln!(out, "tone: the codec answered the probe but not its set-up");

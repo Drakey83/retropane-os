@@ -56,15 +56,12 @@ pub const CLOCK_SETTLE_US: u32 = 1_000;
 /// imitation audit): its real settle is judged by ear in S1.
 // inherited: imitation-audit Audio, Dell wavedev.dll (70 ms amplifier settle)
 pub const AMP_SETTLE_US: u32 = 70_000;
-/// After the codec's set-up (VMID charging on its fast-start divider),
-/// before the jack is read and VMID goes to its playback divider: the jack
-/// line (GPIO83) is valid only once VMID is up. Copied from Dell's driver
-/// (reset, register 25 = fast start, 75 ms, the jack; imitation audit). S1
-/// run 1, with the slow 50k divider from the start, read the line low with
-/// headphones in for seconds; run 2 samples it to measure the real time.
-/// Paid once per power-up.
-// inherited: imitation-audit Audio, Dell wavedev.dll (jack read 75 ms after set-up)
-pub const JACK_SETTLE_US: u32 = 75_000;
+/// The jack line (GPIO83) is valid only once the codec's VMID has charged;
+/// the codec's set-up charges it on its fast divider and waits
+/// ([`rp_drv_wm8750::VMID_CHARGE_US`], Dell's 75 ms) before it returns, so
+/// the jack is read right after (S1 run 1 read it low with headphones in
+/// for seconds on the slow divider; run 2 read it right).
+pub use rp_drv_wm8750::VMID_CHARGE_US as JACK_SETTLE_US;
 /// A jack edge must hold this long before the route follows it.
 pub const JACK_DEBOUNCE_MS: u32 = 50;
 
@@ -246,7 +243,8 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
             unreachable!("audio was down")
         };
         // Muted until the route is known: nothing reaches the wrong output.
-        let mut codec = match Wm8750::init_at(bus, 0, CODEC_RATE) {
+        let board = &mut self.board;
+        let mut codec = match Wm8750::init_at(bus, 0, CODEC_RATE, &mut |us| board.delay_us(us)) {
             Ok(c) => c,
             Err((e, bus)) => {
                 self.codec = Codec::Down(bus);
@@ -254,16 +252,10 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
                 return Err(AudioError::Codec(e));
             }
         };
-        // The jack is valid once the codec is set up and settled; the
-        // latch's edges until here are this read.
-        self.board.delay_us(JACK_SETTLE_US);
+        // The jack is valid now (the set-up waited for VMID); the latch's
+        // edges until here are this read.
         let plugged = self.board.jack_in();
         let _ = self.board.take_jack_edge();
-        if let Err(e) = codec.normal_vmid() {
-            self.codec = Codec::Up(codec);
-            let _ = self.down();
-            return Err(AudioError::Codec(e));
-        }
         let jack_was_dirty = core::mem::take(&mut self.jack_dirty);
         self.jack_pending = None;
         let output = output(plugged);
