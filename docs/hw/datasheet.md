@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-18. Facts come from measurements on the owner's X51v (a
+*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM added the same evening). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -31,7 +31,7 @@ code read but not run), **guess** (an inference worth testing),
 | Wolfson **WM8750** | audio codec: DAC, headphone and speaker outputs, jack detect | I2C (control, `0x1A`), I2S (data) | [audio.md](audio.md) |
 | TI **TSC2046** | touch screen controller | SSP1 | [touch.md](touch.md) |
 | TI **TNETW1100B (ACX100)** | Wi-Fi, 802.11b | PC Card socket 0 (`0x2C000000`) | [cf.md](cf.md), [../research/hardware-inventory.md](../research/hardware-inventory.md) |
-| Bluetooth module | classic Bluetooth (version to confirm) | BTUART | [../design/peripherals.md](../design/peripherals.md) |
+| TI **BRF6150** | Bluetooth **1.2** (no Low Energy, PIN pairing only), firmware 3.0.48, 921,600 baud | BTUART | [bluetooth.md](bluetooth.md) |
 
 ## 2. Memory map (physical)
 
@@ -185,12 +185,16 @@ watching.
   controller (`UP2OCR.HXS`) or a board reset; double-buffered bulk
   endpoints by DMA. Page: [udc.md](udc.md).
 - **Host**: the OHCI controller; its port 2 shares that connector (the
-  loader uses it for the unplug). Power to a device (VBUS): to check
-  ([../design/peripherals.md](../design/peripherals.md)).
+  loader uses it for the unplug). Windows Mobile has **no USB host
+  drivers** on the X51v; power to a device (VBUS): unknown, to check
+  ([bluetooth.md](bluetooth.md),
+  [../design/peripherals.md](../design/peripherals.md)).
 
 ### Serial, IrDA, Bluetooth, Wi-Fi
 - FFUART: the debug console (the loader's log); STUART: IrDA; BTUART:
-  the Bluetooth module (power bits in [cpld.md](cpld.md)); Wi-Fi: the ACX100
+  the **TI BRF6150** Bluetooth 1.2 radio at 921,600 baud, its PCM voice port
+  and its own I2C possibly wired to the codec ([bluetooth.md](bluetooth.md));
+  Wi-Fi: the ACX100
   on socket 0, reset GPIO89, interrupt GPIO107. Interrupt lines:
   [interrupts.md](interrupts.md).
 
@@ -204,8 +208,8 @@ watching.
 
 ## 6. Open questions
 
-The bits and lines marked unknown or guess above; the Bluetooth module's
-part and version; VBUS on the USB connector; GPIO11, 86/87 and 96's jobs;
+The bits and lines marked unknown or guess above; the BRF6150's power
+lines and whether its PCM port reaches the codec; VBUS on the USB connector; GPIO11, 86/87 and 96's jobs;
 the 2700G's TA vertex formats for fog and a second texture unit. Each is
 listed with its next step on its own page and in
 [../quality-audit.md](../quality-audit.md).

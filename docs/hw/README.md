@@ -32,6 +32,7 @@ measured on one X51v. Each links to its spec, with sources and confidence.
 | The MMU/cache enable hazard on the X51v's XScale (CPWAIT and what follows must share a cache line) | "First facts" below |
 | RAM starts at `0xA8000000` (HaRET needs `ramaddr`) | [`memory-map.md`](memory-map.md) |
 | SD card detect GPIO12 (low = in) and write-protect GPIO27 (high = locked); an SD multi-block write needs the stop-transmission bit for its CMD12 | [`sd.md`](sd.md) |
+| **The built-in Bluetooth radio is a TI BRF6150 (Bluetooth 1.2, firmware 3.0.48, 921,600 baud)**, and Windows Mobile ships no USB host drivers on the X51v | [`bluetooth.md`](bluetooth.md) |
 | USB client quirks of the PXA27x UDC as wired on the X51v (fixed pull-up: the PC never sees a disconnect) | [`udc.md`](udc.md) |
 
 ## Format

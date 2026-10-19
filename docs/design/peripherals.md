@@ -2,9 +2,12 @@
 
 **Owner (2026-10-18):** full driver support for **keyboards and mice over
 USB and Bluetooth**, and **Bluetooth headsets** (stereo listening, and
-calls with the headset's microphone). This page holds the requirement and
-the questions until its design is written for the owner's vote (after the
-hardware datasheet); nothing is built yet.
+calls with the headset's microphone). **The design is
+[ADR-0033](../adr/0033-keyboards-mice-headsets.md)** (proposed 2026-10-18,
+votes P1-P5 waiting for the owner); the hardware facts found since are in
+[hw/bluetooth.md](../hw/bluetooth.md) (the radio is a TI BRF6150,
+Bluetooth 1.2; Windows Mobile has no USB host drivers). This page keeps
+the original requirement and questions.
 
 ## What the X51v gives us (known, and to check)
 
