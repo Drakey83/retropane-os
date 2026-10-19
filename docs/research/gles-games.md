@@ -6,6 +6,10 @@ sizes the binary GLES layer for closed games (ADR-0026 D7, amended
 2026-10-15): we implement the union of what owned games import, nothing
 speculative. Open-source engines get native ports instead (D7 layer 3).
 
+The wider library (every title, emulator and demo with evidence of 2700G
+3D, including games the owner doesn't have, and what was checked and
+excluded): [`3d-games-catalogue.md`](3d-games-catalogue.md).
+
 Method: unpack the installer or read the installed files, list the PE
 imports (`libGLES_CL.dll`, `libGLES_CM.dll`, `libEGL.dll`, `gx.dll`),
 resolve ordinals against Intel's `libGLES_CL.dll` exports from the
