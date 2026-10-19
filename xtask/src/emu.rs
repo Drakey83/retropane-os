@@ -4892,30 +4892,33 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
                 ));
             }
         }
-        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        // The owner's steps: headphones in at the start, out at step 2. At
+        // step 4 the check leaves them out (the owner puts them back): the
+        // model records only the speaker's voice, and the recording keeps
+        // only the last power-up's sound, so the last note must go to the
+        // speaker to be checked.
+        mon.query("qom-set /machine/peripheral/jack pressed true")?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
-        // While the image waits for the jack (after its three notes).
-        std::thread::sleep(Duration::from_secs(6));
-        mon.query("qom-set /machine/peripheral/jack pressed true")?;
-        // While audio is off and the image waits again (15 s window).
-        std::thread::sleep(Duration::from_secs(8));
+        std::thread::sleep(Duration::from_secs(7));
         mon.query("qom-set /machine/peripheral/jack pressed false")?;
         let log = usb_read_until(&mut s, "RPL END", 60)?;
         for want in [
             "RetroPane audio S1 (44.1 kHz",
-            "up (first): codec at 0x1a, to speaker, waited 0 ms",
+            "STEP 1: HEADPHONES IN",
+            "up (first): codec at 0x1a, to headphones, waited 0 ms",
             "note 440 Hz: 44100 frames",
             "note 880 Hz: 44100 frames",
+            "STEP 2: PULL THE HEADPHONES OUT NOW",
+            "jack: rerouted to speaker (edge latch, debounced)",
             "board: speaker amplifier on",
-            "PLUG IN THE HEADPHONES NOW",
-            "jack: rerouted to headphones (edge latch, debounced)",
-            "board: speaker amplifier off",
-            "to headphones",
-            "up (straight after down): codec at 0x1a, to headphones",
-            "AUDIO IS OFF: UNPLUG THE HEADPHONES NOW",
+            "STEP 3: LEAVE THEM OUT",
+            "up (straight after down): codec at 0x1a, to speaker",
+            "STEP 4: PUT THE HEADPHONES BACK IN NOW",
             "while down: a jack edge came: false",
             "up (after the change while down): codec at 0x1a, to speaker",
+            "board: speaker amplifier off",
+            "DONE: 6 NOTES IN ALL",
             "board bits put back as found",
             "AUDIO-S1-OK",
         ] {

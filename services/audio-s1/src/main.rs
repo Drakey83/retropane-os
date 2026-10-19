@@ -222,14 +222,15 @@ mod image {
                     p.waited_ms,
                     p.jack_was_dirty
                 );
-                // When is the jack line valid? Sampled after set-up.
-                let mut t = 0;
-                for at in [0u32, 25, 75, 150] {
-                    a.board_mut().delay_us((at - t) * 1_000);
-                    t = at;
+                // When is the jack line valid? Sampled every 50 ms for 1 s
+                // after the power-up (which read it after Dell's 75 ms).
+                let _ = write!(out, "  GPIO83 every 50 ms after up:");
+                for _ in 0..20 {
                     let level = a.board_mut().gpio.borrow_mut().read(JACK);
-                    let _ = writeln!(out, "  GPIO83 {at} ms after set-up: {}", u8::from(level));
+                    let _ = write!(out, "{}", u8::from(level));
+                    a.board_mut().delay_us(50_000);
                 }
+                let _ = writeln!(out);
                 true
             }
             Err(e) => {
@@ -343,7 +344,9 @@ mod image {
         let mut a: Service<'_> = Audio::new(board, PxaI2s::new(i2s), bus, LEVEL);
         let ring = &mut scratch[..RING];
 
-        // 1. Up, three notes.
+        // The owner's steps, the same words as in the chat: headphones in
+        // at the start; fixed prompts that never depend on a reading.
+        let _ = writeln!(out, "STEP 1: HEADPHONES IN. LISTEN: 3 NOTES");
         if !up(&mut out, &mut a, "first") {
             finish(a.board_mut().cpld.take(), found)
         }
@@ -352,15 +355,9 @@ mod image {
         }
 
         // 2. The jack while up.
-        let was = a.output();
         let _ = writeln!(
             out,
-            "{} THE HEADPHONES NOW ({CHANGE_WAIT_S} s)",
-            if was == Some(Output::Headphones) {
-                "UNPLUG"
-            } else {
-                "PLUG IN"
-            }
+            "STEP 2: PULL THE HEADPHONES OUT NOW ({CHANGE_WAIT_S} s). LISTEN: 1 NOTE"
         );
         let mut rerouted = None;
         for _ in 0..CHANGE_WAIT_S * 100 {
@@ -381,6 +378,10 @@ mod image {
         }
 
         // 3. Down, then straight back up: the guard.
+        let _ = writeln!(
+            out,
+            "STEP 3: LEAVE THEM OUT. LISTEN: 1 NOTE AFTER A SHORT PAUSE"
+        );
         down(&mut out, &mut a);
         if up(&mut out, &mut a, "straight after down") {
             note(&mut out, &mut a, &mut dma, ring, 440);
@@ -390,12 +391,7 @@ mod image {
         down(&mut out, &mut a);
         let _ = writeln!(
             out,
-            "AUDIO IS OFF: {} THE HEADPHONES NOW ({DOWN_WAIT_S} s)",
-            if a.output().or(rerouted).or(was) == Some(Output::Headphones) {
-                "UNPLUG"
-            } else {
-                "PLUG IN"
-            }
+            "STEP 4: PUT THE HEADPHONES BACK IN NOW ({DOWN_WAIT_S} s). THEN LISTEN: 1 NOTE"
         );
         for _ in 0..DOWN_WAIT_S * 100 {
             let _ = a.poll_jack();
@@ -410,6 +406,7 @@ mod image {
             note(&mut out, &mut a, &mut dma, ring, 880);
         }
         down(&mut out, &mut a);
+        let _ = writeln!(out, "DONE: 6 NOTES IN ALL");
         let cpld = a.board_mut().cpld.take();
         finish(cpld, found)
     }

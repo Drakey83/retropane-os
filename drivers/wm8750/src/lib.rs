@@ -43,6 +43,13 @@ const VOL_ZC: u16 = 1 << 7;
 const VOL_0DB: u16 = 0x79;
 const VOL_MIN: u16 = 0x30;
 
+/// Register 25 (`PWR1`): VMID on its 5k divider (`VMIDSEL` = 11, fast
+/// start) and VREF on.
+const PWR1_FAST_START: u16 = 0x1C0;
+/// Register 25: VMID on its 50k divider (`VMIDSEL` = 01, playback) and VREF
+/// on.
+const PWR1_PLAYBACK: u16 = 0x0C0;
+
 /// DAC soft mute (`DAC_CTRL` bit 3).
 const DAC_MUTE: u16 = 1 << 3;
 
@@ -138,8 +145,12 @@ impl<I: I2cBus> Wm8750<I> {
             rate,
         };
         let setup = [
-            // VMID 50k divider (playback), VREF on.
-            (reg::PWR1, 0x0C0),
+            // VMID on its 5k divider (fast start) and VREF: the reference
+            // charges quickly, as Windows Mobile's driver starts it
+            // (register 25 = 0x1C2, then 75 ms, then the jack: S1 run 1
+            // showed the jack line low for seconds with the 50k divider).
+            // `normal_vmid` moves to 50k once it has charged.
+            (reg::PWR1, PWR1_FAST_START),
             // DACs, both output pairs.
             (reg::PWR2, 0x1F8),
             // I2S, 16-bit, slave (the PXA drives the clocks).
@@ -208,6 +219,12 @@ impl<I: I2cBus> Wm8750<I> {
     #[must_use]
     pub fn output(&self) -> Output {
         self.output
+    }
+
+    /// Moves VMID from its fast-start divider to the playback one, once it
+    /// has charged (the datasheet's start-up: 5k to charge, then 50k).
+    pub fn normal_vmid(&mut self) -> Result<(), I2cError> {
+        self.set(reg::PWR1, PWR1_PLAYBACK)
     }
 
     /// The sample rate it was set up for.
@@ -399,6 +416,15 @@ mod tests {
         codec.route(Output::Speaker).unwrap();
         assert_eq!(last(&codec.i2c.regs, reg::ROUT2), VOL_0DB);
         assert_eq!(codec.output(), Output::Speaker);
+    }
+
+    #[test]
+    fn vmid_starts_fast_then_goes_to_playback() {
+        let mut c = Wm8750::init(bus(0x1A), 50).ok().unwrap();
+        // Right after the reset: the 5k fast-start divider.
+        assert_eq!(c.i2c.regs[1], (reg::PWR1, PWR1_FAST_START));
+        c.normal_vmid().unwrap();
+        assert_eq!(c.i2c.regs.last(), Some(&(reg::PWR1, PWR1_PLAYBACK)));
     }
 
     #[test]

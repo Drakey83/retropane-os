@@ -56,11 +56,13 @@ pub const CLOCK_SETTLE_US: u32 = 1_000;
 /// imitation audit): its real settle is judged by ear in S1.
 // inherited: imitation-audit Audio, Dell wavedev.dll (70 ms amplifier settle)
 pub const AMP_SETTLE_US: u32 = 70_000;
-/// After the codec's set-up, before the jack is read: the jack line
-/// (GPIO83) is valid only with the codec powered and set up. Copied from
-/// Dell's driver (it reads the jack 75 ms after its reset and power writes;
-/// imitation audit); S1's device run samples the line at 0, 25, 75 and
-/// 150 ms to replace it with a measurement. Paid once per power-up.
+/// After the codec's set-up (VMID charging on its fast-start divider),
+/// before the jack is read and VMID goes to its playback divider: the jack
+/// line (GPIO83) is valid only once VMID is up. Copied from Dell's driver
+/// (reset, register 25 = fast start, 75 ms, the jack; imitation audit). S1
+/// run 1, with the slow 50k divider from the start, read the line low with
+/// headphones in for seconds; run 2 samples it to measure the real time.
+/// Paid once per power-up.
 // inherited: imitation-audit Audio, Dell wavedev.dll (jack read 75 ms after set-up)
 pub const JACK_SETTLE_US: u32 = 75_000;
 /// A jack edge must hold this long before the route follows it.
@@ -257,6 +259,11 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         self.board.delay_us(JACK_SETTLE_US);
         let plugged = self.board.jack_in();
         let _ = self.board.take_jack_edge();
+        if let Err(e) = codec.normal_vmid() {
+            self.codec = Codec::Up(codec);
+            let _ = self.down();
+            return Err(AudioError::Codec(e));
+        }
         let jack_was_dirty = core::mem::take(&mut self.jack_dirty);
         self.jack_pending = None;
         let output = output(plugged);

@@ -301,6 +301,18 @@ explain "valid only once set up"); (c) until settled, the service's
 power-up keeps both outputs muted until the jack line has been stable for
 a measured time. (a) and (b) can be combined; (b) needs no device.
 
+**Dell's start-up, read again after run 1 (static, `wavedev.dll`
+`0x02464AA8`-`0x02464BC4`, facts only):** codec reset; **register 25 =
+`0x1C2`** (VMID on its 5 kΩ fast-start divider, VREF, mic bias); **75 ms**;
+GPIO83 read (`GPLR2` bit 19), then GPIO96 (`GPLR3` bit 0); register 25 =
+`0x0C2` or `0x0C0` (the 50 kΩ playback divider, mic bias by GPIO96);
+register 16 = `0x080`, register 24 = `0x008`. RetroPane wrote `0x0C0` at
+once (the slow divider), which fits run 1's jack line staying low for
+seconds. **Changed for run 2:** `0x1C0` at set-up, the jack read 75 ms
+later, then `0x0C0`; and GPIO83 sampled every 50 ms for 1 s after
+power-up. Registers 16 and 24 are not written yet (their meaning to be
+read from the datasheet before copying them).
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
