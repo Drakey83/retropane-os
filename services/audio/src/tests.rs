@@ -35,6 +35,9 @@ struct World {
     link_off_at: Option<u64>,
     plugged: bool,
     edge: bool,
+    /// When the codec's rate was set (its set-up), and the jack last read.
+    set_up_at: Option<u64>,
+    jack_read_at: Option<u64>,
 }
 
 type W = Rc<RefCell<World>>;
@@ -46,7 +49,11 @@ struct FakeBus(W);
 impl Board for FakeBoard {
     fn codec_power(&mut self, on: bool) {
         let mut w = self.0.borrow_mut();
+        // The jack line is high only while powered and plugged: switching
+        // the supply moves it, and the latch catches that edge.
+        let before = w.powered && w.plugged;
         w.powered = on;
+        w.edge |= before != (on && w.plugged);
         w.ev.push(Ev::Power(on));
     }
     fn speaker_amp(&mut self, on: bool) {
@@ -61,6 +68,7 @@ impl Board for FakeBoard {
     fn jack_in(&mut self) -> bool {
         let mut w = self.0.borrow_mut();
         w.ev.push(Ev::JackRead);
+        w.jack_read_at = Some(w.us);
         // Valid only with the codec powered (and set up): else reads low.
         w.powered && w.plugged
     }
@@ -105,6 +113,9 @@ impl I2cBus for FakeBus {
             return Err(I2cError::Nak);
         }
         w.writes += 1;
+        if data[0] >> 1 == 0x08 {
+            w.set_up_at = Some(w.us);
+        }
         let [a, b] = data else {
             panic!("codec writes are two bytes")
         };
@@ -161,6 +172,19 @@ fn up_powers_then_clocks_then_talks_then_reads_the_jack() {
         .unwrap();
     assert!(amp < unmute);
     assert!(a.is_up());
+}
+
+#[test]
+fn the_jack_is_read_only_once_the_set_up_has_settled() {
+    let w = world(true);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    let ww = w.borrow();
+    let settled = ww.jack_read_at.unwrap() - ww.set_up_at.unwrap();
+    assert!(
+        settled >= u64::from(JACK_SETTLE_US),
+        "read {settled} us after set-up"
+    );
 }
 
 #[test]
@@ -239,6 +263,17 @@ fn a_jack_edge_while_down_powers_nothing_and_is_read_at_the_next_up() {
     let p = a.up().unwrap();
     assert!(p.jack_was_dirty);
     assert_eq!(p.output, Output::Headphones);
+    assert!(!a.jack_dirty());
+}
+
+#[test]
+fn our_own_power_down_is_not_a_jack_change() {
+    let w = world(true);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    a.down().unwrap();
+    // The line fell with the supply; nothing changed at the jack.
+    assert_eq!(a.poll_jack(), None);
     assert!(!a.jack_dirty());
 }
 

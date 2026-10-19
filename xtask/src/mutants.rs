@@ -631,10 +631,11 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "audio: a failed power-up leaves the speaker amplifier on",
+        name: "audio: going down leaves the speaker amplifier on",
         file: "services/audio/src/lib.rs",
-        from: "    fn back_down(&mut self) {\n        self.amp_off();\n",
-        to: "    fn back_down(&mut self) {\n",
+        from: "        self.amp_off();
+        let (r, bus) = codec.power_down();",
+        to: "        let (r, bus) = codec.power_down();",
         check: Check::Host(&[
             "-p",
             "rp-audio",
@@ -684,6 +685,28 @@ pub const MUTANTS: &[Mutant] = &[
             "rp-drv-wm8750",
             "power_down_mutes_then_outputs_then_the_reference",
         ]),
+    },
+    Mutant {
+        name: "audio: the jack read before its line has settled after set-up",
+        file: "services/audio/src/lib.rs",
+        from: "        self.board.delay_us(JACK_SETTLE_US);
+",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_jack_is_read_only_once_the_set_up_has_settled",
+        ]),
+    },
+    Mutant {
+        name: "audio: the jack line falling with our own power-down taken as a jack change",
+        file: "services/audio/src/lib.rs",
+        from: "        let _ = self.board.take_jack_edge();
+        r
+",
+        to: "        r
+",
+        check: Check::Host(&["-p", "rp-audio", "our_own_power_down_is_not_a_jack_change"]),
     },
 ];
 /// Puts a file back when dropped.

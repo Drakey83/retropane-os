@@ -105,6 +105,9 @@ commands:
   tone     the audio check: loads rp-tone (440 Hz to the speaker or the
             headphones, then waits 15 s for the jack to change; the run log
             names the output and the CPU's busy share)
+  audio-s1  audio service step S1 (ADR-0032), a guided run with the
+            owner listening: loads rp-audio-s1 (44.1 kHz, the jack while up
+            and while down, the I2S restart guard)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
             in target/device-check.txt; --with-owner adds CF (the tone:
@@ -172,6 +175,9 @@ commands:
             picture pixel-exact through each gamma table its dials set)
   emu-tone  the audio test image (rp-tone): the codec behind its GPIO82 gate,
             440 Hz to the speaker, the GPIO96 jack, 1000 Hz to headphones
+  emu-audio-s1  the S1 image's check (rp-audio-s1: three notes at
+            44.1 kHz, the jack re-routes while up, the restart guard, no
+            power-up for a jack change while down)
   emu-looks the C6 looks test's check (rp-looks: photos, chart and ramps
             pixel-exact through each measured table)
   emu-drive only the drive check (the card as a USB drive, its blocks by DMA)
@@ -203,8 +209,10 @@ fn main() -> ExitCode {
         | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
         | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
-        | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-refresh" | "emu-screen-measure"
-        | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-refresh"
+        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => {
+            run_step(&cmd)
+        }
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -405,6 +413,10 @@ fn main() -> ExitCode {
             eprintln!("==> tone (rp-tone)");
             usb::load(&workspace_root(), "rp-tone", false)
         }
+        "audio-s1" => {
+            eprintln!("==> audio-s1 (rp-audio-s1)");
+            usb::load(&workspace_root(), "rp-audio-s1", false)
+        }
         "device-check" => {
             eprintln!("==> device-check {flag}");
             usb::device_check(&workspace_root(), flag == "--with-owner")
@@ -487,6 +499,7 @@ fn run_step(step: &str) -> Result {
         "emu-display-cal" => cross().and_then(|()| emu::boot_loader_display_cal(&workspace_root())),
         "emu-looks" => cross().and_then(|()| emu::boot_loader_looks(&workspace_root())),
         "emu-tone" => cross().and_then(|()| emu::boot_loader_tone(&workspace_root())),
+        "emu-audio-s1" => cross().and_then(|()| emu::boot_loader_audio_s1(&workspace_root())),
         "emu-refresh" => cross().and_then(|()| emu::boot_loader_refresh(&workspace_root())),
         "emu-screen-measure" => {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
@@ -545,6 +558,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
             .and_then(|()| emu::boot_loader_cf(&workspace_root()))
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
+            .and_then(|()| emu::boot_loader_audio_s1(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))

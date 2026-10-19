@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM added the same evening). Facts come from measurements on the owner's X51v (a
+*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM, and the audio service's jack findings, added the same evening). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -148,7 +148,11 @@ watching.
 - Data: I2S master (bit clock and frame from the PXA), 48 kHz proven, by
   DMA (channel map `AUDIO`).
 - Outputs: headphones (jack GPIO83) and speaker (amplifier CPLD `0x14`
-  bit 1).
+  bit 1). GPIO83 is high only while the codec is powered, so it falls
+  when the codec goes off with headphones in (an edge of our own making),
+  and a plug while audio is off likely makes no edge (emulator-modelled;
+  device run S1 pending). RetroPane's session rate is **44.1 kHz**
+  (ADR-0032 A1: `SADIV` `0x0D`, codec register 8 = `0x020`).
 - **Traps measured on this board:** the I2C controller can't do
   address-only transfers (a byte with START and STOP never finishes; after
   an acknowledged address a master abort holds SCL low); a switch-on of I2S

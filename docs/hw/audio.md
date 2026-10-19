@@ -251,6 +251,23 @@ switching it on within ~645 ms is dropped**. Run 8's "200 ms off plays"
 followed a failed try. `PxaI2s::start` now reads `SACR0` back and reports
 a dropped switch-on; the OS keeps I2S on through a session.
 
+**The audio service's S1 core (2026-10-18, `services/audio`, ADR-0032;
+emulator-verified, device run pending):** 44.1 kHz on both sides
+(`SADIV` `0x0D`; the codec's `SR` = 10000, register 8 = `0x020`, from the
+datasheet's table as the emulator's model has it); power-up and power-down
+in one order each, everything put back on any failure; the I2S restart
+guard (700 ms); the jack by GPIO83's edge latch (`GEDR`, both edges),
+debounced 50 ms while up. **Found in the emulator and fixed:** switching
+the codec off with headphones in drops GPIO83 (it reads high only while
+powered), so the latch catches an edge of our own making; the service
+clears it at power-down. Because of the same rule, **a jack change while
+audio is off most likely makes no edge at all** (Windows Mobile measured:
+GPIO83 reads 0 idle, plugged or not): the next power-up reads the jack
+anyway. `rp-audio-s1` (`cargo xtask audio-s1`) is the guided device run:
+three notes, the jack while up and while down, the guard, and GPIO83
+sampled 0/25/75/150 ms after set-up (Dell's driver waits 75 ms: copied
+until measured).
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the

@@ -1,0 +1,23 @@
+[package]
+name = "rp-audio-s1"
+description = "Audio service step S1 on the real X51v (ADR-0032): power-up at 44.1 kHz, the jack by its edge latch while up and while down, the I2S restart guard, the jack line's settle time measured"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-i2c = { path = "../../drivers/pxa-i2c" }
+rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
+rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-audio = { path = "../../services/audio" }
+
+[lints]
+workspace = true

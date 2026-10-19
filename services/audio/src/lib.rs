@@ -46,13 +46,23 @@ pub const RESTART_GUARD_MS: u32 = 700;
 /// After the codec's supply comes on, before anything else. Copied from
 /// Dell's driver (1 ms; imitation audit): `rp-tone` run 6 found the codec at
 /// 1 ms and 300 ms alike. Measured again in S1.
+// inherited: imitation-audit Audio, Dell wavedev.dll (1 ms after codec power)
 pub const POWER_SETTLE_US: u32 = 1_000;
 /// After I2S starts (the codec's master clock), before the first I2C
 /// write. Copied from Dell's driver (1 ms; imitation audit).
+// inherited: imitation-audit Audio, Dell wavedev.dll (1 ms after I2S on)
 pub const CLOCK_SETTLE_US: u32 = 1_000;
 /// After the speaker amplifier comes on. Copied from Dell's driver (70 ms;
 /// imitation audit): its real settle is judged by ear in S1.
+// inherited: imitation-audit Audio, Dell wavedev.dll (70 ms amplifier settle)
 pub const AMP_SETTLE_US: u32 = 70_000;
+/// After the codec's set-up, before the jack is read: the jack line
+/// (GPIO83) is valid only with the codec powered and set up. Copied from
+/// Dell's driver (it reads the jack 75 ms after its reset and power writes;
+/// imitation audit); S1's device run samples the line at 0, 25, 75 and
+/// 150 ms to replace it with a measurement. Paid once per power-up.
+// inherited: imitation-audit Audio, Dell wavedev.dll (jack read 75 ms after set-up)
+pub const JACK_SETTLE_US: u32 = 75_000;
 /// A jack edge must hold this long before the route follows it.
 pub const JACK_DEBOUNCE_MS: u32 = 50;
 
@@ -242,7 +252,9 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
                 return Err(AudioError::Codec(e));
             }
         };
-        // The jack is valid now; the latch's edges until here are this read.
+        // The jack is valid once the codec is set up and settled; the
+        // latch's edges until here are this read.
+        self.board.delay_us(JACK_SETTLE_US);
         let plugged = self.board.jack_in();
         let _ = self.board.take_jack_edge();
         let jack_was_dirty = core::mem::take(&mut self.jack_dirty);
@@ -283,6 +295,10 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         let (r, bus) = codec.power_down();
         self.codec = Codec::Down(bus);
         self.back_down();
+        // The jack line falls with the codec's supply (it reads high only
+        // while powered): that edge is ours, not a jack change. (Caught by
+        // the emulator's model, 2026-10-18.)
+        let _ = self.board.take_jack_edge();
         r
     }
 
@@ -365,10 +381,12 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         }
     }
 
-    /// Everything but the codec's own registers, down: the amplifier, I2S
-    /// (its switch-off time kept for the guard), the pins, the supply.
+    /// Everything but the codec's own registers and the amplifier, down: I2S
+    /// (its switch-off time kept for the guard), the pins, the supply. The
+    /// amplifier is on only while the codec is up, and [`Self::down`] takes
+    /// it off first.
     fn back_down(&mut self) {
-        self.amp_off();
+        debug_assert!(!self.amp, "the amplifier outlived the codec");
         self.link.stop();
         self.stopped_at = Some(self.board.now_ms());
         self.board.pins_down();

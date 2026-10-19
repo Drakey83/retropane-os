@@ -294,7 +294,14 @@ with the performance monitor built first to measure everything else).
 
 ### Audio
 
-- **Today:** DMA ring for playback, refilled by polling; 48 kHz only.
+- **Today (2026-10-18):** the audio service's S1 core (`services/audio`,
+  ADR-0032): 44.1 kHz fixed (vote A1, chosen on content, not imitation),
+  one power-up and power-down order, the I2S restart guard, the jack by
+  its edge latch. **Four copied Dell timings, tagged `inherited:` in the
+  code, each to be replaced by a measurement in S1's device run:** 1 ms
+  after codec power, 1 ms after I2S on, 70 ms amplifier settle, 75 ms
+  before the jack is read (`rp-audio-s1` samples GPIO83 at 0/25/75/150 ms).
+  Before: DMA ring for playback, refilled by polling; 48 kHz only.
 - **Better ways:** DMA completion interrupt (CPU sleeps), a mixer with
   sample-rate conversion, low-latency mode for games.
 - **Verdict:** 🔧 covered by **item 73** (interrupts) and Phase 5/8 audio

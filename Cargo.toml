@@ -51,6 +51,7 @@ members = [
     "boot/refresh",
     "boot/cfdetect",
     "boot/tone",
+    "boot/audio-s1",
     "boot/crash",
     "boot/hang",
     "boot/mbx",

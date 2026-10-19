@@ -4836,9 +4836,149 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(90),
         },
     )?;
-    let data = std::fs::read(&wav).map_err(|e| format!("{}: {e}", wav.display()))?;
+    let (found, seconds) = first_notes(&wav, &[440.0, 660.0, 880.0], "tone")?;
+    eprintln!(
+        "    tone OK: WM8750 found on I2C, three notes through I2S, recorded at {:.1}, {:.1} and {:.1} Hz over {seconds:.3} s",
+        found[0], found[1], found[2]
+    );
+    Ok(())
+}
+
+/// Audio service step S1 (ADR-0032, `rp-audio-s1`): audio up at 44.1 kHz
+/// through the service, three notes to the speaker (pitch checked in the
+/// recording: a codec set to another rate than I2S would shift it), the
+/// headphones plugged in while up (re-routed by the edge latch), down and
+/// straight back up (the restart guard waits, then a note plays: the
+/// emulator drops an early switch-on as the X51v does), the headphones
+/// pulled while down (no edge: the jack line is low with the codec off, as
+/// measured; the next power-up reads it), the board bits put back.
+pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    audio S1: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let image = raw_image(root, "rp-audio-s1")?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let wav = scratch(root, "audio-s1.wav")?;
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let port = monitor_port();
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend([
+        "-audiodev".into(),
+        format!("wav,id=snd,path={wav_path}"),
+        "-machine".into(),
+        "audiodev=snd".into(),
+    ]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        // The audio wiring as measured (rp-v0.23.0+) and the I2S restart
+        // rule (rp-v0.24.0+) are what this check is about.
+        for prop in ["codec-power", "i2s-restart"] {
+            if !mon
+                .query(&format!("qom-get /machine {prop}"))?
+                .contains("true")
+            {
+                return Err(format!(
+                    "audio S1: this emulator lacks the {prop} model (pin rp-v0.24.0 or later)"
+                ));
+            }
+        }
+        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // While the image waits for the jack (after its three notes).
+        std::thread::sleep(Duration::from_secs(6));
+        mon.query("qom-set /machine/peripheral/jack pressed true")?;
+        // While audio is off and the image waits again (15 s window).
+        std::thread::sleep(Duration::from_secs(8));
+        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        let log = usb_read_until(&mut s, "RPL END", 60)?;
+        for want in [
+            "RetroPane audio S1 (44.1 kHz",
+            "up (first): codec at 0x1a, to speaker, waited 0 ms",
+            "note 440 Hz: 44100 frames",
+            "note 880 Hz: 44100 frames",
+            "board: speaker amplifier on",
+            "PLUG IN THE HEADPHONES NOW",
+            "jack: rerouted to headphones (edge latch, debounced)",
+            "board: speaker amplifier off",
+            "to headphones",
+            "up (straight after down): codec at 0x1a, to headphones",
+            "AUDIO IS OFF: UNPLUG THE HEADPHONES NOW",
+            "while down: a jack edge came: false",
+            "up (after the change while down): codec at 0x1a, to speaker",
+            "board bits put back as found",
+            "AUDIO-S1-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("audio S1: no {want:?} in the run log:{log}"));
+            }
+        }
+        // The guard waited (most of 700 ms: down takes a few) and the note
+        // after it played.
+        let waited = log
+            .lines()
+            .find(|l| l.starts_with("up (straight after down)"))
+            .and_then(|l| l.split("waited ").nth(1))
+            .and_then(|r| r.split(' ').next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .ok_or("audio S1: no guard wait in the log")?;
+        if !(500..=700).contains(&waited) {
+            return Err(format!("audio S1: the restart guard waited {waited} ms"));
+        }
+        let played = log.matches("frames in").count();
+        if played != 6 {
+            return Err(format!("audio S1: {played} notes played, wanted 6:{log}"));
+        }
+        if log.contains("failed") || log.contains("stream ") {
+            return Err(format!("audio S1: a step failed:{log}"));
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    // Each power-up re-opens the emulator codec's voice, and its wav
+    // backend starts the file again: the recording holds the last session,
+    // its one note (880 Hz). Its pitch proves both sides at 44.1 kHz (a
+    // codec left at 48 kHz would play it ~9% sharp).
+    let (found, seconds) = first_notes(&wav, &[880.0], "audio S1")?;
+    eprintln!(
+        "    audio S1 OK: three power-ups at 44.1 kHz through the service, the last note recorded at {:.1} Hz over {seconds:.3} s; jack re-routed while up, the restart guard waited, no jack change seen for our own power-down",
+        found[0]
+    );
+    Ok(())
+}
+
+/// The first stretch of sound in an emulator recording (`wav`): `want`'s
+/// notes back to back, a second each. Their measured frequencies (within
+/// 4% of `want`, else an error naming `what`) and the stretch's length.
+fn first_notes(wav: &Path, want: &[f64], what: &str) -> Result<(Vec<f64>, f64), String> {
+    let data = std::fs::read(wav).map_err(|e| format!("{}: {e}", wav.display()))?;
     if data.len() < 44 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
-        return Err("tone: the emulator wrote no wav".into());
+        return Err(format!("{what}: the emulator wrote no wav"));
     }
     let rate = u32::from_le_bytes([data[24], data[25], data[26], data[27]]);
     let channels = usize::from(u16::from_le_bytes([data[22], data[23]]));
@@ -4846,14 +4986,13 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         .chunks_exact(2 * channels)
         .map(|f| i16::from_le_bytes([f[0], f[1]]))
         .collect();
-    // The tone: the stretch between the first and last loud samples.
+    // The notes: the stretch between the first and last loud samples.
     let loud = |s: &i16| s.unsigned_abs() > 2000;
     let Some(start) = left.iter().position(loud) else {
-        return Err("tone: the recording is silent".into());
+        return Err(format!("{what}: the recording is silent"));
     };
-    // The first output's three notes (each a second, back to back): they
-    // end at the first tenth of a second of quiet (the second output's
-    // come seconds later).
+    // They end at the first tenth of a second of quiet (later sounds come
+    // seconds after).
     let gap = (rate / 10) as usize;
     let mut end = start;
     let mut quiet = 0;
@@ -4870,33 +5009,29 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     }
     let tones = &left[start..=end];
     let seconds = tones.len() as f64 / f64::from(rate);
-    // The first output's three notes, back to back (I2S stays on).
-    const WANT: [f64; 3] = [440.0, 660.0, 880.0];
-    if !(2.8..=3.4).contains(&seconds) {
+    let n = want.len() as f64;
+    if !((n - 0.2)..=(n + 0.4)).contains(&seconds) {
         return Err(format!(
-            "tone: recorded {seconds:.3} s of sound (wanted three 1 s notes)"
+            "{what}: recorded {seconds:.3} s of sound (wanted {} notes of 1 s)",
+            want.len()
         ));
     }
-    // Each quarter, its middle 80% (away from the joins).
-    let third = tones.len() / WANT.len();
-    let mut found = [0.0f64; 3];
-    for (k, want) in WANT.into_iter().enumerate() {
-        let part = &tones[k * third + third / 10..(k + 1) * third - third / 10];
-        let crossings = part.windows(2).filter(|w| (w[0] < 0) != (w[1] < 0)).count();
+    // Each note, its middle 80% (away from the joins).
+    let part_len = tones.len() / want.len();
+    let mut found = Vec::new();
+    for (k, &w) in want.iter().enumerate() {
+        let part = &tones[k * part_len + part_len / 10..(k + 1) * part_len - part_len / 10];
+        let crossings = part.windows(2).filter(|p| (p[0] < 0) != (p[1] < 0)).count();
         let hz = crossings as f64 / 2.0 / (part.len() as f64 / f64::from(rate));
-        if (hz - want).abs() > want * 0.04 {
+        if (hz - w).abs() > w * 0.04 {
             return Err(format!(
-                "tone: note {} recorded at {hz:.1} Hz, wanted {want} Hz",
+                "{what}: note {} recorded at {hz:.1} Hz, wanted {w} Hz",
                 k + 1
             ));
         }
-        found[k] = hz;
+        found.push(hz);
     }
-    eprintln!(
-        "    tone OK: WM8750 found on I2C, three notes through I2S, recorded at {:.1}, {:.1} and {:.1} Hz over {seconds:.3} s",
-        found[0], found[1], found[2]
-    );
-    Ok(())
+    Ok((found, seconds))
 }
 
 /// Writing files to an exFAT card (SDXC) through the loader: a file
