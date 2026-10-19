@@ -477,7 +477,8 @@ The output is flat from 2 to 1.5 kHz and falls steeply below about
 -21 dB). **440 Hz comes out ~35 dB below 2 kHz and 18 dB below 660 Hz.**
 At level 60 (the codec 30 dB lower) that puts 440 Hz near the room's
 noise and 660 Hz well above it, matching every listening test. (The
-room's reading, NOTE 0, is to come from the owner; phone meters aren't
+room's reading, NOTE 0, wasn't taken, so the lowest readings may include
+the room's noise; phone meters aren't
 calibrated, so the differences between pitches count, not the absolute
 dB.) Whether this response is this unit's fault or the model's design is
 not settled without a second X50v/X51v; the owner judges the speaker
