@@ -6,7 +6,8 @@
   conditions" below; written into R2-R7, A2-A5 and the steps). Proposed
   and revised after a review the same day.
 - **A6 (quality audit E3, the DMA chain that stops at the mix's end):
-  proposed 2026-10-19, the owner's vote waiting.**
+  the owner chose B on 2026-10-19, conditional on the two device
+  measurements passing their criteria; not built.**
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -505,7 +506,13 @@ changes a vote or a condition.
 
 ## A6. When the mixer is late by more than the ring (quality audit E3)
 
-**Proposed 2026-10-19; the owner's vote is waiting. Nothing is built.**
+**The owner's decision (2026-10-19): B, conditional on the two device
+measurements below meeting their pass criteria.** If either misses, the
+numbers come back to the owner with the options; nothing is decided by a
+result alone. The owner's review the same day added five points, folded in
+below: what an empty I2S FIFO might send, the end marker's rule in one
+sentence, a pass criterion for the restart time, the "mixed or cleared"
+rule, and the build order against S2. Nothing is built.
 
 ### In plain words
 
@@ -573,8 +580,14 @@ stalls; its failure is the loud one.
   of 11 of 4 KiB. Two reasons, both measured from the mixer's own numbers:
   1. **The end must never be the descriptor the engine is in.** Otherwise
      the engine would finish this lap, start that descriptor again with
-     STOP set, and play the stale tail of it before stopping. The rule is
-     *lead ≤ ring − one descriptor*. The background lead is 10,816 frames
+     STOP set, and play the stale tail of it before stopping. **The end
+     marker's rule (the invariant the race argument and the mutants rest
+     on): the STOP sits on the descriptor holding the first frame not yet
+     mixed, and that descriptor ends no further than one ring past the
+     start of the descriptor the engine is reading; so the mix may lead the
+     engine's read position by at most the ring less one descriptor
+     (*lead ≤ ring − one descriptor*: 11,264 − 352 = 10,912 frames).**
+     The background lead is 10,816 frames
      and the ring 11,264, leaving 448 frames: a 4 KiB descriptor (1,024
      frames) breaks the rule; 352 frames keeps it with room to spare.
   2. **The race gets rare** (next point).
@@ -594,15 +607,41 @@ stalls; its failure is the loud one.
   ~20 ms left with clicks playing and ~45 ms with music alone, so the race
   needs a wake 12 ms late (clicks) or 37 ms late (music): already the
   nearly-late case. Counted (`restarts`), never hidden.
-- **The last sample before any stop is silent**, so whatever I2S sends
-  while its FIFO is empty (zeros, or the last sample again: the manual
-  doesn't say, and nothing here depends on it) is silence. The end is put
-  on the descriptor holding the first *unmixed* frame, so at least one
-  frame of the cleared ring is played before the stop.
-- **After a stop** the mixer's existing "late" path does the rest (S2):
-  every playing stream carries on after the gap from where it stopped, and
-  `late` counts it. Starting again after silence needs no margin: the
-  engine is stopped, so the mixer mixes the first block and then starts it.
+- **Every frame the engine plays is mixed for its time, or cleared (zero)**
+  (the rule the host model checks, not "mixed" alone: after the mix's end
+  the engine plays cleared frames up to the end of the STOP descriptor).
+  The mixer guarantees it: **after every wake's mixing it clears from the
+  mix's end to the end of the STOP descriptor** (at most 351 frames, 1.4
+  KiB, usually already zero). Found while writing this down: a rewrite can
+  end *short* of the old mix (a click arriving during music shrinks the
+  lead from 245 ms to 35 ms), leaving the old mix beyond the new end; today
+  that tail would play in a stall, and under B without the clear the
+  engine would play up to 7.9 ms of it before stopping. Frames past the
+  STOP descriptor need no clearing: the engine can't reach them before the
+  next wake re-mixes or clears them.
+- **What I2S sends while its FIFO is empty is not known**: zeros, or the
+  last sample held (the manual doesn't say). It matters at a stop:
+  - **A stall or the end of sound:** the last frames before the stop are
+    cleared ones (the rule above; the end is on the descriptor holding the
+    first *unmixed* frame), so either way the gap is silence with no step
+    into it. Coming out of it, the music restarts mid-waveform: a possible
+    click, the same as today's late path.
+  - **The race:** the engine stops at the end of a descriptor the mixer has
+    just mixed into, so the last sample is music. With zeros the gap is a
+    hard cut to silence and back (a click at each end); with the last
+    sample held it is a held DC level, a step at each end (also a click
+    each). **Either way the race can click**; the device test listens for
+    exactly that (below).
+- **After a stop** the mixer's existing "late" path does the rest: every
+  playing stream carries on after the gap from where it stopped, and `late`
+  counts it. That path is S2's, **already built and passed** (`tick`'s
+  "too late" branch; host test
+  `a_late_wake_plays_silence_never_an_old_lap_and_nothing_is_lost`; on the
+  device the S2 image's six console-stall wakes went through it). B leans
+  on it, not the other way round; the build order below makes the stop
+  reach it through a test before anything else changes. Starting again
+  after silence needs no margin: the engine is stopped, so the mixer mixes
+  the first block and then starts it.
 - **The interface:** the mixer tells the DMA ring where the mix ends
   (`DmaRing` gains "end at byte N" and "stopped?"); the HAL owns the
   descriptors, as it does now. The emulator and host fakes implement the
@@ -623,28 +662,57 @@ Each its own short bench test, owner watching, only when the owner says go:
    The 645 ms rule is about switching I2S on; this test is the proof that it
    doesn't reach a DMA-only restart (2026-10-18's stalls all followed an
    I2S switch-off).
-2. **How long a restart takes** from the stop to sound moving again: the
-   size of the race's gap.
+   **Passes if** every restart, after every stop length, moves within
+   criterion 2's time, and `SACR0` still reads I2S on afterwards (with any
+   `SASR0` error bit cleared by a documented write, not a reset of I2S).
+2. **How long a restart takes**, from the channel's stop to the DMA moving
+   again (the race's gap, less the mixer's own reaction, which the audio
+   host's event sets later). **Passes if** under **0.5 ms** on every try:
+   below the 5 ms margin the mixer already keeps, and a gap short enough
+   that the click (above) is the only thing heard, not a dropout. The
+   device listening run then checks the whole race by ear: **the forced
+   race heard as at most a single click, no audible gap**, its logged gap
+   (stop to move, the mixer's wait included) under **1 ms**.
 
 If (1) fails, B isn't possible as written and the write-up comes back with
-the measurement (C, or A).
+the measurement (C, or A). If (2) misses, the numbers come back with the
+options (larger descriptors are no answer: the end rule needs them small;
+the stop as an interrupt straight to a restart is the likely one).
+
+### Build order (after both measurements pass)
+
+1. **The end marker in the HAL**, pure logic beside `dmachain`, host-tested
+   with a model engine and mutants; the ring re-cut into 32 descriptors of
+   1,408 bytes (still looping: nothing heard changes).
+2. **A stop reaches S2's late path**: a host test in which the model engine
+   stops at the end marker and the existing late-path test's checks hold
+   (silence, never an old lap, nothing lost). Only then the mixer moves the
+   end each wake, clears to the STOP descriptor's end, and handles the race.
+3. **The lap estimate removed** from `advance_clock` (it is the last thing
+   to go, once a stop is the only way the engine can fall behind).
+4. `emu-audio-e3`, then the owner's listening run.
 
 ### Tests, emulator, size
 
 - **Host:** the moving end as pure logic beside `dmachain` (which
   descriptor carries STOP for a given mix end; the race told apart from a
   stop from `DCSR` and `DDADR`), a model engine with random wake timing
-  checking *never a frame played that wasn't mixed for that time*, and
+  checking *every frame played was mixed for its time or cleared*, and
   mutants (the STOP set after clearing the old one instead of before; the
-  rule *lead ≤ ring − descriptor* dropped).
+  rule *lead ≤ ring − descriptor* dropped; the clear to the STOP
+  descriptor's end dropped, caught by a shortening rewrite followed by a
+  stall).
 - **Emulator:** the fork's DMA already stops at STOP. A new
   `emu-audio-e3`: the image stalls the mixer 400 ms mid-music; the codec
   model's recording must show the music, silence, and the music carrying on,
   never a repeat. Whether the fork's I2S model handles an empty FIFO is
   checked then; if it doesn't, it is modelled first (docs/hw/emulator.md).
 - **Device (owner listening):** the same 400 ms stall, heard as a clean
-  gap, not a stutter; a forced late wake to exercise the race, its gap
-  logged.
+  gap, not a stutter (listening for a click going in, which there should
+  not be, and coming out, which is possible); a forced late wake to
+  exercise the race, listening for clicks at both ends of its gap (what an
+  empty FIFO sends decides whether they're there), its gap logged against
+  the 1 ms criterion.
 - **Size:** no memory added; code a few hundred bytes (measured when
   built).
 
