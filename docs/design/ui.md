@@ -59,6 +59,12 @@ back and forth at any time:
 - **Modern (the default): SPB's shape.** Finger-friendly: big targets on the
   Today screen and the launcher, widget panels you swipe between, readable
   at a glance. The stylus and the D-pad still work everywhere.
+  **The finger is for navigation only** (owner, 2026-10-19): moving through
+  menus, icons and screens. The stylus and the buttons work everywhere, and
+  they are the way to do anything the small screen makes precise: typing on
+  the on-screen keyboard (it stays stylus-sized), selecting text, small
+  controls, old Windows Mobile programs. So only navigation targets grow;
+  precise controls keep their stylus size in both looks.
 - **Classic: a Windows Mobile 5-style look**, at stylus scale, as DESIGN.md
   §7's theme engine already planned ("a faithful WM5-style homage, using our
   own artwork").
