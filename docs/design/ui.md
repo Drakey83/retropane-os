@@ -398,6 +398,85 @@ tiles; the cost of uploading a layer (the CPU's writes, 32-41 MB/s
 measured, or a DMA copy from RAM, not measured); whether rendering can
 track the frame event without tearing.
 
+## Ideas: modern 3D in a retro-modern UI (proposal, 2026-10-19)
+
+The owner asked for cool, modern-looking ways to use the 3D core in this
+retro-modern UI. **Ideas to weigh, not decisions**; each rests on the 3D
+compositor above (option B) and on the measured budget: about one
+full-screen composition a frame at today's core clock, so the trick in
+every idea is that **only what moves is re-rendered, and the rest of the
+screen holds still**. The X51v has no motion sensor, so depth follows the
+stylus, the finger and the panels, never tilting the device. Within the
+rules: no Metro look, no other company's artwork, buttons keep Windows
+Mobile's jobs, and every effect switchable off in the settings (themes may
+turn them on or off too).
+
+**The signature set (recommended to try first):**
+1. **A 3D flip clock on the weather screen.** The ode's flip clock, now
+   real: each digit a pair of half-cards that hinge over in perspective
+   when the minute turns, lit from above (the falling half darkens as it
+   turns, a soft shadow under it). Retro object, modern motion; a few
+   small quads once a minute, so nearly free.
+2. **A living weather sky (the default home).** The painted sky as depth
+   layers: far hills, near clouds, the sun or moon on its true arc for the
+   time of day; clouds drift at the forecast's wind speed and direction;
+   rain and snow as falling quads at the forecast's intensity; a
+   lightning flash lighting the clouds from behind. Swiping between home
+   panels shifts the layers at different speeds (parallax), so the sky
+   has depth without a sensor. Moves slowly, so it can run at a low frame
+   rate (10-15 Hz) except while you swipe.
+3. **Glass that catches the light.** The smoked-glass panels get a soft
+   specular highlight that slides across them as you scroll or drag, and
+   follows the stylus a little while it's down, as real glass would; the
+   panel edges pick up a thin bright rim. One small gradient texture
+   moved per frame: the cheapest effect here with the biggest "modern"
+   feel.
+4. **Sheets push the world back.** Opening the Start menu, a sheet or the
+   keyboard, the screen behind scales back a few percent and dims, as if
+   it stepped away; closing it, it comes forward again. One transform on
+   the layer behind.
+5. **A card-stack task switcher.** Open programs as cards standing in
+   perspective, slightly overlapped, each its last picture (old Windows
+   Mobile programs too); slide through them, flick one away to close it,
+   tap to bring it forward full screen. Each card a quad.
+6. **The home carousel** (SPB-inspired, our own take, above): the home
+   panels on a ring with a glossy floor reflection, the pull-back and turn.
+
+**More, to pick from later:**
+- **The Start menu unfolding:** the classic corner Start menu opening as a
+  stack of strips that swing out in sequence, then settle flat:
+  Windows Mobile's own structure with modern motion.
+- **Icons with depth:** a pressed icon sinks into the screen and its shadow
+  tightens; launcher icons lean very slightly toward the stylus while it
+  hovers near (pressure-free, by position).
+- **Page turns** for the calendar's days and the notes: a curled page with
+  its shading, flicked by the finger, as old paper organisers did (the
+  PDA's roots).
+- **Notifications with weight:** toasts that drop in on a spring with a
+  soft shadow, and the notification shade pulled down as a sheet of glass
+  that bends slightly at its edge as it's dragged.
+- **A 3D logo at start-up:** RetroPane's mark as a real lit, turning
+  object while the system starts (the GPU's first job of the day; mesh
+  drawing is what the core does natively).
+- **A retro screen theme:** an optional theme drawing the whole interface
+  through a curved-glass "CRT" mesh with scanlines and a soft glow: the
+  retro half of retro-modern taken literally, for the Classic look or as
+  an extra. Recomposed only when something changes.
+- **The forecast as objects:** the week's days as a short row of tiles you
+  spin through, each with its weather scene inside, the hourly forecast a
+  dial with the sun's arc.
+
+**Pros:** each makes the device feel new without losing the retro
+character (real objects, light and depth rather than flat boxes); all of
+them run on the 3D core, leaving the CPU for programs and the battery's
+sake; switchable off, so the plain look is always there.
+**Cons and risks:** each is work in the compositor and needs its art; the
+frame budget means two full-screen effects can't run at once (the design
+keeps one moving thing at a time); sustained 3D draws power, so slow
+effects run at low frame rates and nothing animates when nothing changes;
+none is proven until the GPU facts batch measures textured, blended fill
+and each is tried on the X51v.
+
 ## The wallpaper when the card is gone (ADR-0018 edge case)
 
 - The base system (flash) always has one built-in wallpaper of its own,
