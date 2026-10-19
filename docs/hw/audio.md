@@ -360,7 +360,7 @@ measurement, not a decision:
 | 4 | Off 3 s, on, 70 ms | yes |
 | 5 | Audio down and straight back up (the amplifier off ~1 s) | yes |
 
-So **the first speaker sound after the amplifier has been off a long time
+~~So **the first speaker sound after the amplifier has been off a long time
 is lost** (more than ~2 s from its switch-on, the note included), while
 it comes back at once after being off for up to 3 s. It fits runs 2 and 3
 too: their missing speaker note was step 2's, the run's first sound on
@@ -372,7 +372,34 @@ measure how long the first start takes; (b) a static read of whether
 Windows Mobile keeps the amplifier on longer, or switches it on earlier,
 than its 70 ms wait suggests; (c) design: the service switches the
 amplifier on at power-up whenever the speaker may be used, early enough
-to cover the measured start, and keeps it on while audio is up.
+to cover the measured start, and keeps it on while audio is up.~~
+**Wrong: disproved by the timing run below.**
+
+**Amplifier timing run (2026-10-18 night, `RP_AUDIO_AMP_TIMING`, log
+`local/rp-audio-s1-amptiming1.txt`):** from a cold start (minutes after
+the last run), 20 beeps of 150 ms at 660 Hz, one every 0.5 s, the first
+72 ms after the amplifier came on. **The owner heard all 20.** The
+amplifier starts within 72 ms; there is no slow cold start. Looking at
+every run again, **every unheard speaker note was 440 Hz**, the lowest
+pitch played on the speaker (amplifier test 1; runs 2-3's step 3, so their
+missing note was step 3's, not step 2's), while 523-880 Hz were always
+heard. The likely cause: the small speaker gives little output at 440 Hz,
+too little to hear at level 60. A measurement, not a decision; to confirm
+it, a run of numbered notes at falling pitches (e.g. 1000 down to 220 Hz)
+on the speaker, the owner naming the lowest heard. If confirmed, nothing
+in the service is wrong; it bears on A4's speaker tuning (ADR-0032).
+
+**Dell's speaker amplifier policy (static, `wavedev.dll`, facts only):**
+switched on (CPLD `0x14` bit 1, through the shared shadow) when output
+starts on the speaker, then **70 ms**; a flag keeps it from being set
+twice (`0x02465654`-`0x02465684`). A worker thread waits on two events
+(`0x02465F38`): "playing on the speaker" (the wait becomes infinite: the
+amplifier stays on) and "stopped or headphones" (a **500 ms** timer); when
+the timer runs out the amplifier is switched off (`0x02465FA0`). It is
+also switched off in the audio power-down (`0x02464C4C`, after the DAC
+mute and register 26 = 0). Nothing waits longer at a cold start, so
+Windows Mobile may lose the start of its first speaker sound after a
+long quiet spell too (not checked).
 
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte

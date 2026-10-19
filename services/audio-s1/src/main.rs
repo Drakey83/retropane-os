@@ -63,6 +63,11 @@ mod image {
     /// runs 2-3: one of two speaker notes unheard), numbered tests instead
     /// of the steps.
     const AMP_TEST: bool = option_env!("RP_AUDIO_AMP_TEST").is_some();
+    /// `RP_AUDIO_AMP_TIMING` at build time: how long the speaker amplifier
+    /// takes to start from cold (the amplifier diagnostic: the first speaker
+    /// sound after a long quiet spell is lost): numbered short notes every
+    /// 0.5 s from its switch-on.
+    const AMP_TIMING: bool = option_env!("RP_AUDIO_AMP_TIMING").is_some();
     /// Output level, 0-100: 60, or `RP_AUDIO_LEVEL` at build time.
     const LEVEL: u32 = match option_env!("RP_AUDIO_LEVEL") {
         Some(v) => parse(v),
@@ -96,6 +101,8 @@ mod image {
         /// When the codec's supply came on (OS timer ticks), for the jack's
         /// settle measurement.
         powered_at: u32,
+        /// When the speaker amplifier was last switched on (OS timer ticks).
+        amp_on_at: u32,
     }
 
     impl X51vAudio<'_> {
@@ -120,6 +127,9 @@ mod image {
         }
         fn speaker_amp(&mut self, on: bool) {
             self.bit(SPEAKER_AMP, on);
+            if on {
+                self.amp_on_at = rt::ticks();
+            }
             let _ = writeln!(devices::RunLog, "board: speaker amplifier {}", onoff(on));
         }
         fn pins_up(&mut self) {
@@ -320,6 +330,46 @@ mod image {
         let _ = writeln!(out, "DONE: WHICH TESTS DID YOU HEAR?");
     }
 
+    /// The amplifier's cold start, timed: audio up to the speaker, then 20
+    /// numbered notes of 150 ms, one every 0.5 s, each logged with its time
+    /// since the amplifier's switch-on. The owner remembers the first number
+    /// heard.
+    fn amp_timing(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
+        let _ = writeln!(out, "AMP TIMING: HEADPHONES OUT THE WHOLE TIME");
+        let _ = writeln!(out, "REMEMBER THE FIRST NUMBER YOU HEAR A BEEP FOR");
+        a.board_mut().delay_us(3_000_000);
+        match a.up() {
+            Ok(p) => {
+                let _ = writeln!(out, "up: to {}", name(p.output));
+            }
+            Err(e) => {
+                let _ = writeln!(out, "up failed: {e:?}");
+                return;
+            }
+        }
+        let rate = rp_audio::LINK_RATE.hz();
+        for n in 1..=20u32 {
+            let start = rt::ticks();
+            let ms = start.wrapping_sub(a.board_mut().amp_on_at) / TICK_MS;
+            let _ = writeln!(out, "BEEP {n} ({ms} ms after the amplifier came on)");
+            let mut tone = Tone::new(660, rate, 12_000);
+            let _ = a.play(
+                dma,
+                ring,
+                &mut tone,
+                rate * 150 / 1000,
+                &mut rt::ticks,
+                3_250_000 / 5,
+                &mut rt::check_in,
+            );
+            // The next beep 0.5 s after this one started.
+            let used = rt::ticks().wrapping_sub(start) / TICK_MS;
+            a.board_mut().delay_us(500u32.saturating_sub(used) * 1_000);
+        }
+        down(out, a);
+        let _ = writeln!(out, "DONE: WHAT WAS THE FIRST NUMBER YOU HEARD?");
+    }
+
     fn down(out: &mut impl Write, a: &mut Service<'_>) {
         match a.down() {
             Ok(()) => {
@@ -383,6 +433,7 @@ mod image {
             gpio: &gpio,
             cpld,
             powered_at: 0,
+            amp_on_at: 0,
         };
         let bus = Gated {
             bus: PxaI2c::new(i2c),
@@ -393,6 +444,11 @@ mod image {
 
         // The owner's steps, the same words as in the chat: headphones in
         // at the start; fixed prompts that never depend on a reading.
+        if AMP_TIMING {
+            amp_timing(&mut out, &mut a, &mut dma, ring);
+            let cpld = a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         if AMP_TEST {
             amp_test(&mut out, &mut a, &mut dma, ring);
             let cpld = a.board_mut().cpld.take();
