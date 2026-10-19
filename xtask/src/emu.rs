@@ -5004,7 +5004,9 @@ pub fn boot_loader_audio_sleep(root: &Path) -> Result<(), String> {
 /// stays stopped 0-1,000 ms, and is restarted as option B would restart
 /// it. Here every try must stop at the chain's end, move again, finish and
 /// leave I2S on; the timings are the device's to measure (the emulator's
-/// DMA restarts in no time), so none is checked.
+/// DMA restarts in no time), so none is checked. The codec is off, so the
+/// link must drain on its own clock as on the X51v (`i2s-free-run`,
+/// rp-v0.27.0+); an older emulator never moves the DMA, and is skipped.
 pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
     if !has_usb_model(root) {
         eprintln!("    dma restart: skipped (this emulator has no USB controller model)");
@@ -5030,9 +5032,16 @@ pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
         "audiodev=snd".into(),
     ]);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let port = monitor_port();
+    let skipped = std::cell::Cell::new(false);
     let check = || -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        if !mon.query("qom-get /machine i2s-free-run")?.contains("true") {
+            skipped.set(true);
+            return Ok(());
+        }
         s.write_all(&frame).map_err(|e| e.to_string())?;
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         let log = usb_read_until(&mut s, "RPL END", 90)?;
@@ -5079,6 +5088,12 @@ pub fn boot_loader_dma_restart(root: &Path) -> Result<(), String> {
             timeout: Duration::from_secs(150),
         },
     )?;
+    if skipped.get() {
+        eprintln!(
+            "    dma restart: skipped (this emulator's I2S drains only into a powered codec: rp-v0.27.0)"
+        );
+        return Ok(());
+    }
     eprintln!(
         "    dma restart OK: 15 stops at the chain's end with I2S running, every restart moved and finished"
     );
@@ -7618,14 +7633,18 @@ const LOAD_TAG: &str = "rp-emu-load";
 /// shell's command line. Then it waits (up to 10 s) until that emulator
 /// has gone: a check started while the last one lingered found the monitor
 /// port answered by the old emulator and its WAV file still open (no sound
-/// voice, the DMA never drained; 2026-10-19).
+/// voice, the DMA never drained; 2026-10-19). One that ignores the TERM is
+/// killed outright after the 10 s and waited for again: one lived on for
+/// minutes past both this TERM and its `timeout 100`'s, writing the same
+/// WAV, and the next checks' codec never asked for a sample (`emu-tone`
+/// stalled, `emu-audio-s2` read the link 0.9% slow; 2026-10-19).
 fn stop_own_qemu(monitor_port: u16) -> String {
     // No `$(...)` in a script for `wsl`: it reaches bash broken (a syntax
     // error, and then nothing in the script runs at all).
     let tries = vec!["t"; 100].join(" ");
-    format!(
-        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; for i in {tries}; do pgrep -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]' >/dev/null || break; sleep 0.1; done; true"
-    )
+    let mine = format!("'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'");
+    let wait = format!("for i in {tries}; do pgrep -f {mine} >/dev/null || break; sleep 0.1; done");
+    format!("pkill -f {mine}; {wait}; pkill -KILL -f {mine}; {wait}; true")
 }
 
 /// The load script: one spinner per core, a fixed count, each ended by
@@ -7908,6 +7927,12 @@ mod tests {
         assert!(!ere_finds(p, &qemu(45_461)), "another run's emulator");
         assert!(!ere_finds(p, &qemu(4_544)), "a port that is a prefix");
         assert!(!ere_finds(p, &format!("bash -c {stop}")), "its own shell");
+        // One deaf to the TERM is killed (it outlived TERM for minutes).
+        assert!(stop.contains("pkill -KILL -f "), "{stop}");
+        assert!(
+            stop.split("pkill").skip(1).all(|k| pattern(k) == p),
+            "every kill is this run's: {stop}"
+        );
 
         let spinner = |port: u16| {
             let s = super::load_script(port, 90);

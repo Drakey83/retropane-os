@@ -588,6 +588,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_s1(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_sleep(&workspace_root()))
+            .and_then(|()| emu::boot_loader_dma_restart(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_s2(&workspace_root()))
             .and_then(|()| emu::boot_loader_silent_pc(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
