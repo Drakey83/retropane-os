@@ -399,14 +399,32 @@ bilinear and alpha blending; whether non-power-of-two textures work; how
 long a frame of N full-screen layers takes, and a partial frame of a few
 tiles; the cost of uploading a layer (the CPU's writes, 32-41 MB/s
 measured, or a DMA copy from RAM, not measured); whether rendering can
-track the frame event without tearing. **Written as `rp-gpubench`
-(2026-10-19, not yet run; docs/hw/2700g.md "Texture shapes"):** run A
-measures all of these, run B probes for a row-order texture mode. Found
-on the way (static, Dell's GLES library): textures may be rectangles of
-powers of two, so a 480 x 640 layer would sit in 512 x 1024 (1 MiB at 16
-bits, not 2 MiB); the library has no row-order texture mode and refuses
-other sizes, so every layer reaches the 3D core reordered (twiddled) by
-the CPU, unless run B finds a mode the chip has and Dell never used.
+track the frame event without tearing.
+
+**Measured (`rp-gpubench` run A, 2026-10-19, twice; docs/hw/2700g.md
+"Texture shapes"), at today's core clock; results for the vote, not a
+decision:**
+- A 480 x 640 layer is one 512 x 1024 texture (1 MiB at 16 bits):
+  rectangles drawn right.
+- **One full-screen textured layer takes 25-29 ms** (the background alone
+  12.7 ms), longer than a 17.7 ms frame; each translucent full-screen
+  layer adds ~20 ms; hidden opaque layers are almost free (8 stacked:
+  40 ms). PVRTC is the cheapest texture (21-23 ms). A 16-bit screen saves
+  0-3 ms. So **recomposing the whole screen every frame runs at ~35 Hz
+  at best today**, not 56.
+- **Only what changes is cheap:** under three translucent layers a list
+  row (480 x 16) re-renders in 1.6 ms, an icon in 0.85 ms, a 480 x 160
+  band in 15.5 ms.
+- Uploading a layer: 18.5 ms in row order, 57 ms reordered for the GPU
+  by the CPU, or reordered in RAM (37 ms) then copied by DMA (34 ms, the
+  CPU mostly free).
+- In step with the frame: flips at the frame event don't tear (owner:
+  smooth), and one screen can be redrawn in bands just behind the scan
+  line (owner: smooth), which saves the second screen buffer. A flip
+  takes effect at once, so it is written in the blanking.
+- Still open: run B (whether the chip reads a row-order texture, which
+  would drop the reordering), and a faster core clock (each MHz is speed;
+  version 29's 75 MHz was rejected as built).
 
 ## Ideas: modern 3D in a retro-modern UI (proposal, 2026-10-19)
 

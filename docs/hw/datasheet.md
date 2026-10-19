@@ -144,8 +144,11 @@ watching.
   grey, code 8 = grey + alpha, code 7 = ARGB4444; full list in 2700g.md);
   all eight depth modes proven (ADR-0026); render done is bit 2 of the
   interrupt status `0x12c`. Textures are twiddled, sides powers of two up
-  to 2048; Dell's GLES builds rectangles (512 x 1024) and has no row-order
-  mode (static, 2026-10-19; device check `rp-gpubench`).
+  to 2048, rectangles too (512 x 1024 drawn right, `rp-gpubench`
+  2026-10-19); Dell's GLES has no row-order mode. At WM's clock a bare
+  tile renders in ~5.3 us, a textured one ~11.3 us, each translucent
+  layer adds ~8 us: a full-screen textured layer takes 25-29 ms. A
+  `GSCADR` flip takes effect at once (write it in the blanking).
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),
