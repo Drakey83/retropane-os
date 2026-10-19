@@ -291,6 +291,113 @@ it's mostly static, which changes the cost completely:
   while dragging; the whole desktop recomposes once, on release.
 - **No blur, ever,** unless measured affordable; the look doesn't need it.
 
+## 3D acceleration for the whole UI (proposal, 2026-10-19)
+
+The owner asked (2026-10-19) how the 2700G's 3D core could make the
+SPB-style experience run smoother. **A proposal to weigh, not a decision**:
+the numbers it needs are GPU facts still to measure (below), and the
+owner votes once they're in.
+
+**In plain words.** Today's plan has the CPU draw each screen and the
+2700G copy or blend whole planes. The CPU is slow at the one thing
+animation needs most: writing pixels into the 2700G's memory (32-41 MB/s
+measured, so one full screen takes ~15 ms, a whole 56 Hz frame). The 3D
+core is fast at it and costs the CPU nothing (a frame is a few hundred
+bytes of commands). So: **the CPU draws each part of the screen once, into
+its own picture in the 2700G's memory (a layer), and the 3D core puts the
+layers on screen every frame**, moved, turned, scaled, faded. Nothing is
+redrawn to move. This is how modern phones compose their screens (iOS's
+Core Animation, Android's SurfaceFlinger); on this chip it is what makes
+the SPB look smooth instead of merely possible.
+
+**What it gives, part by part:**
+- **The carousel:** each panel a textured quad, its floor reflection the
+  same quad mirrored with an alpha fade, the pull-back and turn only their
+  transforms; mipmaps (measured working) keep a shrunken panel from
+  shimmering, bilinear filtering (measured) keeps it smooth.
+- **Scrolling lists, the launcher's pages, contacts' photo grid:** the
+  content is a tall layer (or tiles of it); a scroll is a new texture
+  offset, so flick-scrolling with momentum runs at the panel's full
+  56.46 Hz however long the list. The CPU draws only the rows coming into
+  view.
+- **Sheets over a dimmed screen** (menus, the "change background" sheet,
+  the on-screen keyboard): the dim is one translucent quad; the sheet
+  slides as a quad. The smoked glass (above) becomes a tinted quad over
+  the layers under it, at no CPU cost, even while things move.
+- **Frosted glass, if wanted:** a blur behind a panel, cheaply, from a
+  small mipmap level of the layer under it sampled with bilinear filtering
+  (a fake blur the GPU does for free); today's rule "no blur, ever, unless
+  measured affordable" stays until it's measured.
+- **The weather screen (the default home):** the sky picture, clouds on a
+  few layers moving at different speeds (parallax), rain or snow as small
+  textured quads, the clock and the forecast as layers over them: live
+  weather that moves, for a few quads a frame.
+- **Transitions everywhere** (opening a program, the task switcher, a theme
+  change cross-fading): quads and alpha, no redraw.
+- **Themes:** a theme is layers, textures and a layout; swapping it
+  re-renders the layers once. Pictures can be stored compressed (PVRTC, 4
+  or 2 bits a pixel, measured working): a full-screen wallpaper in 256 KB
+  of the 2700G's memory instead of 600 KB-1.2 MB, read faster too.
+- **Old Windows Mobile programs:** each draws into its own layer, as
+  today's plan already lets them (ADR-0018); the compositor treats it like
+  any other, so even they get smooth switching and transitions.
+- **Power:** the CPU sleeps between frames; frames are timed by the frame
+  event (VEVENT0, measured once a frame) and the render-done interrupt
+  (measured), and when nothing moves nothing is drawn: the screen holds
+  its last picture at no cost.
+
+**Costs and risks (the honest side):**
+- **Memory:** a 480 x 640 layer is 600 KB at 16 bits, 1.2 MB at 32; the
+  2700G has 16 MB. Ten full-screen layers fit with room for textures, but
+  not unlimited: layers are made for what's on screen or about to be, and
+  dropped after.
+- **Speed (measured, docs/hw/2700g.md S26):** a full-screen render (2,400
+  tiles of 8 x 16) took **12.5 ms** with Windows Mobile's core clock
+  (49.8 MHz), exactly in proportion to the clock. A 56.46 Hz frame is
+  17.7 ms, so at today's clock one full-screen composition a frame fits
+  with ~5 ms to spare: smooth for a carousel or a sliding sheet, but not
+  for stacking many full-screen translucent layers. The levers, each
+  measured or queued: render only the tiles that changed (a sheet sliding
+  over a still screen touches a band of tiles, not 2,400); a faster core
+  clock (Dell's driver allows 75 MHz, its default setting gives 66.5 MHz;
+  `claude/mbx3d-render-2`'s v29 option A at 75 MHz is built and unrun),
+  each MHz is speed; and a tile-based renderer (PowerVR MBX) skips hidden
+  opaque pixels, so only translucent layers really add cost. What a
+  *textured, blended* tile costs against the measured flat fill is not
+  measured yet.
+- **Texture sizes:** whether textures must be powers of two (a 480 x 640
+  layer then sits in 512 x 1024) is not measured yet; it decides the
+  memory per layer.
+- **Text:** stays the CPU's (drawn into layers, crisp at its size); the 3D
+  core only moves it. Text in a turning panel is a picture of text: fine
+  while moving, re-drawn sharp when it stops.
+- **One more driver to get right:** the compositor lives on our own GPU
+  driver (owner's rule: purpose-built for this workload), so the MBX
+  bring-up (docs/hw/2700g.md, items 69+) becomes UI-critical. A software
+  fallback keeps every screen working if the 3D core is unavailable
+  (slower, but never broken).
+
+**The options:**
+- **A: planes only (today's plan).** Wallpaper and interface planes
+  blended at scan-out, the 2D blitter copying moving panels. Simple and
+  proven so far; no carousel worth the name, scrolling limited by copies.
+- **B: a 3D compositor for everything (recommended, pending the
+  measurements).** Every screen part a layer; the 3D core composes each
+  frame that moves. The SPB look at full frame rate, the CPU free.
+- **C: the 3D core only for the showpieces** (carousel, weather, task
+  switcher), planes and the blitter elsewhere. Less to build first, but
+  two ways of drawing to keep in step, and lists and sheets don't get
+  smoother.
+
+**To measure first** (a GPU facts batch, on the device, owner watching,
+only on the owner's go; listed for the work order: GPU facts before UI
+design): textured fill rate at 16- and 32-bit targets, with and without
+bilinear and alpha blending; whether non-power-of-two textures work; how
+long a frame of N full-screen layers takes, and a partial frame of a few
+tiles; the cost of uploading a layer (the CPU's writes, 32-41 MB/s
+measured, or a DMA copy from RAM, not measured); whether rendering can
+track the frame event without tearing.
+
 ## The wallpaper when the card is gone (ADR-0018 edge case)
 
 - The base system (flash) always has one built-in wallpaper of its own,
