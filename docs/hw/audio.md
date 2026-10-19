@@ -528,7 +528,9 @@ amplifier), with no I2S restart and no guard wait. Test 2 (a sound with no
 touch first) was sent 152 ms after it was asked for; on the three taps the
 codec woke as the stylus landed and **each click started 0 ms after the
 lift** (taps held ~0.5-0.6 s). **The owner heard all five (two notes,
-three clicks).** Both board bits put back.
+three clicks; the "clicks" are 150 ms beeps, test tones for timing, not
+UI sounds).** Both board bits put back. **S1b passed by the owner
+(2026-10-19).**
 
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte

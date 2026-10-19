@@ -304,7 +304,10 @@ The chain, in order, per output:
   alarm, a notification) waits ~0.15 s. Full power-down (I2S off too) only
   on suspend. The 5 s is a tunable, measured later. Weighed and not
   chosen: B (no early wake: the first click after a quiet spell ~0.15 s
-  late) and C (the codec on whenever the screen is on: 4-12% more drain). Because of the 645 ms
+  late) and C (the codec on whenever the screen is on: 4-12% more drain).
+  **Built and passed (S1b, the owner, 2026-10-19):** on the device the
+  codec slept 5.0 s after each sound with I2S running, woke in 152 ms, and
+  the sound after a tap started at the lift. Because of the 645 ms
   rule, powering down between sounds turns into a latency trap: a click
   arriving inside the window waits. **Idle power-down between sounds is
   built only if S1 measures that an idle, powered codec (with I2S running)
