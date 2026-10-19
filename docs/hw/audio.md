@@ -482,7 +482,9 @@ the room's noise; phone meters aren't
 calibrated, so the differences between pitches count, not the absolute
 dB.) Whether this response is this unit's fault or the model's design is
 not settled without a second X50v/X51v; the owner judges the speaker
-faulty for low notes. For the speaker tuning (ADR-0032 A4): the useful
+faulty for low notes. **Pending: the owner's X50v (on its way) gets the
+same sweep** (likely the same speaker part); its numbers beside these settle
+"this unit" or "the model". For the speaker tuning (ADR-0032 A4): the useful
 band starts around 600-800 Hz; below ~500 Hz the speaker gives almost
 nothing at any level.
 
