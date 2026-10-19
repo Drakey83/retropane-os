@@ -5362,6 +5362,15 @@ pub fn boot_loader_audio_e3(root: &Path) -> Result<(), String> {
         if after(b, "forced")? != 5 || after(b, "late")? != 0 {
             return Err(format!("audio E3: five races not forced cleanly: {b:?}"));
         }
+        // No stream heard dry, in either part (A6 run 2: the scale ran dry
+        // once after the stall; a dry stretch is now counted only when it
+        // plays).
+        for part in ["E3A RESULT", "E3B RESULT"] {
+            let l = line(part)?;
+            if after(l, "dry")? != 0 {
+                return Err(format!("audio E3: a stream ran dry: {l:?}"));
+            }
+        }
         let all = line("E3 ALL")?;
         if after(a, "failed")? != 0 || after(b, "failed")? != 0 || after(all, "failed")? != 0 {
             return Err(format!("audio E3: the ring's end failed to move:{log}"));

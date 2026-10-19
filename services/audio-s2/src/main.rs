@@ -714,6 +714,10 @@ mod image {
         let stopped = rig.dma.stopped();
         rig.tick();
         let gap = stopped_us(rig, from);
+        rig.run(out, 1_900, &mut |r| r.feed(id, &mut sc, refill));
+        rig.close(id);
+        // Written once the music is over: a log line can take ~100 ms, more
+        // than the mixer has left at a wake (the owner's A6 run 2).
         let _ = writeln!(
             out,
             "  stall: 400 ms with the mix {lead} ms ahead; the engine {} by the stall's end, stopped {} ms in all",
@@ -724,8 +728,6 @@ mod image {
             },
             gap / 1_000
         );
-        rig.run(out, 1_900, &mut |r| r.feed(id, &mut sc, refill));
-        rig.close(id);
         rig.report(out, "E3A", &mark);
         let s = rig.m.stats();
         let _ = writeln!(
@@ -750,22 +752,42 @@ mod image {
         };
         let mut sc = Synth::new(&SCALE, 100, OUT, 9_000, 2, 2_400);
         let piece = (rig.dma.piece() / 4) as u64;
-        let (mut forced, mut worst) = (0u32, 0u64);
+        let (mut forced, mut worst, mut skipped) = (0u32, 0u64, 0u32);
+        // Each race: frames left at the wake, the engine stopped (us),
+        // waited for (or had stopped): logged after the music.
+        let mut races = [(0u64, 0u64, false); 5];
         let until = ms() + 2_200;
         while forced < 5 && ms() < until && piece > 0 {
             rig.feed(id, &mut sc, refill);
             rig.tick();
             let end = rig.m.clock() + rig.m.lead();
             let start = end / piece * piece;
-            if end - start < 96 {
+            // Room in the end's piece for the wait's window (16 frames in,
+            // 96 short of the end): wider than one move of the engine's
+            // position (8 frames a burst on the X51v, 44 a 1 ms tick in the
+            // emulator), so it can't step past the window unseen.
+            if end - start < 160 {
                 rig.run(out, 7, &mut |r| r.feed(id, &mut sc, refill));
                 continue;
             }
-            // Held back until the engine is inside the end's piece.
+            // Held back until the engine is inside the end's piece, short of
+            // the end by a margin; if it gets closer than that (or stops),
+            // this try is skipped and counted, not forced.
             let t = ms();
-            while rig.m.clock_now(&mut rig.dma) < start + 16 && ms().wrapping_sub(t) < 400 {
+            let mut pos = rig.m.clock_now(&mut rig.dma);
+            while pos < start + 16
+                && pos + 96 < end
+                && !rig.dma.stopped()
+                && ms().wrapping_sub(t) < 400
+            {
                 rt::delay_us(20);
                 rt::check_in();
+                pos = rig.m.clock_now(&mut rig.dma);
+            }
+            if pos < start + 16 || pos + 96 >= end {
+                skipped += 1;
+                rig.run(out, 120, &mut |r| r.feed(id, &mut sc, refill));
+                continue;
             }
             let (r0, s0) = (rig.m.stats().races, rig.m.stats().restarts);
             let from = (rt::ticks(), rig.m.clock_now(&mut rig.dma));
@@ -773,18 +795,10 @@ mod image {
             rig.tick();
             let gap = stopped_us(rig, from);
             if rig.m.stats().restarts > s0 {
+                races[forced as usize] =
+                    (end.saturating_sub(from.1), gap, rig.m.stats().races > r0);
                 forced += 1;
                 worst = worst.max(gap);
-                let _ = writeln!(
-                    devices::RunLog,
-                    "  race {forced}: {} frames left at the wake, the engine stopped {gap} us ({})",
-                    end.saturating_sub(from.1),
-                    if rig.m.stats().races > r0 {
-                        "waited for"
-                    } else {
-                        "had stopped"
-                    }
-                );
             }
             rig.run(out, 120, &mut |r| r.feed(id, &mut sc, refill));
         }
@@ -794,6 +808,18 @@ mod image {
             rig.run(out, 50, &mut |r| r.feed(id, &mut sc, refill));
         }
         rig.close(id);
+        for (k, &(left, gap, waited)) in races.iter().take(forced as usize).enumerate() {
+            let _ = writeln!(
+                devices::RunLog,
+                "  race {}: {left} frames left at the wake, the engine stopped {gap} us ({})",
+                k + 1,
+                if waited { "waited for" } else { "had stopped" }
+            );
+        }
+        let _ = writeln!(
+            devices::RunLog,
+            "  tries skipped (the engine too near the end): {skipped}"
+        );
         rig.report(out, "E3B", &mark);
         let s = rig.m.stats();
         let _ = writeln!(

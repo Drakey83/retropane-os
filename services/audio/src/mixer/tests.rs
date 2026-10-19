@@ -873,6 +873,8 @@ fn a_stall_longer_than_the_ring_is_silence_never_a_replay() {
     assert_eq!(sim.m.clock(), sim.dma.played);
     assert!(sim.m.clock() - before < frames(400));
     assert_eq!(sim.m.stats().stops, 1);
+    // The stall's gap is a late wake, not a stream running dry.
+    assert_eq!(sim.m.stats().starved, 0);
     sim.run(2_500, &mut |m, now| f.feed(m, now));
     assert!(heard_once(&sim, &f), "lost or repeated frames");
     assert!(sim.m.status(f.id, sim.ms).unwrap().drained);
@@ -1136,6 +1138,46 @@ fn a_restart_does_not_tie_the_mixer_to_the_engine() {
     assert!(st.races <= 10, "{st:?}");
     assert_eq!(st.ring_failed, 0);
     sim.run(2_000, &mut |m, now| f.feed(m, now));
+    assert!(heard_once(&sim, &f), "lost or repeated frames");
+}
+
+#[test]
+fn after_a_stall_music_stays_music_and_carries_on_in_one_gap() {
+    // The owner's A6 run 2: after the stall the scale ran dry once (a
+    // second gap) and was taken for an interactive stream (the 35 ms
+    // lead, ~46 wakes a second). The program refills a stream emptied by
+    // a stall in small writes close together with little queued: that is
+    // a refill, not a game's pattern.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 20, 8_000, 4);
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    f.feed(&mut sim.m, sim.ms);
+    sim.tick();
+    stall(&mut sim, 400);
+    sim.tick();
+    let after = sim.wakes.len();
+    sim.run(3_500, &mut |m, now| f.feed(m, now));
+    let interactive = sim.wakes[after..].iter().filter(|w| w.2).count();
+    assert_eq!(interactive, 0, "music counted interactive after the stall");
+    // Nothing heard dry: a stretch mixed past the data right after the
+    // restart is re-mixed when the program refills, before it plays.
+    assert_eq!(sim.m.stats().starved, 0, "{:?}", sim.m.stats());
+    // One gap of silence, the stall's.
+    let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap() as usize;
+    let end = start + f.total as usize;
+    let mut gaps = 0;
+    let mut quiet = 0;
+    for &h in &sim.dma.out[start..end.min(sim.dma.out.len())] {
+        if h == (0, 0) {
+            quiet += 1;
+        } else {
+            if quiet > 32 {
+                gaps += 1;
+            }
+            quiet = 0;
+        }
+    }
+    assert_eq!(gaps, 1, "gaps of silence in the music");
     assert!(heard_once(&sim, &f), "lost or repeated frames");
 }
 

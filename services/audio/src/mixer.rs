@@ -256,7 +256,9 @@ pub struct Stats {
     pub rewritten: u64,
     /// The DMA passed the mixed sound: the mixer woke too late.
     pub late: u32,
-    /// Times a stream ran out of data while playing.
+    /// Times a stream ran out of data while playing: counted when the
+    /// engine plays the point where its data ran out, so a dry stretch
+    /// re-mixed before it played (the program refilled in time) isn't one.
     pub starved: u32,
     /// Samples the limiter's backstop clipped.
     pub clipped: u32,
@@ -313,6 +315,13 @@ struct Slot<'a> {
     last_commit_ms: Option<u32>,
     last_write_ms: u32,
     small_run: u8,
+    /// Sound queued after the last commit (ms): a queue that grows from
+    /// write to write is a refill, not a game's pattern.
+    last_queued_ms: u32,
+    /// Its `starved_at` is counted already. (A late wake's gap moves a
+    /// stream with data past it before this is looked at; one with no data
+    /// left after the gap really is dry.)
+    dry_seen: bool,
 }
 
 /// The sizing rule (ADR-0032 R2, condition 4): a stream's ring, in bytes,
@@ -587,6 +596,7 @@ impl Slot<'_> {
             // The filter reads up to `reach` frames past the next one.
             if !self.ended && idx + reach + 1 > self.write {
                 self.starved_at = Some(t);
+                self.dry_seen = false;
                 return true;
             }
             if self.ended && idx >= self.write + reach {
@@ -773,6 +783,8 @@ impl<'a> Mixer<'a> {
             last_commit_ms: None,
             last_write_ms: now_ms,
             small_run: 0,
+            last_queued_ms: 0,
+            dry_seen: false,
         });
         Ok(StreamId {
             slot: i as u8,
@@ -839,7 +851,15 @@ impl<'a> Mixer<'a> {
         let close = s
             .last_commit_ms
             .is_some_and(|t| now_ms.wrapping_sub(t) <= SHORT_GAP_MS);
-        if s.anchor.is_some() && ms <= SMALL_WRITE_MS && close && queued <= SHORT_QUEUE_MS {
+        // A game keeps its queue level (it writes about what played); a
+        // program refilling a queue a stall or a gap emptied writes small
+        // pieces close together too, but its queue grows by each one: not
+        // counted (the owner's A6 run 2: a scale taken for a game after a
+        // stall).
+        let level = queued <= s.last_queued_ms + ms / 2;
+        s.last_queued_ms = queued;
+        if s.anchor.is_some() && ms <= SMALL_WRITE_MS && close && queued <= SHORT_QUEUE_MS && level
+        {
             s.small_run = (s.small_run + 1).min(SMALL_RUN);
         } else if ms > LARGE_WRITE_MS || queued > LONG_QUEUE_MS {
             s.small_run = 0;
@@ -1334,9 +1354,7 @@ impl<'a> Mixer<'a> {
             }
             let mut acc = [0i32; 2 * BLOCK];
             for s in self.slots.iter_mut().flatten() {
-                if s.add(b, &mut acc) {
-                    self.stats.starved += 1;
-                }
+                s.add(b, &mut acc);
             }
             let at = (b % RING_FRAMES) as usize * 4;
             let out = &mut self.ring[at..at + 4 * BLOCK];
@@ -1420,6 +1438,11 @@ impl<'a> Mixer<'a> {
     fn update_played(&mut self) {
         let hw = self.hw;
         for s in self.slots.iter_mut().flatten() {
+            if !s.dry_seen && s.starved_at.is_some_and(|at| at < hw) {
+                // The engine has played into the dry stretch.
+                s.dry_seen = true;
+                self.stats.starved += 1;
+            }
             if let Some(p) = s.src_at(hw) {
                 s.played = p.min(s.write);
                 let reach = u64::from(s.ratio.reach());

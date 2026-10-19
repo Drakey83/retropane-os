@@ -9,8 +9,10 @@
   the owner chose B on 2026-10-19, conditional on the two device
   measurements; both passed on the X51v the same evening; B built the
   same night (below, "A6 as built"), emulator-checked (`emu-audio-e3`),
-  not yet proven on the device: the owner's listening run waits for the
-  owner's go.**
+  and **PASSED on the X51v by the owner's ears (2026-10-19, run 2:
+  "a little gap" in A, "no gap" in B).** Follow-ups: the stream after a
+  stall (dry once, counted interactive), the test's forced wait, and
+  quality audit C17.**
 - **Date:** 2026-10-18
 
 ## In plain words

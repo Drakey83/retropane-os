@@ -1621,6 +1621,40 @@ pub const MUTANTS: &[Mutant] = &[
             "a_restart_does_not_tie_the_mixer_to_the_engine",
         ]),
     },
+    // After a stall: the write pattern and the dry count (ADR-0032 A6 run 2).
+    Mutant {
+        name: "mixer: a refill growing its queue counted as a game's small writes (music taken for interactive after a stall) (ADR-0032 A6 run 2)",
+        file: "services/audio/src/mixer.rs",
+        from: "        let level = queued <= s.last_queued_ms + ms / 2;\n",
+        to: "        let level = true;\n",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "after_a_stall_music_stays_music_and_carries_on_in_one_gap",
+        ]),
+    },
+    Mutant {
+        name: "mixer: a dry stretch counted when mixed, not when played (a refilled stretch reported dry) (ADR-0032 A6 run 2)",
+        file: "services/audio/src/mixer.rs",
+        from: "            if !s.dry_seen && s.starved_at.is_some_and(|at| at < hw) {",
+        to: "            if !s.dry_seen && s.starved_at.is_some() {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "after_a_stall_music_stays_music_and_carries_on_in_one_gap",
+        ]),
+    },
+    Mutant {
+        name: "mixer: a stream that really runs dry never counted (ADR-0032 A6 run 2)",
+        file: "services/audio/src/mixer.rs",
+        from: "                s.dry_seen = true;\n                self.stats.starved += 1;",
+        to: "                s.dry_seen = true;",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_stream_that_runs_dry_carries_on_where_it_stopped",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
