@@ -268,6 +268,39 @@ three notes, the jack while up and while down, the guard, and GPIO83
 sampled 0/25/75/150 ms after set-up (Dell's driver waits 75 ms: copied
 until measured).
 
+**S1 device run 1 (2026-10-18 night, `rp-audio-s1`, owner listening,
+headphones in at the start; log `local/rp-audio-s1-run1.txt`).** A
+measurement, not a decision:
+
+- **GPIO83 read 0 with the headphones in, at every power-up**: 80 ms
+  after the codec's supply, and 0, 25, 75 and 150 ms after its set-up,
+  three power-ups alike. So the jack read at power-up (Dell's 75 ms,
+  copied) **routed to the speaker while headphones were in**. The line read
+  1 later (18.9 s after power, after an edge, during the "plug in" prompt),
+  and the service re-routed to the headphones then.
+- While audio was off, an edge **did** come during the "unplug" prompt
+  (the latch reported it); whether that was the unplug or the line's late
+  fall after power-down is not settled by this run.
+- The restart guard: down, then straight back up waited 700 ms; the note
+  after it played (the X51v's 645 ms rule handled on the device).
+- 44.1 kHz: 44,100 frames in 1,016 ms by DMA, each of six notes (1 s plus
+  the ~15 ms start and stop seen at 48 kHz too); CPU 0% busy.
+- Clean return; both board bits put back as found (`14=0008 1C=000D`).
+- **The owner heard nothing in the headphones**, although the log sends
+  one note (660 Hz) to them after the re-route. Unlike `rp-tone` run 9 (48 kHz,
+  heard on both outputs), this run set both sides to 44.1 kHz: what was
+  heard from the speaker, and what was done at each prompt, is being asked.
+
+So the jack line becomes valid much later than 150 ms after set-up (or
+only after something Dell's driver does that ours doesn't). Options, for
+the owner: (a) a run that samples GPIO83 every 20 ms for 3 s after set-up,
+headphones in, to find when it rises; (b) a static read of which codec
+registers Dell's driver writes before it reads the jack (a jack-detect
+enable such as the WM8750's headphone-switch bits, register 24, would
+explain "valid only once set up"); (c) until settled, the service's
+power-up keeps both outputs muted until the jack line has been stable for
+a measured time. (a) and (b) can be combined; (b) needs no device.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
