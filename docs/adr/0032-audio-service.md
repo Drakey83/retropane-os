@@ -294,7 +294,17 @@ The chain, in order, per output:
   *codec* down about 2 s after the last sound and keeps *I2S* running, so
   it saves the codec's 10-35 mA without meeting the 645 ms rule. The
   choice that follows is the owner's (codec-only idle power-down, and
-  its timeout and latency). Because of the 645 ms
+  its timeout and latency). **Decided by the owner, 2026-10-19 (option
+  A):** after **5 s** of quiet the service powers the **codec** down (the
+  amplifier off, the codec's insides down, its supply off) and **keeps I2S
+  running**, so the 645 ms rule never applies; it **wakes the codec
+  early**, at a touch on the screen or a key press (a click sound usually
+  follows), so the codec's start-up (75 ms of VMID charge, 70 ms for the
+  amplifier) is hidden behind the tap. A sound with no touch before it (an
+  alarm, a notification) waits ~0.15 s. Full power-down (I2S off too) only
+  on suspend. The 5 s is a tunable, measured later. Weighed and not
+  chosen: B (no early wake: the first click after a quiet spell ~0.15 s
+  late) and C (the codec on whenever the screen is on: 4-12% more drain). Because of the 645 ms
   rule, powering down between sounds turns into a latency trap: a click
   arriving inside the window waits. **Idle power-down between sounds is
   built only if S1 measures that an idle, powered codec (with I2S running)

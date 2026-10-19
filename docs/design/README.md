@@ -92,3 +92,6 @@ A running list; each line points to where the detail is.
   secure pairing), our own Rust Bluetooth stack, PIN pairing only for
   keyboards, mice and headsets, an iPad-style pointer, modern keyboard
   shortcuts; radio routing and a profile allowlist per radio before P-S1.
+- **2026-10-19:** audio S1 passed; when the sound chip sleeps
+  ([ADR-0032](../adr/0032-audio-service.md) R5): after 5 s of quiet, the link
+  kept running, woken early by a touch or a key so clicks stay instant.
