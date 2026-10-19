@@ -824,7 +824,10 @@ mutants and the emulator; no vote changes.
   nothing failed; B: five races, each recognised from `DDADR` (now a proven
   device fact) and restarted with **0 us** stopped (criterion 1 ms). The
   owner's verdict by ear (a clean gap in A? clicks in B?) is pending: B is
-  not passed until the owner says so.
+  not passed until the owner says so. **Run 2 (speaker only), the owner:
+  A "a little gap", B "no gap"**; the log shows the stream running dry
+  once after A's gap and counted interactive after the stall, and one
+  late wake in B from the test's forced wait (docs/hw/audio.md).
 - **Open (quality audit C17):** `emu-audio-s2` reported one ring end that
   failed in 2 of its first 6 runs after B was built (none in the next 4),
   in an ordinary wake; not understood yet. The ring now logs why and what

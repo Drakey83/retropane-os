@@ -691,7 +691,7 @@ mod image {
         let cfg = StreamConfig::new(Role::Media, OUT, 2, refill);
         let _ = writeln!(
             out,
-            "E3 TEST A: A RISING SCALE, THE MIXER STALLED 400 ms AFTER 1 s: SILENCE, THEN THE SCALE CARRIES ON (NEVER A REPEAT)"
+            "E3 TEST A: A RISING SCALE WITH ONE SHORT GAP ABOUT 1 s IN (ON PURPOSE), THEN THE SCALE CARRIES ON. LISTEN: A CLICK GOING INTO THE GAP? COMING OUT?"
         );
         let mark = rig.mark(out);
         let Some(id) = rig.open(cfg) else {
@@ -700,6 +700,10 @@ mod image {
         };
         let mut sc = Synth::new(&SCALE, 100, OUT, 9_000, 2, 2_400);
         rig.run(out, 1_000, &mut |r| r.feed(id, &mut sc, refill));
+        // The stall straight after a wake: the same gap every run (the
+        // stall less a full lead, about 0.15 s).
+        rig.feed(id, &mut sc, refill);
+        rig.tick();
         let lead = rig.m.lead() * 1_000 / u64::from(OUT);
         let from = (rt::ticks(), rig.m.clock_now(&mut rig.dma));
         let t0 = ms();
@@ -737,7 +741,7 @@ mod image {
 
         let _ = writeln!(
             out,
-            "E3 TEST B: THE SCALE AGAIN, 5 WAKES FORCED INSIDE THE END'S PIECE (THE RACE): AT MOST A CLICK EACH, NO GAP"
+            "E3 TEST B: THE SCALE AGAIN, NO GAP MEANT. LISTEN: ANY CLICK OR DROPOUT?"
         );
         let mark = rig.mark(out);
         let Some(id) = rig.open(cfg) else {
@@ -1051,7 +1055,11 @@ mod image {
             *p = Some(b);
             rest = r;
         }
-        let _ = writeln!(out, "HEADPHONES IN FOR TESTS 1-5, OUT FOR 6-7");
+        if E3 {
+            let _ = writeln!(out, "A6 RUN: SPEAKER OR HEADPHONES, EITHER IS FINE");
+        } else {
+            let _ = writeln!(out, "HEADPHONES IN FOR TESTS 1-5, OUT FOR 6-7");
+        }
         a.board_mut().delay_us(3_000_000);
         let output = match a.up() {
             Ok(p) => {

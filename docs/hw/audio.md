@@ -660,6 +660,20 @@ pending:
   **0 us** each time (criterion 1 ms); no late wake, nothing failed.
 - Mixer CPU 2.5-3.2%; the DMA ran at 44,319 frames a second in B (no
   stop), 39,963 in A (its window holds the stop).
+- Run 1's start screen asked for headphones (the S2 prompt), which threw
+  the owner off; the owner's headphones are broken (a new pair the next
+  day), so run 2 was speaker only, with an E3 prompt of its own and the
+  stall started straight after a wake.
+
+**Run 2 (log `local/rp-audio-e3-run2.txt`), the owner by ear: "the first
+one with a little gap, the second one with no gap"** (no click
+mentioned). Measured: A, the engine stopped 224 ms and restarted, nothing
+failed; B, five races, 0-9 us stopped, nothing failed. Two things in the
+log to work out, neither in the ring: in A the scale's stream **ran dry
+once** just after the gap, and its write pattern made it count as
+**interactive** (45.8 wakes a second, the 35 ms lead) after the stall; in
+B **one late wake** came from the test's own forced wait overshooting the
+mix's end.
 
 **S2 listening runs (2026-10-19 morning, owner; logs
 `local/rp-audio-s2-listen2.txt`).** Run 1: the headphones came out during
