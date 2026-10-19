@@ -1,7 +1,11 @@
 # ADR-0033: Keyboards, mice and headsets over USB and Bluetooth
 
-- **Status:** Proposed (2026-10-18). **Five votes are the owner's (P1-P5)**;
-  R1-R9 are recommendations under the standing go-ahead, open to veto.
+- **Status:** **Accepted (owner, 2026-10-18): P1 A, P2 A, P3 A, P4 A,
+  P5 A**, with conditions that land before P-S1 (below: the radio routing
+  policy and the per-transport profile allowlist, written in as R10 and
+  R11; **the owner's further list of fourteen fixes is still to be
+  received and written in**). R1-R9 are recommendations under the standing
+  go-ahead, open to veto.
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -20,6 +24,20 @@ Dell's ROM (docs/hw/bluetooth.md) shape everything:
    modern Bluetooth 5 USB dongle would fix point 1, if USB host works.
 
 Five questions are yours (P1-P5). The rest has a recommendation.
+
+## The owner's decision (2026-10-18)
+
+| Vote | Chosen | The owner's reason |
+|---|---|---|
+| P1 radios | **A: both** | Built-in for classic devices; a dongle when plugged in for Low Energy and secure pairing |
+| P2 software | **A: our own, in Rust** | Parser bugs were the big Bluetooth attacks; ours are memory-safe by construction. Slowest to the first keyboard, worth it |
+| P3 PIN pairing | **A: keyboards, mice and headsets only, with the plain notice** | Files and networking wait for the secure dongle |
+| P4 mouse | **A: an iPad-style pointer** | Shows on mouse movement, hides on touch; right click = tap-and-hold menu; the wheel scrolls |
+| P5 keyboard | **A: modern shortcuts** | The hardware buttons keep their Windows Mobile jobs; layouts, key repeat and Caps Lock lights included |
+
+**Conditions, all before P-S1:** the radio routing policy (R10), the
+per-transport profile allowlist (R11), and the owner's fourteen fixes
+(to be written in when received).
 
 ## Context
 
@@ -152,6 +170,36 @@ a radio. USB host: the fork's OHCI model with QEMU's USB keyboard and
 mouse. Device runs (owner present) with a real keyboard, mouse and
 headset at each step.
 
+### R10. Radio routing (owner's condition)
+With both radios present, each device goes to one radio by a fixed
+policy, never by chance:
+
+| Device | Radio | Why |
+|---|---|---|
+| Headsets (A2DP, AVRCP, HFP/HSP) | **The built-in radio first**; the dongle only if the headset is Low Energy only (LE Audio, later) | Audio is classic Bluetooth on nearly every headset; keeping it on the built-in radio leaves the dongle's air time to input and doesn't make audio depend on USB power |
+| Low Energy keyboards and mice (HID over GATT) | **The dongle** (the built-in radio can't) | — |
+| Classic keyboards and mice | The built-in radio when no dongle is present; **the dongle when it is** (secure pairing for typing, P3) | A dongle-paired keyboard is safe from the PIN-pairing weakness |
+| File transfer, networking | **The dongle only** (P3) | Secure pairing required |
+
+A device keeps its radio once bonded (its bond belongs to that radio's
+address); moving it means pairing again, and Settings shows which radio
+each device uses. When the dongle is pulled, its devices disconnect; they
+don't fall back to the weak pairing silently.
+
+### R11. A profile allowlist per transport (owner's condition)
+Each radio has a fixed list of profiles it will run, enforced in the host
+stack (a connection asking for anything else is refused before its
+parser runs):
+
+| Transport | Allowed | Refused |
+|---|---|---|
+| Built-in BRF6150 (PIN pairing only) | SDP (for discovery only), HID (classic), A2DP, AVRCP, HFP, HSP | OBEX (file transfer, phone book), PAN/BNEP (networking), RFCOMM serial ports, everything else |
+| USB dongle (secure pairing) | The above, plus HID over GATT (Low Energy), and later, each when it's built: OBEX, PAN, LE Audio | Anything not built and reviewed |
+
+The allowlist is data in one place (not checks scattered through the
+stack), tested by a fuzz target that offers every profile on each
+transport, and a mutant that removes one entry.
+
 ### R9. Old programs
 Keyboards and mice reach old programs as normal input (R1). Windows
 Mobile's own Bluetooth programming interfaces (Winsock `AF_BTH`, `Bth*`
@@ -159,6 +207,9 @@ calls) are lower priority, done if a program the owner uses needs them.
 
 ## Steps
 
+0. **Before P-S1:** R10 and R11 designed in detail and tested in the
+   host stack's skeleton; the owner's fourteen fixes written into this
+   ADR.
 1. **P-S0 facts (read-only and owner checks):** VBUS on the connector (a
    multimeter, owner); the host power pins as Windows Mobile leaves them;
    static read of `BTControl.dll`/`BTHUTIL.dll` (the radio's power and
