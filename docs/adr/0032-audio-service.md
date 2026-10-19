@@ -289,7 +289,12 @@ The chain, in order, per output:
   amplifier only if needed (70 ms) → unmute.
 - **When audio powers down: the baseline is Windows Mobile's behaviour**
   (I2S and the codec stay up while the device is awake; down on suspend
-  or when the screen goes off with nothing playing). Because of the 645 ms
+  or when the screen goes off with nothing playing). **Corrected
+  2026-10-19 (`rp-wmpower`, docs/hw/audio.md):** Windows Mobile powers the
+  *codec* down about 2 s after the last sound and keeps *I2S* running, so
+  it saves the codec's 10-35 mA without meeting the 645 ms rule. The
+  choice that follows is the owner's (codec-only idle power-down, and
+  its timeout and latency). Because of the 645 ms
   rule, powering down between sounds turns into a latency trap: a click
   arriving inside the window waits. **Idle power-down between sounds is
   built only if S1 measures that an idle, powered codec (with I2S running)

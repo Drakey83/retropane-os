@@ -494,6 +494,32 @@ every note; the speaker's weak low notes are the speaker's (the same
 under Windows Mobile; the owner's X50v will be compared). Carried
 forward: `rp-wmpower`, the idle-power measurement.
 
+**Idle audio power, measured under Windows Mobile (2026-10-19, `rp-wmpower`,
+on battery, screen on with the backlight timer off, headphones out; log
+`local/wmpower/rp-wm-power-run1.txt`, run 2 complete; run 1 stopped after
+the backlight switched itself off).** Windows Mobile's battery current
+(`GetSystemPowerStatusEx2`), 40 s phases, means of the last 30 s:
+
+| Phase | Sound chip (CPLD `0x1C` bit 1), amplifier (`0x14` bit 1) | mA |
+|---|---|---|
+| A1, A2, A3: device closed | off, off | 245, 308, 307 |
+| B1, B2: open, playing silence | on, on | 257, 343 |
+| C1, C2: open, nothing written | on for 2 s, then off; amplifier off | 289, 264 |
+
+- **An idle powered audio path costs roughly 10-35 mA** (B against the A
+  phases around it), against ~250-310 mA for the whole Axim with the
+  screen on: about 4-12%. The gauge's reading swings ±50 mA second to
+  second, so this is a range, not a number to three figures.
+- **Windows Mobile powers the codec down about 2 s after the last sound**
+  (C phases: `0x1C` bit 1 on at the open, off 2 s later, the device still
+  open), while it keeps I2S running (`rp-wmaudio`: `SACR0` `0x8805` after
+  the device closes). So Dell saves the codec's power without ever
+  meeting the I2S restart rule: only the codec goes down. (ADR-0032 R5
+  said Windows Mobile keeps audio up while awake: corrected.)
+- Battery 95% to 90% over the run, ~4.0 V steady.
+
+A measurement, not a decision; the options are in ADR-0032 R5.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
