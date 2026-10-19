@@ -77,6 +77,16 @@ mod image {
     /// `RP_AUDIO_QUICK` at build time: no step waits for the owner (no
     /// taps, no headphone change): a measurement run, unattended.
     const QUICK: bool = option_env!("RP_AUDIO_QUICK").is_some();
+    /// `RP_AUDIO_E3` at build time: only ADR-0032 A6's run (the ring that
+    /// stops at the mix's end): a 400 ms stall mid-music, then wakes forced
+    /// inside the end's piece (the race). Tests 1-7 are skipped.
+    const E3: bool = option_env!("RP_AUDIO_E3").is_some();
+    /// An ascending scale from 440 Hz, a semitone every 100 ms: no two
+    /// notes alike, so a replay would show as the pitch going down.
+    const SCALE: [u32; 24] = [
+        440, 466, 494, 523, 554, 587, 622, 659, 698, 740, 784, 831, 880, 932, 988, 1047, 1109,
+        1175, 1245, 1319, 1397, 1480, 1568, 1661,
+    ];
     /// How long each "now" step waits for the owner.
     const WAIT_S: u32 = 30;
 
@@ -186,8 +196,26 @@ mod image {
         fn tick(&mut self) -> rp_audio::mixer::Tick {
             let t0 = rt::ticks();
             let (late, lead, due) = (self.m.stats().late, self.m.lead(), self.next);
+            let (failed, clock) = (self.m.stats().ring_failed, self.m.clock());
             let c0 = clocks::cycles();
             let t = self.m.tick(&mut self.dma, ms());
+            if self.m.stats().ring_failed != failed {
+                let _ = writeln!(
+                    devices::RunLog,
+                    "  ring end failed at {} ms (due {due}): clock {clock} -> {}, the mix {} ms ahead before, {} after, {} ms the wake took",
+                    t0 / TICK_MS,
+                    self.m.clock(),
+                    lead * 1_000 / u64::from(OUT),
+                    self.m.lead() * 1_000 / u64::from(OUT),
+                    rt::ticks().wrapping_sub(t0) / TICK_MS
+                );
+                if let Some((why, [ddadr, dsadr], stopped)) = self.dma.ring_failure() {
+                    let _ = writeln!(
+                        devices::RunLog,
+                        "  ring end failure: {why} (DDADR {ddadr:08X}, DSADR {dsadr:08X}, stopped {stopped})"
+                    );
+                }
+            }
             self.cycles += u64::from(clocks::cycles().wrapping_sub(c0));
             self.mixed += t.mixed;
             self.busy += u64::from(rt::ticks().wrapping_sub(t0));
@@ -635,6 +663,145 @@ mod image {
         rig.tick();
     }
 
+    /// Microseconds from OS timer ticks (3.25 MHz).
+    fn us(ticks: u32) -> u64 {
+        u64::from(ticks) * 4 / 13
+    }
+
+    /// How long the engine sat stopped between `(t0, p0)` and now (the OS
+    /// timer's ticks, the output's clock): the time passed less the frames
+    /// that went out, at the link's measured 44,317 Hz (docs/hw/audio.md),
+    /// in microseconds (0 if it never stopped).
+    fn stopped_us(rig: &mut Rig<'_, '_>, (t0, p0): (u32, u64)) -> u64 {
+        let p1 = rig.m.clock_now(&mut rig.dma);
+        let passed = us(rt::ticks().wrapping_sub(t0));
+        passed.saturating_sub((p1 - p0) * 1_000_000 / 44_317)
+    }
+
+    /// ADR-0032 A6's run (`RP_AUDIO_E3`). A: the scale, the mixer stalled
+    /// 400 ms after 1 s (no wake, no feeding: the whole program stops, as
+    /// a stalled audio host would): the music, silence, then the music
+    /// carrying on from where it stopped, never a repeat. B: the scale
+    /// again, wakes held back until the engine is inside the end's piece
+    /// (under 7.9 ms left, the race), five times: each heard as at most a
+    /// click, its gap (the engine stopped) logged against 1 ms.
+    fn e3(out: &mut Tee<'_, '_>, rig: &mut Rig<'_, '_>) {
+        use rp_hal_api::DmaRing;
+        let refill = OUT / 30;
+        let cfg = StreamConfig::new(Role::Media, OUT, 2, refill);
+        let _ = writeln!(
+            out,
+            "E3 TEST A: A RISING SCALE, THE MIXER STALLED 400 ms AFTER 1 s: SILENCE, THEN THE SCALE CARRIES ON (NEVER A REPEAT)"
+        );
+        let mark = rig.mark(out);
+        let Some(id) = rig.open(cfg) else {
+            let _ = writeln!(out, "  the scale's stream didn't open");
+            return;
+        };
+        let mut sc = Synth::new(&SCALE, 100, OUT, 9_000, 2, 2_400);
+        rig.run(out, 1_000, &mut |r| r.feed(id, &mut sc, refill));
+        let lead = rig.m.lead() * 1_000 / u64::from(OUT);
+        let from = (rt::ticks(), rig.m.clock_now(&mut rig.dma));
+        let t0 = ms();
+        while ms().wrapping_sub(t0) < 400 {
+            rt::delay_us(1_000);
+            rt::check_in();
+        }
+        let stopped = rig.dma.stopped();
+        rig.tick();
+        let gap = stopped_us(rig, from);
+        let _ = writeln!(
+            out,
+            "  stall: 400 ms with the mix {lead} ms ahead; the engine {} by the stall's end, stopped {} ms in all",
+            if stopped {
+                "had stopped"
+            } else {
+                "was still playing"
+            },
+            gap / 1_000
+        );
+        rig.run(out, 1_900, &mut |r| r.feed(id, &mut sc, refill));
+        rig.close(id);
+        rig.report(out, "E3A", &mark);
+        let s = rig.m.stats();
+        let _ = writeln!(
+            out,
+            "E3A RING: late {}, stops {}, restarts {}, races {}, failed {}",
+            s.late - mark.stats.late,
+            s.stops - mark.stats.stops,
+            s.restarts - mark.stats.restarts,
+            s.races - mark.stats.races,
+            s.ring_failed - mark.stats.ring_failed
+        );
+        pause(out, rig, 1_000);
+
+        let _ = writeln!(
+            out,
+            "E3 TEST B: THE SCALE AGAIN, 5 WAKES FORCED INSIDE THE END'S PIECE (THE RACE): AT MOST A CLICK EACH, NO GAP"
+        );
+        let mark = rig.mark(out);
+        let Some(id) = rig.open(cfg) else {
+            let _ = writeln!(out, "  the scale's stream didn't open");
+            return;
+        };
+        let mut sc = Synth::new(&SCALE, 100, OUT, 9_000, 2, 2_400);
+        let piece = (rig.dma.piece() / 4) as u64;
+        let (mut forced, mut worst) = (0u32, 0u64);
+        let until = ms() + 2_200;
+        while forced < 5 && ms() < until && piece > 0 {
+            rig.feed(id, &mut sc, refill);
+            rig.tick();
+            let end = rig.m.clock() + rig.m.lead();
+            let start = end / piece * piece;
+            if end - start < 96 {
+                rig.run(out, 7, &mut |r| r.feed(id, &mut sc, refill));
+                continue;
+            }
+            // Held back until the engine is inside the end's piece.
+            let t = ms();
+            while rig.m.clock_now(&mut rig.dma) < start + 16 && ms().wrapping_sub(t) < 400 {
+                rt::delay_us(20);
+                rt::check_in();
+            }
+            let (r0, s0) = (rig.m.stats().races, rig.m.stats().restarts);
+            let from = (rt::ticks(), rig.m.clock_now(&mut rig.dma));
+            rig.feed(id, &mut sc, refill);
+            rig.tick();
+            let gap = stopped_us(rig, from);
+            if rig.m.stats().restarts > s0 {
+                forced += 1;
+                worst = worst.max(gap);
+                let _ = writeln!(
+                    devices::RunLog,
+                    "  race {forced}: {} frames left at the wake, the engine stopped {gap} us ({})",
+                    end.saturating_sub(from.1),
+                    if rig.m.stats().races > r0 {
+                        "waited for"
+                    } else {
+                        "had stopped"
+                    }
+                );
+            }
+            rig.run(out, 120, &mut |r| r.feed(id, &mut sc, refill));
+        }
+        // The rest of the scale (the held-back wakes made it run late).
+        let t = ms();
+        while rig.m.status(id, ms()).is_some_and(|st| !st.drained) && ms().wrapping_sub(t) < 3_000 {
+            rig.run(out, 50, &mut |r| r.feed(id, &mut sc, refill));
+        }
+        rig.close(id);
+        rig.report(out, "E3B", &mark);
+        let s = rig.m.stats();
+        let _ = writeln!(
+            out,
+            "E3B RING: forced {forced}, worst gap {worst} us (criterion 1,000), late {}, restarts {}, races {}, failed {}",
+            s.late - mark.stats.late,
+            s.restarts - mark.stats.restarts,
+            s.races - mark.stats.races,
+            s.ring_failed - mark.stats.ring_failed
+        );
+    }
+
     /// Test 1: the same pitch from two rates, back to back.
     fn two_notes(out: &mut Tee<'_, '_>, rig: &mut Rig<'_, '_>) {
         let _ = writeln!(
@@ -914,6 +1081,9 @@ mod image {
             lead_max: 0,
         };
         let started = rig.m.start(&mut rig.dma, ms());
+        if rig.m.stats().ring_failed != 0 {
+            let _ = writeln!(devices::RunLog, "  ring end failed at the start");
+        }
         if started.is_err() {
             let _ = writeln!(out, "the DMA engine refused the ring");
             let _ = rig.a.down();
@@ -921,6 +1091,25 @@ mod image {
             finish(cpld, found)
         }
 
+        if E3 {
+            pause(&mut out, &mut rig, 1_000);
+            e3(&mut out, &mut rig);
+            pause(&mut out, &mut rig, 500);
+            rig.m.stop(&mut rig.dma);
+            let s = rig.m.stats();
+            let _ = writeln!(
+                out,
+                "E3 ALL: {} wakes, {} late, {} dry, ring stops {} restarts {} races {} failed {}",
+                s.wakes, s.late, s.starved, s.stops, s.restarts, s.races, s.ring_failed
+            );
+            let _ = rig.a.down();
+            let _ = writeln!(
+                out,
+                "E3 DONE: TELL ME A (A GAP, THEN THE SCALE CARRIES ON?) AND B (CLICKS?)"
+            );
+            let cpld = rig.a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         two_notes(&mut out, &mut rig);
         pause(&mut out, &mut rig, 2_000);
         taps(&mut out, &mut rig, &mut touch);

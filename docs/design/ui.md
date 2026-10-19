@@ -40,7 +40,38 @@ against screenshots and the manual before any concept uses them):
 - Big, finger-friendly targets: a full-screen launcher grid of large icons,
   quick contacts with photos.
 - Widgets in panels you swipe between (version 3's 3D carousel), not one
-  long list.
+  long list. **The carousel** (owner, 2026-10-19: the name is right): the
+  panels on a 3D rotating ring, turned with the finger. The owner points
+  out the 2700G suits effects like it (textured quads, bilinear filtering,
+  the render-done interrupt: docs/hw GPU facts). Its look and motion are
+  to be studied from the owner's screenshots and video split into frames
+  (rotation, easing, timing, depth and lighting); how it felt to the
+  finger (response, stutter) from the owner's own words. "Carousel" is
+  SPB's feature named for reference, not our name for ours.
+
+  **What SPB's own demo video shows** (SPB Mobile Shell 3.5, YouTube
+  `IGrfQ7IKGBs`, 640x480, stepped through frame by frame in the app's
+  browser, 2026-10-19; observations to check against the owner's memory,
+  nothing copied):
+  - **At rest:** one panel full-face in the middle (each panel titled in
+    a bar at its top: "Lifestyle Home", "Contacts", "Favorite Contacts",
+    "Weather"...), its neighbours visible at both edges, turned away and
+    foreshortened, so the ring reads as a drum seen from the front. A
+    glossy black floor reflects the panels; the background is near
+    black. The Windows Mobile title bar and two softkeys stay as they are.
+  - **A turn:** the view pulls back (the front panel shrinks within about
+    0.2-0.3 s), the panels sit small and dim on the drum, the drum turns,
+    then the view zooms in on the chosen panel and it brightens. Whole
+    turn about 1.5-2 s in the demo (a demo may be slowed for the camera).
+  - **Elsewhere in the video:** the Today panel (a big clock, the date,
+    the weather, the next appointment, launcher and contacts buttons at
+    the bottom), a full-screen launcher grid of large icons, background
+    pictures to pick from, a message view, contacts with photos.
+  - **Fits the 2700G** (docs/hw GPU facts): each panel one textured quad
+    (rendered once into a texture, redrawn only when it changes), the
+    floor reflection the same quads mirrored and faded, the pull-back and
+    turn just their transforms: a few quads a frame. Open: the frame rate
+    and the finger's response the owner remembers.
 - WM itself still there underneath: programs, Start menu, softkeys.
 
 How it fits what's decided: the **hybrid** feel, live **widgets** and a

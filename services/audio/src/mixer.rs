@@ -1347,12 +1347,20 @@ impl<'a> Mixer<'a> {
             self.stats.clipped += r.clipped;
             self.stats.limited += u32::from(r.limited);
             b += BLOCK as u64;
-            // A whole piece mixed past the ring's end: the end moves on to
-            // it now, not after the whole stretch, so an engine that was
-            // already stopping (the race) or stopped is started again
-            // within about two pieces' mixing (under 1 ms on the X51v), not
-            // after a long mix. The piece is full: nothing to clear.
-            if self.ended && b.is_multiple_of(self.piece) && b > self.piece_end(self.end_frame) {
+            // A whole piece mixed past the ring's end and the engine
+            // stopped there (late, or the race's piece played out): the end
+            // moves on to it now, not after the whole stretch, so the
+            // engine starts again within about two pieces' mixing (under
+            // 1 ms on the X51v). The piece is full: nothing to clear. Only
+            // a stopped engine: one that is still playing is left to the
+            // wake's last move (moving the end under it each piece found it
+            // in the old end's piece again and again after a restart, and
+            // waited for it every time: found by emu-audio-e3).
+            if self.ended
+                && b.is_multiple_of(self.piece)
+                && b > self.piece_end(self.end_frame)
+                && dma.stopped()
+            {
                 self.mixed_to = b;
                 self.set_end(dma, b - 1);
             }

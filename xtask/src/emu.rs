@@ -5282,6 +5282,282 @@ pub fn boot_loader_silent_pc(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// ADR-0032 A6, audit E3 (`rp-audio-s2` built with `RP_AUDIO_E3`): the
+/// ring that stops at the end of the mixed sound. A: a rising scale (a
+/// semitone every 100 ms), the mixer stalled 400 ms after 1 s: the
+/// recording must hold the scale, one gap of silence, and the scale
+/// carrying on, its notes never going down (a replay of the ring's last
+/// quarter second would), none missing. B: the scale again with five wakes
+/// held back until the engine is inside the end's piece (the race): the
+/// notes in order with no gap. The log: the stall late once and stopped,
+/// five races forced, nothing failed. The headphones are out (the model
+/// records the speaker's voice).
+pub fn boot_loader_audio_e3(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    audio E3: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let image = variant_image(root, "rp-audio-s2", ("RP_AUDIO_E3", "1"))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let wav = scratch(root, "audio-e3.wav")?;
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let port = monitor_port();
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend([
+        "-audiodev".into(),
+        format!("wav,id=snd,path={wav_path}{WAV_VOICE}"),
+        "-machine".into(),
+        "audiodev=snd".into(),
+    ]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        let log = usb_read_until(&mut s, "RPL END", 150)?;
+        for want in [
+            "E3 TEST A",
+            "E3A RESULT",
+            "E3A RING",
+            "E3 TEST B",
+            "E3B RESULT",
+            "E3B RING",
+            "E3 ALL",
+            "E3 DONE",
+            "board bits put back as found",
+            "AUDIO-S2-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("audio E3: no {want:?} in the run log:{log}"));
+            }
+        }
+        let line = |key: &str| -> Result<&str, String> {
+            log.lines()
+                .find(|l| l.contains(key))
+                .ok_or(format!("audio E3: no {key:?} line"))
+        };
+        let after = |l: &str, key: &str| -> Result<u64, String> {
+            l.split(key)
+                .nth(1)
+                .and_then(|r| r.trim_start().split([' ', ',']).next())
+                .and_then(|n| n.parse().ok())
+                .ok_or(format!("audio E3: no {key:?} in {l:?}"))
+        };
+        let a = line("E3A RING")?;
+        if after(a, "late")? != 1 || after(a, "stops")? < 1 || after(a, "restarts")? < 1 {
+            return Err(format!(
+                "audio E3: the stall wasn't one late wake with the engine stopped and started again: {a:?}"
+            ));
+        }
+        let b = line("E3B RING")?;
+        if after(b, "forced")? != 5 || after(b, "late")? != 0 {
+            return Err(format!("audio E3: five races not forced cleanly: {b:?}"));
+        }
+        let all = line("E3 ALL")?;
+        if after(a, "failed")? != 0 || after(b, "failed")? != 0 || after(all, "failed")? != 0 {
+            return Err(format!("audio E3: the ring's end failed to move:{log}"));
+        }
+        // The engine stood stopped through the rest of the stall: 400 ms
+        // less the mix it had (245 ms) and its piece's silence.
+        let stall = line("  stall:")?;
+        if after(stall, "end, stopped")? < 100 {
+            return Err(format!(
+                "audio E3: the engine stopped under 100 ms: {stall:?}"
+            ));
+        }
+        if !line("  stall:")?.contains("had stopped") {
+            return Err(format!(
+                "audio E3: the engine still played at the stall's end (longer than the mix and its piece): {:?}",
+                line("  stall:")?
+            ));
+        }
+        for l in log.lines().filter(|l| {
+            l.contains("E3A") || l.contains("E3B") || l.contains("stall:") || l.contains("race ")
+        }) {
+            eprintln!("    audio E3: {}", l.trim());
+        }
+        guest_hold(&mut mon, 500, "audio-e3")?;
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    let found = e3_recording(&wav)?;
+    eprintln!("    audio E3 OK: {found}");
+    Ok(())
+}
+
+/// The scale `rp-audio-s2`'s E3 run plays (a semitone every 100 ms).
+const E3_SCALE: [f64; 24] = [
+    440.0, 466.0, 494.0, 523.0, 554.0, 587.0, 622.0, 659.0, 698.0, 740.0, 784.0, 831.0, 880.0,
+    932.0, 988.0, 1047.0, 1109.0, 1175.0, 1245.0, 1319.0, 1397.0, 1480.0, 1568.0, 1661.0,
+];
+
+/// The pitch of `x` from its first and last zero crossings, each placed
+/// between its two samples (a fraction of a sample): accurate to well
+/// under 1 Hz over 20 ms, where counting crossings resolves only 50 Hz
+/// (coarser than a semitone).
+fn fine_pitch(x: &[i16], rate: u32) -> f64 {
+    let at: Vec<f64> = x
+        .windows(2)
+        .enumerate()
+        .filter(|(_, p)| (p[0] < 0) != (p[1] < 0))
+        .map(|(i, p)| {
+            let (a, b) = (f64::from(p[0]), f64::from(p[1]));
+            i as f64 + a / (a - b)
+        })
+        .collect();
+    match (at.first(), at.last()) {
+        (Some(f), Some(l)) if at.len() > 2 && l > f => {
+            (at.len() - 1) as f64 / 2.0 / ((l - f) / f64::from(rate))
+        }
+        _ => 0.0,
+    }
+}
+
+/// `emu-audio-e3`'s recording: 20 ms windows, each silent, a note of the
+/// scale (its pitch within 2.5%, by [`fine_pitch`]), or neither (a join
+/// between notes). The two scales (A, B) are the two runs of notes split
+/// by the long pause; in each the notes never go down and all 24 are
+/// there (one window out of order is a join, where a stop's cleared
+/// frames skew the pitch: a replay of the old looping ring would be a
+/// quarter second of earlier notes); B has no gap over 20 ms. A's stall
+/// gap: the fork's I2S sends nothing while its FIFO is empty (the stopped
+/// DMA), so the recording closes it up (docs/hw/emulator.md); the log's
+/// "stopped N ms" holds it instead. Should the model send silence there,
+/// A's one gap must be at least 100 ms.
+fn e3_recording(wav: &Path) -> Result<String, String> {
+    let (x, rate) = wav_left(wav, "audio E3")?;
+    let w = rate as usize / 50;
+    #[derive(Clone, Copy, PartialEq)]
+    enum Win {
+        Quiet,
+        Note(usize),
+        Other,
+    }
+    let wins: Vec<Win> = x
+        .chunks_exact(w)
+        .map(|c| {
+            if rms(c) < 200.0 {
+                return Win::Quiet;
+            }
+            let hz = fine_pitch(c, rate);
+            E3_SCALE
+                .iter()
+                .position(|&n| (hz - n).abs() < n * 0.025)
+                .map_or(Win::Other, Win::Note)
+        })
+        .collect();
+    // Runs of notes, split where at least 600 ms is quiet (the pauses).
+    let mut parts: Vec<Vec<(usize, Win)>> = Vec::new();
+    let mut quiet = usize::MAX;
+    for (k, &v) in wins.iter().enumerate() {
+        match v {
+            Win::Quiet => quiet = quiet.saturating_add(1),
+            _ => {
+                if quiet >= 30 {
+                    parts.push(Vec::new());
+                }
+                quiet = 0;
+            }
+        }
+        if let Some(p) = parts.last_mut() {
+            p.push((k, v));
+        }
+    }
+    for p in &mut parts {
+        while p.last().is_some_and(|&(_, v)| v == Win::Quiet) {
+            p.pop();
+        }
+    }
+    let parts: Vec<_> = parts.into_iter().filter(|p| p.len() > 25).collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "audio E3: the recording holds {} scales, wanted 2 (A, B)",
+            parts.len()
+        ));
+    }
+    let mut said = Vec::new();
+    // In windows: A's gap at least 100 ms, B's at most 20 ms.
+    for (name, p, gap_min, gap_max) in [("A", &parts[0], 5, usize::MAX), ("B", &parts[1], 0, 1)] {
+        let mut last = 0;
+        let mut below = 0;
+        let mut seen = [0usize; 24];
+        let (mut run, mut gaps, mut longest) = (0usize, 0usize, 0usize);
+        for &(k, v) in p {
+            match v {
+                Win::Note(n) => {
+                    below = if n + 1 < last { below + 1 } else { 0 };
+                    if below >= 2 {
+                        return Err(format!(
+                            "audio E3: in {name} the scale went down at {:.2} s (note {} after {}): a replay",
+                            k as f64 / 50.0,
+                            n + 1,
+                            last + 1
+                        ));
+                    }
+                    last = last.max(n);
+                    seen[n] += 1;
+                }
+                Win::Quiet => {
+                    run += 1;
+                    continue;
+                }
+                Win::Other => {}
+            }
+            if run > 1 {
+                gaps += usize::from(run >= gap_min.max(2));
+            }
+            longest = longest.max(run);
+            run = 0;
+        }
+        let missing: Vec<usize> = (0..24).filter(|&n| seen[n] < 2).map(|n| n + 1).collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "audio E3: in {name} notes {missing:?} are missing or short"
+            ));
+        }
+        if name == "A" && (gaps > 1 || (gaps == 1 && longest < gap_min)) {
+            return Err(format!(
+                "audio E3: A holds {gaps} gaps of silence (the longest {} ms), wanted one of at least 100 ms",
+                longest * 20
+            ));
+        }
+        if longest > gap_max {
+            return Err(format!(
+                "audio E3: B has a gap of {} ms (the race must leave none)",
+                longest * 20
+            ));
+        }
+        said.push(format!(
+            "{name} all 24 notes rising, longest silence {} ms",
+            longest * 20
+        ));
+    }
+    Ok(said.join("; "))
+}
+
 /// Audio service step S2 (ADR-0032, `rp-audio-s2`): the mixer on the
 /// emulated X51v, the headphones out the whole run (the model records the
 /// speaker's voice). The two notes of test 1 come from a 22.05 kHz and a
@@ -5479,9 +5755,9 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
                 "    audio S2: the link's rate not checked (the emulator lacks i2s-rates: rp-v0.26.0)"
             );
         }
-        if !log.contains(", 0 laps lost") || !log.contains(" 0 late, 0 dry, 0 clipped") {
+        if !log.contains(" 0 late, 0 dry, 0 clipped") || !log.contains(" failed 0") {
             return Err(format!(
-                "audio S2: a lap lost, a late wake, a stream run dry or a clip over the whole run:{log}"
+                "audio S2: a late wake, a stream run dry, a clip or a ring end that failed over the whole run:{log}"
             ));
         }
         for l in log.lines().filter(|l| {

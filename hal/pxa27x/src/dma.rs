@@ -137,6 +137,14 @@ impl Dma {
         ]
     }
 
+    /// Why the running ring's last failed end failed, and the registers
+    /// it read then (`DDADR`, `DSADR`, `DCSR` said stopped): for logs.
+    #[must_use]
+    pub fn ring_failure(&self) -> Option<(&'static str, [u32; 2], bool)> {
+        let (why, s) = self.ring?.failure()?;
+        Some((why, [s.ddadr, s.dsadr], s.stopped))
+    }
+
     /// Stops the channel and waits until it says it has stopped
     /// (`DCSR.STOPINTR`, bounded). A channel only stops once its current
     /// transfer step ends; until then it still reads its descriptors and

@@ -7,7 +7,10 @@
   and revised after a review the same day.
 - **A6 (quality audit E3, the DMA chain that stops at the mix's end):
   the owner chose B on 2026-10-19, conditional on the two device
-  measurements passing their criteria; not built.**
+  measurements; both passed on the X51v the same evening; B built the
+  same night (below, "A6 as built"), emulator-checked (`emu-audio-e3`),
+  not yet proven on the device: the owner's listening run waits for the
+  owner's go.**
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -512,7 +515,8 @@ numbers come back to the owner with the options; nothing is decided by a
 result alone. The owner's review the same day added five points, folded in
 below: what an empty I2S FIFO might send, the end marker's rule in one
 sentence, a pass criterion for the restart time, the "mixed or cleared"
-rule, and the build order against S2. Nothing is built.
+rule, and the build order against S2. **Built 2026-10-19** in that
+order: see "A6 as built" at the end of this section.
 
 ### In plain words
 
@@ -587,6 +591,11 @@ stalls; its failure is the loud one.
      start of the descriptor the engine is reading; so the mix may lead the
      engine's read position by at most the ring less one descriptor
      (*lead ≤ ring − one descriptor*: 11,264 − 352 = 10,912 frames).**
+     Built, the rule turned out to need the strict form (*lead < ring −
+     one descriptor*), measured from the piece holding the last frame the
+     engine played: an end one whole ring on is the piece just behind a
+     stopped engine, which can't be told from an end it has already played
+     (found by the HAL's host test; "A6 as built").
      The background lead is 10,816 frames
      and the ring 11,264, leaving 448 frames: a 4 KiB descriptor (1,024
      frames) breaks the rule; 352 frames keeps it with room to spare.
@@ -732,7 +741,94 @@ the stop as an interrupt straight to a restart is the likely one).
   empty FIFO sends decides whether they're there), its gap logged against
   the 1 ms criterion.
 - **Size:** no memory added; code a few hundred bytes (measured when
-  built).
+  built: 3.7 KB in `rp-audio-s2`, 83,780 to 87,524 bytes with the ring's
+  logic, the mixer's end, its counters and log lines; "A6 as built").
+
+### A6 as built (2026-10-19)
+
+Built in the build order above, each step committed on its own; nothing
+heard on the device yet. Engineering inside B, settled by host tests,
+mutants and the emulator; no vote changes.
+
+- **The HAL** (`hal/pxa27x/src/dmaring.rs`, beside `dmachain`): the ring
+  is cut into as many pieces as the channel's chain holds, whole cache
+  lines (the mixer's 44 KiB: 32 of 1,408 bytes; an 8 KiB ring, as S1's
+  and the link-rate bench's: 32 of 256), and loops until given an end.
+  `DmaRing` gained `piece`, `stopped` and `end_at`. Moving the end: STOP
+  on the new piece's link first, then off the old one (a CPU held up
+  between the two writes then still has one STOP in the chain; the other
+  order left none and the engine went round: the host model catches it).
+  The race is told from `DDADR` (it carries STOP and names the piece after
+  the one the engine is in), waited for (at most a piece) and restarted at
+  once. An end in the engine's own piece is a failure, counted, and held
+  one piece on (at most a piece of what's there plays, never a lap).
+  `position()` now reads the ring's end as its start (it was clamped one
+  frame short: a stop at the ring's last piece would have put the clock
+  one frame off).
+- **Device fact the HAL leans on, not yet proven:** `DDADR` keeps the
+  link's address bits with STOP set while the engine runs a STOP piece
+  (the manual's register layout; the fork does the same). The bench
+  proved the stop and restart, not this reading: the listening run's
+  forced races prove it (a wrong reading shows as `failed`).
+- **The mixer:** after each wake's mixing it clears the rest of the
+  piece its mix ends in (audit E4) and moves the end there. After a stop
+  every stream carries on **exactly where the engine stopped** (the end of
+  the end's piece), not past the margin: the engine is stopped, so no
+  margin is needed, and mixing from there also writes over any old mix
+  past it. Found while building:
+  1. **The ring gets an end the moment it starts** (silence up to the
+     first piece past the margin). A ring looping even for its first
+     wake let an engine faster than that wake's mixing lap the first mix
+     and replay it (host test with the service starting the ring for a
+     first stream).
+  2. **The end moves on during a long mix, but only to a stopped
+     engine.** A race leaves under a piece (7.9 ms) of sound, while mixing
+     a wake's 245 ms lead can take ~9 ms on the X51v (48 kHz content). So
+     each fully mixed piece checks whether the engine has stopped (one
+     register read) and, if so, moves the end to it, starting the engine
+     again within about two pieces' mixing (under 1 ms on the device).
+     Moving it under a *playing* engine every piece (the first version)
+     found it in the old end's piece again and again after any restart
+     and waited for it each time: the mixer paced by the engine, its lead
+     never rebuilt, 63-99% of the emulator's CPU in busy waits (found by
+     `emu-audio-e3`; host test: 58,316 races in 4 s that way, 4 now).
+  3. **The mix is capped by the end's rule** and mixed on until the end's
+     piece starts at least the margin past the engine (only on a
+     nearly-late wake).
+- **The clock** is the DMA position alone; the OS-timer lap estimate and
+  `laps_lost` are gone. It counts only frames that went out, so it stands
+  still while the engine is stopped; the S2 image's result lines say how
+  many stops a window held (such a window's rate isn't the link's).
+- **Counters:** `stops`, `restarts`, `races`, `ring_failed` (never
+  expected, never hidden), in the S2 image's log.
+- **Host tests:** the HAL's model engine with random wake timing, a CPU
+  held up between the two link writes and stalls longer than the ring:
+  every frame played is the one written for its time, or silence. The
+  mixer's: a stop reaches S2's late path; a stall longer than the ring is
+  silence, never a replay (E3); a shortening rewrite then a stall plays no
+  stale tail (E4); a wake inside the end's piece (the race); a larger cut;
+  a mixer slower than the sound fails quietly; the race on a 28% CPU
+  costs about two pieces' mixing; a restart doesn't tie the mixer to the
+  engine. **13 mutants**, all killed (6 HAL, 7 mixer).
+- **Emulator (`emu-audio-e3`, `rp-audio-s2` built with `RP_AUDIO_E3`):**
+  A, a rising scale (a semitone every 100 ms) with the mixer stalled
+  400 ms after 1 s: one late wake, the engine stopped 162 ms, then the
+  scale carrying on, all 24 notes rising, never a step back. B, five
+  wakes held back until the engine is inside the end's piece: five races,
+  the engine stopped 0-77 us each (criterion 1 ms), all 24 notes, no gap.
+  The fork's I2S sends nothing while its FIFO is empty, so the recording
+  closes the stall's gap up; the guest's log holds it instead
+  (docs/hw/emulator.md). Mixer CPU 0.5-1.6%.
+- **Open (quality audit C17):** `emu-audio-s2` reported one ring end that
+  failed in 2 of its first 6 runs after B was built (none in the next 4),
+  in an ordinary wake; not understood yet. The ring now logs why and what
+  it read; contained meanwhile (at most a piece, never a lap).
+- **For the owner's listening run** (`RP_AUDIO_E3=1`): A heard as the
+  scale, a clean gap of about 0.16 s, the scale carrying on (a click
+  going in shouldn't be there; one coming out is possible); B as the
+  scale with at most a click at each of five moments, no audible gap; the
+  log's worst race gap under 1 ms. What an empty FIFO sends (zeros or the
+  last sample) shows in whether B clicks.
 
 ### The step questions
 

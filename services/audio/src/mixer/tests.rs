@@ -1117,6 +1117,29 @@ fn the_race_on_a_slow_cpu_costs_about_two_pieces_mixing_not_the_whole_mix() {
 }
 
 #[test]
+fn a_restart_does_not_tie_the_mixer_to_the_engine() {
+    // After a stall the engine starts again right behind the mix's front.
+    // Moving the end under it with every piece mixed found it in the old
+    // end's piece each time and waited for it (a race per piece: the mixer
+    // paced by the engine, its lead never rebuilt; found by emu-audio-e3).
+    // On a 28% CPU: a stall, then two seconds of music, a handful of races
+    // at most (4 measured; moving the end under it every piece: 58,316).
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 19, 8_000, 4);
+    sim.dma.lag = 9;
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    sim.tick();
+    stall(&mut sim, 400);
+    sim.tick();
+    sim.run(2_000, &mut |m, now| f.feed(m, now));
+    let st = sim.m.stats();
+    assert!(st.races <= 10, "{st:?}");
+    assert_eq!(st.ring_failed, 0);
+    sim.run(2_000, &mut |m, now| f.feed(m, now));
+    assert!(heard_once(&sim, &f), "lost or repeated frames");
+}
+
+#[test]
 fn a_ring_cut_in_larger_pieces_still_keeps_the_end_s_rule() {
     // Whatever the HAL's cut (here 11 pieces of 4 KiB, the old chain), the
     // mix never ends in the piece just behind the engine: a background

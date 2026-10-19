@@ -99,6 +99,9 @@ pub struct Ring {
     base: u32,
     /// The piece whose link carries STOP, once there is an end.
     end: Option<u32>,
+    /// Why the last [`Ring::end_at`] that failed did, and the registers it
+    /// read then (for logs: a failure is never expected).
+    failure: Option<(&'static str, Seen)>,
 }
 
 impl Ring {
@@ -129,6 +132,7 @@ impl Ring {
             pieces,
             base,
             end: None,
+            failure: None,
         };
         for (i, d) in (0..pieces).zip(chain.iter_mut()) {
             *d = [ring.link(i), addr + i * piece, dst, cmd | piece];
@@ -146,6 +150,12 @@ impl Ring {
     #[must_use]
     pub const fn pieces(&self) -> u32 {
         self.pieces
+    }
+
+    /// Why the last failed [`Ring::end_at`] failed, and what it read.
+    #[must_use]
+    pub const fn failure(&self) -> Option<(&'static str, Seen)> {
+        self.failure
     }
 
     /// The piece carrying the end, if any (tests, logs).
@@ -247,12 +257,14 @@ impl Ring {
         let k = at / self.piece;
         self.move_end(k, eng);
         let mut s = eng.seen();
+        let first = s;
         let raced = match self.look(s) {
             Look::Moving(c) if c == k => {
                 // The rule broken: it loaded the end's piece before its STOP
                 // and would go round. One piece on, so at most that plays.
                 let k1 = if k + 1 == self.pieces { 0 } else { k + 1 };
                 self.move_end(k1, eng);
+                self.failure = Some(("the end in the engine's own piece", s));
                 return RingEnd::Failed;
             }
             Look::Moving(_) => return RingEnd::Running,
@@ -262,6 +274,7 @@ impl Ring {
                 let mut n = 0;
                 while !s.stopped {
                     if n == polls {
+                        self.failure = Some(("the race's wait ran out", first));
                         return RingEnd::Failed;
                     }
                     n += 1;
@@ -270,9 +283,13 @@ impl Ring {
                 true
             }
             Look::Stopped(_) => false,
-            Look::Bad => return RingEnd::Failed,
+            Look::Bad => {
+                self.failure = Some(("registers that make no sense", s));
+                return RingEnd::Failed;
+            }
         };
         let Look::Stopped(r) = self.look(s) else {
+            self.failure = Some(("stopped mid-piece after the race", s));
             return RingEnd::Failed;
         };
         if r == if k + 1 == self.pieces { 0 } else { k + 1 } {

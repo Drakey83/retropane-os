@@ -1597,12 +1597,28 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "mixer: the end moved only after the whole mix (the race waits for a long mix) (ADR-0032 A6)",
         file: "services/audio/src/mixer.rs",
-        from: "            if self.ended && b.is_multiple_of(self.piece) && b > self.piece_end(self.end_frame) {",
-        to: "            if false {",
+        from: "            if self.ended
+                && b.is_multiple_of(self.piece)
+",
+        to: "            if false
+                && b.is_multiple_of(self.piece)
+",
         check: Check::Host(&[
             "-p",
             "rp-audio",
             "the_race_on_a_slow_cpu_costs_about_two_pieces_mixing_not_the_whole_mix",
+        ]),
+    },
+    // The end moved mid-mix only to a stopped engine (ADR-0032 A6).
+    Mutant {
+        name: "mixer: the end moved under a playing engine with every piece mixed (the mixer tied to the engine) (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "                && b > self.piece_end(self.end_frame)\n                && dma.stopped()\n",
+        to: "                && b > self.piece_end(self.end_frame)\n",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_restart_does_not_tie_the_mixer_to_the_engine",
         ]),
     },
 ];
