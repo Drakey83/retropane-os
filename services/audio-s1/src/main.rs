@@ -71,6 +71,10 @@ mod image {
     /// `RP_AUDIO_AB_TEST` at build time: the unheard 440 Hz speaker note,
     /// one change per test (pitch, power-up, level), numbered on screen.
     const AB_TEST: bool = option_env!("RP_AUDIO_AB_TEST").is_some();
+    /// `RP_AUDIO_SWEEP` at build time: the speaker's response, read by the
+    /// owner's phone sound meter: a quiet reading, then numbered pitches,
+    /// high to low, 3 s each at full level.
+    const SWEEP: bool = option_env!("RP_AUDIO_SWEEP").is_some();
     /// Output level, 0-100: 60, or `RP_AUDIO_LEVEL` at build time.
     const LEVEL: u32 = match option_env!("RP_AUDIO_LEVEL") {
         Some(v) => parse(v),
@@ -427,6 +431,47 @@ mod image {
         let _ = writeln!(out, "DONE: WHICH TESTS DID YOU HEAR?");
     }
 
+    /// NOTE 0 is 4 s of quiet (the room's own level), then ten pitches from
+    /// 2 kHz down to 220 Hz on the speaker at full level, 3 s each (a phone
+    /// meter settles), each number on screen first, 5 s of quiet after
+    /// (time to write the reading down).
+    fn sweep(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
+        let _ = writeln!(out, "SPEAKER SWEEP: HEADPHONES OUT, METER AT THE SPEAKER");
+        let _ = writeln!(out, "TAKE IT OUT OF THE DOCK NOW: NOTE 0 COMES IN 30 SECONDS");
+        a.board_mut().delay_us(30_000_000);
+        if !up(out, a, "sweep") {
+            return;
+        }
+        let _ = a.set_level(100);
+        let rate = rp_audio::LINK_RATE.hz();
+        let _ = writeln!(out, "NOTE 0: QUIET - WRITE DOWN THE ROOM'S READING");
+        a.board_mut().delay_us(5_000_000);
+        for (n, hz) in [2000u32, 1500, 1000, 800, 660, 523, 440, 330, 262, 220]
+            .into_iter()
+            .enumerate()
+        {
+            let _ = writeln!(out, "NOTE {}: {hz} Hz", n + 1);
+            let mut tone = Tone::new(hz, rate, 12_000);
+            if a.play(
+                dma,
+                ring,
+                &mut tone,
+                rate * 3,
+                &mut rt::ticks,
+                3_250_000 / 5,
+                &mut rt::check_in,
+            )
+            .is_err()
+            {
+                let _ = writeln!(out, "  note {} did not play", n + 1);
+            }
+            a.board_mut().delay_us(5_000_000);
+        }
+        let _ = a.set_level(LEVEL);
+        down(out, a);
+        let _ = writeln!(out, "DONE: SEND ME THE 11 READINGS, NOTE 0 TO NOTE 10");
+    }
+
     fn down(out: &mut impl Write, a: &mut Service<'_>) {
         match a.down() {
             Ok(()) => {
@@ -501,6 +546,11 @@ mod image {
 
         // The owner's steps, the same words as in the chat: headphones in
         // at the start; fixed prompts that never depend on a reading.
+        if SWEEP {
+            sweep(&mut out, &mut a, &mut dma, ring);
+            let cpld = a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         if AB_TEST {
             ab_test(&mut out, &mut a, &mut dma, ring);
             let cpld = a.board_mut().cpld.take();

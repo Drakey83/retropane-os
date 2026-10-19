@@ -461,6 +461,30 @@ shows it the same way as RetroPane's, the fault is in the speaker hardware
 A replacement speaker is the hardware fix; the audio service's speaker
 tuning (ADR-0032 A4) can only make the most of what the speaker gives.
 
+**Speaker response, measured (2026-10-18 night, `RP_AUDIO_SWEEP`, run 2;
+logs `local/rp-audio-sweep1/2-log.txt`).** RetroPane at full level
+(codec 0 dB, amplitude 12000 of 32767), speaker only, the owner's phone
+sound meter ~2 cm from the grille, out of the dock in a quiet room; 3 s per
+pitch, every note played in full:
+
+| Pitch (Hz) | 2000 | 1500 | 1000 | 800 | 660 | 523 | 440 | 330 | 262 | 220 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| dB (meter) | 112.2 | 111.9 | 106.4 | 101.2 | 95.2 | 85.3 | 77.3 | 73.5 | 63.6 | 58.3 |
+| vs 2 kHz | 0 | -0.3 | -5.8 | -11.0 | -17.0 | -26.9 | -34.9 | -38.7 | -48.6 | -53.9 |
+
+The output is flat from 2 to 1.5 kHz and falls steeply below about
+1.5 kHz: roughly 20 dB per octave from 1 kHz down (1 kHz to 523 Hz:
+-21 dB). **440 Hz comes out ~35 dB below 2 kHz and 18 dB below 660 Hz.**
+At level 60 (the codec 30 dB lower) that puts 440 Hz near the room's
+noise and 660 Hz well above it, matching every listening test. (The
+room's reading, NOTE 0, is to come from the owner; phone meters aren't
+calibrated, so the differences between pitches count, not the absolute
+dB.) Whether this response is this unit's fault or the model's design is
+not settled without a second X50v/X51v; the owner judges the speaker
+faulty for low notes. For the speaker tuning (ADR-0032 A4): the useful
+band starts around 600-800 Hz; below ~500 Hz the speaker gives almost
+nothing at any level.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
