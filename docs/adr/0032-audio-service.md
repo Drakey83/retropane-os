@@ -307,7 +307,18 @@ swaps to that output's remembered volumes (A3). **While audio is powered
 down, a jack edge does not power it up**: the level can't be read then,
 and where sound goes matters only when sound plays. The edge sets a "jack
 changed" flag; the next power-up reads the jack (it always does, R5) and
-routes from that. Every output is an `Output` (speaker, headphones;
+routes from that.
+
+**Found while building S1 (2026-10-18, emulator; device run pending):**
+GPIO83 reads high only while the codec is powered, so (a) **switching the
+codec off with headphones in makes a falling edge of our own**, which the
+latch caught and took for a jack change (fixed: the service clears the
+latch at power-down; test and mutant); and (b) **a plug or unplug while
+audio is off most likely makes no edge at all** (under Windows Mobile the
+line reads 0 idle, plugged or not), so condition 6's flag will rarely or
+never be set on this board. Nothing depends on it: every power-up reads
+the jack, after a settle (75 ms, Dell's, copied until S1 measures it).
+Every output is an `Output` (speaker, headphones;
 later Bluetooth A2DP and HFP), so Bluetooth headsets (docs/design/
 peripherals.md) plug into the same routing without changing the mixer.
 
@@ -365,7 +376,15 @@ step grows it by more than 8 KiB).
    R6): the shell's click on the device; the restart guard; **the
    measurement R5 waits on: the battery current with audio idle but
    powered (codec set up, I2S running) against audio off**, which decides
-   whether idle power-down between sounds is built at all.
+   whether idle power-down between sounds is built at all. RetroPane has
+   no battery gauge yet (ADR-0031 step c), so it's measured **under
+   Windows Mobile**, which reports the battery's current:
+   `rp-wmpower` (tools/wmbench), read-only, on battery, phases with the
+   sound device closed, open and playing silence, and open idle.
+   **Built 2026-10-18:** the core (`services/audio`), the guided device
+   run `rp-audio-s1` (`cargo xtask audio-s1`; its emulator check
+   `emu-audio-s1` passes) and `rp-wmpower`; both device runs wait for the
+   owner.
 2. **S2 the mixer** (R2-R4): roles, several streams, the rewrite-ahead
    and its adaptive wake interval (15 / 200 ms), the actual-start field; latency and wake-ups
    measured with music and clicks; limiter times tuned.

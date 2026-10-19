@@ -394,13 +394,14 @@ fn main() -> ExitCode {
                          -o target/wmbench/rp-wmgpu.exe tools/wmbench/rp-wmgpu.c && \
                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s \
                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1 \
-                         -o target/wmbench/rp-wm3d.exe tools/wmbench/rp-wm3d.c -ltoolhelp &&                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1                          -o target/wmbench/rp-wmaudio.exe tools/wmbench/rp-wmaudio.c -lmmtimer",
+                         -o target/wmbench/rp-wm3d.exe tools/wmbench/rp-wm3d.c -ltoolhelp &&                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1                          -o target/wmbench/rp-wmaudio.exe tools/wmbench/rp-wmaudio.c -lmmtimer &&                          ~/cegcc/bin/arm-mingw32ce-gcc -O2 -mcpu=xscale -Wall -s                          -Wl,--major-subsystem-version,5,--minor-subsystem-version,1                          -o target/wmbench/rp-wmpower.exe tools/wmbench/rp-wmpower.c",
                         emu::to_wsl_path(&workspace_root())
                     ))
                 })
                 .map(|()| {
                     eprintln!("    target/wmbench/rp-wmbench.exe: put it in the SD root (cargo xtask put target/wmbench/rp-wmbench.exe rp-wmbench.exe), run it under Windows Mobile, then fetch rp-wm-baseline.txt");
                     eprintln!("    target/wmbench/rp-wmgpu.exe (item 69, what draws WM's screen): the same way; its log is rp-wm-gpu.txt");
+                    eprintln!("    target/wmbench/rp-wmpower.exe (ADR-0032 S1, the idle audio power): into its own folder (cargo xtask put target/wmbench/rp-wmpower.exe rp-wmpower/rp-wmpower.exe), run on battery under Windows Mobile; its log is rp-wmpower/rp-wm-power.txt");
                     eprintln!("    target/wmbench/rp-wmaudio.exe (docs/hw/audio.md): into its own folder (cargo xtask put target/wmbench/rp-wmaudio.exe rp-wmaudio/rp-wmaudio.exe), run under Windows Mobile; its log is rp-wmaudio/rp-wm-audio.txt");
                     eprintln!("    target/wmbench/rp-wm3d.exe (ADR-0024 M3): the same way, then start DoomGLES; its log is rp-wm3d.txt, its copies rp-wm3d-1.bin and -2.bin (16 MiB each)");
                 })
