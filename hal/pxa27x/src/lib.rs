@@ -19,6 +19,7 @@ pub mod diag;
 pub mod dma;
 pub mod dma_map;
 pub mod dmachain;
+pub mod dmaring;
 pub mod elapsed;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod handoff;

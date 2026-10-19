@@ -43,7 +43,8 @@ const fn a(channel: u32, owner: &'static str, descriptors: usize) -> Assignment 
 /// The SD card's transfers (`pxa-mmc`; up to 128 KiB). Test images that run
 /// alone (the benchmarks, `rp-mbx`'s copies) borrow it.
 pub const SD: u32 = 0;
-/// The audio ring (`pxa-i2s`; an 8 KiB ring, the chain up to 128 KiB).
+/// The audio ring (`pxa-i2s`, the mixer: 44 KiB in 32 pieces of 1,408
+/// bytes, ADR-0032 A6; one piece per slot, `dmaring`).
 pub const AUDIO: u32 = 1;
 /// The CompactFlash card's reads (the 32-bit data window by DMA).
 pub const CF: u32 = 2;

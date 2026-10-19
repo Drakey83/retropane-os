@@ -1490,6 +1490,53 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Host(&["-p", "rp-hal-pxa27x", "invalid_shapes_are_refused"]),
     },
+    // The audio ring's end (ADR-0032 A6, dmaring).
+    Mutant {
+        name: "ring: old STOP cleared before the new one is set (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "        eng.link(k as usize, self.link(k) | STOP);\n        if let Some(j) = self.end {\n            eng.link(j as usize, self.link(j));\n        }",
+        to: "        if let Some(j) = self.end {\n            eng.link(j as usize, self.link(j));\n        }\n        eng.link(k as usize, self.link(k) | STOP);",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "every_frame_played_is_the_one_written_for_its_time_or_silence",
+        ]),
+    },
+    Mutant {
+        name: "ring: the race not waited for (left to stop short) (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "            Look::Stopping(c) if c == k => return RingEnd::Running,",
+        to: "            Look::Stopping(_) => return RingEnd::Running,",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
+    },
+    Mutant {
+        name: "ring: an engine stopped just after the new end started again (a lap) (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "        if r == if k + 1 == self.pieces { 0 } else { k + 1 } {",
+        to: "        if false {",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
+    },
+    Mutant {
+        name: "ring: the ring's end read as past it (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "        if at == self.len {\n            Some(0)\n        } else if at < self.len {",
+        to: "        if at < self.len {",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
+    },
+    Mutant {
+        name: "ring: an end in the engine's own piece taken (goes round) (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "            Look::Moving(c) if c == k => {",
+        to: "            Look::Moving(c) if c == k && false => {",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
+    },
+    Mutant {
+        name: "ring: a stop mid-piece taken as a stop at a piece's end (ADR-0032 A6)",
+        file: "hal/pxa27x/src/dmaring.rs",
+        from: "            if !at.is_multiple_of(self.piece) {\n                return Look::Bad;\n            }\n            return Look::Stopped(at / self.piece);",
+        to: "            return Look::Stopped(at / self.piece);",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

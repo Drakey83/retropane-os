@@ -433,6 +433,15 @@ mod image {
         }
         fn filled(&mut self, _: &[u8]) {}
         fn stop(&mut self) {}
+        fn piece(&self) -> usize {
+            rp_audio::mixer::DMA_RING_BYTES / 32
+        }
+        fn stopped(&mut self) -> bool {
+            false
+        }
+        fn end_at(&mut self, _: usize) -> rp_hal_api::RingEnd {
+            rp_hal_api::RingEnd::Running
+        }
     }
 
     /// The link's real rate at each divider: I2S on (no codec, no board

@@ -45,7 +45,8 @@ use crate::role::{Role, Unplug, on_unplug};
 
 /// Streams open at once.
 pub const MAX_STREAMS: usize = 8;
-/// The DMA ring: 11 descriptors of 4 KiB, 11,264 frames, 255 ms.
+/// The DMA ring: 44 KiB, 11,264 frames, 255 ms (the HAL cuts it in 32
+/// pieces of 1,408 bytes, 352 frames: ADR-0032 A6).
 pub const DMA_RING_BYTES: usize = 11 * 4096;
 /// The DMA ring in frames.
 pub const RING_FRAMES: u64 = (DMA_RING_BYTES / 4) as u64;

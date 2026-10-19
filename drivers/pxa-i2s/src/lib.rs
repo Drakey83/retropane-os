@@ -386,6 +386,16 @@ mod tests {
         fn stop(&mut self) {
             self.running = false;
         }
+        fn piece(&self) -> usize {
+            self.mem.len() / 2
+        }
+        fn stopped(&mut self) -> bool {
+            false
+        }
+        fn end_at(&mut self, _: usize) -> rp_hal_api::RingEnd {
+            // `stream` loops; an end isn't modelled here.
+            rp_hal_api::RingEnd::Failed
+        }
     }
 
     fn fake(speed: usize) -> FakeRing {

@@ -58,6 +58,15 @@ impl DmaRing for FakeDma {
     fn stop(&mut self) {
         self.running = false;
     }
+    fn piece(&self) -> usize {
+        DMA_RING_BYTES / 32
+    }
+    fn stopped(&mut self) -> bool {
+        false
+    }
+    fn end_at(&mut self, _: usize) -> rp_hal_api::RingEnd {
+        rp_hal_api::RingEnd::Running
+    }
 }
 
 fn leak<T: Clone + Default>(n: usize) -> &'static mut [T] {

@@ -113,9 +113,15 @@ pub enum Width {
     Word,
 }
 
-/// A DMA engine looping a buffer into a device without end (audio): the
-/// CPU refills the part the engine has passed. Positions are byte offsets
-/// in the ring.
+/// A DMA engine looping a buffer into a device (audio): the CPU refills
+/// the part the engine has passed. Positions are byte offsets in the ring.
+///
+/// The ring is cut into equal **pieces** ([`DmaRing::piece`]). It loops
+/// without end until the CPU gives it one ([`DmaRing::end_at`], ADR-0032
+/// A6): from then on the engine stops by itself at the end of the piece
+/// holding the end, unless the CPU moves the end further first. So a CPU
+/// that is late by any amount makes the engine fall silent, never replay
+/// an old lap.
 pub trait DmaRing {
     /// Starts looping `ring` into `port`. The CPU may write the ring while
     /// it runs, behind the position, then must hand what it wrote to
@@ -123,13 +129,49 @@ pub trait DmaRing {
     /// `ring` must outlive the loop: call [`DmaRing::stop`] before reusing
     /// it. False if it can't (size, alignment, busy).
     fn start(&mut self, port: Port, ring: &[u8]) -> bool;
-    /// Where in the ring the engine reads next, if running.
+    /// Where in the ring the engine reads next, while started (moving, or
+    /// stopped at its end).
     fn position(&mut self) -> Option<usize>;
     /// The CPU wrote `part` (a piece of the running ring): make it visible
     /// to the engine (write back the cache).
     fn filled(&mut self, part: &[u8]);
     /// Stops the loop.
     fn stop(&mut self);
+    /// Bytes per piece of the running ring (0 if none runs).
+    fn piece(&self) -> usize;
+    /// The engine has stopped at its end (or short of it, the race in
+    /// [`RingEnd::Raced`]): it moves again only through
+    /// [`DmaRing::end_at`].
+    fn stopped(&mut self) -> bool;
+    /// The sound in the ring ends before byte `at` (the first byte not
+    /// written for its time): the engine stops at the end of the piece
+    /// holding `at`. The caller's part (the rule the engine's correctness
+    /// rests on): everything from where the engine reads up to `at` is
+    /// written for its time, the rest of `at`'s piece is silence, `at`'s
+    /// piece starts past where the engine reads (by the caller's margin),
+    /// and ends no further than one ring past the start of the piece the
+    /// engine reads. A stopped engine is started again where it stopped.
+    fn end_at(&mut self, at: usize) -> RingEnd;
+}
+
+/// What [`DmaRing::end_at`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RingEnd {
+    /// The engine runs on to the new end.
+    Running,
+    /// It had stopped at the old end (the CPU was late): started again
+    /// where it stopped.
+    Restarted,
+    /// It had already started the old end's piece, so it would have
+    /// stopped there short of the new end (the race): it was waited for
+    /// (at most a piece) and started again at once.
+    Raced,
+    /// It is stopped at the new end already: nothing was written past it.
+    Stopped,
+    /// Not running a ring, an end outside it or breaking the rule, the
+    /// registers making no sense, or the race's wait running out: the end
+    /// may not hold (counted by the caller, never hidden).
+    Failed,
 }
 
 /// No DMA: every arm is refused, so drivers use programmed I/O.

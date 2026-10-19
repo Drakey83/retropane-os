@@ -6,8 +6,9 @@
 //! device's request line, in descriptor mode: 4 KiB per descriptor, any
 //! length, streamed through the channel's ring of slots (its `dma_map`
 //! chain) by [`crate::dmachain`] as [`DmaEngine::done`] is polled) or
-//! [`rp_hal_api::DmaRing`] (a buffer looped into a device without end, for
-//! audio: the last descriptor points back at the first).
+//! [`rp_hal_api::DmaRing`] (a buffer looped into a device, for audio: cut
+//! into as many pieces as the chain holds, the last linked back to the
+//! first, until it is given an end; [`crate::dmaring`]).
 //! The cache maintenance the VIVT caches need is done here, so no caller
 //! can forget it: buffers are cleaned (and for reads discarded) before the
 //! transfer, and reads discarded again after, so the CPU sees what the
@@ -17,11 +18,12 @@
 //! bytes long) in identity-mapped memory (the bring-up map): the DMA
 //! controller sees physical addresses.
 
-use rp_hal_api::{DmaEngine, DmaRing, Port, Width, WindowDma};
+use rp_hal_api::{DmaEngine, DmaRing, Port, RingEnd, Width, WindowDma};
 
 use crate::cpu;
 use crate::dma_map;
 use crate::dmachain::{Next, Seen, Shape, Stream};
+use crate::dmaring::{self, Ring};
 
 const BASE: usize = 0x4000_0000;
 const fn dcsr(ch: u32) -> usize {
@@ -93,8 +95,8 @@ pub struct Dma {
     /// The armed transfer was written whole, links and all, before the
     /// controller started: it can't stop short, so polls need only `DCSR`.
     whole: bool,
-    /// The running ring: its address and length.
-    ring: Option<(u32, u32)>,
+    /// The running ring.
+    ring: Option<Ring>,
 }
 
 fn write(addr: usize, v: u32) {
@@ -166,29 +168,35 @@ impl Dma {
         }
     }
 
-    /// Fills the chain with a ring of `len` bytes (whole chunks, at most
-    /// the chain) at `addr` looped into `port`, and starts the channel.
-    fn program_ring(&mut self, port: Port, addr: u32, len: u32) {
+    /// Fills the chain with a ring of `len` bytes at `addr` looped into
+    /// `port` (cut by [`dmaring::cut`]) and starts the channel; `None` if
+    /// it can't be cut.
+    fn program_ring(&mut self, port: Port, addr: u32, len: u32) -> Option<Ring> {
         self.halt();
         let chain = self.chain();
-        let n = len / CHUNK;
         let base = chain.as_ptr() as u32;
-        for (i, d) in (0..n).zip(chain.iter_mut()) {
-            *d = [
-                if i + 1 < n { base + 16 * (i + 1) } else { base },
-                addr + i * CHUNK,
-                port.addr,
-                DCMD_INCSRC | DCMD_FLOWTRG | DCMD_SIZE32 | width(port.width) | CHUNK,
-            ];
-        }
+        let cmd = DCMD_INCSRC | DCMD_FLOWTRG | DCMD_SIZE32 | width(port.width);
+        let ring = Ring::start(addr, len, port.addr, cmd, chain, base)?;
         // The controller reads the chain from memory.
-        cpu::clean_range(base, 16 * n);
+        cpu::clean_range(base, 16 * ring.pieces());
         write(dcsr(self.ch), 0);
         write(drcmr(port.request), DRCMR_MAPVLD | self.ch);
         write(ddadr(self.ch), base);
         write(dcsr(self.ch), DCSR_RUN);
         self.request = port.request;
         self.paced = true;
+        Some(ring)
+    }
+
+    /// The registers, `DCSR` first (once it says stopped, the others read
+    /// after it are final).
+    fn seen(&self) -> Seen {
+        Seen {
+            stopped: read(dcsr(self.ch)) & DCSR_STOPINTR != 0,
+            ddadr: read(ddadr(self.ch)),
+            dsadr: read(dsadr(self.ch)),
+            dtadr: read(dtadr(self.ch)),
+        }
     }
 
     /// Starts streaming `shape`: the first descriptors written, the chain
@@ -450,38 +458,58 @@ impl WindowDma for Dma {
     }
 }
 
+/// The channel as [`Ring::end_at`] needs it.
+struct RingChannel<'a>(&'a mut Dma);
+
+impl dmaring::Engine for RingChannel<'_> {
+    fn seen(&mut self) -> Seen {
+        self.0.seen()
+    }
+
+    fn link(&mut self, slot: usize, word: u32) {
+        let chain = self.0.chain();
+        chain[slot][0] = word;
+        cpu::clean_range(chain.as_ptr() as u32 + 16 * slot as u32, 16);
+    }
+
+    fn restart(&mut self, at: u32) {
+        write(ddadr(self.0.ch), at);
+        write(dcsr(self.0.ch), DCSR_RUN);
+    }
+}
+
 impl DmaRing for Dma {
     fn start(&mut self, port: Port, ring: &[u8]) -> bool {
         let addr = ring.as_ptr() as u32;
         let Ok(len) = u32::try_from(ring.len()) else {
             return false;
         };
-        // At least two descriptors, all whole: the engine can be reading
-        // one part while the CPU refills another.
-        let ok = len >= 2 * CHUNK
-            && len.is_multiple_of(CHUNK)
-            && len <= CHUNK * dma_map::descriptors(self.ch) as u32;
-        if self.armed.is_some() || self.ring.is_some() || !ok || addr & (cpu::LINE - 1) != 0 {
+        // At least two pieces, whole lines (`dmaring::cut`): the engine can
+        // be reading one part while the CPU refills another.
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || dmaring::cut(len, dma_map::descriptors(self.ch) as u32).is_none()
+            || addr & (cpu::LINE - 1) != 0
+        {
             return false;
         }
         cpu::clean_range(addr, len);
-        self.program_ring(port, addr, len);
-        self.ring = Some((addr, len));
-        true
+        self.ring = self.program_ring(port, addr, len);
+        self.ring.is_some()
     }
 
     fn position(&mut self) -> Option<usize> {
-        let (addr, len) = self.ring?;
         // DSADR: the source address the channel reads next.
-        let at = read(ddadr(self.ch) + 4).wrapping_sub(addr);
-        Some((at.min(len.saturating_sub(1))) as usize)
+        let at = self.ring?.offset(read(dsadr(self.ch)))?;
+        Some(at as usize)
     }
 
     fn filled(&mut self, part: &[u8]) {
         let (at, len) = (part.as_ptr() as u32, part.len() as u32);
-        if let Some((addr, size)) = self.ring
-            && at >= addr
-            && at - addr + len <= size
+        if let Some(r) = self.ring
+            && r.offset(at).is_some()
+            && r.offset(at + len).is_some()
+            && len <= r.pieces() * r.piece()
         {
             cpu::clean_range(at, len);
         }
@@ -492,5 +520,24 @@ impl DmaRing for Dma {
             self.halt();
             write(drcmr(self.request), 0);
         }
+    }
+
+    fn piece(&self) -> usize {
+        self.ring.map_or(0, |r| r.piece() as usize)
+    }
+
+    fn stopped(&mut self) -> bool {
+        self.ring.is_some_and(|r| r.stopped(self.seen()))
+    }
+
+    fn end_at(&mut self, at: usize) -> RingEnd {
+        let (Some(mut ring), Ok(at)) = (self.ring, u32::try_from(at)) else {
+            return RingEnd::Failed;
+        };
+        // The race's wait (four reads a poll): well over a piece (8 ms at
+        // 44.1 kHz); it bounds only a failure.
+        let r = ring.end_at(at, &mut RingChannel(self), HALT_POLLS);
+        self.ring = Some(ring);
+        r
     }
 }
