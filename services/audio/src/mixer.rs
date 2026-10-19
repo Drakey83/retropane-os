@@ -19,6 +19,14 @@
 //! and the chain's small state ([`chain::State`]) is kept at every
 //! [`SNAP`] boundary.
 //!
+//! **The ring ends where the mix ends** (ADR-0032 A6, option B): after
+//! each wake's mixing the mixer clears the rest of the piece its mix ends
+//! in and moves the ring's end there ([`DmaRing::end_at`]), so a mixer late
+//! by any amount makes the engine stop after silence, never replay the
+//! ring; the next wake carries every stream on from where the engine
+//! stopped and starts it again. The output's clock is the engine's frames,
+//! exactly: it stands still while the engine is stopped.
+//!
 //! **The wake interval adapts** (condition 13): about [`INTERACTIVE_MS`]
 //! while an interactive stream plays (its program's low-latency hint, or
 //! small writes at short intervals: the old `waveOut` games' pattern), about
@@ -33,7 +41,7 @@
 //! ring); a commit larger than the room is refused.
 
 use rp_drv_pxa_i2s::{StreamError, TX_PORT};
-use rp_hal_api::DmaRing;
+use rp_hal_api::{DmaRing, RingEnd};
 
 use crate::chain::{self, BLOCK};
 use crate::resample::{MAX_TAPS, OUT, PHASES, POINTS, Ratio, WING};
@@ -256,6 +264,18 @@ pub struct Stats {
     pub limited: u32,
     /// Lap counted from the clock (a wake later than the ring is long).
     pub laps_lost: u32,
+    /// Wakes that found the engine stopped at the ring's end (a late
+    /// mixer, or the race below).
+    pub stops: u32,
+    /// The engine started again after a stop.
+    pub restarts: u32,
+    /// Of those, the race: a wake that came after the engine had started
+    /// the end's piece (under a piece, 7.9 ms, of sound left), waited for
+    /// and restarted at once.
+    pub races: u32,
+    /// The ring's end couldn't be moved as meant (registers making no
+    /// sense, or the rule broken): never expected, never hidden.
+    pub ring_failed: u32,
 }
 
 struct Slot<'a> {
@@ -664,6 +684,10 @@ pub struct Mixer<'a> {
     last_interactive_ms: Option<u32>,
     /// The DMA has just started: the first wake doesn't count it late.
     starting: bool,
+    /// The ring has been given an end since it started.
+    ended: bool,
+    /// Frames per piece of the ring (the HAL's cut, [`DmaRing::piece`]).
+    piece: u64,
     stats: Stats,
 }
 
@@ -693,6 +717,8 @@ impl<'a> Mixer<'a> {
             dirty_all: false,
             last_interactive_ms: None,
             starting: false,
+            ended: false,
+            piece: 0,
             stats: Stats::default(),
         }
     }
@@ -1003,14 +1029,28 @@ impl<'a> Mixer<'a> {
         if !dma.start(TX_PORT, self.ring) {
             return Err(StreamError::Refused);
         }
+        // Pieces of whole blocks, at least two (the end's rule needs a
+        // piece the engine isn't in).
+        let piece = (dma.piece() / 4) as u64;
+        if piece == 0 || !piece.is_multiple_of(BLOCK as u64) || piece * 2 > RING_FRAMES {
+            dma.stop();
+            return Err(StreamError::Refused);
+        }
+        self.piece = piece;
+        self.ended = false;
         self.running = true;
         // The engine starts at the ring's first frame: the clock moves on to
         // the next whole lap so the two agree.
         self.hw = align_up(self.hw, RING_FRAMES);
         self.last_pos = 0;
         self.last_ms = now_ms;
-        self.mixed_to = self.hw;
         self.snaps.fill(0xFF);
+        // An end from the start, in the first piece past the margin (the
+        // ring is silence up to there): a ring that loops even for one
+        // wake can be lapped by an engine faster than the mixer, replaying
+        // what was just mixed.
+        self.mixed_to = self.hw;
+        self.set_end(dma, align_up(self.hw + MARGIN, self.piece));
         self.starting = true;
         Ok(self.tick(dma, now_ms))
     }
@@ -1020,6 +1060,7 @@ impl<'a> Mixer<'a> {
         if self.running {
             dma.stop();
             self.running = false;
+            self.ended = false;
             // Whatever was mixed ahead never plays.
             self.mixed_to = self.hw;
         }
@@ -1037,6 +1078,10 @@ impl<'a> Mixer<'a> {
                 ..Tick::default()
             };
         }
+        // Read before the position: once stopped, the position is final.
+        if self.ended && dma.stopped() {
+            self.stats.stops += 1;
+        }
         self.advance_clock(dma, now_ms);
         let mut tick = Tick::default();
 
@@ -1047,9 +1092,12 @@ impl<'a> Mixer<'a> {
             // ring: not late, mixing starts from here.
             self.mixed_to = self.mixed_to.max(floor);
         } else if self.mixed_to < self.hw {
-            // Too late: the DMA played past the mix (silence: the ring was
-            // cleared behind it). Every playing stream continues after the
-            // gap, from where it stopped.
+            // Too late: the DMA played past the mix (silence: the rest of
+            // the end's piece was cleared, and what played before it).
+            // Every playing stream continues after the gap, from where it
+            // stopped: where the engine stops, at the end of the end's
+            // piece (it may still be playing that piece's silence; with no
+            // end yet, past the margin).
             self.stats.late += 1;
             let at = self.mixed_to;
             for s in self.slots.iter_mut().flatten() {
@@ -1058,7 +1106,11 @@ impl<'a> Mixer<'a> {
                     s.dirty = min_opt(s.dirty, at);
                 }
             }
-            self.mixed_to = floor;
+            self.mixed_to = if self.ended {
+                self.piece_end(at)
+            } else {
+                floor
+            };
         }
 
         // Where re-mixing must start: the earliest change, not before the
@@ -1116,13 +1168,25 @@ impl<'a> Mixer<'a> {
             .unwrap_or(u64::MAX)
             .max(self.hw + INTERACTIVE_LEAD);
         let target = align_down((self.hw + lead).min(data), BLOCK as u64)
-            .min(self.hw + RING_FRAMES - MARGIN)
+            .min(self.max_end())
             .max(self.mixed_to);
         let from = self.mixed_to;
         self.mix(from, target, dma);
-        tick.mixed = target - from;
+        // The end's piece must start past the engine by the margin (it
+        // moved while mixing): mix on until it does (only on a nearly-late
+        // wake; a stream without data runs dry there).
+        loop {
+            let now = self.peek_clock(dma);
+            let next = self.mixed_to + BLOCK as u64;
+            if align_down(self.mixed_to, self.piece) >= now + MARGIN || next > self.max_end() {
+                break;
+            }
+            self.mix(self.mixed_to, next, dma);
+        }
+        tick.mixed = self.mixed_to - from;
         self.stats.mixed += tick.mixed;
         self.stats.rewritten += tick.rewrote;
+        self.end_ring(dma);
 
         self.update_played();
 
@@ -1145,6 +1209,44 @@ impl<'a> Mixer<'a> {
             .min(ahead_ms.saturating_sub(SLACK_MS))
             .max(1);
         tick
+    }
+
+    /// The end of the piece holding output frame `f`.
+    fn piece_end(&self, f: u64) -> u64 {
+        align_down(f, self.piece) + self.piece
+    }
+
+    /// How far the mix may go (exclusive, whole blocks): the end's rule
+    /// (ADR-0032 A6, `rp_hal_pxa27x::dmaring`): the piece the mix ends in
+    /// ends no further than one ring past the start of the piece holding
+    /// the last frame the engine played, so it is never the piece just
+    /// behind the engine (*lead < ring − one piece*).
+    fn max_end(&self) -> u64 {
+        align_down(self.hw.saturating_sub(1), self.piece) + RING_FRAMES - BLOCK as u64
+    }
+
+    /// Clears the rest of the piece the mix ends in (the engine plays it
+    /// before it stops: a shortening rewrite leaves the old mix there,
+    /// audit E4), then moves the ring's end to the mix's end.
+    fn end_ring(&mut self, dma: &mut dyn DmaRing) {
+        let (from, to) = (self.mixed_to, self.piece_end(self.mixed_to));
+        self.clear(from, to, dma);
+        self.set_end(dma, from);
+    }
+
+    /// Moves the ring's end to output frame `at` (everything before it
+    /// written for its time, the rest of its piece silence).
+    fn set_end(&mut self, dma: &mut dyn DmaRing, at: u64) {
+        match dma.end_at((at % RING_FRAMES) as usize * 4) {
+            RingEnd::Running | RingEnd::Stopped => {}
+            RingEnd::Restarted => self.stats.restarts += 1,
+            RingEnd::Raced => {
+                self.stats.restarts += 1;
+                self.stats.races += 1;
+            }
+            RingEnd::Failed => self.stats.ring_failed += 1,
+        }
+        self.ended = true;
     }
 
     /// Applies a stream's pending changes at output frame `at` (where mixing
@@ -1270,7 +1372,8 @@ impl<'a> Mixer<'a> {
         let est = u64::from(now_ms.wrapping_sub(self.last_ms)) * u64::from(OUT) / 1_000;
         // Only when the clock is sure: three quarters of a ring more than
         // the position shows (a lap counted wrongly skips a whole ring).
-        let laps = if est > delta + RING_FRAMES * 3 / 4 {
+        // With an end, the engine can't lap the mix: it stops instead.
+        let laps = if !self.ended && est > delta + RING_FRAMES * 3 / 4 {
             (est - delta + RING_FRAMES / 2) / RING_FRAMES
         } else {
             0

@@ -1537,6 +1537,62 @@ pub const MUTANTS: &[Mutant] = &[
         to: "            return Look::Stopped(at / self.piece);",
         check: Check::Host(&["-p", "rp-hal-pxa27x", "dmaring"]),
     },
+    // The mixer's end of the ring (ADR-0032 A6 step 2, audit E3/E4).
+    Mutant {
+        name: "mixer: the end's rule dropped (lead < ring - one piece), the old cap back (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "            .min(self.max_end())\n",
+        to: "            .min(self.hw + RING_FRAMES - MARGIN)\n",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_ring_cut_in_larger_pieces_still_keeps_the_end_s_rule",
+        ]),
+    },
+    Mutant {
+        name: "mixer: the rest of the end's piece not cleared (audit E4) (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "        self.clear(from, to, dma);\n        self.set_end(dma, from);",
+        to: "        let _ = to;\n        self.set_end(dma, from);",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_shortening_rewrite_then_a_stall_plays_no_stale_tail",
+        ]),
+    },
+    Mutant {
+        name: "mixer: after a stop the sound carries on past the margin, not where the engine stopped (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "            self.mixed_to = if self.ended {\n                self.piece_end(at)\n            } else {\n                floor\n            };",
+        to: "            self.mixed_to = floor;",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_stall_longer_than_the_ring_is_silence_never_a_replay",
+        ]),
+    },
+    Mutant {
+        name: "mixer: the ring loops until the first wake's end (an engine faster than the mixer laps it) (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "        self.set_end(dma, align_up(self.hw + MARGIN, self.piece));\n",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_mixer_slower_than_the_sound_fails_quietly",
+        ]),
+    },
+    Mutant {
+        name: "mixer: the end's piece not kept past the engine by the margin (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "            if align_down(self.mixed_to, self.piece) >= now + MARGIN || next > self.max_end() {",
+        to: "            if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_shortening_rewrite_on_a_slow_cpu_keeps_the_end_ahead_of_the_engine",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

@@ -1,34 +1,98 @@
 //! The mixer against a model of the DMA engine: it plays the ring a frame
 //! at a time at 44.1 kHz and sees only what the mixer handed it
 //! (`filled`, the cache written back), so a missed hand-over, a late wake
-//! or a stale lap is heard in the recording.
+//! or a stale lap is heard in the recording. Like the HAL's ring
+//! (`rp_hal_pxa27x::dmaring`), it cuts the ring into pieces and stops at
+//! the end of the piece the mixer's end is in.
 
 use super::*;
 use crate::resample::Ratio;
+use rp_hal_api::RingEnd;
 
 /// The DMA engine: its own copy of the ring (what the cache wrote back).
 struct FakeDma {
     mem: Vec<u8>,
     base: usize,
-    running: bool,
+    started: bool,
+    /// Moving (not stopped at an end).
+    moving: bool,
+    /// Frames the engine has played (its clock).
     played: u64,
+    /// Output frames since the start, played or silent while stopped.
+    time: u64,
+    /// Frames per piece.
+    piece: u64,
+    /// The piece whose link carries STOP.
+    end: Option<u64>,
+    /// The piece being played was loaded with STOP.
+    stop_loaded: bool,
     /// A slow CPU: every hand-over of mixed sound plays this many frames
-    /// first (the time mixing took), recorded in `during`.
+    /// first (the time mixing took), recorded in `during`, as are the
+    /// frames played while the race is waited for.
     lag: u64,
     during: Vec<(i16, i16)>,
     /// Frames the engine has played by the first look at its position.
     head_start: u64,
+    /// What went out, in real time (silence while stopped).
+    out: Vec<(i16, i16)>,
 }
 
 impl FakeDma {
+    fn new() -> Self {
+        Self {
+            mem: Vec::new(),
+            base: 0,
+            started: false,
+            moving: false,
+            played: 0,
+            time: 0,
+            piece: RING_FRAMES / 32,
+            end: None,
+            stop_loaded: false,
+            lag: 0,
+            during: Vec::new(),
+            head_start: 0,
+            out: Vec::new(),
+        }
+    }
+
+    fn pieces(&self) -> u64 {
+        RING_FRAMES / self.piece
+    }
+
+    /// One frame of the engine (it is moving).
     fn play(&mut self) -> (i16, i16) {
+        if self.played.is_multiple_of(self.piece) {
+            // A piece's descriptor loaded: its STOP as it is now.
+            self.stop_loaded = self.end == Some(self.played / self.piece % self.pieces());
+        }
         let at = (self.played % RING_FRAMES) as usize * 4;
         let b = &self.mem[at..at + 4];
-        self.played += 1;
-        (
+        let f = (
             i16::from_le_bytes([b[0], b[1]]),
             i16::from_le_bytes([b[2], b[3]]),
-        )
+        );
+        self.played += 1;
+        if self.played.is_multiple_of(self.piece) && self.stop_loaded {
+            self.moving = false;
+        }
+        f
+    }
+
+    /// One output frame of time: the engine's frame if it moves.
+    fn step(&mut self) -> Option<(i16, i16)> {
+        self.time += 1;
+        let f = self.moving.then(|| self.play());
+        self.out.push(f.unwrap_or((0, 0)));
+        f
+    }
+
+    fn pass(&mut self, frames: u64) {
+        for _ in 0..frames {
+            if let Some(f) = self.step() {
+                self.during.push(f);
+            }
+        }
     }
 }
 
@@ -37,35 +101,64 @@ impl DmaRing for FakeDma {
         assert_eq!(port, TX_PORT);
         self.mem = ring.to_vec();
         self.base = ring.as_ptr() as usize;
-        self.running = true;
+        self.started = true;
+        self.moving = true;
+        self.end = None;
         self.played = self.head_start;
+        self.time = self.time.max(self.head_start);
         true
     }
     fn position(&mut self) -> Option<usize> {
-        self.running
+        self.started
             .then(|| (self.played % RING_FRAMES) as usize * 4)
     }
     fn filled(&mut self, part: &[u8]) {
-        if self.running {
-            for _ in 0..self.lag {
-                let f = self.play();
-                self.during.push(f);
-            }
+        if self.started {
+            self.pass(self.lag);
             let at = part.as_ptr() as usize - self.base;
             self.mem[at..at + part.len()].copy_from_slice(part);
         }
     }
     fn stop(&mut self) {
-        self.running = false;
+        self.started = false;
+        self.moving = false;
     }
     fn piece(&self) -> usize {
-        DMA_RING_BYTES / 32
+        if self.started {
+            self.piece as usize * 4
+        } else {
+            0
+        }
     }
     fn stopped(&mut self) -> bool {
-        false
+        self.started && !self.moving
     }
-    fn end_at(&mut self, _: usize) -> rp_hal_api::RingEnd {
-        rp_hal_api::RingEnd::Running
+    fn end_at(&mut self, at: usize) -> RingEnd {
+        let n = self.pieces();
+        let k = at as u64 / 4 / self.piece;
+        self.end = Some(k);
+        if !self.moving {
+            if self.played / self.piece % n == (k + 1) % n {
+                return RingEnd::Stopped;
+            }
+            self.moving = true;
+            return RingEnd::Restarted;
+        }
+        let inside = !self.played.is_multiple_of(self.piece);
+        let c = self.played / self.piece % n;
+        if inside && self.stop_loaded && c != k {
+            // The race: it stops at the old end's piece; wait, restart.
+            while self.moving {
+                self.pass(1);
+            }
+            self.moving = true;
+            return RingEnd::Raced;
+        }
+        if inside && !self.stop_loaded && c == k {
+            self.end = Some((k + 1) % n);
+            return RingEnd::Failed;
+        }
+        RingEnd::Running
     }
 }
 
@@ -151,17 +244,13 @@ struct Sim {
 
 impl Sim {
     fn new(speaker: bool) -> Self {
+        Self::with(speaker, FakeDma::new())
+    }
+
+    fn with(speaker: bool, dma: FakeDma) -> Self {
         let mut s = Self {
             m: Mixer::new(leak(MIXER_BYTES), speaker),
-            dma: FakeDma {
-                mem: Vec::new(),
-                base: 0,
-                running: false,
-                played: 0,
-                lag: 0,
-                during: Vec::new(),
-                head_start: 0,
-            },
+            dma,
             ms: 0,
             heard: Vec::new(),
             next_wake: 0,
@@ -181,12 +270,9 @@ impl Sim {
         let t = self.m.tick(&mut self.dma, self.ms);
         // Time the wake took (a slow CPU): heard, and the clock moved on.
         let during = core::mem::take(&mut self.dma.during);
-        if !during.is_empty() {
-            let end = self.dma.played;
-            self.heard.extend(during);
-            while frames(self.ms) < end {
-                self.ms += 1;
-            }
+        self.heard.extend(during);
+        while frames(self.ms) < self.dma.time {
+            self.ms += 1;
         }
         self.next_wake = self.ms + t.next_ms;
         self.wakes.push((self.ms, t.next_ms, t.interactive));
@@ -197,12 +283,8 @@ impl Sim {
     /// `act` (the programs) runs; a wake when it did something or when due.
     fn run(&mut self, ms: u32, act: &mut dyn FnMut(&mut Mixer<'static>, u32) -> bool) {
         for _ in 0..ms {
-            let from = frames(self.ms);
             self.ms += 1;
-            for _ in from.max(self.dma.played)..frames(self.ms) {
-                let f = self.dma.play();
-                self.heard.push(f);
-            }
+            self.pass_to(frames(self.ms));
             let acted = act(&mut self.m, self.ms);
             if acted || self.ms >= self.next_wake {
                 self.tick();
@@ -210,7 +292,17 @@ impl Sim {
         }
     }
 
-    /// Frames heard in `[from, to)` (output frames since the start).
+    /// The engine plays on to output frame `to`.
+    fn pass_to(&mut self, to: u64) {
+        while self.dma.time < to {
+            if let Some(f) = self.dma.step() {
+                self.heard.push(f);
+            }
+        }
+    }
+
+    /// Frames heard in `[from, to)` (the engine's frames: the output's
+    /// clock, which stands still while it is stopped).
     fn heard(&self, from: u64, to: u64) -> &[(i16, i16)] {
         &self.heard[from as usize..to as usize]
     }
@@ -662,12 +754,8 @@ fn a_stream_that_runs_dry_carries_on_where_it_stopped() {
 /// The engine plays on alone for `ms` (the service doesn't run).
 fn stall(sim: &mut Sim, ms: u32) {
     for _ in 0..ms {
-        let from = frames(sim.ms);
         sim.ms += 1;
-        for _ in from..frames(sim.ms) {
-            let f = sim.dma.play();
-            sim.heard.push(f);
-        }
+        sim.pass_to(frames(sim.ms));
     }
 }
 
@@ -676,13 +764,19 @@ fn a_late_wake_plays_silence_never_an_old_lap_and_nothing_is_lost() {
     let mut sim = Sim::new(false);
     let mut f = music(&mut sim, 8, 8_000, 3);
     sim.run(1_000, &mut |m, now| f.feed(m, now));
-    // Just after a wake that mixed a ring ahead, the service stalls for
-    // longer than that lead but less than the ring.
+    // Just after a wake that mixed a ring ahead (245 ms), the service
+    // stalls for longer than that lead and the rest of its piece.
     sim.tick();
-    stall(&mut sim, 250);
+    stall(&mut sim, 260);
+    // The engine stopped at the ring's end (A6): the late path carries
+    // every stream on from there, and the engine is started again.
+    assert!(sim.dma.stopped());
     sim.tick();
     sim.run(2_500, &mut |m, now| f.feed(m, now));
     assert_eq!(sim.m.stats().late, 1);
+    assert_eq!(sim.m.stats().stops, 1);
+    assert_eq!(sim.m.stats().restarts, 1);
+    assert_eq!(sim.m.stats().ring_failed, 0);
     // Every non-silent frame heard once, in order: the stall is a gap.
     let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
     let heard: Vec<_> = sim.heard[start as usize..]
@@ -715,6 +809,8 @@ fn a_wake_that_takes_time_to_mix_still_wakes_again_in_time() {
     assert_eq!(sim.m.stats().late, 0);
     assert_eq!(sim.m.stats().starved, 0);
     assert_eq!(sim.m.stats().laps_lost, 0);
+    assert_eq!(sim.m.stats().stops, 0);
+    assert_eq!(sim.m.stats().ring_failed, 0);
     let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
     let bad = (0..f.total)
         .find(|&n| sim.heard.get((start + n) as usize) != Some(&(f.sample(n, 0), f.sample(n, 1))));
@@ -725,36 +821,238 @@ fn a_wake_that_takes_time_to_mix_still_wakes_again_in_time() {
 fn the_engine_moving_before_the_first_wake_is_not_a_late_wake() {
     let mut m = Mixer::new(leak(MIXER_BYTES), false);
     let mut dma = FakeDma {
-        mem: Vec::new(),
-        base: 0,
-        running: false,
-        played: 0,
-        lag: 0,
-        during: Vec::new(),
         head_start: 100,
+        ..FakeDma::new()
     };
     m.start(&mut dma, 0).unwrap();
     assert_eq!(m.stats().late, 0);
     assert!(m.lead() > MARGIN);
 }
 
+/// Every non-silent frame heard from `start` on, against every non-silent
+/// frame `f` wrote: equal means nothing lost, nothing repeated.
+fn heard_once(sim: &Sim, f: &Feeder) -> bool {
+    let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
+    let heard: Vec<_> = sim.heard[start as usize..]
+        .iter()
+        .copied()
+        .filter(|&s| s != (0, 0))
+        .collect();
+    let want: Vec<_> = (0..f.total)
+        .map(|n| (f.sample(n, 0), f.sample(n, 1)))
+        .filter(|&s| s != (0, 0))
+        .collect();
+    heard == want
+}
+
 #[test]
-fn a_stall_longer_than_the_ring_is_counted_in_laps_by_the_clock() {
-    // The position can't show a whole lap; the clock does. (The looping
-    // engine replays the ring meanwhile: a limit of a looping ring, in
-    // docs/quality-audit.md.)
+fn a_stall_longer_than_the_ring_is_silence_never_a_replay() {
+    // Audit E3 (ADR-0032 A6): the looping ring replayed its last quarter
+    // second until the mixer woke. Now the engine stops at the mix's end:
+    // silence, then the music carries on from where it stopped.
     let mut sim = Sim::new(false);
     let mut f = music(&mut sim, 8, 8_000, 3);
     sim.run(1_000, &mut |m, now| f.feed(m, now));
     sim.tick();
-    let before = sim.m.clock();
+    let (before, out) = (sim.m.clock(), sim.dma.out.len());
+    let stop = sim.m.piece_end(sim.m.mixed_to);
+    stall(&mut sim, 400);
+    assert_eq!(sim.dma.played, stop, "stopped at the end's piece");
+    // What went out in the stall: the mix to its end, then silence only.
+    let tail: Vec<_> = sim.dma.out[out..].to_vec();
+    let quiet = tail.iter().position(|&s| s == (0, 0)).unwrap();
+    assert!(tail[quiet..].iter().all(|&s| s == (0, 0)), "a replay");
+    assert!(quiet as u64 <= RING_FRAMES);
+    sim.tick();
+    // The clock counts frames that went out: it stood still while stopped.
+    assert_eq!(sim.m.clock(), sim.dma.played);
+    assert!(sim.m.clock() - before < frames(400));
+    assert_eq!(sim.m.stats().laps_lost, 0);
+    assert_eq!(sim.m.stats().stops, 1);
+    sim.run(2_500, &mut |m, now| f.feed(m, now));
+    assert!(heard_once(&sim, &f), "lost or repeated frames");
+    assert!(sim.m.status(f.id, sim.ms).unwrap().drained);
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    // The music carries on exactly where the engine stopped: no more gap
+    // than the stall.
+    assert!(
+        sim.heard[stop as usize..stop as usize + 8]
+            .iter()
+            .all(|&s| s != (0, 0))
+    );
+}
+
+/// The A6 rule, checked frame by frame: every frame the engine played
+/// from `f`'s start is the one mixed for its time, or silence (the stream
+/// has no gap of its own, so frame `n` of it is due at `start + n`).
+fn each_frame_for_its_time_or_silent(sim: &Sim, f: &Feeder) -> Option<u64> {
+    let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
+    (0..f.total).find(|&n| {
+        let h = sim
+            .heard
+            .get((start + n) as usize)
+            .copied()
+            .unwrap_or((0, 0));
+        h != (0, 0) && h != (f.sample(n, 0), f.sample(n, 1))
+    })
+}
+
+#[test]
+fn a_mixer_slower_than_the_sound_fails_quietly() {
+    // Each 32-frame block takes the time of 40 to mix: the mixer can never
+    // keep up. It must still never let the engine play a stale or
+    // repeated frame: each frame heard is the one mixed for its time, or
+    // silence (where the engine passed it before the mixer wrote it).
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 15, 8_000, 2);
+    // The ring starts with the music already waiting (as the service
+    // starts it for a first stream), so the first wake mixes a full lead.
+    f.feed(&mut sim.m, sim.ms);
+    sim.m.stop(&mut sim.dma);
+    sim.dma.lag = 40;
+    let t = sim.m.start(&mut sim.dma, sim.ms).unwrap();
+    sim.heard.extend(core::mem::take(&mut sim.dma.during));
+    while frames(sim.ms) < sim.dma.time {
+        sim.ms += 1;
+    }
+    sim.next_wake = sim.ms + t.next_ms;
+    sim.run(3_000, &mut |m, now| f.feed(m, now));
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    assert_eq!(sim.m.stats().late, 0);
+    // It falls behind: the engine stops at the end (while the mixer is
+    // still mixing) and is started again, again and again.
+    assert!(sim.m.stats().restarts > 10, "{:?}", sim.m.stats());
+    assert_eq!(each_frame_for_its_time_or_silent(&sim, &f), None);
+    let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
+    let silent = (0..f.total)
+        .filter(|&n| sim.heard.get((start + n) as usize) == Some(&(0, 0)))
+        .count() as u64;
+    assert!(silent * 2 < f.total, "most of it lost");
+}
+
+#[test]
+fn a_shortening_rewrite_on_a_slow_cpu_keeps_the_end_ahead_of_the_engine() {
+    // A slow CPU (each block takes the time of 30 frames to mix) and a
+    // click arriving during music: the rewrite ends 35 ms ahead, and while
+    // it mixes the engine moves on so far that the new end would land in
+    // the piece it is playing (which it loaded without STOP, so it would
+    // go round). The mixer mixes on until the end's piece is past it.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 16, 8_000, 3);
+    sim.dma.lag = 30;
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    for k in 0..8 {
+        let mut click = steady(&mut sim, Role::System, false, 3_000, 1);
+        click.total = 441;
+        click.feed(&mut sim.m, sim.ms);
+        sim.tick();
+        sim.run(300 + 37 * k, &mut |m, now| {
+            f.feed(m, now) | click.feed(m, now)
+        });
+        sim.m.close(click.id);
+    }
+    assert_eq!(sim.m.stats().ring_failed, 0, "{:?}", sim.m.stats());
+}
+
+#[test]
+fn a_shortening_rewrite_then_a_stall_plays_no_stale_tail() {
+    // Audit E4: music mixed ~245 ms ahead, then a click makes the lead
+    // 35 ms: the rewrite ends short of the old mix. In a stall the engine
+    // plays on to the end of the end's piece: that must be silence, not
+    // the old mix (the music without the click).
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 12, 8_000, 3);
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    sim.tick();
+    let long = sim.m.mixed_to;
+    let mut click = steady(&mut sim, Role::System, false, 3_000, 1);
+    click.total = 441;
+    click.feed(&mut sim.m, sim.ms);
+    sim.tick();
+    let end = sim.m.mixed_to;
+    assert!(
+        end + sim.m.piece < long,
+        "the rewrite didn't shorten the mix"
+    );
+    stall(&mut sim, 150);
+    assert!(sim.dma.stopped());
+    let piece_end = (end / sim.m.piece + 1) * sim.m.piece;
+    assert_eq!(sim.dma.played, piece_end, "stopped at the end's piece");
+    let tail = &sim.heard[end as usize..piece_end as usize];
+    assert!(
+        tail.iter().all(|&s| s == (0, 0)),
+        "the old mix played past the end"
+    );
+    sim.run(2_500, &mut |m, now| f.feed(m, now) | click.feed(m, now));
+    assert_eq!(sim.m.stats().ring_failed, 0);
+}
+
+#[test]
+fn a_wake_inside_the_end_s_piece_restarts_at_once_with_no_gap() {
+    // The race: the engine has started the end's piece (loaded with its
+    // STOP) when the mixer wakes, under a piece of sound left. Moving the
+    // end is too late for that piece; the engine is waited for and
+    // started again at once: nothing lost, and here (no restart time in
+    // the model) no gap at all.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 13, 8_000, 3);
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    let mut raced = 0;
+    for _ in 0..20 {
+        sim.tick();
+        let end = sim.m.mixed_to;
+        let start = end / sim.m.piece * sim.m.piece;
+        if end - start < 64 {
+            sim.run(7, &mut |m, now| f.feed(m, now));
+            continue;
+        }
+        // Into the end's piece, short of the end.
+        while sim.dma.played < start + 8 {
+            if let Some(fr) = sim.dma.step() {
+                sim.heard.push(fr);
+            }
+        }
+        while frames(sim.ms) < sim.dma.time {
+            sim.ms += 1;
+        }
+        f.feed(&mut sim.m, sim.ms);
+        sim.tick();
+        raced = sim.m.stats().races;
+        if raced > 0 {
+            break;
+        }
+    }
+    assert!(raced > 0, "no race made");
+    assert_eq!(sim.m.stats().late, 0);
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    sim.run(2_500, &mut |m, now| f.feed(m, now));
+    let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
+    let bad = (0..f.total)
+        .find(|&n| sim.heard.get((start + n) as usize) != Some(&(f.sample(n, 0), f.sample(n, 1))));
+    assert_eq!(bad, None, "a frame lost or out of place");
+}
+
+#[test]
+fn a_ring_cut_in_larger_pieces_still_keeps_the_end_s_rule() {
+    // Whatever the HAL's cut (here 11 pieces of 4 KiB, the old chain), the
+    // mix never ends in the piece just behind the engine: a background
+    // lead of 245 ms is cut back to keep *lead < ring - one piece*.
+    let mut sim = Sim::with(
+        false,
+        FakeDma {
+            piece: RING_FRAMES / 11,
+            ..FakeDma::new()
+        },
+    );
+    let mut f = music(&mut sim, 14, 8_000, 3);
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    sim.tick();
     stall(&mut sim, 400);
     sim.tick();
-    assert_eq!(sim.m.stats().laps_lost, 1);
-    assert_eq!(sim.m.clock(), sim.dma.played);
-    assert!(sim.m.clock() - before >= frames(400) - 50);
     sim.run(2_500, &mut |m, now| f.feed(m, now));
-    assert!(sim.m.status(f.id, sim.ms).unwrap().drained);
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    assert_eq!(sim.m.stats().laps_lost, 0);
+    assert!(heard_once(&sim, &f), "lost or repeated frames");
 }
 
 #[test]

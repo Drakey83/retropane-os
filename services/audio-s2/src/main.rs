@@ -999,14 +999,18 @@ mod image {
         let s = rig.m.stats();
         let _ = writeln!(
             out,
-            "ALL: {} wakes, {} rewrites ({} ms re-mixed), {} late, {} dry, {} clipped, {} laps lost",
+            "ALL: {} wakes, {} rewrites ({} ms re-mixed), {} late, {} dry, {} clipped, {} laps lost, ring stops {} restarts {} races {} failed {}",
             s.wakes,
             s.rewrites,
             s.rewritten * 1_000 / u64::from(OUT),
             s.late,
             s.starved,
             s.clipped,
-            s.laps_lost
+            s.laps_lost,
+            s.stops,
+            s.restarts,
+            s.races,
+            s.ring_failed
         );
         match rig.a.down() {
             Ok(()) => {
