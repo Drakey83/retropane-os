@@ -452,6 +452,15 @@ owner's call (it stays "S1 not passed" until the owner says otherwise).
 Note: RetroPane's earlier runs were heard near the owner's noisy PC; the
 quieter room matters for faint notes.
 
+**The owner's finding (2026-10-18 night):** listening with the Axim held
+right to the ear in a quiet room (away from the PC's fans), under stock
+Windows Mobile, 440 Hz at 50% volume and below did not play: **the
+speaker does not work properly for low notes.** Since Dell's own driver
+shows it the same way as RetroPane's, the fault is in the speaker hardware
+(this unit's speaker, or the model's), not in RetroPane's audio software.
+A replacement speaker is the hardware fix; the audio service's speaker
+tuning (ADR-0032 A4) can only make the most of what the speaker gives.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
