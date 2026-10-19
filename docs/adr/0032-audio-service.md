@@ -1,11 +1,10 @@
 # ADR-0032: The audio service: one mixer, one owner of the codec
 
-- **Status:** Proposed (2026-10-18; revised the same day after a review:
-  stream roles, the signal chain, start-time feedback, ring sizing, the
-  power-down baseline, the jack while powered down, the limiter, the
-  microphone's program identity, `WOM_DONE` parity, the hearing warning's
-  numbers, the slider's target). Votes A1-A5 are the owner's; R1-R10 are
-  recommendations under the standing go-ahead, open to the owner's veto.
+- **Status:** **Accepted (owner, 2026-10-18): A1 A, A2 A, A3 B with the
+  hearing warning, A4 B, A5 A**, and R1-R10 with the owner's thirteen
+  conditions, all landing before S1 (listed under "The owner's
+  conditions" below; written into R2-R7, A2-A5 and the steps). Proposed
+  and revised after a review the same day.
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -22,6 +21,47 @@ same `waveOut` calls they always used.
 Five questions change what you hear or see, so they are yours (A1-A5,
 each with pluses and minuses and a recommendation). The rest is
 engineering with a recommendation (R1-R10).
+
+## The owner's decision (2026-10-18)
+
+| Vote | Chosen | The owner's reason |
+|---|---|---|
+| A1 the rate | **A: 44.1 kHz fixed** | Music and the old games live in the 44.1 family, the old games convert in exact whole steps; the 48 kHz conversion cost is measured before it's final. No rate switching, no gaps |
+| A2 headphones out | **A: pause** | As phones do; programs too old to pause are muted instead, unmuted when the headphones go back in |
+| A3 volumes | **B: per output, per kind**, with the hearing warning | First time past the level in a headphone session, never a hard cap |
+| A4 tone | **B: the codec's bass and treble in Settings, plus the speaker tuning** | No crackle at full volume; no software equaliser |
+| A5 microphone | **A: ask once per program, a mark while anything records** | Old programs are asked like everything else, never refused for being old |
+
+### The owner's conditions (all before S1)
+
+1. Stream roles (Media, Notification, Alarm, System, Voice) declared by
+   native programs, a documented legacy mapping, the unplug policy per
+   role (R3, A2).
+2. The signal chain's order fixed; speaker protection in the mixer per
+   output; the codec's bass and treble for the user and X50Mix, last
+   writer wins, Settings shows the live value (R4, A4).
+3. Start times get a feedback path: actual start reported back (R3).
+4. Stream rings sized for the DMA ring plus the margin; the CE library
+   owns a shadow ring that meets it (R2, R7).
+5. Idle I2S power-down must beat the baseline (Windows Mobile's: on while
+   awake); S1 measures idle codec power first (R5, S1).
+6. A jack edge while the codec is down sets a flag only, no power-up (R6).
+7. The limiter: peak detection, ~1 ms attack, ~100 ms release, hard clip
+   as the backstop (R4).
+8. The microphone's program identity is the executable's hash; a changed
+   binary is asked again (A5).
+9. S4 measures `WOM_DONE` latency against stock Windows Mobile on the same
+   game (R7, S4).
+10. The hearing warning is a codec-gain threshold (~-10 dB), once per
+    plug-in (A3).
+11. The day-to-day slider drives the active output's dominant kind (A3).
+12. Bluetooth tone is done in software (the codec can't reach A2DP); A4's
+    "no CPU" holds for the codec path only, and X50Mix's codes don't
+    affect Bluetooth (A4).
+13. The mixer's wake interval adapts (~15 ms with interactive streams,
+    ~200 ms for background media only); rings stay sized for the maximum;
+    switching between the two is glitch-free; a stream is interactive by
+    its low-latency hint or by a write-pattern heuristic (R2).
 
 ## Context: what the hardware dictates (measured)
 
@@ -114,7 +154,7 @@ pressure; the threshold is tuned by ear with the owner in S3).
 
 | | A: none (only what X50Mix asks for) | **B: the codec's own bass/treble in Settings, plus a speaker tuning (recommended)** | C: a software equaliser (several bands) |
 |---|---|---|---|
-| CPU | none | **none: the WM8750 does it** | some per sample (measure) |
+| CPU | none | **none on the wired outputs: the WM8750 does it** (software only for Bluetooth, below) | some per sample (measure) |
 | Plus | Nothing to design | Free, works for every program; a tuned preset for the small speaker (less boom it can't play, a little more presence) and a limiter so it doesn't crackle at full volume; X50Mix's settings go to the same control | Most flexible |
 | Minus | The small speaker sounds as Dell left it | Two bands only | Battery and CPU; more to get wrong |
 
@@ -127,9 +167,11 @@ Under B, who owns what (one owner per control, R4 has the chain):
 - **The codec's bass and treble** belong to you and to X50Mix (Dell's
   `WAV1:` codes): **the last writer wins**, and Settings always shows the
   codec's live value, so an X50Mix change appears there.
-- **Bluetooth headsets** don't pass through the codec, so the same two
-  bands are applied by the mixer for a Bluetooth output (a little CPU, only
-  then).
+- **Bluetooth headsets** don't pass through the codec (A2DP carries the
+  mix, not the codec's output), so the Settings bass and treble are applied
+  by the mixer in software for a Bluetooth output (a little CPU, only
+  then). **X50Mix's `WAV1:` codes act on the codec only and don't affect
+  Bluetooth** (condition 12).
 
 ### A5. Who may use the microphone
 
@@ -155,7 +197,7 @@ with the same interface (the graphics service's path, ADR-0030 G4).
 ### R2. Low power and low latency at once: a long ring, rewritten ahead
 From PulseAudio's glitch-free design, kept small. The DMA ring is long
 (target 250 ms; ~44 KiB at 44.1 kHz stereo 16-bit), so with music playing
-and the screen off the CPU wakes about 4-5 times a second instead of ~50.
+and the screen off the CPU wakes about every 200 ms (5 times a second) instead of ~50 times.
 When a new sound arrives (a key click, a game's shot), the mixer reads the
 DMA engine's position and **re-mixes from just ahead of it** (a safety
 margin, measured, target ≤ 5 ms), so it starts within milliseconds. To
@@ -163,20 +205,24 @@ allow that, each stream keeps two positions: "mixed" and "played"; data
 stays in a stream's ring until played. Games and the shell get the low
 latency automatically; nothing asks for a "fast mode".
 
-**The mix-ahead depth adapts.** The full 250 ms is mixed ahead only when
-nothing but Media is playing and the screen is off (the case where
-wake-ups cost battery). With the screen on, or any Voice, legacy or game
-stream open, the depth drops (target 20-40 ms, measured in S2): wake-ups
-matter less then, and both the rings' size and the legacy buffer-done
-delay (R7) follow the depth.
+**The wake interval adapts (condition 13).** The mixer wakes about
+every **~15 ms while any interactive stream is open** and about every
+**~200 ms when only background media plays** (the case where wake-ups cost
+battery); both are tuned in S2. A stream is interactive when its program
+says so (**a low-latency hint** in the control block, R3: games, the
+shell's sounds, Voice) or when **its write pattern** shows it (small
+writes at short intervals, as old `waveOut` games do: a heuristic, so a
+program that never sets the hint still gets low latency). **Switching
+between the two intervals is glitch-free**: going to 15 ms only shortens
+the next wake; going to 200 ms first mixes ahead the longer stretch while
+every stream's data is there, so no sample is played that wasn't mixed.
 
-**Ring sizing rule.** Because data stays until played, **a stream's ring
-must hold at least the current mix-ahead depth plus the margin plus one
-refill of its own** (at 44.1 kHz stereo 16-bit: about 50 KiB at the full
-250 ms depth, about 8 KiB at 40 ms). The library sizes rings by this rule
-when a stream opens, and the service refuses a smaller one with a clear
-error. Long rings are needed only by background Media streams, the ones
-that get the full depth.
+**Ring sizing rule (condition 4).** Because data stays until played,
+**every stream's ring is sized for the maximum: the DMA ring plus the
+margin plus one refill of its own** (at 44.1 kHz stereo 16-bit about
+**50 KiB**), whatever its current interval, so a switch of interval never
+finds a ring too short. The library sizes rings by this rule when a stream
+opens, and the service refuses a smaller one with a clear error.
 
 ### R3. Programs write into shared rings; no copies
 Each stream is a ring in the global shared region (ADR-0016: buffers two
@@ -277,8 +323,9 @@ Old programs often queue small buffers, smaller than R2's sizing rule.
 **The CE library owns a shadow ring per `waveOut` handle** that meets the
 rule: it copies each buffer in (and converts it), and returns the
 program's buffer with `WOM_DONE` when those samples have been **played**
-(from the played position, R3), not when copied. A legacy stream counts as
-interactive, so the mix-ahead stays short while it plays (R2).
+(from the played position, R3), not when copied. A legacy stream that writes small buffers often is
+taken as interactive by the write-pattern heuristic (R2), so the mixer
+wakes often while it plays.
 
 **Parity is measured, not assumed:** S4 records the distribution of the
 time from `waveOutWrite` to `WOM_DONE` on the same game under stock
@@ -304,9 +351,11 @@ the DMA position) and battery.
 Within the audio host's share of the 1 MiB for driver hosts
 (memory-budget.md): the DMA ring ~44 KiB, the mixer's state per stream a
 few hundred bytes, program rings in the programs' own budgets (R2's
-sizing rule: ~50 KiB for a background Media stream at full depth, ~8 KiB
-for an interactive one; the CE library's shadow rings in the old
-program's budget). Code budget
+sizing rule: ~50 KiB per stream at 44.1 kHz stereo, so ~400 KiB with eight
+streams open across all programs; mono and 22 kHz streams are smaller;
+the CE library's shadow rings in the old program's budget). S2 records the
+streams real use opens at once, so the cost is a measurement, not a
+guess. Code budget
 set when the first crate exists (ratcheted per the budget rule, asking if a
 step grows it by more than 8 KiB).
 
@@ -318,7 +367,7 @@ step grows it by more than 8 KiB).
    powered (codec set up, I2S running) against audio off**, which decides
    whether idle power-down between sounds is built at all.
 2. **S2 the mixer** (R2-R4): roles, several streams, the rewrite-ahead
-   and its adaptive depth, the actual-start field; latency and wake-ups
+   and its adaptive wake interval (15 / 200 ms), the actual-start field; latency and wake-ups
    measured with music and clicks; limiter times tuned.
 3. **S3 volumes and routing** (A2, A3, A4).
 4. **S4 the CE personality's sound calls** (R7) with an old game and X50Mix,
