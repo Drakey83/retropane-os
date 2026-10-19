@@ -1368,8 +1368,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "xtask: the emulator's clean-up ends another run's emulator (a port prefix)",
         file: "xtask/src/emu.rs",
-        from: "-monitor tcp:127.0.0.1:{monitor_port}[,]'",
-        to: "-monitor tcp:127.0.0.1:{monitor_port}'",
+        from: "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'",
+        to: "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}'",
         check: Check::Host(&["-p", "xtask", "cleanup_ends_only_this_runs_processes"]),
     },
     Mutant {
