@@ -43,6 +43,30 @@ const VOL_ZC: u16 = 1 << 7;
 const VOL_0DB: u16 = 0x79;
 const VOL_MIN: u16 = 0x30;
 
+/// DAC soft mute (`DAC_CTRL` bit 3).
+const DAC_MUTE: u16 = 1 << 3;
+
+/// The sample rate the codec expects, with its master clock at 256 fs (the
+/// PXA's I2S system clock, `SADIV` picks both).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SampleRate {
+    /// 48 kHz from 12.288 MHz (`SR` = 00000: proven on the X51v, rp-tone).
+    Khz48,
+    /// 44.1 kHz from 11.2896 MHz (`SR` = 10000; the datasheet's table as the
+    /// emulator's WM8750 model carries it; the session rate, ADR-0032 A1).
+    Khz44_1,
+}
+
+impl SampleRate {
+    /// Register 8 (`SRATE`): normal mode, `SR` in bits 5-1.
+    fn srate(self) -> u16 {
+        match self {
+            Self::Khz48 => 0b00000 << 1,
+            Self::Khz44_1 => 0b10000 << 1,
+        }
+    }
+}
+
 /// Where sound goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Output {
@@ -83,13 +107,19 @@ pub struct Wm8750<I> {
     addr: u8,
     level: u32,
     output: Output,
+    rate: SampleRate,
 }
 
 impl<I: I2cBus> Wm8750<I> {
     /// Finds the codec (whichever address answers) and sets it up for
     /// 48 kHz 16-bit I2S playback from a 12.288 MHz master clock (256 fs),
     /// outputs at `level` (0-100). The bus comes back if no codec answers.
-    pub fn init(mut i2c: I, level: u32) -> Result<Self, (I2cError, I)> {
+    pub fn init(i2c: I, level: u32) -> Result<Self, (I2cError, I)> {
+        Self::init_at(i2c, level, SampleRate::Khz48)
+    }
+
+    /// As [`Self::init`], at `rate` (the I2S side must run at the same rate).
+    pub fn init_at(mut i2c: I, level: u32, rate: SampleRate) -> Result<Self, (I2cError, I)> {
         // Found by its first set-up write, the reset (as Windows Mobile
         // starts; the X51v's controller can't do address-only transfers:
         // docs/hw/audio.md).
@@ -105,6 +135,7 @@ impl<I: I2cBus> Wm8750<I> {
             addr,
             level: 0,
             output: Output::Speaker,
+            rate,
         };
         let setup = [
             // VMID 50k divider (playback), VREF on.
@@ -113,8 +144,8 @@ impl<I: I2cBus> Wm8750<I> {
             (reg::PWR2, 0x1F8),
             // I2S, 16-bit, slave (the PXA drives the clocks).
             (reg::IFACE, 0x002),
-            // 48 kHz from 12.288 MHz (normal mode, 256 fs).
-            (reg::SRATE, 0x000),
+            // The rate, from a 256 fs master clock (normal mode).
+            (reg::SRATE, rate.srate()),
             // DAC unmuted.
             (reg::DAC_CTRL, 0x000),
             // Left DAC to the left mixer, right DAC to the right.
@@ -177,6 +208,32 @@ impl<I: I2cBus> Wm8750<I> {
     #[must_use]
     pub fn output(&self) -> Output {
         self.output
+    }
+
+    /// The sample rate it was set up for.
+    #[must_use]
+    pub fn rate(&self) -> SampleRate {
+        self.rate
+    }
+
+    /// Powers the codec's insides down before its supply goes off: the DAC
+    /// soft-muted, both output pairs to mute, then outputs and DACs off,
+    /// then VMID and VREF off (the datasheet's order: outputs before the
+    /// reference, so the outputs don't follow VMID down). Gives the bus
+    /// back, with the first failed write's error if one failed (every step
+    /// is still tried).
+    pub fn power_down(mut self) -> (Result<(), I2cError>, I) {
+        let mut first = Ok(());
+        let mut step = |r: Result<(), I2cError>| {
+            if first.is_ok() {
+                first = r;
+            }
+        };
+        step(self.set(reg::DAC_CTRL, DAC_MUTE));
+        step(self.set_level(0));
+        step(self.set(reg::PWR2, 0));
+        step(self.set(reg::PWR1, 0));
+        (first, self.i2c)
     }
 
     /// Gives the bus back.
@@ -342,6 +399,77 @@ mod tests {
         codec.route(Output::Speaker).unwrap();
         assert_eq!(last(&codec.i2c.regs, reg::ROUT2), VOL_0DB);
         assert_eq!(codec.output(), Output::Speaker);
+    }
+
+    #[test]
+    fn the_rate_goes_to_register_8() {
+        let regs = |rate| {
+            Wm8750::init_at(bus(0x1A), 50, rate)
+                .ok()
+                .unwrap()
+                .into_inner()
+                .regs
+        };
+        assert!(regs(SampleRate::Khz48).contains(&(reg::SRATE, 0x000)));
+        // SR = 10000: 44.1 kHz at 256 fs.
+        assert!(regs(SampleRate::Khz44_1).contains(&(reg::SRATE, 0x020)));
+        let c = Wm8750::init_at(bus(0x1A), 50, SampleRate::Khz44_1)
+            .ok()
+            .unwrap();
+        assert_eq!(c.rate(), SampleRate::Khz44_1);
+        assert_eq!(
+            Wm8750::init(bus(0x1A), 50).ok().unwrap().rate(),
+            SampleRate::Khz48
+        );
+    }
+
+    #[test]
+    fn power_down_mutes_then_outputs_then_the_reference() {
+        let c = Wm8750::init(bus(0x1A), 80).ok().unwrap();
+        let before = c.i2c.regs.len();
+        let (r, b) = c.power_down();
+        assert_eq!(r, Ok(()));
+        let w = &b.regs[before..];
+        assert_eq!(w[0], (reg::DAC_CTRL, DAC_MUTE));
+        // Both pairs muted, the right channels latching.
+        assert!(w[1..5].iter().all(|&(_, v)| v & 0x7F == 0));
+        assert_eq!(w[5], (reg::PWR2, 0));
+        assert_eq!(w[6], (reg::PWR1, 0));
+        assert_eq!(w.len(), 7);
+    }
+
+    #[test]
+    fn power_down_tries_every_step_and_reports_the_first_failure() {
+        struct Flaky {
+            inner: Bus,
+            fail_at: usize,
+            n: usize,
+        }
+        impl I2cBus for Flaky {
+            fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2cError> {
+                self.n += 1;
+                if self.n == self.fail_at {
+                    return Err(I2cError::Nak);
+                }
+                self.inner.write(addr, data)
+            }
+        }
+        let c = Wm8750::init(
+            Flaky {
+                inner: bus(0x1A),
+                fail_at: usize::MAX,
+                n: 0,
+            },
+            80,
+        )
+        .ok()
+        .unwrap();
+        let mut c = c;
+        c.i2c.fail_at = c.i2c.n + 1; // the mute fails
+        let (r, b) = c.power_down();
+        assert_eq!(r, Err(I2cError::Nak));
+        // The reference still went off after the failed first step.
+        assert_eq!(b.inner.regs.last(), Some(&(reg::PWR1, 0)));
     }
 
     #[test]

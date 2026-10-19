@@ -19,6 +19,12 @@ enum Kind {
     Direction,
     Set,
     Clear,
+    /// `GRERn`: a rising edge is latched.
+    Rising,
+    /// `GFERn`: a falling edge is latched.
+    Falling,
+    /// `GEDRn`: the latched edges (write 1 to clear).
+    Edge,
 }
 
 /// Offset of the register of `kind` covering `pin`, and the pin's bit.
@@ -30,6 +36,9 @@ fn reg(kind: Kind, pin: u8) -> (usize, u32) {
         Kind::Direction => (0x0C, 0x10C),
         Kind::Set => (0x18, 0x118),
         Kind::Clear => (0x24, 0x124),
+        Kind::Rising => (0x30, 0x130),
+        Kind::Falling => (0x3C, 0x13C),
+        Kind::Edge => (0x48, 0x148),
     };
     let off = if bank < 3 { low_base + 4 * bank } else { bank3 };
     (off, 1 << (pin % 32))
@@ -107,6 +116,30 @@ impl<B: RegisterBus> Gpio<B> {
         (self.regs.read32(off) >> shift & 3) as u8
     }
 
+    /// Arms `pin`'s edge detector: rising and/or falling edges are latched
+    /// in `GEDRn` (and raise the GPIO interrupt where it's enabled), so an
+    /// edge is never missed between two looks. Only `pin`'s bits change.
+    pub fn watch_edges(&mut self, pin: u8, rising: bool, falling: bool) {
+        for (kind, on) in [(Kind::Rising, rising), (Kind::Falling, falling)] {
+            let (off, bit) = reg(kind, pin);
+            let old = self.regs.read32(off);
+            let v = if on { old | bit } else { old & !bit };
+            self.regs.write32(off, v);
+        }
+    }
+
+    /// Whether an armed edge was latched on `pin` since the last call; the
+    /// latch is cleared (`GEDRn` is write-1-to-clear: only this pin's bit is
+    /// written, so other pins' edges stay latched).
+    pub fn take_edge(&mut self, pin: u8) -> bool {
+        let (off, bit) = reg(Kind::Edge, pin);
+        if self.regs.read32(off) & bit == 0 {
+            return false;
+        }
+        self.regs.write32(off, bit);
+        true
+    }
+
     /// Gives the register block back.
     pub fn into_inner(self) -> B {
         self.regs
@@ -173,6 +206,40 @@ mod tests {
         assert_eq!(g.function(24), 0);
         // Only GPIO24's two bits changed.
         assert_eq!(g.into_inner().value(0x58), 0x0018_851A);
+    }
+
+    #[test]
+    fn edge_registers_match_the_manual() {
+        // GRER0 0x30, GFER0 0x3C, GEDR0 0x48; bank 3 (GPIO96-120) at +0x100.
+        assert_eq!(reg(Kind::Rising, 0), (0x30, 1));
+        assert_eq!(reg(Kind::Falling, 40), (0x40, 1 << 8));
+        assert_eq!(reg(Kind::Edge, 83), (0x50, 1 << 19));
+        assert_eq!(reg(Kind::Rising, 96), (0x130, 1));
+        assert_eq!(reg(Kind::Falling, 107), (0x13C, 1 << 11));
+        assert_eq!(reg(Kind::Edge, 120), (0x148, 1 << 24));
+    }
+
+    #[test]
+    fn watching_edges_changes_only_its_pin() {
+        let mut bus = MockBus::new();
+        bus.preset(0x38, 0x0000_0001); // GPIO64 rising, armed by someone else
+        bus.preset(0x44, 1 << 19); // GPIO83 falling, armed before
+        let mut g = Gpio::new(bus);
+        g.watch_edges(83, true, false);
+        let bus = g.into_inner();
+        assert_eq!(bus.value(0x38), 1 | 1 << 19);
+        assert_eq!(bus.value(0x44), 0);
+    }
+
+    #[test]
+    fn an_edge_is_taken_once_and_cleared_alone() {
+        let mut bus = MockBus::new();
+        bus.preset(0x50, 1 << 19 | 1 << 20); // GPIO83 and GPIO84 latched
+        let mut g = Gpio::new(bus);
+        assert!(g.take_edge(83));
+        // Write-1-to-clear: only GPIO83's bit written.
+        assert_eq!(g.regs.writes(), [(0x50, 1 << 19)]);
+        assert!(!g.take_edge(85));
     }
 
     #[test]

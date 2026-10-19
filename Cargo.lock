@@ -53,6 +53,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rp-audio"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-pxa-i2s",
+ "rp-drv-wm8750",
+ "rp-hal-api",
+]
+
+[[package]]
 name = "rp-bench"
 version = "0.0.0"
 dependencies = [

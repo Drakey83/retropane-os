@@ -1,0 +1,16 @@
+[package]
+name = "rp-audio"
+description = "The audio service (ADR-0032), step S1: one owner of the codec, the I2S link and the speaker amplifier; the power sequence, the restart guard, the headphone jack by its edge latch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
+rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+
+[lints]
+workspace = true

@@ -80,6 +80,7 @@ members = [
     "boot/quantum",
     "services/display-host",
     "services/graphics",
+    "services/audio",
     "shell/core",
     "shell/today",
     "personality/ce/cab",

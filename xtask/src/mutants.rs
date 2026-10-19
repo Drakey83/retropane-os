@@ -608,6 +608,83 @@ pub const MUTANTS: &[Mutant] = &[
         to: "    let other = pending & !(1 << crate::soc::irq::OST1 | 1 << crate::soc::irq::OST_4_11);",
         check: Check::Emu(crate::emu::boot_loader_noise),
     },
+    Mutant {
+        name: "audio: the I2S restart guard skipped (a switch-on within 645 ms is dropped)",
+        file: "services/audio/src/lib.rs",
+        from: "        if since >= RESTART_GUARD_MS {",
+        to: "        if since < u32::MAX {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "up_soon_after_down_waits_out_the_guard_and_is_taken",
+        ]),
+    },
+    Mutant {
+        name: "audio: a jack edge while down forgotten (the next power-up wouldn't know)",
+        file: "services/audio/src/lib.rs",
+        from: "            self.jack_dirty |= edge;",
+        to: "            let _ = edge;",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_jack_edge_while_down_powers_nothing_and_is_read_at_the_next_up",
+        ]),
+    },
+    Mutant {
+        name: "audio: a failed power-up leaves the speaker amplifier on",
+        file: "services/audio/src/lib.rs",
+        from: "    fn back_down(&mut self) {\n        self.amp_off();\n",
+        to: "    fn back_down(&mut self) {\n",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_route_failing_after_the_amplifier_takes_it_back_off",
+        ]),
+    },
+    Mutant {
+        name: "audio: to headphones, the amplifier off before the speaker pair is muted",
+        file: "services/audio/src/lib.rs",
+        from: "        if to == Output::Speaker {\n            self.amp_on();\n        }\n        let r",
+        to: "        if to == Output::Speaker {\n            self.amp_on();\n        } else {\n            self.amp_off();\n        }\n        let r",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_jack_edge_while_up_reroutes_after_the_debounce",
+        ]),
+    },
+    Mutant {
+        name: "audio: the jack edge no longer debounced",
+        file: "services/audio/src/lib.rs",
+        from: "        if now.wrapping_sub(since) < JACK_DEBOUNCE_MS {",
+        to: "        if now.wrapping_sub(since) < 0 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_jack_edge_while_up_reroutes_after_the_debounce",
+        ]),
+    },
+    Mutant {
+        name: "GPIO: taking one pin's edge clears every latched edge",
+        file: "drivers/pxa-gpio/src/lib.rs",
+        from: "        self.regs.write32(off, bit);\n        true",
+        to: "        self.regs.write32(off, u32::MAX);\n        true",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-gpio",
+            "an_edge_is_taken_once_and_cleared_alone",
+        ]),
+    },
+    Mutant {
+        name: "WM8750: the reference switched off before the outputs",
+        file: "drivers/wm8750/src/lib.rs",
+        from: "        step(self.set(reg::PWR2, 0));\n        step(self.set(reg::PWR1, 0));",
+        to: "        step(self.set(reg::PWR1, 0));\n        step(self.set(reg::PWR2, 0));",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-wm8750",
+            "power_down_mutes_then_outputs_then_the_reference",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
