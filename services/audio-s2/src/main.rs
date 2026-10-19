@@ -331,7 +331,7 @@ mod image {
             );
             let _ = writeln!(
                 out,
-                "{what} RESULT: {elapsed} ms, {}.{} wakes/s, mixer CPU {}.{}%, lead up to {} ms, rewrites {}, late {}, dry {}, clipped {}, limited {}, DMA at {rate} frames/s",
+                "{what} RESULT: {elapsed} ms, {}.{} wakes/s, mixer CPU {}.{}%, lead up to {} ms, rewrites {}, late {}, dry {}, clipped {}, limited {}, ring stops {} (a window with a stop: its rate isn't the link's), DMA at {rate} frames/s",
                 wakes10 / 10,
                 wakes10 % 10,
                 cpu10 / 10,
@@ -342,6 +342,7 @@ mod image {
                 s.starved - from.stats.starved,
                 s.clipped - from.stats.clipped,
                 s.limited - from.stats.limited,
+                s.stops - from.stats.stops,
             );
             self.lead_max = 0;
         }
@@ -999,14 +1000,13 @@ mod image {
         let s = rig.m.stats();
         let _ = writeln!(
             out,
-            "ALL: {} wakes, {} rewrites ({} ms re-mixed), {} late, {} dry, {} clipped, {} laps lost, ring stops {} restarts {} races {} failed {}",
+            "ALL: {} wakes, {} rewrites ({} ms re-mixed), {} late, {} dry, {} clipped, ring stops {} restarts {} races {} failed {}",
             s.wakes,
             s.rewrites,
             s.rewritten * 1_000 / u64::from(OUT),
             s.late,
             s.starved,
             s.clipped,
-            s.laps_lost,
             s.stops,
             s.restarts,
             s.races,

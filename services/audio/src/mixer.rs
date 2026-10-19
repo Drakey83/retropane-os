@@ -262,8 +262,6 @@ pub struct Stats {
     pub clipped: u32,
     /// Blocks the limiter rode down.
     pub limited: u32,
-    /// Lap counted from the clock (a wake later than the ring is long).
-    pub laps_lost: u32,
     /// Wakes that found the engine stopped at the ring's end (a late
     /// mixer, or the race below).
     pub stops: u32,
@@ -668,7 +666,6 @@ pub struct Mixer<'a> {
     /// The output frame the DMA reads next.
     hw: u64,
     last_pos: u64,
-    last_ms: u32,
     /// Frames mixed into the ring up to here.
     mixed_to: u64,
     state: chain::State,
@@ -709,7 +706,6 @@ impl<'a> Mixer<'a> {
             running: false,
             hw: 0,
             last_pos: 0,
-            last_ms: 0,
             mixed_to: 0,
             state: chain::State::default(),
             snaps,
@@ -974,7 +970,10 @@ impl<'a> Mixer<'a> {
 
     /// The output's clock read fresh from the DMA position (between wakes
     /// [`Self::clock`] holds the last wake's): for measuring the link's real
-    /// rate. Exact unless a whole ring passed since the last wake.
+    /// rate. Exact: the engine can't run further ahead than the mix, which
+    /// is less than a ring (ADR-0032 A6), and it counts only frames that
+    /// went out (it stands still while stopped: a window holding a stop
+    /// measures the rate wrongly, so [`Stats::stops`] says to drop it).
     pub fn clock_now(&mut self, dma: &mut dyn DmaRing) -> u64 {
         if self.running {
             self.peek_clock(dma)
@@ -1043,7 +1042,6 @@ impl<'a> Mixer<'a> {
         // the next whole lap so the two agree.
         self.hw = align_up(self.hw, RING_FRAMES);
         self.last_pos = 0;
-        self.last_ms = now_ms;
         self.snaps.fill(0xFF);
         // An end from the start, in the first piece past the margin (the
         // ring is silence up to there): a ring that loops even for one
@@ -1082,7 +1080,7 @@ impl<'a> Mixer<'a> {
         if self.ended && dma.stopped() {
             self.stats.stops += 1;
         }
-        self.advance_clock(dma, now_ms);
+        self.advance_clock(dma);
         let mut tick = Tick::default();
 
         // The earliest frame we may still write.
@@ -1361,28 +1359,18 @@ impl<'a> Mixer<'a> {
         }
     }
 
-    fn advance_clock(&mut self, dma: &mut dyn DmaRing, now_ms: u32) {
+    /// Moves the clock on by what the engine played since the last wake:
+    /// the position alone, exactly (the ring's end keeps the engine within
+    /// the mix, less than a ring ahead: no lap to guess, ADR-0032 A6).
+    fn advance_clock(&mut self, dma: &mut dyn DmaRing) {
         let Some(pos) = dma.position() else {
             return;
         };
         let pos = (pos / 4) as u64 % RING_FRAMES;
         let delta = (pos + RING_FRAMES - self.last_pos) % RING_FRAMES;
-        // A wake later than a whole ring can't be seen in the position:
-        // the clock says how many laps went by.
-        let est = u64::from(now_ms.wrapping_sub(self.last_ms)) * u64::from(OUT) / 1_000;
-        // Only when the clock is sure: three quarters of a ring more than
-        // the position shows (a lap counted wrongly skips a whole ring).
-        // With an end, the engine can't lap the mix: it stops instead.
-        let laps = if !self.ended && est > delta + RING_FRAMES * 3 / 4 {
-            (est - delta + RING_FRAMES / 2) / RING_FRAMES
-        } else {
-            0
-        };
-        self.stats.laps_lost += laps as u32;
         let old = self.hw;
-        self.hw += delta + laps * RING_FRAMES;
+        self.hw += delta;
         self.last_pos = pos;
-        self.last_ms = now_ms;
         // What played is cleared: if the mixer is ever late, the DMA plays
         // silence, never a lap-old sound.
         let clear_from = old.max(self.hw.saturating_sub(RING_FRAMES));

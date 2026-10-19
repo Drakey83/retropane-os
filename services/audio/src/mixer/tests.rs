@@ -808,7 +808,6 @@ fn a_wake_that_takes_time_to_mix_still_wakes_again_in_time() {
     sim.run(3_500, &mut |m, now| f.feed(m, now));
     assert_eq!(sim.m.stats().late, 0);
     assert_eq!(sim.m.stats().starved, 0);
-    assert_eq!(sim.m.stats().laps_lost, 0);
     assert_eq!(sim.m.stats().stops, 0);
     assert_eq!(sim.m.stats().ring_failed, 0);
     let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
@@ -867,7 +866,6 @@ fn a_stall_longer_than_the_ring_is_silence_never_a_replay() {
     // The clock counts frames that went out: it stood still while stopped.
     assert_eq!(sim.m.clock(), sim.dma.played);
     assert!(sim.m.clock() - before < frames(400));
-    assert_eq!(sim.m.stats().laps_lost, 0);
     assert_eq!(sim.m.stats().stops, 1);
     sim.run(2_500, &mut |m, now| f.feed(m, now));
     assert!(heard_once(&sim, &f), "lost or repeated frames");
@@ -1051,7 +1049,6 @@ fn a_ring_cut_in_larger_pieces_still_keeps_the_end_s_rule() {
     sim.tick();
     sim.run(2_500, &mut |m, now| f.feed(m, now));
     assert_eq!(sim.m.stats().ring_failed, 0);
-    assert_eq!(sim.m.stats().laps_lost, 0);
     assert!(heard_once(&sim, &f), "lost or repeated frames");
 }
 
