@@ -409,6 +409,33 @@ mute and register 26 = 0). Nothing waits longer at a cold start, so
 Windows Mobile may lose the start of its first speaker sound after a
 long quiet spell too (not checked).
 
+**A/B run (2026-10-18 night, `RP_AUDIO_AB_TEST`, run twice; the owner
+wrote down each test in the second: logs `local/rp-audio-s1-ab1.txt`,
+`-ab2.txt`).** Speaker only, one change per test, every note streamed in
+full:
+
+| Test | Note | Level | Power cycle first | Heard |
+|---|---|---|---|---|
+| 1, 3 | 660 Hz | 60 | no | yes |
+| 5 | 660 Hz | 60 | yes | yes |
+| 2, 4 | 440 Hz | 60 | no | **no** |
+| 6 | 440 Hz | 60 | yes | **no** |
+| 7 | 440 Hz | 100 | no | yes |
+
+**Proven:** the power cycle makes no difference; pitch and level together
+decide it: 440 Hz at level 60 (the codec's output 30 dB below full) is
+inaudible on the speaker, 660 Hz at the same level is heard, 440 Hz at
+full level is heard. **Not proven:** why 440 Hz comes out so much weaker:
+the speaker itself, or RetroPane's codec set-up (Dell's driver writes
+registers 16 and 24, which RetroPane doesn't; their meaning unconfirmed).
+**Status: broken, S1 not passed.** Options for the owner: (a) the same
+two notes played by Windows Mobile through its own driver at a known
+volume (a read-only probe like `rp-wmaudio`): if Windows Mobile's 440 Hz is
+heard where ours isn't, our set-up is missing something; (b) the A/B test
+repeated with Dell's register 24 value, then register 16's, one per run;
+(c) a sweep of numbered pitches at one level to map the speaker's
+response.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the

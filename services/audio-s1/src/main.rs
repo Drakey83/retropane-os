@@ -376,7 +376,8 @@ mod image {
     /// One change at a time: 660 and 440 Hz alternating with nothing else
     /// changed (tests 1-4), each after a power-down and up as runs 2-3's
     /// step 3 did (5, 6), and 440 Hz at full level (7). Each test's number
-    /// is on screen just before its 1 s note, then 2 s of quiet.
+    /// is on screen just before its 1 s note, then 5 s of quiet (time to
+    /// write it down).
     fn ab_test(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
         let _ = writeln!(out, "A/B TEST: HEADPHONES OUT THE WHOLE TIME");
         let _ = writeln!(out, "WATCH FOR TEST 1 TO TEST 7; NOTE WHICH ONES YOU HEAR");
@@ -419,7 +420,8 @@ mod image {
             if full {
                 let _ = a.set_level(LEVEL);
             }
-            a.board_mut().delay_us(2_000_000);
+            // Time for the owner to write each one down.
+            a.board_mut().delay_us(5_000_000);
         }
         down(out, a);
         let _ = writeln!(out, "DONE: WHICH TESTS DID YOU HEAR?");
