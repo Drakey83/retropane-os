@@ -378,11 +378,14 @@ the SPB look smooth instead of merely possible.
   (slower, but never broken).
 
 **The options:**
-- **A: planes only (today's plan).** Wallpaper and interface planes
-  blended at scan-out, the 2D blitter copying moving panels. Simple and
+- **A: planes only (today's plan: ADR-0022 as accepted, its point 3:
+  scan-out planes first, the 2D engine second, the CPU last).** Wallpaper
+  and interface planes blended at scan-out, the 2D blitter copying moving
+  panels. Simple and
   proven so far; no carousel worth the name, scrolling limited by copies.
 - **B: a 3D compositor for everything (recommended, pending the
-  measurements).** Every screen part a layer; the 3D core composes each
+  measurements; it would amend ADR-0022's point 3, so it's an ADR change
+  for the owner's vote, with ADR-0030's graphics service).** Every screen part a layer; the 3D core composes each
   frame that moves. The SPB look at full frame rate, the CPU free.
 - **C: the 3D core only for the showpieces** (carousel, weather, task
   switcher), planes and the blitter elsewhere. Less to build first, but

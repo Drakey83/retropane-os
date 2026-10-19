@@ -15,7 +15,7 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 
 | Page | What's in it |
 |---|---|
-| [ui.md](ui.md) | The look: the owner's decisions, the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
+| [ui.md](ui.md) | The look: the owner's decisions, **SPB Mobile Shell's whole experience as the reference with our own take (2026-10-19): two looks, Modern and Classic; the weather screen the default home; everything customisable, themes included; the carousel and a part-by-part survey of SPB's demo video**; **3D acceleration for the whole UI (a proposal, options A/B/C) and ideas for modern 3D effects (a 3D flip clock, a living weather sky, glass that catches the light, a card-stack task switcher...), not voted yet**; the smoked-glass design language (**boards N-R: the chosen design**), the Today screen, the Start menu, wallpapers and their licences, type, how the glass renders on the 624 MHz XScale |
 | [apps-and-packs.md](apps-and-packs.md) | Every Windows Mobile 5 default app rebuilt and modernized, a new coat of paint on everything, themes and customization, legacy apps and games, the SD expansion pack and its download location, our own DOOM / Heretic / Quake ports, more ideas to modernize |
 | [display-calibration.md](display-calibration.md) | Getting the most out of the X51v's screen: what we control (gamma table, backlight, refresh, PWM1, dither, content) and what we can't, and the plan (C1-C5) to calibrate it by eye on the device |
 | [today-screen-plan.md](today-screen-plan.md) | The plan for the Today screen on the device: what runs now, the four steps, the icon format |
@@ -95,3 +95,10 @@ A running list; each line points to where the detail is.
 - **2026-10-19:** audio S1 passed; when the sound chip sleeps
   ([ADR-0032](../adr/0032-audio-service.md) R5): after 5 s of quiet, the link
   kept running, woken early by a touch or a key so clicks stay instant.
+- **2026-10-19:** the UI follows SPB Mobile Shell's whole experience with
+  our own take: two looks, Modern (the default, SPB-shaped; the finger for
+  navigation only) and Classic (WM5, stylus), switchable; the weather
+  screen the default home; everything customisable, themes included; the
+  carousel ([ui.md](ui.md)). Proposals waiting for a vote: 3D acceleration
+  for the whole UI (A planes only = ADR-0022 as accepted, B a 3D compositor,
+  C showpieces only) and ideas for modern 3D effects ([ui.md](ui.md)).
