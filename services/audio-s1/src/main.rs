@@ -68,6 +68,9 @@ mod image {
     /// sound after a long quiet spell is lost): numbered short notes every
     /// 0.5 s from its switch-on.
     const AMP_TIMING: bool = option_env!("RP_AUDIO_AMP_TIMING").is_some();
+    /// `RP_AUDIO_AB_TEST` at build time: the unheard 440 Hz speaker note,
+    /// one change per test (pitch, power-up, level), numbered on screen.
+    const AB_TEST: bool = option_env!("RP_AUDIO_AB_TEST").is_some();
     /// Output level, 0-100: 60, or `RP_AUDIO_LEVEL` at build time.
     const LEVEL: u32 = match option_env!("RP_AUDIO_LEVEL") {
         Some(v) => parse(v),
@@ -370,6 +373,58 @@ mod image {
         let _ = writeln!(out, "DONE: WHAT WAS THE FIRST NUMBER YOU HEARD?");
     }
 
+    /// One change at a time: 660 and 440 Hz alternating with nothing else
+    /// changed (tests 1-4), each after a power-down and up as runs 2-3's
+    /// step 3 did (5, 6), and 440 Hz at full level (7). Each test's number
+    /// is on screen just before its 1 s note, then 2 s of quiet.
+    fn ab_test(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
+        let _ = writeln!(out, "A/B TEST: HEADPHONES OUT THE WHOLE TIME");
+        let _ = writeln!(out, "WATCH FOR TEST 1 TO TEST 7; NOTE WHICH ONES YOU HEAR");
+        a.board_mut().delay_us(3_000_000);
+        if !up(out, a, "a/b test") {
+            return;
+        }
+        // (test, pitch, power down and up first, full level)
+        let tests: [(u32, u32, bool, bool); 7] = [
+            (1, 660, false, false),
+            (2, 440, false, false),
+            (3, 660, false, false),
+            (4, 440, false, false),
+            (5, 660, true, false),
+            (6, 440, true, false),
+            (7, 440, false, true),
+        ];
+        for (n, hz, cycle, full) in tests {
+            if cycle {
+                down(out, a);
+                if !up(out, a, "a/b cycle") {
+                    return;
+                }
+            }
+            if full {
+                let _ = a.set_level(100);
+            }
+            let _ = writeln!(
+                out,
+                "TEST {n}: {hz} Hz{}{}, level {}",
+                if cycle {
+                    ", after audio down and up"
+                } else {
+                    ""
+                },
+                if full { ", full level" } else { "" },
+                a.level()
+            );
+            note(out, a, dma, ring, hz);
+            if full {
+                let _ = a.set_level(LEVEL);
+            }
+            a.board_mut().delay_us(2_000_000);
+        }
+        down(out, a);
+        let _ = writeln!(out, "DONE: WHICH TESTS DID YOU HEAR?");
+    }
+
     fn down(out: &mut impl Write, a: &mut Service<'_>) {
         match a.down() {
             Ok(()) => {
@@ -444,6 +499,11 @@ mod image {
 
         // The owner's steps, the same words as in the chat: headphones in
         // at the start; fixed prompts that never depend on a reading.
+        if AB_TEST {
+            ab_test(&mut out, &mut a, &mut dma, ring);
+            let cpld = a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         if AMP_TIMING {
             amp_timing(&mut out, &mut a, &mut dma, ring);
             let cpld = a.board_mut().cpld.take();

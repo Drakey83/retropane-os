@@ -388,7 +388,8 @@ too little to hear at level 60. The owner heard 440 Hz in the headphones (runs
 2-3, step 1's first note) at the same level, so it isn't the listener's
 hearing. **But the owner rejects "the speaker's limit" (2026-10-18): 440
 Hz isn't low, and a speaker this size should still make it audible. Status:
-unexplained, possibly a fault;** the pitch pattern is a lead, not a cause.
+**broken** (the owner's rule: broken until a test shows every sound playing
+as it should; S1 is not passed);** the pitch pattern is a lead, not a cause.
 Next: an A/B run that changes one thing at a time (440 Hz and 660 Hz
 alternating with nothing else changed, then each after a power-down and
 up, then 440 Hz at full level). A measurement, not a decision; to confirm
