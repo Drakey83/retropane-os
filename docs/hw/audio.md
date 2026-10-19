@@ -436,6 +436,22 @@ repeated with Dell's register 24 value, then register 16's, one per run;
 (c) a sweep of numbered pitches at one level to map the speaker's
 response.
 
+**Windows Mobile plays the same notes (2026-10-18 night, `rp-wmtones`,
+option (a); log `local/wmtones/rp-wm-tones-run1.txt`, three runs).** The
+A/B notes (44.1 kHz, amplitude 12000) through Dell's own driver, at
+Windows Mobile volumes 100/50/25/12% (set and read back exactly), the
+system volume turned all the way up, the owner away from the noisy PC,
+headphones out. **Owner: 660 Hz heard at every volume (tests 1, 3, 5, 7);
+440 Hz heard only at 100% (test 2); at 50%, 25% and 12% (tests 4, 6, 8)
+no tone, only a slight static click.** The speaker amplifier was on for
+every note (CPLD `0x14` = `000A`) and the codec powered (`0x1C` bit 1).
+So **Dell's driver shows the same pattern as RetroPane's**: on this
+speaker, 440 Hz needs about full level to be heard while 660 Hz is heard
+far below it. A measurement; whether this counts as acceptable is the
+owner's call (it stays "S1 not passed" until the owner says otherwise).
+Note: RetroPane's earlier runs were heard near the owner's noisy PC; the
+quieter room matters for faint notes.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
