@@ -73,8 +73,8 @@ This makes the theme engine carry **layout** as well as skin: target sizes,
 the launcher's grid and the Today screen's arrangement differ between the
 two looks, not only colours and art. Both looks are designed, mocked up and
 tested; old Windows Mobile programs keep their own windows in either.
-"Modern" and "Classic" are working names; the final names are the owner's
-to choose, and never "SPB" or "Windows Mobile" (their owners' names).
+**The names are Modern and Classic** (owner, 2026-10-19): plain words, and
+never "SPB" or "Windows Mobile" (their owners' names).
 
 ## Constraints every concept respects
 
