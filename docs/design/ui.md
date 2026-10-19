@@ -422,9 +422,10 @@ decision:**
   smooth), and one screen can be redrawn in bands just behind the scan
   line (owner: smooth), which saves the second screen buffer. A flip
   takes effect at once, so it is written in the blanking.
-- Still open: run B (whether the chip reads a row-order texture, which
-  would drop the reordering), and a faster core clock (each MHz is speed;
-  version 29's 75 MHz was rejected as built).
+- No row-order texture mode was found (run B, 20 tries of the bits Dell
+  never sets): layers are reordered for the GPU on upload.
+- Still open: a faster core clock (each MHz is speed; version 29's
+  75 MHz was rejected as built).
 
 ## Ideas: modern 3D in a retro-modern UI (proposal, 2026-10-19)
 
