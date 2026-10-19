@@ -173,7 +173,7 @@ x51v-os/
 │   ├── x51v/        board: GPIO map, CPLD, memory map, variant detection
 │   └── mock/        recording/scriptable fake hardware for host tests
 ├── drivers/         one crate per device (display, mbx3d, touch, keypad, audio, sd, cf, acx100, bt, battery)
-├── services/        net (TCP/IP), tls, audio-mixer, fs, registry, power, gfx (GLES engine)
+├── services/        net (TCP/IP), tls, audio (ADR-0032), fs, registry, power, graphics (ADR-0030)
 ├── gwes/            window manager, GDI, input, compositor, theme engine
 ├── personality/ce/  clean-room CE API DLLs (coredll, aygshell, commctrl, ws2, libGLES_CL, ...)
 ├── shell/           Today screen, Start menu, task switcher, notifications

@@ -32,7 +32,7 @@ depends on them proves less than it looks):
 | B2 | Alpha test, all depth modes, code 10 grey | Fork rp-v0.22.0 (`mbx-3d-alpha`), `emu-glesfeat` checks the device's pixels | **fixed** 2026-10-18 |
 | B3 | Fog (TSP bit 24, colour `0x63C`) and the second texture unit | Device test first (needs the TA's vertex and state formats read statically), then model | open |
 | B4 | Codec power (CPLD `0x1C` bit 1) and speaker amp (`0x14` bit 1): the model's codec answers with power off | Model after the owner-watched run decides what the codec needs | open |
-| B8 | I2S re-enabled right after being switched off sends nothing; measured: a switch-on within ~645 ms of the switch-off is dropped (`SACR0` reads 0); the fork's I2S restarts at once | Model it in the fork (a switch-on within 645 ms of a switch-off ignored), with a check that runs a stop-start and fails without the model; `PxaI2s::start` reports a dropped switch-on | in progress |
+| B8 | I2S re-enabled right after being switched off sends nothing; measured: a switch-on within ~645 ms of the switch-off is dropped (`SACR0` reads 0); the fork's I2S restarts at once | Model it in the fork (a switch-on within 645 ms of a switch-off ignored), with a check that runs a stop-start and fails without the model; `PxaI2s::start` reports a dropped switch-on | **fixed** 2026-10-18 (rp-v0.24.0, property `i2s-restart`; `emu-tone` and `emu-audio-s1` check it; the audio service waits it out) |
 | B5 | The 60 Hz display PLL (`DISPPLL`) | Model the PLL so `emu-refresh` checks the real switch | open |
 | B6 | GPIO pin functions (touch CS on GPIO24) | Model `GAFR`, start from WM's values | open |
 | B7 | The CF socket in the X51v machine; MVED decoder registers; clocks' relock time and `MDCNFG`; timer channels' odd modes; 2D engine format code 4 | One fork change each, listed in `emulator.md` | open |
@@ -50,20 +50,21 @@ depends on them proves less than it looks):
 | C8 | `rp-wmaudio`'s tone was far too quiet to judge by ear (-30 dB at 12.5% volume, through headphones turned low): "heard nothing" proved nothing about Windows Mobile's audio | `rp-wmaudio`'s tone at about -12 dB of full scale and volume 50%, 2 s; never draw a conclusion from a test that couldn't show it | **fixed** 2026-10-18 |
 | C9 | The jack was taken as GPIO96 (static reading) and built into `rp-tone` and the emulator's model (rp-v0.21.0 `audio-gate`); measured, it is GPIO83 (high = in, valid with audio powered) | `rp-tone` reads GPIO83 (device run 6: the unplug seen); the fork's model (`codec-power`) has GPIO83 with the power dependency and `emu-tone` checks it | **fixed** 2026-10-18 (fork release pending) |
 | C10 | The I2C driver had a test that pinned the wrong behaviour ("a presence check is address and stop" on one byte), so the mistake looked tested | Replaced by tests of what the device does, a guard over every write, and mutants; lesson: a test must state the device's behaviour, never the code's | **fixed** 2026-10-18 |
+| C11 | `emu-audio-s1` can analyse only the last power-up's sound: the fork's wav backend restarts its file whenever the codec's voice is re-opened (each power-up) | The fork's audio capture kept across voice re-opens (or a QMP capture per session), so every note of a run is checked | open |
 | C5 | Mutants exist for some guards, not all | Every guard added since 2026-10-10 gets a mutant; list the ones missing | open |
 
 ## D. Copied values and housekeeping
 
 | # | Shortcut | Proper fix | State |
 |---|---|---|---|
-| D1 | Values copied from Dell/WM carry no `inherited:` tag (0 tags in the code), so the open-copied-values count the owner asked for can't be given | Tag every copied value (`// inherited: <audit item>, <source>`), an `xtask` lint counts them, every summary reports the count; work them down (imitation audit) | open |
+| D1 | Values copied from Dell/WM carry no `inherited:` tag (0 tags in the code), so the open-copied-values count the owner asked for can't be given | Tag every copied value (`// inherited: <audit item>, <source>`), an `xtask` lint counts them, every summary reports the count; work them down (imitation audit) | in progress: the tag format is in use (4 `inherited:` tags, the audio service's Dell timings, 2026-10-18); the counting lint is still to build |
 | D2 | The card's loader was behind main (the drive's naps counter, the DMA halt) | Installed 2026-10-18 (`a50c8c4f`, 114,156 B; backup `retropane-backups/2026-10-18/card-boot-before-dma-halt-install`), proven by a `reboot-wm`: ready at 350 ms, the leftover DMA stopped in 1 us | **fixed** 2026-10-18 |
 | D3 | 26 old branches and their worktrees, all merged | Deleted (29 local branches, 3 on GitHub; only `main` left) after a full bundle (`retropane-backups/2026-10-18/retropane-os-all-before-branch-cleanup.bundle`) and the worktrees' `local/` files saved and copied into `local/`; 15 empty worktree folders stay until the app releases them | **fixed** 2026-10-18 |
 | D4 | The RNG restart-test health rule sat unfinished on a branch | Finished into main with tests and a mutant | **fixed** 2026-10-18 |
 
 ## Order
 
-1. Finish what's in progress: A4 (owner-watched audio run).
-2. The ones that can hide wrong conclusions: A3, A5, C2, C5.
+1. Finish what's in progress: the audio service's S1 device runs (`rp-audio-s1`, `rp-wmpower`), which replace the four copied timings (D1).
+2. The ones that can hide wrong conclusions: A5, C2, C5, C11.
 3. Emulator debt by what the next work needs: B1, B3, B4, then B5-B7.
 4. D1 (the copied-values count), D2 with the next loader change.

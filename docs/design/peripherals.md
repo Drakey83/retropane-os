@@ -13,8 +13,8 @@ the original requirement and questions.
 
 | Part | Known | To check |
 |---|---|---|
-| USB host | The PXA27x's OHCI host controller; its port 2 shares the sync connector's transceiver with the device controller (`UP2OCR.HXS` switches it: measured 2026-10-16, docs/hw/udc.md, where the loader uses it to make the PC see an unplug) | Whether the X51v supplies VBUS (5 V) to a device on the connector (a board switch, a CPLD bit?) or a powered hub / Y-cable is needed; the cradle vs the cable; ports 1 and 3 wiring |
-| Bluetooth | A built-in module on a PXA27x UART (BTUART, ROADMAP phase 9); its power and reset among the CPLD's bits (docs/hw/cpld.md) | The chip and its Bluetooth version (pairing: PIN-only before 2.1 or Secure Simple Pairing), its UART transport (H4/BCSP), baud rate and firmware set-up as Windows Mobile does it; whether its PCM/SCO audio is wired to the codec or carried over HCI |
+| USB host | The PXA27x's OHCI host controller; its port 2 shares the sync connector's transceiver with the device controller (`UP2OCR.HXS`, measured 2026-10-16). **Windows Mobile ships no USB host drivers on the X51v** (hw/bluetooth.md) | Whether the X51v supplies VBUS (5 V) to a device on the connector or a powered hub / Y-cable is needed (ADR-0033 P-S0) |
+| Bluetooth | **A TI BRF6150, Bluetooth 1.2, firmware 3.0.48** (2026-10-18, Dell's ROM: hw/bluetooth.md) on the BTUART at 921,600 baud; no Low Energy, PIN pairing only | Its power and reset lines (`BTControl.dll`), the HCI framing (H4, TI's low-power UART), whether its PCM voice port reaches the codec (ADR-0033 P-S0) |
 
 ## What the design must cover
 

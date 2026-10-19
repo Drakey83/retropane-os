@@ -20,6 +20,7 @@ only kept where they measurably win. Own artwork only (`CLEANROOM.md`).
 | [display-calibration.md](display-calibration.md) | Getting the most out of the X51v's screen: what we control (gamma table, backlight, refresh, PWM1, dither, content) and what we can't, and the plan (C1-C5) to calibrate it by eye on the device |
 | [today-screen-plan.md](today-screen-plan.md) | The plan for the Today screen on the device: what runs now, the four steps, the icon format |
 | [weather.md](weather.md) | The Weather app and the Today screen's weather, the icon packs (VClouds' built in, five optional ones on the card, bring your own), the pack format keyed by the WMO codes |
+| [peripherals.md](peripherals.md) | Keyboards, mice and headsets over USB and Bluetooth: the owner's requirement and the hardware questions; the design is [ADR-0033](../adr/0033-keyboards-mice-headsets.md) |
 | [mockups/](mockups/README.md) | Images of the Today screen with the default weather icons (VClouds'), an icon sheet, the five optional packs, and their credits and licences |
 
 **Mock-ups:** the concept canvas, private to the owner (Claude artifact
