@@ -358,7 +358,10 @@ Rust API, so legacy support never constrains the native design.
 - Modern treatment: crisp vector icons at 216 dpi, a modern type ramp, dark mode,
   smooth GPU-composited transitions, notification centre, proper task switcher.
 - A **theme engine** with at least two themes: *Modern* (default) and *Classic*
-  (a faithful WM5-style homage, using our own artwork).
+  (a faithful WM5-style homage, using our own artwork). Modern takes SPB
+  Mobile Shell's finger-friendly shape, Classic stays at stylus scale, and the
+  user switches between them at any time, so a theme carries layout as well as
+  skin (owner, 2026-10-19: `docs/design/ui.md`).
 - Design spec lives in `docs/design/` (start at its README: everything in one place), with mock-ups before code.
 
 ---

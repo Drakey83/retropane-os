@@ -16,7 +16,8 @@ are made, and links the concept mock-ups.
 - **Input: stylus and D-pad equally.** Everything works with the stylus,
   and everything also works one-handed with the D-pad and buttons (a
   visible focus ring, keyboard-style navigation). Buttons keep exactly the
-  jobs Windows Mobile gave them (owner's rule).
+  jobs Windows Mobile gave them (owner's rule). Finger use joins them in the
+  default Modern look (2026-10-19, below: SPB Mobile Shell's philosophy).
 - **Always visible, like a phone:** time, battery and Wi-Fi, at least in a
   status bar on every screen, apps included.
 - **Today screen:** a good weather display with the clock and calendar by
@@ -50,10 +51,24 @@ own, as for Microsoft's UI, docs/CLEANROOM.md); buttons keep Windows
 Mobile's jobs (owner's rule); each idea taken is weighed like any other
 design choice, not adopted because SPB did it.
 
-**Open, the owner's call:** SPB was finger-first, while RetroPane is decided
-as **stylus and D-pad equally**. Does finger use join them (larger targets
-on the Today screen and launcher, at the cost of fewer items per screen), or
-do SPB's ideas come in at stylus scale?
+**Decided by the owner (2026-10-19): both, switchable.** SPB was
+finger-first, while RetroPane was decided as stylus and D-pad equally; the
+answer is two looks, chosen in the customisation settings and switchable
+back and forth at any time:
+
+- **Modern (the default): SPB's shape.** Finger-friendly: big targets on the
+  Today screen and the launcher, widget panels you swipe between, readable
+  at a glance. The stylus and the D-pad still work everywhere.
+- **Classic: a Windows Mobile 5-style look**, at stylus scale, as DESIGN.md
+  §7's theme engine already planned ("a faithful WM5-style homage, using our
+  own artwork").
+
+This makes the theme engine carry **layout** as well as skin: target sizes,
+the launcher's grid and the Today screen's arrangement differ between the
+two looks, not only colours and art. Both looks are designed, mocked up and
+tested; old Windows Mobile programs keep their own windows in either.
+"Modern" and "Classic" are working names; the final names are the owner's
+to choose, and never "SPB" or "Windows Mobile" (their owners' names).
 
 ## Constraints every concept respects
 
