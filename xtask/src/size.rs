@@ -575,10 +575,11 @@ pub const BUDGETS: &[Budget] = &[
     },
     // Test image: audio service step S1 (ADR-0032), everything through
     // rp-audio. Set at its first build on 2026-10-18: 33.3 KiB measured,
-    // +~10%.
+    // +~10%. Then 37 -> 43 KiB for the speaker amplifier diagnostic
+    // (`RP_AUDIO_AMP_TEST`, runs 2-3's unheard note): 38.7 KiB measured.
     Budget {
         image: "rp-audio-s1",
-        max_load: 37 * 1024,
+        max_load: 43 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

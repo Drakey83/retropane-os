@@ -59,6 +59,10 @@ mod image {
         (31, 1, true),
         (113, 1, true),
     ];
+    /// `RP_AUDIO_AMP_TEST` at build time: the speaker-only diagnostic (S1
+    /// runs 2-3: one of two speaker notes unheard), numbered tests instead
+    /// of the steps.
+    const AMP_TEST: bool = option_env!("RP_AUDIO_AMP_TEST").is_some();
     /// Output level, 0-100: 60, or `RP_AUDIO_LEVEL` at build time.
     const LEVEL: u32 = match option_env!("RP_AUDIO_LEVEL") {
         Some(v) => parse(v),
@@ -273,6 +277,49 @@ mod image {
         }
     }
 
+    /// The speaker-only diagnostic: each test one change, numbered on the
+    /// screen just before its note, a different pitch each, 2 s of quiet
+    /// after. The owner counts which numbers they heard.
+    fn amp_test(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
+        let _ = writeln!(out, "AMP TEST: HEADPHONES OUT THE WHOLE TIME");
+        let _ = writeln!(out, "WATCH FOR TEST 1 TO TEST 5; NOTE WHICH ONES YOU HEAR");
+        a.board_mut().delay_us(3_000_000);
+        if !up(out, a, "amp test") {
+            return;
+        }
+        // (test, note, amplifier off for ms (0 = not cycled), settle ms,
+        // power down and up instead)
+        let tests: [(u32, u32, u32, u32, bool); 5] = [
+            (1, 440, 0, 0, false),
+            (2, 523, 900, 70, false),
+            (3, 587, 900, 500, false),
+            (4, 659, 3_000, 70, false),
+            (5, 784, 0, 0, true),
+        ];
+        for (n, hz, off_ms, settle_ms, cycle) in tests {
+            if cycle {
+                down(out, a);
+                if !up(out, a, "test 5") {
+                    return;
+                }
+            } else if off_ms > 0 {
+                a.board_mut().speaker_amp(false);
+                a.board_mut().delay_us(off_ms * 1_000);
+                a.board_mut().speaker_amp(true);
+                a.board_mut().delay_us(settle_ms * 1_000);
+            }
+            let _ = writeln!(
+                out,
+                "TEST {n}: amplifier off {off_ms} ms, settle {settle_ms} ms{}",
+                if cycle { ", audio down and up" } else { "" }
+            );
+            note(out, a, dma, ring, hz);
+            a.board_mut().delay_us(2_000_000);
+        }
+        down(out, a);
+        let _ = writeln!(out, "DONE: WHICH TESTS DID YOU HEAR?");
+    }
+
     fn down(out: &mut impl Write, a: &mut Service<'_>) {
         match a.down() {
             Ok(()) => {
@@ -346,6 +393,11 @@ mod image {
 
         // The owner's steps, the same words as in the chat: headphones in
         // at the start; fixed prompts that never depend on a reading.
+        if AMP_TEST {
+            amp_test(&mut out, &mut a, &mut dma, ring);
+            let cpld = a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         let _ = writeln!(out, "STEP 1: HEADPHONES IN. LISTEN: 3 NOTES");
         if !up(&mut out, &mut a, "first") {
             finish(a.board_mut().cpld.take(), found)

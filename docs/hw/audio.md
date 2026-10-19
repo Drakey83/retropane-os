@@ -338,6 +338,42 @@ A measurement, not a decision:
   suspect (Dell's driver sets it once and never cycles it quickly).
 - Clean return; both board bits put back as found.
 
+**S1 device run 3 (same image, the owner keeping the headphones out
+through step 3; log `local/rp-audio-s1-run3.txt`):** the log matches run
+2 line for line (the jack right at every power-up, both speaker notes
+streamed in full); **the owner again heard only one of the two speaker
+notes** in steps 2-3. Next: a diagnostic run on the speaker only, one
+numbered test per candidate (the amplifier switched off and on quickly,
+with 70 ms and longer settles; the power-down and straight back up).
+
+**Speaker amplifier diagnostic (2026-10-18 night, `rp-audio-s1` built
+with `RP_AUDIO_AMP_TEST`, owner listening, headphones out; log
+`local/rp-audio-s1-amptest1.txt`).** Five numbered notes on the speaker,
+all streamed in full. **The owner heard tests 2-5 and not test 1.** A
+measurement, not a decision:
+
+| Test | What came before the note | Heard |
+|---|---|---|
+| 1 | The first power-up of the run; the amplifier switched on for the first time since Windows Mobile left it off (`14=0008`), 70 ms, then 1 s of jack sampling: on for ~1.1 s before the note | **no** |
+| 2 | The amplifier off 0.9 s, on, 70 ms | yes |
+| 3 | Off 0.9 s, on, 500 ms | yes |
+| 4 | Off 3 s, on, 70 ms | yes |
+| 5 | Audio down and straight back up (the amplifier off ~1 s) | yes |
+
+So **the first speaker sound after the amplifier has been off a long time
+is lost** (more than ~2 s from its switch-on, the note included), while
+it comes back at once after being off for up to 3 s. It fits runs 2 and 3
+too: their missing speaker note was step 2's, the run's first sound on
+the speaker. A slow first start (a bias or bypass capacitor charging, or
+the amplifier's own soft start) is the likely cause; Dell's 70 ms settle
+doesn't cover it. Options for the owner: (a) a timed run from cold (the
+amplifier switched on, then short numbered notes every 0.5 s for 5 s) to
+measure how long the first start takes; (b) a static read of whether
+Windows Mobile keeps the amplifier on longer, or switches it on earlier,
+than its 70 ms wait suggests; (c) design: the service switches the
+amplifier on at power-up whenever the speaker may be used, early enough
+to cover the measured start, and keeps it on while audio is up.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
