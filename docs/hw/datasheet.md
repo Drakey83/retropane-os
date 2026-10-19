@@ -115,6 +115,7 @@ Windows Mobile's drivers share one shadow copy per register (RAM
 | `0x18` | 1 | **CF RESET** (set = held in reset) | likely |
 | `0x18` | 2 | **backlight enable** | confirmed |
 | `0x1C` | 1 | **audio codec power** | confirmed |
+| `0x1C` | 3 | **USB / dock**: on in the dock, off out of it (Windows Mobile's shadow, one observation) | likely |
 | `0x1E` | 3 (write) / 1-0 (read) | **LCD type readout**: 0 = 3.7" Sharp VGA (the owner's), 1 and 3 = 3.5" Sharp QVGA, 2 = 3.7" Samsung VGA | confirmed |
 
 Other bits with a likely or guessed owner (Wi-Fi's power sequence,

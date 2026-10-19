@@ -112,7 +112,7 @@ from its users.
 | `0x1A` | `0x0008` | notification (guess) | `OemNotify` | guess | D |
 | `0x1C` | `0x0001` | Wi-Fi power sequence step 2 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x1C` | `0x0002` | **Audio codec (WM8750) power** | `wavedev` | **confirmed** | D; P (set by Windows Mobile while audio plays; RetroPane's sound with it set, 2026-10-18) |
-| `0x1C` | `0x0008` | USB (guess; AxDroid: "USB power?") | `usbfndrv` | guess | D; C |
+| `0x1C` | `0x0008` | **USB / dock** (AxDroid: "USB power?"): Windows Mobile's shadow read `0x1C` = `000F` docked and `0007` out of the dock, the same session (`rp-wmtones` runs 2 and 3, 2026-10-18) | `usbfndrv` | likely (one observation) | D; C; P |
 | `0x1E` | `0x0001`-`0x0004` | battery / charger (guess) | `battdrvr` | guess | D |
 | `0x1E` | `0x0008` | write 1 to enable the LCD-type readout | `AximSDK`, `Backlight`, `battdrvr`, `ddi` | likely | C; D |
 | `0x1E` (read) | `0x0003` | **LCD type**: 0 = 3.7" Sharp, 1 = 3.5" Sharp, 2 = 3.7" Samsung, 3 = 3.5" Sharp. Even = VGA (X50v/X51v), odd = QVGA | `AximSDK` | confirmed | C; A; P (reads 3.7" Sharp VGA on the owner's X51v) |

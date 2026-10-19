@@ -67,7 +67,7 @@ C = {
     (0x16, 0): ('confirmed', 'SD power'), (0x16, 1): ('confirmed', 'CF power 1'), (0x16, 2): ('likely', 'Wi-Fi seq 3'), (0x16, 3): ('guess', 'BT/serial'),
     (0x18, 0): ('guess', 'BT/serial'), (0x18, 1): ('likely', 'CF reset'), (0x18, 2): ('confirmed', 'backlight on'), (0x18, 3): ('guess', 'display'),
     (0x1A, 1): ('danger', 'battery?: DO NOT CLEAR'), (0x1A, 3): ('guess', 'notify'),
-    (0x1C, 0): ('likely', 'Wi-Fi seq 2'), (0x1C, 1): ('confirmed', 'codec power'), (0x1C, 3): ('guess', 'USB?'),
+    (0x1C, 0): ('likely', 'Wi-Fi seq 2'), (0x1C, 1): ('confirmed', 'codec power'), (0x1C, 3): ('likely', 'USB / dock'),
     (0x1E, 0): ('confirmed', 'LCD type [read] batt? [write]'), (0x1E, 1): ('confirmed', 'LCD type [read] batt? [write]'), (0x1E, 2): ('guess', 'battery'),
     (0x1E, 3): ('likely', 'LCD read enable'),
 }

@@ -303,8 +303,9 @@
 <text x="853.0" y="517" font-size="8.5" text-anchor="middle">codec</text>
 <text x="853.0" y="528" font-size="8.5" text-anchor="middle">power</text>
 <rect x="773" y="505" width="52" height="28" rx="3" fill="#ffffff" stroke="#aaa" stroke-width="0.7"/>
-<rect x="719" y="505" width="52" height="28" rx="3" fill="#f7efc0" stroke="#aaa" stroke-width="0.7"/>
-<text x="745.0" y="523" font-size="9" text-anchor="middle">USB?</text>
+<rect x="719" y="505" width="52" height="28" rx="3" fill="#cfe6f7" stroke="#aaa" stroke-width="0.7"/>
+<text x="745.0" y="517" font-size="8.5" text-anchor="middle">USB /</text>
+<text x="745.0" y="528" font-size="8.5" text-anchor="middle">dock</text>
 <rect x="665" y="505" width="52" height="28" rx="3" fill="#ffffff" stroke="#aaa" stroke-width="0.7"/>
 <rect x="611" y="505" width="52" height="28" rx="3" fill="#ffffff" stroke="#aaa" stroke-width="0.7"/>
 <rect x="557" y="505" width="52" height="28" rx="3" fill="#ffffff" stroke="#aaa" stroke-width="0.7"/>
