@@ -634,8 +634,12 @@ pub const MUTANTS: &[Mutant] = &[
         name: "audio: going down leaves the speaker amplifier on",
         file: "services/audio/src/lib.rs",
         from: "        self.amp_off();
-        let (r, bus) = codec.power_down();",
-        to: "        let (r, bus) = codec.power_down();",
+        let (r, bus) = codec.power_down();
+        self.codec = Codec::Down(bus);
+        self.back_down();",
+        to: "        let (r, bus) = codec.power_down();
+        self.codec = Codec::Down(bus);
+        self.back_down();",
         check: Check::Host(&[
             "-p",
             "rp-audio",
@@ -701,10 +705,10 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "audio: the jack line falling with our own power-down taken as a jack change",
         file: "services/audio/src/lib.rs",
-        from: "        let _ = self.board.take_jack_edge();
-        r
+        from: "        // the emulator's model, 2026-10-18.)
+        let _ = self.board.take_jack_edge();
 ",
-        to: "        r
+        to: "        // the emulator's model, 2026-10-18.)
 ",
         check: Check::Host(&["-p", "rp-audio", "our_own_power_down_is_not_a_jack_change"]),
     },
@@ -766,6 +770,31 @@ pub const MUTANTS: &[Mutant] = &[
             "rp-audio",
             "a_wake_or_a_sound_restarts_the_quiet_time",
         ]),
+    },
+    Mutant {
+        name: "audio: the codec's sleep leaves the speaker amplifier on",
+        file: "services/audio/src/lib.rs",
+        from: "        self.amp_off();
+        let (r, bus) = codec.power_down();
+        self.codec = Codec::Down(bus);
+        self.board.pins_down();",
+        to: "        let (r, bus) = codec.power_down();
+        self.codec = Codec::Down(bus);
+        self.board.pins_down();",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_codec_sleeps_after_the_quiet_time_and_the_link_keeps_running",
+        ]),
+    },
+    Mutant {
+        name: "audio: the jack line falling with the codec's sleep taken as a jack change",
+        file: "services/audio/src/lib.rs",
+        from: "        // The jack line falls with the supply: our edge, not a jack change.
+        let _ = self.board.take_jack_edge();
+",
+        to: "",
+        check: Check::Host(&["-p", "rp-audio", "our_own_sleep_is_not_a_jack_change"]),
     },
 ];
 /// Puts a file back when dropped.
