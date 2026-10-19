@@ -964,7 +964,10 @@ mod image {
         rig.tune(&mut out, &TUNE, OUT, 2, 30_000, 5_000, UNITY, true);
         rig.report(&mut out, "6A", &mark);
         pause(&mut out, &mut rig, 1_500);
-        let _ = writeln!(out, "TEST 6B: THE SAME AT HALF VOLUME");
+        let _ = writeln!(
+            out,
+            "TEST 6B: THE SAME AT HALF VOLUME (NO LIMITER NEEDED: ABOUT AS LOUD AS 6A)"
+        );
         let mark = rig.mark(&out);
         rig.tune(&mut out, &TUNE, OUT, 2, 30_000, 5_000, UNITY / 2, true);
         rig.report(&mut out, "6B", &mark);

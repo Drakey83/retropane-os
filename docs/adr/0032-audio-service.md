@@ -413,8 +413,10 @@ step grows it by more than 8 KiB).
    (`cargo xtask audio-s2`) on the X51v wiring now shared as
    `rp-audio-x51v`; its emulator check `emu-audio-s2` passes). What was
    built and the engineering it settled are under "S2 as built" below; the
-   numbers are in docs/hw/audio.md. **Device run pending (owner
-   listening).**
+   numbers are in docs/hw/audio.md. **Passed by the owner on the device
+   (2026-10-19, second listening run):** every test heard as meant; the
+   one-ear sound in the headphones was the earbuds (they play one side
+   under Windows Mobile too).
 3. **S3 volumes and routing** (A2, A3, A4).
 4. **S4 the CE personality's sound calls** (R7) with an old game and X50Mix,
    including the `WOM_DONE` latency comparison with Windows Mobile.

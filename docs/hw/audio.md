@@ -615,6 +615,19 @@ listening run is still to come; these are numbers only.
   host will have its own thread; a single-threaded program stalling the
   mixer is the image's, but the console's cost is worth knowing.)
 
+**S2 listening runs (2026-10-19 morning, owner; logs
+`local/rp-audio-s2-listen2.txt`).** Run 1: the headphones came out during
+test 5A, so 5A-5C played on the speaker; run 2 went as planned (out at test
+6). Both: 0 late, 0 dry, 0 clipped, 0 laps lost; taps clicked 5.0-7.2 ms
+after the pen landed, timed clicks 6.3-6.5 ms on average (7.8 at worst);
+the link 44,317-44,319 frames a second; at level 60 with the speaker
+filter the mixer took 184-845 cycles a frame. **The owner: every test
+passed.** Sound came from one earbud only: the earbuds' fault (one side
+under Windows Mobile too). 6B (half volume) sounded as loud as 6A: as
+designed (6A's two full parts are limited to just under full scale, 6B's
+sum peaks at ~92% unlimited, ~0.5 dB apart); the screen's label didn't say
+so (fixed: it does now). **S2 passed (owner, 2026-10-19).**
+
 **What the device run measures** (`rp-audio-s2`, each test's RESULT line):
 wakes a second, the mixer's CPU share per source rate, how far ahead it
 mixed, rewrites, late wakes, streams run dry, clips and limited blocks,
