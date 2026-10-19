@@ -374,6 +374,20 @@ mod tests {
         let input = [0x4B, 0x4C, 0x4A, 0x4E, 0x84, 0x21, 0x00];
         let mut w = [0u8; 32];
         assert_eq!(inflate(&input, &mut w, 0, 11), Err(Error::Corrupt));
+        // And nothing was written past the limit on the way to the error.
+        assert!(w[11..].iter().all(|&b| b == 0), "{w:?}");
+        // Literals only (zlib's raw deflate of "abcdefghijklmnop"): the
+        // limit is met by a literal, not a match.
+        let literals = [
+            0x4B, 0x4C, 0x4A, 0x4E, 0x49, 0x4D, 0x4B, 0xCF, 0xC8, 0xCC, 0xCA, 0xCE, 0xC9, 0xCD,
+            0xCB, 0x2F, 0x00, 0x00,
+        ];
+        let mut w = [0u8; 32];
+        assert_eq!(inflate(&literals, &mut w, 0, 16), Ok(16));
+        let mut w = [0u8; 32];
+        assert_eq!(inflate(&literals, &mut w, 0, 5), Err(Error::Corrupt));
+        assert_eq!(&w[..5], b"abcde");
+        assert!(w[5..].iter().all(|&b| b == 0), "{w:?}");
     }
 
     #[test]

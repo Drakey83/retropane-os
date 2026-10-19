@@ -1341,6 +1341,81 @@ pub const MUTANTS: &[Mutant] = &[
             "malformed_cbws_are_ignored_and_the_next_command_works",
         ]),
     },
+    Mutant {
+        name: "cf: a transfer past the card's end sent to it",
+        file: "drivers/cf/src/lib.rs",
+        from: "Some(end) if end <= self.sectors => Ok(n),",
+        to: "Some(_) => Ok(n),",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cf",
+            "transfers_past_the_end_are_refused_before_the_card_sees_them",
+        ]),
+    },
+    Mutant {
+        name: "cf: a card still in reset accessed (its READY line not waited for)",
+        file: "drivers/cf/src/lib.rs",
+        from: "        if lines.ready() {
+            return Ok(ResetSeen {",
+        to: "        if true {
+            return Ok(ResetSeen {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-cf",
+            "a_card_that_never_comes_out_of_reset_is_never_accessed",
+        ]),
+    },
+    Mutant {
+        name: "xtask: the emulator's clean-up ends another run's emulator (a port prefix)",
+        file: "xtask/src/emu.rs",
+        from: "-monitor tcp:127.0.0.1:{monitor_port}[,]'",
+        to: "-monitor tcp:127.0.0.1:{monitor_port}'",
+        check: Check::Host(&["-p", "xtask", "cleanup_ends_only_this_runs_processes"]),
+    },
+    Mutant {
+        name: "xtask: an emulator check without its own recorder plays sound on the PC",
+        file: "xtask/src/emu.rs",
+        from: "    if !extra.contains(&\"-audiodev\") {",
+        to: "    if false {",
+        check: Check::Host(&["-p", "xtask", "the_emulator_never_plays_sound_out_loud"]),
+    },
+    Mutant {
+        name: "xtask serve: an unknown path answered with a kit file",
+        file: "xtask/src/serve.rs",
+        from: ".map_or(Route::NotFound, |f| Route::File(f))",
+        to: ".map_or(Route::File(FILES[0]), |f| Route::File(f))",
+        check: Check::Host(&["-p", "xtask", "only_the_kit_files_are_served"]),
+    },
+    Mutant {
+        name: "fat: a FAT12/16 volume (a fixed root directory) taken for FAT32",
+        file: "kernel/fat/src/lib.rs",
+        from: "            || le16(&buf, 17) != 0 // FAT32 has no fixed root directory
+",
+        to: "",
+        check: Check::Host(&["-p", "rp-fat", "rejects_what_is_not_fat32"]),
+    },
+    Mutant {
+        name: "fat: a new name ending in a dot taken (Windows can't open it)",
+        file: "kernel/fat/src/lib.rs",
+        from: "        || name.ends_with(b\".\")
+",
+        to: "",
+        check: Check::Host(&["-p", "rp-fat", "refuses_names_fat_does_not_allow"]),
+    },
+    Mutant {
+        name: "cab: an over-subscribed Huffman code taken (its codes overlap)",
+        file: "personality/ce/cab/src/inflate.rs",
+        from: "            if left < 0 {",
+        to: "            if false {",
+        check: Check::Host(&["-p", "rp-cab", "over_subscribed_code_is_refused"]),
+    },
+    Mutant {
+        name: "cab: a literal written past the output limit",
+        file: "personality/ce/cab/src/inflate.rs",
+        from: "            if *pos >= end {",
+        to: "            if *pos >= window.len() {",
+        check: Check::Host(&["-p", "rp-cab", "output_limit_is_enforced"]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

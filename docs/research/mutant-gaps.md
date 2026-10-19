@@ -9,33 +9,39 @@ checked one by one). Generated 2026-10-19 by cross-referencing the test
 names against the mutants (`tools`-free: a short script); regenerate after
 adding mutants.
 
-**1074 tests, 98 test filters named by mutants, 181 guard-like tests without a mutant naming them.**
+**1074 tests, 107 test filters named by mutants, 172 guard-like tests without a mutant naming them.**
 
-**Added 2026-10-19 night (33 mutants, all killed):** the load protocol
+**Added 2026-10-19 night (43 mutants, all killed):** the load protocol
 (frame size, CRC, file names, base64), the PE loader (section count, order,
 CPU type), LZ4 (match offsets on both paths, the output bound, the fast
 path's room), IPC (rights on grant and call, generations, nesting, the
 handle quota), the FAT boot-file guard (MBR, boot sector, chains, chain ends,
 data, renames: it had none), the memory manager (frame ranges, double frees,
 small, section and large mappings, reserved domains) and USB mass storage
-(range, transfer shape, write protection, command signature). Two real test
+(range, transfer shape, write protection, command signature); then CompactFlash
+(the range, a card held in reset), the PC tool (the emulator clean-up's port
+match, the silent audio backend, the kit server's allow-list), FAT (FAT12/16
+taken for FAT32, a trailing dot) and the cab decompressor (an over-subscribed
+code, a literal past the limit). Three real test
 gaps found and closed: nothing moved a boot file's chain end
 (`a_boot_files_chain_end_cannot_be_moved`) and nothing mapped a large page
-over small ones (`a_large_page_never_lands_on_small_pages`).
+over small ones (`a_large_page_never_lands_on_small_pages`), and the cab
+decompressor's limit was tested only through a match, never a literal
+(`output_limit_is_enforced` now checks both and that nothing past the limit is
+written). One mutant was dropped as a layered guard (FAT's next-cluster
+range, caught by the next step's own check), not a gap.
 
-## `xtask/src` (22)
+## `xtask/src` (19)
 
 - `a_free_lock_is_free_even_with_a_stale_note` (xtask/src/devlock.rs)
 - `a_press_answer_counts_only_near_the_pen` (xtask/src/emu.rs)
 - `a_pushed_run_log_is_not_a_reply` (xtask/src/usb.rs)
 - `bad_replies_are_refused` (xtask/src/trace.rs)
-- `cleanup_ends_only_this_runs_processes` (xtask/src/emu.rs)
 - `counts_only_allocated_sections` (xtask/src/size.rs)
 - `hostile_or_unexpected_input_is_refused` (xtask/src/userimg.rs)
 - `images_that_never_return_are_known` (xtask/src/size.rs)
 - `mock_only_as_dev_dependency` (xtask/src/policy.rs)
 - `only_bench_dir_creates_or_deletes` (xtask/src/usbbench.rs)
-- `only_the_kit_files_are_served` (xtask/src/serve.rs)
 - `os_crates_never_depend_on_host_tools` (xtask/src/policy.rs)
 - `refined_tables_never_fall` (xtask/src/calib.rs)
 - `rejects_a_black_screen` (xtask/src/screen.rs)
@@ -43,12 +49,11 @@ over small ones (`a_large_page_never_lands_on_small_pages`).
 - `rejects_non_elf` (xtask/src/size.rs)
 - `rejects_truncated_ppm` (xtask/src/screen.rs)
 - `rejects_wrong_size` (xtask/src/screen.rs)
-- `the_emulator_never_plays_sound_out_loud` (xtask/src/emu.rs)
 - `the_frame_is_refused_for_its_crc_only` (xtask/src/usbbench.rs)
 - `the_load_is_bounded` (xtask/src/emu.rs)
 - `upward_edges_are_rejected` (xtask/src/policy.rs)
 
-## `kernel/fat` (20)
+## `kernel/fat` (18)
 
 - `a_cut_long_name_never_matches_its_prefix` (kernel/fat/src/exfat.rs)
 - `a_damaged_entry_set_is_skipped_and_a_damaged_boot_region_refused` (kernel/fat/src/exfat.rs)
@@ -64,8 +69,6 @@ over small ones (`a_large_page_never_lands_on_small_pages`).
 - `hostile_exfat_cards_never_panic_or_loop` (kernel/fat/src/exfat.rs)
 - `out_of_range_clusters_and_absurd_geometry_are_refused` (kernel/fat/src/tests.rs)
 - `power_cuts_leak_space_at_worst_never_damage` (kernel/fat/src/tests.rs)
-- `refuses_names_fat_does_not_allow` (kernel/fat/src/tests.rs)
-- `rejects_what_is_not_fat32` (kernel/fat/src/tests.rs)
 - `replace_refuses_when_the_card_is_full_and_keeps_the_old_file` (kernel/fat/src/tests.rs)
 - `sets_across_sector_boundaries` (kernel/fat/src/exfat.rs)
 - `too_big_is_refused_with_the_card_unchanged` (kernel/fat/src/exfat.rs)
@@ -86,19 +89,6 @@ over small ones (`a_large_page_never_lands_on_small_pages`).
 - `the_quota_and_memory_bound_it` (kernel/mm/src/regions.rs)
 - `unmap_cleans_while_mapped_then_clears_then_invalidates` (kernel/mm/src/pagetable.rs)
 - `xscale_bit_4_is_never_set` (kernel/mm/src/arm.rs)
-
-## `personality/ce` (10)
-
-- `a_short_or_foreign_file_is_not_a_cabinet` (personality/ce/cab/src/lib.rs)
-- `every_truncation_is_an_error_not_a_panic` (personality/ce/cab/tests/fixtures.rs)
-- `hostile_mutations_never_panic_or_hang` (personality/ce/cab/tests/fixtures.rs)
-- `hostile_scripts_never_panic` (personality/ce/setup/tests/scripts.rs)
-- `hostile_setup_xml_never_panics` (personality/ce/setup/tests/scripts.rs)
-- `output_limit_is_enforced` (personality/ce/cab/src/inflate.rs)
-- `over_subscribed_code_is_refused` (personality/ce/cab/src/inflate.rs)
-- `paths_refuse_escapes_and_odd_characters` (personality/ce/setup/src/lib.rs)
-- `random_bytes_behind_a_valid_signature_never_panic` (personality/ce/cab/tests/fixtures.rs)
-- `spanning_sets_are_refused_by_flag_and_by_file_entry` (personality/ce/cab/tests/fixtures.rs)
 
 ## `hal/pxa27x` (9)
 
@@ -124,16 +114,16 @@ over small ones (`a_large_page_never_lands_on_small_pages`).
 - `rejects_wrong_guid` (tools/romdump/src/imgfs.rs)
 - `relocation_directory_larger_than_stored_data_is_clamped` (tools/romdump/src/pe.rs)
 
-## `drivers/cf` (8)
+## `personality/ce` (8)
 
-- `a_bad_sector_is_an_error_with_the_card_usable_after` (drivers/cf/src/tests.rs)
-- `a_card_that_never_comes_out_of_reset_is_never_accessed` (drivers/cf/src/tests.rs)
-- `a_card_that_never_gets_ready_times_out` (drivers/cf/src/tests.rs)
-- `a_dma_that_misreads_refuses_or_fails_is_handled` (drivers/cf/src/tests.rs)
-- `a_window_that_moves_too_little_is_refused_and_leaves_nothing_behind` (drivers/cf/src/tests.rs)
-- `a_window_that_reads_wrong_keeps_the_port` (drivers/cf/src/tests.rs)
-- `hostile_cards_never_panic_or_hang` (drivers/cf/src/tests.rs)
-- `transfers_past_the_end_are_refused_before_the_card_sees_them` (drivers/cf/src/tests.rs)
+- `a_short_or_foreign_file_is_not_a_cabinet` (personality/ce/cab/src/lib.rs)
+- `every_truncation_is_an_error_not_a_panic` (personality/ce/cab/tests/fixtures.rs)
+- `hostile_mutations_never_panic_or_hang` (personality/ce/cab/tests/fixtures.rs)
+- `hostile_scripts_never_panic` (personality/ce/setup/tests/scripts.rs)
+- `hostile_setup_xml_never_panics` (personality/ce/setup/tests/scripts.rs)
+- `paths_refuse_escapes_and_odd_characters` (personality/ce/setup/src/lib.rs)
+- `random_bytes_behind_a_valid_signature_never_panic` (personality/ce/cab/tests/fixtures.rs)
+- `spanning_sets_are_refused_by_flag_and_by_file_entry` (personality/ce/cab/tests/fixtures.rs)
 
 ## `drivers/mbx-display` (7)
 
@@ -164,6 +154,15 @@ over small ones (`a_large_page_never_lands_on_small_pages`).
 - `the_serial_only_fallback_is_the_old_layout` (drivers/pxa-udc/src/tests.rs)
 - `the_transceiver_output_is_turned_on_only_when_off` (drivers/pxa-udc/src/tests.rs)
 - `udccr_writes_carry_only_writable_bits` (drivers/pxa-udc/src/tests.rs)
+
+## `drivers/cf` (6)
+
+- `a_bad_sector_is_an_error_with_the_card_usable_after` (drivers/cf/src/tests.rs)
+- `a_card_that_never_gets_ready_times_out` (drivers/cf/src/tests.rs)
+- `a_dma_that_misreads_refuses_or_fails_is_handled` (drivers/cf/src/tests.rs)
+- `a_window_that_moves_too_little_is_refused_and_leaves_nothing_behind` (drivers/cf/src/tests.rs)
+- `a_window_that_reads_wrong_keeps_the_port` (drivers/cf/src/tests.rs)
+- `hostile_cards_never_panic_or_hang` (drivers/cf/src/tests.rs)
 
 ## `services/audio` (6)
 
