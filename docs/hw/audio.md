@@ -520,6 +520,16 @@ the backlight switched itself off).** Windows Mobile's battery current
 
 A measurement, not a decision; the options are in ADR-0032 R5.
 
+**S1b, the codec's sleep, on the device (2026-10-19, `RP_AUDIO_SLEEP`, owner
+listening, speaker; log `local/rp-audio-sleep1.txt`).** Five sleeps, each
+5.0 s after the last sound, **I2S still running every time**; every wake
+from sleep took **152 ms** (the codec's start-up: VMID charge and the
+amplifier), with no I2S restart and no guard wait. Test 2 (a sound with no
+touch first) was sent 152 ms after it was asked for; on the three taps the
+codec woke as the stylus landed and **each click started 0 ms after the
+lift** (taps held ~0.5-0.6 s). **The owner heard all five (two notes,
+three clicks).** Both board bits put back.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
