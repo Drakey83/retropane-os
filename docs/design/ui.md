@@ -29,6 +29,15 @@ are made, and links the concept mock-ups.
 
 ## SPB Mobile Shell's philosophy (owner, 2026-10-19)
 
+**The scope (owner, 2026-10-19, later the same day): the whole
+experience,** not one feature: all of SPB Mobile Shell's UI, how each part
+is interacted with (touch, scrolling, menus, transitions, feedback) and its
+design language as a whole, **with our own take on it.** Two points of
+ours already fixed by the owner: **the weather screen is the main screen
+by default** (what the device opens to), and **everything is
+customisable, themes included** (a theme carries layout as well as skin:
+DESIGN.md §7). The carousel below is one part of it.
+
 **Borrow heavily from SPB Mobile Shell's design philosophy**, keep the retro
 charm, and modernise it. SPB Mobile Shell (SPB Software, 2007-2010) set out to
 do on Windows Mobile what RetroPane wants to do: keep WM underneath and give
@@ -63,10 +72,29 @@ against screenshots and the manual before any concept uses them):
     0.2-0.3 s), the panels sit small and dim on the drum, the drum turns,
     then the view zooms in on the chosen panel and it brightens. Whole
     turn about 1.5-2 s in the demo (a demo may be slowed for the camera).
-  - **Elsewhere in the video:** the Today panel (a big clock, the date,
-    the weather, the next appointment, launcher and contacts buttons at
-    the bottom), a full-screen launcher grid of large icons, background
-    pictures to pick from, a message view, contacts with photos.
+  - **The rest of the video, part by part** (the whole experience, as the
+    owner asked):
+    - *Home (Today):* a big digital clock and the date over a full-screen
+      picture (sky, leaves), the weather, the next appointments, two
+      large buttons at the bottom (Launcher, Contacts) between the
+      softkeys. Later a variant with social status widgets ("What's on
+      your mind" boxes) over the sky picture; tapping one opens a
+      full-screen entry with the on-screen keyboard.
+    - *Launcher:* a full-screen grid of large labelled icons (3 across),
+      pages of them; programs and settings alike.
+    - *Customising:* a "change background" sheet over the dimmed home
+      screen (big choices: pictures, gallery, colours), then a grid of
+      background pictures with names; themes swap the whole look.
+    - *Contacts:* a grid of favourite contacts as large photos (3 across,
+      edge to edge), a contact's action sheet (call, message, change the
+      photo, link to a social profile) as big icon tiles, and the contact
+      card: the photo large, one wide green Call button, Send SMS / Send
+      MMS beside it.
+    - *Messages:* conversations as bubbles with the sender's photo.
+    - *Agenda:* the day's appointments as a list under a date bar.
+    - *Throughout:* black or dark glass behind bright content, big touch
+      targets for navigation, sheets that slide over a dimmed screen, the
+      Windows Mobile title bar and softkeys kept at the top and bottom.
   - **Fits the 2700G** (docs/hw GPU facts): each panel one textured quad
     (rendered once into a texture, redrawn only when it changes), the
     floor reflection the same quads mirrored and faded, the pull-back and
