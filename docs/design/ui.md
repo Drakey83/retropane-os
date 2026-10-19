@@ -26,6 +26,35 @@ are made, and links the concept mock-ups.
   were mocked for comparison: A clean flat, dark-first; B glassy accents;
   C retro-modern (concept canvas, private to the owner).
 
+## SPB Mobile Shell's philosophy (owner, 2026-10-19)
+
+**Borrow heavily from SPB Mobile Shell's design philosophy**, keep the retro
+charm, and modernise it. SPB Mobile Shell (SPB Software, 2007-2010) set out to
+do on Windows Mobile what RetroPane wants to do: keep WM underneath and give
+it a friendlier, more modern face. Its ideas, as remembered (to be checked
+against screenshots and the manual before any concept uses them):
+
+- A Today screen built around a large clock, the weather and the next
+  appointment, readable at a glance.
+- Big, finger-friendly targets: a full-screen launcher grid of large icons,
+  quick contacts with photos.
+- Widgets in panels you swipe between (version 3's 3D carousel), not one
+  long list.
+- WM itself still there underneath: programs, Start menu, softkeys.
+
+How it fits what's decided: the **hybrid** feel, live **widgets** and a
+**weather-led** Today screen (above) are the same direction; the smoked
+glass (below) is our own look, not SPB's. The guardrails: it's a
+philosophy, not a clone (no SPB artwork, layouts or names: we design our
+own, as for Microsoft's UI, docs/CLEANROOM.md); buttons keep Windows
+Mobile's jobs (owner's rule); each idea taken is weighed like any other
+design choice, not adopted because SPB did it.
+
+**Open, the owner's call:** SPB was finger-first, while RetroPane is decided
+as **stylus and D-pad equally**. Does finger use join them (larger targets
+on the Today screen and launcher, at the cost of fewer items per screen), or
+do SPB's ideas come in at stylus scale?
+
 ## Constraints every concept respects
 
 480 x 640 at 3.7 inches; resistive single-touch stylus plus D-pad and the WM
