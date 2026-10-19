@@ -1,8 +1,11 @@
 # ADR-0032: The audio service: one mixer, one owner of the codec
 
-- **Status:** Proposed (2026-10-18). Votes A1-A5 are the owner's; R1-R10
-  are recommendations under the standing go-ahead, open to the owner's
-  veto.
+- **Status:** Proposed (2026-10-18; revised the same day after a review:
+  stream roles, the signal chain, start-time feedback, ring sizing, the
+  power-down baseline, the jack while powered down, the limiter, the
+  microphone's program identity, `WOM_DONE` parity, the hearing warning's
+  numbers, the slider's target). Votes A1-A5 are the owner's; R1-R10 are
+  recommendations under the standing go-ahead, open to the owner's veto.
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -73,23 +76,39 @@ imitation. C sounds best on paper but buys gaps and pops for little.
 
 ### A2. Headphones pulled out while music plays
 
-| | **A: pause the music (recommended)** | B: keep playing on the speaker |
+Every stream has a role (R3: Media, Voice, Notification, Alarm, System),
+so the answer can differ by role. The table is the policy per role.
+
+| Role | **A: modern (recommended)** | B: as Windows Mobile |
 |---|---|---|
-| What happens | Music and videos pause; other sounds (alarms, reminders, clicks) go to the speaker | Everything moves to the speaker, as Windows Mobile does |
+| Media (music, video, games' sound) | **Pause** (native players get a "paused by unplug" event); legacy media, which can't be paused, is **muted** until the headphones go back in or you unmute it | Moves to the speaker |
+| Voice (calls, later) | Moves to the speaker (or stays on a Bluetooth headset) | Moves to the speaker |
+| Notification, System | Moves to the speaker | Moves to the speaker |
+| Alarm | Moves to the speaker (alarms must be heard) | Moves to the speaker |
 | Plus | What phones have done for a decade; no surprise blast in a quiet room; a cable yanked by accident costs nothing | Nothing to resume |
-| Minus | One tap to resume; old programs that don't understand "pause" (most) keep playing: for them A behaves like B unless their sound is muted instead (an option: mute legacy media on unplug, unmute on plug-in) | Loud surprises; not what anyone expects in 2026 |
+| Minus | One tap to resume (or unmute an old game) | Loud surprises; not what anyone expects in 2026 |
 
 ### A3. The volume controls
 
 | | A: one volume (as Windows Mobile) | **B: per output, per kind (recommended)** |
 |---|---|---|
-| How | One master volume, plus "system sounds on/off" | Separate remembered volumes for **speaker, headphones and (later) each Bluetooth headset**; inside each, levels for **media**, **notifications and system sounds**, and **alarms** (alarms never fully silent); calls get their own once Bluetooth calls exist |
+| How | One master volume, plus "system sounds on/off" | Separate remembered volumes for **speaker, headphones and (later) each Bluetooth headset**; inside each, a level per role: **Media**, **Notification and System**, **Alarm** (never fully silent), **Voice** (once Bluetooth calls exist) |
 | Plus | Simple; one slider | Plugging in headphones never starts at the speaker's loud level; alarms still wake you with media muted; matches modern phones |
-| Minus | Headphones inherit the speaker's level (too loud or too quiet each switch) | More settings (the shell shows one slider for whatever is playing now; the rest under Settings) |
+| Minus | Headphones inherit the speaker's level (too loud or too quiet each switch) | More settings (one slider day to day, below; the rest under Settings) |
 
-Part of B, also yours to say yes or no: **a gentle hearing warning** the
-first time headphone volume goes past a safe level in a session (as modern
-phones do), never a hard cap.
+**The day-to-day slider under B** (as Android does): it sets the **active
+output's level for the dominant role**: the role of the loudest stream
+playing now (Voice over Media over Alarm over Notification), or Media when
+nothing plays. The slider names what it's setting ("Media, headphones").
+Levels are mixer gains per role on top of one codec output volume per
+output, so changing a role never changes another.
+
+Part of B, also yours to say yes or no: **a gentle hearing warning**, never
+a cap. Numbers: shown once per **session**, a session being one plug-in of
+the headphones, the first time the headphone output's codec gain plus the
+Media level goes above **-10 dB of full scale** (approximate: headphone
+impedance and sensitivity are unknown, so this is a level, not a sound
+pressure; the threshold is tuned by ear with the owner in S3).
 
 ### A4. Tone controls (bass, treble)
 
@@ -99,6 +118,19 @@ phones do), never a hard cap.
 | Plus | Nothing to design | Free, works for every program; a tuned preset for the small speaker (less boom it can't play, a little more presence) and a limiter so it doesn't crackle at full volume; X50Mix's settings go to the same control | Most flexible |
 | Minus | The small speaker sounds as Dell left it | Two bands only | Battery and CPU; more to get wrong |
 
+Under B, who owns what (one owner per control, R4 has the chain):
+
+- **Speaker protection** (the tuning for the small speaker: cutting bass it
+  can't play, keeping it from crackling) is **not** the codec's tone
+  control: it's one or two filters in the mixer, on the speaker output
+  only, always on, not a user setting.
+- **The codec's bass and treble** belong to you and to X50Mix (Dell's
+  `WAV1:` codes): **the last writer wins**, and Settings always shows the
+  codec's live value, so an X50Mix change appears there.
+- **Bluetooth headsets** don't pass through the codec, so the same two
+  bands are applied by the mixer for a Bluetooth output (a little CPU, only
+  then).
+
 ### A5. Who may use the microphone
 
 The X51v's built-in microphone (the Record button's voice notes) goes
@@ -107,7 +139,7 @@ classic spy risk on a connected device (docs/security.md).
 
 | | **A: ask once per program, show when it's on (recommended)** | B: always allowed |
 |---|---|---|
-| How | The first time a program opens the microphone, RetroPane asks; the answer is remembered and changeable in Settings; a small mark in the title bar while any program records | Any program records any time |
+| How | The first time a program opens the microphone, RetroPane asks; the answer is remembered and changeable in Settings; a small mark in the title bar while any program records. **A program is known by a hash of its executable** taken at its first microphone use, not by its path: a different file put in the same place on the SD card (or an update) is asked about again. (Signed packs could later be known by their signer, so updates keep the answer.) | Any program records any time |
 | Plus | Modern privacy; old programs still work (they're asked about, never refused for being old: legacy is not locked out) | No prompt, like Windows Mobile |
 | Minus | One prompt per program | Any program can listen without you knowing |
 
@@ -131,19 +163,71 @@ allow that, each stream keeps two positions: "mixed" and "played"; data
 stays in a stream's ring until played. Games and the shell get the low
 latency automatically; nothing asks for a "fast mode".
 
+**The mix-ahead depth adapts.** The full 250 ms is mixed ahead only when
+nothing but Media is playing and the screen is off (the case where
+wake-ups cost battery). With the screen on, or any Voice, legacy or game
+stream open, the depth drops (target 20-40 ms, measured in S2): wake-ups
+matter less then, and both the rings' size and the legacy buffer-done
+delay (R7) follow the depth.
+
+**Ring sizing rule.** Because data stays until played, **a stream's ring
+must hold at least the current mix-ahead depth plus the margin plus one
+refill of its own** (at 44.1 kHz stereo 16-bit: about 50 KiB at the full
+250 ms depth, about 8 KiB at 40 ms). The library sizes rings by this rule
+when a stream opens, and the service refuses a smaller one with a clear
+error. Long rings are needed only by background Media streams, the ones
+that get the full depth.
+
 ### R3. Programs write into shared rings; no copies
 Each stream is a ring in the global shared region (ADR-0016: buffers two
 parties use at once), owned by its program and read by the mixer; "room
-for more" and "drained" are waitable events (ADR-0010), not polling. The
+for more" and "drained" are waitable events (ADR-0010), not polling.
+
+Each stream has a small **control block** beside its ring:
+
+- **Role**, declared by a native program when it opens the stream:
+  **Media, Voice, Notification, Alarm, System**. A2's unplug policy and
+  A3's levels are per role, so the role is required (no default guessing
+  for native code). Old programs get roles by a fixed mapping in the CE
+  library: `waveOut` → Media; `PlaySound`, `sndPlaySound`, `MessageBeep`
+  → System; the clock and calendar alarms (Windows Mobile's notification
+  sounds, through the CE notification API) → Alarm.
+- **Requested start** (program → service): a sample time on the output's
+  clock, or "as soon as possible".
+- **Actual start** (service → program): with mix-ahead, the real start is
+  the later of the request and the DMA position plus the margin, which a
+  program can't predict; the service writes the start it actually got, and
+  games read it for picture-to-sound sync.
+- **Played position** (service → program): frames the output has really
+  played, the base for sync and for `waveOutGetPosition`.
+
+The
 mixer reads PCM 16-bit (8-bit and 24/32-bit converted on the client side by
 the library). Decoders (MP3, AAC, Opus, FLAC) are libraries in the
 programs, not in the service: a damaged file crashes the player, never the
 audio host (docs/security.md).
 
 ### R4. The mixer
-- 32-bit accumulation, per-stream gain with short ramps (no zipper noise
-  on volume changes), **a soft limiter** instead of clipping when several
-  loud sounds add up, **TPDF dither** back to 16 bits.
+The chain, in order, per output:
+
+1. **Rate conversion** of each stream to the output rate (below).
+2. **Per-stream gain**: the stream's own volume times its role's level
+   for this output (A3), with short ramps (no zipper noise on changes).
+   Legacy media muted on unplug (A2) is a gain of 0 here.
+3. **Ducking (optional, measured):** when the sum would overload, the
+   loudest stream that isn't an Alarm is turned down first, so an alarm
+   stays clear over loud music.
+4. **Sum** in 32 bits.
+5. **Output filters:** speaker protection on the speaker output (A4,
+   always on); the user's two tone bands on a Bluetooth output (the codec
+   does them for wired outputs).
+6. **Limiter:** a peak detector driving a gain, **~1 ms attack, ~100 ms
+   release** (values tuned in S2), so loud peaks are ridden down instead
+   of clipped; a **hard clip only as the backstop** for what the limiter
+   can't catch in time.
+7. **TPDF dither** back to 16 bits, into the DMA ring.
+8. In the codec: the output volume (1 dB steps, zero-cross latched) and,
+   on wired outputs, the user's bass and treble (A4).
 - Rate conversion by a windowed-sinc polyphase filter (whole-number steps
   for 11.025/22.05 kHz; 147:160 for 48 kHz under A1-A), fixed point, the
   hot loops in iWMMXt. Quality is measured, not assumed: host tests feed
@@ -157,18 +241,27 @@ audio host (docs/security.md).
   ramp (WM8750 datasheet order, not Dell's timings: those are copied
   values to work, per the imitation audit) → read the jack → the speaker
   amplifier only if needed (70 ms) → unmute.
-- **Idle power-down** after a quiet period (default to be measured: the
-  battery cost of an idle powered codec against the 645 ms re-start
-  penalty; Windows Mobile's own timeout is a finding to measure first),
-  in the reverse order, I2C pins low as Windows Mobile does, the I2S
-  restart guard armed.
+- **When audio powers down: the baseline is Windows Mobile's behaviour**
+  (I2S and the codec stay up while the device is awake; down on suspend
+  or when the screen goes off with nothing playing). Because of the 645 ms
+  rule, powering down between sounds turns into a latency trap: a click
+  arriving inside the window waits. **Idle power-down between sounds is
+  built only if S1 measures that an idle, powered codec (with I2S running)
+  costs enough battery to be worth it**, and then with a timeout long
+  enough that the trap is rare. The power-down order is the reverse of
+  power-up, I2C pins low as Windows Mobile does, the I2S restart guard
+  armed.
 - **Pops** are judged by ear with the owner (no loopback exists to record
   the output); each sequence change is a device run.
 
 ### R6. Jack and routing by interrupt
-GPIO83's edge event, debounced (~50 ms), re-checked against the codec's
-set-up state; a change re-routes per A2 and swaps to that output's
-remembered volume (A3). Every output is an `Output` (speaker, headphones;
+While audio is powered: GPIO83's edge event, debounced (~50 ms), re-checked
+against the codec's set-up state; a change re-routes per A2 (per role) and
+swaps to that output's remembered volumes (A3). **While audio is powered
+down, a jack edge does not power it up**: the level can't be read then,
+and where sound goes matters only when sound plays. The edge sets a "jack
+changed" flag; the next power-up reads the jack (it always does, R5) and
+routes from that. Every output is an `Output` (speaker, headphones;
 later Bluetooth A2DP and HFP), so Bluetooth headsets (docs/design/
 peripherals.md) plug into the same routing without changing the mixer.
 
@@ -179,6 +272,18 @@ equalizer codes (X50Mix), mapped onto streams. Their buffer-done callbacks
 (`WOM_DONE`) keep the timing old games expect (buffers complete when
 played, not when copied). Their rates (8-22.05 kHz, 8-bit, mono) are
 converted by the library.
+
+Old programs often queue small buffers, smaller than R2's sizing rule.
+**The CE library owns a shadow ring per `waveOut` handle** that meets the
+rule: it copies each buffer in (and converts it), and returns the
+program's buffer with `WOM_DONE` when those samples have been **played**
+(from the played position, R3), not when copied. A legacy stream counts as
+interactive, so the mix-ahead stays short while it plays (R2).
+
+**Parity is measured, not assumed:** S4 records the distribution of the
+time from `waveOutWrite` to `WOM_DONE` on the same game under stock
+Windows Mobile and under RetroPane; games that pace or sync animation by
+`WOM_DONE` must see no more delay than on Windows Mobile.
 
 ### R8. Security
 Programs never touch the codec, I2S or DMA; they hold stream handles only.
@@ -198,18 +303,26 @@ the DMA position) and battery.
 ### R10. Memory and size
 Within the audio host's share of the 1 MiB for driver hosts
 (memory-budget.md): the DMA ring ~44 KiB, the mixer's state per stream a
-few hundred bytes, program rings in the programs' own budgets. Code budget
+few hundred bytes, program rings in the programs' own budgets (R2's
+sizing rule: ~50 KiB for a background Media stream at full depth, ~8 KiB
+for an interactive one; the CE library's shadow rings in the old
+program's budget). Code budget
 set when the first crate exists (ratcheted per the budget rule, asking if a
 step grows it by more than 8 KiB).
 
 ## Steps (each proven on the device and modelled before the next)
 
 1. **S1 one stream, the power sequence and the jack interrupt** (R1, R5,
-   R6): the shell's click on the device; the restart guard.
-2. **S2 the mixer** (R2-R4): several streams, the rewrite-ahead; latency
-   and wake-ups measured with music and clicks.
+   R6): the shell's click on the device; the restart guard; **the
+   measurement R5 waits on: the battery current with audio idle but
+   powered (codec set up, I2S running) against audio off**, which decides
+   whether idle power-down between sounds is built at all.
+2. **S2 the mixer** (R2-R4): roles, several streams, the rewrite-ahead
+   and its adaptive depth, the actual-start field; latency and wake-ups
+   measured with music and clicks; limiter times tuned.
 3. **S3 volumes and routing** (A2, A3, A4).
-4. **S4 the CE personality's sound calls** (R7) with an old game and X50Mix.
+4. **S4 the CE personality's sound calls** (R7) with an old game and X50Mix,
+   including the `WOM_DONE` latency comparison with Windows Mobile.
 5. **S5 recording** (A5), the microphone path measured first (read-only,
    under Windows Mobile).
 6. **S6 Bluetooth outputs**, with the peripherals design.
@@ -228,6 +341,7 @@ step grows it by more than 8 KiB).
 | Kept from Windows Mobile | Silicon or choice? |
 |---|---|
 | I2S on for a whole session | **Silicon**: the 645 ms ignored switch-on (measured) |
+| Audio up while the device is awake, down on suspend | Choice, kept **as the baseline to beat**: idle power-down between sounds only if S1's battery measurement justifies it (R5) |
 | 44.1 kHz (if A1-A) | Choice, made on content (see A1), not imitation |
 | Codec I2C gate GPIO82 around each transfer; I2C pins low when powered down | Board wiring (gate: shared line, measured); pins low: a good practice for an unpowered chip, kept |
 | Dell's 70 ms amplifier settle, 75 ms after codec reset, power-up waits | **Copied values**: open questions in the imitation audit, measured on the device in S1 |
