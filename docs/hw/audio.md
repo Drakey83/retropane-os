@@ -313,6 +313,31 @@ later, then `0x0C0`; and GPIO83 sampled every 50 ms for 1 s after
 power-up. Registers 16 and 24 are not written yet (their meaning to be
 read from the datasheet before copying them).
 
+**S1 device run 2 (2026-10-18 night, `rp-audio-s1` with VMID's fast
+start, owner listening, fixed steps; log `local/rp-audio-s1-run2.txt`).**
+A measurement, not a decision:
+
+- **The jack read right at every power-up** (80 ms after power, 75 ms after
+  set-up): 1 with headphones in (steps 1 and 4), 0 with them out (step 3);
+  GPIO83 steady over the next second (every 50 ms). With run 1's slow
+  divider it read 0 with headphones in: **VMID's fast start is what makes
+  the line valid in time.**
+- Step 2 (pulled out while up): the edge latch re-routed to the speaker
+  after the debounce.
+- **A plug-in while audio was off did make an edge** (step 4: the latch
+  reported it). So the jack line is not simply "low whenever unpowered" on
+  the board; run 1's open question is answered: edges do come while off.
+- The guard: 700 ms, then the note was sent.
+- **The owner heard steps 1 and 4 in the headphones as expected, but only
+  one note on the speaker across steps 2 and 3**, where the log sends two
+  (step 2's 660 Hz right after the re-route, the amplifier on 70 ms before;
+  step 3's 440 Hz right after a fresh power-up, the amplifier switched off
+  at the power-down and on again ~0.9 s later, 70 ms before the note). Both
+  streamed in full (44,100 frames in 1,016 ms). Which one was silent is
+  being asked; the amplifier's real settle after a quick off-on is the first
+  suspect (Dell's driver sets it once and never cycles it quickly).
+- Clean return; both board bits put back as found.
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the
