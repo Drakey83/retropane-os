@@ -645,6 +645,22 @@ transfer of 160 KiB of silence, eight descriptors longer than the channel's
   on the wire while the FIFO is empty (zeros or the last sample held:
   ADR-0032 A6 lists both cases).
 
+**ADR-0032 A6's listening run (2026-10-19 night, owner listening;
+`rp-audio-s2` built with `RP_AUDIO_E3`, speaker, log
+`local/rp-audio-e3-run1.txt`).** Measured; the owner's verdict by ear is
+pending:
+- **A, the mixer stalled 400 ms mid-scale:** one late wake; the ring's
+  engine stopped at the mix's end and stood stopped 325 ms (the stall began
+  ~180 ms after the last wake, so ~64 ms of mix was left: 400 - 64 - the
+  end piece's silence), then started again; nothing failed. (The log's
+  "the mix 244 ms ahead" is the lead at the last wake, not at the stall.)
+- **B, five wakes forced inside the end's piece (the race):** all five
+  recognised from `DDADR` (STOP set, the next piece's address kept: a
+  device fact, now proven) and restarted at once; the engine stood stopped
+  **0 us** each time (criterion 1 ms); no late wake, nothing failed.
+- Mixer CPU 2.5-3.2%; the DMA ran at 44,319 frames a second in B (no
+  stop), 39,963 in A (its window holds the stop).
+
 **S2 listening runs (2026-10-19 morning, owner; logs
 `local/rp-audio-s2-listen2.txt`).** Run 1: the headphones came out during
 test 5A, so 5A-5C played on the speaker; run 2 went as planned (out at test

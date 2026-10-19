@@ -174,6 +174,11 @@ watching.
   by `DDADR` and `RUN` moves 8 us later (once the FIFO has emptied); I2S stays
   on. An empty FIFO sets `SASR0` `TUR` (bit 5, sticky until `SAICR`), which
   doesn't block the restart.
+- **While the engine runs a descriptor whose link has STOP, `DDADR` reads
+  that link: the STOP bit and the next descriptor's address bits**
+  (2026-10-19, ADR-0032 A6's listening run: the ring's race told apart and
+  restarted 5 of 5 by it, none failed). Restarted at once after such a
+  stop, the engine played on with no measurable gap (0 us).
 - Dell's private equalizer controls: `WAV1:` codes `0x1D2000`/`0x1D2004`.
 - Page: [audio.md](audio.md).
 

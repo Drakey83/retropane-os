@@ -819,6 +819,12 @@ mutants and the emulator; no vote changes.
   The fork's I2S sends nothing while its FIFO is empty, so the recording
   closes the stall's gap up; the guest's log holds it instead
   (docs/hw/emulator.md). Mixer CPU 0.5-1.6%.
+- **On the X51v (2026-10-19 night, the owner's listening run; docs/hw/
+  audio.md):** A: one late wake, the engine stopped 325 ms and restarted,
+  nothing failed; B: five races, each recognised from `DDADR` (now a proven
+  device fact) and restarted with **0 us** stopped (criterion 1 ms). The
+  owner's verdict by ear (a clean gap in A? clicks in B?) is pending: B is
+  not passed until the owner says so.
 - **Open (quality audit C17):** `emu-audio-s2` reported one ring end that
   failed in 2 of its first 6 runs after B was built (none in the next 4),
   in an ordinary wake; not understood yet. The ring now logs why and what
