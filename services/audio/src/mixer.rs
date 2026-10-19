@@ -685,6 +685,8 @@ pub struct Mixer<'a> {
     ended: bool,
     /// Frames per piece of the ring (the HAL's cut, [`DmaRing::piece`]).
     piece: u64,
+    /// The output frame the ring's end was last put at.
+    end_frame: u64,
     stats: Stats,
 }
 
@@ -715,6 +717,7 @@ impl<'a> Mixer<'a> {
             starting: false,
             ended: false,
             piece: 0,
+            end_frame: 0,
             stats: Stats::default(),
         }
     }
@@ -1235,6 +1238,7 @@ impl<'a> Mixer<'a> {
     /// Moves the ring's end to output frame `at` (everything before it
     /// written for its time, the rest of its piece silence).
     fn set_end(&mut self, dma: &mut dyn DmaRing, at: u64) {
+        self.end_frame = at;
         match dma.end_at((at % RING_FRAMES) as usize * 4) {
             RingEnd::Running | RingEnd::Stopped => {}
             RingEnd::Restarted => self.stats.restarts += 1,
@@ -1343,6 +1347,15 @@ impl<'a> Mixer<'a> {
             self.stats.clipped += r.clipped;
             self.stats.limited += u32::from(r.limited);
             b += BLOCK as u64;
+            // A whole piece mixed past the ring's end: the end moves on to
+            // it now, not after the whole stretch, so an engine that was
+            // already stopping (the race) or stopped is started again
+            // within about two pieces' mixing (under 1 ms on the X51v), not
+            // after a long mix. The piece is full: nothing to clear.
+            if self.ended && b.is_multiple_of(self.piece) && b > self.piece_end(self.end_frame) {
+                self.mixed_to = b;
+                self.set_end(dma, b - 1);
+            }
         }
         self.mixed_to = to;
     }

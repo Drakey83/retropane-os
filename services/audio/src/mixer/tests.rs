@@ -35,6 +35,8 @@ struct FakeDma {
     head_start: u64,
     /// What went out, in real time (silence while stopped).
     out: Vec<(i16, i16)>,
+    /// Output frames the started engine spent stopped.
+    idle: u64,
 }
 
 impl FakeDma {
@@ -53,6 +55,7 @@ impl FakeDma {
             during: Vec::new(),
             head_start: 0,
             out: Vec::new(),
+            idle: 0,
         }
     }
 
@@ -82,6 +85,9 @@ impl FakeDma {
     /// One output frame of time: the engine's frame if it moves.
     fn step(&mut self) -> Option<(i16, i16)> {
         self.time += 1;
+        if self.started && !self.moving {
+            self.idle += 1;
+        }
         let f = self.moving.then(|| self.play());
         self.out.push(f.unwrap_or((0, 0)));
         f
@@ -895,37 +901,68 @@ fn each_frame_for_its_time_or_silent(sim: &Sim, f: &Feeder) -> Option<u64> {
     })
 }
 
-#[test]
-fn a_mixer_slower_than_the_sound_fails_quietly() {
-    // Each 32-frame block takes the time of 40 to mix: the mixer can never
-    // keep up. It must still never let the engine play a stale or
-    // repeated frame: each frame heard is the one mixed for its time, or
-    // silence (where the engine passed it before the mixer wrote it).
-    let mut sim = Sim::new(false);
-    let mut f = music(&mut sim, 15, 8_000, 2);
-    // The ring starts with the music already waiting (as the service
-    // starts it for a first stream), so the first wake mixes a full lead.
+/// The ring started with `f`'s music already waiting (as the service
+/// starts it for a first stream), each block of the first wake taking the
+/// time of `lag` frames to mix, then `lag_after` from the next wake on.
+fn started_with_music_waiting(f: &mut Feeder, sim: &mut Sim, lag: u64, lag_after: u64) {
     f.feed(&mut sim.m, sim.ms);
     sim.m.stop(&mut sim.dma);
-    sim.dma.lag = 40;
+    sim.dma.lag = lag;
     let t = sim.m.start(&mut sim.dma, sim.ms).unwrap();
+    sim.dma.lag = lag_after;
     sim.heard.extend(core::mem::take(&mut sim.dma.during));
     while frames(sim.ms) < sim.dma.time {
         sim.ms += 1;
     }
     sim.next_wake = sim.ms + t.next_ms;
+}
+
+#[test]
+fn a_mixer_slower_than_the_sound_fails_quietly() {
+    // Each 32-frame block takes the time of 40 to mix: the mixer can never
+    // keep up. The engine follows the mix's front, stops past it, and the
+    // music carries on after each gap. It must still never play a stale or
+    // repeated frame: what is heard is the music in order, with gaps.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 15, 8_000, 2);
+    started_with_music_waiting(&mut f, &mut sim, 40, 40);
     sim.run(3_000, &mut |m, now| f.feed(m, now));
     assert_eq!(sim.m.stats().ring_failed, 0);
-    assert_eq!(sim.m.stats().late, 0);
-    // It falls behind: the engine stops at the end (while the mixer is
-    // still mixing) and is started again, again and again.
-    assert!(sim.m.stats().restarts > 10, "{:?}", sim.m.stats());
-    assert_eq!(each_frame_for_its_time_or_silent(&sim, &f), None);
+    assert!(sim.m.stats().late > 10, "{:?}", sim.m.stats());
+    assert!(heard_in_order(&sim, &f), "a stale or repeated frame");
+}
+
+#[test]
+fn a_ring_started_with_sound_waiting_has_its_end_from_the_start() {
+    // The first wake mixes a full lead (245 ms). On a CPU slower than the
+    // sound for that one wake, a ring still looping would let the engine
+    // lap that mix and replay it; with an end from the start each frame is
+    // the one mixed for its time, or silence where the engine got there
+    // first.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 17, 8_000, 2);
+    started_with_music_waiting(&mut f, &mut sim, 40, 0);
+    sim.run(3_000, &mut |m, now| f.feed(m, now));
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    assert!(heard_in_order(&sim, &f), "a stale or repeated frame");
+    if sim.m.stats().late == 0 {
+        assert_eq!(each_frame_for_its_time_or_silent(&sim, &f), None);
+    }
+}
+
+/// Every non-silent frame heard from `f`'s start is one `f` wrote, in
+/// order, none twice (gaps allowed).
+fn heard_in_order(sim: &Sim, f: &Feeder) -> bool {
     let start = sim.m.status(f.id, sim.ms).unwrap().actual_start.unwrap();
-    let silent = (0..f.total)
-        .filter(|&n| sim.heard.get((start + n) as usize) == Some(&(0, 0)))
-        .count() as u64;
-    assert!(silent * 2 < f.total, "most of it lost");
+    let want: Vec<_> = (0..f.total)
+        .map(|n| (f.sample(n, 0), f.sample(n, 1)))
+        .filter(|&s| s != (0, 0))
+        .collect();
+    let mut w = want.iter();
+    sim.heard[start as usize..]
+        .iter()
+        .filter(|&&s| s != (0, 0))
+        .all(|h| w.any(|x| x == h))
 }
 
 #[test]
@@ -1028,6 +1065,55 @@ fn a_wake_inside_the_end_s_piece_restarts_at_once_with_no_gap() {
     let bad = (0..f.total)
         .find(|&n| sim.heard.get((start + n) as usize) != Some(&(f.sample(n, 0), f.sample(n, 1))));
     assert_eq!(bad, None, "a frame lost or out of place");
+}
+
+#[test]
+fn the_race_on_a_slow_cpu_costs_about_two_pieces_mixing_not_the_whole_mix() {
+    // As above, on a CPU where each block takes the time of 9 frames to
+    // mix (the emulator's 28%): mixing the wake's whole lead takes ~70 ms
+    // of sound, far more than the under-a-piece left. The end moves on as
+    // each piece is mixed, so the engine, stopped at the old end, starts
+    // again after about two pieces' mixing, not after the whole stretch.
+    let mut sim = Sim::new(false);
+    let mut f = music(&mut sim, 18, 8_000, 3);
+    sim.dma.lag = 9;
+    sim.run(1_000, &mut |m, now| f.feed(m, now));
+    let mut worst = None;
+    for _ in 0..40 {
+        sim.tick();
+        let end = sim.m.mixed_to;
+        let start = end / sim.m.piece * sim.m.piece;
+        if end - start < 96 {
+            sim.run(7, &mut |m, now| f.feed(m, now));
+            continue;
+        }
+        while sim.dma.played < end - 64 {
+            if let Some(fr) = sim.dma.step() {
+                sim.heard.push(fr);
+            }
+        }
+        while frames(sim.ms) < sim.dma.time {
+            sim.ms += 1;
+        }
+        let (idle, stops) = (sim.dma.idle, sim.m.stats().restarts);
+        f.feed(&mut sim.m, sim.ms);
+        sim.tick();
+        if sim.m.stats().restarts > stops {
+            let gap = sim.dma.idle - idle;
+            worst = Some(worst.map_or(gap, |w: u64| w.max(gap)));
+        }
+        sim.run(50, &mut |m, now| f.feed(m, now));
+    }
+    let worst = worst.expect("no restart made");
+    // Two pieces of mixing at 9/32 of real time, and a block's slack.
+    let bound = 2 * sim.m.piece * 9 / 32 + 32;
+    assert!(
+        worst <= bound,
+        "the engine sat stopped {worst} frames (at most {bound})"
+    );
+    assert_eq!(sim.m.stats().ring_failed, 0);
+    sim.run(2_500, &mut |m, now| f.feed(m, now));
+    assert!(heard_once(&sim, &f), "lost or repeated frames");
 }
 
 #[test]

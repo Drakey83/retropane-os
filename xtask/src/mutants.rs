@@ -1579,7 +1579,7 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&[
             "-p",
             "rp-audio",
-            "a_mixer_slower_than_the_sound_fails_quietly",
+            "a_ring_started_with_sound_waiting_has_its_end_from_the_start",
         ]),
     },
     Mutant {
@@ -1591,6 +1591,18 @@ pub const MUTANTS: &[Mutant] = &[
             "-p",
             "rp-audio",
             "a_shortening_rewrite_on_a_slow_cpu_keeps_the_end_ahead_of_the_engine",
+        ]),
+    },
+    // The end moving during a long mix (ADR-0032 A6).
+    Mutant {
+        name: "mixer: the end moved only after the whole mix (the race waits for a long mix) (ADR-0032 A6)",
+        file: "services/audio/src/mixer.rs",
+        from: "            if self.ended && b.is_multiple_of(self.piece) && b > self.piece_end(self.end_frame) {",
+        to: "            if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_race_on_a_slow_cpu_costs_about_two_pieces_mixing_not_the_whole_mix",
         ]),
     },
 ];
