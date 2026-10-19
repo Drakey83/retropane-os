@@ -27,11 +27,34 @@ four lenses. A change should advance at least one and must not set back any:
 |---|---|
 | 🔁 **Iterate** | Can we measure it, improve it and test it again? Is there a benchmark or test that captures it, so the next iteration can beat it? |
 | ✨ **Modernize** | Does it bring 2026 standards, security and UX to the device, not 2005 ones? |
-| 🗄️ **Legacy support** | Do WM5/WM6.x apps (and users' muscle memory) still work, unchanged? |
-| ⚡ **Better / faster** | Does it use the hardware more fully than the original did: faster, leaner, smoother? |
+| 🗄️ **Legacy support** | Does the games catalogue (and users' muscle memory) still work, unchanged? |
+| ⚡ **Better / faster** | Does it beat stock Windows Mobile on the benchmarks, and does input still answer at once? |
 
 These lenses become required checkboxes in the PR template and a required
 section in every ADR (Phase 0).
+
+**Better / faster** means both, with no trade between them. *Benchmarks:*
+stock Windows Mobile's numbers (`tools/wmbench`, docs/perf.md) are the floor;
+the goal is to beat the original drivers, not match them (§11b). *Feel:* tap
+something and it answers; nothing on the input path ever waits on I/O, the
+network, or a lock held by something slower. The bar is the 19 ms
+touch-to-screen measured on the device (`rp-today`). Game and level loads of
+15-30 s are fine; Q3CE's 5-minute loads are what we fix. Every new port
+measures stock first, and its startup time is a metric from day one.
+
+**Legacy support** is driven by demand and bounded. The target is the games
+catalogue (docs/research/3d-games-catalogue.md) plus the common API core those
+titles share, so the API backlog (docs/research/api-backlog.md) ranks what
+the catalogue needs first. (Today it ranks what the ROM's own modules import;
+the catalogue's games are still to be scanned. The top of that list is the
+core every program uses, games included.) It is not every WM app ever
+written: beyond the catalogue, compatibility grows product by product as
+users report problems. Done means the catalogue runs.
+
+**One device.** RetroPane runs on one fixed machine, the X51v. That is a
+simplification we chose, not a limit: no driver matrix, one test device covers
+every user, and every bug report is reproducible by construction. Design work
+doesn't hedge against hardware variations we don't have.
 
 ### 1.1 Goals
 
@@ -40,7 +63,7 @@ section in every ADR (Phase 0).
 | G1 | **Native drivers for ALL hardware — non-negotiable.** 3D (MBX), 2D blitter, Wi-Fi, touchscreen, SD and CompactFlash are hard requirements, reverse-engineered where no documentation exists; the rest (audio, keys, backlight, Bluetooth, battery/power, video decoder) follow | Every component in §2 has a driver we wrote and is hardware-accelerated where the hardware allows; no Windows driver DLLs loaded at runtime. Software fallbacks are development aids only and never count as "done" |
 | G1b | **Efficient and full speed** | CPU runs at its full 624 MHz turbo clock under load (and scales down when idle); UI holds 60 fps on the GPU; budgets in §11a are met on real hardware |
 | G1c | **Beat stock** | After drivers work, iterate (§11b) until RetroPane is measurably faster than the original WM drivers on the same apps |
-| G2 | **WM5 + WM6.x application compatibility** | Unmodified WM5 and WM6.0–6.5 ARM `.exe`/`.dll` files run; DoomGLES is the flagship test |
+| G2 | **WM5 + WM6.x application compatibility** | The games catalogue's unmodified WM5 and WM6.0–6.5 ARM `.exe`/`.dll` files run (§1.0: bounded, catalogue first); DoomGLES is the flagship test |
 | G3 | **Modern internet** | TLS 1.3, WPA2 and WPA3, IPv6, UTF-8, a usable modern web browser |
 | G4 | **Modern take on the WM look** | Windows-esque, retro, modernised: recognisable but fresh |
 | G5 | **Proper engineering** | Layered architecture, unit tests from day one, CI, documented decisions |
@@ -546,7 +569,8 @@ scripted session and fail if any component exceeds its budget.
 | I/O | DMA for SD, CF, audio, Wi-Fi and display. No polling loops in drivers; everything interrupt-driven |
 | Hot paths | Fixed-point maths; iWMMXt asm for memcpy/memset, blending, audio mixing, crypto (ChaCha20) and image decoding |
 | Boot | Target under 5 s from loader to Today screen |
-| Legacy apps | WM5/6.x apps run at least as fast as on stock Windows Mobile (benchmarked with the same apps on the same device) |
+| Legacy apps | The catalogue's WM5/6.x apps run faster than on stock Windows Mobile (benchmarked with the same apps on the same device; stock is the floor) |
+| Input | Touch to screen within the 19 ms measured on the device; nothing on the input path waits on I/O, the network or a slower lock |
 
 Each requirement has a matching benchmark in the performance test suite
 (§12). Absolute numbers are recorded on real hardware at every milestone.
@@ -571,7 +595,7 @@ Stock baselines (user's X51v on the LennySh WM6.1 ROM, 2026-10-10):
 | App | Stock behaviour | First improvement targets |
 |---|---|---|
 | DoomGLES (Doom, Doom II) | Full VGA resolution, **~50–60 fps** (estimated, no FPS counter) | Hold a locked 60 fps at VGA, then add effects. Add an FPS overlay so we can measure precisely |
-| Quake 3 (Q3CE) | **Very slow loading**; roughly full speed once running | Load time: SD 4-bit mode at max clock, DMA, read-ahead, a better file cache, and faster texture upload to the 2700G |
+| Quake 3 (Q3CE) | **Very slow loading** (~5 minutes, the owner's estimate, not yet timed; 15-30 s is the target); roughly full speed once running | Load time: SD 4-bit mode at max clock, DMA, read-ahead, a better file cache, and faster texture upload to the 2700G |
 
 ---
 

@@ -36,7 +36,7 @@ Personality's drawing (Phase 4) are designed:
 - [x] ADR-0005 memory and storage architecture *(accepted 2026-10-10)*; code-size budgets enforced in `cargo xtask cross`; whole-device memory budget (`docs/memory-budget.md`: OS at most 12 MiB, apps at least 52 MiB) checked there too since 2026-10-12
 - [x] **RE:** `tools/romdump`: unpacks X51v `.nb0` ROM images (IMGFS + LZX) and rebuilds driver DLLs as PE files. No device access needed
 - [ ] *(Optional)* UART serial adapter for deep debugging. Not required: the cradle's USB is the main console from Phase 2
-- [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory), which become the "at least as fast" target *(CPU, memory, threads, timers, drawing and card speeds measured by `tools/wmbench`, 2026-10-13: docs/perf.md; DoomGLES fps and boot time still to do)*
+- [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory, game load times), which become the floor to beat (DESIGN.md §1.0) *(CPU, memory, threads, timers, drawing and card speeds measured by `tools/wmbench`, 2026-10-13: docs/perf.md; DoomGLES fps and boot time still to do)*
 
 **Exit:** `cargo xtask test` passes in CI on an empty skeleton; ROM dump in hand.
 
@@ -92,7 +92,8 @@ Personality's drawing (Phase 4) are designed:
 ## Phase 4 — CE Personality v1
 **Goal:** simple unmodified WM5/6.x apps run.
 
-- [ ] Compatibility corpus defined; import-table scanner produces a ranked API backlog *(scanner done 2026-10-12: `tools/apiscan` -> `docs/research/api-backlog.md` from the owner's ROM; third-party apps still to add to the corpus)*
+- [ ] Compatibility corpus defined (the games catalogue, `docs/research/3d-games-catalogue.md`: DESIGN.md §1.0); import-table scanner produces an API backlog ranked by what the catalogue needs first *(scanner done 2026-10-12: `tools/apiscan` -> `docs/research/api-backlog.md` from the owner's ROM; today's ranking is the ROM's own 519 modules, no games: the catalogue's games still to add)*
+  - [ ] Scan the catalogue's binaries on the card (they stay local; only interface facts are written: docs/CLEANROOM.md) and rank catalogue-first, as a games-ranked view beside the ROM's: `apiscan` needs a weighting or second-report option
 - [ ] coredll (core subset), aygshell basics, GDI on the software backend
 - [ ] GAPI (`gx.dll`)
 - [ ] Registry and file-system semantics matching CE
@@ -143,7 +144,7 @@ gathered in [design/README.md](design/README.md).
 - [ ] NetSurf port with TLS 1.3
 - [ ] Bridge service (self-hostable) and Bridge mode in the browser
 - [ ] Messaging (Matrix/XMPP/email), music player, modern media formats
-- [ ] Broader CE compatibility (commctrl, DirectDraw, D3DM) driven by the corpus
+- [ ] Broader CE compatibility (commctrl, DirectDraw, D3DM) as the catalogue needs it; beyond the catalogue, product by product as users report problems
 
 ## Phase 9 — Power, Bluetooth, flash install and release
 - [ ] **RE:** power/battery IC; suspend/resume; battery gauge
