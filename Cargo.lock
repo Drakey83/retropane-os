@@ -66,6 +66,7 @@ name = "rp-audio-s1"
 version = "0.0.0"
 dependencies = [
  "rp-audio",
+ "rp-audio-x51v",
  "rp-drv-cpld",
  "rp-drv-mbx-display",
  "rp-drv-pxa-gpio",
@@ -75,6 +76,38 @@ dependencies = [
  "rp-drv-tsc2046",
  "rp-drv-wm8750",
  "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-audio-s2"
+version = "0.0.0"
+dependencies = [
+ "rp-audio",
+ "rp-audio-x51v",
+ "rp-drv-cpld",
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-i2s",
+ "rp-drv-pxa-ssp",
+ "rp-drv-tsc2046",
+ "rp-drv-wm8750",
+ "rp-hal-api",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
+]
+
+[[package]]
+name = "rp-audio-x51v"
+version = "0.0.0"
+dependencies = [
+ "rp-audio",
+ "rp-drv-cpld",
+ "rp-drv-pxa-gpio",
+ "rp-drv-pxa-i2c",
+ "rp-drv-pxa-i2s",
+ "rp-drv-wm8750",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
 ]

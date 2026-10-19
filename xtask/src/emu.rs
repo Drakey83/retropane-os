@@ -5112,6 +5112,214 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Audio service step S2 (ADR-0032, `rp-audio-s2`): the mixer on the
+/// emulated X51v, the headphones out the whole run (the model records the
+/// speaker's voice). The two notes of test 1 come from a 22.05 kHz and a
+/// 48 kHz stream, the second placed to start where the first ends: both
+/// must be recorded at 880 Hz, back to back (a wrong conversion ratio shifts
+/// the pitch). Three taps through QMP each get a click within 10 ms; the
+/// tune alone sleeps long (few wakes a second), with clicks the interval is
+/// short; no wake is late and no stream runs dry anywhere; the limiter
+/// works on the overload (6A) and not at half volume (6B); the board bits
+/// are put back.
+pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    audio S2: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let image = raw_image(root, "rp-audio-s2")?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let wav = scratch(root, "audio-s2.wav")?;
+    let _ = std::fs::remove_file(&wav);
+    let wav_path = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&wav),
+        Emulator::Native(_) => wav.display().to_string(),
+    };
+    let port = monitor_port();
+    let mut args: Vec<String> = usb_args(2).into();
+    args.extend([
+        "-audiodev".into(),
+        format!("wav,id=snd,path={wav_path}"),
+        "-machine".into(),
+        "audiodev=snd".into(),
+    ]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        let mut qmp = crate::screen::Qmp::connect(port + 1)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // Test 2 waits up to 30 s for each tap from ~8 s into the run.
+        let centre = (0x4000, 0x4000);
+        std::thread::sleep(Duration::from_secs(12));
+        for _ in 0..3 {
+            qmp.touch(Some(centre))?;
+            std::thread::sleep(Duration::from_secs(2));
+            qmp.touch(None)?;
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        let log = usb_read_until(&mut s, "RPL END", 180)?;
+        for want in [
+            "RetroPane audio S2: the mixer (44.1 kHz",
+            "TEST 1: TWO NOTES",
+            "TEST 1 RESULT",
+            "TEST 2: TAP THE SCREEN",
+            "TEST 2 RESULT",
+            "TEST 3 RESULT",
+            "TEST 4 RESULT",
+            "5A 22 kHz RESULT",
+            "5B 11 kHz RESULT",
+            "5C 48 kHz RESULT",
+            "TEST 6: PULL THE HEADPHONES OUT NOW",
+            "sound to the speaker",
+            "6A RESULT",
+            "6B RESULT",
+            "7A RESULT",
+            "7B RESULT",
+            "DONE: TELL ME TESTS 1-7",
+            "board bits put back as found",
+            "AUDIO-S2-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("audio S2: no {want:?} in the run log:{log}"));
+            }
+        }
+        // The second note got the start it asked for, to the frame.
+        let placed = log
+            .lines()
+            .find(|l| l.contains("second asked for"))
+            .ok_or("audio S2: no placement line")?;
+        let asked = placed
+            .split("asked for ")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .ok_or(format!("audio S2: unreadable {placed:?}"))?;
+        if !placed.contains(&format!("got Some({asked})")) {
+            return Err(format!(
+                "audio S2: the second note didn't start where asked: {placed:?}"
+            ));
+        }
+        // A number after `key` in `line` (`12.3`, `4`).
+        let num = |line: &str, key: &str| -> Result<f64, String> {
+            line.split(key)
+                .next()
+                .and_then(|l| l.rsplit(' ').next())
+                .and_then(|n| n.trim_end_matches('%').parse().ok())
+                .ok_or(format!("audio S2: no {key:?} in {line:?}"))
+        };
+        let after = |line: &str, key: &str| -> Result<f64, String> {
+            line.split(key)
+                .nth(1)
+                .and_then(|r| r.trim_start().split([' ', ',']).next())
+                .and_then(|n| n.parse().ok())
+                .ok_or(format!("audio S2: no {key:?} in {line:?}"))
+        };
+        let result = |name: &str| -> Result<&str, String> {
+            log.lines()
+                .find(|l| l.starts_with(&format!("{name} RESULT")))
+                .ok_or(format!("audio S2: no {name} result"))
+        };
+        for name in [
+            "TEST 1",
+            "TEST 2",
+            "TEST 3",
+            "TEST 4",
+            "5A 22 kHz",
+            "5B 11 kHz",
+            "5C 48 kHz",
+            "6A",
+            "6B",
+            "7A",
+            "7B",
+        ] {
+            let l = result(name)?;
+            if after(l, "late")? != 0.0 || after(l, "dry")? != 0.0 {
+                return Err(format!("audio S2: a late wake or a stream run dry: {l:?}"));
+            }
+        }
+        let taps: Vec<&str> = log
+            .lines()
+            .filter(|l| l.contains("after the pen landed"))
+            .collect();
+        if taps.len() != 3 {
+            return Err(format!(
+                "audio S2: {} taps clicked, wanted 3:{log}",
+                taps.len()
+            ));
+        }
+        for l in &taps {
+            let ms = after(l, "first sample")?;
+            if ms > 10.0 {
+                return Err(format!("audio S2: a tap's click {ms} ms late: {l:?}"));
+            }
+        }
+        let clicks = log
+            .lines()
+            .find(|l| l.contains(" clicks: first sample"))
+            .ok_or("audio S2: no click summary")?;
+        let worst = num(clicks, " ms at worst")?;
+        if worst > 10.0 {
+            return Err(format!("audio S2: a click {worst} ms late: {clicks:?}"));
+        }
+        let alone = num(result("TEST 3")?, " wakes/s")?;
+        let busy = num(result("TEST 4")?, " wakes/s")?;
+        if alone > 12.0 || busy < 40.0 {
+            return Err(format!(
+                "audio S2: {alone} wakes/s with the tune alone (at most 12), {busy} with clicks (at least 40)"
+            ));
+        }
+        if after(result("6A")?, "limited")? == 0.0 {
+            return Err("audio S2: the overload in 6A wasn't limited".into());
+        }
+        let half = result("6B")?;
+        if after(half, "limited")? != 0.0 || after(half, "clipped")? != 0.0 {
+            return Err(format!(
+                "audio S2: half volume was limited or clipped: {half:?}"
+            ));
+        }
+        if !log.contains(", 0 laps lost") || !log.contains(" 0 late, 0 dry, 0 clipped") {
+            return Err(format!(
+                "audio S2: a lap lost, a late wake, a stream run dry or a clip over the whole run:{log}"
+            ));
+        }
+        for l in log.lines().filter(|l| {
+            l.contains("RESULT") || l.contains("after the pen") || l.contains(" clicks:")
+        }) {
+            eprintln!("    audio S2: {}", l.trim());
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(240),
+        },
+    )?;
+    // Test 1's notes, the first sound of the run: 880 Hz from 22.05 kHz,
+    // then 880 Hz from 48 kHz.
+    let (found, seconds) = first_notes(&wav, &[880.0, 880.0], "audio S2")?;
+    eprintln!(
+        "    audio S2 OK: the two-rate notes recorded at {:.1} and {:.1} Hz over {seconds:.3} s, back to back; taps and clicks within 10 ms; long sleeps with music alone; nothing late or dry; the limiter rode the overload",
+        found[0], found[1]
+    );
+    Ok(())
+}
+
 /// The first stretch of sound in an emulator recording (`wav`): `want`'s
 /// notes back to back, a second each. Their measured frequencies (within
 /// 4% of `want`, else an error naming `what`) and the stretch's length.

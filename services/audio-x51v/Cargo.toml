@@ -1,0 +1,21 @@
+[package]
+name = "rp-audio-x51v"
+description = "The X51v's audio wiring for the audio service (ADR-0032): the codec's supply and the speaker amplifier through the CPLD shadow, the I2C and I2S pins, the codec's I2C gate, the headphone jack; shared by the audio test images and, later, the audio driver host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
+rp-drv-pxa-i2c = { path = "../../drivers/pxa-i2c" }
+rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
+rp-drv-wm8750 = { path = "../../drivers/wm8750" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-audio = { path = "../audio" }
+
+[lints]
+workspace = true

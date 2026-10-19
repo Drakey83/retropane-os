@@ -1,6 +1,6 @@
 [package]
 name = "rp-audio"
-description = "The audio service (ADR-0032), step S1: one owner of the codec, the I2S link and the speaker amplifier; the power sequence, the restart guard, the headphone jack by its edge latch"
+description = "The audio service (ADR-0032): one owner of the codec, the I2S link and the speaker amplifier (S1: the power sequence, the restart guard, the jack, the codec's sleep); the mixer (S2: stream roles, shared rings, the long ring rewritten ahead, the adaptive wake, limiter and dither, the 44.1 kHz resampler)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -55,6 +55,16 @@ depends on them proves less than it looks):
 | C12 | `emu-drive` fails on the downloaded Windows release (`RETROPANE_QEMU=release`: "drive: no answer" after the read-only and read-write replies) and passes on the WSL build; found 2026-10-19 when the suite first ran on the release, not caused by that day's changes (it fails with them switched off) | Find what the Windows build lacks for the drive check (its USB or socket path) and fix it, so a contributor using the release can run the whole suite | open |
 | C5 | Mutants exist for some guards, not all | Every guard added since 2026-10-10 gets a mutant; list the ones missing | open |
 
+| C13 | `emu-audio-s2` checks the recording only for test 1's two notes (pitch, back to back); the rest of the run (the tune from three rates, the limiter's output, the speaker filter) is checked by the run log's numbers, not by what was recorded | Analyse the whole recording (one power-up, so it holds the run): each part's pitch, 6A's peaks under full scale, 7A's level below 7B's at the low notes | open |
+
+## E. Built smaller than the design, waiting on a measurement or a later step
+
+| # | Shortcut | Proper fix | State |
+|---|---|---|---|
+| E1 | The mixer and resampler are scalar fixed point; ADR-0032 R4 says the hot loops are iWMMXt | Measure the CPU share on the device first (`rp-audio-s2`, per source rate); then the resampler's taps in iWMMXt (16-bit multiply-accumulate in parallel) if the share warrants it, the scalar loop kept as the test reference | open |
+| E2 | "Room for more" and "drained" are read from `Mixer::status`; ADR-0032 R3 says waitable events (ADR-0010) | With the audio host's IPC (R1: the service is a library until then, as the graphics service is) | open |
+| E3 | The DMA ring loops: a service stall longer than the ring (255 ms) replays the ring's sound until the next wake (the mixer counts the lost lap by the clock, but can't stop the replay); a shorter stall plays silence, as designed | A descriptor chain that ends at the mixed sound (the engine stops instead of looping if the CPU doesn't extend it), measured against the looping ring's cost | open |
+
 ## D. Copied values and housekeeping
 
 | # | Shortcut | Proper fix | State |

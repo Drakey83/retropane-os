@@ -532,6 +532,49 @@ three clicks; the "clicks" are 150 ms beeps, test tones for timing, not
 UI sounds).** Both board bits put back. **S1b passed by the owner
 (2026-10-19).**
 
+**The mixer (S2, ADR-0032, built 2026-10-19; device run pending).**
+Measured on the host (`services/audio` tests, the targets a few dB inside
+these):
+
+| Resampler, a 20000-amplitude sine to 44.1 kHz | Result |
+|---|---|
+| THD+N, 1 kHz from 8 / 11.025 / 22.05 / 32 / 48 kHz | -85 / -88 / -90 / about -85 / -85 dB |
+| THD+N, 5 kHz from 22.05 kHz; 10 kHz from 48 kHz | -83 / -82 dB |
+| Images (upsampling: a tone at f makes one at fs - f) | -69 to -74 dB |
+| 48 kHz: 15 kHz / 19 kHz kept | 0.0 / -3.6 dB |
+| 48 kHz: 23 kHz (above 22.05 kHz) folded to 21.1 kHz | -26 dB |
+| Gain at 1 kHz, every rate | within 0.1 dB |
+
+The chain: a lone 44.1 kHz stream at full volume comes out bit-exact;
+silence stays silent; dither is triangular, +-1 LSB, unbiased; the
+speaker's high-pass is -3 dB at 300 Hz, about -1.2 dB at 440 Hz, -20 dB at
+100 Hz, flat at 2 kHz; an overload 6 dB over full scale is held 0.5 dB
+under it from the tone's second period on, with no clip after its first;
+a 100 Hz overload holds the gain steady (no ripple inside the note).
+
+**`emu-audio-s2` (emulator, 2026-10-19; emulator CPU and timing, not the
+device's):** the two test-1 notes (22.05 kHz, then 48 kHz, the second
+placed to start where the first ends, and it did, to the frame) recorded
+at 879.9 and 880.6 Hz over 1.983 s; three taps clicked 6.3-7.0 ms after
+the pen landed, with music mixed up to 245 ms ahead; 12 timed clicks 6.6 ms
+on average, 7.0 at worst; music alone ~10 wakes a second (the timer's and
+the program's write), with clicks ~132 (the mixer's 15 ms interval plus the
+music program writing smaller pieces more often); the mixer's CPU share
+0.8-1.4% at 44.1 kHz, 3.0% from 22.05 or 11.025 kHz mono, 7.1% from 48 kHz
+stereo; the limiter rode test 6A's overload (7489 blocks limited, 0
+clipped), half volume untouched; no late wake, no stream run dry, no lap
+lost over the run. The emulator's DMA ran 42.9-45.3 thousand frames a
+second against its OS timer (its pacing, not a measurement of the link).
+
+**What the device run measures** (`rp-audio-s2`, each test's RESULT line):
+wakes a second, the mixer's CPU share per source rate, how far ahead it
+mixed, rewrites, late wakes, streams run dry, clips and limited blocks,
+and **the DMA's real rate against the OS timer** (A1's open question: how
+close `SADIV` `0x0D` is to 44.1 kHz). The owner listens for: the two notes
+at the same pitch (tests 1), clicks as the pen lands (2), clean steady
+music (3-5, headphones), crackle in 6A against 6B and 7B against 7A
+(speaker).
+
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte
 block each, handled by `wavedev.dll` `0x02463E54`; the hardware is the

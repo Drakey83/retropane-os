@@ -82,6 +82,8 @@ members = [
     "services/graphics",
     "services/audio",
     "services/audio-s1",
+    "services/audio-s2",
+    "services/audio-x51v",
     "shell/core",
     "shell/today",
     "personality/ce/cab",

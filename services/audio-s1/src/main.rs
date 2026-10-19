@@ -29,15 +29,13 @@ mod image {
     use core::cell::RefCell;
     use core::fmt::Write;
 
-    use rp_audio::{Audio, Board, PlayError};
+    use rp_audio::{Board, PlayError};
+    use rp_audio_x51v::{JACK, Service, SharedGpio, TICK_MS, found, name, put_back};
     use rp_drv_cpld::Cpld;
-    use rp_drv_cpld::handover;
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::{Display, crash};
     use rp_drv_pxa_gpio::Gpio;
-    use rp_drv_pxa_i2c::PxaI2c;
-    use rp_drv_pxa_i2s::{PxaI2s, Tone};
-    use rp_drv_wm8750::{Gate, Gated, Output};
+    use rp_drv_pxa_i2s::Tone;
     use rp_hal_pxa27x::dma::Dma;
     use rp_hal_pxa27x::{Mmio, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
@@ -45,20 +43,6 @@ mod image {
 
     rp_hal_pxa27x::entry!(main);
 
-    /// The headphone jack (high = plugged in, with the codec powered).
-    const JACK: u8 = 83;
-    /// The codec's I2C gate.
-    const I2C_GATE: u8 = 82;
-    const CODEC_POWER: (usize, u16) = (0x1C, 1 << 1);
-    const SPEAKER_AMP: (usize, u16) = (0x14, 1 << 1);
-    /// The I2S pins as Windows Mobile sets them: (GPIO, function, output).
-    const I2S_PINS: [(u8, u8, bool); 5] = [
-        (28, 1, true),
-        (29, 2, false),
-        (30, 1, true),
-        (31, 1, true),
-        (113, 1, true),
-    ];
     /// `RP_AUDIO_AMP_TEST` at build time: the speaker-only diagnostic (S1
     /// runs 2-3: one of two speaker notes unheard), numbered tests instead
     /// of the steps.
@@ -87,8 +71,6 @@ mod image {
         Some(v) => parse(v),
         None => 60,
     };
-    /// OS timer ticks per millisecond (3.25 MHz).
-    const TICK_MS: u32 = 3_250;
     const RING: usize = 8192;
     const NOTE_MS: u32 = 1_000;
     /// How long each "now" step waits for the owner.
@@ -104,123 +86,6 @@ mod image {
             i += 1;
         }
         if n > 100 { 100 } else { n }
-    }
-
-    type SharedGpio = RefCell<Gpio<Mmio>>;
-
-    /// The X51v's audio lines.
-    struct X51vAudio<'a> {
-        gpio: &'a SharedGpio,
-        cpld: Option<Cpld<Mmio, handover::Table<'static>>>,
-        /// When the codec's supply came on (OS timer ticks), for the jack's
-        /// settle measurement.
-        powered_at: u32,
-        /// When the speaker amplifier was last switched on (OS timer ticks).
-        amp_on_at: u32,
-    }
-
-    impl X51vAudio<'_> {
-        fn bit(&mut self, (reg, bit): (usize, u16), on: bool) {
-            if let Some(c) = self.cpld.as_mut() {
-                if on {
-                    c.set(reg, bit);
-                } else {
-                    c.clear(reg, bit);
-                }
-            }
-        }
-    }
-
-    impl Board for X51vAudio<'_> {
-        fn codec_power(&mut self, on: bool) {
-            self.bit(CODEC_POWER, on);
-            if on {
-                self.powered_at = rt::ticks();
-            }
-            let _ = writeln!(devices::RunLog, "board: codec power {}", onoff(on));
-        }
-        fn speaker_amp(&mut self, on: bool) {
-            self.bit(SPEAKER_AMP, on);
-            if on {
-                self.amp_on_at = rt::ticks();
-            }
-            let _ = writeln!(devices::RunLog, "board: speaker amplifier {}", onoff(on));
-        }
-        fn pins_up(&mut self) {
-            let mut g = self.gpio.borrow_mut();
-            for pin in [117, 118] {
-                g.set_function(pin, 1);
-                g.make_output(pin, true);
-            }
-            g.set_function(I2C_GATE, 0);
-            g.make_output(I2C_GATE, false);
-            for (pin, function, output) in I2S_PINS {
-                g.set_function(pin, function);
-                if output {
-                    g.make_output(pin, false);
-                } else {
-                    g.make_input(pin);
-                }
-            }
-        }
-        fn pins_down(&mut self) {
-            // As Windows Mobile's audio power-down: the I2C lines plain
-            // outputs held low; the gate closed.
-            let mut g = self.gpio.borrow_mut();
-            for pin in [117, 118] {
-                g.make_output(pin, false);
-                g.set_function(pin, 0);
-            }
-            g.write(I2C_GATE, false);
-        }
-        fn jack_in(&mut self) -> bool {
-            let level = self.gpio.borrow_mut().read(JACK);
-            let ms = rt::ticks().wrapping_sub(self.powered_at) / TICK_MS;
-            let _ = writeln!(
-                devices::RunLog,
-                "board: jack read {ms} ms after power: GPIO83 {}",
-                u8::from(level)
-            );
-            level
-        }
-        fn take_jack_edge(&mut self) -> bool {
-            self.gpio.borrow_mut().take_edge(JACK)
-        }
-        fn now_ms(&mut self) -> u32 {
-            rt::ticks() / TICK_MS
-        }
-        fn delay_us(&mut self, us: u32) {
-            // In slices, the watchdog fed between.
-            let mut left = us;
-            while left > 0 {
-                let step = left.min(100_000);
-                rt::delay_us(step);
-                rt::check_in();
-                left -= step;
-            }
-        }
-    }
-
-    /// The codec's I2C gate on the shared GPIO block.
-    struct GatePin<'a>(&'a SharedGpio);
-
-    impl Gate for GatePin<'_> {
-        fn set(&mut self, open: bool) {
-            self.0.borrow_mut().write(I2C_GATE, open);
-        }
-    }
-
-    type Service<'a> = Audio<X51vAudio<'a>, Gated<PxaI2c<Mmio>, GatePin<'a>>, PxaI2s<Mmio>>;
-
-    fn onoff(on: bool) -> &'static str {
-        if on { "on" } else { "off" }
-    }
-
-    fn name(o: Output) -> &'static str {
-        match o {
-            Output::Headphones => "headphones",
-            Output::Speaker => "speaker",
-        }
     }
 
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
@@ -639,9 +504,7 @@ mod image {
         let mut out = Tee(&mut con);
         let _ = writeln!(out, "RetroPane audio S1 (44.1 kHz, level {LEVEL})");
         let cpld = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0);
-        let found = cpld
-            .as_ref()
-            .map(|c| (c.shadow(SPEAKER_AMP.0), c.shadow(CODEC_POWER.0)));
+        let found = found(cpld.as_ref());
         match found {
             Some((r14, r1c)) => {
                 let _ = writeln!(out, "CPLD found: 14={r14:04X} 1C={r1c:04X}");
@@ -662,23 +525,7 @@ mod image {
             finish(cpld, found)
         };
         let gpio = RefCell::new(Gpio::new(gpio_bus));
-        {
-            let mut g = gpio.borrow_mut();
-            g.make_input(JACK);
-            g.watch_edges(JACK, true, true);
-            let _ = g.take_edge(JACK);
-        }
-        let board = X51vAudio {
-            gpio: &gpio,
-            cpld,
-            powered_at: 0,
-            amp_on_at: 0,
-        };
-        let bus = Gated {
-            bus: PxaI2c::new(i2c),
-            gate: GatePin(&gpio),
-        };
-        let mut a: Service<'_> = Audio::new(board, PxaI2s::new(i2s), bus, LEVEL);
+        let mut a: Service<'_> = rp_audio_x51v::service(&gpio, cpld, i2c, i2s, LEVEL);
         let ring = &mut scratch[..RING];
 
         // The owner's steps, the same words as in the chat: headphones in
@@ -779,22 +626,8 @@ mod image {
     }
 
     /// Puts the two board bits back as found, reports, returns to the loader.
-    fn finish(cpld: Option<Cpld<Mmio, handover::Table<'static>>>, found: Option<(u16, u16)>) -> ! {
-        if let (Some(mut c), Some((r14, r1c))) = (cpld, found) {
-            for ((reg, bit), was) in [(SPEAKER_AMP, r14), (CODEC_POWER, r1c)] {
-                if was & bit != 0 {
-                    c.set(reg, bit);
-                } else {
-                    c.clear(reg, bit);
-                }
-            }
-            let _ = writeln!(
-                devices::RunLog,
-                "board bits put back as found: 14={:04X} 1C={:04X}",
-                c.shadow(SPEAKER_AMP.0),
-                c.shadow(CODEC_POWER.0)
-            );
-        }
+    fn finish(cpld: Option<rp_audio_x51v::BoardCpld>, found: Option<(u16, u16)>) -> ! {
+        put_back(cpld, found);
         let _ = writeln!(devices::RunLog, "{}", super::MARKER);
         if devices::loader_present() {
             rt::delay_us(1_000_000);

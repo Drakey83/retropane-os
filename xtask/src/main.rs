@@ -108,6 +108,10 @@ commands:
   audio-s1  audio service step S1 (ADR-0032), a guided run with the
             owner listening: loads rp-audio-s1 (44.1 kHz, the jack while up
             and while down, the I2S restart guard)
+  audio-s2  audio service step S2 (ADR-0032), the mixer, a guided run
+            with the owner listening: loads rp-audio-s2 (two rates, taps,
+            the tune with and without clicks, old-game rates, the limiter
+            and the speaker filter A/B)
   device-check  the read-only checks waiting for the device, in one run
             (drive, SD DMA, backlight, the unscanned card blocks), report
             in target/device-check.txt; --with-owner adds CF (the tone:
@@ -178,6 +182,10 @@ commands:
   emu-audio-s1  the S1 image's check (rp-audio-s1: three notes at
             44.1 kHz, the jack re-routes while up, the restart guard, no
             power-up for a jack change while down)
+  emu-audio-s2  the mixer's check (rp-audio-s2: two notes from 22.05 and
+            48 kHz recorded at the same pitch back to back, taps and clicks
+            within 10 ms, long sleeps with music alone, nothing late or dry,
+            the limiter on the overload)
   emu-audio-sleep  the codec's sleep (ADR-0032 R5, S1b): rp-audio-s1 built
             with RP_AUDIO_SLEEP: the idle sleep with I2S kept on, a sound
             with no wake first, three taps that wake it early
@@ -213,8 +221,8 @@ fn main() -> ExitCode {
         | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
-        | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "mutants"
-        | "qemu" => run_step(&cmd),
+        | "emu-audio-s2" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
+        | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -421,6 +429,10 @@ fn main() -> ExitCode {
             eprintln!("==> audio-s1 (rp-audio-s1)");
             usb::load(&workspace_root(), "rp-audio-s1", false)
         }
+        "audio-s2" => {
+            eprintln!("==> audio-s2 (rp-audio-s2)");
+            usb::load(&workspace_root(), "rp-audio-s2", false)
+        }
         "device-check" => {
             eprintln!("==> device-check {flag}");
             usb::device_check(&workspace_root(), flag == "--with-owner")
@@ -505,6 +517,7 @@ fn run_step(step: &str) -> Result {
         "emu-tone" => cross().and_then(|()| emu::boot_loader_tone(&workspace_root())),
         "emu-audio-s1" => cross().and_then(|()| emu::boot_loader_audio_s1(&workspace_root())),
         "emu-audio-sleep" => cross().and_then(|()| emu::boot_loader_audio_sleep(&workspace_root())),
+        "emu-audio-s2" => cross().and_then(|()| emu::boot_loader_audio_s2(&workspace_root())),
         "emu-refresh" => cross().and_then(|()| emu::boot_loader_refresh(&workspace_root())),
         "emu-screen-measure" => {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
@@ -565,6 +578,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_tone(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_s1(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_sleep(&workspace_root()))
+            .and_then(|()| emu::boot_loader_audio_s2(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))

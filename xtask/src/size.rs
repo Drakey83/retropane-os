@@ -583,6 +583,15 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image: audio service step S2 (ADR-0032), the mixer through
+    // rp-audio on the X51v's wiring (rp-audio-x51v). Set at its first build
+    // on 2026-10-19: 70.1 KiB measured, +~10%.
+    Budget {
+        image: "rp-audio-s2",
+        max_load: 77 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     // Test image: display calibration C1 (docs/design/display-calibration.md),
     // the gamma table judged by eye. Set at its first build on 2026-10-17:
     // 25.9 KiB measured, +~10%. Raised for the guided run 5 (six dials,

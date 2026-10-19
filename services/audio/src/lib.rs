@@ -31,11 +31,18 @@
 //!   or a key, brings only the codec back (no guard, no restart). Full
 //!   power-down ([`Audio::down`]) is for suspend.
 //!
-//! The mixer, roles and volumes per output come in S2 and S3; S1 plays one
-//! stream at a time ([`Audio::play`]).
+//! The mixer (S2) is [`mixer`]: several streams by role ([`role`]), the
+//! long DMA ring rewritten ahead, the signal chain ([`chain`]) and the
+//! conversion to 44.1 kHz ([`resample`]). [`Audio::play`] still plays one
+//! stream alone (S1's runs). Volumes per output and routing come in S3.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
+
+pub mod chain;
+pub mod mixer;
+pub mod resample;
+pub mod role;
 
 use rp_drv_pxa_i2s::{PxaI2s, Rate, StreamError, Streamed, stream};
 use rp_drv_wm8750::{Output, SampleRate, Wm8750};

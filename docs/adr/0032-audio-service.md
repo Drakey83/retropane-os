@@ -408,12 +408,80 @@ step grows it by more than 8 KiB).
 2. **S2 the mixer** (R2-R4): roles, several streams, the rewrite-ahead
    and its adaptive wake interval (15 / 200 ms), the actual-start field; latency and wake-ups
    measured with music and clicks; limiter times tuned.
+   **Built 2026-10-19** (`services/audio`: `mixer`, `chain`, `resample`,
+   `role`; 63 host tests, 19 mutants all killed; the image `rp-audio-s2`
+   (`cargo xtask audio-s2`) on the X51v wiring now shared as
+   `rp-audio-x51v`; its emulator check `emu-audio-s2` passes). What was
+   built and the engineering it settled are under "S2 as built" below; the
+   numbers are in docs/hw/audio.md. **Device run pending (owner
+   listening).**
 3. **S3 volumes and routing** (A2, A3, A4).
 4. **S4 the CE personality's sound calls** (R7) with an old game and X50Mix,
    including the `WOM_DONE` latency comparison with Windows Mobile.
 5. **S5 recording** (A5), the microphone path measured first (read-only,
    under Windows Mobile).
 6. **S6 Bluetooth outputs**, with the peripherals design.
+
+## S2 as built (2026-10-19)
+
+Engineering inside R2-R4, settled by tests and the emulator; nothing here
+changes a vote or a condition.
+
+- **The mix is a function of output time** (the clever part, nothing given
+  up): the resampler keeps no history (a stream's source position for any
+  output frame is exact rational arithmetic from its anchor), volume ramps
+  are functions of time, and the chain's whole state (limiter, speaker
+  filter, dither generator: 42 bytes) is kept at every rewrite point (every
+  128 frames, 2.9 ms). So a rewrite gives, bit for bit, what mixing once
+  would have (a host test compares the two with the limiter working).
+  PulseAudio's rewind bookkeeping isn't needed.
+- **Rewrites** start at the next 128-frame point at least 5 ms past the DMA
+  position, and each 32-frame block goes to the DMA engine as soon as it is
+  mixed (nearest first), so the margin covers one block's mixing however
+  long the stretch.
+- **How far ahead** (R2's "while every stream's data is there"): the mixer
+  mixes the mode's lead (245 ms background, 35 ms interactive) but never
+  past where a playing stream's data ends, except that it always mixes the
+  short lead, so one program that stops writing runs dry alone.
+- **When it wakes:** at the mode's interval (15 / 200 ms), timed from the
+  DMA position after mixing, and at the latest at a **low-water mark** (the
+  lead less one interval: ~45 ms of sound left with music, ~20 ms with
+  clicks): a program gets its room at a wake, so it has that long to refill
+  (a decoder's work). Found by the emulator: waking only as the mix ran out
+  left a program ~5 ms.
+- **Interactive (condition 13):** the low-latency hint (System and Voice by
+  default), or the write pattern: three writes in a row, once playing, of
+  at most 50 ms each, within 100 ms of each other, **leaving at most
+  150 ms queued**. The queue is what tells a game from a music player that
+  tops up its ring in small pieces (without it the music test woke 33
+  times a second). The short interval holds for 1 s after the last
+  interactive write, in the mixer, so a click's own short stream closing
+  doesn't end it.
+- **Rings are bytes** (16-bit little-endian samples): the shared region
+  between two processes will be bytes, no alignment assumed. Sizes by
+  condition 4's rule: 50.9 KiB at 44.1 kHz stereo (a 32 ms write), 12.8 KiB
+  at 22.05 kHz mono, 55.7 KiB at 48 kHz stereo; a smaller ring is refused
+  with the size it needs.
+- **The chain (condition 2's order):** per-stream gain with 5.8 ms ramps,
+  sum in 32 bits, the speaker's filter (second-order high-pass at 300 Hz,
+  ours: below the 440 Hz the owner already finds weak on this speaker; A/B
+  by ear in the device run), the limiter (block peak, attack within the
+  0.7 ms block, a 20 ms hold so the gain doesn't ripple inside a low note,
+  100 ms release, aiming 0.5 dB under full scale once an overload set it
+  off, the hard clip only as the backstop), then TPDF dither only where the
+  mix isn't already a 16-bit value: a lone 44.1 kHz stream at full volume
+  is bit-exact (A1) and silence stays silent. **Ducking** (R4 step 3,
+  optional) is not built; it waits for S3's volumes.
+- **The resampler (A1):** one Kaiser-windowed sinc table (10 zero
+  crossings, 64 points each, computed at compile time), Smith's method, the
+  filter stretched for 48 kHz. 11.025 and 22.05 kHz land exactly on table
+  points. Measured on the host: THD+N under -80 dB for every rate, images
+  under -65 dB, 19 kHz from 48 kHz content at -3.6 dB, 23 kHz folding to
+  -26 dB. Scalar for now: the iWMMXt loop waits for the device's CPU share
+  (quality audit E1).
+- **Memory:** the mixer itself 2.3 KB; its memory block 48.3 KiB (the DMA
+  ring 44 KiB and the kept states 4.3 KiB), given by its owner. The image
+  `rp-audio-s2` is 70.1 KiB.
 
 ## The four lenses
 
