@@ -91,7 +91,7 @@ from its users.
 | `0x02` | `0x0040` | Wi-Fi power sequence step 1 (AxDroid writes it at `0x00`) | `pcc_socket`, `tiacxwln` | likely | D; C (offset `0x00`) |
 | `0x04` (read) | `0x0002` | **CompactFlash card present when clear** | `pcc_socket` | likely | D; P (`0x00a0`, bit clear, with the owner's card in) |
 | `0x08` | `0x0002` | set by the kernel's reboot just before its board reset (GPIO99); purpose unknown | `nk.exe` (OAL) | likely | D (README.md "Software reset") |
-| `0x10` | `0x0004` | Bluetooth/serial power (guess) | `serial32`, `BTuartDMA` | guess | D |
+| `0x10` | `0x0004` | **Bluetooth radio power, stage 2** (set after stage 1 and the 32 kHz clock; bluetooth.md) | `serial32`, `BTuartDMA` | likely | D (static, 2026-10-18) |
 | `0x10` | `0x0008` | Wi-Fi power sequence step 5 | `pcc_socket`, `tiacxwln` | likely | D; C |
 | `0x10` | `0x1000` | **CompactFlash slot power, stage 2** | `pcc_socket` | confirmed | D; P (the slot powers up and stays up) |
 | `0x10` | `0x2000` | Wi-Fi power sequence step 4 | `pcc_socket`, `tiacxwln` | likely | D; C |
@@ -103,8 +103,8 @@ from its users.
 | `0x16` | `0x0001` | **SD card power** | `pxa27x_sdhc` | confirmed | D; C; P |
 | `0x16` | `0x0002` | **CompactFlash slot power, stage 1** | `pcc_socket` | confirmed | D; P |
 | `0x16` | `0x0004` | Wi-Fi power sequence step 3 | `pcc_socket`, `tiacxwln` | likely | D; C |
-| `0x16` | `0x0008` | Bluetooth/serial (guess) | `serial32`, `BTuartDMA` | guess | D |
-| `0x18` | `0x0001` | serial / Bluetooth (cleared by both; guess) | `serial32`, `BTuartDMA` | guess | D |
+| `0x16` | `0x0008` | **Bluetooth radio power, stage 1** (5 ms before the 32 kHz clock; bluetooth.md) | `serial32`, `BTuartDMA` | likely | D (static, 2026-10-18) |
+| `0x18` | `0x0001` | **Bluetooth radio reset, active low** (set = running, cleared first at power-down; bluetooth.md) | `serial32`, `BTuartDMA` | likely | D (static, 2026-10-18) |
 | `0x18` | `0x0002` | **CompactFlash RESET** (set = card held in reset) | `pcc_socket` | likely | D (held 100 ms after power-up); P (attach works through it) |
 | `0x18` | `0x0004` | **Backlight enable** | `Backlight`, `ddi`, `ddi_2700g` | confirmed | D; P (clearing it darkened the panel, setting it lit it again, 2026-10-12) |
 | `0x18` | `0x0008` | display (guess) | `ddi_2700g` | guess | D |

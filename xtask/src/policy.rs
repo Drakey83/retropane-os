@@ -108,9 +108,77 @@ pub fn check_conflict_markers(path: &str, text: &str) -> Option<String> {
     ))
 }
 
+/// The marker of a value copied from Windows Mobile, Dell or another
+/// original (docs/quality-audit.md D1): `// inherited: <audit item>,
+/// <source>`.
+pub const INHERITED: &str = "// inherited:";
+
+/// One tagged copied value: its file, line and audit item.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Inherited {
+    /// The file.
+    pub path: String,
+    /// Its line, from 1.
+    pub line: usize,
+    /// The audit item it belongs to (before the comma).
+    pub item: String,
+}
+
+/// The `inherited:` tags in `text`, and a violation for each malformed one
+/// (an empty audit item or no source after the comma).
+#[must_use]
+pub fn inherited_tags(path: &str, text: &str) -> (Vec<Inherited>, Vec<String>) {
+    let mut tags = Vec::new();
+    let mut bad = Vec::new();
+    for (k, l) in text.lines().enumerate() {
+        let Some(at) = l.find(INHERITED) else {
+            continue;
+        };
+        let rest = l[at + INHERITED.len()..].trim();
+        match rest.split_once(',') {
+            Some((item, source)) if !item.trim().is_empty() && !source.trim().is_empty() => {
+                tags.push(Inherited {
+                    path: path.into(),
+                    line: k + 1,
+                    item: item.trim().into(),
+                });
+            }
+            _ => bad.push(format!(
+                "{path}:{}: an `inherited:` tag needs `<audit item>, <source>`",
+                k + 1
+            )),
+        }
+    }
+    (tags, bad)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inherited_tags_are_counted_and_malformed_ones_refused() {
+        let src = format!(
+            "const A: u32 = 1;
+{INHERITED} imitation-audit Audio, Dell wavedev.dll (1 ms)
+const B: u32 = 2;
+    {INHERITED} imitation-audit Clocks,
+{INHERITED}  , no item
+"
+        );
+        let (tags, bad) = inherited_tags("a.rs", &src);
+        assert_eq!(
+            tags,
+            [Inherited {
+                path: "a.rs".into(),
+                line: 2,
+                item: "imitation-audit Audio".into(),
+            }]
+        );
+        assert_eq!(bad.len(), 2);
+        assert!(bad[0].starts_with("a.rs:4:"));
+        assert!(bad[1].starts_with("a.rs:5:"));
+    }
 
     const HAL: Placement = Placement::Os(Layer::Hal);
     const CORE: Placement = Placement::Os(Layer::Core);

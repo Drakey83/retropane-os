@@ -16,9 +16,40 @@
 | TI's script raises the link to **921,600 baud**; it also sets the radio's power tables, temperature thresholds and a voltage (VLDO) | confirmed (static) | (D) script comments |
 | The script configures the chip's **PCM voice port** (clock as output, falling-edge polarity) and **"codec initial by I2C from BRF6150"** on its IO2/IO3 pins as SCL/SDA. So the radio may talk to an audio codec over I2C itself, and carry call audio over PCM | likely (TI's script; the board's wiring unknown) | (D) script comments |
 | The audio driver's I2C lock `CI2C_Mutex_H` is shared with **another driver** (docs/hw/audio.md); the BRF6150's own I2C to a codec would be such a user | guess (fits; unproven) | audio.md, the script |
-| Power and reset: `BTControl.dll` (`BTC_PowerUp` / `BTC_PowerDown`, through `BTHUTIL.dll`); the CPLD bits Dell's serial and Bluetooth drivers touch are guesses (`0x10` bit 2, `0x16` bit 3, `0x18` bit 0) | guess | (D); cpld.md |
+| `BTControl.dll` touches no hardware (its `BTC_PowerUp`/`BTC_PowerDown` are empty; it reads the registry, waits on an event and calls `BTHUTIL.dll` ordinal 1): **the radio's power and reset are in `BTuartDMA.dll`** | confirmed (code) | (D) static read, 2026-10-18 (ADR-0033 P-S0) |
 | `BTHCI.dll` has a `WakeUpTimer` and `ResetDelay`: likely TI's low-power UART protocol (HCILL) and a reset wait | guess | (D) strings |
 | Profiles in Dell's ROM: A2DP stereo (`bta2dp.dll`), headset/hands-free audio gateway (`bthasplugin.dll`), HID keyboards and mice (`bthhid.dll`, `bthidsvc.dll`, `kbdhid.dll`), phone book (`bthpbap.dll`), serial ports | confirmed (files) | (D) |
+
+### The radio's power-up and power-down (static, `BTuartDMA.dll` `0x023C234C`, facts only)
+
+Three small functions switch one CPLD bit each through Windows Mobile's
+shared shadow (the same 10-way helpers as the other drivers: one sets, one
+clears); the waits are busy loops on the OS timer.
+
+**Power-up, in order:**
+
+1. `CKEN` bit 7 on (the BTUART's clock).
+2. GPIO42 and GPIO44 made inputs; 300 µs.
+3. **CPLD `0x16` bit 3 set** (the radio's power, stage 1); 5 ms.
+4. `OSCC` bits 1 and 2 set (the 32.768 kHz oscillator on and its output
+   enabled), **GPIO10 made an output, function 1**: the PXA's 32 kHz clock
+   output, most likely the radio's slow (sleep) clock.
+5. **CPLD `0x10` bit 2 set** (power, stage 2); 300 µs.
+6. GPIO42-45 to the BTUART's functions: 42 RXD (function 1), 43 TXD (2),
+   44 CTS (1), 45 RTS (2); 300 µs.
+7. **CPLD `0x18` bit 0 set: the radio out of reset** (the bit is the
+   reset line, active low); 300 ms before the port is used.
+
+**Power-down:** `0x18` bit 0 cleared (reset held); 300 µs; `0x10` bit 2
+cleared; 300 µs; GPIO42-45 back to plain GPIOs driven low; 300 µs; `0x16`
+bit 3 cleared; 50 ms; GPIO42 and 44 made outputs (low). The 32 kHz output
+and the BTUART clock are left as they were.
+
+| Fact | Confidence | Evidence |
+|---|---|---|
+| CPLD `0x16` bit 3 and `0x10` bit 2: the radio's two power stages; `0x18` bit 0: its reset (clear = held in reset) | likely (code; the roles from the order) | (D) `0x023C6F94`, `0x023C6FC0`, `0x023C6FEC` and their calls |
+| GPIO10 (function 1, with `OSCC` TOUT_EN) feeds the radio a 32.768 kHz clock | likely (code; the PXA27x manual's GPIO10 output function) | (D), (M) |
+| The BTUART on GPIO42-45 with hardware flow control (CTS, RTS) | confirmed (code) | (D) |
 
 ## USB host
 
@@ -34,8 +65,8 @@
    for it (a CPLD bit, a host power-enable pin)?
 2. Is the BRF6150's PCM port wired to the WM8750 (which has one audio
    interface, already used by I2S) or unused?
-3. The BRF6150's power and reset lines (which CPLD bits or GPIOs
-   `BTControl.dll` switches): static read of `BTControl.dll` and
-   `BTHUTIL.dll`.
+3. ~~The BRF6150's power and reset lines~~ **answered (static, above):**
+   CPLD `0x16` bit 3, `0x10` bit 2, reset `0x18` bit 0, the 32 kHz clock on
+   GPIO10; to confirm on the device with the owner watching (board bits).
 4. HCI transport framing (H4, or TI's HCILL on top) and the baud rate
    before the script runs.

@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM, and the audio service's jack findings, added the same evening). Facts come from measurements on the owner's X51v (a
+*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, added the same night). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -62,6 +62,7 @@ alternate function. Directions are as the board uses them.
 | 1 | 0 | in | a wake source (`PWER` `0x80007803`: GPIO0, 1, 11-14 and the RTC alarm); device unknown | unknown | [probe](probe-2026-10-11.md) |
 | 2 | — | — | not the USB D+ pull-up (tried both ways: the pull-up is hard-wired) | confirmed (negative) | [udc.md](udc.md) |
 | 3, 4, 38 | 0 | out | **core voltage select** (three levels to the regulator: 1050-1574 mV; GPIO3/4 are the power-I2C pins used as plain GPIOs) | likely (code) | [clocks.md](clocks.md) |
+| 10 | 1 | out | **32.768 kHz clock out** (`OSCC` TOUT_EN), most likely the Bluetooth radio's sleep clock | likely | [bluetooth.md](bluetooth.md) |
 | 11 | 0 | in | an interrupt, both edges (SYSINTR 18), and a wake source; device unknown | unknown | [interrupts.md](interrupts.md) |
 | 12 | 0 | in | **SD card detect**, low = card in | confirmed | [sd.md](sd.md) |
 | 13 | 0 | in | **CompactFlash card detect**, low = card in; **sticks at "no card" after a removal until a reset** (use CPLD `0x04` bit 1) | confirmed | [cf.md](cf.md) |
@@ -78,6 +79,8 @@ alternate function. Directions are as the board uses them.
 | 31 | 1 | out | **I2S frame sync** | confirmed | [audio.md](audio.md) |
 | 32 | MMCLK | out | SD clock (seen toggling every ~16 µs) | likely | [2700g.md](2700g.md), [sd.md](sd.md) |
 | 36 | — | — | **not** the CF reset (AxDroid's guess); a charger/cradle line, perhaps | unknown | [cf.md](cf.md) |
+| 42, 44 | 1 | in | **BTUART** receive (42) and CTS (44), the Bluetooth radio | confirmed (code) | [bluetooth.md](bluetooth.md) |
+| 43, 45 | 2 | out | **BTUART** transmit (43) and RTS (45) | confirmed (code) | [bluetooth.md](bluetooth.md) |
 | 82 | 0 | out | **codec I2C gate**: high during each codec transfer, low after (never left high: shared) | confirmed | [audio.md](audio.md) |
 | 83 | 0 | in | **headphone jack**, high = plugged in, valid only while the codec is powered and set up | confirmed | [audio.md](audio.md) |
 | 84 | 0 | in | **CF slot powered / ready**, high | confirmed | [cf.md](cf.md) |
@@ -114,6 +117,9 @@ Windows Mobile's drivers share one shadow copy per register (RAM
 | `0x16` | 1 | **CF slot power, stage 1** (then `0x10` bit 12, 10 ms apart) | confirmed |
 | `0x18` | 1 | **CF RESET** (set = held in reset) | likely |
 | `0x18` | 2 | **backlight enable** | confirmed |
+| `0x10` | 2 | **Bluetooth power, stage 2** | likely |
+| `0x16` | 3 | **Bluetooth power, stage 1** | likely |
+| `0x18` | 0 | **Bluetooth reset**, active low (set = running) | likely |
 | `0x1C` | 1 | **audio codec power** | confirmed |
 | `0x1C` | 3 | **USB / dock**: on in the dock, off out of it (Windows Mobile's shadow, one observation) | likely |
 | `0x1E` | 3 (write) / 1-0 (read) | **LCD type readout**: 0 = 3.7" Sharp VGA (the owner's), 1 and 3 = 3.5" Sharp QVGA, 2 = 3.7" Samsung VGA | confirmed |

@@ -27,8 +27,9 @@
 <text x="684" y="78" font-size="12" font-weight="600">8</text>
 <rect x="760" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
 <text x="766" y="78" font-size="12" font-weight="600">9</text>
-<rect x="842" y="62" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<rect x="842" y="62" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
 <text x="848" y="78" font-size="12" font-weight="600">10</text>
+<text x="848" y="94" font-size="10.5" fill="#222">BT 32kHz</text>
 <rect x="22" y="108" width="78" height="42" rx="4" fill="#e6e6e6" stroke="#888" stroke-width="0.8"/>
 <text x="28" y="124" font-size="12" font-weight="600">11</text>
 <text x="28" y="140" font-size="10.5" fill="#222">irq ?</text>
@@ -110,14 +111,18 @@
 <text x="602" y="216" font-size="12" font-weight="600">40</text>
 <rect x="678" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
 <text x="684" y="216" font-size="12" font-weight="600">41</text>
-<rect x="760" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<rect x="760" y="200" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
 <text x="766" y="216" font-size="12" font-weight="600">42</text>
-<rect x="842" y="200" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="766" y="232" font-size="10.5" fill="#222">BT RXD</text>
+<rect x="842" y="200" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
 <text x="848" y="216" font-size="12" font-weight="600">43</text>
-<rect x="22" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="848" y="232" font-size="10.5" fill="#222">BT TXD</text>
+<rect x="22" y="246" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
 <text x="28" y="262" font-size="12" font-weight="600">44</text>
-<rect x="104" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
+<text x="28" y="278" font-size="10.5" fill="#222">BT CTS</text>
+<rect x="104" y="246" width="78" height="42" rx="4" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
 <text x="110" y="262" font-size="12" font-weight="600">45</text>
+<text x="110" y="278" font-size="10.5" fill="#222">BT RTS</text>
 <rect x="186" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
 <text x="192" y="262" font-size="12" font-weight="600">46</text>
 <rect x="268" y="246" width="78" height="42" rx="4" fill="#ffffff" stroke="#888" stroke-width="0.8"/>
@@ -287,7 +292,7 @@
 <rect x="245" y="578" width="16" height="16" rx="3" fill="#cfe8c8" stroke="#888" stroke-width="0.8"/>
 <text x="267" y="591" font-size="12">Touch / keys</text>
 <rect x="470" y="578" width="16" height="16" rx="3" fill="#fde3b8" stroke="#888" stroke-width="0.8"/>
-<text x="492" y="591" font-size="12">SD / CF / Wi-Fi</text>
+<text x="492" y="591" font-size="12">SD / CF / Wi-Fi / Bluetooth</text>
 <rect x="695" y="578" width="16" height="16" rx="3" fill="#c9dcf5" stroke="#888" stroke-width="0.8"/>
 <text x="717" y="591" font-size="12">Display (2700G, backlight)</text>
 <rect x="20" y="604" width="16" height="16" rx="3" fill="#e3d3f2" stroke="#888" stroke-width="0.8"/>

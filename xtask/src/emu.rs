@@ -4880,15 +4880,15 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(2)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         let mut mon = crate::screen::Monitor::connect(port)?;
-        // The audio wiring as measured (rp-v0.23.0+) and the I2S restart
-        // rule (rp-v0.24.0+) are what this check is about.
-        for prop in ["codec-power", "i2s-restart"] {
+        // The audio wiring (rp-v0.23.0+), the I2S restart rule (rp-v0.24.0+)
+        // and the jack line waiting for VMID (rp-v0.25.0+): what this check is about.
+        for prop in ["codec-power", "i2s-restart", "jack-vmid"] {
             if !mon
                 .query(&format!("qom-get /machine {prop}"))?
                 .contains("true")
             {
                 return Err(format!(
-                    "audio S1: this emulator lacks the {prop} model (pin rp-v0.24.0 or later)"
+                    "audio S1: this emulator lacks the {prop} model (pin rp-v0.25.0 or later)"
                 ));
             }
         }

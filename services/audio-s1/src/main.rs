@@ -437,7 +437,10 @@ mod image {
     /// (time to write the reading down).
     fn sweep(out: &mut impl Write, a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8]) {
         let _ = writeln!(out, "SPEAKER SWEEP: HEADPHONES OUT, METER AT THE SPEAKER");
-        let _ = writeln!(out, "TAKE IT OUT OF THE DOCK NOW: NOTE 0 COMES IN 30 SECONDS");
+        let _ = writeln!(
+            out,
+            "TAKE IT OUT OF THE DOCK NOW: NOTE 0 COMES IN 30 SECONDS"
+        );
         a.board_mut().delay_us(30_000_000);
         if !up(out, a, "sweep") {
             return;

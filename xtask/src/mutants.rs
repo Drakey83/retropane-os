@@ -708,6 +708,24 @@ pub const MUTANTS: &[Mutant] = &[
 ",
         check: Check::Host(&["-p", "rp-audio", "our_own_power_down_is_not_a_jack_change"]),
     },
+    Mutant {
+        name: "WM8750: VMID started on the slow 50k divider (S1 run 1: the jack read 'out' with headphones in)",
+        file: "drivers/wm8750/src/lib.rs",
+        from: "const PWR1_FAST_START: u16 = 0x1C0;",
+        to: "const PWR1_FAST_START: u16 = 0x0C0;",
+        check: Check::Emu(crate::emu::boot_loader_audio_s1),
+    },
+    Mutant {
+        name: "lint: an inherited: tag without its source accepted (D1)",
+        file: "xtask/src/policy.rs",
+        from: "if !item.trim().is_empty() && !source.trim().is_empty() =>",
+        to: "if !item.trim().is_empty() =>",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "inherited_tags_are_counted_and_malformed_ones_refused",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

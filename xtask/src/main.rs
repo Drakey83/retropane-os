@@ -725,6 +725,7 @@ fn lint() -> Result {
         }
     }
     // Every tracked text file: no merge-conflict markers.
+    let mut inherited = Vec::new();
     let tracked = Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(workspace_root())
@@ -737,8 +738,38 @@ fn lint() -> Result {
         // Binary or unreadable files are skipped: markers are text.
         if let Ok(text) = std::fs::read_to_string(workspace_root().join(path)) {
             violations.extend(policy::check_conflict_markers(path, &text));
+            // Copied values (quality-audit D1), in Rust sources outside xtask
+            // (whose policy code names the tag itself).
+            if path.ends_with(".rs") && !path.starts_with("xtask/") {
+                let (tags, bad) = policy::inherited_tags(path, &text);
+                inherited.extend(tags);
+                violations.extend(bad);
+            }
         }
     }
+    let mut items: Vec<(&str, usize)> = Vec::new();
+    for t in &inherited {
+        match items.iter_mut().find(|(i, _)| *i == t.item) {
+            Some((_, n)) => *n += 1,
+            None => items.push((&t.item, 1)),
+        }
+    }
+    eprintln!(
+        "    {} copied values tagged `inherited:` (docs/research/imitation-audit.md){}",
+        inherited.len(),
+        if items.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ": {}",
+                items
+                    .iter()
+                    .map(|(i, n)| format!("{i} {n}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    );
     if violations.is_empty() {
         eprintln!("    {} crates, no policy violations", crates.len());
         Ok(())
