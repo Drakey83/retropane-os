@@ -810,8 +810,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "mixer: a rewrite doesn't put the chain's state back (limiter, filter, dither jump)",
         file: "services/audio/src/mixer.rs",
-        from: "        self.state = chain::State::load(st);\n",
-        to: "",
+        from: "        self.state = chain::State::load(st);",
+        to: "        let _ = chain::State::load(st);",
         check: Check::Host(&[
             "-p",
             "rp-audio",
@@ -1416,6 +1416,39 @@ pub const MUTANTS: &[Mutant] = &[
         to: "            if *pos >= window.len() {",
         check: Check::Host(&["-p", "rp-cab", "output_limit_is_enforced"]),
     },
+    Mutant {
+        name: "udc: a configured device (or a PC still retrying) unplugged",
+        file: "drivers/pxa-udc/src/unplug.rs",
+        from: "        if configured || resets != self.resets {",
+        to: "        if resets != self.resets {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "a_pc_that_talks_or_a_configured_device_is_never_unplugged",
+        ]),
+    },
+    Mutant {
+        name: "udc: the host controller run without our communication area (it writes memory there)",
+        file: "drivers/pxa-udc/src/unplug.rs",
+        from: "    uhc.write32(HCCA, core::ptr::addr_of!(hcca) as usize as u32);",
+        to: "    let _ = &hcca;",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-pxa-udc",
+            "the_host_controller_never_runs_without_our_communication_area",
+        ]),
+    },
+    Mutant {
+        name: "legacysync: a cab name with `..` (outside the INI's folder) used on the PC",
+        file: "pc/legacysync/src/stage.rs",
+        from: "            .any(|p| p.is_empty() || *p == \".\" || *p == \"..\")",
+        to: "            .any(|p| p.is_empty() || *p == \".\")",
+        check: Check::Host(&[
+            "-p",
+            "rp-legacysync",
+            "cab_names_escaping_the_ini_folder_are_refused",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
@@ -1458,12 +1491,45 @@ fn host_tests(root: &Path, args: &[&str]) -> Result<(bool, u32), String> {
         .args(args)
         .output()
         .map_err(|e| format!("cargo: {e}"))?;
-    let ran = String::from_utf8_lossy(&out.stdout)
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    outcome(out.status.success(), &stdout, &stderr)
+}
+
+/// Whether the tests passed, and how many ran; an error if the code didn't
+/// build (a mutant that doesn't compile kills nothing: its text needs
+/// fixing, found 2026-10-19 when one had gone stale that way).
+fn outcome(success: bool, stdout: &str, stderr: &str) -> Result<(bool, u32), String> {
+    if stderr.contains("could not compile") || stderr.contains("error[E") {
+        return Err("the code doesn't build".into());
+    }
+    let ran = stdout
         .lines()
         .filter_map(|l| l.strip_prefix("test result: "))
         .filter_map(|l| l.split(". ").nth(1)?.split(' ').next()?.parse::<u32>().ok())
         .sum();
-    Ok((out.status.success(), ran))
+    Ok((success, ran))
+}
+
+#[test]
+fn a_mutant_that_does_not_build_is_not_a_kill() {
+    let failed = "test result: FAILED. 3 passed; 1 failed; 0 ignored";
+    assert_eq!(outcome(false, failed, ""), Ok((false, 3)));
+    assert!(
+        outcome(
+            false,
+            "",
+            "error[E0308]: mismatched types
+error: could not compile `x`"
+        )
+        .is_err()
+    );
+    assert_eq!(
+        outcome(true, "test result: ok. 2 passed; 0 failed", ""),
+        Ok((true, 2))
+    );
 }
 
 /// Runs every host mutant, and the emulator ones with `emu`.
@@ -1503,7 +1569,11 @@ pub fn run(root: &Path, emu: bool) -> Result<(), String> {
         std::fs::write(&path, original.replacen(m.from, m.to, 1))
             .map_err(|e| format!("{}: {e}", m.file))?;
         let killed = match m.check {
-            Check::Host(args) => !host_tests(root, args)?.0,
+            Check::Host(args) => {
+                !host_tests(root, args)
+                    .map_err(|e| format!("mutant `{}`: {e} (fix its text)", m.name))?
+                    .0
+            }
             Check::Emu(f) => crate::cross().is_err() || f(root).is_err(),
         };
         drop(guard);
