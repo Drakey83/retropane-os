@@ -19,11 +19,17 @@
 //!   down an edge only marks the jack dirty** (no power-up just to look);
 //!   the next power-up reads it.
 //!
-//! When audio powers down is the caller's policy. ADR-0032's baseline is
-//! Windows Mobile's: up while the device is awake, down on suspend; an idle
-//! power-down between sounds is built only if S1's measurement of an idle
-//! powered codec says it's worth it (the 645 ms guard makes it a latency
-//! cost).
+//! When audio powers down fully is the caller's policy (suspend); between
+//! sounds the codec sleeps on its own (below). S1's measurement under
+//! Windows Mobile (`rp-wmpower`, 2026-10-19): an idle powered codec costs
+//! ~10-35 mA, and Windows Mobile itself powers the codec down ~2 s after
+//! the last sound while keeping I2S on.
+//!
+//! - **The codec's sleep (S1b, ADR-0032 R5, the owner's option A):** after
+//!   [`SLEEP_AFTER_MS`] of quiet the codec sleeps and **I2S keeps running**
+//!   ([`Audio::idle`], [`Audio::sleep`]); [`Audio::wake`], called on a touch
+//!   or a key, brings only the codec back (no guard, no restart). Full
+//!   power-down ([`Audio::down`]) is for suspend.
 //!
 //! The mixer, roles and volumes per output come in S2 and S3; S1 plays one
 //! stream at a time ([`Audio::play`]).
@@ -62,6 +68,11 @@ pub const AMP_SETTLE_US: u32 = 70_000;
 /// the jack is read right after (S1 run 1 read it low with headphones in
 /// for seconds on the slow divider; run 2 read it right).
 pub use rp_drv_wm8750::VMID_CHARGE_US as JACK_SETTLE_US;
+/// After this long with no sound and no wake, the codec sleeps: its
+/// supply off, I2S kept running (ADR-0032 R5, the owner's option A,
+/// 2026-10-19). A tunable, to be measured (battery against how often the
+/// codec cycles).
+pub const SLEEP_AFTER_MS: u32 = 5_000;
 /// A jack edge must hold this long before the route follows it.
 pub const JACK_DEBOUNCE_MS: u32 = 50;
 
@@ -137,6 +148,8 @@ pub struct Powered {
     pub jack_was_dirty: bool,
     /// The codec's I2C address.
     pub address: u8,
+    /// It woke from sleep: I2S was already running (no guard, no restart).
+    pub from_sleep: bool,
 }
 
 /// The codec: its bus while down, the driver while up.
@@ -160,6 +173,10 @@ pub struct Audio<B, I, L> {
     /// A jack edge seen while up, waiting out the debounce: since when.
     jack_pending: Option<u32>,
     amp: bool,
+    /// I2S is running (up, or asleep: the codec off, the link on).
+    link_on: bool,
+    /// The last sound's end or wake (`now_ms`), for the idle sleep.
+    last_active: u32,
 }
 
 impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
@@ -175,7 +192,15 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
             jack_dirty: false,
             jack_pending: None,
             amp: false,
+            link_on: false,
+            last_active: 0,
         }
+    }
+
+    /// Whether the codec sleeps with I2S still running (ADR-0032 R5).
+    #[must_use]
+    pub fn is_asleep(&self) -> bool {
+        !self.is_up() && self.link_on
     }
 
     /// Whether audio is up.
@@ -204,6 +229,11 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         &mut self.board
     }
 
+    /// The I2S link (for its status in a log).
+    pub fn link_mut(&mut self) -> &mut L {
+        &mut self.link
+    }
+
     /// The output level, 0-100.
     #[must_use]
     pub fn level(&self) -> u32 {
@@ -219,26 +249,35 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         }
     }
 
-    /// Brings audio up (nothing to do if it is). See the crate's notes for
-    /// the order; any failure puts everything back down.
+    /// Brings audio up (nothing to do if it is, but the idle time restarts).
+    /// From sleep only the codec comes up: I2S is already running, so no
+    /// guard and no restart. See the crate's notes for the order; any
+    /// failure puts everything back down. Also the early wake: call it on a
+    /// touch or a key press, so a click that follows plays at once.
     pub fn up(&mut self) -> Result<Powered, AudioError> {
+        self.last_active = self.board.now_ms();
         if let Codec::Up(c) = &self.codec {
             return Ok(Powered {
                 waited_ms: 0,
                 output: c.output(),
                 jack_was_dirty: false,
                 address: c.address(),
+                from_sleep: false,
             });
         }
-        let waited_ms = self.wait_out_guard();
+        let from_sleep = self.link_on;
+        let waited_ms = if from_sleep { 0 } else { self.wait_out_guard() };
         self.board.codec_power(true);
         self.board.delay_us(POWER_SETTLE_US);
         self.board.pins_up();
-        if !self.link.start() {
-            self.back_down();
-            return Err(AudioError::LinkRefused);
+        if !from_sleep {
+            if !self.link.start() {
+                self.back_down();
+                return Err(AudioError::LinkRefused);
+            }
+            self.link_on = true;
+            self.board.delay_us(CLOCK_SETTLE_US);
         }
-        self.board.delay_us(CLOCK_SETTLE_US);
         let Codec::Down(bus) = core::mem::replace(&mut self.codec, Codec::Moving) else {
             unreachable!("audio was down")
         };
@@ -271,12 +310,56 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
             let _ = self.down();
             return Err(AudioError::Codec(e));
         }
+        self.last_active = self.board.now_ms();
         Ok(Powered {
             waited_ms,
             output,
             jack_was_dirty,
             address,
+            from_sleep,
         })
+    }
+
+    /// The early wake (ADR-0032 R5): the same as [`Self::up`], named for
+    /// the shell's touch and key handlers.
+    pub fn wake(&mut self) -> Result<Powered, AudioError> {
+        self.up()
+    }
+
+    /// Puts the codec to sleep (nothing to do unless up): the amplifier
+    /// off, the codec's insides down, the I2C pins low, its supply off;
+    /// **I2S keeps running**, so waking needs no restart and the 645 ms rule
+    /// never applies.
+    pub fn sleep(&mut self) -> Result<(), I2cError> {
+        if !self.is_up() {
+            return Ok(());
+        }
+        let Codec::Up(codec) = core::mem::replace(&mut self.codec, Codec::Moving) else {
+            unreachable!("audio was up")
+        };
+        self.amp_off();
+        let (r, bus) = codec.power_down();
+        self.codec = Codec::Down(bus);
+        self.board.pins_down();
+        self.board.codec_power(false);
+        // The jack line falls with the supply: our edge, not a jack change.
+        let _ = self.board.take_jack_edge();
+        r
+    }
+
+    /// The idle rule: after [`SLEEP_AFTER_MS`] with no sound and no wake,
+    /// the codec sleeps. Returns whether it just went to sleep. Call it on
+    /// a timer.
+    pub fn idle(&mut self) -> bool {
+        if !self.is_up() {
+            return false;
+        }
+        let quiet = self.board.now_ms().wrapping_sub(self.last_active);
+        if quiet < SLEEP_AFTER_MS {
+            return false;
+        }
+        let _ = self.sleep();
+        true
     }
 
     /// Takes audio down (nothing to do if it is): the amplifier off, the
@@ -285,6 +368,12 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
     /// write that failed is reported.
     pub fn down(&mut self) -> Result<(), I2cError> {
         if !self.is_up() {
+            if self.link_on {
+                // Asleep: the codec is already off; I2S goes off now.
+                self.link.stop();
+                self.link_on = false;
+                self.stopped_at = Some(self.board.now_ms());
+            }
             return Ok(());
         }
         let Codec::Up(codec) = core::mem::replace(&mut self.codec, Codec::Moving) else {
@@ -346,7 +435,9 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
         idle: &mut dyn FnMut(),
     ) -> Result<Streamed, PlayError> {
         self.up().map_err(PlayError::Up)?;
-        stream(dma, ring, source, frames, now, stall, idle).map_err(PlayError::Stream)
+        let r = stream(dma, ring, source, frames, now, stall, idle).map_err(PlayError::Stream);
+        self.last_active = self.board.now_ms();
+        r
     }
 
     /// To headphones: the speaker pair muted first, then the amplifier off.
@@ -387,6 +478,7 @@ impl<B: Board, I: I2cBus, L: Link> Audio<B, I, L> {
     fn back_down(&mut self) {
         debug_assert!(!self.amp, "the amplifier outlived the codec");
         self.link.stop();
+        self.link_on = false;
         self.stopped_at = Some(self.board.now_ms());
         self.board.pins_down();
         self.board.codec_power(false);

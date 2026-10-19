@@ -726,6 +726,47 @@ pub const MUTANTS: &[Mutant] = &[
             "inherited_tags_are_counted_and_malformed_ones_refused",
         ]),
     },
+    Mutant {
+        name: "audio: the codec's sleep switches I2S off too (the 645 ms trap on every wake)",
+        file: "services/audio/src/lib.rs",
+        from: "        self.board.pins_down();
+        self.board.codec_power(false);
+        // The jack line falls with the supply: our edge",
+        to: "        self.link.stop();
+        self.board.pins_down();
+        self.board.codec_power(false);
+        // The jack line falls with the supply: our edge",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_codec_sleeps_after_the_quiet_time_and_the_link_keeps_running",
+        ]),
+    },
+    Mutant {
+        name: "audio: the codec sleeps before the quiet time is up",
+        file: "services/audio/src/lib.rs",
+        from: "        if quiet < SLEEP_AFTER_MS {",
+        to: "        if quiet < SLEEP_AFTER_MS / 2 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_codec_sleeps_after_the_quiet_time_and_the_link_keeps_running",
+        ]),
+    },
+    Mutant {
+        name: "audio: a touch's wake doesn't restart the quiet time",
+        file: "services/audio/src/lib.rs",
+        from: "    pub fn up(&mut self) -> Result<Powered, AudioError> {
+        self.last_active = self.board.now_ms();
+",
+        to: "    pub fn up(&mut self) -> Result<Powered, AudioError> {
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "a_wake_or_a_sound_restarts_the_quiet_time",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

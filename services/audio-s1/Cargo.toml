@@ -18,6 +18,8 @@ rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
 rp-drv-wm8750 = { path = "../../drivers/wm8750" }
 rp-drv-cpld = { path = "../../drivers/cpld" }
 rp-audio = { path = "../../services/audio" }
+rp-drv-pxa-ssp = { path = "../../drivers/pxa-ssp" }
+rp-drv-tsc2046 = { path = "../../drivers/tsc2046" }
 
 [lints]
 workspace = true

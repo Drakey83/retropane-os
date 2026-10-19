@@ -4844,6 +4844,143 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// An image built with one of its build-time switches set (`env` = `(name,
+/// value)`), in its own target folder so the plain build stays as it is;
+/// the raw file to load.
+fn variant_image(root: &Path, image: &str, env: (&str, &str)) -> Result<PathBuf, String> {
+    let dir = format!("target/variants/{}", env.0.to_ascii_lowercase());
+    run(Command::new("cargo")
+        .current_dir(root)
+        .env(env.0, env.1)
+        .args([
+            "build",
+            "--release",
+            "--target",
+            crate::TARGET_SPEC,
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zjson-target-spec",
+            "-q",
+            "-p",
+            image,
+            "--target-dir",
+            &dir,
+        ]))?;
+    let out = emu_dir(root)?.join(format!("{image}-{}.bin", env.0.to_ascii_lowercase()));
+    crate::sdkit::raw_binary(
+        &root
+            .join(&dir)
+            .join("armv5te-x51v-none-eabi/release")
+            .join(image),
+        &out,
+    )?;
+    Ok(out)
+}
+
+/// The codec's sleep (ADR-0032 R5, S1b): `rp-audio-s1` built with
+/// `RP_AUDIO_SLEEP`. After a note the codec sleeps within the quiet time
+/// with I2S still running; a sound with no wake first wakes it from sleep
+/// (VMID and the amplifier: ~150 ms); three taps on the screen wake it as
+/// the stylus lands, so each click starts right at the lift.
+pub fn boot_loader_audio_sleep(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) {
+        eprintln!("    audio sleep: skipped (this emulator has no USB controller model)");
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let image = variant_image(root, "rp-audio-s1", ("RP_AUDIO_SLEEP", "1"))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let port = monitor_port();
+    let args: Vec<String> = usb_args(2).into();
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        let mut s = usb_connect(2)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
+        let mut mon = crate::screen::Monitor::connect(port)?;
+        mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        let mut qmp = crate::screen::Qmp::connect(port + 1)?;
+        s.write_all(&frame).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
+        // Three taps, each held 4 s (the image waits up to 30 s for each,
+        // so a slow emulator still finds the stylus down), 12 s apart.
+        let centre = (0x4000, 0x4000);
+        std::thread::sleep(Duration::from_secs(20));
+        for _ in 0..3 {
+            qmp.touch(Some(centre))?;
+            std::thread::sleep(Duration::from_secs(4));
+            qmp.touch(None)?;
+            std::thread::sleep(Duration::from_secs(8));
+        }
+        let log = usb_read_until(&mut s, "RPL END", 60)?;
+        for want in [
+            "SLEEP TEST: HEADPHONES OUT",
+            "TEST 1:",
+            "TEST 2: A NOTE WITH NO TOUCH FIRST",
+            "TEST 5:",
+            "DONE: DID YOU HEAR 2 NOTES AND 3 CLICKS?",
+            "board bits put back as found",
+            "AUDIO-S1-OK",
+        ] {
+            if !log.contains(want) {
+                return Err(format!("audio sleep: no {want:?} in the run log:{log}"));
+            }
+        }
+        let asleep = log.matches("codec asleep").count();
+        let running = log.matches("I2S still running: true").count();
+        if asleep != 5 || running != 5 {
+            return Err(format!(
+                "audio sleep: {asleep} sleeps, {running} with I2S running (wanted 5 and 5):{log}"
+            ));
+        }
+        let woke = log.matches("(from sleep: true)").count();
+        if woke != 4 {
+            return Err(format!(
+                "audio sleep: {woke} wakes from sleep (wanted 4: the alarm-style note and three taps):{log}"
+            ));
+        }
+        // Each click starts right at the lift: the codec was already up.
+        for l in log.lines().filter(|l| l.contains("the click started")) {
+            let ms: u32 = l
+                .split("started ")
+                .nth(1)
+                .and_then(|r| r.split(' ').next())
+                .and_then(|n| n.parse().ok())
+                .ok_or(format!("audio sleep: unreadable click line {l:?}"))?;
+            if ms > 30 {
+                return Err(format!(
+                    "audio sleep: a click started {ms} ms after the lift:{log}"
+                ));
+            }
+        }
+        if log.contains("didn't sleep") || log.contains("no tap in 30 s") {
+            return Err(format!("audio sleep: a step didn't happen:{log}"));
+        }
+        if let Some(l) = log.lines().find(|l| l.contains("the chip woke in")) {
+            eprintln!("    audio sleep: {}", l.trim());
+        }
+        Ok(())
+    };
+    boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(150),
+        },
+    )?;
+    eprintln!(
+        "    audio sleep OK: five sleeps with I2S running, four wakes from sleep, every click at the lift"
+    );
+    Ok(())
+}
+
 /// Audio service step S1 (ADR-0032, `rp-audio-s1`): audio up at 44.1 kHz
 /// through the service, three notes to the speaker (pitch checked in the
 /// recording: a codec set to another rate than I2S would shift it), the
@@ -6708,6 +6845,19 @@ fn check_stack(text: &str) -> Result<Option<(u32, u32)>, String> {
     Ok(deepest)
 }
 
+/// A check's extra emulator arguments, with the sound recorded to
+/// `throwaway` (a wav backend) unless the check records it itself
+/// (`-audiodev`): without an audio backend QEMU plays the guest's sound on
+/// the PC's speakers (it beeped at the owner, 2026-10-19). Not QEMU's
+/// `none` backend: on Windows it stalled the machine protocol (QMP) mid-run.
+fn silent_unless_recorded<'a>(extra: &[&'a str], throwaway: &'a str) -> Vec<&'a str> {
+    let mut v = extra.to_vec();
+    if !extra.contains(&"-audiodev") {
+        v.extend(["-audiodev", throwaway, "-machine", "audiodev=rpsilent"]);
+    }
+    v
+}
+
 fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let Boot {
         image,
@@ -6727,6 +6877,16 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
     let qmp = format!("tcp:127.0.0.1:{},server,nowait", port + 1);
     let emu = emulator(root)?;
     let wsl = matches!(emu, Emulator::Wsl);
+    let silent = scratch(root, "silent.wav")?;
+    let throwaway = format!(
+        "wav,id=rpsilent,path={}",
+        if wsl {
+            to_wsl_path(&silent)
+        } else {
+            silent.display().to_string()
+        }
+    );
+    let extra = &silent_unless_recorded(extra, &throwaway);
     let _load = match std::env::var_os(LOAD_ENV) {
         Some(_) if wsl => Some(start_load(port, timeout + Duration::from_secs(30))?),
         Some(_) => {
@@ -7351,6 +7511,24 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].name, "memcpy_64k");
         assert!((r[0].ns - 100_000.0).abs() < 1e-6); // 3250 ticks = 1 ms, / 10
+    }
+
+    #[test]
+    fn the_emulator_never_plays_sound_out_loud() {
+        let file = "wav,id=rpsilent,path=t.wav";
+        let silent = silent_unless_recorded(&["-usb"], file);
+        assert_eq!(
+            silent,
+            ["-usb", "-audiodev", file, "-machine", "audiodev=rpsilent"]
+        );
+        // A check that records keeps its own backend.
+        let recorded = [
+            "-audiodev",
+            "wav,id=snd,path=x.wav",
+            "-machine",
+            "audiodev=snd",
+        ];
+        assert_eq!(silent_unless_recorded(&recorded, file), recorded);
     }
 
     #[test]

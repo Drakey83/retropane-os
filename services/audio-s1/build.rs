@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=RP_AUDIO_AMP_TIMING");
     println!("cargo:rerun-if-env-changed=RP_AUDIO_AB_TEST");
     println!("cargo:rerun-if-env-changed=RP_AUDIO_SWEEP");
+    println!("cargo:rerun-if-env-changed=RP_AUDIO_SLEEP");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");

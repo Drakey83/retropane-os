@@ -406,3 +406,111 @@ fn the_level_applies_when_up_and_is_kept_when_down() {
     // 100% is 0 dB on the headphone pair.
     assert!(w.borrow().ev.contains(&Ev::Reg(0x03, 0x1F9)));
 }
+
+// The codec's sleep (S1b, ADR-0032 R5): I2S keeps running.
+
+fn link_events(w: &W) -> (usize, usize) {
+    let ev = w.borrow().ev.clone();
+    let on = ev.iter().filter(|e| matches!(e, Ev::LinkOn(_))).count();
+    let off = ev.iter().filter(|e| **e == Ev::LinkOff).count();
+    (on, off)
+}
+
+#[test]
+fn the_codec_sleeps_after_the_quiet_time_and_the_link_keeps_running() {
+    let w = world(false);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    w.borrow_mut().us += u64::from(SLEEP_AFTER_MS - 1) * 1_000;
+    assert!(!a.idle(), "not before the quiet time");
+    assert!(a.is_up());
+    w.borrow_mut().us += 1_000;
+    let from = w.borrow().ev.len();
+    assert!(a.idle());
+    assert!(a.is_asleep() && !a.is_up());
+    let ev = w.borrow().ev[from..].to_vec();
+    // The amplifier off before the codec's insides, the supply last.
+    assert_eq!(ev[0], Ev::Amp(false));
+    assert_eq!(ev.last(), Some(&Ev::Power(false)));
+    assert!(ev.contains(&Ev::PinsDown));
+    // I2S was never switched off.
+    assert_eq!(link_events(&w), (1, 0));
+    assert!(w.borrow().link_on);
+    // Idle again: nothing more.
+    let n = w.borrow().ev.len();
+    assert!(!a.idle());
+    assert_eq!(w.borrow().ev.len(), n);
+}
+
+#[test]
+fn waking_from_sleep_needs_no_guard_and_no_link_restart() {
+    let w = world(true);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    a.sleep().unwrap();
+    // Straight back: the 645 ms rule would drop a link restart now.
+    let p = a.wake().unwrap();
+    assert!(p.from_sleep);
+    assert_eq!(p.waited_ms, 0);
+    assert_eq!(p.output, Output::Headphones);
+    assert_eq!(link_events(&w), (1, 0));
+    // The codec was set up again (its reset written twice in all).
+    let resets = w
+        .borrow()
+        .ev
+        .iter()
+        .filter(|e| **e == Ev::Reg(0x0F, 0))
+        .count();
+    assert_eq!(resets, 2);
+}
+
+#[test]
+fn a_wake_or_a_sound_restarts_the_quiet_time() {
+    let w = world(false);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    w.borrow_mut().us += 4_000_000;
+    // A touch: the shell wakes audio (already up: only the time restarts).
+    assert!(!a.wake().unwrap().from_sleep);
+    w.borrow_mut().us += 4_000_000;
+    assert!(!a.idle(), "8 s after up but only 4 s after the touch");
+    w.borrow_mut().us += 1_000_000;
+    assert!(a.idle());
+}
+
+#[test]
+fn going_down_from_sleep_stops_the_link_and_arms_the_guard() {
+    let w = world(false);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    a.sleep().unwrap();
+    a.down().unwrap();
+    assert!(!a.is_asleep() && !a.is_up());
+    assert_eq!(link_events(&w), (1, 1));
+    // Straight back up: the full start-up, after the guard.
+    let p = a.up().unwrap();
+    assert!(!p.from_sleep);
+    assert!(p.waited_ms > 600);
+    assert!(!w.borrow().ev.contains(&Ev::LinkOn(false)));
+}
+
+#[test]
+fn our_own_sleep_is_not_a_jack_change() {
+    let w = world(true);
+    let mut a = audio(&w);
+    a.up().unwrap();
+    a.sleep().unwrap();
+    assert_eq!(a.poll_jack(), None);
+    assert!(!a.jack_dirty());
+    // A real change while asleep only marks it.
+    {
+        let mut ww = w.borrow_mut();
+        ww.plugged = false;
+        ww.edge = true;
+    }
+    assert_eq!(a.poll_jack(), None);
+    assert!(a.jack_dirty());
+    let p = a.wake().unwrap();
+    assert!(p.jack_was_dirty);
+    assert_eq!(p.output, Output::Speaker);
+}

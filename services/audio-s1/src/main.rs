@@ -75,6 +75,13 @@ mod image {
     /// owner's phone sound meter: a quiet reading, then numbered pitches,
     /// high to low, 3 s each at full level.
     const SWEEP: bool = option_env!("RP_AUDIO_SWEEP").is_some();
+    /// `RP_AUDIO_SLEEP` at build time: S1b, the codec's sleep (ADR-0032 R5)
+    /// on the device: the idle sleep with I2S kept on, a sound with no
+    /// wake first, and taps that wake it early.
+    const SLEEP: bool = option_env!("RP_AUDIO_SLEEP").is_some();
+    /// The touch chip's select and pen lines (docs/hw/touch.md).
+    const TS_CS: u8 = 24;
+    const TS_PENIRQ: u8 = 94;
     /// Output level, 0-100: 60, or `RP_AUDIO_LEVEL` at build time.
     const LEVEL: u32 = match option_env!("RP_AUDIO_LEVEL") {
         Some(v) => parse(v),
@@ -475,6 +482,133 @@ mod image {
         let _ = writeln!(out, "DONE: SEND ME THE 11 READINGS, NOTE 0 TO NOTE 10");
     }
 
+    /// Whether I2S is running (`SACR0` bit 0).
+    fn link_running(a: &mut Service<'_>) -> bool {
+        a.link_mut().status()[0] & 1 != 0
+    }
+
+    /// Waits (polling the idle rule every 100 ms) until the codec sleeps;
+    /// logs how long it took and that I2S kept running.
+    fn wait_for_sleep(out: &mut impl Write, a: &mut Service<'_>) {
+        let t0 = rt::ticks();
+        for _ in 0..100 {
+            if a.idle() {
+                let ms = rt::ticks().wrapping_sub(t0) / TICK_MS;
+                let _ = writeln!(
+                    out,
+                    "  codec asleep {ms} ms into the wait; I2S still running: {}",
+                    link_running(a)
+                );
+                return;
+            }
+            a.board_mut().delay_us(100_000);
+        }
+        let _ = writeln!(out, "  codec didn't sleep in 10 s");
+    }
+
+    /// A 150 ms click at 1 kHz; how long after `from` it started.
+    fn click(a: &mut Service<'_>, dma: &mut Dma, ring: &mut [u8], from: u32) -> u32 {
+        let rate = rp_audio::LINK_RATE.hz();
+        let started = rt::ticks();
+        let mut tone = Tone::new(1_000, rate, 12_000);
+        let _ = a.play(
+            dma,
+            ring,
+            &mut tone,
+            rate * 150 / 1000,
+            &mut rt::ticks,
+            3_250_000 / 5,
+            &mut rt::check_in,
+        );
+        started.wrapping_sub(from) / TICK_MS
+    }
+
+    /// S1b on the device (ADR-0032 R5). Speaker only.
+    fn sleep_test(
+        out: &mut impl Write,
+        a: &mut Service<'_>,
+        gpio: &SharedGpio,
+        ssp: Mmio,
+        dma: &mut Dma,
+        ring: &mut [u8],
+    ) {
+        use rp_drv_pxa_gpio::GpioPin;
+        use rp_drv_pxa_ssp::Ssp;
+        use rp_drv_tsc2046::Tsc2046;
+        let _ = writeln!(out, "SLEEP TEST: HEADPHONES OUT THE WHOLE TIME");
+        // The touch chip: its select a plain GPIO (Windows Mobile leaves it
+        // as SSP1's frame), one reading to arm its pen line (GPIO94).
+        {
+            let mut g = gpio.borrow_mut();
+            g.make_output(TS_CS, true);
+            g.set_function(TS_CS, 0);
+            g.make_input(TS_PENIRQ);
+        }
+        let mut s = Ssp::new(ssp);
+        s.configure_spi(2_600_000);
+        let mut touch = Tsc2046::new(s, GpioPin::new(gpio, TS_CS), GpioPin::new(gpio, TS_PENIRQ));
+        let _ = touch.read(rp_drv_tsc2046::channel::X);
+        a.board_mut().delay_us(3_000_000);
+
+        let _ = writeln!(out, "TEST 1: A NOTE, THEN 5 S OF QUIET (THE CHIP SLEEPS)");
+        if !up(out, a, "sleep test") {
+            return;
+        }
+        note(out, a, dma, ring, 660);
+        wait_for_sleep(out, a);
+
+        let _ = writeln!(out, "TEST 2: A NOTE WITH NO TOUCH FIRST (LIKE AN ALARM)");
+        let asked = rt::ticks();
+        let woke = a.up();
+        let ms = rt::ticks().wrapping_sub(asked) / TICK_MS;
+        let _ = writeln!(
+            out,
+            "  the chip woke in {ms} ms (from sleep: {})",
+            woke.map(|p| p.from_sleep).unwrap_or(false)
+        );
+        note(out, a, dma, ring, 880);
+        wait_for_sleep(out, a);
+
+        for n in 3..=5u32 {
+            let _ = writeln!(
+                out,
+                "TEST {n}: TAP THE SCREEN, HOLD 1 SECOND, LIFT: A CLICK AS YOU LIFT"
+            );
+            // The finger lands: wake early.
+            let mut waited = 0u32;
+            while !touch.pen_down() && waited < 30_000 {
+                a.board_mut().delay_us(5_000);
+                waited += 5;
+            }
+            if waited >= 30_000 {
+                let _ = writeln!(out, "  no tap in 30 s");
+                continue;
+            }
+            let down_at = rt::ticks();
+            let woke = a.wake();
+            let ms = rt::ticks().wrapping_sub(down_at) / TICK_MS;
+            let _ = writeln!(
+                out,
+                "  touch: the chip woke in {ms} ms (from sleep: {})",
+                woke.map(|p| p.from_sleep).unwrap_or(false)
+            );
+            // The finger lifts: the click.
+            while touch.pen_down() {
+                a.board_mut().delay_us(5_000);
+            }
+            let up_at = rt::ticks();
+            let held = up_at.wrapping_sub(down_at) / TICK_MS;
+            let late = click(a, dma, ring, up_at);
+            let _ = writeln!(
+                out,
+                "  lift after {held} ms: the click started {late} ms after the lift"
+            );
+            wait_for_sleep(out, a);
+        }
+        down(out, a);
+        let _ = writeln!(out, "DONE: DID YOU HEAR 2 NOTES AND 3 CLICKS?");
+    }
+
     fn down(out: &mut impl Write, a: &mut Service<'_>) {
         match a.down() {
             Ok(()) => {
@@ -549,6 +683,16 @@ mod image {
 
         // The owner's steps, the same words as in the chat: headphones in
         // at the start; fixed prompts that never depend on a reading.
+        if SLEEP {
+            let Some(ssp) = rt::take_ssp1() else {
+                let _ = writeln!(out, "no SSP1 for the touch chip");
+                let cpld = a.board_mut().cpld.take();
+                finish(cpld, found)
+            };
+            sleep_test(&mut out, &mut a, &gpio, ssp, &mut dma, ring);
+            let cpld = a.board_mut().cpld.take();
+            finish(cpld, found)
+        }
         if SWEEP {
             sweep(&mut out, &mut a, &mut dma, ring);
             let cpld = a.board_mut().cpld.take();
