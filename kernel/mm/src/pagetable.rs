@@ -953,6 +953,22 @@ mod tests {
     }
 
     #[test]
+    fn a_large_page_never_lands_on_small_pages() {
+        // One small page inside the 64 KiB: the large page is refused and
+        // the small one stays as it was.
+        let (mut pt, mut ram, mut fr) = setup();
+        pt.map_small(&mut ram, &mut fr, 0x1_3000, phys(5), 0, RW)
+            .unwrap();
+        let p = crate::layout::RAM_PHYS + 0x20_0000;
+        assert_eq!(
+            pt.map_large(&mut ram, &mut fr, 0x1_0000, p, 0, RW),
+            Err(MapError::AlreadyMapped)
+        );
+        assert_eq!(pt.translate(&mut ram, 0x1_3000), Some((phys(5), RW)));
+        assert_eq!(pt.translate(&mut ram, 0x1_0000), None);
+    }
+
+    #[test]
     #[should_panic(expected = "unmapped whole")]
     fn half_a_large_page_cannot_be_unmapped() {
         let (mut pt, mut ram, mut fr) = setup();

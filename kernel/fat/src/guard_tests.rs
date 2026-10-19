@@ -272,3 +272,27 @@ fn a_boot_files_chain_cannot_be_relinked() {
         );
     }
 }
+
+#[test]
+fn a_boot_files_chain_end_cannot_be_moved() {
+    // 3000 bytes in 1 KiB clusters, written in one run: the third cluster
+    // ends the chain. Pointing it on (the file would grow into another
+    // file's clusters) is refused, in both copies of the FAT.
+    let (mut v, _) = card(&[], 3000);
+    let last = v.find("retropane.bin").unwrap().first_cluster + 2;
+    for copy in 0..2 {
+        let lba = v.fat_start + copy * v.fat_sectors + last / FAT_PER_SECTOR;
+        let mut s = sector(&v, lba);
+        let o = (last % FAT_PER_SECTOR) as usize * 4;
+        assert!(
+            u32::from_le_bytes([s[o], s[o + 1], s[o + 2], s[o + 3]]) & 0x0FFF_FFFF >= 0x0FFF_FFF8,
+            "the chain's end"
+        );
+        s[o..o + 4].copy_from_slice(&(last + 40).to_le_bytes());
+        assert_eq!(
+            raw_write(&mut v, lba, &s),
+            Err(BlockError::ReadOnly),
+            "copy {copy}"
+        );
+    }
+}
