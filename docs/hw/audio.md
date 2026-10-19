@@ -428,7 +428,7 @@ inaudible on the speaker, 660 Hz at the same level is heard, 440 Hz at
 full level is heard. **Not proven:** why 440 Hz comes out so much weaker:
 the speaker itself, or RetroPane's codec set-up (Dell's driver writes
 registers 16 and 24, which RetroPane doesn't; their meaning unconfirmed).
-**Status: broken, S1 not passed.** Options for the owner: (a) the same
+**Status then: broken, S1 not passed** (passed by the owner on 2026-10-19, the speaker's weak low notes being its hardware's: the Windows Mobile run and the measured response below). Options for the owner: (a) the same
 two notes played by Windows Mobile through its own driver at a known
 volume (a read-only probe like `rp-wmaudio`): if Windows Mobile's 440 Hz is
 heard where ours isn't, our set-up is missing something; (b) the A/B test
@@ -487,6 +487,12 @@ same sweep** (likely the same speaker part); its numbers beside these settle
 "this unit" or "the model". For the speaker tuning (ADR-0032 A4): the useful
 band starts around 600-800 Hz; below ~500 Hz the speaker gives almost
 nothing at any level.
+
+**S1 passed (the owner, 2026-10-19).** The jack, the power order (VMID
+fast start) and the I2S guard work on the device; the headphones play
+every note; the speaker's weak low notes are the speaker's (the same
+under Windows Mobile; the owner's X50v will be compared). Carried
+forward: `rp-wmpower`, the idle-power measurement.
 
 **Dell's private equalizer controls (2026-10-18, from X50Mix, read only):**
 `WAV1:` control codes `0x1D2000` (set) and `0x1D2004` (get), a 9-byte

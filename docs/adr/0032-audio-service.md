@@ -383,8 +383,10 @@ step grows it by more than 8 KiB).
    sound device closed, open and playing silence, and open idle.
    **Built 2026-10-18:** the core (`services/audio`), the guided device
    run `rp-audio-s1` (`cargo xtask audio-s1`; its emulator check
-   `emu-audio-s1` passes) and `rp-wmpower`; both device runs wait for the
-   owner.
+   `emu-audio-s1` passes) and `rp-wmpower`. **Passed by the owner
+   2026-10-19** (docs/hw/audio.md, runs 1-3 and the diagnostics); the
+   idle-power measurement (`rp-wmpower`) is carried forward, so R5's
+   baseline (audio up while awake) stands until it runs.
 2. **S2 the mixer** (R2-R4): roles, several streams, the rewrite-ahead
    and its adaptive wake interval (15 / 200 ms), the actual-start field; latency and wake-ups
    measured with music and clicks; limiter times tuned.
