@@ -661,8 +661,17 @@ while I2S runs; each of 0, 1, 10, 100 and 1,000 ms stopped, three tries;
 each line says whether it met the criteria). **Passes in the emulator**
 (`emu-dma-restart`, fork rp-v0.28.0, where the PXA's link clock drains I2S
 with the codec off as the X51v does: every stop at the chain's end, every restart moving and
-finishing; the emulator's timings say nothing about the device's). Not yet
-run on the device.
+finishing; the emulator's timings say nothing about the device's).
+**Run on the X51v (2026-10-19 evening): both pass, 15 of 15 tries**
+(docs/hw/audio.md). (1) Every restart moved and finished after every stop
+length (0-1,000 ms) with I2S on throughout; `TUR` (`SASR0` bit 5) sets when
+the FIFO runs dry and stays set, and doesn't block the restart, so nothing
+needs clearing. (2) The restart moved **8 us** after it once the FIFO had
+emptied; restarted at once, 168-172 us, which is the FIFO still playing its
+last frames down to its threshold (no gap). Both under 0.5 ms. **The
+owner's condition for B is met**; building waits for the owner's go. The
+forced race's click (what an empty FIFO sends) is heard in the listening
+run after B is built.
 
 1. **Restarting the I2S DMA channel while I2S keeps running**: the channel
    stopped at a STOP link, left stopped 0, 10, 100 and 1,000 ms, restarted;

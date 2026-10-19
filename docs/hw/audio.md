@@ -615,6 +615,36 @@ listening run is still to come; these are numbers only.
   host will have its own thread; a single-threaded program stalling the
   mixer is the image's, but the console's cost is worth knowing.)
 
+**The audio DMA stopped and restarted while I2S runs (2026-10-19 evening,
+ADR-0032 A6's bench: `rp-tone` built with `RP_TONE_DMA_RESTART`, no codec, no
+I2C, no board bit; log `%TEMP%\a6-device.log`, copied to
+`local/rp-tone-dma-restart.txt`).** I2S on at 44.1 kHz (`SADIV` `0x0D`); a
+transfer of 160 KiB of silence, eight descriptors longer than the channel's
+32-descriptor chain, so the channel stops at the chain's STOP link
+(byte 131,072) while nothing polls; left stopped 0, 1, 10, 100 and
+1,000 ms, three tries each; restarted as ADR-0032 A6's option B would
+(`DDADR` at the next descriptor, then `RUN`, the request line kept mapped).
+
+- **Every restart worked, 15 of 15:** the stop came at the chain's end every
+  time, the transfer finished, and `SACR0` read I2S on throughout. The 645 ms
+  rule is about switching I2S on; it doesn't touch a DMA-only restart.
+- **How long a restart takes:** the restart itself (the poll that writes
+  `DDADR` and `RUN`) 4-16 us; the first move **8 us** after it once the FIFO
+  has emptied (every stop of 1 ms or more). Restarted at once (0 ms), the
+  first move came 168-172 us after the restart: the FIFO was still playing
+  its last 16 frames, and the engine is asked for more only when the FIFO
+  falls to its threshold (8 frames, ~180 us at 44,317), so there was no gap
+  at all.
+- **`SASR0` bit 5 (`TUR`, transmit underrun) sets when the FIFO runs dry
+  and stays set** (`0x24`: `BSY` and `TUR`; `0x2D` while the FIFO waits
+  for data: `TNF`, `TFS`, `BSY`, `TUR`). The first stop, restarted before
+  the FIFO emptied, read `0x04` (no underrun). `TUR` doesn't stop a restart:
+  nothing needs clearing. (`SAICR` bit 5 clears it, PXA27x manual; not
+  needed.)
+- Still not known (no codec on this bench, nothing to hear): what I2S sends
+  on the wire while the FIFO is empty (zeros or the last sample held:
+  ADR-0032 A6 lists both cases).
+
 **S2 listening runs (2026-10-19 morning, owner; logs
 `local/rp-audio-s2-listen2.txt`).** Run 1: the headphones came out during
 test 5A, so 5A-5C played on the speaker; run 2 went as planned (out at test

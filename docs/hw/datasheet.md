@@ -169,6 +169,11 @@ watching.
   address-only transfers (a byte with START and STOP never finishes; after
   an acknowledged address a master abort holds SCL low); a switch-on of I2S
   within ~645 ms of a switch-off is ignored (keep I2S on through a session).
+- **The audio DMA may stop and restart while I2S runs** (2026-10-19, ADR-0032
+  A6's bench, 15 of 15): a stop at a STOP link, left 0-1,000 ms, restarted
+  by `DDADR` and `RUN` moves 8 us later (once the FIFO has emptied); I2S stays
+  on. An empty FIFO sets `SASR0` `TUR` (bit 5, sticky until `SAICR`), which
+  doesn't block the restart.
 - Dell's private equalizer controls: `WAV1:` codes `0x1D2000`/`0x1D2004`.
 - Page: [audio.md](audio.md).
 
