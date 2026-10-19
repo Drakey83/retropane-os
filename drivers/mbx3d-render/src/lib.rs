@@ -1176,6 +1176,15 @@ impl Renderer {
         Ok(())
     }
 
+    /// Where slot `slot`'s object words sit in 2700G memory (as [`Self::set`]
+    /// stores them), for device tests that change a word the renderer
+    /// doesn't build yet (`rp-gpubench`'s texture-word probes) between a
+    /// set and a render; `None` for no such slot.
+    #[must_use]
+    pub fn slot_words_at(&self, slot: usize) -> Option<u32> {
+        (slot < MAX_SLOTS).then(|| self.params.at + SLOTS_AT + slot as u32 * SLOT_BYTES)
+    }
+
     /// Marks pixels `[x, x + w)` x `[y, y + h)` to be rendered again (after
     /// something else drew there).
     pub fn invalidate(&mut self, x: i32, y: i32, w: i32, h: i32) {

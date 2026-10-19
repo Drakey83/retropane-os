@@ -59,6 +59,7 @@ members = [
     "boot/glesfeat",
     "boot/noise",
     "boot/mbx3d-api",
+    "boot/gpubench",
     "boot/cftime",
     "boot/sdtime",
     "boot/storfast",

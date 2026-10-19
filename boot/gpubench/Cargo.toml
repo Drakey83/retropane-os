@@ -1,0 +1,26 @@
+[package]
+name = "rp-gpubench"
+description = "Test image (docs/design/ui.md, 3D acceleration for the whole UI): the GPU facts the 3D compositor proposal needs. Run A: textured and blended fill rate on 32- and 16-bit targets, N full-screen layers, partial frames, a 512 x 1024 rectangular texture, layer upload costs (CPU and DMA), and rendering in step with the frame event (three tests the owner watches). Run B (RP_GPUBENCH_PROBES): texture words Dell's driver never sets, one at a time, for a row-order (non-twiddled) texture mode"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-hal-mem = { path = "../../hal/mem" }
+rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
+rp-vram-map = { path = "../../drivers/vram-map" }
+rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+
+[lints]
+workspace = true

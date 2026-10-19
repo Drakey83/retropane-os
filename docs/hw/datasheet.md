@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-18 (Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, added the same night). Facts come from measurements on the owner's X51v (a
+*As of 2026-10-19 (texture shapes from Dell's GLES library; Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, 2026-10-18). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -143,7 +143,9 @@ watching.
   fog bit 24 / no fog bit 25) and texture words (texture code 10 = 8-bit
   grey, code 8 = grey + alpha, code 7 = ARGB4444; full list in 2700g.md);
   all eight depth modes proven (ADR-0026); render done is bit 2 of the
-  interrupt status `0x12c`.
+  interrupt status `0x12c`. Textures are twiddled, sides powers of two up
+  to 2048; Dell's GLES builds rectangles (512 x 1024) and has no row-order
+  mode (static, 2026-10-19; device check `rp-gpubench`).
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),

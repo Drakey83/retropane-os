@@ -2931,6 +2931,88 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The GPU measuring run for the 3D compositor proposal (rp-gpubench,
+/// docs/design/ui.md): run A (fill, layers, partial frames, rectangular
+/// textures, uploads, the frame-event watch tests) and run B (the
+/// texture-word probes, built with `RP_GPUBENCH_PROBES`), each under the
+/// loader. The models' times say nothing about the device's (the fork's 3D
+/// core doesn't model the clock or the fill costs: emulator.md), so this
+/// checks that every stage runs, the 2700G memory pool is all given back,
+/// the two upload paths write the same texture, nothing faults, and each
+/// run returns to the loader. Without a key the watch tests end at their
+/// 30 s cap (or at once if the scan line isn't modelled).
+pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    gpubench: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    let run_a = dir.join("rp-gpubench.bin");
+    crate::sdkit::raw_binary(&release.join("rp-gpubench"), &run_a)?;
+    let run_b = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PROBES", "1"))?;
+    let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    for (name, bin, want) in [
+        (
+            "run A",
+            &run_a,
+            &[
+                "G4a: rectangular textures",
+                "G1 565 bilinear 1:1 / 16-bit",
+                "G2 translucent flat / 32-bit",
+                "G3 1 opaque 565 layer, one tile",
+                "U4b SDRAM to the texture by DMA",
+                "U3 and U4 wrote the same texture: true",
+                "U5b strip",
+                "  W1: ",
+                "  W2: ",
+                "  W3: ",
+            ][..],
+        ),
+        ("run B", &run_b, &["B: TEX0 words", "  B: 20 tries"][..]),
+    ] {
+        let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        let output = boot(
+            root,
+            &Boot {
+                image: &loader,
+                marker: LOADER_MARKER,
+                screenshot: None,
+                sd_image: None,
+                steps: &[],
+                extra: &[],
+                input: Some((&rp_loadproto::frame(&payload), "RETROPANE-GPUBENCH: ")),
+                during: None,
+                then: Some("RPL END"),
+                timeout: Duration::from_secs(900),
+            },
+        )?;
+        let log = output
+            .rsplit_once("RPL LOG")
+            .map(|(_, l)| l)
+            .ok_or_else(|| format!("gpubench {name}: never came back to the loader"))?;
+        if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+            return Err(format!("gpubench {name}: didn't return cleanly:{log}"));
+        }
+        let always = ["everything given back: true", "RETROPANE-GPUBENCH: done"];
+        // Without the 3D model every render is refused (`NoCore`): only
+        // the plumbing is checked.
+        let modelled_only: &[&str] = if modelled { want } else { &[] };
+        for w in always.iter().chain(modelled_only) {
+            if !log.contains(w) {
+                return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
+            }
+        }
+        if modelled && name == "run A" && !log.contains(" 0 hung renders recovered") {
+            return Err(format!("gpubench {name}: a render hung on the model:{log}"));
+        }
+        eprintln!("    gpubench {name} OK: every stage ran and it returned to the loader");
+    }
+    Ok(())
+}
+
 /// RetroPane's own 3D renderer's device test (rp-mbx3d-api, ADR-0026):
 /// runs under the loader. With the fork's 3D model (`mbx-3d`, rp-v0.15.0)
 /// every counted check must pass, as on the device (run 3: 0 BAD), and

@@ -1176,3 +1176,17 @@ fn sixteen_bit_targets_as_measured() {
         );
     }
 }
+
+#[test]
+fn slot_words_at_finds_the_texture_words_set_stored() {
+    let mut g = rig(480, 640);
+    let t = upload(&mut g.pool, &mut g.mem, 1, format::RGB565, &[0; 256]).unwrap();
+    g.set(5, Some(Draw::rect(0, 0, 16, 16, Paint::texture(t))));
+    let at = g.r.slot_words_at(5).expect("slot");
+    let words: Vec<u32> = (0..64)
+        .map(|k| g.mem.load(at as usize + 4 * k).unwrap())
+        .collect();
+    // Both triangles carry TEX0 (the probes change it there).
+    assert_eq!(words.iter().filter(|&&w| w == t.words()[0]).count(), 2);
+    assert_eq!(g.r.slot_words_at(MAX_SLOTS), None);
+}

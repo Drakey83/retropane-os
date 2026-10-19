@@ -399,7 +399,14 @@ bilinear and alpha blending; whether non-power-of-two textures work; how
 long a frame of N full-screen layers takes, and a partial frame of a few
 tiles; the cost of uploading a layer (the CPU's writes, 32-41 MB/s
 measured, or a DMA copy from RAM, not measured); whether rendering can
-track the frame event without tearing.
+track the frame event without tearing. **Written as `rp-gpubench`
+(2026-10-19, not yet run; docs/hw/2700g.md "Texture shapes"):** run A
+measures all of these, run B probes for a row-order texture mode. Found
+on the way (static, Dell's GLES library): textures may be rectangles of
+powers of two, so a 480 x 640 layer would sit in 512 x 1024 (1 MiB at 16
+bits, not 2 MiB); the library has no row-order texture mode and refuses
+other sizes, so every layer reaches the 3D core reordered (twiddled) by
+the CPU, unless run B finds a mode the chip has and Dell never used.
 
 ## Ideas: modern 3D in a retro-modern UI (proposal, 2026-10-19)
 

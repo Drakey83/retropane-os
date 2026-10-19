@@ -297,6 +297,38 @@ pub mod tex {
         }
         r
     }
+
+    /// TEX0 with sides of `2^(code_u + 3)` across and `2^(code_v + 3)`
+    /// down (a rectangle of powers of two) and `format`: the GLES driver
+    /// builds the two size codes apart (static, 2026-10-19, `libGLES_CL.dll`
+    /// `0x02263924`-`0x02263930`: width in bits 27-24, height in 23-20).
+    /// Not yet drawn on the device (`rp-gpubench` G4a).
+    #[must_use]
+    pub const fn tex0_rect(code_u: u32, code_v: u32, format: u32) -> u32 {
+        0xA000_0000
+            | (code_u & 15) << SIZE_SHIFTS.0
+            | (code_v & 15) << SIZE_SHIFTS.1
+            | (format & 0x1F) << FORMAT_SHIFT
+    }
+
+    /// Where texel `(x, y)` sits in a rectangular texture of `1 << bits_u`
+    /// x `1 << bits_v` texels: [`twiddle`] over the shorter side's bits,
+    /// then the longer side's remaining bits above them, in order (static,
+    /// 2026-10-19: the GLES driver's address function `0x02265a98`-
+    /// `0x02265b10`, the bit counts passed per axis). A square texture is
+    /// [`twiddle`]. Not yet drawn on the device (`rp-gpubench` G4a).
+    #[must_use]
+    pub const fn twiddle_rect(x: u32, y: u32, bits_u: u32, bits_v: u32) -> u32 {
+        let short = if bits_u < bits_v { bits_u } else { bits_v };
+        let mask = (1 << short) - 1;
+        let low = twiddle(x & mask, y & mask);
+        let high = if bits_u > bits_v {
+            x >> short
+        } else {
+            y >> short
+        };
+        low | high << (2 * short)
+    }
     /// TEX1's high bits as DoomGLES writes them (bits 31-25: a level of
     /// detail setting); the texture's address / 128 goes below.
     pub const ADDRESS_GAME: u32 = 0xCE00_0000;

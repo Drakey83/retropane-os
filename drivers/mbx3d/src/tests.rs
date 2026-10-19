@@ -374,3 +374,47 @@ fn tex1_fields_as_the_gles_driver_writes_them() {
     assert_eq!(tex::tex0(0, tex::ARGB8888) & 0x3_E000, 0x1_8000);
     assert_eq!(tex::tex0(0, tex::RGB565) & 0x3_E000, 0x4000);
 }
+
+#[test]
+fn rectangular_twiddle_is_square_twiddle_for_squares() {
+    for (x, y) in [(0, 0), (5, 3), (15, 3), (63, 63), (511, 200)] {
+        assert_eq!(tex::twiddle_rect(x, y, 9, 9), tex::twiddle(x, y));
+    }
+}
+
+#[test]
+fn rectangular_twiddle_appends_the_longer_sides_bits() {
+    // 64 x 32: x's bit 5 above the 32 x 32 square's ten bits.
+    assert_eq!(tex::twiddle_rect(32, 0, 6, 5), 1 << 10);
+    assert_eq!(
+        tex::twiddle_rect(37, 3, 6, 5),
+        (1 << 10) | tex::twiddle(5, 3)
+    );
+    // 32 x 64: y's bit 5 instead.
+    assert_eq!(
+        tex::twiddle_rect(5, 35, 5, 6),
+        (1 << 10) | tex::twiddle(5, 3)
+    );
+    // 512 x 1024 (a 480 x 640 layer): every texel a place of its own,
+    // squares of 512 x 512 one after the other down.
+    let mut seen = [0u32; 512 * 1024 / 32];
+    for y in 0..1024 {
+        for x in 0..512 {
+            let i = tex::twiddle_rect(x, y, 9, 10) as usize;
+            assert!(seen[i / 32] & 1 << (i % 32) == 0, "({x},{y}) shares {i}");
+            seen[i / 32] |= 1 << (i % 32);
+        }
+    }
+    assert_eq!(tex::twiddle_rect(0, 512, 9, 10), 512 * 512);
+}
+
+#[test]
+fn rectangular_tex0_carries_both_size_codes() {
+    let t = tex::tex0_rect(6, 7, tex::RGB565);
+    assert_eq!(t >> tex::SIZE_SHIFTS.0 & 15, 6);
+    assert_eq!(t >> tex::SIZE_SHIFTS.1 & 15, 7);
+    assert_eq!(
+        tex::tex0_rect(3, 3, tex::ARGB4444),
+        tex::tex0(3, tex::ARGB4444)
+    );
+}

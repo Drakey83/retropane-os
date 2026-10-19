@@ -457,6 +457,17 @@ pub const BUDGETS: &[Budget] = &[
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Test image (docs/design/ui.md, the 3D compositor proposal's GPU
+    // facts): run A (fill rate, layers, partial frames, rectangular
+    // textures, uploads, frame-event watch tests) and run B (texture-word
+    // probes). 95.9 KiB measured (2026-10-19), + ~10%; zeroed RAM 19.7 KiB
+    // (the renderer's state), + ~12%.
+    Budget {
+        image: "rp-gpubench",
+        max_load: 106 * 1024,
+        max_zero: 22 * 1024,
+        device: OnDevice::Returns,
+    },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
     // the card's CIS and IDENTIFY, five read paths timed; report only.
     // 32.8 KiB measured (2026-10-15), + ~10%.
