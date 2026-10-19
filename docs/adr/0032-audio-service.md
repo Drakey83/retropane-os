@@ -477,8 +477,21 @@ changes a vote or a condition.
   filter stretched for 48 kHz. 11.025 and 22.05 kHz land exactly on table
   points. Measured on the host: THD+N under -80 dB for every rate, images
   under -65 dB, 19 kHz from 48 kHz content at -3.6 dB, 23 kHz folding to
-  -26 dB. Scalar for now: the iWMMXt loop waits for the device's CPU share
-  (quality audit E1).
+  -26 dB. On the device (2026-10-19, the cycle counter): 174 cycles a
+  frame at 44.1 kHz, 431 from 22.05 / 11.025 kHz, 669 from 48 kHz
+  (1.2-4.7% of the 624 MHz CPU), after a scalar rework the same night that
+  stays bit-exact (strided table points for whole-number steps, a
+  compile-time 48 kHz table of its 148 phases, 6.5 KB). iWMMXt is still
+  open (quality audit E1).
+- **Measured on the device, for A1:** the link runs at **44,318 Hz**, not
+  44,100 (+0.49%, ~8.5 cents sharp): `SADIV` `0x0D` can't make 44.1 kHz
+  from the PXA's audio clock (`0x0C` makes exactly 48 kHz). Windows Mobile
+  has the same offset. **Options, the owner's to choose:** (a) keep it (as
+  Windows Mobile; a player syncing video to the audio clock doesn't drift;
+  pitch 8.5 cents sharp, below what most notice); (b) convert every stream
+  to 44,318 Hz (no bit-exact 44.1 kHz; a little CPU for all music); (c) run
+  the link at 48 kHz (exact; A1-B, 44.1 kHz content converted, ~669 cycles
+  a frame measured for the reverse direction).
 - **Memory:** the mixer itself 2.3 KB; its memory block 48.3 KiB (the DMA
   ring 44 KiB and the kept states 4.3 KiB), given by its owner. The image
   `rp-audio-s2` is 70.1 KiB.
