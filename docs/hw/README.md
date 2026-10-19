@@ -48,6 +48,8 @@ Rules:
 - Facts only: no code, no pseudo-code transcribed from disassembly, no listings.
 - Each `confirmed` fact needs a matching spec test in the driver crate.
 - Record what we **don't** know too (an "Open questions" section).
+- **Keep [`datasheet.md`](datasheet.md) current:** every new or changed fact
+  here goes into the datasheet (and its drawings) in the same commit.
 
 ## First facts from a real X51v (2026-10-11)
 

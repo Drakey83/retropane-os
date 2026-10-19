@@ -82,6 +82,14 @@ emu` boot that fails without it; what can't be modelled is listed with the
 reason in `docs/hw/emulator.md`. The emulator is only trusted for what that
 table says it models.
 
+**The datasheet follows the device too.** `docs/hw/datasheet.md` (and its
+drawings in `docs/hw/img/`) is the one-page summary of the board. A new or
+changed hardware fact (a pin, a CPLD bit, an address, a confidence moving
+from guess to confirmed, a fact disproved) goes into its detail page under
+`docs/hw/` **and** into the datasheet in the same commit, with the "as of"
+date moved; the GPIO and CPLD drawings are regenerated when their tables
+change (`tools/hwmaps/maps.py`).
+
 ## The box (non-negotiable constraints)
 
 - Intel PXA270 (XScale ARMv5TE), single core, 624 MHz. No Thumb-2, no atomics
@@ -152,5 +160,6 @@ that run at 624 MHz.
 ## Definition of done
 
 `cargo xtask ci` is green (fmt, clippy, architecture lint, unit tests, X51v
-cross-build), docs updated, benchmarks not regressed, and the change advances
+cross-build), docs updated (a hardware fact: its `docs/hw` page and the
+datasheet), benchmarks not regressed, and the change advances
 at least one lens without setting back any other.

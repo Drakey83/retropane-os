@@ -29,7 +29,7 @@ hardware datasheet); nothing is built yet.
    (keyboards, mice), **A2DP** with the SBC codec into the audio service,
    **HFP/HSP** for calls and the headset's microphone, AVRCP (headset
    buttons: play, pause, volume).
-4. **The audio service** (still to design: docs/hw/audio.md, ROADMAP) routes
+4. **The audio service** (ADR-0032, proposed; Bluetooth outputs are its step S6) routes
    sound to the speaker, the headphones or a Bluetooth headset, and takes a
    headset's microphone; one session rule (I2S on through a session) holds.
 5. **Battery**: radio and USB power policies, measured.
