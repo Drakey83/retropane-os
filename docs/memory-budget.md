@@ -16,7 +16,7 @@ Framebuffers, window surfaces and textures live in the 2700G's own 16 MB
 |---|---|---|
 | Kernel image: code, data, static tables, boot stacks | 1 MiB | `rp-kernel`: 65 + 120 KiB |
 | Kernel memory in use: page tables, compressed store, thread stacks | 1 MiB | measured at run time |
-| Driver hosts: storage, display+input, audio, connectivity, power (ADR-0016) | 1 MiB | audio: the mixer's memory 48.3 KiB (the DMA ring 44 KiB, its kept chain states 4.3 KiB) and the mixer itself 2.3 KB for eight streams (measured 2026-10-19, ADR-0032 S2; programs' rings, 50.9 KiB per 44.1 kHz stereo stream, in their own budgets); connectivity grows a Bluetooth process, its budget set at ADR-0033 P-S2 |
+| Driver hosts: storage, display+input, audio, connectivity, power (ADR-0016) | 1 MiB | audio: the mixer's memory 48.3 KiB (the DMA ring 44 KiB, its kept chain states 4.3 KiB) and the mixer itself 2.3 KB for eight streams and its read-only tables (the resampler's wing 1.3 KB, 48 kHz's 148 phases 6.5 KB) (measured 2026-10-19, ADR-0032 S2; programs' rings, 50.9 KiB per 44.1 kHz stereo stream, in their own budgets); connectivity grows a Bluetooth process, its budget set at ADR-0033 P-S2 |
 | Service manager and system services (files, registry) | 1 MiB | |
 | Window manager (GWES), shell, Today screen | 3 MiB | |
 | Windows Mobile libraries (coredll, aygshell, GDI, GAPI): code shared by all apps | 2 MiB | |

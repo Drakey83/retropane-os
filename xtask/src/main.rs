@@ -182,6 +182,9 @@ commands:
   emu-audio-s1  the S1 image's check (rp-audio-s1: three notes at
             44.1 kHz, the jack re-routes while up, the restart guard, no
             power-up for a jack change while down)
+  emu-silent-pc  a PC silent after the loader's first plug-in (the fork's
+            pxa27x-udc.ignore-plugs=1): the loader's retry must get it
+            configured
   emu-audio-s2  the mixer's check (rp-audio-s2: two notes from 22.05 and
             48 kHz recorded at the same pitch back to back, taps and clicks
             within 10 ms, long sleeps with music alone, nothing late or dry,
@@ -221,8 +224,8 @@ fn main() -> ExitCode {
         | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
-        | "emu-audio-s2" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-audio-s2" | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure"
+        | "emu-unplug" | "emu-keepfed" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -518,6 +521,7 @@ fn run_step(step: &str) -> Result {
         "emu-audio-s1" => cross().and_then(|()| emu::boot_loader_audio_s1(&workspace_root())),
         "emu-audio-sleep" => cross().and_then(|()| emu::boot_loader_audio_sleep(&workspace_root())),
         "emu-audio-s2" => cross().and_then(|()| emu::boot_loader_audio_s2(&workspace_root())),
+        "emu-silent-pc" => cross().and_then(|()| emu::boot_loader_silent_pc(&workspace_root())),
         "emu-refresh" => cross().and_then(|()| emu::boot_loader_refresh(&workspace_root())),
         "emu-screen-measure" => {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
@@ -579,6 +583,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_audio_s1(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_sleep(&workspace_root()))
             .and_then(|()| emu::boot_loader_audio_s2(&workspace_root()))
+            .and_then(|()| emu::boot_loader_silent_pc(&workspace_root()))
             .and_then(|()| emu::boot_loader_drive(&workspace_root()))
             .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
             .and_then(|()| emu::boot_loader_fallback(&workspace_root()))

@@ -1449,6 +1449,45 @@ pub const MUTANTS: &[Mutant] = &[
             "cab_names_escaping_the_ini_folder_are_refused",
         ]),
     },
+    Mutant {
+        name: "udc: no retry for a PC silent after the plug-in (the loader waits forever)",
+        file: "drivers/pxa-udc/src/unplug.rs",
+        from: "        self.wait_ms = (self.wait_ms * 2).min(Self::MAX_MS);
+        true",
+        to: "        self.wait_ms = (self.wait_ms * 2).min(Self::MAX_MS);
+        false",
+        check: Check::Emu(crate::emu::boot_loader_silent_pc),
+    },
+    Mutant {
+        name: "today: GPIO24 driven as the touch chip's select while still SSP1's frame (every tap reads 0, as on the X51v)",
+        file: "shell/today/src/main.rs",
+        from: "        gpio.borrow_mut().set_function(TS_CS, 0);",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_today),
+    },
+    Mutant {
+        name: "sdcard: a card echoing the wrong CMD8 check pattern taken as v2",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "Ok(r) if r[0] & 0xFFF == CMD8_ARG => true,",
+        to: "Ok(_r) => true,",
+        check: Check::Host(&["-p", "rp-drv-sdcard", "bad_cmd8_echo_is_rejected"]),
+    },
+    Mutant {
+        name: "dma chain: a chunk longer than a descriptor's length field taken",
+        file: "hal/pxa27x/src/dmachain.rs",
+        from: "            || self.chunk > 0x1FFF
+",
+        to: "",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "invalid_shapes_are_refused"]),
+    },
+    Mutant {
+        name: "dma chain: a destination step other than the chunk (or 0) taken",
+        file: "hal/pxa27x/src/dmachain.rs",
+        from: "            || (self.dst_step != 0 && self.dst_step != self.chunk)
+",
+        to: "",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "invalid_shapes_are_refused"]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

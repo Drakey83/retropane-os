@@ -29,13 +29,13 @@ depends on them proves less than it looks):
 
 | # | Not modelled | Proper fix | State |
 |---|---|---|---|
-| B1 | A PC that goes silent after an unplug (the silent-PC retry has host tests only) | A host option in the fork that ignores the first N plug-ins; an `emu-usb` variant must get configured by the retry; a mutant without the retry must fail | open |
+| B1 | A PC that goes silent after an unplug (the silent-PC retry has host tests only) | A host option in the fork that ignores the first N plug-ins; an `emu-usb` variant must get configured by the retry; a mutant without the retry must fail | **built** 2026-10-19: the fork's `pxa27x-udc.ignore-plugs=N`; `emu-silent-pc` (one plug-in ignored) passes on the local build, the loader's retry configuring it; an emulator mutant disables the retry; release rp-v0.26.0 waits for the owner's OK to push |
 | B2 | Alpha test, all depth modes, code 10 grey | Fork rp-v0.22.0 (`mbx-3d-alpha`), `emu-glesfeat` checks the device's pixels | **fixed** 2026-10-18 |
 | B3 | Fog (TSP bit 24, colour `0x63C`) and the second texture unit | Device test first (needs the TA's vertex and state formats read statically), then model | open |
 | B4 | Codec power (CPLD `0x1C` bit 1) and speaker amp (`0x14` bit 1): the model's codec answers with power off | Model after the owner-watched run decides what the codec needs | open |
 | B8 | I2S re-enabled right after being switched off sends nothing; measured: a switch-on within ~645 ms of the switch-off is dropped (`SACR0` reads 0); the fork's I2S restarts at once | Model it in the fork (a switch-on within 645 ms of a switch-off ignored), with a check that runs a stop-start and fails without the model; `PxaI2s::start` reports a dropped switch-on | **fixed** 2026-10-18 (rp-v0.24.0, property `i2s-restart`; `emu-tone` and `emu-audio-s1` check it; the audio service waits it out) |
 | B5 | The 60 Hz display PLL (`DISPPLL`) | Model the PLL so `emu-refresh` checks the real switch | open |
-| B6 | GPIO pin functions (touch CS on GPIO24) | Model `GAFR`, start from WM's values | open |
+| B6 | GPIO pin functions (touch CS on GPIO24) | Model `GAFR`, start from WM's values | **built** 2026-10-19 in the fork (property `gpio-functions`: WM's `GAFR` at start, a pin outside its GPIO function doesn't drive the board), with an emulator mutant (`rp-today` without its switch must fail `emu-today`); release rp-v0.26.0 waits for the owner's OK to push |
 | B7 | The CF socket in the X51v machine; MVED decoder registers; clocks' relock time and `MDCNFG`; timer channels' odd modes; 2D engine format code 4 | One fork change each, listed in `emulator.md` | open |
 
 ## C. Checks that prove less than they claim
@@ -43,7 +43,7 @@ depends on them proves less than it looks):
 | # | Shortcut | Proper fix | State |
 |---|---|---|---|
 | C1 | emu-today waited on the wall clock and masked the clock areas everywhere | Presses answered near the pen, Home held in guest time, screens awaited | **fixed** 2026-10-18 (`43e7e22`) |
-| C2 | 27 fixed sleeps of 500 ms or more remain in `xtask/src/emu.rs` (e.g. "press a key, sleep 4 s" in emu-mbx3d, emu-mbx3d-api, emu-glesfeat) | Each sleep replaced by a wait on the image (a serial marker, the screen, a register) or a guest-time hold; a test that forbids new ones | open |
+| C2 | 27 fixed sleeps of 500 ms or more remain in `xtask/src/emu.rs` (e.g. "press a key, sleep 4 s" in emu-mbx3d, emu-mbx3d-api, emu-glesfeat) | Each sleep replaced by a wait on the image (a serial marker, the screen, a register) or a guest-time hold; a test that forbids new ones | **fixed** 2026-10-19 (emulator suite passing pending at the time of writing): 36 sleeps of 500 ms or more reviewed: 7 redundant (the harness waits for `RPL END`) removed, 7 pauses inside wait loops named `poll_pause`, 22 "let the image run" waits turned into guest-time holds (`guest_hold`/`GuestClock`: the emulated OS timer, read through the check's own monitor connection, since QEMU's monitor takes one client); screen-measure's schedule follows the guest's clock; the guard `no_fixed_sleeps_of_half_a_second_or_more` refuses new ones. Found on the way: the clean-up waited 0.3 s for the old emulator, and a check could start while it lingered (its monitor and WAV file taken): it now waits until it's gone |
 | C3 | emu-glesfeat checked no pixels | Checks the device's pixels with rp-v0.22.0 | **fixed** 2026-10-18 |
 | C4 | emu-noise could only check plumbing; with the R6 health rule the emulator can't make a healthy run | The append is host-tested (`append_row`); the emulator proves the refusal and that the file stays untouched | **fixed** 2026-10-18 |
 | C6 | `rp-wmaudio`'s first version read clocked units without checking `CKEN` and froze Windows Mobile on every start (2026-10-18) | Reads each unit only with its clock on (`read_reg`); the fact is in `docs/hw/README.md`; every new probe checks `CKEN` before a clocked unit | **fixed** 2026-10-18 |

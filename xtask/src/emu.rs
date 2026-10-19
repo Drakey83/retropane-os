@@ -915,7 +915,7 @@ pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
                 }
                 last = Some(got);
             }
-            std::thread::sleep(Duration::from_millis(500));
+            poll_pause(Duration::from_millis(500));
         }
         Ok(())
     };
@@ -1384,15 +1384,20 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
         Emulator::Wsl => to_wsl_path(&shot),
         Emulator::Native(_) => shot.display().to_string(),
     };
-    let screen_is = |grey: u8, from_ms: u32, to_ms: u32, t0: Instant| -> Result<(), String> {
-        let from = Duration::from_millis(u64::from(from_ms) + 800);
-        if let Some(w) = from.checked_sub(t0.elapsed()) {
-            std::thread::sleep(w);
+    // The schedule in the guest's time (it shows each patch for its time
+    // by its own clock; a busy PC slows it).
+    let screen_is = |grey: u8,
+                     from_ms: u32,
+                     to_ms: u32,
+                     t0: &mut GuestClock<'_>|
+     -> Result<(), String> {
+        while t0.ms()? < u64::from(from_ms) + 800 {
+            poll_pause(Duration::from_millis(50));
         }
         let mut seen = None;
-        while t0.elapsed() < Duration::from_millis(u64::from(to_ms)) {
+        while t0.ms()? < u64::from(to_ms) {
             let _ = std::fs::remove_file(&shot);
-            crate::screen::Monitor::connect(monitor_port())?.screendump(&guest, &shot)?;
+            t0.mon.screendump(&guest, &shot)?;
             let img = crate::screen::parse_ppm(&std::fs::read(&shot).map_err(|e| e.to_string())?)?;
             let want = [grey; 3];
             if img
@@ -1404,16 +1409,17 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
                 return Ok(());
             }
             seen = Some(img.rgb.get(..3).map(<[u8]>::to_vec));
-            std::thread::sleep(Duration::from_millis(300));
+            poll_pause(Duration::from_millis(300));
         }
         Err(format!(
             "screen-measure: grey {grey} never showed on screen between {from_ms} and {to_ms} ms (first pixel {seen:?})"
         ))
     };
     let check = || -> Result<(), String> {
-        let t0 = Instant::now();
-        screen_is(128, starts[0], starts[1], t0)?;
-        screen_is(64, starts[1], starts[2], t0)
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        let mut t0 = GuestClock::start(&mut mon, "screen-measure")?;
+        screen_is(128, starts[0], starts[1], &mut t0)?;
+        screen_is(64, starts[1], starts[2], &mut t0)
     };
     let frame = rp_loadproto::frame(&payload);
     let output = boot(
@@ -1518,9 +1524,17 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
             Ok(())
         };
         // The first measurement (2 s), then a switch press and its 2 s.
-        std::thread::sleep(Duration::from_secs(5));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            5000,
+            "refresh",
+        )?;
         key("ret")?;
-        std::thread::sleep(Duration::from_secs(5));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            5000,
+            "refresh",
+        )?;
         key("f4")
     };
     let output = boot(
@@ -1654,7 +1668,6 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
         poll(Duration::from_secs(5), &image_box)?;
         poll(Duration::from_secs(8), &loader_screen)?;
         // The run log goes out with the crash screen: let it arrive.
-        std::thread::sleep(Duration::from_millis(1000));
         Ok(())
     };
     let output = boot(
@@ -1758,7 +1771,11 @@ pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
     let args = usb_args(4);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let wait = || -> Result<(), String> {
-        std::thread::sleep(Duration::from_secs(150));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            150000,
+            "keeps-feeding",
+        )?;
         Ok(())
     };
     let output = boot(
@@ -1867,7 +1884,11 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
         let shown = Instant::now();
         // The emulator redraws its screen on a timer: give it time to show
         // the new frame (as the crash-screen check does).
-        std::thread::sleep(Duration::from_millis(1500));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            1500,
+            "picture",
+        )?;
         let _ = std::fs::remove_file(&shot);
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.screendump(&guest, &shot)?;
@@ -1892,10 +1913,8 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
                 "picture: {off} of 307200 pixels differ from the source"
             ));
         }
-        // Stay up until it has had time to return (20 s shown, then the
-        // loader's run log reaches the PC).
-        let wait = Duration::from_secs(u64::from(rp_picture_seconds()) + 6);
-        std::thread::sleep(wait.saturating_sub(shown.elapsed()));
+        // Its return is awaited after the check (the loader's RPL END).
+        let _ = shown;
         Ok(())
     };
     let output = boot(
@@ -1992,7 +2011,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
         for (i, stage) in Stage::ALL.iter().enumerate() {
             let deadline = Instant::now() + safety;
             loop {
-                std::thread::sleep(Duration::from_millis(700));
+                poll_pause(Duration::from_millis(700));
                 let got = dump(stage.letter())?;
                 let differ = |w: &[u8]| {
                     got.chunks(3)
@@ -2018,7 +2037,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
         let bars = |s: &[u8]| s[(435 * blendtest::W + 90) * 3..][..3].to_vec();
         let deadline = Instant::now() + safety;
         loop {
-            std::thread::sleep(Duration::from_millis(700));
+            poll_pause(Duration::from_millis(700));
             let got = dump('R')?;
             if !want.iter().any(|w| bars(w) == bars(&got)) {
                 return Ok(());
@@ -2097,7 +2116,11 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     };
     let check = || -> Result<(), String> {
         // Give the emulator's screen timer a frame to show the picture.
-        std::thread::sleep(Duration::from_millis(1500));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            1500,
+            "mbx",
+        )?;
         let _ = std::fs::remove_file(&shot);
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.screendump(&guest, &shot)?;
@@ -2141,7 +2164,6 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
         }
         // A button press returns it to the loader.
         mon.command("sendkey ret")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -2598,7 +2620,6 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.query("sendkey ret 200")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -2680,7 +2701,6 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.command("sendkey ret")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -2919,7 +2939,6 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.command("sendkey ret")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -3006,7 +3025,6 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.command("sendkey ret")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -3070,7 +3088,6 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.command("sendkey ret")?;
-        std::thread::sleep(Duration::from_secs(4));
         Ok(())
     };
     let output = boot(
@@ -3374,7 +3391,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let until = |name: &str, want: &[u8]| -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            std::thread::sleep(Duration::from_millis(500));
+            poll_pause(Duration::from_millis(500));
             let n = today_differ(&dump(name)?, want);
             if n == 0 {
                 return Ok(());
@@ -3403,7 +3420,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         // Left alone past the loader's 30 s run limit: an idle image must
         // keep checking in (it slept through it once and the watchdog reset
         // the device). Then it must still be there, unchanged.
-        std::thread::sleep(Duration::from_secs(40));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            40000,
+            "today",
+        )?;
         until("idle", &want[0])?;
         let mut qmp = crate::screen::Qmp::connect(monitor_port() + 1)?;
         // Every press is held until the image answers it on screen, never
@@ -3441,29 +3462,14 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
                 std::thread::sleep(Duration::from_millis(200));
             }
         };
-        // Guest time: held until the image's own timer (OSCR0, 3.25 MHz,
-        // read through the monitor) has moved `ms` on, for presses the
-        // image answers only on the lift (the bare wallpaper's depth flip).
-        let guest_hold = |ms: u32| -> Result<(), String> {
-            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-            let oscr = |mon: &mut crate::screen::Monitor| -> Result<u32, String> {
-                let out = mon.query("xp /1wx 0x40a00010")?;
-                let hex = out
-                    .rsplit("0x")
-                    .next()
-                    .map(|h| h.trim().trim_end_matches(|c: char| !c.is_ascii_hexdigit()))
-                    .unwrap_or("");
-                u32::from_str_radix(hex, 16).map_err(|_| format!("today: OSCR0 read: {out}"))
-            };
-            let from = oscr(&mut mon)?;
-            let deadline = Instant::now() + PRESS_ANSWER;
-            while oscr(&mut mon)?.wrapping_sub(from) < ms * 3_250 {
-                if Instant::now() > deadline {
-                    return Err("today: the image's clock didn't move".into());
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(())
+        // Guest time, for presses the image answers only on the lift (the
+        // bare wallpaper's depth flip).
+        let guest_hold = |ms: u32| {
+            guest_hold(
+                &mut crate::screen::Monitor::connect(monitor_port())?,
+                ms,
+                "today",
+            )
         };
         // Down until the screen shows the press (a pressed target, the
         // align target turning green), or for `guest_ms` of the image's
@@ -3551,7 +3557,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         let strip = |s: &[u8]| s[210 * rp_today::W * 3..218 * rp_today::W * 3].to_vec();
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
-            std::thread::sleep(Duration::from_millis(500));
+            poll_pause(Duration::from_millis(500));
             if strip(&dump("after")?) != strip(&want[2]) {
                 return Ok(());
             }
@@ -4651,7 +4657,7 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                     if Instant::now() > deadline {
                         return Err(format!("CF {what}: {log:?}"));
                     }
-                    std::thread::sleep(Duration::from_millis(500));
+                    poll_pause(Duration::from_millis(500));
                 }
             };
             poll("removed: the slot was never powered off", &|l| {
@@ -4768,7 +4774,11 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         // Headphones in while the image waits for the jack (after its
         // first tone): the second tone goes to them.
-        std::thread::sleep(Duration::from_secs(4));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            4000,
+            "tone",
+        )?;
         let mut mon = crate::screen::Monitor::connect(port)?;
         // An emulator with the audio wiring as measured under Windows
         // Mobile (rp-v0.23.0, `codec-power`: the codec answers only while
@@ -4818,7 +4828,7 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
             eprintln!("    rp-tone: {}", line.trim());
         }
         // Let the backend write out what it has.
-        std::thread::sleep(Duration::from_millis(500));
+        guest_hold(&mut mon, 500, "tone")?;
         Ok(())
     };
     boot(
@@ -4904,12 +4914,12 @@ pub fn boot_loader_audio_sleep(root: &Path) -> Result<(), String> {
         // Three taps, each held 4 s (the image waits up to 30 s for each,
         // so a slow emulator still finds the stylus down), 12 s apart.
         let centre = (0x4000, 0x4000);
-        std::thread::sleep(Duration::from_secs(20));
+        guest_hold(&mut mon, 20000, "audio-sleep")?;
         for _ in 0..3 {
             qmp.touch(Some(centre))?;
-            std::thread::sleep(Duration::from_secs(4));
+            guest_hold(&mut mon, 4000, "audio-sleep")?;
             qmp.touch(None)?;
-            std::thread::sleep(Duration::from_secs(8));
+            guest_hold(&mut mon, 8000, "audio-sleep")?;
         }
         let log = usb_read_until(&mut s, "RPL END", 60)?;
         for want in [
@@ -5037,7 +5047,7 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
         mon.query("qom-set /machine/peripheral/jack pressed true")?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
-        std::thread::sleep(Duration::from_secs(7));
+        guest_hold(&mut mon, 7000, "audio-s1")?;
         mon.query("qom-set /machine/peripheral/jack pressed false")?;
         let log = usb_read_until(&mut s, "RPL END", 60)?;
         for want in [
@@ -5082,7 +5092,7 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
         if log.contains("failed") || log.contains("stream ") {
             return Err(format!("audio S1: a step failed:{log}"));
         }
-        std::thread::sleep(Duration::from_millis(500));
+        guest_hold(&mut mon, 500, "audio-s1")?;
         Ok(())
     };
     boot(
@@ -5109,6 +5119,50 @@ pub fn boot_loader_audio_s1(root: &Path) -> Result<(), String> {
         "    audio S1 OK: three power-ups at 44.1 kHz through the service, the last note recorded at {:.1} Hz over {seconds:.3} s; jack re-routed while up, the restart guard waited, no jack change seen for our own power-down",
         found[0]
     );
+    Ok(())
+}
+
+/// A PC that stays silent after a plug-in (quality audit B1, docs/hw/udc.md
+/// "unplugged, but nobody came"): the emulated host ignores the loader's
+/// first plug-in (`pxa27x-udc.ignore-plugs=1`, rp-v0.26.0+). The loader's
+/// retry (`pxa-udc` `unplug::Patience`: no bus reset for 10 s, unplug and
+/// present again) must get it configured and talking; without the retry it
+/// waits forever (an emulator mutant).
+pub fn boot_loader_silent_pc(root: &Path) -> Result<(), String> {
+    if !has_usb_model(root) || !device_has(root, "pxa27x-udc", "ignore-plugs") {
+        eprintln!(
+            "    silent PC: skipped (this emulator's USB host can't stay silent: rp-v0.26.0)"
+        );
+        return Ok(());
+    }
+    let loader = raw_image(root, "rp-loader")?;
+    let mut args: Vec<String> = usb_args(15).into();
+    args.extend(["-global".into(), "pxa27x-udc.ignore-plugs=1".into()]);
+    let extra: Vec<&str> = args.iter().map(String::as_str).collect();
+    let check = || -> Result<(), String> {
+        // The first plug-in passes in silence; the retry comes after 10 s
+        // of the loader's time without a bus reset.
+        let mut s = usb_connect(15)?;
+        usb_read_until(&mut s, "RPLOAD1 READY", 90)?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &extra,
+            input: None,
+            during: Some(&check),
+            then: None,
+            timeout: Duration::from_secs(150),
+        },
+    )?;
+    let _ = output;
+    eprintln!("    silent PC OK: the first plug-in ignored, the loader's retry got it configured");
     Ok(())
 }
 
@@ -5154,17 +5208,20 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         let mut mon = crate::screen::Monitor::connect(port)?;
         mon.query("qom-set /machine/peripheral/jack pressed false")?;
+        // The link at SADIV's measured rate (rp-v0.26.0+): checked when the
+        // model is there.
+        let rates = mon.query("qom-get /machine i2s-rates")?.contains("true");
         let mut qmp = crate::screen::Qmp::connect(port + 1)?;
         s.write_all(&frame).map_err(|e| e.to_string())?;
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         // Test 2 waits up to 30 s for each tap from ~8 s into the run.
         let centre = (0x4000, 0x4000);
-        std::thread::sleep(Duration::from_secs(12));
+        guest_hold(&mut mon, 12000, "audio-s2")?;
         for _ in 0..3 {
             qmp.touch(Some(centre))?;
-            std::thread::sleep(Duration::from_secs(2));
+            guest_hold(&mut mon, 2000, "audio-s2")?;
             qmp.touch(None)?;
-            std::thread::sleep(Duration::from_secs(3));
+            guest_hold(&mut mon, 3000, "audio-s2")?;
         }
         let log = usb_read_until(&mut s, "RPL END", 180)?;
         for want in [
@@ -5292,6 +5349,20 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
                 "audio S2: half volume was limited or clipped: {half:?}"
             ));
         }
+        // Test 2's 16 s: the DMA's rate against the guest's OS timer. With
+        // the model it's the X51v's measured 44,317; the emulator's pacing
+        // keeps it within 0.3%.
+        let dma = after(result("TEST 2")?, "DMA at")?;
+        if rates && !(44_190.0..=44_450.0).contains(&dma) {
+            return Err(format!(
+                "audio S2: the link ran at {dma} frames/s in test 2 (the X51v's 44,317, within 0.3%)"
+            ));
+        }
+        if !rates {
+            eprintln!(
+                "    audio S2: the link's rate not checked (the emulator lacks i2s-rates: rp-v0.26.0)"
+            );
+        }
         if !log.contains(", 0 laps lost") || !log.contains(" 0 late, 0 dry, 0 clipped") {
             return Err(format!(
                 "audio S2: a lap lost, a late wake, a stream run dry or a clip over the whole run:{log}"
@@ -5302,7 +5373,7 @@ pub fn boot_loader_audio_s2(root: &Path) -> Result<(), String> {
         }) {
             eprintln!("    audio S2: {}", l.trim());
         }
-        std::thread::sleep(Duration::from_millis(500));
+        guest_hold(&mut mon, 500, "audio-s2")?;
         Ok(())
     };
     boot(
@@ -5456,6 +5527,87 @@ fn s2_recording(wav: &Path, clicks: usize) -> Result<String, String> {
     Ok(format!(
         "{clicks} clicks recorded; the tune at pitch from 22.05, 11.025 and 48 kHz; 6A limited without a flat top (peak {pa}, 6B {pb}); the speaker filter {low:.1} dB at 330 Hz, {high:.1} dB at 659 Hz"
     ))
+}
+
+/// The pause between two looks of a wait loop (a screen, a register, a
+/// log polled until it shows what's waited for): never a wait by itself
+/// (quality audit C2's guard counts sleeps outside this).
+fn poll_pause(d: Duration) {
+    std::thread::sleep(d);
+}
+
+/// Waits until the guest's own clock (OSCR0, 3.25 MHz, read through `mon`,
+/// the check's monitor connection: QEMU's monitor takes one client at a
+/// time, so a hold never opens its own while the check holds one) has
+/// moved `ms` on: "let the image run this long" in
+/// its time, not the PC's (a busy PC slows the guest; quality audit C2).
+/// An error, naming `what`, if the guest's clock stops for a minute.
+fn guest_hold(mon: &mut crate::screen::Monitor, ms: u32, what: &str) -> Result<(), String> {
+    let mut clock = GuestClock::start(mon, what)?;
+    while clock.ms()? < u64::from(ms) {
+        poll_pause(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// The guest's time since [`GuestClock::start`], from its OS timer (OSCR0,
+/// 3.25 MHz, read through the monitor), past the counter's wrap.
+struct GuestClock<'m> {
+    mon: &'m mut crate::screen::Monitor,
+    what: String,
+    last: u32,
+    ticks: u64,
+    stuck: Instant,
+}
+
+impl<'m> GuestClock<'m> {
+    fn start(mon: &'m mut crate::screen::Monitor, what: &str) -> Result<Self, String> {
+        let mut c = Self {
+            mon,
+            what: what.to_string(),
+            last: 0,
+            ticks: 0,
+            // A guest whose clock hasn't moved by then has stopped (a hung
+            // emulator, not slow guest work).
+            stuck: Instant::now() + Duration::from_secs(60),
+        };
+        c.last = c.oscr()?;
+        Ok(c)
+    }
+
+    fn oscr(&mut self) -> Result<u32, String> {
+        // A busy emulator sometimes misses one answer: asked again before
+        // it counts (a stopped guest is caught by `ms`'s minute).
+        let mut tries = 0;
+        let out = loop {
+            match self.mon.query("xp /1wx 0x40a00010") {
+                Ok(o) => break o,
+                Err(e) if tries >= 3 => return Err(e),
+                Err(_) => tries += 1,
+            }
+        };
+        let hex = out
+            .rsplit("0x")
+            .next()
+            .map(|h| h.trim().trim_end_matches(|c: char| !c.is_ascii_hexdigit()))
+            .unwrap_or("");
+        u32::from_str_radix(hex, 16).map_err(|_| format!("{}: OSCR0 read: {out}", self.what))
+    }
+
+    /// Milliseconds of guest time so far; an error if the guest's clock
+    /// hasn't moved for a minute.
+    fn ms(&mut self) -> Result<u64, String> {
+        let now = self.oscr()?;
+        let step = now.wrapping_sub(self.last);
+        if step > 0 {
+            self.stuck = Instant::now() + Duration::from_secs(60);
+        } else if Instant::now() > self.stuck {
+            return Err(format!("{}: the guest's clock stopped", self.what));
+        }
+        self.ticks += u64::from(step);
+        self.last = now;
+        Ok(self.ticks / 3_250)
+    }
 }
 
 /// The first stretch of sound in an emulator recording (`wav`): `want`'s
@@ -6379,7 +6531,11 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(2500)); // the write grace
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            2500,
+            "drive",
+        )?; // the write grace
         // Write a new file through the drive (the PC's side).
         {
             let mut vol = rp_fat::Volume::mount(&mut bot, rp_fat::format::PARTITION_START)
@@ -6395,7 +6551,11 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
             return Err(format!("serial put during a drive write: {r:?}"));
         }
         // ... and accepts once the PC has been quiet for the grace period.
-        std::thread::sleep(Duration::from_millis(2500));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            2500,
+            "drive",
+        )?;
         serial.write_all(&put).map_err(|e| e.to_string())?;
         let r = usb_read_until(&mut serial, "RPL OK", 30)?;
         let _ = r;
@@ -6410,7 +6570,11 @@ pub fn boot_loader_drive(root: &Path) -> Result<(), String> {
         }
         // The guard follows the device's own write: the new loader's
         // clusters are protected now.
-        std::thread::sleep(Duration::from_millis(2500));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            2500,
+            "drive",
+        )?;
         refuses_boot_file(&mut bot, "after the device replaced it")?;
         if drive_file(&mut bot, "retropane.bin")? != via_serial {
             return Err("drive: a refused write changed the new retropane.bin".into());
@@ -6647,7 +6811,11 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
         let mut s = usb_connect(9)?;
         usb_read_until(&mut s, "RPLOAD1 READY", 10)?;
         // An idle loader sleeps between polls, and still answers at once.
-        std::thread::sleep(Duration::from_secs(2));
+        guest_hold(
+            &mut crate::screen::Monitor::connect(monitor_port())?,
+            2000,
+            "backlight",
+        )?;
         let asked = Instant::now();
         s.write_all(&rp_loadproto::control_frame("drive status"))
             .map_err(|e| e.to_string())?;
@@ -6738,7 +6906,7 @@ pub fn boot_loader_backlight(root: &Path) -> Result<(), String> {
                     std::thread::sleep(Duration::from_millis(100));
                 };
                 mon.query("qom-set /machine/peripheral/power pressed false")?;
-                std::thread::sleep(Duration::from_millis(800));
+                guest_hold(mon, 800, "backlight")?;
                 Ok(got)
             };
             let off = press(&mut mon, "0")?;
@@ -6864,7 +7032,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
                 Ok(()) => return Ok(()),
                 Err(e) => last = e,
             }
-            std::thread::sleep(Duration::from_millis(500));
+            poll_pause(Duration::from_millis(500));
         }
         Err(last)
     };
@@ -7353,10 +7521,13 @@ const LOAD_TAG: &str = "rp-emu-load";
 /// block), and a `pkill -x qemu-system-arm` here once ended the other
 /// run's emulator mid-check (rp-blend under load, 2026-10-15: "terminating
 /// on signal 15"). The `[,]` keeps the pattern from matching its own
-/// shell's command line.
+/// shell's command line. Then it waits (up to 10 s) until that emulator
+/// has gone: a check started while the last one lingered found the monitor
+/// port answered by the old emulator and its WAV file still open (no sound
+/// voice, the DMA never drained; 2026-10-19).
 fn stop_own_qemu(monitor_port: u16) -> String {
     format!(
-        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; sleep 0.3; true"
+        "pkill -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]'; for i in $(seq 100); do pgrep -f 'qemu-system-arm .*-monitor tcp:127.0.0.1:{monitor_port}[,]' >/dev/null || break; sleep 0.1; done; true"
     )
 }
 
@@ -7683,6 +7854,56 @@ mod tests {
     /// the limit was there to catch), which the loader must report. The
     /// one wall-clock bound left is the idle loader's answer (500 ms; 26 ms
     /// with every core busy), which is about the PC's round trip.
+    /// No check waits by a fixed sleep of half a second or more on the PC's
+    /// clock (quality audit C2): a wait is on the image (a serial marker,
+    /// the screen, a register), in the guest's time (`guest_hold`,
+    /// `GuestClock`), or a short pause inside a wait loop (`poll_pause`).
+    #[test]
+    fn no_fixed_sleeps_of_half_a_second_or_more() {
+        let src = include_str!("emu.rs");
+        let code = src
+            .split(
+                "#[cfg(test)]
+mod tests",
+            )
+            .next()
+            .expect("code");
+        let mut bad = Vec::new();
+        let mut in_poll = false;
+        for (i, line) in code.lines().enumerate() {
+            if line.starts_with("fn poll_pause") {
+                in_poll = true;
+            } else if line.starts_with('}') {
+                in_poll = false;
+            }
+            let Some(at) = line.find("thread::sleep(") else {
+                continue;
+            };
+            let arg = &line[at + "thread::sleep(".len()..];
+            let ms = if let Some(v) = arg.strip_prefix("Duration::from_millis(") {
+                v.split(')')
+                    .next()
+                    .and_then(|n| n.replace('_', "").parse::<u64>().ok())
+            } else if let Some(v) = arg.strip_prefix("Duration::from_secs(") {
+                v.split(')')
+                    .next()
+                    .and_then(|n| n.replace('_', "").parse::<u64>().ok())
+                    .map(|s| s * 1000)
+            } else {
+                None
+            };
+            match ms {
+                Some(ms) if ms < 500 => {}
+                _ if in_poll => {}
+                _ => bad.push(format!("line {}: {}", i + 1, line.trim())),
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "fixed sleeps (wait on the guest instead): {bad:#?}"
+        );
+    }
+
     #[test]
     fn guest_work_is_not_timed_on_the_wall_clock() {
         let drive = body("boot_loader_drive");
