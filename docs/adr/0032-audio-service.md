@@ -5,6 +5,8 @@
   conditions, all landing before S1 (listed under "The owner's
   conditions" below; written into R2-R7, A2-A5 and the steps). Proposed
   and revised after a review the same day.
+- **A6 (quality audit E3, the DMA chain that stops at the mix's end):
+  proposed 2026-10-19, the owner's vote waiting.**
 - **Date:** 2026-10-18
 
 ## In plain words
@@ -500,6 +502,164 @@ changes a vote or a condition.
 - **Memory:** the mixer itself 2.3 KB; its memory block 48.3 KiB (the DMA
   ring 44 KiB and the kept states 4.3 KiB), given by its owner. The image
   `rp-audio-s2` is 70.1 KiB.
+
+## A6. When the mixer is late by more than the ring (quality audit E3)
+
+**Proposed 2026-10-19; the owner's vote is waiting. Nothing is built.**
+
+### In plain words
+
+The DMA engine plays the mixed sound from a ring 254 ms long, round and
+round, without the CPU. The mixer keeps it filled ahead and clears what
+has played. If the mixer is late by **less** than the ring, the engine
+reaches the cleared part and you hear **silence** until the mixer catches
+up (built that way, S2). If it is late by **more** than the ring, the
+engine goes round again and **replays the last quarter-second of music,
+over and over**, until the mixer wakes: a loud stutter, the classic sound
+of a hung computer. The mixer can count the lost laps afterwards, but it
+can't stop the replay.
+
+The fix: make the chain of descriptors **end where the mixed sound ends**,
+so the engine **stops by itself** instead of going round. Each time the
+mixer mixes further, it moves the end further. Late by any amount, you
+hear the music, then silence, then the music carrying on from where it
+stopped. Never a replay.
+
+When could the mixer be that late? On the device so far only in test
+images, where one program both mixes and draws (S2 found the console
+taking up to 98 ms to scroll). In the audio host (R1) the mixer has its own
+thread, so a quarter-second stall means something is wrong: a runaway
+higher-priority thread, a kernel bug, a debugger stop. This choice is
+about **how the device fails** when that happens: quietly or loudly.
+
+### How the engine works (PXA27x manual, public; no Dell value)
+
+- Each descriptor (16 bytes: next, source, target, command) is **loaded
+  into the channel's registers when the engine starts it** and never read
+  again.
+- Bit 0 of the "next" word is **STOP**: after that descriptor, the engine
+  stops and says so in `DCSR` (`STOPINTR`). I2S keeps running; its FIFO
+  simply empties.
+- `hal/pxa27x/src/dmachain.rs` already streams SD and CF transfers this
+  way (a moving STOP, a restart when the CPU falls behind), proven on the
+  device (docs/research/storage-speed.md) and modelled in the fork
+  (rp-v0.9.6). What is **not** proven yet is the same restart on the I2S
+  channel while I2S runs (see "What must be measured first").
+
+### The options
+
+| | A: keep the loop (as built) | **B: a chain that stops at the mix's end (recommended)** | C: a chain that falls into a loop of silence |
+|---|---|---|---|
+| How | 11 descriptors of 4 KiB, the last linked to the first | The ring stays (same 44 KiB, same place); the descriptor holding the **first frame not yet mixed** carries STOP. Each wake the mixer writes STOP on the new end's descriptor, then clears the old one (two 16-byte writes, each written back from the cache) | As B, but the end descriptor links to a tiny descriptor of zeros that links to itself. The engine never stops; when the mixer catches up it re-links the zeros back into the ring |
+| Late by less than the ring | Silence, then the music carries on | Same | Same |
+| **Late by more than the ring** | **The last ~0.25 s replayed until the mixer wakes** | **Silence**, then the music carries on | **Silence**, then the music carries on |
+| Nothing playing | The engine loops the silent ring; the mixer must keep waking at least once a ring, or old sound comes back | **The engine stops by itself after the last sound: no wakes at all while quiet** | The engine loops the zeros (a descriptor fetch every 8 frames) |
+| The output clock | From the DMA position, plus a guess at lost laps from the OS timer (a heuristic: a wrong guess skips a whole ring) | **From the position alone, exactly**: the engine can't lap the mix, so no lap can be lost; the clock stands still while the engine is stopped (it counts frames that really went out) | The position leaves the ring while in the zeros: time there is a guess from the timer again |
+| The race (below) | None | A short gap of silence, only on a wake that comes with under 7.9 ms of sound left | Same race, and getting out of the zeros needs a bounded wait while the engine leaves them |
+| Cost per wake | Nothing | Two descriptor writes and two cache-line cleans, read `DCSR` and `DDADR`: well under a microsecond (measured when built) | Same as B, plus the exit wait when used |
+| Memory | 44 KiB ring, 11 of the channel's 32 descriptor slots | **Same 44 KiB ring, all 32 slots** (already reserved in `dma_map`: no budget change) | As B, plus a small zero buffer |
+| Unknown on the device | Nothing new | Restarting the I2S DMA channel while I2S runs | Re-linking a running self-loop |
+
+**Why B.** It fails quietly, the engine itself enforces the end (no
+software has to be on time for it to hold), the clock becomes exact and
+loses its lap-guessing heuristic, and a quiet mixer can sleep as long as it
+likes. C avoids the restart but brings the timer guess back and needs a
+wait to leave the zeros. A costs nothing now and is fine while nothing
+stalls; its failure is the loud one.
+
+### The details of B
+
+- **Smaller descriptors: 32 of 1,408 bytes** (352 frames, 7.9 ms) instead
+  of 11 of 4 KiB. Two reasons, both measured from the mixer's own numbers:
+  1. **The end must never be the descriptor the engine is in.** Otherwise
+     the engine would finish this lap, start that descriptor again with
+     STOP set, and play the stale tail of it before stopping. The rule is
+     *lead ≤ ring − one descriptor*. The background lead is 10,816 frames
+     and the ring 11,264, leaving 448 frames: a 4 KiB descriptor (1,024
+     frames) breaks the rule; 352 frames keeps it with room to spare.
+  2. **The race gets rare** (next point).
+  1,408 is a whole number of cache lines (44 × 32 bytes) and of frames,
+  under the length field's limit, and 32 × 1,408 is exactly the 44 KiB
+  ring.
+- **The race.** The engine loads a descriptor when it starts it. If, at a
+  wake, it has already started the end descriptor, clearing that STOP is
+  too late: it will stop at that descriptor's end even though the mixer
+  has just mixed past it. The mixer sees this straight after moving the
+  end (`DDADR` still carries STOP while the mix goes further, or `DCSR`
+  says stopped) and **restarts the channel at the next descriptor** as soon
+  as it stops (the channel's stop as an event to the audio host; until the
+  host exists, a bounded wait of at most one descriptor). What you'd hear:
+  a gap of silence of about the restart time. **When it can happen:** only
+  when a wake comes with under 7.9 ms of sound left. The mixer wakes with
+  ~20 ms left with clicks playing and ~45 ms with music alone, so the race
+  needs a wake 12 ms late (clicks) or 37 ms late (music): already the
+  nearly-late case. Counted (`restarts`), never hidden.
+- **The last sample before any stop is silent**, so whatever I2S sends
+  while its FIFO is empty (zeros, or the last sample again: the manual
+  doesn't say, and nothing here depends on it) is silence. The end is put
+  on the descriptor holding the first *unmixed* frame, so at least one
+  frame of the cleared ring is played before the stop.
+- **After a stop** the mixer's existing "late" path does the rest (S2):
+  every playing stream carries on after the gap from where it stopped, and
+  `late` counts it. Starting again after silence needs no margin: the
+  engine is stopped, so the mixer mixes the first block and then starts it.
+- **The interface:** the mixer tells the DMA ring where the mix ends
+  (`DmaRing` gains "end at byte N" and "stopped?"); the HAL owns the
+  descriptors, as it does now. The emulator and host fakes implement the
+  same.
+- **What goes away:** the lap estimate from the OS timer in
+  `advance_clock`, and `laps_lost` (replaced by `stops` and `restarts`).
+  A1's rate measurement (`clock_now`) reports any stop inside its window, so
+  a window with a stop isn't used.
+
+### What must be measured first (device, before B is built on)
+
+Each its own short bench test, owner watching, only when the owner says go:
+
+1. **Restarting the I2S DMA channel while I2S keeps running**: the channel
+   stopped at a STOP link, left stopped 0, 10, 100 and 1,000 ms, restarted;
+   the DMA timed to its first move each time, `SACR0` and `SASR0` read
+   before and after (does an empty FIFO set an error that needs clearing?).
+   The 645 ms rule is about switching I2S on; this test is the proof that it
+   doesn't reach a DMA-only restart (2026-10-18's stalls all followed an
+   I2S switch-off).
+2. **How long a restart takes** from the stop to sound moving again: the
+   size of the race's gap.
+
+If (1) fails, B isn't possible as written and the write-up comes back with
+the measurement (C, or A).
+
+### Tests, emulator, size
+
+- **Host:** the moving end as pure logic beside `dmachain` (which
+  descriptor carries STOP for a given mix end; the race told apart from a
+  stop from `DCSR` and `DDADR`), a model engine with random wake timing
+  checking *never a frame played that wasn't mixed for that time*, and
+  mutants (the STOP set after clearing the old one instead of before; the
+  rule *lead ≤ ring − descriptor* dropped).
+- **Emulator:** the fork's DMA already stops at STOP. A new
+  `emu-audio-e3`: the image stalls the mixer 400 ms mid-music; the codec
+  model's recording must show the music, silence, and the music carrying on,
+  never a repeat. Whether the fork's I2S model handles an empty FIFO is
+  checked then; if it doesn't, it is modelled first (docs/hw/emulator.md).
+- **Device (owner listening):** the same 400 ms stall, heard as a clean
+  gap, not a stutter; a forced late wake to exercise the race, its gap
+  logged.
+- **Size:** no memory added; code a few hundred bytes (measured when
+  built).
+
+### The step questions
+
+- **Clever or re-implementing?** Neither Windows Mobile nor Dell's driver
+  is the model here. Linux (ALSA) catches an underrun in the sound card's
+  interrupt and stops the stream there, so it needs that interrupt to come
+  on time; here the engine enforces the end itself, with no interrupt per
+  period: correctness that doesn't depend on any software being on time.
+- **Smaller?** No memory added; the lap heuristic removed.
+- **Modernized?** A stall fails quietly, as a modern system should.
+- **Security:** a program that starves the audio thread gets silence, not
+  a loud replay; nothing new is exposed to programs (the descriptors stay
+  in the audio host).
 
 ## The four lenses
 
