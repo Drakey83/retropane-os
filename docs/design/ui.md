@@ -392,6 +392,21 @@ the SPB look smooth instead of merely possible.
   two ways of drawing to keep in step, and lists and sheets don't get
   smoother.
 
+- **D: hybrid (added 2026-10-19 from the measurements).** Whole-screen
+  moves (page swipes, flick-scrolling, sliding whole screens) by the
+  display itself: pointing the plane at another picture or another place
+  in a taller one, in the blanking, at the full 56.46 Hz for no render
+  at all. The 3D core composes what changes in part (sheets, dimming,
+  glass, fades, the weather's clouds, the carousel's panels), rendering
+  only the changed tiles under a frame budget. The SPB look smooth at
+  today's clock; two tools inside one compositor; some effects shaped to
+  fit (a carousel turn drawn as moving panels, not a full-screen
+  picture). A faster core clock, if proven, lets it lean toward B.
+
+**Owner's vote (2026-10-19): D, the hybrid**, after `rp-gpubench`'s
+numbers (below). It amends ADR-0022's point 3: the amendment is written
+there for the owner's sign-off, and nothing is built on it before.
+
 **To measure first** (a GPU facts batch, on the device, owner watching,
 only on the owner's go; listed for the work order: GPU facts before UI
 design): textured fill rate at 16- and 32-bit targets, with and without

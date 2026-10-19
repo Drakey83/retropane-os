@@ -2,7 +2,8 @@
 
 - **Status:** Accepted (2026-10-14, by the project owner; drafted
   2026-10-13; open questions 1-4, 6 and 7 answered below, 5 is a
-  measurement)
+  measurement). **Amendment to point 3 proposed 2026-10-19** (option D
+  of docs/design/ui.md, voted by the owner): waiting for sign-off.
 - **Date:** 2026-10-13
 
 ## Context
@@ -203,6 +204,60 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
   unextracted OAL). The owner accepted the decision on 2026-10-14, with the
   rule that the hardware is the only limit: WM's and Dell's ways are
   findings to beat, never a ceiling or a fallback.
+
+## Amendment to point 3, proposed 2026-10-19 (for the owner's sign-off)
+
+The owner voted for option D of docs/design/ui.md ("3D acceleration for
+the whole UI") after `rp-gpubench` measured the 3D core (docs/hw/2700g.md
+"Texture shapes", 2026-10-19). This text replaces point 3 once signed;
+until then point 3 stands as accepted.
+
+**In plain words.** Each way of putting pixels on the screen does what
+it is measured best at. When the whole screen moves (a page swipe, a
+flick through a list, a screen sliding in), the display is pointed at a
+different picture, or a different place in a taller one: nothing is
+redrawn, at the panel's full 56 frames a second. When part of the screen
+changes (a sheet sliding up, a dimmed backdrop, glass, a fade, moving
+clouds, the carousel's panels), the 3D core redraws only the tiles that
+changed, under a frame budget so a frame never runs late. The 2D engine
+keeps the copies and fills it already does; the CPU draws text and what
+the engines can't.
+
+**Point 3, amended:** *The compositor moves whole screens with the
+scan-out planes, composes partial changes with the 3D core, copies and
+fills with the 2D engine, and draws on the CPU last.*
+- **Planes:** the wallpaper and full-screen video on the video plane;
+  the interface on the graphics plane; whole-screen moves by changing
+  where a plane reads (`GSCADR`), written in the blanking at the frame
+  event (VEVENT0, line 643: a write takes effect at once, measured), in
+  a picture as tall as the move needs.
+- **The 3D core:** layers are textures (a 480 x 640 layer in one
+  512 x 1024 texture); a frame renders only the changed tiles; the frame
+  budget comes from the measured per-tile costs (bare ~5.3 us, textured
+  ~11.3 us, each translucent layer ~8 us more, at today's clock), and an
+  animation that would overrun gets fewer layers or a smaller area, never
+  a late frame. One screen redrawn in bands behind the scan line, or two
+  screens flipped at the frame event (both measured smooth), by what the
+  frame needs.
+- **The 2D engine:** copies (negative-stride scrolls), fills, keyed
+  copies, glyph runs, as accepted.
+- **The CPU:** text and what no engine draws, uploaded by DMA where the
+  CPU has other work (layers reordered for the 3D core in SDRAM, then
+  copied: measured 37 + 34 ms a full layer, the CPU 79% free).
+
+**Pluses:** the SPB look smooth at today's clock (whole-screen motion
+costs no render; partial effects fit the budget); the CPU free most of
+each frame; memory per full-screen layer 1 MiB (16-bit). **Minuses:** two
+tools inside one compositor to keep in step (one service owns both, so
+nothing above it sees the difference); full-screen 3D effects (a whole
+screen turning in 3D) run at ~35 frames a second or are shaped as moving
+panels instead. **Hardware limit or choice:** the full-screen cost is the
+3D core's at 49.8 MHz (a hardware limit at today's clock; a faster clock
+is the open lever). **Four lenses:** iterate (each tool replaceable
+behind the compositor), modernize (a layer compositor as phones use),
+legacy (old programs' windows are layers like any other), better/faster
+(nothing redrawn to move). **Security:** no change: one service owns the
+GPU (ADR-0030), layers stay inside its memory quotas.
 
 ## Open questions (for the owner; none decided here)
 
