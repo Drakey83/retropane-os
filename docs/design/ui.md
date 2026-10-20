@@ -404,8 +404,8 @@ the SPB look smooth instead of merely possible.
   picture). A faster core clock, if proven, lets it lean toward B.
 
 **Owner's vote (2026-10-19): D, the hybrid**, after `rp-gpubench`'s
-numbers (below). It amends ADR-0022's point 3: the amendment is written
-there for the owner's sign-off, and nothing is built on it before.
+numbers (below). It amends ADR-0022's point 3: the amendment was signed
+off by the owner the same day (ADR-0022, "Amendment to point 3").
 
 **To measure first** (a GPU facts batch, on the device, owner watching,
 only on the owner's go; listed for the work order: GPU facts before UI

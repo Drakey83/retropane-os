@@ -2,8 +2,8 @@
 
 - **Status:** Accepted (2026-10-14, by the project owner; drafted
   2026-10-13; open questions 1-4, 6 and 7 answered below, 5 is a
-  measurement). **Amendment to point 3 proposed 2026-10-19** (option D
-  of docs/design/ui.md, voted by the owner): waiting for sign-off.
+  measurement). **Point 3 amended 2026-10-19** (option D of
+  docs/design/ui.md, voted and the text signed off by the owner).
 - **Date:** 2026-10-13
 
 ## Context
@@ -78,7 +78,8 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
    one lives in SDRAM and reaches the screen by a flush. The surface type
    says which; the compositor never reads 2700G memory with the CPU
    (docs/hw/2700g.md, "the framebuffer is write-only").
-3. **The compositor uses scan-out planes first, the 2D engine second, the
+3. *(Replaced 2026-10-19 by the amendment below; kept for the record.)*
+   **The compositor uses scan-out planes first, the 2D engine second, the
    CPU last.** Wallpaper and full-screen video: the video plane (zero
    copies). The interface: the graphics plane, per-pixel alpha over the
    video plane (measured). A full-screen program's surface becomes the
@@ -205,12 +206,14 @@ looks win over RAM when a real trade-off remains (owner, 2026-10-12).
   rule that the hardware is the only limit: WM's and Dell's ways are
   findings to beat, never a ceiling or a fallback.
 
-## Amendment to point 3, proposed 2026-10-19 (for the owner's sign-off)
+## Amendment to point 3 (accepted 2026-10-19, signed off by the owner)
 
 The owner voted for option D of docs/design/ui.md ("3D acceleration for
 the whole UI") after `rp-gpubench` measured the 3D core (docs/hw/2700g.md
-"Texture shapes", 2026-10-19). This text replaces point 3 once signed;
-until then point 3 stands as accepted.
+"Texture shapes", 2026-10-19). The owner signed this text off
+the same day (after a review that added the pan's bad case, bounded and
+unbounded content, the emulator, the upload as a static cost and C20): it
+replaces point 3.
 
 **In plain words.** Each way of putting pixels on the screen does what
 it is measured best at. When the whole screen moves (a page swipe, a
