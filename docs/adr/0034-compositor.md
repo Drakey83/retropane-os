@@ -79,7 +79,11 @@ leaves the CPU 79% free. **Not re-decided:** C1 stands until the owner
 looks at it again with these numbers. 8-bit layers take half the upload
 and draw faster than RGB565 (22.7 ms vs 27.2 full screen); PVRTC a quarter
 or an eighth; text as one 2D command a glyph moves 11x fewer bytes but
-takes as long as pixels.
+takes as long as pixels. Run F: text drawn by the CPU as 4 bpp strips
+and coloured by the 2D engine takes as long in all (23.6 ms a screen
+against 22.4 as pixels: the engine's blend runs at ~16 Mpx/s), but the
+CPU only 6.2 ms of it (3.6x less) and the bus 4.3x fewer bytes: a choice
+of CPU time against nothing, for the renderer to weigh.
 
 ## Process
 
