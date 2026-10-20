@@ -69,6 +69,18 @@ pictures (or are drawn by the CPU, dithered, as layers).
 pages are **built on demand and dropped** when they're off screen and not
 about to be shown (ADR-0027's pool, the client's quota).
 
+## Measured since (`rp-gpubench` run E, 2026-10-20)
+
+A full-screen layer into a texture now takes **34.8 ms** with the reorder
+by table and the CPU writing straight in (was 71 by C1's path), or 41.0 ms
+reordered beside the DMA (the CPU free only 11.6 ms of it: the reorder and
+the DMA share SDRAM). That narrows C1's trade: the DMA path no longer
+leaves the CPU 79% free. **Not re-decided:** C1 stands until the owner
+looks at it again with these numbers. 8-bit layers take half the upload
+and draw faster than RGB565 (22.7 ms vs 27.2 full screen); PVRTC a quarter
+or an eighth; text as one 2D command a glyph moves 11x fewer bytes but
+takes as long as pixels.
+
 ## Process
 
 - The pan path is **proven** when its device run passes, and **done** only
