@@ -2931,16 +2931,24 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// One `rp-gpubench` run for [`boot_loader_gpubench`]: its name, image,
+/// wanted log lines, whether they need the 3D model, and its key presses
+/// (guest ms before the first, between them, how many).
+type GpubenchRun<'a> = (&'a str, &'a PathBuf, &'a [&'a str], bool, (u32, u32, u32));
+
 /// The GPU measuring run for the 3D compositor proposal (rp-gpubench,
 /// docs/design/ui.md): run A (fill, layers, partial frames, rectangular
 /// textures, uploads, the frame-event watch tests) and run B (the
 /// texture-word probes, built with `RP_GPUBENCH_PROBES`), each under the
-/// loader. The models' times say nothing about the device's (the fork's 3D
+/// loader, then run C (the video plane's repoint and pans,
+/// `RP_GPUBENCH_PLANES`) and run D (its undocumented format codes,
+/// `RP_GPUBENCH_VFMT`), with key presses for their watch steps. The
+/// models' times say nothing about the device's (the fork's 3D
 /// core doesn't model the clock or the fill costs: emulator.md), so this
 /// checks that every stage runs, the 2700G memory pool is all given back,
 /// the two upload paths write the same texture, nothing faults, and each
-/// run returns to the loader. Without a key the watch tests end at their
-/// 30 s cap (or at once if the scan line isn't modelled).
+/// run returns to the loader. Run A's watch tests end at their 30 s cap
+/// (or at once if the scan line isn't modelled).
 pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    gpubench: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -2953,8 +2961,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_a = dir.join("rp-gpubench.bin");
     crate::sdkit::raw_binary(&release.join("rp-gpubench"), &run_a)?;
     let run_b = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PROBES", "1"))?;
+    let run_c = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PLANES", "1"))?;
+    let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
-    for (name, bin, want) in [
+    // (name, image, wanted lines, whether they need the 3D model, key
+    // presses: guest ms before the first, between them, how many). Runs C
+    // and D draw no 3D; their presses end the watch steps early (a press
+    // landing outside one is ignored by the image, which then waits its
+    // cap), never more than the steps, so none reaches the loader.
+    let runs: [GpubenchRun; 4] = [
         (
             "run A",
             &run_a,
@@ -2969,11 +2984,54 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  W1: ",
                 "  W2: ",
                 "  W3: ",
-            ][..],
+            ],
+            true,
+            (0, 0, 0),
         ),
-        ("run B", &run_b, &["B: TEX0 words", "  B: 20 tries"][..]),
-    ] {
+        (
+            "run B",
+            &run_b,
+            &["B: TEX0 words", "  B: 20 tries"],
+            true,
+            (0, 0, 0),
+        ),
+        (
+            "run C",
+            &run_c,
+            &[
+                "  W4: ",
+                "the list converted RGB -> UYVY",
+                "  W5: ",
+                "the RGB list drawn",
+                "  W6: ",
+            ],
+            false,
+            (15_000, 8_000, 3),
+        ),
+        (
+            "run D",
+            &run_d,
+            &["  try code 0", "  try code 8"],
+            false,
+            (6_000, 3_000, 9),
+        ),
+    ];
+    for (name, bin, want, needs_model, (first, every, presses)) in runs {
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        let keys = || -> Result<(), String> {
+            if presses == 0 {
+                return Ok(());
+            }
+            let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+            guest_hold(&mut mon, first, "gpubench: before the first key")?;
+            for k in 0..presses {
+                if k > 0 {
+                    guest_hold(&mut mon, every, "gpubench: between keys")?;
+                }
+                mon.command("sendkey ret")?;
+            }
+            Ok(())
+        };
         let output = boot(
             root,
             &Boot {
@@ -2984,7 +3042,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 steps: &[],
                 extra: &[],
                 input: Some((&rp_loadproto::frame(&payload), "RETROPANE-GPUBENCH: ")),
-                during: None,
+                during: Some(&keys),
                 then: Some("RPL END"),
                 timeout: Duration::from_secs(900),
             },
@@ -2998,9 +3056,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         }
         let always = ["everything given back: true", "RETROPANE-GPUBENCH: done"];
         // Without the 3D model every render is refused (`NoCore`): only
-        // the plumbing is checked.
-        let modelled_only: &[&str] = if modelled { want } else { &[] };
-        for w in always.iter().chain(modelled_only) {
+        // the plumbing is checked for runs A and B.
+        let checked: &[&str] = if modelled || !needs_model { want } else { &[] };
+        for w in always.iter().chain(checked) {
             if !log.contains(w) {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
             }

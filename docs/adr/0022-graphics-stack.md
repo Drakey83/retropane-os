@@ -269,7 +269,17 @@ fills with the 2D engine, and draws on the CPU last.*
      translucent layer this way (the display has one blend stage between
      the two planes). **Rests on one unmeasured fact:** that a video-plane
      repoint (`VSCADR`) takes effect as `GSCADR`'s does (queued: docs/hw/2700g.md
-     "Queued device test: the video plane's repoint").
+     "Queued device test: the video plane's repoint"). **Caveat found
+     writing that test:** the video plane's known formats are all YUV
+     (4:2:0 and four 4:2:2 orders), so content panned on it is stored as
+     YUV: full sharpness for brightness, half for colour (coloured text
+     and thin coloured lines soften), and the CPU converts what it draws
+     (the 3D core can't draw YUV). The same run measures the planes
+     swapped (the RGB content panned on the graphics plane, the video
+     plane above it as an even tint at one global alpha: dims and even
+     glass at full quality), and run D probes the video plane's unnamed
+     format codes for an RGB one. Which arrangement serves which layer is
+     settled by those results, with the owner.
   2. **Fallback, dropping the translucency:** for a second translucent
      layer, or if the video plane's repoint doesn't behave, the layer's
      translucency is dropped for the pan's duration (shown as an opaque

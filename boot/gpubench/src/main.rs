@@ -37,6 +37,19 @@
 //! a time, on a texture written in row order: whether any reads it as rows
 //! (a non-twiddled, any-width texture). A hung render is recovered by the
 //! renderer (core reset), and the log line is written before each try.
+//!
+//! **Run C** (`RP_GPUBENCH_PLANES`, the owner watches each step until a
+//! button): the video plane for ADR-0022 point 3's glass-over-a-pan rule.
+//! W4 whether a `VSCADR` repoint takes effect at once (a band shows); W5 a
+//! list stored as UYVY (the video plane's formats are all YUV) panned by
+//! `VSCADR` under per-pixel-alpha glass, its text against the same row in
+//! RGB at the bottom; W6 the planes swapped: the list in RGB panned by
+//! `GSCADR` under the video plane as a tint at one global alpha.
+//!
+//! **Run D** (`RP_GPUBENCH_VFMT`, the owner watches): an RGB565 test card on
+//! the video plane at each unnamed format code 0-8, colour conversion off,
+//! the chroma bases pointed at zeroed memory first (mbxfb: a planar format
+//! with them unset hangs the chip); which show the card right.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -52,7 +65,9 @@ mod image {
     use rp_drv_mbx_display::clock::MBXCLK;
     use rp_drv_mbx_display::font::{self, WIDTH};
     use rp_drv_mbx_display::{
-        Display, PixelFormat as PlaneFormat, Plane, event, layers::Layer, reg as dreg,
+        Display, PixelFormat as PlaneFormat, Plane, event,
+        layers::{Blend, Layer, Slot, Snapshot, VideoFormat, VideoPlane, reg as lreg},
+        reg as dreg, scanout,
     };
     use rp_drv_mbx3d::tex;
     use rp_drv_pxa_keypad::{Keypad, Pressed};
@@ -77,6 +92,11 @@ mod image {
 
     /// Run B: the texture-word probes instead of run A.
     const PROBES: bool = option_env!("RP_GPUBENCH_PROBES").is_some();
+    /// Run C: the video plane's repoint and pans (the owner watches).
+    const PLANES: bool = option_env!("RP_GPUBENCH_PLANES").is_some();
+    /// Run D: the video plane's undocumented format codes (the owner
+    /// watches).
+    const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -1434,6 +1454,444 @@ mod image {
         let _ = g.pool.free(at, 512 * 512 * 2);
     }
 
+    // ---- Run C: the video plane (the owner watches) --------------------------
+    //
+    // ADR-0022 point 3, the translucent-layer-over-a-pan rule: does a
+    // `VSCADR` repoint take effect at once (W4), does a YUV picture pan
+    // smoothly under per-pixel-alpha glass and is its text good enough
+    // (W5), and does an RGB pan on the graphics plane under a global-alpha
+    // video-plane tint work (W6, the planes swapped).
+
+    /// Whether pixel `(x, y)` is lit in `s` drawn at `(x0, y0)` in the
+    /// 5 x 7 font, `scale` times.
+    fn in_text(x: u32, y: u32, s: &str, x0: u32, y0: u32, scale: u32) -> bool {
+        let cell = (WIDTH as u32 + 1) * scale;
+        if x < x0 || y < y0 || y >= y0 + 7 * scale {
+            return false;
+        }
+        let k = ((x - x0) / cell) as usize;
+        let Some(ch) = s.chars().nth(k) else {
+            return false;
+        };
+        let gx = (x - x0) % cell / scale;
+        let gy = ((y - y0) / scale) as usize;
+        gx < WIDTH as u32 && font::glyph(ch)[gy] & (1 << (WIDTH as u32 - 1 - gx)) != 0
+    }
+
+    /// A list to scroll through: 48-pixel rows, each with its number in
+    /// black, a red and a blue word (colour detail: where YUV's halved
+    /// chroma shows) and a thin green line; `0x00RRGGBB`.
+    fn list_rgb(x: u32, y: u32) -> u32 {
+        let row = y / 48;
+        let top = row * 48;
+        let mut label = heapless_name();
+        let _ = write!(label, "ROW {row:02}");
+        if in_text(x, y, label.as_str(), 16, top + 14, 3) {
+            return 0x00_10_10_10;
+        }
+        if in_text(x, y, "RED", 200, top + 14, 3) {
+            return 0x00_D0_10_10;
+        }
+        if in_text(x, y, "BLUE", 300, top + 14, 3) {
+            return 0x00_10_30_D0;
+        }
+        if y == top + 47 {
+            return 0x00_20_A0_40;
+        }
+        if row.is_multiple_of(2) {
+            0x00_F4_F4_F4
+        } else {
+            0x00_DC_DC_E4
+        }
+    }
+
+    /// Writes `w` x `h` UYVY pixels (stride `w * 2`) at `at` from `f`
+    /// (`0x00RRGGBB`), each pair's chroma averaged.
+    fn write_uyvy(g: &mut Rig, at: u32, w: u32, h: u32, f: &dyn Fn(u32, u32) -> u32) {
+        let mut row = [0u32; 240];
+        for y in 0..h {
+            for (k, word) in row[..(w / 2) as usize].iter_mut().enumerate() {
+                let x = 2 * k as u32;
+                let yuv = |c: u32| scanout::rgb_to_yuv((c >> 16) as u8, (c >> 8) as u8, c as u8);
+                let (y0, u0, v0) = yuv(f(x, y));
+                let (y1, u1, v1) = yuv(f(x + 1, y));
+                let u = (u32::from(u0) + u32::from(u1)).div_ceil(2);
+                let v = (u32::from(v0) + u32::from(v1)).div_ceil(2);
+                *word = u | u32::from(y0) << 8 | v << 16 | u32::from(y1) << 24;
+            }
+            g.mem
+                .store((at + y * w * 2) as usize, &row[..(w / 2) as usize]);
+            if y.is_multiple_of(64) {
+                rt::check_in();
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// Writes `w` x `h` ARGB8888 pixels (stride `w * 4`) at `at` from `f`.
+    fn write_argb(g: &mut Rig, at: u32, w: u32, h: u32, f: &dyn Fn(u32, u32) -> u32) {
+        let mut row = [0u32; 480];
+        for y in 0..h {
+            for (x, p) in row[..w as usize].iter_mut().enumerate() {
+                *p = f(x as u32, y);
+            }
+            g.mem.store((at + y * w * 4) as usize, &row[..w as usize]);
+            if y.is_multiple_of(64) {
+                rt::check_in();
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// The video plane's registers for a 480 x 640 UYVY picture at `at`
+    /// (its lines `stride` bytes apart), as `layer`.
+    fn video_regs(at: u32, stride: u32, layer: Layer) -> [(usize, u32); 9] {
+        let mut p = VideoPlane::new(VideoFormat::Uyvy, 480, 640, at as usize);
+        p.stride = stride as usize;
+        p.registers(layer, false)
+    }
+
+    fn vscadr_of(regs: &[(usize, u32); 9]) -> u32 {
+        regs.iter()
+            .find(|(o, _)| *o == lreg::VSCADR)
+            .map_or(0, |&(_, v)| v)
+    }
+
+    /// The graphics plane on the 32-bit picture at `at` (480 x 640, lines
+    /// `stride` bytes apart), as `layer`.
+    fn graphics_on(g: &mut Rig, at: u32, stride: u32, layer: Layer) {
+        let plane = Plane {
+            format: PlaneFormat::Argb8888,
+            width: 480,
+            height: 640,
+            offset: at as usize,
+            stride: stride as usize,
+        };
+        let gamma = g.e.regs.read32(dreg::GSCTRL) & (1 << 26);
+        for (off, v) in plane.registers() {
+            let v = match off {
+                dreg::GSCTRL => v | gamma,
+                dreg::GSCADR => layer.scadr(v),
+                dreg::GBBASE => layer.bbase(v),
+                _ => v,
+            };
+            g.e.regs.write32(off, v);
+        }
+    }
+
+    fn video_on(g: &mut Rig, regs: &[(usize, u32); 9]) {
+        g.e.regs.modify(lreg::VOVRCLK, rp_hal_api::Field::bit(0), 1);
+        for &(off, v) in regs {
+            g.e.regs.write32(off, v);
+        }
+    }
+
+    /// `GSCADR` for the graphics plane at `at` as `layer`.
+    fn gscadr_as(at: u32, stride: u32, layer: Layer) -> u32 {
+        let plane = Plane {
+            format: PlaneFormat::Argb8888,
+            width: 480,
+            height: 640,
+            offset: at as usize,
+            stride: stride as usize,
+        };
+        plane
+            .registers()
+            .iter()
+            .find(|(o, _)| *o == dreg::GSCADR)
+            .map_or(0, |&(_, v)| layer.scadr(v))
+    }
+
+    /// A glass layer: clear, the prompt's opaque black band on top (its
+    /// words in white and yellow), a reference strip at the bottom (the
+    /// list's own row in RGB, to compare text against), and a sheet in the
+    /// middle: a blue-grey tint at alpha 0x90 with soft edges.
+    fn glass(x: u32, y: u32, l1: &str, l2: &str) -> u32 {
+        if y < 80 {
+            if in_text(x, y, l1, 8, 10, 3) {
+                return 0xFF_FF_FF_FF;
+            }
+            if in_text(x, y, l2, 8, 46, 3) {
+                return 0xFF_FF_E0_00;
+            }
+            return 0xFF_00_00_00;
+        }
+        if y >= 592 {
+            // Row 1 of the list (its stripes and words), in RGB.
+            return 0xFF00_0000 | list_rgb(x, y - 592 + 48);
+        }
+        let (x0, y0, x1, y1) = (60u32, 200u32, 420u32, 440u32);
+        if x < x0 || x >= x1 || y < y0 || y >= y1 {
+            return 0;
+        }
+        let edge = (x - x0).min(x1 - 1 - x).min(y - y0).min(y1 - 1 - y);
+        let a = if edge < 16 { 0x90 * edge / 16 } else { 0x90 };
+        a << 24 | 0x40_50_70
+    }
+
+    /// Runs `step` once a frame (at VEVENT0) until a button or the cap.
+    /// Returns frames and whether the frame event stopped coming.
+    fn each_frame(g: &mut Rig, step: &mut dyn FnMut(&mut Rig, u32)) -> (u32, bool) {
+        g.arm_button();
+        let t0 = rt::ticks();
+        let mut n = 0;
+        while us_since(t0) < WATCH_US && !g.button() {
+            rt::check_in();
+            g.vevent_clear();
+            if !g.vevent_wait() {
+                return (n, true);
+            }
+            step(g, n);
+            n += 1;
+        }
+        (n, false)
+    }
+
+    #[inline(never)]
+    fn planes(g: &mut Rig) {
+        log!(
+            "C: the video plane: repoint (W4), a YUV pan under glass (W5), an RGB pan under a video-plane tint (W6)"
+        );
+        const VSTRIDE: u32 = 960;
+        const GSTRIDE: u32 = 480 * 4;
+        let (Some(vid), Some(rgb)) = (
+            g.pool.alloc(VSTRIDE * 1280, 0x1000),
+            g.pool.alloc(GSTRIDE * 1280, 0x1000),
+        ) else {
+            log!("  no 2700G memory");
+            return;
+        };
+        let under = Layer {
+            slot: Slot::Bottom,
+            blend: Blend::Opaque,
+        };
+        let glass_layer = Layer {
+            slot: Slot::Middle,
+            blend: Blend::PixelAlpha,
+        };
+
+        // W4: two flat pictures, blue over yellow, in one tall buffer.
+        log!(
+            "W4: VSCADR to the yellow half at line 320, back at 560, every frame: a band shows if a repoint takes effect at once"
+        );
+        write_uyvy(g, vid, 480, 1280, &|_, y| {
+            if y < 640 {
+                0x00_10_20_A0
+            } else {
+                0x00_FF_E0_00
+            }
+        });
+        write_argb(g, SCREEN.at, 480, 640, &|x, y| {
+            glass(x, y, "W4: A YELLOW BAND?", "THEN PRESS A BUTTON")
+        });
+        // No sheet or strip for W4: only the prompt.
+        write_argb(g, SCREEN.at + 80 * GSTRIDE, 480, 560, &|_, _| 0);
+        let a = video_regs(vid, VSTRIDE, under);
+        let b = vscadr_of(&video_regs(vid + 640 * VSTRIDE, VSTRIDE, under));
+        video_on(g, &a);
+        graphics_on(g, SCREEN.at, GSTRIDE, glass_layer);
+        g.arm_button();
+        let t0 = rt::ticks();
+        let (mut frames, mut late1, mut late2) = (0u32, 0u32, 0u32);
+        while us_since(t0) < WATCH_US && !g.button() {
+            rt::check_in();
+            if !g.wait_line(320, 20) {
+                log!("  no scan line: stopped");
+                break;
+            }
+            g.e.regs.write32(lreg::VSCADR, b);
+            late1 = late1.max(g.line());
+            if !g.wait_line(560, 20) {
+                break;
+            }
+            g.e.regs.write32(lreg::VSCADR, vscadr_of(&a));
+            late2 = late2.max(g.line());
+            frames += 1;
+        }
+        log!(
+            "  W4: {frames} frames, {} s; writes done by line {late1} and {late2} at the latest",
+            us_since(t0) / 1_000_000
+        );
+
+        // W5: the list in UYVY, panned under the glass.
+        log!(
+            "W5: a YUV list panned 4 lines a frame by VSCADR at VEVENT0, under per-pixel-alpha glass; the bottom strip is the same row in RGB"
+        );
+        let t0 = rt::ticks();
+        write_uyvy(g, vid, 480, 1280, &list_rgb);
+        let made = us_since(t0);
+        log!(
+            "  the list converted RGB -> UYVY by the CPU: 480 x 1280 in {} ms",
+            made / 1000
+        );
+        write_argb(g, SCREEN.at, 480, 640, &|x, y| {
+            glass(x, y, "W5: TORN, JUMPY, SMOOTH?", "TEXT VS BOTTOM STRIP?")
+        });
+        let (frames, stopped) = each_frame(g, &mut |g, n| {
+            let pos = (n * 4) % 640;
+            let v = vscadr_of(&video_regs(vid + pos * VSTRIDE, VSTRIDE, under));
+            g.e.regs.write32(lreg::VSCADR, v);
+        });
+        log!(
+            "  W5: {frames} frames{}",
+            if stopped {
+                ", the frame event stopped"
+            } else {
+                ""
+            }
+        );
+
+        // W6: planes swapped: the list in RGB on the graphics plane, panned
+        // by GSCADR; the video plane on top, a flat tint at global alpha.
+        log!(
+            "W6: an RGB list panned 4 lines a frame by GSCADR at VEVENT0, under the video plane as a tint at global alpha 0x90 (its top band the prompt)"
+        );
+        let t0 = rt::ticks();
+        write_argb(g, rgb, 480, 1280, &|x, y| 0xFF00_0000 | list_rgb(x, y));
+        log!("  the RGB list drawn: {} ms", us_since(t0) / 1000);
+        write_uyvy(g, vid, 480, 640, &|x, y| {
+            if y < 80 {
+                if in_text(x, y, "W6: TORN, JUMPY, SMOOTH?", 8, 10, 3)
+                    || in_text(x, y, "THEN PRESS A BUTTON", 8, 46, 3)
+                {
+                    return 0x00_FF_FF_FF;
+                }
+                return 0;
+            }
+            0x00_20_30_70
+        });
+        let tint = Layer {
+            slot: Slot::Middle,
+            blend: Blend::Global(0x90),
+        };
+        let content = Layer {
+            slot: Slot::Bottom,
+            blend: Blend::Opaque,
+        };
+        g.e.regs.write32(lreg::VSCADR, 0);
+        graphics_on(g, rgb, GSTRIDE, content);
+        video_on(g, &video_regs(vid, VSTRIDE, tint));
+        let (frames, stopped) = each_frame(g, &mut |g, n| {
+            let pos = (n * 4) % 640;
+            g.e.regs.write32(
+                dreg::GSCADR,
+                gscadr_as(rgb + pos * GSTRIDE, GSTRIDE, content),
+            );
+        });
+        log!(
+            "  W6: {frames} frames{}",
+            if stopped {
+                ", the frame event stopped"
+            } else {
+                ""
+            }
+        );
+        let _ = g.pool.free(vid, VSTRIDE * 1280);
+        let _ = g.pool.free(rgb, GSTRIDE * 1280);
+    }
+
+    // ---- Run D: the video plane's undocumented format codes -------------------
+
+    #[inline(never)]
+    fn vformats(g: &mut Rig) {
+        log!(
+            "D: VSCTRL format codes 0-8 (only 9 and 0xC-0xF are named) on an RGB565 test card, colour conversion off, one at a time"
+        );
+        const STRIDE: u32 = 960;
+        let (Some(card), Some(chroma)) = (
+            g.pool.alloc(STRIDE * 640, 0x1000),
+            g.pool.alloc(STRIDE * 640, 0x1000),
+        ) else {
+            log!("  no 2700G memory");
+            return;
+        };
+        // The card: eight colour bars over the top half, a grey ramp, the
+        // words "RGB565" in the bottom half; RGB565 pixels.
+        const BARS: [u32; 8] = [
+            0xFFFFFF, 0xFFFF00, 0x00FFFF, 0x00FF00, 0xFF00FF, 0xFF0000, 0x0000FF, 0x000000,
+        ];
+        let px = |x: u32, y: u32| -> u32 {
+            let c = if y < 320 {
+                BARS[(x / 60) as usize]
+            } else if y < 480 {
+                let v = x * 255 / 479;
+                v << 16 | v << 8 | v
+            } else if in_text(x, y, "RGB565", 60, 530, 8) {
+                0xFFFFFF
+            } else {
+                0x202020
+            };
+            ((c >> 19) & 31) << 11 | ((c >> 10) & 63) << 5 | ((c >> 3) & 31)
+        };
+        let mut row = [0u32; 240];
+        for y in 0..640 {
+            for (k, w) in row.iter_mut().enumerate() {
+                let x = 2 * k as u32;
+                *w = px(x, y) | px(x + 1, y) << 16;
+            }
+            g.mem.store((card + y * STRIDE) as usize, &row);
+        }
+        // The chroma bases point at zeroed memory (mbxfb: a planar format
+        // with them unset hangs the chip).
+        let zero = [0u32; 240];
+        for y in 0..640 {
+            g.mem.store((chroma + y * STRIDE) as usize, &zero);
+        }
+        g.mem.sync();
+        let under = Layer {
+            slot: Slot::Bottom,
+            blend: Blend::Opaque,
+        };
+        let glass_layer = Layer {
+            slot: Slot::Middle,
+            blend: Blend::PixelAlpha,
+        };
+        let base = video_regs(card, STRIDE, under);
+        g.e.regs.write32(lreg::VSCADR, 0);
+        g.e.regs.write32(lreg::VUBASE, (chroma / 8) | 1 << 31);
+        g.e.regs.write32(lreg::VVBASE, chroma / 8);
+        for code in 0..9u32 {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "CODE {code}: A TEST CARD?");
+            write_argb(g, SCREEN.at, 480, 640, &|x, y| {
+                if y < 80 {
+                    glass(x, y, l1.as_str(), "THEN PRESS A BUTTON")
+                } else {
+                    0
+                }
+            });
+            graphics_on(g, SCREEN.at, 480 * 4, glass_layer);
+            log!("  try code {code}");
+            for &(off, v) in &base {
+                let v = match off {
+                    // The format, colour conversion off; size kept.
+                    lreg::VSCTRL => (v & !(0xF << 27) & !(1 << 25)) | code << 27,
+                    lreg::VUBASE => (chroma / 8) | 1 << 31,
+                    lreg::VVBASE => chroma / 8,
+                    _ => v,
+                };
+                if off == lreg::VSCADR {
+                    g.e.regs.modify(lreg::VOVRCLK, rp_hal_api::Field::bit(0), 1);
+                }
+                g.e.regs.write32(off, v);
+            }
+            let found = g.e.regs.read32(lreg::VSCTRL);
+            g.arm_button();
+            let t0 = rt::ticks();
+            while us_since(t0) < 15_000_000 && !g.button() {
+                rt::check_in();
+                rt::delay_us(20_000);
+            }
+            log!(
+                "    VSCTRL read back 0x{found:08x}; shown {} ms",
+                us_since(t0) / 1000
+            );
+            g.e.regs.write32(lreg::VSCADR, 0);
+        }
+        let _ = g.pool.free(card, STRIDE * 640);
+        let _ = g.pool.free(chroma, STRIDE * 640);
+    }
+
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
@@ -1451,6 +1909,10 @@ mod image {
             "{MARKER}: run {}, MBXCLK 0x{clk0:x}",
             if PROBES {
                 "B (texture-word probes)"
+            } else if PLANES {
+                "C (the video plane: repoint, YUV pan under glass, RGB pan under a tint)"
+            } else if VFMT {
+                "D (the video plane's undocumented format codes)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
@@ -1477,9 +1939,16 @@ mod image {
             pressed: false,
         };
         g.fill(SCREEN.at, (0, 0, 480, 640), BLACK);
+        // Every plane register as found (the video plane, the cursor, the
+        // background colour, the graphics plane), put back at the end.
+        let planes0 = Snapshot::take(&mut g.e.regs);
         let saved = show_screen(&mut g.e.regs);
         if PROBES {
             probes(&mut g);
+        } else if PLANES {
+            planes(&mut g);
+        } else if VFMT {
+            vformats(&mut g);
         } else {
             g4a(&mut g);
             if let Some(set) = textures(&mut g) {
@@ -1511,6 +1980,7 @@ mod image {
         for (off, v) in saved {
             g.e.regs.write32(off, v);
         }
+        planes0.restore(&mut g.e.regs);
         g.e.reset(rt::delay_us);
         g.e.regs.write32(MBXCLK, clk0);
         rp_hal_x51v::devices::return_to_loader();
