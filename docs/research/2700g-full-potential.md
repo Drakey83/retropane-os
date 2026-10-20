@@ -76,6 +76,26 @@ with a fallback** (below), the owner's any-Axim rule.
 |---|---|---|---|
 | CPU bursts 33 MB/s, DMA 30, scattered single writes ~380 ns | DMA burst sizes and widths, the 2D command window fed by DMA (flow control?) | **P12** DMA descriptors with other burst settings; DMA into the 2D window with the FIFO's level as the guard | The CPU free while commands stream |
 
+### 7. Added 2026-10-20 (the owner asked what else there is)
+
+| Probe | What | Payoff |
+|---|---|---|
+| **P13** | The 2D engine's whole operation set: lines, pattern brushes, every ROP, gradients if any, rotation | Drawing the interface's shapes with no CPU |
+| **P14** | The 3D core's limits: objects and textures a frame before it slows, texture size against speed (its texture cache), points, lines and strips, trilinear mipmaps, the remaining texel formats | Knowing what a frame can hold; assets shaped for the cache |
+| **P15** | Everything at once: scan-out reading memory while 2D and 3D both draw | Where the engines get in each other's way |
+| **P16** | Power and heat: each engine and each clock against battery drain | The fastest setting that's also the right one |
+| **P17** | The display: refresh rates above 60 Hz and below (battery), the panel's limits | Smoother motion or longer battery |
+| **P18** | Every status and interrupt bit of every unit | No polling anywhere |
+| **P19** | A full read of Dell's GPU code (`ddi_2700g`, `libGLES_CL`, `pvrvadd`) for every register and feature it touches that RetroPane hasn't used | Nothing the chip does goes unnoticed (facts only, never copied) |
+
+## The checklist rule
+
+The map is the checklist. Every unit and feature has a line here, and
+each line is ticked only with evidence: a measurement, a probe's result,
+or a reason it can't be done or isn't worth it. Anything found along the
+way gets a line. The owner is told "nothing is left" only when every line
+is ticked, and can check that here.
+
 ## The order (owner, 2026-10-20: the clocks first)
 
 1. **P2 + P1, the clocks** (`rp-gpuclock`): the overclock map with
