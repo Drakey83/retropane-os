@@ -3602,6 +3602,26 @@ mod image {
         let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
+        // A log an earlier run kept in the internal SRAM (it hung and the
+        // device was reset: docs/hw/memory-map.md), reported; then every run
+        // keeps its own there until it returns (run Z's log was lost to a
+        // watchdog reset with only the clock runs keeping one: the class
+        // fixed, every run keeps it, every return clears it).
+        let opened = rp_hal_x51v::devices::kept_open(|k, copy| match copy {
+            Ok(text) => {
+                log!(
+                    "SRAM copy {k}: a kept log from an earlier run ({} bytes):",
+                    text.len()
+                );
+                log!("{text}");
+                log!("SRAM copy {k}: end of the kept log");
+            }
+            Err(why) => log!("SRAM copy {k}: {why}"),
+        });
+        if opened {
+            rp_hal_x51v::devices::kept_start();
+            log!("{MARKER}: the log kept in SRAM from here");
+        }
         if SNAPSHOT {
             snapshot(regs, vram);
         }
@@ -3649,28 +3669,6 @@ mod image {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
         );
-        // A log an earlier run kept in the internal SRAM (it hung and the
-        // device was reset: docs/hw/memory-map.md), reported; run G keeps
-        // its own there (rp_hal_x51v::kept).
-        let opened = rp_hal_x51v::devices::kept_open(|k, copy| match copy {
-            Ok(text) => {
-                log!(
-                    "SRAM copy {k}: a kept log from an earlier run ({} bytes):",
-                    text.len()
-                );
-                log!("{text}");
-                log!("SRAM copy {k}: end of the kept log");
-            }
-            Err(why) => log!("SRAM copy {k}: {why}"),
-        });
-        if opened {
-            rp_hal_x51v::devices::kept_start();
-            if CLOCK || LOAD {
-                log!("{MARKER}: the log kept in SRAM from here");
-            } else {
-                rp_hal_x51v::devices::kept_stop();
-            }
-        }
         let keypad = rt::take_keypad().map(|kp| {
             let mut k = Keypad::new(kp);
             k.enable();
@@ -3746,6 +3744,7 @@ mod image {
         planes0.restore(&mut g.e.regs);
         g.e.reset(rt::delay_us);
         g.e.regs.write32(MBXCLK, clk0);
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -3921,6 +3920,7 @@ mod image {
         }
         log!("  the picture at offset 0, mid-screen:{}", words.as_str());
         log!("{MARKER}: done (run S)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -4022,6 +4022,7 @@ mod image {
             log!("X: no plane decoded: no card");
         }
         log!("{MARKER}: done (run X)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -4212,6 +4213,15 @@ mod image {
         }
     }
 
+    /// Writes the healthy value of `name` and waits 1 ms (as Linux mbxfb
+    /// writes its set-up); no read.
+    fn write_healthy(regs: &mut Mmio, name: &str) {
+        if let Some(&(_, off, v)) = HEALTHY.iter().find(|r| r.0 == name) {
+            regs.write32(off, v);
+        }
+        rt::delay_us(1_000);
+    }
+
     /// Writes the healthy value of each of `names`, 1 ms after each (as
     /// Linux mbxfb writes its set-up), and reads it back; logs any that
     /// read differently. The number that did.
@@ -4238,26 +4248,51 @@ mod image {
         let mut regs = regs;
         let (f, s0, s1) = underrun_state(&mut regs);
         log!("Z: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
-        // Z1: the reset, then every register as the reset leaves it (the
-        // 2700G's cold state: what a flash boot will find).
+        // Z1: the reset. Run Z's first try read registers at once after it
+        // (to log the cold state) and froze (the watchdog reset): Linux
+        // mbxfb only writes, 1 ms apart, until the clocks and the memory
+        // run. So here: writes only, in its order, until Z3's end; each
+        // phase noted in the kept log first (a freeze shows where).
+        log!("Z1: SYSRST next (writes only from here to Z3)");
         regs.write32(0x010, 1);
         rt::delay_us(10_000);
+        log!("Z2: the clocks next");
+        for name in ["SYSCLKSRC", "PIXCLKSRC", "CLKSLEEP", "COREPLL", "DISPPLL"] {
+            write_healthy(&mut regs, name);
+        }
+        rt::delay_us(10_000);
+        for name in [
+            "VOVRCLK",
+            "PIXCLK",
+            "MEMCLK",
+            "M24CLK",
+            "MBXCLK",
+            "SDCLK",
+            "PIXCLKDIV",
+        ] {
+            write_healthy(&mut regs, name);
+        }
+        log!("Z3: the local memory next (Linux's setup_memc order)");
+        for name in ["LMCFG", "LMPWR", "LMTIM", "LMREFRESH", "LMTYPE", "LMPWR"] {
+            write_healthy(&mut regs, name);
+        }
+        log!("Z3: first reads after the reset next (PLLSTAT)");
         log!(
-            "Z1: SYSRST written 1; it reads 0x{:x} 10 ms on",
-            regs.read32(0x010)
+            "Z3: PLLSTAT 0x{:x}, LMPWRSTAT 0x{:x}",
+            regs.read32(0x040),
+            regs.read32(0x100C)
         );
-        dump_all(&mut regs, "Z1: every register after the reset");
-        // Z2: the clocks, the PLLs first and their locks awaited.
-        let mut off_by = put_healthy(&mut regs, &["COREPLL"]);
-        let core = wait_for(&mut regs, 0x040, 1 << 2, 1 << 2, 50);
-        off_by += put_healthy(&mut regs, &["DISPPLL"]);
-        let disp = wait_for(&mut regs, 0x040, 1, 1, 50);
-        off_by += put_healthy(
+        for k in 0..16 {
+            let _ = load32_volatile(vram, 4 * k);
+        }
+        let mut off_by = put_healthy(
             &mut regs,
             &[
                 "SYSCLKSRC",
                 "PIXCLKSRC",
                 "CLKSLEEP",
+                "COREPLL",
+                "DISPPLL",
                 "VOVRCLK",
                 "PIXCLK",
                 "MEMCLK",
@@ -4265,30 +4300,19 @@ mod image {
                 "MBXCLK",
                 "SDCLK",
                 "PIXCLKDIV",
+                "LMCFG",
+                "LMPWR",
+                "LMTIM",
+                "LMREFRESH",
+                "LMTYPE",
+                "LMCEMR",
+                "LMPROTMIN",
+                "LMPROTMAX",
+                "LMPROTCFG",
             ],
         );
-        log!(
-            "Z2: the clocks: core PLL locked {core}, display PLL locked {disp}, PLLSTAT 0x{:x}",
-            regs.read32(0x040)
-        );
-        // Z3: the local memory, as Linux mbxfb's setup_memc (with the
-        // working values): configuration, active, timing, refresh, type,
-        // active again, 16 dummy reads.
-        off_by += put_healthy(
-            &mut regs,
-            &["LMCFG", "LMPWR", "LMTIM", "LMREFRESH", "LMTYPE", "LMPWR"],
-        );
-        for k in 0..16 {
-            let _ = load32_volatile(vram, 4 * k);
-        }
-        off_by += put_healthy(
-            &mut regs,
-            &["LMCEMR", "LMPROTMIN", "LMPROTMAX", "LMPROTCFG"],
-        );
-        log!(
-            "Z3: the local memory: LMPWRSTAT 0x{:x}",
-            regs.read32(0x100C)
-        );
+        log!("Z3: the clocks and memory read back: {off_by} differ");
+        log!("Z4: the system block next");
         // Z4: the system block's other settings.
         off_by += put_healthy(
             &mut regs,
@@ -4313,6 +4337,7 @@ mod image {
                 "PWM1PER",
             ],
         );
+        log!("Z5: the display next");
         // Z5: the display, every setting but the status and counters; the
         // sync generator last.
         let skip = [
@@ -4350,7 +4375,10 @@ mod image {
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         }
         dump_all(&mut regs, "Z7: every register after the rebuild");
+        // The cold state (what a flash boot finds) is left for a later run,
+        // once a rebuild is proven: reading it froze the first try.
         log!("{MARKER}: done (run Z)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -4461,6 +4489,7 @@ mod image {
             None => log!("L: no rung brought the display back"),
         }
         log!("{MARKER}: done (run L)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -4563,6 +4592,7 @@ mod image {
         log!("U: at the end: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         card_text(vram, &plane, "U: DONE", 0xFF20_2080, 3);
         log!("{MARKER}: done (run U)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
@@ -4704,6 +4734,7 @@ mod image {
         revive_dump(&mut regs, "after R4");
         revive_card(vram, &plane, 4, 0xFF60_1080);
         log!("{MARKER}: done (run R)");
+        rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
