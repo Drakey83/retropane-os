@@ -5,9 +5,9 @@
   conditions, all landing before S1 (listed under "The owner's
   conditions" below; written into R2-R7, A2-A5 and the steps). Proposed
   and revised after a review the same day.
-- **A7 (virtual bass on the speaker): proposed 2026-10-19, waiting for
-  the owner's vote** (B recommended; a speaker sweep and an A/B by ear
-  before it ships).
+- **A7 (virtual bass on the speaker): B, overtone virtual bass (owner,
+  2026-10-19)**, on the speaker only, switchable; a speaker sweep and the
+  owner's blind A/B by ear before it ships.
 - **A6 (quality audit E3, the DMA chain that stops at the mix's end):
   the owner chose B on 2026-10-19, conditional on the two device
   measurements; both passed on the X51v the same evening; B built the
@@ -857,10 +857,10 @@ mutants and the emulator; no vote changes.
   a loud replay; nothing new is exposed to programs (the descriptors stay
   in the audio host).
 
-## A7. Virtual bass on the speaker (proposal, 2026-10-19: for the owner's vote)
+## A7. Virtual bass on the speaker (owner's vote 2026-10-19: B)
 
-**A proposal, not a decision; nothing is built.** It needs the owner's A/B
-by ear before it ships (the order agreed for ADR-0032's follow-ups).
+**Voted B (owner, 2026-10-19); nothing is built yet.** It needs the
+speaker sweep and the owner's blind A/B by ear before it ships.
 
 ### In plain words
 
