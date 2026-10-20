@@ -259,13 +259,26 @@ fills with the 2D engine, and draws on the CPU last.*
 - **The pathological case, a translucent layer over a pan:** a
   full-screen translucent layer (glass, a dim) over content that pans
   changes every tile every frame, which is the full-screen 3D cost again
-  (~20 ms a layer) and can't fit a frame. Chosen behavior: **for the
-  pan's duration the layer's translucency is dropped** (it is shown as an
-  opaque tint of its colour, or hidden if it is purely decorative), and
-  restored with one render when the pan stops; **a layer that moves with
-  the content** is instead frozen into the panned picture (drawn into it
-  once) so it pans with it at no cost. A designed behavior, not whatever
-  the budget happens to cut.
+  (~20 ms a layer) and can't fit a frame. Chosen behavior, in order
+  (refined 2026-10-19, owner's yes):
+  1. **Scan-out blending first:** the panning content goes on the video
+     plane and pans by repointing it; the translucent layer stays on the
+     graphics plane with per-pixel alpha, and the display blends the two
+     during scan-out (measured, point 3 as first accepted) every frame at
+     no render cost. The glass stays glass for the whole pan. One
+     translucent layer this way (the display has one blend stage between
+     the two planes). **Rests on one unmeasured fact:** that a video-plane
+     repoint (`VSCADR`) takes effect as `GSCADR`'s does (queued: docs/hw/2700g.md
+     "Queued device test: the video plane's repoint").
+  2. **Fallback, dropping the translucency:** for a second translucent
+     layer, or if the video plane's repoint doesn't behave, the layer's
+     translucency is dropped for the pan's duration (shown as an opaque
+     tint of its colour, or hidden if it is purely decorative) and
+     restored with one render when the pan stops.
+  3. **A layer that moves with the content** is frozen into the panned
+     picture (drawn into it once) so it pans with it at no cost.
+
+  A designed behavior, not whatever the budget happens to cut.
 - **The 2D engine:** copies (negative-stride scrolls), fills, keyed
   copies, glyph runs, as accepted.
 - **The CPU:** text and what no engine draws, uploaded by DMA where the
