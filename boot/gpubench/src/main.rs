@@ -140,6 +140,11 @@ mod image {
     /// each one Linux mbxfb's resume or set-up also touches, stopping at
     /// the first after which the display sends (`DSIG` nonzero).
     const LADDER: bool = option_env!("RP_GPUBENCH_LADDER").is_some();
+    /// Run Z: the 2700G reset (`SYSRST`) and rebuilt from a working one's
+    /// registers (run S on the X51v after a soft reset), in Linux mbxfb's
+    /// order: clocks, the local memory, the system block, the display. Run L
+    /// found no clock or power rung that brings the dark display back.
+    const REBUILD: bool = option_env!("RP_GPUBENCH_REBUILD").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3609,6 +3614,9 @@ mod image {
         if LADDER {
             ladder(regs, vram);
         }
+        if REBUILD {
+            rebuild(regs, vram);
+        }
         if REVIVE {
             revive(regs, vram);
         }
@@ -3901,18 +3909,10 @@ mod image {
     /// the first words of the scanned-out picture read; nothing written.
     fn snapshot(regs: Mmio, vram: &mut [u8]) -> ! {
         let mut regs = regs;
-        log!("S: every named register below the MBX block, read only");
-        let mut line = heapless_name();
-        for (k, (name, off)) in SNAPSHOT_REGS.iter().enumerate() {
-            let _ = write!(line, " {name} 0x{:x}", regs.read32(*off));
-            if k % 4 == 3 {
-                log!(" {}", line.as_str());
-                line = heapless_name();
-            }
-        }
-        if line.n != 0 {
-            log!(" {}", line.as_str());
-        }
+        dump_all(
+            &mut regs,
+            "S: every named register below the MBX block, read only",
+        );
         revive_lines(&mut regs);
         let mut words = heapless_name();
         for k in 0..6 {
@@ -4037,6 +4037,324 @@ mod image {
             rt::delay_us(100);
         }
         false
+    }
+
+    /// A working X51v's 2700G (run S, `local/rp-gpubench-runS1-healthy.txt`,
+    /// 2026-10-20, after a soft reset into Windows Mobile and the loader):
+    /// name, offset, value.
+    const HEALTHY: [(&str, usize, u32); 146] = [
+        ("SYSCFG", 0x0000, 0x0),
+        ("PFBASE", 0x0004, 0x0),
+        ("PFCEIL", 0x0008, 0x3FDFFE0),
+        ("POLLFLAG", 0x000C, 0x0),
+        ("NINTPW", 0x0014, 0x1C),
+        ("MINTENABLE", 0x0018, 0x800F),
+        ("MINTSTAT", 0x001C, 0x0),
+        ("SINTENABLE", 0x0020, 0x0),
+        ("SINTSTAT", 0x0024, 0x10),
+        ("SYSCLKSRC", 0x002C, 0x2),
+        ("PIXCLKSRC", 0x0030, 0x1),
+        ("CLKSLEEP", 0x0034, 0x0),
+        ("COREPLL", 0x0038, 0xBB1),
+        ("DISPPLL", 0x003C, 0xFC5),
+        ("PLLSTAT", 0x0040, 0x7),
+        ("VOVRCLK", 0x0044, 0x0),
+        ("PIXCLK", 0x0048, 0x1),
+        ("MEMCLK", 0x004C, 0x1),
+        ("M24CLK", 0x0050, 0x2),
+        ("MBXCLK", 0x0054, 0x5),
+        ("SDCLK", 0x0058, 0x1),
+        ("PIXCLKDIV", 0x005C, 0x1),
+        ("LCD_CONFIG", 0x0060, 0x2EFA0000),
+        ("ODFBPWR", 0x0064, 0x0),
+        ("ODFBSTAT", 0x0068, 0x4),
+        ("GPIOCGF", 0x006C, 0x1),
+        ("GPIOHI", 0x0070, 0x0),
+        ("GPIOLO", 0x0074, 0x0),
+        ("GPIOSTAT", 0x0078, 0x0),
+        ("PWMCFG", 0x0204, 0x3),
+        ("PWM0DIV", 0x0210, 0x0),
+        ("PWM0DUTY", 0x0214, 0x0),
+        ("PWM0PER", 0x0218, 0x4),
+        ("PWM1DIV", 0x0220, 0x0),
+        ("PWM1DUTY", 0x0224, 0x0),
+        ("PWM1PER", 0x0228, 0x4),
+        ("ID", 0x0FF0, 0x1727189),
+        ("LMCFG", 0x1004, 0x27),
+        ("LMPWR", 0x1008, 0x0),
+        ("LMPWRSTAT", 0x100C, 0x0),
+        ("LMCEMR", 0x1010, 0x0),
+        ("LMTYPE", 0x1014, 0xAC8),
+        ("LMTIM", 0x1018, 0x73392),
+        ("LMREFRESH", 0x101C, 0x615),
+        ("LMPROTMIN", 0x1020, 0x0),
+        ("LMPROTMAX", 0x1024, 0x3FDFFFC),
+        ("LMPROTCFG", 0x1028, 0x0),
+        ("LMPROTERR", 0x102C, 0x0),
+        ("GSCTRL", 0x2000, 0x3C0EFA7F),
+        ("VSCTRL", 0x2004, 0x600780F),
+        ("GBBASE", 0x2020, 0x0),
+        ("VBBASE", 0x2024, 0x0),
+        ("GDRCTRL", 0x2040, 0xFFFFFF),
+        ("VCMSK", 0x2044, 0xFFFFFF),
+        ("GSCADR", 0x2060, 0x80000000),
+        ("VSCADR", 0x2064, 0x1000000),
+        ("VUBASE", 0x2084, 0x0),
+        ("VVBASE", 0x20A4, 0x0),
+        ("GSADR", 0x20C0, 0xEC00000),
+        ("VSADR", 0x20C4, 0x0),
+        ("HCCTRL", 0x2100, 0x0),
+        ("HCSIZE", 0x2110, 0x40000000),
+        ("HCPOS", 0x2120, 0x0),
+        ("HCBADR", 0x2130, 0x0),
+        ("HCCKMSK", 0x2140, 0xFFFFFF),
+        ("GPLUT", 0x2150, 0x0),
+        ("DSCTRL", 0x2154, 0x8000002A),
+        ("DHT01", 0x2158, 0x400288),
+        ("DHT02", 0x215C, 0x500050),
+        ("DHT03", 0x2160, 0x2300230),
+        ("DVT01", 0x2164, 0x20284),
+        ("DVT02", 0x2168, 0x30003),
+        ("DVT03", 0x216C, 0x2830283),
+        ("DBCOL", 0x2170, 0x0),
+        ("BGCOLOR", 0x2174, 0x0),
+        ("DINTRS", 0x2178, 0x5),
+        ("DINTRE", 0x217C, 0x0),
+        ("DINTRCNT", 0x2180, 0x0),
+        ("DSIG", 0x2184, 0xFE6D32F),
+        ("DMCTRL", 0x2188, 0x10303010),
+        ("CLIPCTRL", 0x218C, 0x0),
+        ("SPOCTRL", 0x2190, 0xC8030000),
+        ("SVCTRL", 0x2194, 0x0),
+        ("VSCOEFF0", 0x2198, 0x0),
+        ("VSCOEFF1", 0x219C, 0x0),
+        ("VSCOEFF2", 0x21A0, 0x0),
+        ("VSCOEFF3", 0x21A4, 0x0),
+        ("VSCOEFF4", 0x21A8, 0x0),
+        ("SHCTRL", 0x21B0, 0x20000000),
+        ("HSCOEFF0", 0x21B4, 0x0),
+        ("HSCOEFF1", 0x21B8, 0x0),
+        ("HSCOEFF2", 0x21BC, 0x0),
+        ("HSCOEFF3", 0x21C0, 0x0),
+        ("HSCOEFF4", 0x21C4, 0x0),
+        ("HSCOEFF5", 0x21C8, 0x0),
+        ("HSCOEFF6", 0x21CC, 0x0),
+        ("HSCOEFF7", 0x21D0, 0x0),
+        ("HSCOEFF8", 0x21D4, 0x0),
+        ("SSSIZE", 0x21D8, 0x0),
+        ("VIDGAM0", 0x2200, 0x0),
+        ("VIDGAM1", 0x2204, 0x101010),
+        ("VIDGAM2", 0x2208, 0x202020),
+        ("VIDGAM3", 0x220C, 0x303030),
+        ("VIDGAM4", 0x2210, 0x404040),
+        ("VIDGAM5", 0x2214, 0x505050),
+        ("VIDGAM6", 0x2218, 0x606060),
+        ("VIDGAM7", 0x221C, 0x6F6F6F),
+        ("VIDGAM8", 0x2220, 0x808080),
+        ("VIDGAM9", 0x2224, 0x909090),
+        ("VIDGAM10", 0x2228, 0xA0A0A0),
+        ("VIDGAM11", 0x222C, 0xB0B0B0),
+        ("VIDGAM12", 0x2230, 0xC0C0C0),
+        ("VIDGAM13", 0x2234, 0xCFCFCF),
+        ("VIDGAM14", 0x2238, 0xDFDFDF),
+        ("VIDGAM15", 0x223C, 0xF0F0F0),
+        ("VIDGAM16", 0x2240, 0xFFFFFF),
+        ("GFXGAM0", 0x2250, 0x0),
+        ("GFXGAM1", 0x2254, 0xF0F0F),
+        ("GFXGAM2", 0x2258, 0x1F1F1F),
+        ("GFXGAM3", 0x225C, 0x2F2F2F),
+        ("GFXGAM4", 0x2260, 0x3F3F3F),
+        ("GFXGAM5", 0x2264, 0x4F4F4F),
+        ("GFXGAM6", 0x2268, 0x5F5F5F),
+        ("GFXGAM7", 0x226C, 0x6F6F6F),
+        ("GFXGAM8", 0x2270, 0x7F7F7F),
+        ("GFXGAM9", 0x2274, 0x8E8E8E),
+        ("GFXGAM10", 0x2278, 0x9E9E9E),
+        ("GFXGAM11", 0x227C, 0xAEAEAE),
+        ("GFXGAM12", 0x2280, 0xBEBEBE),
+        ("GFXGAM13", 0x2284, 0xCECECE),
+        ("GFXGAM14", 0x2288, 0xDEDEDE),
+        ("GFXGAM15", 0x228C, 0xEEEEEE),
+        ("GFXGAM16", 0x2290, 0xFDFDFD),
+        ("DLSTS", 0x2300, 0x800000),
+        ("DLLCTRL", 0x2304, 0x0),
+        ("DVLNUM", 0x2308, 0xE2),
+        ("DUCTRL", 0x230C, 0x0),
+        ("DVECTRL", 0x2310, 0x2830002),
+        ("DHDET", 0x2314, 0x500230),
+        ("DVDET", 0x2318, 0x30283),
+        ("DODMSK", 0x231C, 0x0),
+        ("CSC01", 0x2330, 0x12A),
+        ("CSC02", 0x2334, 0x95199),
+        ("CSC03", 0x2338, 0x39879C),
+        ("CSC04", 0x233C, 0x10292A),
+        ("CSC05", 0x2340, 0x0),
+    ];
+
+    /// The healthy value of `name`.
+    fn healthy(name: &str) -> u32 {
+        HEALTHY.iter().find(|r| r.0 == name).map_or(0, |r| r.2)
+    }
+
+    /// Every [`SNAPSHOT_REGS`] register logged, four to a line.
+    fn dump_all(regs: &mut Mmio, title: &str) {
+        log!("{title}");
+        let mut line = heapless_name();
+        for (k, (name, off)) in SNAPSHOT_REGS.iter().enumerate() {
+            let _ = write!(line, " {name} 0x{:x}", regs.read32(*off));
+            if k % 4 == 3 {
+                log!(" {}", line.as_str());
+                line = heapless_name();
+            }
+        }
+        if line.n != 0 {
+            log!(" {}", line.as_str());
+        }
+    }
+
+    /// Writes the healthy value of each of `names`, 1 ms after each (as
+    /// Linux mbxfb writes its set-up), and reads it back; logs any that
+    /// read differently. The number that did.
+    fn put_healthy(regs: &mut Mmio, names: &[&str]) -> u32 {
+        let mut off_by = 0;
+        for name in names {
+            let Some(&(_, off, v)) = HEALTHY.iter().find(|r| r.0 == *name) else {
+                log!("  {name}: not in the healthy snapshot");
+                continue;
+            };
+            regs.write32(off, v);
+            rt::delay_us(1_000);
+            let got = regs.read32(off);
+            if got != v {
+                off_by += 1;
+                log!("  {name}: wrote 0x{v:x}, reads 0x{got:x}");
+            }
+        }
+        off_by
+    }
+
+    /// Run Z (see [`REBUILD`]).
+    fn rebuild(regs: Mmio, vram: &mut [u8]) -> ! {
+        let mut regs = regs;
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("Z: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        // Z1: the reset, then every register as the reset leaves it (the
+        // 2700G's cold state: what a flash boot will find).
+        regs.write32(0x010, 1);
+        rt::delay_us(10_000);
+        log!(
+            "Z1: SYSRST written 1; it reads 0x{:x} 10 ms on",
+            regs.read32(0x010)
+        );
+        dump_all(&mut regs, "Z1: every register after the reset");
+        // Z2: the clocks, the PLLs first and their locks awaited.
+        let mut off_by = put_healthy(&mut regs, &["COREPLL"]);
+        let core = wait_for(&mut regs, 0x040, 1 << 2, 1 << 2, 50);
+        off_by += put_healthy(&mut regs, &["DISPPLL"]);
+        let disp = wait_for(&mut regs, 0x040, 1, 1, 50);
+        off_by += put_healthy(
+            &mut regs,
+            &[
+                "SYSCLKSRC",
+                "PIXCLKSRC",
+                "CLKSLEEP",
+                "VOVRCLK",
+                "PIXCLK",
+                "MEMCLK",
+                "M24CLK",
+                "MBXCLK",
+                "SDCLK",
+                "PIXCLKDIV",
+            ],
+        );
+        log!(
+            "Z2: the clocks: core PLL locked {core}, display PLL locked {disp}, PLLSTAT 0x{:x}",
+            regs.read32(0x040)
+        );
+        // Z3: the local memory, as Linux mbxfb's setup_memc (with the
+        // working values): configuration, active, timing, refresh, type,
+        // active again, 16 dummy reads.
+        off_by += put_healthy(
+            &mut regs,
+            &["LMCFG", "LMPWR", "LMTIM", "LMREFRESH", "LMTYPE", "LMPWR"],
+        );
+        for k in 0..16 {
+            let _ = load32_volatile(vram, 4 * k);
+        }
+        off_by += put_healthy(
+            &mut regs,
+            &["LMCEMR", "LMPROTMIN", "LMPROTMAX", "LMPROTCFG"],
+        );
+        log!(
+            "Z3: the local memory: LMPWRSTAT 0x{:x}",
+            regs.read32(0x100C)
+        );
+        // Z4: the system block's other settings.
+        off_by += put_healthy(
+            &mut regs,
+            &[
+                "SYSCFG",
+                "PFBASE",
+                "PFCEIL",
+                "NINTPW",
+                "MINTENABLE",
+                "SINTENABLE",
+                "LCD_CONFIG",
+                "ODFBPWR",
+                "GPIOCGF",
+                "GPIOHI",
+                "GPIOLO",
+                "PWMCFG",
+                "PWM0DIV",
+                "PWM0DUTY",
+                "PWM0PER",
+                "PWM1DIV",
+                "PWM1DUTY",
+                "PWM1PER",
+            ],
+        );
+        // Z5: the display, every setting but the status and counters; the
+        // sync generator last.
+        let skip = [
+            "DINTRS", "DSIG", "DVLNUM", "DLSTS", "DHDET", "DVDET", "DSCTRL",
+        ];
+        let mut display = [""; 128];
+        let mut nd = 0;
+        for &(name, off, _) in &HEALTHY {
+            if (0x2000..0x3000).contains(&off) && !skip.contains(&name) && nd < display.len() {
+                display[nd] = name;
+                nd += 1;
+            }
+        }
+        off_by += put_healthy(&mut regs, &display[..nd]);
+        let ds = healthy("DSCTRL");
+        regs.write32(dreg::DSCTRL, ds & !(1 << 31));
+        rt::delay_us(1_000);
+        regs.write32(dreg::DSCTRL, ds);
+        rt::delay_us(40_000);
+        log!("Z5: the display: {nd} registers; {off_by} writes in all read back differently");
+        let _ = underrun_take(&mut regs);
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!(
+            "Z6: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x} (sending: {})",
+            s0 | s1 != 0
+        );
+        if let Some(p) = Plane::decode(
+            regs.read32(dreg::GSCTRL),
+            regs.read32(dreg::GSCADR),
+            regs.read32(dreg::GSADR),
+            vram.len(),
+        ) {
+            card_text(vram, &p, "Z: BACK", 0xFF10_6020, 6);
+            let (f, s0, s1) = underrun_state(&mut regs);
+            log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        }
+        dump_all(&mut regs, "Z7: every register after the rebuild");
+        log!("{MARKER}: done (run Z)");
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
     }
 
     /// Run L (see [`LADDER`]).
