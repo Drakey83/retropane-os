@@ -3071,7 +3071,8 @@ type GpubenchRun<'a> = (&'a str, &'a PathBuf, &'a [&'a str], bool, (u32, u32, u3
 /// texture-word probes, built with `RP_GPUBENCH_PROBES`), each under the
 /// loader, then run C (the video plane's repoint and pans,
 /// `RP_GPUBENCH_PLANES`) and run D (its undocumented format codes,
-/// `RP_GPUBENCH_VFMT`) and run E (faster uploads, `RP_GPUBENCH_UPLOAD`),
+/// `RP_GPUBENCH_VFMT`), run E (faster uploads, `RP_GPUBENCH_UPLOAD`) and
+/// run F (text as 4 bpp strips, `RP_GPUBENCH_TEXT`),
 /// with key presses for their watch steps. The
 /// models' times say nothing about the device's (the fork's 3D
 /// core doesn't model the clock or the fill costs: emulator.md), so this
@@ -3094,6 +3095,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_c = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PLANES", "1"))?;
     let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
     let run_e = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_UPLOAD", "1"))?;
+    let run_f = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TEXT", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3111,7 +3113,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 5] = [
+    let runs: [GpubenchRun; 6] = [
         (
             "run A",
             &run_a,
@@ -3166,6 +3168,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "E1d fast reorder written by the CPU straight in",
                 "E3 PVRTC 2 bpp layer",
                 "E4 a screen of text",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        (
+            "run F",
+            &run_f,
+            &[
+                "  F0 RGB565 pixels",
+                "  F1 4 bpp strips",
+                "  F3a one 2D command a line",
+                "  F3b one 2D command for all",
             ],
             false,
             (0, 0, 0),
@@ -3248,6 +3262,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         for w in always.iter().chain(checked) {
             if !log.contains(w) {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
+            }
+        }
+        // Run F's text must come out exactly: white pixels = lit coverage.
+        if name == "run F" {
+            for l in log.lines().filter(|l| l.contains("; white ")) {
+                let nums: Vec<&str> = l
+                    .rsplit("; white ")
+                    .next()
+                    .unwrap_or("")
+                    .split(", lit ")
+                    .collect();
+                if nums.len() != 2 || nums[0].trim() != nums[1].trim() {
+                    return Err(format!("gpubench run F: the text came out wrong: `{l}`"));
+                }
             }
         }
         if modelled && name == "run A" && !log.contains(" 0 hung renders recovered") {

@@ -99,6 +99,8 @@ mod image {
     const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
     /// Run E: faster uploads (the owner's 2x).
     const UPLOAD: bool = option_env!("RP_GPUBENCH_UPLOAD").is_some();
+    /// Run F: text as 4 bpp coverage strips.
+    const TEXT: bool = option_env!("RP_GPUBENCH_TEXT").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -2280,6 +2282,195 @@ mod image {
             words_sent * 4
         );
     }
+    // ---- Run F: text as 4 bpp coverage strips (2026-10-20) -------------------
+    //
+    // E4 drew a screen of text as one 2D command a glyph: 11x fewer bytes
+    // than pixels, but no faster (~14 us of engine time a command). Here the
+    // CPU draws the text as 4 bpp coverage (a quarter of RGB565's bytes) and
+    // the 2D engine colours and blends it onto the RGB565 picture: one
+    // command a line (37), or one for the whole text area. F0 is the same
+    // screen drawn by the CPU as RGB565 pixels and copied, the baseline.
+
+    const F_LINES: u32 = 37;
+    const F_COLS: u32 = 38;
+    /// A line: 480 px x 16 rows at 4 bpp.
+    const F_ROW_BYTES: usize = 240;
+    const F_LINE_BYTES: usize = F_ROW_BYTES * 16;
+    const F_TEXT_BYTES: usize = F_LINE_BYTES * F_LINES as usize;
+    /// A glyph's cell in the table: 12 x 16 px at 4 bpp, 6 bytes a row.
+    const F_GLYPH_BYTES: usize = 6 * 16;
+
+    /// The character at line `l`, column `c` (E4's text): glyph index k
+    /// (character 0x20 + k).
+    const fn f_glyph(l: u32, c: u32) -> u32 {
+        (l * 7 + c) % 94 + 1
+    }
+
+    #[inline(never)]
+    fn text_strips(g: &mut Rig) {
+        log!(
+            "F: a screen of text (37 x 38 glyphs) as 4 bpp coverage strips the 2D engine colours, against RGB565 pixels"
+        );
+        let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
+            log!("  no RAM pool");
+            return;
+        };
+        let bytes = rp_hal_mem::words_as_bytes_mut(ram);
+        let (table, rest) = bytes.split_at_mut(95 * F_GLYPH_BYTES);
+        let (strips, rest) = rest.split_at_mut(F_TEXT_BYTES);
+        let (px565, _) = rest.split_at_mut(480 * 640 * 2);
+
+        // The glyph table: each glyph's 12 x 16 cell (the 5 x 7 font at 2x,
+        // as E4), 4 bpp, high nibble first; its lit pixels counted.
+        let mut lit_of = [0u32; 95];
+        for (k, cell) in table
+            .as_chunks_mut::<F_GLYPH_BYTES>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
+            let ch = char::from_u32(0x20 + k as u32).unwrap_or(' ');
+            let mut utf8 = [0u8; 4];
+            let s = ch.encode_utf8(&mut utf8);
+            for y in 0..16u32 {
+                for b in 0..6u32 {
+                    let mut byte = 0u8;
+                    for half in 0..2u32 {
+                        if in_text(2 * b + half, y, s, 1, 1, 2) {
+                            byte |= 0xF << (4 * (1 - half));
+                            lit_of[k] += 1;
+                        }
+                    }
+                    cell[(y * 6 + b) as usize] = byte;
+                }
+            }
+        }
+        let mut lit = 0u32;
+        for l in 0..F_LINES {
+            for c in 0..F_COLS {
+                lit += lit_of[f_glyph(l, c) as usize];
+            }
+        }
+        rt::check_in();
+
+        let black = |g: &mut Rig| {
+            let w = cmd::fill(
+                Format::RGB565,
+                PIC16.at as usize,
+                PIC16.stride as usize,
+                (0, 0, 480, 640),
+                0,
+            );
+            let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
+        };
+        let white = |g: &Rig| -> u32 {
+            let mut n = 0;
+            for i in 0..480 * 640 / 2 {
+                let v = g.mem.load(PIC16.at as usize + 4 * i).unwrap_or(0);
+                n += u32::from(v & 0xFFFF == 0xFFFF) + u32::from(v >> 16 == 0xFFFF);
+            }
+            n
+        };
+
+        // F0: the CPU draws RGB565 pixels in SDRAM (black, white text), then
+        // copies the whole picture (600 KiB).
+        let t0 = rt::ticks();
+        px565.fill(0);
+        for l in 0..F_LINES {
+            for c in 0..F_COLS {
+                let cell = &table[f_glyph(l, c) as usize * F_GLYPH_BYTES..][..F_GLYPH_BYTES];
+                let (x0, y0) = (4 + c * 12, 8 + l * 16);
+                for y in 0..16u32 {
+                    for x in 0..12u32 {
+                        let nib = cell[(y * 6 + x / 2) as usize] >> (4 * (1 - (x & 1)));
+                        if nib & 0xF != 0 {
+                            let at = (((y0 + y) * 480 + x0 + x) * 2) as usize;
+                            px565[at] = 0xFF;
+                            px565[at + 1] = 0xFF;
+                        }
+                    }
+                }
+            }
+        }
+        let drawn = us_since(t0);
+        g.mem.0[PIC16.at as usize..PIC16.at as usize + px565.len()].copy_from_slice(px565);
+        cpu::drain_write_buffer();
+        let total = us_since(t0);
+        let w0 = white(g);
+        log!(
+            "  F0 RGB565 pixels: drawn {drawn} us, copied {} us, {total} us in all; 614400 bytes over the bus; white {w0}, lit {lit}",
+            total - drawn
+        );
+        rt::check_in();
+
+        // F1-F2: the CPU draws 4 bpp strips (whole bytes: every glyph starts
+        // on an even pixel), then copies them (142 KiB).
+        let t0 = rt::ticks();
+        strips.fill(0);
+        for l in 0..F_LINES {
+            for c in 0..F_COLS {
+                let cell = &table[f_glyph(l, c) as usize * F_GLYPH_BYTES..][..F_GLYPH_BYTES];
+                let x0 = (4 + c * 12) as usize / 2;
+                for y in 0..16usize {
+                    let row = l as usize * F_LINE_BYTES + y * F_ROW_BYTES + x0;
+                    strips[row..row + 6].copy_from_slice(&cell[y * 6..y * 6 + 6]);
+                }
+            }
+        }
+        let raster = us_since(t0);
+        let at = map::GLYPHS.at as usize;
+        g.mem.0[at..at + F_TEXT_BYTES].copy_from_slice(strips);
+        cpu::drain_write_buffer();
+        let upload = us_since(t0) - raster;
+        log!(
+            "  F1 4 bpp strips drawn by the CPU: {raster} us; F2 copied: {upload} us ({F_TEXT_BYTES} bytes over the bus)"
+        );
+        rt::check_in();
+
+        // F3a: one 2D command a line; F3b: one for the whole text area.
+        for (name, per_line) in [
+            ("F3a one 2D command a line (37)", true),
+            ("F3b one 2D command for all of it", false),
+        ] {
+            black(g);
+            let t0 = rt::ticks();
+            let _ = g.e.submit(&cmd::blend(cmd::BLEND_DELL_TEXT));
+            let (n, rows) = if per_line {
+                (F_LINES, 16u32)
+            } else {
+                (1, 16 * F_LINES)
+            };
+            let mut ok = true;
+            for k in 0..n {
+                let y0 = (8 + k * rows) as u16;
+                let (w, len) = cmd::blit(
+                    (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
+                    (
+                        Format::COVERAGE4,
+                        at + (k * rows) as usize * F_ROW_BYTES,
+                        F_ROW_BYTES as i32,
+                    ),
+                    (0, 0),
+                    (0, y0, 480, y0 + rows as u16),
+                    cmd::ROP_SRCCOPY,
+                    cmd::OP_BLEND,
+                    0x00FF_FFFF,
+                );
+                ok &= g.e.submit(&w[..len]).is_ok();
+            }
+            let _ = g.e.submit(&cmd::blend(0));
+            let done = g.e.finish(g.mem.0, 500_000).is_ok();
+            let us = us_since(t0);
+            let w = white(g);
+            log!(
+                "  {name}: {us} us (finished {}), so strips in all {} us; white {w}, lit {lit}",
+                ok && done,
+                raster + upload + us
+            );
+            rt::check_in();
+        }
+    }
+
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
@@ -2303,6 +2494,8 @@ mod image {
                 "D (the video plane's undocumented format codes)"
             } else if UPLOAD {
                 "E (faster uploads: overlapped reorder and DMA, 8-bit, PVRTC, text by commands)"
+            } else if TEXT {
+                "F (text as 4 bpp coverage strips, against RGB565 pixels)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
@@ -2341,6 +2534,8 @@ mod image {
             vformats(&mut g);
         } else if UPLOAD {
             uploads(&mut g);
+        } else if TEXT {
+            text_strips(&mut g);
         } else {
             g4a(&mut g);
             if let Some(set) = textures(&mut g) {
