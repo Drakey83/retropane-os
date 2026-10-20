@@ -2576,6 +2576,95 @@ mod image {
             4 * words,
             differ(g, px565)
         );
+        rt::check_in();
+
+        // F6: F4 with leaner commands. a: F4's full commands, sent in
+        // batches; b: the surfaces once, then origin, header, colour and
+        // rectangle a glyph; c: b without the colour word (OP_NO_COLOUR).
+        // Whether the engine keeps the surfaces between operations is what
+        // b and c find out: each picture is compared with F0's, word for
+        // word, and a wedged engine is reset.
+        let [d0, d1] = cmd::dest(Format::RGB565, PIC16.at as usize, PIC16.stride as i32);
+        let [s0, s1] = cmd::source(Format::RGB565, a565, ATLAS565_STRIDE as i32);
+        for (name, lean, colour) in [
+            ("F6a full commands, batched", false, true),
+            ("F6b surfaces once, 5 words a glyph", true, true),
+            (
+                "F6c surfaces once, 4 words a glyph (no colour word)",
+                true,
+                false,
+            ),
+        ] {
+            let t0 = rt::ticks();
+            let w = cmd::fill(
+                Format::RGB565,
+                PIC16.at as usize,
+                PIC16.stride as usize,
+                (0, 0, 480, 640),
+                0,
+            );
+            let mut ok = g.e.submit(&w).is_ok();
+            let mut sent = w.len();
+            let mut batch = [0u32; 320];
+            let mut n = 0usize;
+            if lean {
+                batch[..4].copy_from_slice(&[d0, d1, s0, s1]);
+                n = 4;
+            }
+            for l in 0..F_LINES {
+                for c in 0..F_COLS {
+                    let k = f_glyph(l, c) as u16;
+                    let (x, y) = ((4 + c * 12) as u16, (8 + l * 16) as u16);
+                    if lean {
+                        let flags = if colour { 0 } else { cmd::OP_NO_COLOUR };
+                        batch[n] = cmd::origin(k * 12, 0);
+                        batch[n + 1] = 0x8000_0000 | cmd::ROP_SRCCOPY | flags;
+                        n += 2;
+                        if colour {
+                            batch[n] = 0;
+                            n += 1;
+                        }
+                        batch[n] = cmd::xy(x, y);
+                        batch[n + 1] = cmd::xy(x + 12, y + 16);
+                        n += 2;
+                    } else {
+                        let (cw, len) = cmd::copy(
+                            Format::RGB565,
+                            (PIC16.at as usize, PIC16.stride as usize),
+                            (a565, ATLAS565_STRIDE),
+                            (k * 12, 0),
+                            (x, y, x + 12, y + 16),
+                            0,
+                        );
+                        batch[n..n + len].copy_from_slice(&cw[..len]);
+                        n += len;
+                    }
+                    if n > batch.len() - 12 {
+                        ok &= g.e.submit(&batch[..n]).is_ok();
+                        sent += n;
+                        n = 0;
+                    }
+                }
+            }
+            batch[n] = cmd::FLUSH;
+            n += 1;
+            ok &= g.e.submit(&batch[..n]).is_ok();
+            sent += n;
+            let queued = us_since(t0);
+            let done = g.e.finish(g.mem.0, 500_000).is_ok();
+            let us = us_since(t0);
+            let bad = differ(g, px565);
+            log!(
+                "  {name}: {us} us in all (the CPU queueing {queued}; finished {}); {} bytes over the bus; words differing from F0: {bad}",
+                ok && done,
+                sent * 4
+            );
+            if !(ok && done) {
+                g.e.reset(rt::delay_us);
+                log!("    the 2D engine was reset");
+            }
+            rt::check_in();
+        }
     }
 
     fn main() -> ! {
