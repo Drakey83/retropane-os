@@ -19,6 +19,21 @@ local-memory registers.
 Confidence: **confirmed** (read on the device, or in a datasheet for a
 known part), **likely** (strong evidence, not proven), **guess**.
 
+## Owner's decisions (2026-10-19)
+
+- **SDRAM timings stay at Dell's values.** The rule behind it: RetroPane
+  must work the best it can on **any** X51v, not one unit. The margin is
+  ~1% on a part only *likely* fitted, other units may carry other chips
+  (SDRAM has no ID register), and the owner won't open the device to read
+  markings. Alternative 2 is closed; alternatives 7 (touch less memory)
+  stay the way to faster memory.
+- **The 2700G bus experiment (alternative 6) goes ahead:** `rp-cs3bus`
+  (written 2026-10-15, not yet run) on the owner's go. Any setting it
+  finds is used only with margin for every unit: a fixed value at least
+  two steps looser than the tightest that passed, or a per-device
+  calibration at boot with Dell's value as the fallback (the owner's
+  choice once the results are in).
+
 ## The answer in brief
 
 - **The SDRAM clock is already at the PXA270's maximum.** SDCLK2 =

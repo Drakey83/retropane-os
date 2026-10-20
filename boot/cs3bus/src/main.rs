@@ -8,7 +8,14 @@
 //!   `memcpy`) and checks every word of it;
 //! - times reading 256 KiB back;
 //! - writes and reads back six patterns over 512 KiB ([`Pattern`]);
-//! - writes and reads back a 2700G register (`BGCOLOR`).
+//! - writes and reads back a 2700G register (`BGCOLOR`);
+//! - has the 2D engine fill 480 x 64 pixels (its command words cross the
+//!   same bus) and checks every word of the fill.
+//!
+//! After the steps, a 60 s soak at the step **two looser** than the
+//! tightest that passed (the owner's rule, 2026-10-19: any setting must
+//! hold on every X51v, not this one only), repeating the flush, the fill
+//! and a pattern; any miss ends it.
 //!
 //! It stops at the first mismatch, then re-reads the failing word at
 //! Windows Mobile's timing to tell a write fault from a read fault. Windows
@@ -128,6 +135,7 @@ mod image {
     use core::fmt::Write;
 
     use super::{MARKER, Pattern, STEPS, WM_MSC1, clocks_per_beat, mix};
+    use rp_drv_blit2d::{self as cmd, Engine, Format};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{cpu, diag, rt};
@@ -146,6 +154,15 @@ mod image {
     const PATTERN_AT: usize = POOL.at as usize + 0x14_0000;
     const PATTERN_BYTES: usize = 512 * 1024;
     const READ_BYTES: usize = 256 * 1024;
+    /// The 2D fill's region, past the patterns: 480 x 64 at 32 bits.
+    const FILL_AT: usize = PATTERN_AT + PATTERN_BYTES;
+    const FILL_STRIDE: usize = 480 * 4;
+    const FILL_ROWS: usize = 64;
+    /// The 2D engine's fence word (the memory map's).
+    const FENCE_AT: usize = rp_vram_map::FENCE.at as usize;
+    /// How long the soak runs.
+    const SOAK_US: u32 = 60_000_000;
+    const _: () = assert!(FILL_AT + FILL_STRIDE * FILL_ROWS <= POOL.end() as usize);
     const _: () = assert!(PATTERN_AT + PATTERN_BYTES <= POOL.end() as usize);
     const _: () = assert!(FLUSH_AT + FLUSH_BYTES <= PATTERN_AT);
 
@@ -176,12 +193,40 @@ mod image {
         }
     }
 
+    /// The 2D engine fills the fill region with `colour` (and waits); the
+    /// words that came out wrong, read back at the current timing.
+    fn fill_check(e: &mut Engine<rp_hal_pxa27x::Mmio>, vram: &mut [u8], colour: u32) -> u32 {
+        let words = cmd::fill(
+            Format::BPP32,
+            FILL_AT,
+            FILL_STRIDE,
+            (0, 0, 480, FILL_ROWS as u16),
+            colour,
+        );
+        if e.submit(&words)
+            .and_then(|()| e.finish(vram, 200_000))
+            .is_err()
+        {
+            return u32::MAX;
+        }
+        let mut bad = 0;
+        for k in 0..FILL_STRIDE * FILL_ROWS / 4 {
+            if load32_volatile(vram, FILL_AT + 4 * k) != Some(colour) {
+                bad += 1;
+            }
+        }
+        bad
+    }
+
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
+        let _ = store32_volatile(vram, FENCE_AT, 0);
+        cpu::drain_write_buffer();
+        let mut e = Engine::new(regs, FENCE_AT, rt::ticks, 3_250);
         let Some(ram) = rp_hal_x51v::devices::take_scratch() else {
             crash(format_args!("no scratch RAM"))
         };
@@ -203,17 +248,19 @@ mod image {
             w.copy_from_slice(&mix(k as u32 ^ 0xF1A5_0000).to_le_bytes());
         }
         // Which BGCOLOR bits hold a value, at Windows Mobile's timing.
-        let bg_found = regs.read32(BGCOLOR);
-        regs.write32(BGCOLOR, 0xFFFF_FFFF);
-        let bg_mask = regs.read32(BGCOLOR);
-        regs.write32(BGCOLOR, bg_found);
+        let bg_found = e.regs.read32(BGCOLOR);
+        e.regs.write32(BGCOLOR, 0xFFFF_FFFF);
+        let bg_mask = e.regs.read32(BGCOLOR);
+        e.regs.write32(BGCOLOR, bg_found);
         let _ = writeln!(RunLog, "BGCOLOR {bg_found:08X}, bits held {bg_mask:08X}");
         let _ = writeln!(
             RunLog,
-            "step RDF RDN clk/beat MSC1 | flush us MB/s miss | read256K us MB/s | patterns miss | reg miss"
+            "step RDF RDN clk/beat MSC1 | flush us MB/s miss | read256K us MB/s | patterns miss | reg miss | 2D fill miss"
         );
 
         let mut verdict = "all steps passed";
+        // The tightest step that passed everything.
+        let mut passed: Option<usize> = None;
         for (step, &(rdf, rdn)) in STEPS.iter().enumerate() {
             rt::check_in();
             let Some(now) = diag::set_cs3_timing(rdf, rdn) else {
@@ -284,23 +331,27 @@ mod image {
             // A register: written and read back.
             let mut rcount = 0;
             for w in [0x00A5_A5A5, 0x005A_5A5A, 0x00FF_FFFF, 0x0012_3456, 0] {
-                regs.write32(BGCOLOR, w);
-                if regs.read32(BGCOLOR) != w & bg_mask {
+                e.regs.write32(BGCOLOR, w);
+                if e.regs.read32(BGCOLOR) != w & bg_mask {
                     rcount += 1;
                 }
             }
-            regs.write32(BGCOLOR, bg_found);
+            e.regs.write32(BGCOLOR, bg_found);
+
+            // The 2D engine: its commands cross this bus too.
+            let dcount = fill_check(&mut e, vram, mix(step as u32 ^ 0x2D00));
+            rt::check_in();
 
             let mbs = |bytes: usize, t: u32| bytes as u32 / t.max(1);
             let _ = writeln!(
                 RunLog,
-                "{step} {rdf} {rdn} {} {now:08X} | {best} {} {fcount} | {read_us} {} | {pcount} | {rcount}",
+                "{step} {rdf} {rdn} {} {now:08X} | {best} {} {fcount} | {read_us} {} | {pcount} | {rcount} | {dcount}",
                 clocks_per_beat(rdf, rdn),
                 mbs(FLUSH_BYTES, best),
                 mbs(READ_BYTES, read_us),
             );
 
-            if fcount + pcount + rcount > 0 {
+            if fcount + pcount + rcount > 0 || dcount != 0 {
                 // Write fault or read fault? Re-read the first bad word at
                 // Windows Mobile's timing.
                 restore();
@@ -318,11 +369,73 @@ mod image {
                         "pattern {pname} miss: word {k} wanted {want:08X} read {got:08X}, at WM timing {again:08X}"
                     );
                 }
+                if dcount != 0 {
+                    let _ = writeln!(
+                        RunLog,
+                        "2D fill: {dcount} words wrong (u32::MAX: the engine never finished)"
+                    );
+                }
                 verdict = "stopped at the first mismatch";
                 break;
             }
+            passed = Some(step);
         }
         restore();
+
+        // The soak: two steps looser than the tightest that passed (step 0
+        // is Windows Mobile's own, so a candidate needs step 3 or tighter
+        // to have passed).
+        match passed.and_then(|t| t.checked_sub(2)).filter(|&c| c >= 1) {
+            None => {
+                let _ = writeln!(
+                    RunLog,
+                    "soak: no step two looser than the tightest pass is faster than WM's: none run"
+                );
+            }
+            Some(c) => {
+                let (rdf, rdn) = STEPS[c];
+                let _ = diag::set_cs3_timing(rdf, rdn);
+                let t0 = rt::ticks();
+                let (mut rounds, mut misses) = (0u32, 0u32);
+                while us(rt::ticks().wrapping_sub(t0)) < SOAK_US && misses == 0 {
+                    rt::check_in();
+                    vram[FLUSH_AT..FLUSH_AT + FLUSH_BYTES].copy_from_slice(src);
+                    cpu::drain_write_buffer();
+                    for (k, w) in src.chunks_exact(4).enumerate() {
+                        let want = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        if load32_volatile(vram, FLUSH_AT + 4 * k) != Some(want) {
+                            misses += 1;
+                        }
+                    }
+                    let d = fill_check(&mut e, vram, mix(rounds ^ 0x50AC));
+                    misses = misses.saturating_add(d);
+                    let base = 0x0C00_0000 + PATTERN_AT as u32 + rounds;
+                    for k in 0..PATTERN_BYTES / 4 {
+                        let _ = store32_volatile(
+                            vram,
+                            PATTERN_AT + 4 * k,
+                            Pattern::Random.word(base, k as u32),
+                        );
+                    }
+                    cpu::drain_write_buffer();
+                    for k in 0..PATTERN_BYTES / 4 {
+                        if load32_volatile(vram, PATTERN_AT + 4 * k)
+                            != Some(Pattern::Random.word(base, k as u32))
+                        {
+                            misses += 1;
+                        }
+                    }
+                    rounds += 1;
+                }
+                restore();
+                let _ = writeln!(
+                    RunLog,
+                    "soak at step {c} (RDF {rdf} RDN {rdn}, {} clk/beat): {rounds} rounds in {} s, {misses} misses",
+                    clocks_per_beat(rdf, rdn),
+                    us(rt::ticks().wrapping_sub(t0)) / 1_000_000
+                );
+            }
+        }
 
         // Back at Windows Mobile's timing: one pattern pass, as a health check.
         let after = diag::msc1();

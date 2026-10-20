@@ -217,6 +217,7 @@ version = "0.0.0"
 name = "rp-cs3bus"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-blit2d",
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",

@@ -331,10 +331,12 @@ pub const BUDGETS: &[Budget] = &[
     // the library, ~4 KiB of scene code) and times each stage's drawing;
     // 29.7 KiB measured, + ~14%.
     // Test image (item 68): steps the 2700G's chip-select timing and
-    // verifies 2700G memory at each step. Budget set from the first build.
+    // verifies 2700G memory at each step. Budget set from the first build;
+    // 2026-10-19 with a 2D fill check per step and the soak (the 2D
+    // engine's driver): 18.2 KiB measured, + ~13%.
     Budget {
         image: "rp-cs3bus",
-        max_load: 16 * 1024,
+        max_load: 21 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
