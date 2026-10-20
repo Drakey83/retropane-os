@@ -3969,9 +3969,46 @@ mod image {
             vram.len(),
         );
         if let Some(p) = plane {
-            card_text(vram, &p, "X: CLEARED", 0xFF10_6020, 6);
+            card_text(vram, &p, "X: CLEARED", 0xFF10_6020, 4);
             let (f, s0, s1) = underrun_state(&mut regs);
             log!("X: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+            // Run X1 on the device: the flag cleared, DSIG stayed 0. With
+            // the flag clear, each restart alone (run R tried them with it
+            // set), DSIG read after each: nonzero is the display sending.
+            let steps: [(&str, &str); 3] = [
+                ("X1: the sync generator off and on", "X1: SYNC"),
+                ("X2: the graphics plane off and on", "X2: PLANE"),
+                ("X3: the whole display set-up", "X3: SETUP"),
+            ];
+            for (k, (what, card)) in steps.into_iter().enumerate() {
+                let _ = underrun_take(&mut regs);
+                match k {
+                    0 => {
+                        let v = regs.read32(dreg::DSCTRL);
+                        regs.write32(dreg::DSCTRL, v & !(1 << 31));
+                        rt::delay_us(20_000);
+                        regs.write32(dreg::DSCTRL, v | 1 << 31);
+                    }
+                    1 => {
+                        let v = regs.read32(dreg::GSCADR);
+                        regs.write32(dreg::GSCADR, v & !(1 << 31));
+                        rt::delay_us(20_000);
+                        regs.write32(dreg::GSCADR, v | 1 << 31);
+                    }
+                    _ => {
+                        let mut d = Display::new(regs);
+                        d.enable(&rp_drv_mbx_display::X51V_VGA, &p);
+                        regs = d.into_inner();
+                    }
+                }
+                rt::delay_us(40_000);
+                let (f, s0, s1) = underrun_state(&mut regs);
+                log!(
+                    "{what}: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x} (sending: {})",
+                    s0 | s1 != 0
+                );
+                card_text(vram, &p, card, 0xFF10_6020, 4);
+            }
         } else {
             log!("X: no plane decoded: no card");
         }

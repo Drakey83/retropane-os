@@ -3275,6 +3275,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "X: as found",
                 "X: the flag cleared",
                 "X: after the card",
+                "X1: the sync generator off and on",
+                "X3: the whole display set-up",
                 "RETROPANE-GPUBENCH: done (run X)",
             ],
             false,
