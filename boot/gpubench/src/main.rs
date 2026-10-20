@@ -2960,6 +2960,12 @@ mod image {
         fill_hung: bool,
         /// Texture words found changed since the last check (repaired).
         tex_damaged: u32,
+        /// The display's fetch had run short (`DINTRS` bit 4, cleared when
+        /// read) before this check began (since the last read: the clock
+        /// change into it), and during it (G4's dark screen, never
+        /// reproduced alone by runs U and V).
+        short_before: bool,
+        short_during: bool,
         /// Parts stopped at their time limit ([`PART_US`]): bit 0 the
         /// flush, 1 the read-back, 2 the memory pattern.
         slow: u32,
@@ -2992,7 +2998,10 @@ mod image {
     /// Every test at the current clock. `take_reference`: the 3D picture
     /// becomes the reference (Windows Mobile's clock, first).
     fn clock_check(g: &mut Rig, c: &mut ClockRig, take_reference: bool, seed: u32) -> ClockResult {
-        let mut r = ClockResult::default();
+        let mut r = ClockResult {
+            short_before: underrun_take(&mut g.e.regs),
+            ..ClockResult::default()
+        };
         // The bus: the flush and every word of it; 256 KiB read back.
         let t0 = rt::ticks();
         let src = words_as_bytes(c.src);
@@ -3137,6 +3146,7 @@ mod image {
             }
             let _ = rr.release(&mut g.pool);
         }
+        r.short_during = underrun_take(&mut g.e.regs);
         rt::check_in();
         r
     }
@@ -3248,6 +3258,21 @@ mod image {
             "    control again after a second restore: {}",
             if r.good() { "GOOD" } else { "BAD" }
         );
+        if r.short_before || r.short_during {
+            log!(
+                "    the display ran short (DINTRS bit 4, cleared):{}{}",
+                if r.short_before {
+                    " before the check (the clock change into it)"
+                } else {
+                    ""
+                },
+                if r.short_during {
+                    " during the check"
+                } else {
+                    ""
+                }
+            );
+        }
         if r.tex_damaged != 0 {
             log!(
                 "    the texture: {} words changed since the last check (repaired)",
@@ -3310,7 +3335,7 @@ mod image {
     #[inline(never)]
     fn clocks(g: &mut Rig) {
         log!(
-            "G4: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2, CL3 with the memory restarted, and CL3; each step twice, rising then in reverse, every part time-limited, Windows Mobile's clock checked after each"
+            "G5: the clocks: the lock bit traced; the cores at divide 1 and 2 up to 133.25 MHz with CL2; each step twice, rising then in reverse, every part time-limited, the display's underrun read around every check, Windows Mobile's clock checked after each, a 60 s soak at 99.67 MHz with the cores at divide 1"
         );
         let found = (
             g.e.regs.read32(clock::COREPLL),
@@ -3412,12 +3437,12 @@ mod image {
                 step(25, 3, 0, 2, Some(false), false), // 108.33 CL2 (G2: GOOD)
                 step(27, 3, 0, 2, Some(false), false), // 117.00 CL2
                 step(41, 4, 0, 2, Some(false), false), // 133.25 CL2 (run 27: right)
-                step(25, 3, 0, 2, Some(true), true),   // 108.33 CL3, the memory restarted
-                step(27, 3, 0, 2, Some(true), true),   // 117.00 CL3, restarted
-                step(41, 4, 0, 2, Some(true), true),   // 133.25 CL3, restarted
-                step(25, 3, 0, 2, Some(true), false),  // 108.33 CL3 (G1: no 3D; G2: hung)
-                step(27, 3, 0, 2, Some(true), false),  // 117.00 CL3
-                step(41, 4, 0, 2, Some(true), false),  // 133.25 CL3
+                // G5: CL3 dropped (G4: the 3D core wrong in all 24 checks,
+                // with or without the memory restart: settled); the cores
+                // at divide 1 past 100 MHz, new.
+                step(25, 3, 0, 1, Some(false), false), // 108.33 CL2 /1
+                step(27, 3, 0, 1, Some(false), false), // 117.00 CL2 /1
+                step(41, 4, 0, 1, Some(false), false), // 133.25 CL2 /1
             ];
             let total = 2 * steps.len();
             let mut seed = 4;
@@ -3492,10 +3517,40 @@ mod image {
                     }
                 }
             }
+            // The soak: 60 s of checks at the best setting so far (the
+            // cores at divide 1, the memory at Windows Mobile's clock).
+            if healthy {
+                let s = step(23, 3, 0, 1, None, false);
+                clock_card(
+                    g,
+                    ["SOAK 60 S", "99.67 MHZ CORES/1", "TESTING"],
+                    0xFF20_2040,
+                    2,
+                );
+                let lock = clock_apply(g, s);
+                let t0 = rt::ticks();
+                let (mut rounds, mut bad, mut short) = (0u32, 0u32, 0u32);
+                while lock.is_some() && us_since(t0) < 60_000_000 {
+                    let r = clock_check(g, &mut c, false, seed);
+                    seed += 2;
+                    rounds += 1;
+                    short += u32::from(r.short_before || r.short_during);
+                    if !r.good() {
+                        bad += 1;
+                        clock_log(s, lock, &r);
+                    }
+                }
+                clock_restore(&mut g.e.regs);
+                log!(
+                    "  soak at 99.67 MHz, cores / 1: {rounds} rounds in {} s, {bad} BAD, the display short in {short}",
+                    us_since(t0) / 1_000_000
+                );
+                healthy = clock_control(g, &mut c, seed, "after the soak");
+            }
             if healthy {
                 clock_card(
                     g,
-                    ["RUN G4 DONE", "BACK TO NORMAL", "LOG SENT"],
+                    ["RUN G5 DONE", "BACK TO NORMAL", "LOG SENT"],
                     0xFF10_6020,
                     3,
                 );
@@ -3503,7 +3558,7 @@ mod image {
                 log!("  STOPPED: Windows Mobile's clock stayed BAD after a step");
                 clock_card(
                     g,
-                    ["RUN G4 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
+                    ["RUN G5 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
                     0xFF80_2010,
                     3,
                 );
@@ -3564,7 +3619,7 @@ mod image {
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
             } else if CLOCK {
-                "G4 (the clocks: lock traces, divide 1, past 100 MHz with CL2, CL3 and CL3 with the memory restarted, memory-controller writes checked, the texture checked and repaired, time limits, controls after each step, the log kept in SRAM)"
+                "G5 (the clocks: lock traces, divide 1 and 2 to 133.25 MHz with CL2, the display's underrun watched, a 60 s soak, memory-controller writes checked, the texture checked and repaired, time limits, controls after each step, the log kept in SRAM)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
