@@ -108,6 +108,11 @@ mod image {
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
+    /// Run R: the display found dark (run G4 stopped scan-out while every
+    /// render landed right, and it stayed dark at the loader): every
+    /// register read as found, then restart steps one at a time, each
+    /// shown as a card for the owner to say which one brought it back.
+    const REVIVE: bool = option_env!("RP_GPUBENCH_REVIVE").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3405,6 +3410,9 @@ mod image {
         let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
+        if REVIVE {
+            revive(regs, vram);
+        }
         let mut display = Display::new(regs);
         let _ = display.adopt(vram.len());
         let regs = display.into_inner();
@@ -3529,6 +3537,141 @@ mod image {
         planes0.restore(&mut g.e.regs);
         g.e.reset(rt::delay_us);
         g.e.regs.write32(MBXCLK, clk0);
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    // ---- Run R: the dark display (2026-10-20, after run G4) ---------------
+
+    /// Every register Dell's driver saves, the PLLs and the system clock's
+    /// source, and the display's line counter sampled 8 times 0.5 ms apart
+    /// (moving: the sync generator runs).
+    fn revive_dump(regs: &mut Mmio, when: &str) {
+        log!("R: {when}");
+        let extra: [(&str, usize); 5] = [
+            ("SYSCLKSRC", 0x02C),
+            ("COREPLL", 0x038),
+            ("DISPPLL", 0x03C),
+            ("PLLSTAT", 0x040),
+            ("DINTRS", 0x2178),
+        ];
+        let all = rp_drv_mbx_display::SAVED_REGS.iter().chain(extra.iter());
+        let mut line = heapless_name();
+        for (k, (name, off)) in all.enumerate() {
+            let _ = write!(line, " {name} 0x{:x}", regs.read32(*off));
+            if k % 4 == 3 {
+                log!(" {}", line.as_str());
+                line = heapless_name();
+            }
+        }
+        if line.n != 0 {
+            log!(" {}", line.as_str());
+        }
+        revive_lines(regs);
+    }
+
+    fn revive_lines(regs: &mut Mmio) {
+        let mut line = heapless_name();
+        for _ in 0..8 {
+            let _ = write!(line, " {}", regs.read32(dreg::DVLNUM));
+            rt::delay_us(500);
+        }
+        log!(
+            "  line counter every 0.5 ms:{}; DSCTRL 0x{:x}, DINTRS 0x{:x}",
+            line.as_str(),
+            regs.read32(dreg::DSCTRL),
+            regs.read32(0x2178)
+        );
+    }
+
+    /// A full-screen card in `plane`: `bg`, and "REVIVE n" in large white
+    /// letters, drawn by the CPU (the 2D engine isn't trusted here); held
+    /// 8 s.
+    fn revive_card(vram: &mut [u8], plane: &Plane, n: u32, bg: u32) {
+        let bpp = if plane.format == PlaneFormat::Rgb565 {
+            2
+        } else {
+            4
+        };
+        let px = |c: u32| -> u32 {
+            if bpp == 2 {
+                let v = ((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F);
+                v | v << 16
+            } else {
+                c
+            }
+        };
+        let mut label = heapless_name();
+        let _ = write!(label, "REVIVE {n}");
+        let scale = 8;
+        for y in 0..u32::from(plane.height) {
+            for x in (0..u32::from(plane.width)).step_by(4 / bpp) {
+                let lit = in_text(x, y, label.as_str(), 24, 280, scale);
+                let at = plane.offset + y as usize * plane.stride + x as usize * bpp;
+                let _ = store32_volatile(vram, at, px(if lit { 0xFFFF_FFFF } else { bg }));
+            }
+        }
+        cpu::drain_write_buffer();
+        for _ in 0..80 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+    }
+
+    /// Run R: the registers as found (before anything is touched), then
+    /// one restart step at a time, each followed by a card the owner
+    /// watches for (the first number seen names the step that worked):
+    /// 0 nothing (only the adopt every image does), 1 the sync generator
+    /// off and on, 2 the display PLL written again, 3 the whole display
+    /// set-up again, 4 the system clock and memory timing put back
+    /// (checked) and the display set up again.
+    fn revive(regs: Mmio, vram: &mut [u8]) -> ! {
+        let mut regs = regs;
+        revive_dump(&mut regs, "as found, before anything is touched");
+        let mut d = Display::new(regs);
+        let (plane, kept) = d.adopt(vram.len());
+        let mut regs = d.into_inner();
+        log!(
+            "R0: adopted (plane kept: {kept}; offset 0x{:x}, stride {}, {:?})",
+            plane.offset,
+            plane.stride,
+            plane.format
+        );
+        revive_lines(&mut regs);
+        revive_card(vram, &plane, 0, 0xFF80_1010);
+
+        log!("R1: the sync generator off and on");
+        let v = regs.read32(dreg::DSCTRL);
+        regs.write32(dreg::DSCTRL, v & !(1 << 31));
+        rt::delay_us(20_000);
+        regs.write32(dreg::DSCTRL, v | 1 << 31);
+        revive_lines(&mut regs);
+        revive_card(vram, &plane, 1, 0xFF10_6020);
+
+        log!("R2: the display PLL written again (60 Hz)");
+        regs.write32(dreg::DISPPLL, rp_drv_mbx_display::pll::SIXTY);
+        rt::delay_us(1_000);
+        revive_lines(&mut regs);
+        revive_card(vram, &plane, 2, 0xFF20_2080);
+
+        log!("R3: the whole display set-up again");
+        let mut d = Display::new(regs);
+        d.enable(&rp_drv_mbx_display::X51V_VGA, &plane);
+        let mut regs = d.into_inner();
+        revive_lines(&mut regs);
+        revive_card(vram, &plane, 3, 0xFF80_6010);
+
+        log!("R4: the system clock and memory timing put back (checked), the display set up again");
+        let a = clock::set_speed(&mut regs, ClockSpeed::WM, rt::delay_us);
+        log!("  set_speed: {a:?}");
+        let mut d = Display::new(regs);
+        d.enable(&rp_drv_mbx_display::X51V_VGA, &plane);
+        let mut regs = d.into_inner();
+        revive_dump(&mut regs, "after R4");
+        revive_card(vram, &plane, 4, 0xFF60_1080);
+        log!("{MARKER}: done (run R)");
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();

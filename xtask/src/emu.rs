@@ -3097,6 +3097,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_e = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_UPLOAD", "1"))?;
     let run_f = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TEXT", "1"))?;
     let run_g = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CLOCK", "1"))?;
+    let run_r = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REVIVE", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3114,7 +3115,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 7] = [
+    let runs: [GpubenchRun; 8] = [
         (
             "run A",
             &run_a,
@@ -3197,6 +3198,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        // Run R (the dark display's restart steps): every step's registers
+        // and cards, and back at the loader.
+        (
+            "run R",
+            &run_r,
+            &[
+                "R: as found, before anything is touched",
+                "R0: adopted",
+                "R1: the sync generator",
+                "R2: the display PLL",
+                "R3: the whole display set-up",
+                "R4: the system clock",
+                "R: after R4",
+                "RETROPANE-GPUBENCH: done (run R)",
+            ],
+            false,
+            (0, 0, 0),
+        ),
     ];
     for (name, bin, want, needs_model, (first, every, presses)) in runs {
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -3268,7 +3287,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
             return Err(format!("gpubench {name}: didn't return cleanly:{log}"));
         }
-        let always = ["everything given back: true", "RETROPANE-GPUBENCH: done"];
+        // Run R returns before any 2700G memory is taken: no pool line.
+        let always: &[&str] = if name == "run R" {
+            &["RETROPANE-GPUBENCH: done"]
+        } else {
+            &["everything given back: true", "RETROPANE-GPUBENCH: done"]
+        };
         // Without the 3D model every render is refused (`NoCore`): only
         // the plumbing is checked for runs A and B.
         let checked: &[&str] = if modelled || !needs_model { want } else { &[] };
