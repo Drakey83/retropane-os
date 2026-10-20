@@ -129,6 +129,11 @@ mod image {
     /// G4 went dark at its first step, the cores at divide 1 at 99.67 MHz).
     /// Built on run G's set-up.
     const LOAD: bool = option_env!("RP_GPUBENCH_LOAD").is_some();
+    /// Run X: the dark display's one difference from a working one (run S,
+    /// dark against healthy: only `DINTRS` bit 4 set and `DSIG` 0 among
+    /// 146 registers) cleared, nothing else touched: the flag cleared
+    /// Dell's way, then a card.
+    const CLEAR: bool = option_env!("RP_GPUBENCH_CLEAR").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3592,6 +3597,9 @@ mod image {
         if UNDERRUN {
             underrun(regs, vram);
         }
+        if CLEAR {
+            clear_underrun(regs, vram);
+        }
         if REVIVE {
             revive(regs, vram);
         }
@@ -3940,6 +3948,37 @@ mod image {
             log!(
                 "U{n}: the flag cleared (Dell's way): DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}"
             );
+        }
+    }
+
+    /// Run X (see [`CLEAR`]): nothing but the flag, then the plane as found
+    /// gets a card (drawn by the CPU into the picture already scanned out).
+    fn clear_underrun(regs: Mmio, vram: &mut [u8]) -> ! {
+        let mut regs = regs;
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("X: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        let v = regs.read32(DINTRS);
+        regs.write32(DINTRS, v & !GFX_UNDERRUN);
+        rt::delay_us(40_000);
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("X: the flag cleared (Dell's way): DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        let plane = Plane::decode(
+            regs.read32(dreg::GSCTRL),
+            regs.read32(dreg::GSCADR),
+            regs.read32(dreg::GSADR),
+            vram.len(),
+        );
+        if let Some(p) = plane {
+            card_text(vram, &p, "X: CLEARED", 0xFF10_6020, 6);
+            let (f, s0, s1) = underrun_state(&mut regs);
+            log!("X: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        } else {
+            log!("X: no plane decoded: no card");
+        }
+        log!("{MARKER}: done (run X)");
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
         }
     }
 
