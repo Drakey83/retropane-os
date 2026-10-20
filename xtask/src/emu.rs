@@ -3098,6 +3098,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_f = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TEXT", "1"))?;
     let run_g = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CLOCK", "1"))?;
     let run_r = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REVIVE", "1"))?;
+    let run_s = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SNAPSHOT", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3115,7 +3116,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 8] = [
+    let runs: [GpubenchRun; 9] = [
         (
             "run A",
             &run_a,
@@ -3216,6 +3217,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        // Run S (a read-only register snapshot): every line, back at the
+        // loader.
+        (
+            "run S",
+            &run_s,
+            &[
+                "S: every named register below the MBX block",
+                " SYSCFG 0x",
+                " CSC05 0x",
+                "the picture at offset 0, mid-screen",
+                "RETROPANE-GPUBENCH: done (run S)",
+            ],
+            false,
+            (0, 0, 0),
+        ),
     ];
     for (name, bin, want, needs_model, (first, every, presses)) in runs {
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
@@ -3288,7 +3304,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             return Err(format!("gpubench {name}: didn't return cleanly:{log}"));
         }
         // Run R returns before any 2700G memory is taken: no pool line.
-        let always: &[&str] = if name == "run R" {
+        let always: &[&str] = if name == "run R" || name == "run S" {
             &["RETROPANE-GPUBENCH: done"]
         } else {
             &["everything given back: true", "RETROPANE-GPUBENCH: done"]
