@@ -4379,10 +4379,11 @@ mod image {
         blink(&mut pwm, 7);
         log!("Z5: the display next");
         // Z5: the display, every setting but the status and counters; the
-        // sync generator last.
-        let skip = [
-            "DINTRS", "DSIG", "DVLNUM", "DLSTS", "DHDET", "DVDET", "DSCTRL",
-        ];
+        // sync generator last. DHDET and DVDET are the display-enable
+        // window (run Z's third try skipped them as status: they read 0
+        // after the reset and nothing was drawn; healthy 0x500230 and
+        // 0x30283, the panel's 80-560 x 3-643).
+        let skip = ["DINTRS", "DSIG", "DVLNUM", "DLSTS", "DSCTRL"];
         let mut display = [""; 128];
         let mut nd = 0;
         for &(name, off, _) in &HEALTHY {
