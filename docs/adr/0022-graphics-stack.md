@@ -279,7 +279,12 @@ fills with the 2D engine, and draws on the CPU last.*
      plane above it as an even tint at one global alpha: dims and even
      glass at full quality), and run D probes the video plane's unnamed
      format codes for an RGB one. Which arrangement serves which layer is
-     settled by those results, with the owner.
+     settled by those results, with the owner. **Run C on the device
+     (2026-10-19, twice):** the video plane's repoint takes effect at once
+     (as the graphics plane's); a YUV pan under per-pixel glass and an RGB
+     pan under a video-plane tint were both smooth, and the YUV text looked
+     "the same mostly, maybe a little soft" in motion (owner). Run D is
+     still to run.
   2. **Fallback, dropping the translucency:** for a second translucent
      layer, or if the video plane's repoint doesn't behave, the layer's
      translucency is dropped for the pan's duration (shown as an opaque
