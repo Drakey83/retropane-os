@@ -3096,6 +3096,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
     let run_e = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_UPLOAD", "1"))?;
     let run_f = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TEXT", "1"))?;
+    let run_g = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CLOCK", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3113,7 +3114,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 6] = [
+    let runs: [GpubenchRun; 7] = [
         (
             "run A",
             &run_a,
@@ -3186,6 +3187,13 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  F6b surfaces once",
                 "  F6c surfaces once",
             ],
+            false,
+            (0, 0, 0),
+        ),
+        (
+            "run G",
+            &run_g,
+            &["G: the clocks", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -3267,6 +3275,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         for w in always.iter().chain(checked) {
             if !log.contains(w) {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
+            }
+        }
+        // Run G steps the clocks only from Windows Mobile's; a fork whose
+        // core PLL reads 0 (rp-v0.29.0 and older: docs/hw/emulator.md) gets
+        // the refusal, and one that starts as Windows Mobile leaves the
+        // chip must step every series and put everything back.
+        if name == "run G" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let stepped = [
+                "  series 1: the cores at divide 1",
+                "  series 2: the system clock past 100 MHz",
+                "  soak at ",
+                "  put back: COREPLL 0xbb1",
+            ]
+            .iter()
+            .all(|w| log.contains(w));
+            if !(refused && log.contains("as found: COREPLL 0x0,") || stepped) {
+                return Err(format!(
+                    "gpubench run G: neither refused cleanly nor stepped every series:{log}"
+                ));
             }
         }
         // Run F's text must come out exactly: white pixels = lit coverage,

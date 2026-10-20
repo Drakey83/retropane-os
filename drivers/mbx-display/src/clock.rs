@@ -79,6 +79,39 @@ impl Speed {
         lmrefresh: 0x48F,
     };
 
+    /// The core PLL value `pll` with the memory timing Dell's routine gives
+    /// for its clock (docs/hw/2700g.md, "The 2700G's local memory sets the
+    /// clock limit"): each timing the SDRAM's rating (tRC 85, tRP and tRCD
+    /// 25, tRAS 48 ns) in whole cycles rounded up, tRAS raised to
+    /// tRC - tRP + 1, tDPL 2; CL2 up to 100 MHz, CL3 above (`LMTYPE`
+    /// `0xAC8` / `0xEC8`); a refresh every 15.6 us (64 ms over 4096 rows).
+    /// It gives Windows Mobile's values at 99.67 MHz and Dell's own at
+    /// 133.25 MHz (`0x944C2`, CL3). Past 100 MHz the memory runs over its
+    /// rating: for the clock experiments (docs/research/2700g-full-potential.md
+    /// P2), never a default.
+    #[must_use]
+    pub const fn rated(pll: u32) -> Self {
+        let khz = Self {
+            pll,
+            lmtype: 0,
+            lmtim: 0,
+            lmrefresh: 0,
+        }
+        .khz();
+        let (trc, trp, trcd) = (cycles(85, khz), cycles(25, khz), cycles(25, khz));
+        let tras = if cycles(48, khz) > trc - trp + 1 {
+            cycles(48, khz)
+        } else {
+            trc - trp + 1
+        };
+        Self {
+            pll,
+            lmtype: if khz > 100_000 { 0xEC8 } else { 0xAC8 },
+            lmtim: tras << 16 | trp << 12 | trcd << 8 | trc << 4 | 2,
+            lmrefresh: khz * 15_625 / 1_000_000,
+        }
+    }
+
     /// The system clock in kHz (by mbxfb's formula).
     #[must_use]
     pub const fn khz(self) -> u32 {
@@ -89,6 +122,11 @@ impl Speed {
         );
         if n == 0 { 0 } else { 13_000 * m / (n << p) }
     }
+}
+
+/// `ns` nanoseconds in whole cycles of a `khz` clock, rounded up.
+const fn cycles(ns: u32, khz: u32) -> u32 {
+    (ns * khz).div_ceil(1_000_000)
 }
 
 /// The poll interval and limit while the core PLL locks (Dell's driver
@@ -268,7 +306,12 @@ mod tests {
             assert_eq!(lmtim(s.khz()), s.lmtim);
             assert_eq!(refresh(s.khz()), s.lmrefresh);
             assert_eq!(s.lmtype >> 10 & 7, 2, "CL2 below 100 MHz");
+            assert_eq!(Speed::rated(s.pll), s, "rated gives the known speeds");
         }
+        // Dell's own 133.25 MHz timing (13 x 41 / 4): CL3, 0x944C2.
+        let fast = Speed::rated(41 << 7 | 4 << 4 | 1);
+        assert_eq!(fast.khz(), 133_250);
+        assert_eq!((fast.lmtim, fast.lmtype), (0x944C2, 0xEC8));
     }
 
     #[test]

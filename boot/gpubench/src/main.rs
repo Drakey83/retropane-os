@@ -62,7 +62,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
-    use rp_drv_mbx_display::clock::MBXCLK;
+    use rp_drv_mbx_display::clock::{self, MBXCLK, Speed as ClockSpeed};
     use rp_drv_mbx_display::font::{self, WIDTH};
     use rp_drv_mbx_display::{
         Display, PixelFormat as PlaneFormat, Plane, event,
@@ -74,6 +74,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::{DmaEngine, RegisterBus};
     use rp_hal_mem::{load32_volatile, store32_volatile, words_as_bytes};
+    use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::RunLog;
     use rp_mbx3d_render::{
@@ -101,6 +102,9 @@ mod image {
     const UPLOAD: bool = option_env!("RP_GPUBENCH_UPLOAD").is_some();
     /// Run F: text as 4 bpp coverage strips.
     const TEXT: bool = option_env!("RP_GPUBENCH_TEXT").is_some();
+    /// Run G: the clocks (the cores at divide 1, the system clock past
+    /// 100 MHz).
+    const CLOCK: bool = option_env!("RP_GPUBENCH_CLOCK").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -2667,6 +2671,418 @@ mod image {
         }
     }
 
+    // ---- Run G: the clocks (docs/research/2700g-full-potential.md P1, P2) ----
+    //
+    // The cores at divide by 1 (version 29: 2D right, 3D 3 of 5 wrong at
+    // 74.75 MHz: is it divide 1 itself, or the speed?), then the system
+    // clock past Dell's 100 MHz with the memory timing Dell's rule gives
+    // (CL3 above 100 MHz), each step stressed and checked; each series
+    // stops at its first error; a 60 s soak at the fastest clean step of
+    // each. Windows Mobile's clock and bus timing go back at the end and
+    // from the fault handler.
+
+    /// CS3 timing (RDF, RDN, RRR): Windows Mobile's (Dell's tier for 99 MHz
+    /// and up) and Dell's tier for 25-99 MHz.
+    const CS3_WM: (u32, u32, u32) = (8, 4, 2);
+    const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
+
+    /// A clock step: the core PLL (13 MHz x M / (N x 2^P)) and the cores'
+    /// divider (1 or 2).
+    #[derive(Clone, Copy)]
+    struct ClockStep {
+        m: u32,
+        n: u32,
+        p: u32,
+        div: u32,
+    }
+
+    impl ClockStep {
+        const fn pll(self) -> u32 {
+            self.m << 7 | self.n << 4 | self.p << 1 | 1
+        }
+
+        const fn khz(self) -> u32 {
+            ClockSpeed::rated(self.pll()).khz()
+        }
+    }
+
+    const WM_STEP: ClockStep = ClockStep {
+        m: 23,
+        n: 3,
+        p: 0,
+        div: 2,
+    };
+
+    /// Windows Mobile's clock and bus timing back, wherever run G left
+    /// them (no state kept, so the fault handler can call it).
+    fn clock_restore<B: RegisterBus>(regs: &mut B) {
+        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
+        let clk = regs.read32(MBXCLK);
+        regs.write32(MBXCLK, (clk & !0xC) | 1 << 2);
+        rt::delay_us(1_000);
+        let now = ClockSpeed {
+            pll: regs.read32(clock::COREPLL),
+            lmtype: regs.read32(clock::LMTYPE),
+            lmtim: regs.read32(clock::LMTIM),
+            lmrefresh: regs.read32(clock::LMREFRESH),
+        };
+        if now != ClockSpeed::WM {
+            let _ = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us);
+        }
+        let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
+    }
+
+    /// Puts `s` in place: the long bus timing first (safe at any clock),
+    /// the cores at divide 2, the PLL and its memory timing (Dell's way),
+    /// then the step's divider and the bus timing of its tier. The PLL's
+    /// lock time, or `None` (Windows Mobile's speed is then back).
+    fn clock_apply(g: &mut Rig, s: ClockStep) -> Option<u32> {
+        let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
+        let clk = g.e.regs.read32(MBXCLK);
+        g.e.regs.write32(MBXCLK, (clk & !0xC) | 1 << 2);
+        rt::delay_us(1_000);
+        let lock = clock::set_speed(&mut g.e.regs, ClockSpeed::rated(s.pll()), rt::delay_us);
+        let clk = g.e.regs.read32(MBXCLK);
+        g.e.regs.write32(MBXCLK, (clk & !0xC) | (s.div - 1) << 2);
+        rt::delay_us(1_000);
+        let cs3 = if s.khz() < 99_000 { CS3_LONG } else { CS3_WM };
+        let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
+        lock
+    }
+
+    /// Where run G's memory sits: the texture, the flush target, the
+    /// pattern region (2700G memory); the flush source and the reference
+    /// picture (SDRAM).
+    struct ClockRig<'a> {
+        tex: Texture,
+        flush_at: u32,
+        pat_at: u32,
+        pat_bytes: u32,
+        src: &'a [u32],
+        reference: &'a mut [u32],
+    }
+
+    /// One step's results.
+    #[derive(Default)]
+    struct ClockResult {
+        flush_us: u32,
+        read_us: u32,
+        bus_wrong: u32,
+        mem_wrong: u32,
+        fill_us: u32,
+        fill_wrong: u32,
+        render_us: u32,
+        render_wrong: u32,
+        first_diff: Option<(u32, u32, u32)>,
+    }
+
+    impl ClockResult {
+        fn good(&self) -> bool {
+            self.bus_wrong + self.mem_wrong + self.fill_wrong + self.render_wrong == 0
+                && self.render_us != 0
+        }
+    }
+
+    /// The pattern word at byte offset `a` for `seed` (odd seeds inverted).
+    fn clock_pat(a: u32, seed: u32) -> u32 {
+        let w = a.wrapping_mul(0x9E37_79B9) ^ seed.wrapping_mul(0x85EB_CA6B);
+        if seed & 1 == 1 { !w } else { w }
+    }
+
+    /// Every test at the current clock. `take_reference`: the 3D picture
+    /// becomes the reference (Windows Mobile's clock, first).
+    fn clock_check(g: &mut Rig, c: &mut ClockRig, take_reference: bool, seed: u32) -> ClockResult {
+        let mut r = ClockResult::default();
+        let flush_bytes = c.src.len() * 4;
+        // The bus: the flush and every word of it; 256 KiB read back.
+        let t0 = rt::ticks();
+        g.mem.0[c.flush_at as usize..c.flush_at as usize + flush_bytes]
+            .copy_from_slice(words_as_bytes(c.src));
+        cpu::drain_write_buffer();
+        r.flush_us = us_since(t0);
+        rt::check_in();
+        let t0 = rt::ticks();
+        let mut sum = 0u32;
+        for k in 0..256 * 1024 / 4 {
+            let v = g.mem.load(c.flush_at as usize + 4 * k).unwrap_or(0);
+            sum = sum.wrapping_add(v);
+            r.bus_wrong += u32::from(v != c.src[k]);
+        }
+        r.read_us = us_since(t0);
+        let _ = core::hint::black_box(sum);
+        for k in 256 * 1024 / 4..c.src.len() {
+            r.bus_wrong += u32::from(g.mem.load(c.flush_at as usize + 4 * k) != Some(c.src[k]));
+        }
+        rt::check_in();
+        // Memory: a pattern and its inverse over the pattern region.
+        for s in [seed, seed + 1] {
+            let mut buf = [0u32; 64];
+            let mut a = 0;
+            while a < c.pat_bytes {
+                for (j, w) in buf.iter_mut().enumerate() {
+                    *w = clock_pat(a + 4 * j as u32, s);
+                }
+                g.mem.store((c.pat_at + a) as usize, &buf);
+                a += 256;
+            }
+            g.mem.sync();
+            rt::check_in();
+            let mut a = 0;
+            while a < c.pat_bytes {
+                r.mem_wrong +=
+                    u32::from(g.mem.load((c.pat_at + a) as usize) != Some(clock_pat(a, s)));
+                a += 4;
+                if a % (1 << 20) == 0 {
+                    rt::check_in();
+                }
+            }
+        }
+        // The 2D engine: a full-screen fill, timed, 4096 words checked.
+        let colour = clock_pat(seed, 0x2D) | 0xFF00_0000;
+        let w = cmd::fill(
+            Format::BPP32,
+            SCREEN.at as usize,
+            SCREEN.stride as usize,
+            (0, 0, 480, 640),
+            colour,
+        );
+        let t0 = rt::ticks();
+        let ok =
+            g.e.submit(&w)
+                .and_then(|()| g.e.finish(g.mem.0, 200_000))
+                .is_ok();
+        r.fill_us = us_since(t0);
+        if !ok {
+            r.fill_wrong = u32::MAX;
+        }
+        for k in 0..4096u32 {
+            let at = SCREEN.at + (k * 7919 % (480 * 640)) * 4;
+            r.fill_wrong += u32::from(g.mem.load(at as usize) != Some(colour));
+        }
+        rt::check_in();
+        // The 3D core: a scene of a textured layer, a translucent flat one
+        // and a square, rendered whole three times; the picture against the
+        // reference, word for word.
+        if let Some(mut rr) = Renderer::new(&mut g.pool, 480, 640) {
+            let _ = rr.set_background(Some(GREY));
+            g.set(&mut rr, 0, Some(cover(c.tex, 16, false)));
+            g.set(&mut rr, 1, Some(flat(0x8040_A0C0, true)));
+            g.set(
+                &mut rr,
+                2,
+                Some(Draw::rect(100, 200, 96, 96, Paint::Flat(0xFFFF_2000))),
+            );
+            let full = Target {
+                picture: SCREEN,
+                x: 0,
+                y: 0,
+            };
+            let times = g.full(&mut rr, full, 3);
+            r.render_us = times.min();
+            for (k, want) in c.reference.iter_mut().enumerate() {
+                let got = g.mem.load(SCREEN.at as usize + 4 * k).unwrap_or(0);
+                if take_reference {
+                    *want = got;
+                } else if got != *want {
+                    r.render_wrong += 1;
+                    if r.first_diff.is_none() {
+                        r.first_diff = Some((k as u32, got, *want));
+                    }
+                }
+            }
+            for k in 0..3 {
+                g.set(&mut rr, k, None);
+            }
+            let _ = rr.release(&mut g.pool);
+        }
+        rt::check_in();
+        r
+    }
+
+    fn clock_log(s: ClockStep, lock: Option<u32>, r: &ClockResult) {
+        let mhz = s.khz() / 1000;
+        let mbs = |bytes: u32, us: u32| bytes / us.max(1);
+        log!(
+            "  G {}.{:02} MHz, cores / {} = {} MHz: lock {lock:?} us | flush {} us {} MB/s, read 256K {} us {} MB/s, bus wrong {} | memory wrong {} | 2D fill {} us wrong {} | 3D {} us wrong {} | {}",
+            mhz,
+            s.khz() % 1000 / 10,
+            s.div,
+            s.khz() / s.div / 1000,
+            r.flush_us,
+            mbs(1_228_800, r.flush_us),
+            r.read_us,
+            mbs(262_144, r.read_us),
+            r.bus_wrong,
+            r.mem_wrong,
+            r.fill_us,
+            r.fill_wrong,
+            r.render_us,
+            r.render_wrong,
+            if r.good() { "GOOD" } else { "BAD" }
+        );
+        if let Some((k, got, want)) = r.first_diff {
+            log!(
+                "    first 3D difference at ({},{}): 0x{got:08x}, want 0x{want:08x}",
+                k % 480,
+                k / 480
+            );
+        }
+    }
+
+    #[inline(never)]
+    fn clocks(g: &mut Rig) {
+        log!(
+            "G: the clocks: the cores at divide 1, the system clock past 100 MHz (Dell's memory rule), every step stressed; each series stops at its first error"
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
+            log!("  no RAM pool");
+            return;
+        };
+        let (src, rest) = ram.split_at_mut(480 * 640);
+        let (reference, _) = rest.split_at_mut(480 * 640);
+        for (i, w) in src.iter_mut().enumerate() {
+            *w = clock_pat(4 * i as u32, 0xF1A5);
+        }
+        let Some(tex) = tex16(g, 6, format::RGB565, 1, &pattern565) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let (Some(flush_at), Some(pat_at)) =
+            (g.pool.alloc(480 * 640 * 4, 128), g.pool.alloc(4 << 20, 128))
+        else {
+            log!("  no 2700G memory");
+            return;
+        };
+        let mut c = ClockRig {
+            tex,
+            flush_at,
+            pat_at,
+            pat_bytes: 4 << 20,
+            src,
+            reference,
+        };
+
+        // Windows Mobile's clock: the reference.
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        if !base.good() {
+            log!("  the reference step itself is BAD: stopped");
+            return;
+        }
+
+        let step = |m, n, p, div| ClockStep { m, n, p, div };
+        let mut best = [None::<ClockStep>; 2];
+        let mut seed = 4;
+        // Series 1, the cores at divide 1, rising to today's system clock.
+        // Series 2, the system clock past 100 MHz, the cores at divide 2.
+        let series1 = [step(23, 3, 1, 1), step(23, 4, 0, 1), step(23, 3, 0, 1)];
+        let series2 = [
+            step(25, 3, 0, 2),
+            step(27, 3, 0, 2),
+            step(29, 3, 0, 2),
+            step(31, 3, 0, 2),
+            step(33, 3, 0, 2),
+            step(35, 3, 0, 2),
+        ];
+        for (k, series) in [&series1[..], &series2[..]].into_iter().enumerate() {
+            log!(
+                "  {}",
+                if k == 0 {
+                    "series 1: the cores at divide 1"
+                } else {
+                    "series 2: the system clock past 100 MHz, the cores at divide 2"
+                }
+            );
+            for &s in series {
+                let lock = clock_apply(g, s);
+                let r = if lock.is_some() {
+                    clock_check(g, &mut c, false, seed)
+                } else {
+                    ClockResult::default()
+                };
+                seed += 2;
+                clock_log(s, lock, &r);
+                clock_restore(&mut g.e.regs);
+                if !r.good() {
+                    break;
+                }
+                best[k] = Some(s);
+            }
+        }
+        // Series 3: both, if the cores ran right at divide 1 at 99.67 MHz.
+        if best[0].is_some_and(|s| s.khz() >= 99_000) {
+            log!("  series 3: past 100 MHz with the cores at divide 1");
+            for &s in &series2 {
+                let s = ClockStep { div: 1, ..s };
+                let lock = clock_apply(g, s);
+                let r = if lock.is_some() {
+                    clock_check(g, &mut c, false, seed)
+                } else {
+                    ClockResult::default()
+                };
+                seed += 2;
+                clock_log(s, lock, &r);
+                clock_restore(&mut g.e.regs);
+                if !r.good() {
+                    break;
+                }
+                best[0] = Some(s);
+            }
+        }
+        // The soaks: 60 s at the fastest clean step of each divider.
+        for s in best.into_iter().flatten() {
+            let lock = clock_apply(g, s);
+            let t0 = rt::ticks();
+            let (mut rounds, mut bad) = (0u32, 0u32);
+            while lock.is_some() && us_since(t0) < 60_000_000 && bad == 0 {
+                let r = clock_check(g, &mut c, false, seed);
+                seed += 2;
+                rounds += 1;
+                if !r.good() {
+                    bad += 1;
+                    clock_log(s, lock, &r);
+                }
+            }
+            clock_restore(&mut g.e.regs);
+            log!(
+                "  soak at {} kHz, cores / {}: {rounds} rounds in {} s, {} BAD",
+                s.khz(),
+                s.div,
+                us_since(t0) / 1_000_000,
+                bad
+            );
+        }
+        let after = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            after.0,
+            after.1,
+            after.2
+        );
+        let _ = g.pool.free(flush_at, 480 * 640 * 4);
+        let _ = g.pool.free(pat_at, 4 << 20);
+        let _ = rp_mbx3d_render::release(&mut g.pool, tex);
+    }
+
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
@@ -2692,6 +3108,8 @@ mod image {
                 "E (faster uploads: overlapped reorder and DMA, 8-bit, PVRTC, text by commands)"
             } else if TEXT {
                 "F (text as 4 bpp coverage strips, against RGB565 pixels)"
+            } else if CLOCK {
+                "G (the clocks: the cores at divide 1, the system clock past 100 MHz)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
@@ -2732,6 +3150,8 @@ mod image {
             uploads(&mut g);
         } else if TEXT {
             text_strips(&mut g);
+        } else if CLOCK {
+            clocks(&mut g);
         } else {
             g4a(&mut g);
             if let Some(set) = textures(&mut g) {
@@ -2803,6 +3223,10 @@ mod image {
 
     #[inline(never)]
     fn crash(msg: core::fmt::Arguments) -> ! {
+        // Run G: Windows Mobile's clock and bus timing back first.
+        if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            clock_restore(&mut regs);
+        }
         rp_hal_x51v::devices::crash_to_loader(msg);
         loop {
             core::hint::spin_loop();
