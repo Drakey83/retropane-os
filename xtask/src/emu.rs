@@ -5130,6 +5130,22 @@ pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
                 "cardlog {name}: the closing line is wrong: {closing}"
             ));
         }
+        // Written as the run went, not only by the loader at its end (a
+        // hang that loses the RAM leaves only what was written as it went):
+        // a sector write a line, so at least as many writes as the lines
+        // before the closing line, but for the loader's first two.
+        let writes: usize = closing
+            .split(" sector writes")
+            .next()
+            .and_then(|h| h.rsplit(' ').next())
+            .and_then(|n| n.parse().ok())
+            .ok_or_else(|| format!("cardlog {name}: no write count in: {closing}"))?;
+        let lines = card.lines().count() - 1;
+        if writes + 2 < lines {
+            return Err(format!(
+                "cardlog {name}: {writes} sector writes for {lines} lines: the lines weren't written as the run went"
+            ));
+        }
         Ok(card)
     };
     let image = |n: &str| -> Result<Vec<u8>, String> {
