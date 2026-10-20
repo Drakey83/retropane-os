@@ -4243,9 +4243,36 @@ mod image {
         off_by
     }
 
+    /// Blinks the backlight `n` times (off 0.4 s, back 0.4 s), then 1.5 s
+    /// lit: the owner counts the last group to name the phase a freeze
+    /// came in. The PXA's PWM0 duty register (`0x4`), put back as found.
+    fn blink(pwm: &mut Option<Mmio>, n: u32) {
+        let Some(p) = pwm else { return };
+        let duty = p.read32(0x4);
+        let wait = |ms: u32| {
+            for _ in 0..ms / 50 {
+                rt::delay_us(50_000);
+                rt::check_in();
+            }
+        };
+        for _ in 0..n {
+            p.write32(0x4, 0);
+            wait(400);
+            p.write32(0x4, duty);
+            wait(400);
+        }
+        wait(1_500);
+    }
+
     /// Run Z (see [`REBUILD`]).
     fn rebuild(regs: Mmio, vram: &mut [u8]) -> ! {
         let mut regs = regs;
+        // The backlight (the PXA's PWM0, not the 2700G) blinks the phase
+        // number before each phase: run Z's second try froze after the
+        // reset and neither the SDRAM log nor the SRAM copy survived the
+        // watchdog reset (Dell's boot clears both), so the owner counts the
+        // last group of blinks instead.
+        let mut pwm = rt::take_pwm0();
         let (f, s0, s1) = underrun_state(&mut regs);
         log!("Z: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         // Z1: the reset. Run Z's first try read registers at once after it
@@ -4253,9 +4280,19 @@ mod image {
         // mbxfb only writes, 1 ms apart, until the clocks and the memory
         // run. So here: writes only, in its order, until Z3's end; each
         // phase noted in the kept log first (a freeze shows where).
+        blink(&mut pwm, 1);
         log!("Z1: SYSRST next (writes only from here to Z3)");
         regs.write32(0x010, 1);
         rt::delay_us(10_000);
+        // Linux mbxfb's next write after the reset: "setup a timeout, raise
+        // drive strength". Without a timeout, an access the reset 2700G
+        // never answers holds the bus (RDY) for good: the suspect for the
+        // freeze. Kept to the end (Z4 doesn't put WM's 0 back).
+        blink(&mut pwm, 2);
+        log!("Z1b: SYSCFG 0xffffff0c (Linux's timeout and drive strength) next");
+        regs.write32(0x000, 0xFFFF_FF0C);
+        rt::delay_us(1_000);
+        blink(&mut pwm, 3);
         log!("Z2: the clocks next");
         for name in ["SYSCLKSRC", "PIXCLKSRC", "CLKSLEEP", "COREPLL", "DISPPLL"] {
             write_healthy(&mut regs, name);
@@ -4272,10 +4309,12 @@ mod image {
         ] {
             write_healthy(&mut regs, name);
         }
+        blink(&mut pwm, 4);
         log!("Z3: the local memory next (Linux's setup_memc order)");
         for name in ["LMCFG", "LMPWR", "LMTIM", "LMREFRESH", "LMTYPE", "LMPWR"] {
             write_healthy(&mut regs, name);
         }
+        blink(&mut pwm, 5);
         log!("Z3: first reads after the reset next (PLLSTAT)");
         log!(
             "Z3: PLLSTAT 0x{:x}, LMPWRSTAT 0x{:x}",
@@ -4312,12 +4351,12 @@ mod image {
             ],
         );
         log!("Z3: the clocks and memory read back: {off_by} differ");
+        blink(&mut pwm, 6);
         log!("Z4: the system block next");
-        // Z4: the system block's other settings.
+        // Z4: the system block's other settings (SYSCFG stays Linux's).
         off_by += put_healthy(
             &mut regs,
             &[
-                "SYSCFG",
                 "PFBASE",
                 "PFCEIL",
                 "NINTPW",
@@ -4337,6 +4376,7 @@ mod image {
                 "PWM1PER",
             ],
         );
+        blink(&mut pwm, 7);
         log!("Z5: the display next");
         // Z5: the display, every setting but the status and counters; the
         // sync generator last.
@@ -4370,6 +4410,7 @@ mod image {
             regs.read32(dreg::GSADR),
             vram.len(),
         ) {
+            blink(&mut pwm, 8);
             card_text(vram, &p, "Z: BACK", 0xFF10_6020, 6);
             let (f, s0, s1) = underrun_state(&mut regs);
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");

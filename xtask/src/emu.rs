@@ -3306,6 +3306,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &[
                 "Z: as found",
                 "Z1: SYSRST next",
+                "Z1b: SYSCFG 0xffffff0c",
                 "Z2: the clocks next",
                 "Z3: the clocks and memory read back",
                 "Z5: the display",
