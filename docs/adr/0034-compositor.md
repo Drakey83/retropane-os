@@ -73,9 +73,9 @@ about to be shown (ADR-0027's pool, the client's quota).
 
 - The pan path is **proven** when its device run passes, and **done** only
   when the emulator models the repoint (ADR-0022 point 3): the fork models
-  it from rp-v0.29.0 (`plane-repoint`, `emu-gpubench`'s W4 check; release
-  pending), so the build order's step 1 counts as done once that release is
-  pinned.
+  it from rp-v0.29.0 (`plane-repoint`, `emu-gpubench`'s W4 check),
+  released and pinned 2026-10-20: the build order's step 1 is done once
+  its device run passes.
 - C2 amends ADR-0023 (its screen pictures were 32-bit) and C5 amends
   ADR-0030 G1 (areas): both ADRs carry a pointer here.
 
