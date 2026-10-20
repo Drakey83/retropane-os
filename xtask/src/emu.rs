@@ -2428,16 +2428,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
     // Two restart rows from "earlier runs": the run must keep them and add
     // its own after them.
     let earlier: Vec<u8> = (0..2000u32).map(|i| (i * 7) as u8).collect();
-    let image = rp_fat::format::build(&rp_fat::format::Image {
-        total_sectors: 64 * 1024,
-        sectors_per_cluster: 8,
-        files: &[rp_fat::format::Entry {
-            name: "noise-ri.bin",
-            data: &earlier,
-        }],
-        blocked_clusters: &[],
-        ballast: 0,
-    });
+    let image = noise_card(&[("rpnoise/noise-ri.bin", &earlier)])?;
     let sd = scratch(root, "sd-noise.img")?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
@@ -2487,7 +2478,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         }
     }
     noise_timer_ways(log)?;
-    let spaced = card_file(&sd, "noise-as.bin")?;
+    let spaced = card_file(&sd, "rpnoise/noise-as.bin")?;
     if spaced.len() != 200_000 {
         return Err(format!(
             "noise: noise-as.bin is {} bytes, want 200,000",
@@ -2502,7 +2493,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "noise-ax.bin",
         "noise-t1.bin",
     ] {
-        let data = card_file(&sd, name)?;
+        let data = card_file(&sd, &format!("rpnoise/{name}"))?;
         if data.len() != 2_000_000 {
             return Err(format!(
                 "noise: {name} is {} bytes, want 2,000,000",
@@ -2510,34 +2501,30 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             ));
         }
     }
-    let rows = card_file(&sd, "noise-ri.bin")?;
+    let rows = card_file(&sd, "rpnoise/noise-ri.bin")?;
     if rows[..] != earlier[..] {
         return Err(format!(
             "noise: noise-ri.bin is {} bytes, want the 2 earlier rows untouched (row refused)",
             rows.len()
         ));
     }
-    let text = card_file(&sd, "noise.txt")?;
+    // Everything in its own folder (the card is shared): nothing in the root.
+    for name in ["noise-ri.bin", "noise-ai.bin", "noise.txt"] {
+        if card_file(&sd, name).is_ok() {
+            return Err(format!(
+                "noise: wrote {name} in the card's root, outside rpnoise/"
+            ));
+        }
+    }
+    let text = card_file(&sd, "rpnoise/noise.txt")?;
     if !String::from_utf8_lossy(&text).contains("MCV min-entropy") {
         return Err("noise: noise.txt has no summaries".into());
     }
     // Quick mode: with `noise-quick.txt` on the card, only the restart row.
-    let image = rp_fat::format::build(&rp_fat::format::Image {
-        total_sectors: 64 * 1024,
-        sectors_per_cluster: 8,
-        files: &[
-            rp_fat::format::Entry {
-                name: "noise-quick.txt",
-                data: b"restart rows only",
-            },
-            rp_fat::format::Entry {
-                name: "noise-ri.bin",
-                data: &earlier[..1000],
-            },
-        ],
-        blocked_clusters: &[],
-        ballast: 0,
-    });
+    let image = noise_card(&[
+        ("rpnoise/noise-quick.txt", b"restart rows only"),
+        ("rpnoise/noise-ri.bin", &earlier[..1000]),
+    ])?;
     std::fs::write(&sd, &image).map_err(|e| format!("{}: {e}", sd.display()))?;
     let output = boot(
         root,
@@ -2571,7 +2558,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             "noise quick: did more than the restart row, or crashed:{log}"
         ));
     }
-    let rows = card_file(&sd, "noise-ri.bin")?;
+    let rows = card_file(&sd, "rpnoise/noise-ri.bin")?;
     if rows[..] != earlier[..1000] {
         return Err(format!(
             "noise quick: noise-ri.bin is {} bytes, want it untouched (row refused)",
@@ -2582,6 +2569,50 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         "    noise OK: clocks read, the 32 kHz ticks taken as interrupts (every tick and spaced), the other sources collected and saved whole, the restart row refused as unhealthy (the emulator's ticks are the PC's) and the file untouched, quick mode does only that, back at the loader"
     );
     Ok(())
+}
+
+/// A FAT32 card image for rp-noise's checks holding `files` (paths inside
+/// folders allowed: rp-noise keeps everything in `rpnoise/`).
+fn noise_card(files: &[(&str, &[u8])]) -> Result<Vec<u8>, String> {
+    let img = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    struct Mem(Vec<u8>);
+    impl rp_hal_api::BlockDevice for Mem {
+        fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), rp_hal_api::BlockError> {
+            let o = lba as usize * 512;
+            let src = self
+                .0
+                .get(o..o + buf.len())
+                .ok_or(rp_hal_api::BlockError::OutOfRange)?;
+            buf.copy_from_slice(src);
+            Ok(())
+        }
+        fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), rp_hal_api::BlockError> {
+            let o = lba as usize * 512;
+            let dst = self
+                .0
+                .get_mut(o..o + buf.len())
+                .ok_or(rp_hal_api::BlockError::OutOfRange)?;
+            dst.copy_from_slice(buf);
+            Ok(())
+        }
+    }
+    let mut disk = Mem(img);
+    {
+        let mut vol = rp_fat::Volume::mount(&mut disk, rp_fat::format::PARTITION_START)
+            .map_err(|e| format!("noise card: mount: {}", e.name()))?;
+        let mut scratch = vec![0u8; 64 * 1024];
+        for (name, data) in files {
+            vol.put(name, data, &mut scratch)
+                .map_err(|e| format!("noise card: {name}: {}", e.name()))?;
+        }
+    }
+    Ok(disk.0)
 }
 
 /// The USB disconnect hunt (rp-unplug, docs/hw/udc.md T4): every candidate

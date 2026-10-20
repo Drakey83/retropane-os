@@ -11,13 +11,17 @@
 //!    in 16 (how to start a channel on the 32 kHz clock is found first,
 //!    each way tried for 2 ms and logged). The first 1,000 low bytes of
 //!    each run are appended to `noise-ri.bin` as one row of SP 800-90B's
-//!    restart test (up to 1,000 rows). With `noise-quick.txt` on the card
+//!    restart test (up to 1,000 rows). With `rpnoise/noise-quick.txt` on the card
 //!    the run does only that row (a few seconds), for the restarts.
 //! 3. **B, one-clock jitter**: 1,000,000 timings (cycles) of 64 reads that
 //!    all miss the data cache (one cache set, 64 lines for 32 ways), so
 //!    each goes to SDRAM.
 //! 4. **T, the TSC2046's single-ended inputs**: 1,000,000 12-bit readings
 //!    each of `TEMP0`, `VBAT`, `AUX`, `TEMP1`.
+//!
+//! Everything it writes is in its own folder on the card, `rpnoise/` (the
+//! card is shared: docs/hw/sd.md and the shared-card rule; a drive
+//! benchmark once replaced a file this image kept in the root).
 //!
 //! Each source's raw samples go to the card as little-endian 16-bit values
 //! (`noise-a.bin`, `noise-b.bin`, `noise-t0.bin`, `noise-vb.bin`,
@@ -427,11 +431,14 @@ mod image {
         let (fat, rest) = rest.split_at_mut(WALK_AT - FAT_AT);
         let (walk, rest) = rest.split_at_mut(WALK_BYTES);
         let restart = rest;
-        // Quick mode (`noise-quick.txt` on the card, put there with `cargo
+        // Quick mode (`rpnoise/noise-quick.txt` on the card, put with `cargo
         // xtask put`): only this start's restart-test row, a few seconds a
         // run, for the 1,000 restarts SP 800-90B's restart test needs.
         let quick = card.as_mut().is_some_and(|sd| {
-            mount(sd).is_ok_and(|mut v| v.read_back("noise-quick.txt", fat, &mut |_| {}).is_ok())
+            mount(sd).is_ok_and(|mut v| {
+                v.read_back("rpnoise/noise-quick.txt", fat, &mut |_| {})
+                    .is_ok()
+            })
         });
         if quick {
             let _ = writeln!(out, "quick mode (noise-quick.txt): the restart row only");
@@ -502,13 +509,13 @@ mod image {
                     1,
                     SAMPLES,
                     "A interrupt (cycles between 32 kHz tick interrupts)",
-                    "noise-ai.bin",
+                    "rpnoise/noise-ai.bin",
                 ),
                 (
                     SPACING,
                     SPACED_SAMPLES,
                     "A spaced (cycles across 16 tick interrupts, low 16 bits)",
-                    "noise-as.bin",
+                    "rpnoise/noise-as.bin",
                 ),
             ];
             for (k, n, name, file) in tries {
@@ -583,7 +590,7 @@ mod image {
                 "low byte",
             );
             let _ = writeln!(RunLog, "  (sink {sink:#x})");
-            save(&mut out, card.as_mut(), "noise-b.bin", samples, fat);
+            save(&mut out, card.as_mut(), "rpnoise/noise-b.bin", samples, fat);
 
             // 4. T: the TSC2046's single-ended inputs.
             let (Some(gpio), Some(ssp)) = (rt::take_gpio(), rt::take_ssp1()) else {
@@ -603,10 +610,10 @@ mod image {
                 GpioPin::new(&gpio, TS_PENIRQ),
             );
             for (ch, name, file) in [
-                (single::TEMP0, "T TEMP0", "noise-t0.bin"),
-                (single::VBAT, "T VBAT", "noise-vb.bin"),
-                (single::AUX, "T AUX", "noise-ax.bin"),
-                (single::TEMP1, "T TEMP1", "noise-t1.bin"),
+                (single::TEMP0, "T TEMP0", "rpnoise/noise-t0.bin"),
+                (single::VBAT, "T VBAT", "rpnoise/noise-vb.bin"),
+                (single::AUX, "T AUX", "rpnoise/noise-ax.bin"),
+                (single::TEMP1, "T TEMP1", "rpnoise/noise-t1.bin"),
             ] {
                 // Let the reference and the input settle first.
                 for _ in 0..64 {
@@ -630,7 +637,8 @@ mod image {
         }
         if let Some(sd) = card.as_mut().filter(|_| !quick) {
             let text = &out.buf[..out.len];
-            let ok = mount(sd).and_then(|mut v| v.put("noise.txt", text, fat).map_err(|_| "write"));
+            let ok = mount(sd)
+                .and_then(|mut v| v.put("rpnoise/noise.txt", text, fat).map_err(|_| "write"));
             let _ = writeln!(RunLog, "noise.txt: {}", ok.map_or_else(|e| e, |_| "saved"));
         }
         if let Some(uart) = rt::take_ffuart() {
@@ -787,7 +795,7 @@ mod image {
         let Ok(mut vol) = mount(sd) else { return };
         let mut have = 0usize;
         let mut fits = true;
-        let _ = vol.read_back("noise-ri.bin", fat, &mut |piece| {
+        let _ = vol.read_back("rpnoise/noise-ri.bin", fat, &mut |piece| {
             let end = have + piece.len();
             if end <= rows.len() {
                 rows[have..end].copy_from_slice(piece);
@@ -803,7 +811,7 @@ mod image {
             let _ = writeln!(out, "  noise-ri.bin: full ({RESTART_ROWS} rows): not added");
             return;
         };
-        let ok = vol.put("noise-ri.bin", &rows[..have], fat);
+        let ok = vol.put("rpnoise/noise-ri.bin", &rows[..have], fat);
         let _ = writeln!(
             out,
             "  noise-ri.bin: {}",

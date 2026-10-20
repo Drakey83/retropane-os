@@ -93,15 +93,22 @@ returns to the loader by itself after about two minutes.
 2. On the device, **only when the owner says go**: `cargo xtask load
    rp-noise`. The run log gives a first look at every source (range,
    distinct values, the 90B most-common-value estimate).
-3. Fetch the files: `cargo xtask get noise-ai.bin` (and `noise-as.bin`,
-   `noise-b.bin`,
-   `noise-t0.bin`, `noise-vb.bin`, `noise-ax.bin`, `noise-t1.bin`,
-   `noise-r.bin`, `noise.txt`).
-4. Each run adds one row to `noise-r.bin` (the restart test, up to 1,000
-   rows); a few runs from the loader and about 20 from a fresh power-up
-   give the start-up picture ADR-0029 asks for.
+3. Everything rp-noise writes is in its own folder on the card,
+   `rpnoise/` (since 2026-10-20; the card is shared, and a drive benchmark
+   once replaced a file it kept in the root). Fetch the files:
+   `cargo xtask get rpnoise/noise-ai.bin` (and `noise-as.bin`,
+   `noise-b.bin`, `noise-t0.bin`, `noise-vb.bin`, `noise-ax.bin`,
+   `noise-t1.bin`, `noise-ri.bin`, `noise.txt`, all in `rpnoise/`).
+4. Each run adds one row to `rpnoise/noise-ri.bin` (the restart test, up to
+   1,000 rows), only if the run was healthy (no missed tick, varied, no
+   zero, within 2,048 cycles: ADR-0029 R6). With `rpnoise/noise-quick.txt`
+   on the card (`cargo xtask put <file> rpnoise/noise-quick.txt`) a run
+   does only that row, ~10 s a run; `local/noise/restart/loop.sh` repeats
+   it to 1,000 rows and copies the file to the PC every 50. Runs from the
+   loader, and about 20 from a fresh power-up, give the start-up picture
+   ADR-0029 asks for.
 5. On the PC, NIST's tool (github.com/usnistgov/SP800-90B_EntropyAssessment,
    built in WSL): the files hold little-endian 16-bit samples; take the
    low byte of A and B (8 bits a symbol) and the 12-bit TSC values as two
    bytes or their low 8 bits, then `ea_non_iid -v <file> 8`, and
-   `ea_restart` on `noise-r.bin` (1,000 bytes a row).
+   `ea_restart` on `noise-ri.bin` (1,000 bytes a row).
