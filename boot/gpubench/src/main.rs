@@ -3758,6 +3758,24 @@ mod image {
         (flags, sig, regs.read32(DSIG))
     }
 
+    /// Held 4 s as it is (the owner sees whether it went dark), then the
+    /// underrun flag cleared Dell's way if it's set, and logged.
+    fn underrun_hold_and_clear(regs: &mut Mmio, n: u32) {
+        for _ in 0..40 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        let v = regs.read32(DINTRS);
+        if v & GFX_UNDERRUN != 0 {
+            regs.write32(DINTRS, v & !GFX_UNDERRUN);
+            rt::delay_us(40_000);
+            let (f, s0, s1) = underrun_state(regs);
+            log!(
+                "U{n}: the flag cleared (Dell's way): DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}"
+            );
+        }
+    }
+
     /// Run U (see [`UNDERRUN`]).
     fn underrun(regs: Mmio, vram: &mut [u8]) -> ! {
         let mut d = Display::new(regs);
@@ -3798,6 +3816,58 @@ mod image {
             let _ = write!(l, "U{n} BACK");
             card_text(vram, &plane, l.as_str(), 0xFF80_6010, 4);
         }
+        // U5-U6 (run U2, after U1 on the device: 30 ms on the reference
+        // clock alone set no underrun): what else G4's lock traces did.
+        // U5: CL3 at Windows Mobile's clock for 100 ms (written the
+        // checked way): CL3 breaks the 3D core's reads (G4), maybe the
+        // display's too. U6: the lock traces as G4 ran them.
+        card_text(vram, &plane, "U5: CL3", 0xFF10_6020, 3);
+        let wm = ClockSpeed::WM;
+        let _ = clock::set_speed(
+            &mut regs,
+            ClockSpeed {
+                lmtype: 0xEC8,
+                ..wm
+            },
+            rt::delay_us,
+        );
+        rt::delay_us(100_000);
+        let (f, s0, s1) = underrun_state(&mut regs);
+        let _ = clock::set_speed(&mut regs, wm, rt::delay_us);
+        log!(
+            "U5: CL3 at 99.67 MHz for 100 ms: DINTRS 0x{f:x} (underrun {}), DSIG 0x{s0:x} then 0x{s1:x}; LMTYPE now 0x{:x}",
+            f & GFX_UNDERRUN != 0,
+            regs.read32(clock::LMTYPE)
+        );
+        underrun_hold_and_clear(&mut regs, 5);
+        card_text(vram, &plane, "U5 BACK", 0xFF80_6010, 4);
+        card_text(vram, &plane, "U6: TRACES", 0xFF10_6020, 3);
+        let a75 = ClockStep { n: 4, ..WM_STEP }.speed();
+        let f108 = ClockStep { m: 25, ..WM_STEP }.speed();
+        for to in [a75, wm, f108, wm] {
+            regs.write32(clock::SYSCLKSRC, 0);
+            rt::delay_us(250);
+            regs.write32(clock::LMTIM, to.lmtim);
+            regs.write32(clock::LMREFRESH, to.lmrefresh);
+            regs.write32(clock::LMTYPE, to.lmtype);
+            regs.write32(clock::COREPLL, to.pll);
+            rt::delay_us(4_000);
+            regs.write32(clock::SYSCLKSRC, 2);
+            rt::delay_us(250);
+        }
+        rt::delay_us(20_000);
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!(
+            "U6: G4's lock traces: DINTRS 0x{f:x} (underrun {}), DSIG 0x{s0:x} then 0x{s1:x}; LMTYPE 0x{:x} LMTIM 0x{:x} LMREFRESH 0x{:x} COREPLL 0x{:x}",
+            f & GFX_UNDERRUN != 0,
+            regs.read32(clock::LMTYPE),
+            regs.read32(clock::LMTIM),
+            regs.read32(clock::LMREFRESH),
+            regs.read32(clock::COREPLL)
+        );
+        let _ = clock::set_speed(&mut regs, wm, rt::delay_us);
+        underrun_hold_and_clear(&mut regs, 6);
+        card_text(vram, &plane, "U6 BACK", 0xFF80_6010, 4);
         let (f, s0, s1) = underrun_state(&mut regs);
         log!("U: at the end: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         card_text(vram, &plane, "U: DONE", 0xFF20_2080, 3);

@@ -3242,6 +3242,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "U: as found",
                 "U1: 1 ms on the reference clock",
                 "U4: 30 ms on the reference clock",
+                "U5: CL3 at 99.67 MHz for 100 ms",
+                "U6: G4's lock traces",
                 "U: at the end",
                 "RETROPANE-GPUBENCH: done (run U)",
             ],
