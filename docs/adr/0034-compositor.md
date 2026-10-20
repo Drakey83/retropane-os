@@ -83,7 +83,10 @@ takes as long as pixels. Run F: text drawn by the CPU as 4 bpp strips
 and coloured by the 2D engine takes as long in all (23.6 ms a screen
 against 22.4 as pixels: the engine's blend runs at ~16 Mpx/s), but the
 CPU only 6.2 ms of it (3.6x less) and the bus 4.3x fewer bytes: a choice
-of CPU time against nothing, for the renderer to weigh.
+of CPU time against nothing, for the renderer to weigh. Run F's second
+run: **text on a solid background as plain 2D copies from a pre-coloured
+glyph atlas: 12.5 ms a screen, 1.8x faster than pixels**, exact (the CPU
+queueing throughout); writing only the ink pixels is slower (25 ms).
 
 ## Process
 
