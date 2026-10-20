@@ -30,7 +30,7 @@
 
 use rp_hal_api::BlockDevice;
 
-use crate::{Error, NAME_MAX, SECTOR, Written};
+use crate::{Error, Fill, NAME_MAX, Reserved, SECTOR, Written};
 
 const ENTRY: usize = 32;
 const FAT_EOC: u32 = 0xFFFF_FFFF;
@@ -869,6 +869,40 @@ impl<D: BlockDevice> ExVolume<D> {
     /// If `scratch` is shorter than a sector.
     #[inline(never)]
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+        self.put_fill(path, Fill::Bytes(data), scratch)
+    }
+
+    /// Replaces or creates `path` (as [`Self::put`]) holding `bytes` zeros
+    /// in one run of clusters, and returns where: see [`Reserved`]. A
+    /// volume with no free run that long gives [`Error::Fragmented`] (the
+    /// file is removed again: nothing is left behind).
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    pub fn reserve(
+        &mut self,
+        path: &str,
+        bytes: usize,
+        scratch: &mut [u8],
+    ) -> Result<Reserved, Error> {
+        let w = self.put_fill(path, Fill::Zeros(bytes), scratch)?;
+        if !w.contiguous || w.first_cluster == 0 {
+            self.remove(path)?;
+            return Err(Error::Fragmented);
+        }
+        Ok(Reserved {
+            lba: self.cluster_lba(w.first_cluster),
+            sectors: bytes.div_ceil(SECTOR) as u32,
+        })
+    }
+
+    #[inline(never)]
+    fn put_fill(
+        &mut self,
+        path: &str,
+        data: Fill<'_>,
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
         assert!(scratch.len() >= SECTOR, "scratch must hold a sector");
         let (dir, name) = match self.parent_of(path) {
             Err(Error::NotFound) => {
@@ -1112,26 +1146,10 @@ impl<D: BlockDevice> ExVolume<D> {
         Ok(())
     }
 
-    /// Writes `data` from sector `lba` on (the last partial sector through
-    /// `scratch`, zero-padded).
-    fn write_data(&mut self, lba: u32, data: &[u8], scratch: &mut [u8]) -> Result<(), Error> {
-        let whole = data.len() / SECTOR * SECTOR;
-        if whole > 0 {
-            self.dev.write_blocks(lba, &data[..whole])?;
-        }
-        if whole < data.len() {
-            let tail = &mut scratch[..SECTOR];
-            tail.fill(0);
-            tail[..data.len() - whole].copy_from_slice(&data[whole..]);
-            self.dev.write_blocks(lba + (whole / SECTOR) as u32, tail)?;
-        }
-        Ok(())
-    }
-
     /// Stores `data` in free clusters, marked used: one run with no FAT
     /// chain if there is one long enough, else chained through the FAT.
     #[inline(never)]
-    fn store(&mut self, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
+    fn store(&mut self, data: Fill<'_>, scratch: &mut [u8]) -> Result<Written, Error> {
         let cb = self.cluster_bytes();
         let n = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
         if n == 0 {
@@ -1143,7 +1161,8 @@ impl<D: BlockDevice> ExVolume<D> {
         }
         let (run, free) = self.scan(2, n, scratch)?;
         if let Some(first) = run {
-            self.write_data(self.cluster_lba(first), data, scratch)?;
+            let lba = self.cluster_lba(first);
+            data.write(&mut self.dev, lba, scratch)?;
             self.mark(first, n, true)?;
             return Ok(Written {
                 first_cluster: first,
@@ -1157,11 +1176,13 @@ impl<D: BlockDevice> ExVolume<D> {
         let mut first = 0;
         let mut prev = None;
         let mut from = 2;
-        for chunk in data.chunks(cb) {
+        for at in (0..data.len()).step_by(cb) {
+            let chunk = data.part(at, cb.min(data.len() - at));
             let (Some(c), _) = self.scan(from, 1, scratch)? else {
                 return Err(Error::NoRoom);
             };
-            self.write_data(self.cluster_lba(c), chunk, scratch)?;
+            let lba = self.cluster_lba(c);
+            chunk.write(&mut self.dev, lba, scratch)?;
             self.mark(c, 1, true)?;
             match prev {
                 Some(p) => self.fat_set(p, c)?,
@@ -1908,6 +1929,27 @@ mod tests {
                 );
             }
         }
+        consistent(&mut v);
+    }
+
+    /// A reservation needs one run: on a card with none it is refused and
+    /// leaves nothing (no file, the bitmap as it was).
+    #[test]
+    fn reserve_on_a_fragmented_card_is_refused_and_leaves_nothing() {
+        let (img, _, _) = image();
+        let mut v = ExVolume::mount(Mem(img), PARTITION_START).unwrap();
+        let mut scratch = vec![0u8; 512];
+        let free: Vec<u32> = (2..2 + v.clusters).filter(|&c| !used(&mut v, c)).collect();
+        for &c in free.iter().step_by(2) {
+            v.mark(c, 1, true).unwrap();
+        }
+        let before = used_count(&mut v);
+        assert_eq!(
+            v.reserve("log.txt", 7000, &mut scratch),
+            Err(Error::Fragmented)
+        );
+        assert!(v.find("log.txt").is_err());
+        assert_eq!(used_count(&mut v), before);
         consistent(&mut v);
     }
 

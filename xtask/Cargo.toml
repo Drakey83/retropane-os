@@ -20,6 +20,7 @@ rp-screen-measure = { path = "../boot/screen-measure" }
 rp-mbx-render = { path = "../drivers/mbx-render", features = ["model"] }
 rp-loadproto = { path = "../boot/loadproto", features = ["std"] }
 rp-fat = { path = "../kernel/fat", features = ["std"] }
+rp-cardlog = { path = "../boot/cardlog" }
 rp-hal-api = { path = "../hal/api" }
 rp-crypto = { path = "../kernel/crypto" }
 rp-kernel-pe = { path = "../kernel/pe" }

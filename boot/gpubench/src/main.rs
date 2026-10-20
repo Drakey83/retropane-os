@@ -76,7 +76,7 @@ mod image {
     use rp_hal_mem::{load32_volatile, store32_volatile, words_as_bytes};
     use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
-    use rp_hal_x51v::devices::KeptRunLog;
+    use rp_cardlog::CardRunLog;
     use rp_mbx3d_render::{
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
         UV_ONE, address, format, untwiddle,
@@ -88,7 +88,7 @@ mod image {
     rp_hal_pxa27x::entry!(main);
 
     macro_rules! log {
-        ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
+        ($($t:tt)*) => {{ let _ = writeln!(CardRunLog, $($t)*); }};
     }
 
     /// Run B: the texture-word probes instead of run A.
@@ -155,6 +155,13 @@ mod image {
     /// after it, and after each of three memory restarts, gentlest first,
     /// then with `SYSCFG` put back.
     const RESCUE: bool = option_env!("RP_GPUBENCH_RESCUE").is_some();
+    /// Run H: the card log's proof against the failure that lost every
+    /// earlier log: a bus the 2700G never answers (runs G2 and Z froze it;
+    /// the hardware watchdog reset the device into Dell's prompt, which
+    /// clears the SDRAM and SRAM copies). 40 numbered lines, then a read of
+    /// the system block's `0x12C` (no register there: it froze Windows
+    /// Mobile each time, docs/hw/2700g.md). Every line must be on the card.
+    const FREEZE: bool = option_env!("RP_GPUBENCH_FREEZE").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3624,6 +3631,14 @@ mod image {
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
+        // The run log on the card as the run goes (rp-cardlog): the SDRAM
+        // log and the SRAM copy don't survive a watchdog reset into Dell's
+        // prompt (run Z, 2026-10-20), and those were the runs that most
+        // needed their log. First, so everything after is on the card.
+        match rp_cardlog::start("gpubench") {
+            Ok(n) => log!("{MARKER}: card log rplog/gpubench-{n:04}.txt"),
+            Err(why) => log!("{MARKER}: card log off ({why}): the SDRAM log only"),
+        }
         let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
@@ -3686,6 +3701,8 @@ mod image {
                 "F (text as 4 bpp coverage strips, against RGB565 pixels)"
             } else if KEPT {
                 "K (a log kept in SRAM by an earlier run, only)"
+            } else if FREEZE {
+                "H (the card log against a frozen bus: 40 lines, then a read the 2700G never answers)"
             } else if RESCUE {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
@@ -3734,6 +3751,8 @@ mod image {
             text_strips(&mut g);
         } else if KEPT {
             // Only the kept log, reported above.
+        } else if FREEZE {
+            freeze(&mut g);
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
@@ -3774,8 +3793,7 @@ mod image {
         planes0.restore(&mut g.e.regs);
         g.e.reset(rt::delay_us);
         g.e.regs.write32(MBXCLK, clk0);
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -3950,8 +3968,7 @@ mod image {
         }
         log!("  the picture at offset 0, mid-screen:{}", words.as_str());
         log!("{MARKER}: done (run S)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4052,8 +4069,7 @@ mod image {
             log!("X: no plane decoded: no card");
         }
         log!("{MARKER}: done (run X)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4310,8 +4326,7 @@ mod image {
         // The cold state (what a flash boot finds) is left for a later run,
         // once a rebuild is proven: reading it froze the first try.
         log!("{MARKER}: done (run Z)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4463,6 +4478,31 @@ mod image {
             let (f, s0, s1) = underrun_state(regs);
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         }
+    }
+
+    /// Run H (see [`FREEZE`]).
+    #[inline(never)]
+    fn freeze(g: &mut Rig) {
+        /// The system block's `0x12C`: no register (the MBX core's status
+        /// is at `0x412C`); reading it froze the bus under Windows Mobile.
+        const NOTHING: usize = 0x12C;
+        log!(
+            "H: the card log against a frozen bus: 40 numbered lines, then a read of 0x{NOTHING:x} the 2700G never answers; the hardware watchdog resets the device; every line must be on the card"
+        );
+        clock_card(
+            g,
+            ["RUN H: FREEZE TEST", "SCREEN FREEZES", "THEN IT RESETS"],
+            0xFF80_2010,
+            3,
+        );
+        for k in 1..=40 {
+            log!("H: line {k} of 40 before the freeze");
+            rt::delay_us(50_000);
+            rt::check_in();
+        }
+        log!("H: reading 0x{NOTHING:x} next (on the X51v the bus freezes here)");
+        let v = g.e.regs.read32(NOTHING);
+        log!("H: the read returned 0x{v:x}: no freeze (the emulator answers every address)");
     }
 
     /// Run Y (see [`RESCUE`]).
@@ -4704,8 +4744,7 @@ mod image {
             None => log!("L: no rung brought the display back"),
         }
         log!("{MARKER}: done (run L)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4807,8 +4846,7 @@ mod image {
         log!("U: at the end: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         card_text(vram, &plane, "U: DONE", 0xFF20_2080, 3);
         log!("{MARKER}: done (run U)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4949,8 +4987,7 @@ mod image {
         revive_dump(&mut regs, "after R4");
         revive_card(vram, &plane, 4, 0xFF60_1080);
         log!("{MARKER}: done (run R)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
+        back_to_loader();
         loop {
             core::hint::spin_loop();
         }
@@ -4981,6 +5018,14 @@ mod image {
         saved
     }
 
+    /// Every clean return: the card log closed (its closing line marks a run
+    /// that came back), the SRAM copy cleared, back to the loader.
+    fn back_to_loader() {
+        rp_cardlog::stop();
+        rp_hal_x51v::devices::kept_stop();
+        rp_hal_x51v::devices::return_to_loader();
+    }
+
     fn on_fault(kind: rt::Fault, addr: u32) -> ! {
         crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
     }
@@ -4991,6 +5036,8 @@ mod image {
         if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
         }
+        let _ = writeln!(rp_cardlog::CardOnly, "{msg}");
+        rp_cardlog::stop();
         rp_hal_x51v::devices::crash_to_loader(msg);
         loop {
             core::hint::spin_loop();

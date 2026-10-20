@@ -1,0 +1,22 @@
+[package]
+name = "rp-cardlog"
+description = "A test image's run log on the SD card as the run goes (rplog/<image>-NNNN.txt): a file reserved before the test, each line written into it in place, so a hang, a watchdog reset or a soft reset loses at most the line being written"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-api = { path = "../../hal/api" }
+rp-fat = { path = "../../kernel/fat" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+
+[lints]
+workspace = true

@@ -92,6 +92,10 @@ commands:
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
   log       the last image's run log again, from the loader (for a log
             lost on the way back; `load` asks for it by itself)
+  cardlog   `cardlog [image] [number]`: a run log kept on the card as the
+            run went (rplog/<image>-NNNN.txt; images built with rp-cardlog,
+            e.g. rp-gpubench): the newest, or the one numbered; it survives
+            hangs, watchdog and soft resets; saved under local/cardlog/
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
   handoff   which DMA channels the loader's start found running, how long
@@ -345,6 +349,15 @@ fn main() -> ExitCode {
         "log" => {
             eprintln!("==> log");
             usb::last_log(&workspace_root())
+        }
+        "cardlog" => {
+            let image = (!flag.is_empty()).then_some(flag.as_str());
+            let number = args().nth(3).map(|n| n.parse::<u32>()).transpose();
+            eprintln!("==> cardlog {flag}");
+            match number {
+                Ok(n) => usb::cardlog(&workspace_root(), image, n),
+                Err(_) => Err("usage: cargo xtask cardlog [image] [number]".into()),
+            }
         }
         "measure" => {
             eprintln!("==> measure");

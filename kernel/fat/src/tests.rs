@@ -1221,3 +1221,108 @@ fn sparse_images_with_ballast_are_clean_full_volumes() {
         .unwrap();
     assert_eq!(read_all(&mut v, "after.txt", 4096), b"past the ballast");
 }
+
+/// A reservation (a run log's file, written in place sector by sector):
+/// zero-filled, one run, at the sector it reports, replacing an older file
+/// of the same name; a sector written straight to the device shows in the
+/// file. On FAT32 and exFAT alike.
+#[test]
+fn reserve_gives_a_zeroed_run_written_in_place_on_either_kind() {
+    let fat = tiny_image(&[]);
+    let ex = crate::exfat::format::build(4096, 2, &[]);
+    let mut scratch = vec![0u8; 4096];
+    for (img, kind) in [(fat, "fat32"), (ex, "exfat")] {
+        let mut v = AnyVolume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+        // An older log in the way: replaced.
+        v.put("rplog/gpubench.txt", &pattern(3000, 4), &mut scratch)
+            .unwrap();
+        let r = v.reserve("rplog/gpubench.txt", 5000, &mut scratch).unwrap();
+        assert_eq!(r.sectors, 10, "{kind}");
+        let mut got = Vec::new();
+        v.read_back("rplog/gpubench.txt", &mut scratch, &mut |c| {
+            got.extend_from_slice(c)
+        })
+        .unwrap();
+        assert_eq!(got, vec![0u8; 5000], "{kind}: not zero-filled");
+        // A sector written in place, then the volume mounted afresh.
+        let mut disk = match v {
+            AnyVolume::Fat32(v) => v.into_inner(),
+            AnyVolume::ExFat(v) => v.into_inner(),
+        };
+        let line = [b'x'; SECTOR];
+        disk.write_blocks(r.lba + 3, &line).unwrap();
+        let mut v = AnyVolume::mount(disk, PARTITION_START).unwrap();
+        let mut got = Vec::new();
+        v.read_back("rplog/gpubench.txt", &mut scratch, &mut |c| {
+            got.extend_from_slice(c)
+        })
+        .unwrap();
+        let mut want = vec![0u8; 5000];
+        want[3 * SECTOR..4 * SECTOR].fill(b'x');
+        assert_eq!(got, want, "{kind}: the in-place sector isn't the file's");
+        let h = v.check(&mut vec![0u8; 1 << 16], &mut scratch).unwrap();
+        assert!(h.clean() && h.lost == 0, "{kind}: {h:?}");
+    }
+}
+
+/// No run long enough: refused, and nothing is left behind (the file
+/// removed, its clusters free again).
+#[test]
+fn reserve_on_a_fragmented_card_is_refused_and_leaves_nothing() {
+    let blocked: Vec<u32> = (4..400).step_by(2).collect();
+    let img = small_image(&[], &blocked);
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    for c in 400..2 + v.clusters() {
+        v.fat_set(c, EOC).unwrap();
+    }
+    v.fat_flush().unwrap();
+    let free_before = (2..2 + v.clusters())
+        .filter(|&c| v.fat_get(c).unwrap() == 0)
+        .count();
+    assert_eq!(
+        v.reserve("log.txt", 3000, &mut vec![0; 4096]),
+        Err(Error::Fragmented)
+    );
+    assert_eq!(v.find("log.txt"), Err(Error::NotFound));
+    let free_after = (2..2 + v.clusters())
+        .filter(|&c| v.fat_get(c).unwrap() == 0)
+        .count();
+    assert_eq!(free_before, free_after);
+}
+
+/// Power lost at any write of a reservation over an older file: the old
+/// file whole, or the new one all zeros; never torn.
+#[test]
+fn power_loss_while_reserving_leaves_the_old_file_or_the_zeroed_one() {
+    let old = pattern(2500, 9);
+    let img = small_image(
+        &[Entry {
+            name: "log.txt",
+            data: &old,
+        }],
+        &[],
+    );
+    let total = {
+        let mut v = Volume::mount(MemDisk::new(img.clone()), PARTITION_START).unwrap();
+        v.reserve("log.txt", 6100, &mut vec![0; 4096]).unwrap();
+        v.dev.writes
+    };
+    let (mut saw_old, mut saw_new) = (0, 0);
+    for fail_at in 0..total {
+        let mut disk = MemDisk::new(img.clone());
+        disk.fail_at = Some(fail_at);
+        let mut v = Volume::mount(disk, PARTITION_START).unwrap();
+        assert!(v.reserve("log.txt", 6100, &mut vec![0; 4096]).is_err());
+        let data = v.into_inner().data;
+        let mut v = Volume::mount(MemDisk::new(data), PARTITION_START).unwrap();
+        let got = read_all(&mut v, "log.txt", 4096);
+        if got == old {
+            saw_old += 1;
+        } else if got == vec![0u8; 6100] {
+            saw_new += 1;
+        } else {
+            panic!("torn file after power loss at write {fail_at}");
+        }
+    }
+    assert!(saw_old > 0 && saw_new > 0, "old {saw_old}, new {saw_new}");
+}

@@ -61,6 +61,9 @@ pub enum Error {
     NotExFat,
     /// The folder still holds files or folders.
     NotEmpty,
+    /// No single run of free clusters is long enough (a reservation must
+    /// be one run: see [`Reserved`]).
+    Fragmented,
 }
 
 impl From<BlockError> for Error {
@@ -83,6 +86,7 @@ impl Error {
             Self::Exists => "exists",
             Self::NotExFat => "not exFAT",
             Self::NotEmpty => "folder not empty",
+            Self::Fragmented => "no free run long enough",
         }
     }
 }
@@ -137,6 +141,87 @@ pub struct Written {
     pub clusters: u32,
     /// The clusters are one consecutive run.
     pub contiguous: bool,
+}
+
+/// A file reserved by `reserve`: zero-filled, in one run of sectors, so a
+/// program can write its contents in place, sector by sector, without
+/// touching the file system again (a run log that survives a reset: every
+/// sector written is on the card, the directory and the FAT never change).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reserved {
+    /// The file's first sector on the device.
+    pub lba: u32,
+    /// Its sectors (the size rounded up to whole sectors).
+    pub sectors: u32,
+}
+
+/// What a store writes: bytes, or zeros (a reservation, written without a
+/// buffer of its size).
+#[derive(Clone, Copy)]
+pub(crate) enum Fill<'a> {
+    Bytes(&'a [u8]),
+    Zeros(usize),
+}
+
+impl<'a> Fill<'a> {
+    pub(crate) fn len(self) -> usize {
+        match self {
+            Self::Bytes(b) => b.len(),
+            Self::Zeros(n) => n,
+        }
+    }
+
+    /// `len` bytes from `at` on.
+    pub(crate) fn part(self, at: usize, len: usize) -> Fill<'a> {
+        match self {
+            Self::Bytes(b) => Self::Bytes(&b[at..at + len]),
+            Self::Zeros(_) => Self::Zeros(len),
+        }
+    }
+
+    /// Writes it from sector `lba` on, the last partial sector zero-padded:
+    /// whole sectors of bytes as they are, zeros and the tail through
+    /// `scratch` (a sector on the stack when `scratch` is shorter).
+    pub(crate) fn write<D: BlockDevice>(
+        self,
+        dev: &mut D,
+        lba: u32,
+        scratch: &mut [u8],
+    ) -> Result<(), Error> {
+        let mut one = [0u8; SECTOR];
+        let scratch = if scratch.len() < SECTOR { &mut one[..] } else { scratch };
+        let n = self.len();
+        let whole = match self {
+            Self::Bytes(b) => {
+                let whole = n / SECTOR * SECTOR;
+                if whole > 0 {
+                    dev.write_blocks(lba, &b[..whole])?;
+                }
+                whole
+            }
+            Self::Zeros(_) => 0,
+        };
+        let total = n.div_ceil(SECTOR) * SECTOR;
+        if whole < total {
+            let chunk = scratch.len() / SECTOR * SECTOR;
+            let buf = &mut scratch[..chunk];
+            buf.fill(0);
+            if let Self::Bytes(b) = self {
+                // The bytes' tail, under a sector: zero-padded.
+                buf[..n - whole].copy_from_slice(&b[whole..]);
+            }
+            let mut at = whole;
+            while at < total {
+                let len = chunk.min(total - at);
+                dev.write_blocks(lba + (at / SECTOR) as u32, &buf[..len])?;
+                if at == whole {
+                    buf[..SECTOR].fill(0);
+                }
+                at += len;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// What [`Volume::walk_dir`] calls per entry: sector, index, raw entry,
@@ -998,23 +1083,6 @@ impl<D: BlockDevice> Volume<D> {
 
     // --- Writing -----------------------------------------------------------
 
-    /// Writes `data` to `cluster`, padding the last sector with zeros; `data`
-    /// is at most one cluster.
-    fn write_cluster(&mut self, cluster: u32, data: &[u8]) -> Result<(), Error> {
-        let lba = self.cluster_lba(cluster);
-        let whole = data.len() / SECTOR * SECTOR;
-        if whole > 0 {
-            self.dev.write_blocks(lba, &data[..whole])?;
-        }
-        if whole < data.len() {
-            self.buf = [0; SECTOR];
-            self.buf[..data.len() - whole].copy_from_slice(&data[whole..]);
-            self.dev
-                .write_blocks(lba + (whole / SECTOR) as u32, &self.buf)?;
-        }
-        Ok(())
-    }
-
     /// Replaces the contents of the root-directory file `name` with `data`
     /// by copy-then-swap (see the crate docs). The old contents stay on the
     /// card, untouched, until the new ones are complete and linked.
@@ -1027,6 +1095,15 @@ impl<D: BlockDevice> Volume<D> {
         &mut self,
         name: &str,
         data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
+        self.replace_fill(name, Fill::Bytes(data), scratch)
+    }
+
+    fn replace_fill(
+        &mut self,
+        name: &str,
+        data: Fill<'_>,
         scratch: &mut [u8],
     ) -> Result<Written, Error> {
         let file = self.find(name)?;
@@ -1058,7 +1135,40 @@ impl<D: BlockDevice> Volume<D> {
     /// directories, like `mkdir -p`) when it doesn't exist.
     #[inline(never)]
     pub fn put(&mut self, path: &str, data: &[u8], scratch: &mut [u8]) -> Result<Written, Error> {
-        match self.replace(path, data, scratch) {
+        self.put_fill(path, Fill::Bytes(data), scratch)
+    }
+
+    /// Replaces or creates `path` (as [`Self::put`]) holding `bytes` zeros
+    /// in one run of clusters, and returns where: see [`Reserved`]. A
+    /// volume with no free run that long gives [`Error::Fragmented`] (the
+    /// file is removed again: nothing is left behind).
+    ///
+    /// # Panics
+    /// If `scratch` is shorter than a sector.
+    pub fn reserve(
+        &mut self,
+        path: &str,
+        bytes: usize,
+        scratch: &mut [u8],
+    ) -> Result<Reserved, Error> {
+        let w = self.put_fill(path, Fill::Zeros(bytes), scratch)?;
+        if !w.contiguous || w.first_cluster == 0 {
+            self.remove(path)?;
+            return Err(Error::Fragmented);
+        }
+        Ok(Reserved {
+            lba: self.cluster_lba(w.first_cluster),
+            sectors: bytes.div_ceil(SECTOR) as u32,
+        })
+    }
+
+    fn put_fill(
+        &mut self,
+        path: &str,
+        data: Fill<'_>,
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
+        match self.replace_fill(path, data, scratch) {
             Err(Error::NotFound) => {
                 let mut parts = components(path)?;
                 parts.next_back();
@@ -1071,7 +1181,7 @@ impl<D: BlockDevice> Volume<D> {
                         Err(e) => return Err(e),
                     }
                 }
-                self.create(path, data, scratch)
+                self.create_fill(path, data, scratch)
             }
             r => r,
         }
@@ -1143,6 +1253,15 @@ impl<D: BlockDevice> Volume<D> {
         &mut self,
         path: &str,
         data: &[u8],
+        scratch: &mut [u8],
+    ) -> Result<Written, Error> {
+        self.create_fill(path, Fill::Bytes(data), scratch)
+    }
+
+    fn create_fill(
+        &mut self,
+        path: &str,
+        data: Fill<'_>,
         scratch: &mut [u8],
     ) -> Result<Written, Error> {
         let (dir, leaf) = self.parent_of(path)?;
@@ -1312,7 +1431,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Allocates clusters for `data` (one contiguous run when there is one,
     /// searching from `hint`), writes it and links the chain in every FAT
     /// copy. The data is reachable only through what the caller links next.
-    fn store(&mut self, data: &[u8], hint: u32, scratch: &mut [u8]) -> Result<Written, Error> {
+    fn store(&mut self, data: Fill<'_>, hint: u32, scratch: &mut [u8]) -> Result<Written, Error> {
         let cb = self.cluster_bytes();
         let need = u32::try_from(data.len().div_ceil(cb)).map_err(|_| Error::NoRoom)?;
 
@@ -1327,14 +1446,8 @@ impl<D: BlockDevice> Volume<D> {
                     // One run: write it as few long transfers as the data
                     // allows (whole clusters in one go), then link it.
                     written.first_cluster = start;
-                    let whole = data.len() / cb * cb;
-                    if whole > 0 {
-                        self.dev
-                            .write_blocks(self.cluster_lba(start), &data[..whole])?;
-                    }
-                    if whole < data.len() {
-                        self.write_cluster(start + need - 1, &data[whole..])?;
-                    }
+                    let lba = self.cluster_lba(start);
+                    data.write(&mut self.dev, lba, scratch)?;
                     for c in start..start + need {
                         self.fat_set(c, if c + 1 == start + need { EOC } else { c + 1 })?;
                     }
@@ -1343,7 +1456,8 @@ impl<D: BlockDevice> Volume<D> {
                     written.contiguous = false;
                     let mut prev = None;
                     let mut from = hint;
-                    for chunk in data.chunks(cb) {
+                    for at in (0..data.len()).step_by(cb) {
+                        let chunk = data.part(at, cb.min(data.len() - at));
                         let Some(c) = self.find_free_run(from, 1, scratch)? else {
                             // Out of space part way: give back what was
                             // taken (the old file is still whole).
@@ -1352,7 +1466,8 @@ impl<D: BlockDevice> Volume<D> {
                             }
                             return Err(Error::NoRoom);
                         };
-                        self.write_cluster(c, chunk)?;
+                        let lba = self.cluster_lba(c);
+                        chunk.write(&mut self.dev, lba, scratch)?;
                         self.fat_set(c, EOC)?;
                         match prev {
                             Some(p) => self.fat_set(p, c)?,
@@ -1437,6 +1552,20 @@ impl<D: BlockDevice> AnyVolume<D> {
         match self {
             Self::Fat32(v) => v.put(path, data, scratch),
             Self::ExFat(v) => v.put(path, data, scratch),
+        }
+    }
+
+    /// Reserves a zero-filled file in one run of sectors (see
+    /// [`Reserved`]).
+    pub fn reserve(
+        &mut self,
+        path: &str,
+        bytes: usize,
+        scratch: &mut [u8],
+    ) -> Result<Reserved, Error> {
+        match self {
+            Self::Fat32(v) => v.reserve(path, bytes, scratch),
+            Self::ExFat(v) => v.reserve(path, bytes, scratch),
         }
     }
 

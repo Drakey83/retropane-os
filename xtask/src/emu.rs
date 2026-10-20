@@ -3105,6 +3105,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LADDER", "1"))?;
     let run_z = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REBUILD", "1"))?;
     let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
+    let run_h = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FREEZE", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3122,7 +3123,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 15] = [
+    let runs: [GpubenchRun; 16] = [
         (
             "run A",
             &run_a,
@@ -3311,6 +3312,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        // Run H (the card log against a frozen bus): the emulator answers
+        // the read, so the run comes back; every line is on the card
+        // (checked for every run).
+        (
+            "run H",
+            &run_h,
+            &[
+                "H: line 1 of 40 before the freeze",
+                "H: line 40 of 40 before the freeze",
+                "H: reading 0x12c next",
+                "H: the read returned",
+            ],
+            false,
+            (0, 0, 0),
+        ),
         // Run Y (the rescue measured): checked below (refused cleanly
         // on a fork that doesn't start as Windows Mobile leaves the clocks).
         (
@@ -3321,7 +3337,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             (0, 0, 0),
         ),
     ];
-    for (name, bin, want, needs_model, (first, every, presses)) in runs {
+    // One card for every run, with someone else's file on it: each run
+    // keeps its log there as it goes (rp-cardlog), the next number each
+    // time, and touches nothing outside rplog/ (the card is shared).
+    let other = b"another session's file: must stay as it is".to_vec();
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "other.txt",
+            data: &other,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let sd = scratch(root, "sd-gpubench.img")?;
+    std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
+    for (number, (name, bin, want, needs_model, (first, every, presses))) in
+        (1u32..).zip(runs)
+    {
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
         let keys = || -> Result<(), String> {
             if presses == 0 {
@@ -3373,7 +3407,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 image: &loader,
                 marker: LOADER_MARKER,
                 screenshot: None,
-                sd_image: None,
+                sd_image: Some(&sd),
                 steps: &[],
                 extra: &[],
                 // The loader's start of the image: the steps below run
@@ -3391,6 +3425,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
             return Err(format!("gpubench {name}: didn't return cleanly:{log}"));
         }
+        gpubench_card_log(&sd, name, number, log)?;
         // Run R returns before any 2700G memory is taken: no pool line.
         let always: &[&str] = if matches!(
             name,
@@ -3541,6 +3576,10 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         }
         eprintln!("    gpubench {name} OK: every stage ran and it returned to the loader");
     }
+    if card_file(&sd, "other.txt")? != other {
+        return Err("gpubench: the card logs changed a file outside rplog/".into());
+    }
+    eprintln!("    gpubench: every run's card log matched its run log; nothing else on the card changed");
     Ok(())
 }
 
@@ -4923,6 +4962,43 @@ impl rp_hal_api::BlockDevice for Disk {
         self.0[o..o + buf.len()].copy_from_slice(buf);
         Ok(())
     }
+}
+
+/// A gpubench run's card log (rp-cardlog) against its run log: the run's
+/// own number, every line the image logged from its first on, in order,
+/// then the closing line (a run that came back), nothing after.
+fn gpubench_card_log(sd: &Path, name: &str, number: u32, log: &str) -> Result<(), String> {
+    let file = format!("rplog/gpubench-{number:04}.txt");
+    let raw = card_file(sd, &file).map_err(|e| format!("gpubench {name}: card log: {e}"))?;
+    if raw.len() != rp_cardlog::FILE_BYTES {
+        return Err(format!(
+            "gpubench {name}: {file} is {} bytes, reserved {}",
+            raw.len(),
+            rp_cardlog::FILE_BYTES
+        ));
+    }
+    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+    let text = String::from_utf8_lossy(&raw[..end]).replace("\r\n", "\n");
+    let Some((body, closing)) = text.trim_end_matches('\n').rsplit_once('\n') else {
+        return Err(format!("gpubench {name}: {file} has no lines"));
+    };
+    if !closing.starts_with("[card log closed: ") || !closing.contains(" 0 refused") {
+        return Err(format!(
+            "gpubench {name}: {file} doesn't end with a clean closing line: {closing}"
+        ));
+    }
+    let first = format!("RETROPANE-GPUBENCH: card log {file}");
+    let log = log.replace("\r\n", "\n");
+    let Some(from) = log.find(&first) else {
+        return Err(format!("gpubench {name}: the run log has no `{first}`:{log}"));
+    };
+    if !body.starts_with(&first) || !log[from..].starts_with(body) {
+        return Err(format!(
+            "gpubench {name}: {file} differs from the run log:\n--- card ---\n{body}\n--- run log ---\n{}",
+            &log[from..]
+        ));
+    }
+    Ok(())
 }
 
 /// Reads root-directory file `name` from a FAT32 disk image.

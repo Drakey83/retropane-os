@@ -463,11 +463,16 @@ pub const BUDGETS: &[Budget] = &[
     // facts): run A (fill rate, layers, partial frames, rectangular
     // textures, uploads, frame-event watch tests) and run B (texture-word
     // probes). 95.9 KiB measured (2026-10-19), + ~10%; zeroed RAM 19.7 KiB
-    // (the renderer's state), + ~12%.
+    // (the renderer's state), + ~12%. Ratcheted 2026-10-20 (test image,
+    // the owner's rule): the run log on the card as the run goes
+    // (rp-cardlog: the SD driver and FAT32 + exFAT, ~52 KiB of it the file
+    // systems, to reserve the file; quality audit C24 has the smaller
+    // design, the loader reserving it): 178.0 KiB measured, + ~10%; zeroed
+    // RAM 23.7 KiB (+ the 4 KiB reservation scratch), + ~10%.
     Budget {
         image: "rp-gpubench",
-        max_load: 106 * 1024,
-        max_zero: 22 * 1024,
+        max_load: 196 * 1024,
+        max_zero: 26 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,

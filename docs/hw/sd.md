@@ -127,6 +127,29 @@ new clusters first, FAT links in every copy, then one sector write switches
 the directory entry, then the old clusters are freed. The probe lists the
 root directory read-only; the loader takes `RPF1` frames (`cargo xtask put`).
 
+### Run logs on the card (`rp-cardlog`, 2026-10-20)
+
+A test image's run log in SDRAM, and its copy in the internal SRAM, are
+cleared by a hardware watchdog reset into Dell's prompt (run Z: the
+2700G froze the bus): the runs that most needed their log lost it. An
+image built with `rp-cardlog` (so far `rp-gpubench`) reserves its own file
+before the test, `rplog/<image>-NNNN.txt` (the next number: a re-run never
+overwrites a log not yet fetched), 256 KiB zero-filled in one run of
+sectors (`reserve`, crash-safe like `put`), then writes each log line into
+it **in place**: one sector write a line, no directory or FAT change
+during the run, so a reset at any moment leaves the file system whole and
+every line written before it on the card (the text ends at the first zero
+byte). A clean return adds a closing line (`[card log closed: ...]`, with
+the slowest sector write); a file without it is a run that didn't come
+back. It uses the CPU's own transfers (no DMA: the SD DMA channel stays the
+image's) and writes only inside `rplog/`. `cargo xtask cardlog [image]
+[number]` fetches the newest (or numbered) one through the loader into
+`local/cardlog/`. `emu-gpubench` checks every run's card log against its
+run log, word for word. Run H (`RP_GPUBENCH_FREEZE`) is the device proof:
+40 lines, then a read the 2700G never answers. Open: the loader could
+reserve the file instead, sparing each image ~52 KiB of file-system code
+(quality audit C24).
+
 ### DMA (M; emulator-verified; reads confirmed on the device 2026-10-15)
 
 Multi-block transfers can move by DMA instead of byte-wide FIFO reads:

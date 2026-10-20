@@ -349,6 +349,58 @@ pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// `cargo xtask cardlog [image] [number]`: a run log kept on the card as
+/// the run went (rp-cardlog, `rplog/<image>-NNNN.txt`), the newest (of
+/// `image`, or of any image) or the one numbered; saved under
+/// `local/cardlog/`, its text printed. A log without the closing line is a
+/// run that didn't come back: said so.
+pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<(), String> {
+    let (entries, _) = query(root, &format!("ls {}", rp_cardlog::FOLDER))?;
+    let mut best: Option<(u32, String)> = None;
+    for e in &entries {
+        let Some((size, name)) = e.split_once(' ') else { continue };
+        if size == "d" {
+            continue;
+        }
+        let Some((who, rest)) = name.rsplit_once('-') else { continue };
+        let Some(n) = rest.strip_suffix(".txt").and_then(|d| d.parse::<u32>().ok()) else {
+            continue;
+        };
+        if image.is_some_and(|i| i != who) || number.is_some_and(|k| k != n) {
+            continue;
+        }
+        // Newest: the highest number (per image the numbers rise; across
+        // images, the listing's last of equal numbers).
+        if best.as_ref().is_none_or(|(b, _)| n >= *b) {
+            best = Some((n, name.to_string()));
+        }
+    }
+    let Some((_, name)) = best else {
+        return Err(format!(
+            "no card log{} in {}/ on the card",
+            image.map(|i| format!(" of {i}")).unwrap_or_default(),
+            rp_cardlog::FOLDER
+        ));
+    };
+    let file = format!("{}/{name}", rp_cardlog::FOLDER);
+    let (lines, reply) = query(root, &format!("get {file}"))?;
+    let data = decode_file(&lines, &reply)?;
+    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
+    let text = String::from_utf8_lossy(&data[..end]).into_owned();
+    let dir = root.join("local/cardlog");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let dest = dir.join(&name);
+    std::fs::write(&dest, text.as_bytes()).map_err(|e| format!("{}: {e}", dest.display()))?;
+    println!("{text}");
+    eprintln!("    {file}: {} bytes of log, saved as {}", text.len(), dest.display());
+    if !text.contains("[card log closed: ") {
+        eprintln!(
+            "    no closing line: this run didn't come back (it hung or the device was reset); the log ends at its last line written"
+        );
+    }
+    Ok(())
+}
+
 /// How long `cargo xtask put` waits for the loader's verdict on a file.
 const PUT_WAIT_SECS: u32 = 90;
 
@@ -660,7 +712,10 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
 /// (the loader's note), a crash, or a probe report with bad lines.
 fn run_verdict(log: &[String]) -> Result<(), String> {
     if log.iter().any(|l| l.contains("did not return")) {
-        return Err("the image hung: the watchdog reset the device (log above)".into());
+        return Err(
+            "the image hung: the watchdog reset the device (log above; an image that keeps a card log has the rest: `cargo xtask cardlog`)"
+                .into(),
+        );
     }
     if log.iter().any(|l| l.contains("[the image crashed")) {
         return Err("the image crashed (log above; also on the card as crashlog.txt)".into());
