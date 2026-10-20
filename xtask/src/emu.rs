@@ -3193,7 +3193,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         (
             "run G",
             &run_g,
-            &["G3: the clocks", "RETROPANE-GPUBENCH: done"],
+            &["G4: the clocks", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),

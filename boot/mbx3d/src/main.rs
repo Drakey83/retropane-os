@@ -794,7 +794,10 @@ mod image {
         seed += 2;
         let (m, _) = measure(e, vram, src, back, table, seed, Some(want));
         report("99.67 MHz, divide by 2, CS3 0x79D4 (the long start)", &m);
-        let lock = clk::set_speed(&mut e.regs, Speed::A75, rt::delay_us);
+        // A memory-controller write that never held is a failed change.
+        let lock = clk::set_speed(&mut e.regs, Speed::A75, rt::delay_us)
+            .filter(|a| a.unwritten == 0)
+            .map(|a| a.lock_us);
         if lock.is_some() {
             e.regs.write32(MBXCLK, clk0 & !0xC);
             rt::delay_us(1_000);
@@ -1134,9 +1137,9 @@ mod image {
             };
             let (src, rest) = ram.split_at_mut(FLUSH_BYTES);
             let back = &mut rest[..READ_BYTES];
-            for (k, w) in src.chunks_exact_mut(4).enumerate() {
+            for (k, w) in src.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 let x = (k as u32 ^ 0xF1A5_0000).wrapping_mul(0x9E37_79B9);
-                w.copy_from_slice(&(x ^ x >> 15).to_le_bytes());
+                *w = (x ^ x >> 15).to_le_bytes();
             }
             log!(
                 "S29: option A, 74.75 MHz with MBXCLK divide by 1, against today's; CS3 stepped from 0x79D4; a chosen timing soaked {SOAK_S} s"

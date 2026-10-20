@@ -130,64 +130,123 @@ const fn cycles(ns: u32, khz: u32) -> u32 {
 }
 
 /// The poll interval and limit while the core PLL locks (Dell's driver
-/// waits up to 50 ms; `rp-mbx3d` run 27 saw it lock at once).
-const LOCK_POLL_US: u32 = 20;
-const LOCK_POLLS: u32 = 2_500;
-/// A fixed wait after the lock bit before the system clock goes back on
-/// the PLL. The bit read set at the first poll in every run so far
-/// (`rp-mbx3d` run 27, `rp-gpubench` run G1), even across a change of the
-/// PLL's own frequency, so whether it follows a relock at all is unproven
-/// (run G2 traces it); until then a settle, cheap next to a clock
-/// change's other costs.
+/// waits up to 50 ms).
+const LOCK_POLL_US: u32 = 2;
+const LOCK_POLLS: u32 = 25_000;
+/// How long a PLL write may take to show as "not locked" (`rp-gpubench`
+/// run G3: `PLLSTAT` read the old "locked" once right after the write, then
+/// dropped, and locked again 16 us later; a write that keeps the frequency
+/// may never drop).
+const DROP_POLLS: u32 = 50;
+/// A wait after the lock before the system clock goes back on the PLL.
 const LOCK_SETTLE_US: u32 = 2_000;
+/// A wait after each memory-controller write, as Linux mbxfb's set-up
+/// waits 1 ms after every register write. Run G3 found writes to `LMTYPE`
+/// and `LMREFRESH` lost when written back to back on the reference clock
+/// (read back unchanged).
+const WRITE_SETTLE_US: u32 = 1_000;
+/// Tries per register write before it's given up as unwritten.
+const WRITE_TRIES: u32 = 3;
+
+/// What [`set_speed`] did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Applied {
+    /// The core PLL's lock time, microseconds.
+    pub lock_us: u32,
+    /// Writes that read back wrong and were written again.
+    pub rewrites: u32,
+    /// Registers still wrong after [`WRITE_TRIES`]: the speed isn't
+    /// what was asked (a caller must treat it as a failure).
+    pub unwritten: u32,
+}
 
 /// Sets the system clock and the memory timing to `speed`, as Dell's driver
 /// changes the PLL (`0x0211faf0`): the system clock on the 13 MHz
-/// reference, the memory timing and the PLL written, the lock awaited, a
-/// fixed settle ([`LOCK_SETTLE_US`]: the lock bit is unproven), the system
-/// clock back on the PLL. The timing is written on the reference,
-/// where both the old and the new are slow enough. Nothing else may use
-/// the 2700G meanwhile (about half a millisecond; the display reads its
-/// picture slower and may show a flicker).
+/// reference, the memory timing written, each write read back (and
+/// written again until it holds), the PLL written and its lock awaited
+/// (first its drop, then the lock), a settle, the system clock back on the
+/// PLL. Nothing else may use the 2700G meanwhile (a few milliseconds; the
+/// display reads its picture slower and may show a flicker).
 ///
-/// Returns the lock time in microseconds, or `None` if the PLL did not lock
-/// in 50 ms; then [`Speed::WM`] is put back (the PLL, awaited, and the
-/// timing).
+/// Returns what happened, or `None` if the PLL did not lock in 50 ms; then
+/// [`Speed::WM`] is put back (the PLL, awaited, and the timing).
 pub fn set_speed<B: RegisterBus>(
     bus: &mut B,
     speed: Speed,
     mut delay_us: impl FnMut(u32),
-) -> Option<u32> {
+) -> Option<Applied> {
     bus.write32(SYSCLKSRC, 0);
     delay_us(250);
-    let locked = write_speed(bus, speed, &mut delay_us);
-    if locked.is_none() {
+    let applied = write_speed(bus, speed, &mut delay_us);
+    if applied.is_none() {
         let _ = write_speed(bus, Speed::WM, &mut delay_us);
     }
     delay_us(LOCK_SETTLE_US);
     bus.write32(SYSCLKSRC, 2);
     delay_us(250);
-    locked
+    applied
 }
 
-/// The timing and the PLL written (on the reference clock); the lock
-/// awaited: microseconds, or `None`.
+/// Writes `value` to `reg`, waits, reads it back; again until it holds.
+fn write_checked<B: RegisterBus>(
+    bus: &mut B,
+    reg: usize,
+    value: u32,
+    delay_us: &mut impl FnMut(u32),
+    a: &mut Applied,
+) {
+    for t in 0..WRITE_TRIES {
+        bus.write32(reg, value);
+        delay_us(WRITE_SETTLE_US);
+        if bus.read32(reg) == value {
+            a.rewrites += t;
+            return;
+        }
+    }
+    a.rewrites += WRITE_TRIES - 1;
+    a.unwritten += 1;
+}
+
+/// The timing written and checked, the PLL written and its lock awaited
+/// (on the reference clock): what happened, or `None` if it never locked.
 fn write_speed<B: RegisterBus>(
     bus: &mut B,
     s: Speed,
     delay_us: &mut impl FnMut(u32),
-) -> Option<u32> {
-    bus.write32(LMTIM, s.lmtim);
-    bus.write32(LMREFRESH, s.lmrefresh);
-    bus.write32(LMTYPE, s.lmtype);
-    bus.write32(COREPLL, s.pll);
-    for k in 0..LOCK_POLLS {
-        if bus.read32(PLLSTAT) & CORE_LOCKED != 0 {
-            return Some(k * LOCK_POLL_US);
+) -> Option<Applied> {
+    let mut a = Applied::default();
+    write_checked(bus, LMTIM, s.lmtim, delay_us, &mut a);
+    write_checked(bus, LMREFRESH, s.lmrefresh, delay_us, &mut a);
+    write_checked(bus, LMTYPE, s.lmtype, delay_us, &mut a);
+    let mut polls = 0;
+    for _ in 0..WRITE_TRIES {
+        bus.write32(COREPLL, s.pll);
+        // The drop (or nothing, for an unchanged frequency), then the lock.
+        for _ in 0..DROP_POLLS {
+            if bus.read32(PLLSTAT) & CORE_LOCKED == 0 {
+                break;
+            }
+            delay_us(LOCK_POLL_US);
         }
-        delay_us(LOCK_POLL_US);
+        loop {
+            if bus.read32(PLLSTAT) & CORE_LOCKED != 0 {
+                break;
+            }
+            polls += 1;
+            if polls >= LOCK_POLLS {
+                return None;
+            }
+            delay_us(LOCK_POLL_US);
+        }
+        if bus.read32(COREPLL) == s.pll {
+            a.lock_us = polls * LOCK_POLL_US;
+            return Some(a);
+        }
+        a.rewrites += 1;
     }
-    None
+    a.unwritten += 1;
+    a.lock_us = polls * LOCK_POLL_US;
+    Some(a)
 }
 
 /// `MBXCLK` with the 2D and 3D clocks on, the divider kept.
@@ -328,7 +387,10 @@ mod tests {
         let mut bus = rp_hal_mock::MockBus::new();
         bus.preset(PLLSTAT, 7);
         let mut waited = 0;
-        assert_eq!(set_speed(&mut bus, Speed::A75, |us| waited += us), Some(0));
+        assert_eq!(
+            set_speed(&mut bus, Speed::A75, |us| waited += us),
+            Some(Applied::default())
+        );
         assert_eq!(
             bus.writes(),
             [
@@ -340,7 +402,43 @@ mod tests {
                 (SYSCLKSRC, 2),
             ]
         );
-        assert_eq!(waited, 500 + LOCK_SETTLE_US);
+        // The settle after each memory write; the drop polls (the mock's
+        // PLL never drops), the lock settle.
+        assert_eq!(
+            waited,
+            500 + 3 * WRITE_SETTLE_US + DROP_POLLS * LOCK_POLL_US + LOCK_SETTLE_US
+        );
+    }
+
+    #[test]
+    fn a_dropped_write_is_written_again() {
+        // Run G3: LMREFRESH read back unchanged after a write.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(PLLSTAT, 7);
+        bus.script_reads(LMREFRESH, &[0x615]);
+        let a = set_speed(&mut bus, Speed::A75, |_| ()).unwrap();
+        assert_eq!((a.rewrites, a.unwritten), (1, 0));
+        let w = bus.writes();
+        assert_eq!(w.iter().filter(|x| **x == (LMREFRESH, 0x48F)).count(), 2);
+    }
+
+    #[test]
+    fn a_write_that_never_holds_is_reported() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(PLLSTAT, 7);
+        bus.script_reads(LMTYPE, &[0xEC8, 0xEC8, 0xEC8]);
+        let a = set_speed(&mut bus, Speed::A75, |_| ()).unwrap();
+        assert_eq!((a.rewrites, a.unwritten), (2, 1));
+    }
+
+    #[test]
+    fn the_lock_is_awaited_after_its_drop() {
+        // G3's trace: the old "locked" once, then not locked, then locked.
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.script_reads(PLLSTAT, &[0x7, 0xB, 0xB, 0xB, 0xF]);
+        bus.preset(PLLSTAT, 0xF);
+        let a = set_speed(&mut bus, Speed::A75, |_| ()).unwrap();
+        assert_eq!(a.lock_us, 2 * LOCK_POLL_US);
     }
 
     #[test]

@@ -2771,7 +2771,15 @@ mod image {
         let clk = regs.read32(MBXCLK);
         regs.write32(MBXCLK, (clk & !0xC) | 1 << 2);
         rt::delay_us(1_000);
-        let _ = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us);
+        if let Some(a) = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us)
+            && a.rewrites + a.unwritten > 0
+        {
+            log!(
+                "    put back: {} memory-controller writes written again, {} never held",
+                a.rewrites,
+                a.unwritten
+            );
+        }
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
     }
 
@@ -2789,7 +2797,19 @@ mod image {
         let lock = if clock_now(&mut g.e.regs) == s.speed() {
             Some(0)
         } else {
-            clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us)
+            match clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us) {
+                Some(a) => {
+                    if a.rewrites + a.unwritten > 0 {
+                        log!(
+                            "    memory-controller writes: {} written again, {} never held",
+                            a.rewrites,
+                            a.unwritten
+                        );
+                    }
+                    (a.unwritten == 0).then_some(a.lock_us)
+                }
+                None => None,
+            }
         };
         if s.restart {
             g.e.regs.write32(LMPWR, 0);
@@ -2881,6 +2901,11 @@ mod image {
     /// picture (SDRAM).
     struct ClockRig<'a> {
         tex: Texture,
+        /// The texture's words as uploaded (read back at Windows Mobile's
+        /// clock): run G3's controls failed on a texture damaged by an
+        /// earlier step, uploaded once; now each check counts the damage
+        /// and repairs it before rendering.
+        tex_copy: &'a [u32],
         flush_at: u32,
         pat_at: u32,
         pat_bytes: u32,
@@ -2900,6 +2925,8 @@ mod image {
         /// The 2D fill didn't finish in 200 ms (G1 counted this as
         /// `u32::MAX` wrong words, which wrapped).
         fill_hung: bool,
+        /// Texture words found changed since the last check (repaired).
+        tex_damaged: u32,
         /// Parts stopped at their time limit ([`PART_US`]): bit 0 the
         /// flush, 1 the read-back, 2 the memory pattern.
         slow: u32,
@@ -2913,6 +2940,7 @@ mod image {
             self.bus_wrong + self.mem_wrong + self.fill_wrong + self.render_wrong == 0
                 && !self.fill_hung
                 && self.slow == 0
+                && self.tex_damaged == 0
                 && self.render_us != 0
         }
     }
@@ -3025,6 +3053,22 @@ mod image {
             r.fill_wrong += u32::from(g.mem.load(at as usize) != Some(colour));
         }
         rt::check_in();
+        // The texture: damage since the last check counted, then repaired.
+        let mut buf = [0u32; 64];
+        for (k, chunk) in c.tex_copy.chunks(64).enumerate() {
+            let at = c.tex.at as usize + 256 * k;
+            let mut bad = false;
+            for (j, &w) in chunk.iter().enumerate() {
+                bad |= g.mem.load(at + 4 * j) != Some(w);
+                r.tex_damaged += u32::from(g.mem.load(at + 4 * j) != Some(w));
+            }
+            if bad {
+                buf[..chunk.len()].copy_from_slice(chunk);
+                g.mem.store(at, &buf[..chunk.len()]);
+            }
+        }
+        g.mem.sync();
+        rt::check_in();
         // The 3D core: a scene of a textured layer, a translucent flat one
         // and a square, rendered whole three times; the picture against the
         // reference, word for word.
@@ -3083,6 +3127,12 @@ mod image {
             "    control again after a second restore: {}",
             if r.good() { "GOOD" } else { "BAD" }
         );
+        if r.tex_damaged != 0 {
+            log!(
+                "    the texture: {} words changed since the last check (repaired)",
+                r.tex_damaged
+            );
+        }
         if r.slow != 0 {
             log!(
                 "    stopped at {} s: {}{}{}",
@@ -3139,7 +3189,7 @@ mod image {
     #[inline(never)]
     fn clocks(g: &mut Rig) {
         log!(
-            "G3: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2, CL3 with the memory restarted, and CL3; each step twice, rising then in reverse, every part time-limited, Windows Mobile's clock checked after each"
+            "G4: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2, CL3 with the memory restarted, and CL3; each step twice, rising then in reverse, every part time-limited, Windows Mobile's clock checked after each"
         );
         let found = (
             g.e.regs.read32(clock::COREPLL),
@@ -3161,7 +3211,7 @@ mod image {
             return;
         };
         let (src, rest) = ram.split_at_mut(480 * 640);
-        let (reference, _) = rest.split_at_mut(480 * 640);
+        let (reference, rest) = rest.split_at_mut(480 * 640);
         for (i, w) in src.iter_mut().enumerate() {
             *w = clock_pat(4 * i as u32, 0xF1A5);
         }
@@ -3175,8 +3225,13 @@ mod image {
             log!("  no 2700G memory");
             return;
         };
+        let (tex_copy, _) = rest.split_at_mut(tex.bytes() as usize / 4);
+        for (k, w) in tex_copy.iter_mut().enumerate() {
+            *w = g.mem.load(tex.at as usize + 4 * k).unwrap_or(0);
+        }
         let mut c = ClockRig {
             tex,
+            tex_copy,
             flush_at,
             pat_at,
             pat_bytes: 4 << 20,
@@ -3315,7 +3370,7 @@ mod image {
         if healthy {
             clock_card(
                 g,
-                ["RUN G3 DONE", "BACK TO NORMAL", "LOG SENT"],
+                ["RUN G4 DONE", "BACK TO NORMAL", "LOG SENT"],
                 0xFF10_6020,
                 3,
             );
@@ -3323,7 +3378,7 @@ mod image {
             log!("  STOPPED: Windows Mobile's clock stayed BAD after a step");
             clock_card(
                 g,
-                ["RUN G3 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
+                ["RUN G4 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
                 0xFF80_2010,
                 3,
             );
@@ -3372,7 +3427,7 @@ mod image {
             } else if KEPT {
                 "K (a log kept in SRAM by an earlier run, only)"
             } else if CLOCK {
-                "G3 (the clocks: lock traces, divide 1, past 100 MHz with CL2, CL3 and CL3 with the memory restarted, time limits, controls after each step, the log kept in SRAM)"
+                "G4 (the clocks: lock traces, divide 1, past 100 MHz with CL2, CL3 and CL3 with the memory restarted, memory-controller writes checked, the texture checked and repaired, time limits, controls after each step, the log kept in SRAM)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
