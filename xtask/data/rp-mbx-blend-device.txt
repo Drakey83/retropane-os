@@ -1,12 +1,18 @@
 # rp-mbx-blend's first run on the owner's X51v, 2026-10-14 (local/rp-mbx-blend-run1.txt):
 # the lines `cargo xtask emu-mbx-blend` holds the emulator to (docs/hw/emulator.md).
-E1 frame: lines 0..644 (645), 17712 us a frame (56458 mHz), 27460 ns a line
+# E1 and E4's GPIO85 lines below are at 60 Hz: the device run above was at Windows
+# Mobile's 56.46 Hz (`E1 frame: ... 17712 us a frame (56458 mHz), 27460 ns a line`,
+# 5 edges a 100 ms), before every program's Display::adopt moved the panel to 60 Hz
+# (2026-10-17). The 60 Hz values are the fork's (rp-v0.29.0: the line time from
+# DISPPLL), which match the 60.0-60.5 Hz the X51v measured at 0xFC5 (display
+# calibration C3); a device re-run of this image replaces them (quality audit C21).
+E1 frame: lines 0..644 (645), 16568 us a frame (60357 mHz), 25686 ns a line
 E3 HBLNK0: set again 16/16 times, lines Some((1, 605)), after Some((20, 28)) us: sets within a few lines (per-line event)
 E3 VEVENT0: set again 16/16 times, lines Some((643, 643)), after Some((1076, 17680)) us: sets on one line (frame event)
 E4 VEVENT at 100: VEVENT0 set 8/8, lines Some((100, 100)): sets on one line (frame event)
-E4 VEVENT at 100, VEVENT0 enabled: GPIO85 edges in 100 ms 5 (both edges: 2 a set), first at lines [100, 100, 100]
+E4 VEVENT at 100, VEVENT0 enabled: GPIO85 edges in 100 ms 6 (both edges: 2 a set), first at lines [100, 100, 100]
 E4 VEVENT at 400: VEVENT0 set 8/8, lines Some((400, 400)): sets on one line (frame event)
-E4 VEVENT at 400, VEVENT0 enabled: GPIO85 edges in 100 ms 5 (both edges: 2 a set), first at lines [400, 400, 400]
+E4 VEVENT at 400, VEVENT0 enabled: GPIO85 edges in 100 ms 6 (both edges: 2 a set), first at lines [400, 400, 400]
 B1 coverage 0..15, red over blue; CPU lerp: 001f 101d 201b 3019 4017 5015 6013 7011 880e 980c a80a b808 c806 d804 e802 f800
 B1 Dell (blend 0x09100000, bit 17): 009d 001f 0199 011b 0295 0217 0391 0313 04ac 042e 05a8 052a 06a4 0626 07c0 0722 -> other
 B1 blend 0x09100000, no bit 17: f800 1100 f800 0000 f800 3300 f800 2200 f800 5500 f800 4400 f800 7700 f800 6600 -> other

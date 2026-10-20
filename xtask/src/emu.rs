@@ -45,7 +45,19 @@ fn wsl_qemu() -> String {
     std::env::var("RETROPANE_WSL_QEMU").unwrap_or_else(|_| WSL_QEMU_DEFAULT.into())
 }
 
-const EMU_ARGS: &str = "-M x51v -display none";
+/// Set to show the emulated screen in a window while a check runs (SDL; in
+/// WSL through Windows 11's own Linux windows), for a person to watch what
+/// the check looks for. Off by default: checks run without a window.
+const SHOW_ENV: &str = "RETROPANE_EMU_SHOW";
+
+/// The machine and its display: none, or a window with [`SHOW_ENV`].
+fn emu_args() -> &'static str {
+    if std::env::var_os(SHOW_ENV).is_some() {
+        "-M x51v -display sdl"
+    } else {
+        "-M x51v -display none"
+    }
+}
 
 /// The guest's serial port, on a local TCP socket for every platform (item
 /// 61: Windows QEMU never read a stdin pipe). QEMU waits for the harness to
@@ -1518,11 +1530,11 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
 }
 
 /// The refresh-rate test (display calibration C3) under the loader. The
-/// emulator's display PLL reads 0, not Windows Mobile's value, so the image
-/// must refuse to switch and only measure: the emulated frame is fixed at
-/// the device's 56.46 Hz (the PLL isn't modelled, docs/hw/emulator.md), and
-/// the counted rate must come out within 1 Hz of it, twice (at the start,
-/// then after D-pad centre); Home puts everything back.
+/// loader has already moved the display PLL to 60 Hz (`0xFC5`, as on the
+/// device), so the image must refuse to switch and only measure: the
+/// emulated frame follows the PLL (rp-v0.29.0, docs/hw/emulator.md), and
+/// the counted rate must come out within 1 Hz of 60.36 Hz, twice (at the
+/// start, then after D-pad centre); Home puts everything back.
 pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
     let release = root.join("target/armv5te-x51v-none-eabi/release");
     let dir = emu_dir(root)?;
@@ -1581,13 +1593,19 @@ pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
         .filter_map(|l| l.split("clock: ").nth(1))
         .filter_map(|r| r.split(' ').next()?.parse().ok())
         .collect();
-    if rates.len() != 2 || rates.iter().any(|r| r.abs_diff(5646) > 100) {
+    // The fork models the line time from DISPPLL (rp-v0.29.0): the
+    // loader's Display::adopt has already moved the panel to 0xFC5, so the
+    // image finds it, refuses to switch, and counts ~60.36 Hz, as the X51v
+    // measured at 0xFC5 (60.0-60.5 Hz, display calibration C3). The
+    // switching path itself (from exactly 0xEC5) isn't reachable here: the
+    // loader always switches first, on the device too.
+    if rates.len() != 2 || rates.iter().any(|r| r.abs_diff(6036) > 100) {
         return Err(format!(
-            "refresh: want two rates within 1 Hz of 56.46 Hz, got {rates:?} (centi-Hz):{log}"
+            "refresh: want two rates within 1 Hz of 60.36 Hz (0xFC5), got {rates:?} (centi-Hz):{log}"
         ));
     }
     eprintln!(
-        "    refresh OK: no PLL switch without Windows Mobile's value; frames counted at {:?} centi-Hz (56.46 Hz modelled); Home put back and returned",
+        "    refresh OK: no PLL switch without Windows Mobile's value; frames counted at {:?} centi-Hz (60 Hz, as the loader leaves it); Home put back and returned",
         rates
     );
     Ok(())
@@ -2931,6 +2949,117 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Takes a screendump each guest second until `check` passes (the step
+/// it looks for is up), `secs` at most; the last one is kept beside `shot`
+/// as `<shot>-<tag>.ppm` for a person to look at. The image's steps start
+/// after work whose length depends on the emulator's speed, so the check
+/// waits for the picture instead of a time.
+fn gpubench_until(
+    mon: &mut crate::screen::Monitor,
+    guest: &str,
+    shot: &Path,
+    secs: u32,
+    tag: &str,
+    check: &dyn Fn(&crate::screen::Image) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut last = String::from("no screendump");
+    for _ in 0..secs {
+        guest_hold(mon, 1000, "gpubench: waiting for the picture")?;
+        let _ = std::fs::remove_file(shot);
+        mon.screendump(guest, shot)?;
+        let data = std::fs::read(shot).map_err(|e| e.to_string())?;
+        let img = crate::screen::parse_ppm(&data)?;
+        let _ = std::fs::write(shot.with_extension(format!("{tag}.ppm")), &data);
+        match check(&img) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+    }
+    Err(format!("{last} (after {secs} s of screendumps)"))
+}
+
+/// Pixel `(x, y)` is the colour `want` names channel by channel (1 bright,
+/// 0 dark): what a test card or a flat fill shows, with room for the
+/// colour conversion.
+fn gpubench_expect(
+    img: &crate::screen::Image,
+    what: &str,
+    x: u32,
+    y: u32,
+    want: (u8, u8, u8),
+) -> Result<(), String> {
+    let i = ((y * img.width + x) * 3) as usize;
+    let got = (img.rgb[i], img.rgb[i + 1], img.rgb[i + 2]);
+    let ok = |c: u8, on: u8| if on == 1 { c >= 150 } else { c <= 110 };
+    if ok(got.0, want.0) && ok(got.1, want.1) && ok(got.2, want.2) {
+        Ok(())
+    } else {
+        Err(format!(
+            "gpubench: {what} at ({x},{y}) is {got:?}, should be {want:?} (1 bright, 0 dark)"
+        ))
+    }
+}
+
+/// The 2700G bus-timing experiment (rp-cs3bus, docs/research/memory-
+/// timing.md §7): runs under the loader and returns. The emulator doesn't
+/// model bus timing (every step reads right), so this checks the plumbing:
+/// with `MSC1` as Windows Mobile leaves it, every step runs with its 2D
+/// fill, the soak runs at two steps looser than the tightest, and `MSC1`
+/// is put back; with any other `MSC1` it refuses and changes nothing.
+pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
+    if !device_has(root, "intel-2700g", "mbx-2d") {
+        eprintln!("    cs3bus: skipped (this emulator release doesn't model the MBX 2D engine)");
+        return Ok(());
+    }
+    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-cs3bus.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-cs3bus"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("cs3bus: never came back to the loader")?;
+    if log.contains("FAULT") || log.contains("PANIC") || !log.contains("RETROPANE-CS3BUS-DONE") {
+        return Err(format!("cs3bus: didn't finish cleanly:{log}"));
+    }
+    if log.contains("MSC1 not as expected: nothing changed") {
+        eprintln!(
+            "    cs3bus OK: the emulator's MSC1 isn't Windows Mobile's, and it refused to change anything"
+        );
+        return Ok(());
+    }
+    for want in [
+        "all steps passed",
+        "soak at step 5 ",
+        " 0 misses",
+        "MSC1 restored 24842481",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("cs3bus: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    cs3bus OK: every step and the soak ran, MSC1 put back");
+    Ok(())
+}
+
 /// One `rp-gpubench` run for [`boot_loader_gpubench`]: its name, image,
 /// wanted log lines, whether they need the 3D model, and its key presses
 /// (guest ms before the first, between them, how many).
@@ -2964,6 +3093,17 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_c = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PLANES", "1"))?;
     let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
+    // What the X51v showed that the fork models from rp-v0.29.0
+    // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
+    // taking effect mid-frame, the video plane's RGB formats.
+    let rect = device_has(root, "intel-2700g", "mbx-3d-rect");
+    let repoint = device_has(root, "intel-2700g", "plane-repoint");
+    let video_rgb = device_has(root, "intel-2700g", "video-rgb");
+    let shot = scratch(root, "gpubench-screen.ppm")?;
+    let guest = match emulator(root)? {
+        Emulator::Wsl => to_wsl_path(&shot),
+        Emulator::Native(_) => shot.display().to_string(),
+    };
     // (name, image, wanted lines, whether they need the 3D model, key
     // presses: guest ms before the first, between them, how many). Runs C
     // and D draw no 3D; their presses end the watch steps early (a press
@@ -3028,6 +3168,36 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 if k > 0 {
                     guest_hold(&mut mon, every, "gpubench: between keys")?;
                 }
+                // Run C's W4 is up before the first key: VSCADR to the
+                // yellow half at line 320 and back at 560 every frame.
+                if name == "run C" && k == 0 && repoint {
+                    gpubench_until(&mut mon, &guest, &shot, 40, "w4", &|img| {
+                        gpubench_expect(img, "W4 above the band", 240, 200, (0, 0, 1))?;
+                        gpubench_expect(img, "W4 band", 240, 440, (1, 1, 0))?;
+                        gpubench_expect(img, "W4 below the band", 240, 600, (0, 0, 1))
+                    })?;
+                }
+                // Run D's code 7 is up before the eighth key: the RGB565
+                // card on the video plane.
+                if name == "run D" && k == 7 && video_rgb {
+                    let bars = [
+                        (1, 1, 1),
+                        (1, 1, 0),
+                        (0, 1, 1),
+                        (0, 1, 0),
+                        (1, 0, 1),
+                        (1, 0, 0),
+                        (0, 0, 1),
+                        (0, 0, 0),
+                    ];
+                    gpubench_until(&mut mon, &guest, &shot, 12, "code7", &|img| {
+                        for (i, want) in bars.into_iter().enumerate() {
+                            gpubench_expect(img, "code 7 bar", 30 + 60 * i as u32, 200, want)?;
+                        }
+                        gpubench_expect(img, "code 7 ramp's left", 4, 400, (0, 0, 0))?;
+                        gpubench_expect(img, "code 7 ramp's right", 476, 400, (1, 1, 1))
+                    })?;
+                }
                 mon.command("sendkey ret")?;
             }
             Ok(())
@@ -3041,7 +3211,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 sd_image: None,
                 steps: &[],
                 extra: &[],
-                input: Some((&rp_loadproto::frame(&payload), "RETROPANE-GPUBENCH: ")),
+                // The loader's start of the image: the steps below run
+                // while it is on screen (its own marker comes at its end).
+                input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
                 during: Some(&keys),
                 then: Some("RPL END"),
                 timeout: Duration::from_secs(900),
@@ -3065,6 +3237,13 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         }
         if modelled && name == "run A" && !log.contains(" 0 hung renders recovered") {
             return Err(format!("gpubench {name}: a render hung on the model:{log}"));
+        }
+        // G4a: every checked pixel of all three rectangles its own texel,
+        // as on the X51v.
+        if rect && name == "run A" && log.matches(": 64 of 64 checked pixels").count() != 3 {
+            return Err(format!(
+                "gpubench {name}: G4a's rectangles should draw as on the device:{log}"
+            ));
         }
         eprintln!("    gpubench {name} OK: every stage ran and it returned to the loader");
     }
@@ -7955,7 +8134,7 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
         Emulator::Native(exe) => {
             eprintln!("    emulator: {}", exe.display());
             let mut c = Command::new(exe);
-            c.args(EMU_ARGS.split(' '))
+            c.args(emu_args().split(' '))
                 .args(["-serial", &serial_arg, "-monitor", &monitor, "-qmp", &qmp])
                 .args(extra)
                 .arg("-kernel")
@@ -7975,8 +8154,9 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
                 .unwrap_or_default();
             let wsl_qemu = wsl_qemu();
             wsl_bash(&format!(
-                "exec timeout {} {wsl_qemu} {EMU_ARGS} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
+                "exec timeout {} {wsl_qemu} {} {} -serial {serial_arg} -monitor {monitor} -qmp {qmp} -kernel '{}'{sd}",
                 timeout.as_secs() + 10,
+                emu_args(),
                 extra.join(" "),
                 to_wsl_path(image)
             ))

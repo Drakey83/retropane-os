@@ -85,6 +85,13 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
   `RETROPANE_EMU_LOAD=1` runs any check with one spinner per WSL core
   (a fixed count, each ended by `timeout`), to prove it; the full suite
   passes under it.
+- **Watching a check:** `RETROPANE_EMU_SHOW=1` opens the emulated screen
+  in a window while any check runs (SDL; from WSL through Windows 11's
+  own Linux windows), so a person can see what the check looks for. For
+  watching only: the window passes stray key presses to the emulated
+  X51v and slows its timing (`emu-gpubench`'s watch steps ended early
+  with it, 2026-10-19), so a check that counts runs without it. Checks that judge the screen keep their last screendump beside it
+  (`target/emulator/<check>-screen.<step>.ppm`).
 - **A run ends only its own processes.** Two sessions' runs share WSL, so
   cleanup finds this run's emulator and load by the monitor port in their
   command lines. A `pkill -x qemu-system-arm` once ended another session's

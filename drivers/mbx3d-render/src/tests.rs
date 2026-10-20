@@ -1190,3 +1190,55 @@ fn slot_words_at_finds_the_texture_words_set_stored() {
     assert_eq!(words.iter().filter(|&&w| w == t.words()[0]).count(), 2);
     assert_eq!(g.r.slot_words_at(MAX_SLOTS), None);
 }
+
+/// `rp-gpubench` G4a as the device drew it: a 64 x 32 RGB565 texture
+/// (TEX0's size codes apart, the rectangle twiddle order) drawn 1:1 shows
+/// each texel at its own pixel.
+#[test]
+fn rectangular_textures_draw_as_the_device_did() {
+    let mut g = rig(480, 640);
+    let (bu, bv) = (6u32, 5u32);
+    let at = g.pool.alloc(2 << (bu + bv), 128).unwrap();
+    // Texel (x, y): green the column, red and blue the row.
+    let colour = |x: u32, y: u32| (((y >> 5) & 31) << 11 | (x & 63) << 5 | (y & 31)) as u16;
+    let words: Vec<u32> = (0..(1u32 << (bu + bv)) / 2)
+        .map(|w| {
+            let texel = |i: u32| {
+                // The inverse of twiddle_rect for a wider-than-tall texture.
+                let (x, y) = untwiddle(i & ((1 << (2 * bv)) - 1));
+                u32::from(colour(x | (i >> (2 * bv)) << bv, y))
+            };
+            texel(2 * w) | texel(2 * w + 1) << 16
+        })
+        .collect();
+    g.mem.store(at as usize, &words);
+    let t = Texture {
+        at,
+        code: 3,
+        format: format::RGB565 as u8,
+        u_mode: address::CLAMP as u8,
+        v_mode: address::CLAMP as u8,
+        linear: false,
+        levels: 1,
+    };
+    g.set(0, Some(Draw::rect(64, 64, 64, 32, Paint::texture(t))));
+    // TEX0 as the renderer built it (64 x 64), its height code made 2.
+    let slot = g.r.slot_words_at(0).unwrap();
+    let square = t.words()[0];
+    let rect = (square & !0x00F0_0000) | 2 << 20;
+    for k in 0..64 {
+        let a = slot as usize + 4 * k;
+        if g.mem.load(a) == Some(square) {
+            g.mem.store(a, &[rect]);
+        }
+    }
+    g.frame_into(FULL);
+    for (x, y) in [(0u32, 0u32), (37, 3), (63, 31), (32, 16), (5, 30)] {
+        let p = g.px(64 + x, 64 + y);
+        let c = u32::from(colour(x, y));
+        let want = (((c >> 11) << 3 | (c >> 11) >> 2) << 16)
+            | (((c >> 5) & 63) << 2 | ((c >> 5) & 63) >> 4) << 8
+            | ((c & 31) << 3 | (c & 31) >> 2);
+        assert_eq!(p & 0xFF_FFFF, want, "texel ({x},{y})");
+    }
+}

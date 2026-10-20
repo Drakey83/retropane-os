@@ -134,6 +134,8 @@ commands:
   emu-mbx3d-api  the 3D renderer's device test (rp-mbx3d-api: every frame
             refused safely, the 3D core isn't modelled; back on a button):
             run it before `load rp-mbx3d-api`
+  emu-cs3bus the 2700G bus-timing experiment (rp-cs3bus: every step and
+            the soak run, MSC1 put back): run it before `load rp-cs3bus`
   emu-gpubench  the GPU measuring run for the 3D compositor proposal
             (rp-gpubench run A, and run B built with RP_GPUBENCH_PROBES: every
             stage runs, memory given back, both return): run it before
@@ -230,9 +232,9 @@ fn main() -> ExitCode {
             .try_for_each(|c| run_step(c)),
         "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
         | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
-        | "emu-mbx3d-api" | "emu-gpubench" | "emu-mved" | "emu-clocks" | "emu-noise"
-        | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
-        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-mved" | "emu-clocks"
+        | "emu-noise" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum"
+        | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
         | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
         | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
         | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
@@ -510,6 +512,7 @@ fn run_step(step: &str) -> Result {
         "emu-unplug" => cross().and_then(|()| emu::boot_loader_unplug(&workspace_root())),
         "emu-mbx3d-api" => cross().and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root())),
         "emu-gpubench" => cross().and_then(|()| emu::boot_loader_gpubench(&workspace_root())),
+        "emu-cs3bus" => cross().and_then(|()| emu::boot_loader_cs3bus(&workspace_root())),
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
@@ -578,6 +581,7 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_glesfeat(&workspace_root()))
             .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
             .and_then(|()| emu::boot_loader_gpubench(&workspace_root()))
+            .and_then(|()| emu::boot_loader_cs3bus(&workspace_root()))
             .and_then(|()| emu::boot_loader_mved(&workspace_root()))
             .and_then(|()| emu::boot_loader_clocks(&workspace_root()))
             .and_then(|()| emu::boot_loader_noise(&workspace_root()))

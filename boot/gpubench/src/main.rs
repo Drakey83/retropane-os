@@ -108,8 +108,11 @@ mod image {
     /// A 16-bit target where the background picture would go (not shown).
     const PIC16: Picture = Picture::packed(map::BACKGROUND.at, 480, 640, PixelFormat::Rgb565);
     const TILES: u32 = 2400;
-    /// A frame of the panel (56.46 Hz, `rp-mbx-blend` run 1).
-    const FRAME_US: u32 = 17_712;
+    /// A frame of the panel at 60 Hz, as `Display::adopt` sets it
+    /// (`DISPPLL` `0xFC5`: 25.19 MHz over the 648 x 645 frame). Runs A-D on
+    /// 2026-10-19 used 17,712 (Windows Mobile's 56.46 Hz) by mistake: G2's
+    /// "fits" and W2's "late" thresholds were 6% loose.
+    const FRAME_US: u32 = 16_594;
     /// Watch tests end on a button, or after this long.
     const WATCH_US: u32 = 30_000_000;
     /// The 2700G's local memory as the CPU and DMA see it (CS3).

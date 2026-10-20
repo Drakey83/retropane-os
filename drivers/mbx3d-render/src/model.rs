@@ -604,18 +604,22 @@ fn mip_level(tw: [u32; 3], uv: impl Fn(f64, f64) -> (f64, f64), x: f64, y: f64) 
 }
 
 /// Texel `(x, y)` of mip level `level` of the texture, ARGB8888 (levels
-/// after the base, each after the larger one: version 25).
+/// after the base, each after the larger one: version 25). The two sides'
+/// size codes apart, a rectangle's texels in `tex::twiddle_rect`'s order
+/// (`rp-gpubench` G4a, 2026-10-19: 64 x 32, 32 x 64 and 512 x 1024 drew
+/// right).
 fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], level: u32, x: u32, y: u32) -> u32 {
-    let side = 8usize << ((tex0 >> 24) & 15);
+    let (bu, bv) = (3 + ((tex0 >> 24) & 15), 3 + ((tex0 >> 20) & 15));
     let texel_bytes = if (tex0 >> tex::FORMAT_SHIFT) & 0x1F == tex::ARGB8888 {
         4
     } else {
         2
     };
     let base = ((tex1 & 0x01FF_FFFF) << 7) as usize
-        + (0..level as usize)
-            .map(|k| (side >> k) * (side >> k) * texel_bytes)
+        + (0..level)
+            .map(|k| ((1usize << bu) >> k) * ((1usize << bv) >> k) * texel_bytes)
             .sum::<usize>();
+    let i = tex::twiddle_rect(x, y, bu.saturating_sub(level), bv.saturating_sub(level)) as usize;
     let word = |a: usize| u32::from_le_bytes([m[a], m[a + 1], m[a + 2], m[a + 3]]);
     let wide = |c: u32, bits: u32| match bits {
         5 => c << 3 | c >> 2,
@@ -628,7 +632,7 @@ fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], level: u32, x: u32, y: u32) -> u32
     let argb = |a: u32, r: u32, g: u32, b: u32| a << 24 | r << 16 | g << 8 | b;
     let format = (tex0 >> tex::FORMAT_SHIFT) & 0x1F;
     match format {
-        tex::ARGB8888 => return word(base + 4 * tex::twiddle(x, y) as usize),
+        tex::ARGB8888 => return word(base + 4 * i),
         tex::PVRTC4 | tex::PVRTC2 => {
             // Approximate (exact for solid blocks, as version 24 drew
             // them): the block's colour A, modulation and the blending
@@ -655,7 +659,7 @@ fn texel(m: &[u8], [tex0, tex1, _]: [u32; 3], level: u32, x: u32, y: u32) -> u32
         }
         _ => {}
     }
-    let a = base + 2 * tex::twiddle(x, y) as usize;
+    let a = base + 2 * i;
     let t = u32::from(u16::from_le_bytes([m[a], m[a + 1]]));
     match format {
         tex::ARGB1555 => argb(
