@@ -97,6 +97,8 @@ mod image {
     /// Run D: the video plane's undocumented format codes (the owner
     /// watches).
     const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
+    /// Run E: faster uploads (the owner's 2x).
+    const UPLOAD: bool = option_env!("RP_GPUBENCH_UPLOAD").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -1895,6 +1897,389 @@ mod image {
         let _ = g.pool.free(chroma, STRIDE * 640);
     }
 
+    // ---- Run E: faster uploads (the owner's 2x, 2026-10-19) -------------------
+    //
+    // The bus to the 2700G is paced by the 2700G (rp-cs3bus: ~33 MB/s
+    // writes whatever MSC1 says), so the 2x comes from around it: E1 the
+    // texture reorder made fast and overlapped with the DMA (G5 did 37 ms
+    // reordering then 34 ms of DMA, one after the other); E2 8-bit layers
+    // (half the bytes) and their draw cost; E3 the bytes PVRTC moves; E4 a
+    // screen of text as 2D-engine commands from a 4 bpp coverage atlas
+    // instead of pixels.
+
+    /// The 64 texels of an aligned 8 x 8 block in twiddled order, as
+    /// offsets in a 480-wide row-order source (texels): word k of the block
+    /// is texels 2k and 2k + 1 (one above the other: y is the low bit).
+    const BLOCK8: [u16; 64] = {
+        let mut t = [0u16; 64];
+        let mut i = 0;
+        while i < 64 {
+            let (x, y) = untwiddle(i as u32);
+            t[i] = (y * 480 + x) as u16;
+            i += 1;
+        }
+        t
+    };
+
+    /// Words of the 512 x 1024 texture (two 16-bit texels each).
+    const TW: usize = 512 * 1024 / 2;
+    /// One DMA piece: 120 KiB (the controller's chain limit, as G5).
+    const PIECE_WORDS: usize = DMA_PIECE / 4;
+
+    /// Block `b` (64 texels, 32 words) of the 512 x 1024 texture from the
+    /// 480 x 640 row-order layer `px`, into `out` (32 words): the fast
+    /// reorder, a table instead of bit work per texel.
+    fn block(px: &[u16], b: usize, out: &mut [u32]) {
+        let (x, y) = untwiddle_rect((b as u32) << 6, 9, 10);
+        if x >= 480 || y >= 640 {
+            out.fill(0);
+            return;
+        }
+        let base = (y * 480 + x) as usize;
+        for (k, w) in out.iter_mut().enumerate() {
+            let lo = px[base + BLOCK8[2 * k] as usize];
+            let hi = px[base + BLOCK8[2 * k + 1] as usize];
+            *w = u32::from(lo) | u32::from(hi) << 16;
+        }
+    }
+
+    /// Waits for the DMA in flight; false on a bus error or 200 ms.
+    fn dma_wait(dma: &mut rp_hal_pxa27x::dma::Dma) -> bool {
+        let t0 = rt::ticks();
+        loop {
+            match dma.done() {
+                Some(true) => return true,
+                Some(false) => return false,
+                None if us_since(t0) > 200_000 => {
+                    dma.abort();
+                    return false;
+                }
+                None => {}
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn uploads(g: &mut Rig) {
+        log!(
+            "E: faster uploads: the bus is the 2700G's (~33 MB/s), so less waiting and fewer bytes"
+        );
+        let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
+            log!("  no RAM pool");
+            return;
+        };
+        let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::SD) else {
+            log!("  no DMA channel");
+            return;
+        };
+        let (rows, rest) = ram.split_at_mut(480 * 640 / 2);
+        let (staging, _) = rest.split_at_mut(TW);
+        for (i, w) in rows.iter_mut().enumerate() {
+            let p = 2 * i as u32;
+            *w = u32::from(pattern565(p % 480, p / 480))
+                | u32::from(pattern565((p + 1) % 480, (p + 1) / 480)) << 16;
+        }
+        let Some(px) = rp_hal_mem::bytes_as_pixels_mut(rp_hal_mem::words_as_bytes_mut(rows)) else {
+            log!("  layer not 16-bit aligned");
+            return;
+        };
+        let px: &[u16] = px;
+        let Some(twd) = g.pool.alloc((TW * 4) as u32, 128) else {
+            log!("  no 2700G memory");
+            return;
+        };
+        let rate = |what: &str, bytes: usize, us: u32| {
+            log!(
+                "  {what}: {bytes} bytes in {us} us, {} MB/s",
+                bytes as u32 / us.max(1)
+            );
+        };
+
+        // E1a: the fast reorder alone (SDRAM to SDRAM).
+        let t0 = rt::ticks();
+        for b in 0..TW / 32 {
+            block(px, b, &mut staging[32 * b..32 * b + 32]);
+        }
+        let reorder = us_since(t0);
+        log!(
+            "  E1a fast reorder of the 512x1024 texture in SDRAM: {reorder} us (G5's plain one: 37,144 us)"
+        );
+        rt::check_in();
+        // It must agree with G5's reference order.
+        let agree = [0usize, 1, 777, 31 * 1024 + 5, TW / 2, TW - 1]
+            .iter()
+            .all(|&w| staging[w] == ref_word(px, w as u32));
+        log!("  E1a agrees with the reference order: {agree}");
+
+        // E1b: reorder then DMA, one after the other (G5's way, fast reorder).
+        let t0 = rt::ticks();
+        for b in 0..TW / 32 {
+            block(px, b, &mut staging[32 * b..32 * b + 32]);
+        }
+        let mut ok = true;
+        for (k, piece) in words_as_bytes(staging).chunks(DMA_PIECE).enumerate() {
+            ok &= dma.arm_copy_to_device_memory(piece, CS3 + twd + (k * DMA_PIECE) as u32)
+                && dma_wait(&mut dma);
+        }
+        rate("E1b fast reorder, then DMA", TW * 4, us_since(t0));
+        rt::check_in();
+
+        // E1c: overlapped: each piece reordered while the last one moves.
+        let t0 = rt::ticks();
+        let (mut waited, mut busy) = (0u32, false);
+        for k in 0..TW.div_ceil(PIECE_WORDS) {
+            let (a, b) = (k * PIECE_WORDS, ((k + 1) * PIECE_WORDS).min(TW));
+            for blk in a / 32..b / 32 {
+                block(px, blk, &mut staging[32 * blk..32 * blk + 32]);
+            }
+            if busy {
+                let w0 = rt::ticks();
+                ok &= dma_wait(&mut dma);
+                waited += us_since(w0);
+            }
+            ok &= dma.arm_copy_to_device_memory(
+                words_as_bytes(&staging[a..b]),
+                CS3 + twd + (a * 4) as u32,
+            );
+            busy = true;
+        }
+        ok &= dma_wait(&mut dma);
+        let total = us_since(t0);
+        rate("E1c fast reorder overlapped with DMA", TW * 4, total);
+        log!(
+            "  E1c the CPU waited for the DMA {waited} us of {total} (free for other work then); DMA ok {ok}"
+        );
+        let landed = [0usize, 1, 777, TW / 2, TW - 1]
+            .iter()
+            .all(|&w| g.mem.load(twd as usize + 4 * w) == Some(staging[w]));
+        log!("  E1c the texture in 2700G memory is right: {landed}");
+        rt::check_in();
+
+        // E1d: the fast reorder written straight to 2700G memory by the CPU.
+        let t0 = rt::ticks();
+        let mut buf = [0u32; 32];
+        for b in 0..TW / 32 {
+            block(px, b, &mut buf);
+            g.mem.store(twd as usize + 128 * b, &buf);
+        }
+        cpu::drain_write_buffer();
+        rate(
+            "E1d fast reorder written by the CPU straight in",
+            TW * 4,
+            us_since(t0),
+        );
+        rt::check_in();
+
+        // E2/E3: fewer bytes. A layer's texture at 8 bits (code 10) and as
+        // PVRTC 4 / 2 bpp: the bytes DMA moves for each.
+        for (what, bytes) in [
+            ("E2 8-bit layer (512x1024, half the bytes)", TW * 2),
+            ("E3 PVRTC 4 bpp layer (512x1024, a quarter)", TW),
+            ("E3 PVRTC 2 bpp layer (an eighth)", TW / 2),
+        ] {
+            let t0 = rt::ticks();
+            let mut ok = true;
+            for (k, piece) in words_as_bytes(&staging[..bytes / 4])
+                .chunks(DMA_PIECE)
+                .enumerate()
+            {
+                ok &= dma.arm_copy_to_device_memory(piece, CS3 + twd + (k * DMA_PIECE) as u32)
+                    && dma_wait(&mut dma);
+            }
+            rate(what, bytes, us_since(t0));
+            if !ok {
+                log!("    DMA refused or failed");
+            }
+            rt::check_in();
+        }
+        let _ = g.pool.free(twd, (TW * 4) as u32);
+        e2_draw(g);
+        e4_text(g);
+    }
+
+    /// Word `w` of the texture the plain way (G5's order, bit by bit): the
+    /// reference the fast reorder must match.
+    fn ref_word(px: &[u16], w: u32) -> u32 {
+        let (x, y) = untwiddle_rect(2 * w, 9, 10);
+        let at = |x: u32, y: u32| {
+            if x < 480 && y < 640 {
+                u32::from(px[(y * 480 + x) as usize])
+            } else {
+                0
+            }
+        };
+        at(x, y) | at(x, y + 1) << 16
+    }
+
+    /// The draw cost of an 8-bit layer (code 10 grey, measured drawing by
+    /// rp-glesfeat L), full screen 1:1, opaque and with its texels as alpha
+    /// (TEX2 0x86084610, glesfeat L), against G1's 565 (27.2 ms).
+    #[inline(never)]
+    fn e2_draw(g: &mut Rig) {
+        let t = Texture {
+            at: 0,
+            code: 6,
+            format: 10,
+            u_mode: address::WRAP as u8,
+            v_mode: address::WRAP as u8,
+            linear: false,
+            levels: 1,
+        };
+        let bytes = 512 * 512;
+        let Some(at) = g.pool.alloc(bytes, 128) else {
+            log!("  E2 draw: no memory");
+            return;
+        };
+        let t = Texture { at, ..t };
+        // Grey texels, twiddled bytes: a stripe pattern.
+        let mut buf = [0u32; 64];
+        let mut w = 0u32;
+        while w < bytes / 4 {
+            for (j, word) in buf.iter_mut().enumerate() {
+                let i = 4 * (w + j as u32);
+                let mut v = 0;
+                for k in 0..4 {
+                    let (x, y) = untwiddle(i + k);
+                    v |= (((x ^ y) >> 3 & 0xFF) | 0x20) << (8 * k);
+                }
+                *word = v;
+            }
+            g.mem.store((at + 4 * w) as usize, &buf);
+            w += 64;
+        }
+        g.mem.sync();
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            return;
+        };
+        let _ = r.set_background(Some(GREY));
+        let full = Target {
+            picture: SCREEN,
+            x: 0,
+            y: 0,
+        };
+        g.set(&mut r, 0, Some(cover(t, 16, false)));
+        let times = g.full(&mut r, full, 5);
+        report("E2 8-bit layer drawn, opaque, 1:1 / 32-bit", &times, TILES);
+        g.set(&mut r, 0, Some(cover(t, 16, true)));
+        let alpha = patch_tex0(g, &r, 0, t.words()[2], 0x8608_4610);
+        let times = g.full(&mut r, full, 5);
+        report(
+            if alpha {
+                "E2 8-bit layer drawn, its texels as alpha, 1:1 / 32-bit"
+            } else {
+                "E2 8-bit layer, alpha word not found: opaque again"
+            },
+            &times,
+            TILES,
+        );
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(at, bytes);
+    }
+
+    /// E4: a screen of text (37 lines of 38 characters, the 5 x 7 font at
+    /// 2x in 12 x 16 cells) drawn by the 2D engine from a 4 bpp coverage
+    /// atlas already in 2700G memory (Dell's text path: blend 0x09100000,
+    /// header bit 17, high nibble first: rp-mbx-blend B1), against the
+    /// same screen as RGB565 pixels from the CPU (G5: 18.5 ms, 600 KiB).
+    #[inline(never)]
+    fn e4_text(g: &mut Rig) {
+        const CELL_W: u32 = 12;
+        const CELL_H: u32 = 16;
+        const GLYPHS: u32 = 95;
+        /// Glyphs sit 16 px (8 bytes) apart in the atlas, so every glyph's
+        /// source address is a whole word.
+        const ATLAS_CELL: u32 = 16;
+        const ATLAS_STRIDE: u32 = 768; // 95 x 16 px at 4 bpp, rounded up
+        let atlas = map::GLYPHS.at;
+        // The atlas: glyph c (0x20 + k) in cell k, lit pixels coverage 15
+        // (cx past 12 stays clear: in_text draws 12 px wide at 2x).
+        let mut row = [0u32; (ATLAS_STRIDE / 4) as usize];
+        let mut lit_per_glyph = [0u32; GLYPHS as usize];
+        for y in 0..CELL_H {
+            for (i, word) in row.iter_mut().enumerate() {
+                let mut v = 0u32;
+                for b in 0..4u32 {
+                    let mut byte = 0u32;
+                    for half in 0..2u32 {
+                        let x = 8 * i as u32 + 2 * b + half;
+                        let (k, cx) = (x / ATLAS_CELL, x % ATLAS_CELL);
+                        let ch = char::from_u32(0x20 + k).unwrap_or(' ');
+                        let mut utf8 = [0u8; 4];
+                        let on = k < GLYPHS && in_text(cx, y, ch.encode_utf8(&mut utf8), 1, 1, 2);
+                        if on {
+                            lit_per_glyph[k as usize] += 1;
+                        }
+                        // High nibble first (B1).
+                        byte |= (u32::from(on) * 0xF) << (4 * (1 - half));
+                    }
+                    v |= byte << (8 * b);
+                }
+                *word = v;
+            }
+            g.mem.store((atlas + y * ATLAS_STRIDE) as usize, &row);
+        }
+        g.mem.sync();
+
+        // The target: an RGB565 picture (PIC16), black.
+        let w = cmd::fill(
+            Format::RGB565,
+            PIC16.at as usize,
+            PIC16.stride as usize,
+            (0, 0, 480, 640),
+            0,
+        );
+        let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
+
+        // The text: line l, column c shows character (l * 7 + c) % 94 + '!'.
+        let (lines, cols) = (37u32, 38u32);
+        let t0 = rt::ticks();
+        let mut words_sent = 0usize;
+        let mut lit = 0u32;
+        let _ = g.e.submit(&cmd::blend(cmd::BLEND_DELL_TEXT));
+        words_sent += 2;
+        for l in 0..lines {
+            for c in 0..cols {
+                let k = (l * 7 + c) % 94 + 1;
+                lit += lit_per_glyph[k as usize];
+                let (x, y) = ((4 + c * CELL_W) as u16, (8 + l * CELL_H + 1) as u16);
+                let (cmdw, n) = cmd::blit(
+                    (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
+                    (
+                        Format::COVERAGE4,
+                        (atlas + k * ATLAS_CELL / 2) as usize,
+                        ATLAS_STRIDE as i32,
+                    ),
+                    (0, 0),
+                    (x, y, x + CELL_W as u16, y + CELL_H as u16),
+                    cmd::ROP_SRCCOPY,
+                    cmd::OP_BLEND,
+                    0x00FF_FFFF,
+                );
+                if g.e.submit(&cmdw[..n]).is_err() {
+                    log!("  E4: the 2D engine stopped taking commands");
+                    return;
+                }
+                words_sent += n;
+            }
+        }
+        let _ = g.e.submit(&cmd::blend(0));
+        words_sent += 2;
+        let queued = us_since(t0);
+        let done = g.e.finish(g.mem.0, 500_000).is_ok();
+        let total = us_since(t0);
+        // Check: white pixels in the picture = the lit coverage drawn.
+        let mut white = 0u32;
+        for i in 0..480 * 640 / 2 {
+            let v = g.mem.load(PIC16.at as usize + 4 * i).unwrap_or(0);
+            white += u32::from(v & 0xFFFF == 0xFFFF) + u32::from(v >> 16 == 0xFFFF);
+        }
+        log!(
+            "  E4 a screen of text ({} glyphs) by 2D commands from a 4 bpp atlas: {} bytes over the bus (RGB565 pixels: 614400), queued in {queued} us, drawn in {total} us (finished {done}); white pixels {white}, lit in the glyphs drawn {lit}",
+            lines * cols,
+            words_sent * 4
+        );
+    }
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
@@ -1916,6 +2301,8 @@ mod image {
                 "C (the video plane: repoint, YUV pan under glass, RGB pan under a tint)"
             } else if VFMT {
                 "D (the video plane's undocumented format codes)"
+            } else if UPLOAD {
+                "E (faster uploads: overlapped reorder and DMA, 8-bit, PVRTC, text by commands)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
@@ -1952,6 +2339,8 @@ mod image {
             planes(&mut g);
         } else if VFMT {
             vformats(&mut g);
+        } else if UPLOAD {
+            uploads(&mut g);
         } else {
             g4a(&mut g);
             if let Some(set) = textures(&mut g) {

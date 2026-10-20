@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WAV_VOICE: &str = ",out.buffer-length=250000";
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.28.0";
+pub const QEMU_RELEASE: &str = "rp-v0.29.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -3071,7 +3071,8 @@ type GpubenchRun<'a> = (&'a str, &'a PathBuf, &'a [&'a str], bool, (u32, u32, u3
 /// texture-word probes, built with `RP_GPUBENCH_PROBES`), each under the
 /// loader, then run C (the video plane's repoint and pans,
 /// `RP_GPUBENCH_PLANES`) and run D (its undocumented format codes,
-/// `RP_GPUBENCH_VFMT`), with key presses for their watch steps. The
+/// `RP_GPUBENCH_VFMT`) and run E (faster uploads, `RP_GPUBENCH_UPLOAD`),
+/// with key presses for their watch steps. The
 /// models' times say nothing about the device's (the fork's 3D
 /// core doesn't model the clock or the fill costs: emulator.md), so this
 /// checks that every stage runs, the 2700G memory pool is all given back,
@@ -3092,6 +3093,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_b = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PROBES", "1"))?;
     let run_c = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_PLANES", "1"))?;
     let run_d = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_VFMT", "1"))?;
+    let run_e = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_UPLOAD", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3109,7 +3111,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 4] = [
+    let runs: [GpubenchRun; 5] = [
         (
             "run A",
             &run_a,
@@ -3154,6 +3156,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &["  try code 0", "  try code 8"],
             false,
             (6_000, 3_000, 9),
+        ),
+        (
+            "run E",
+            &run_e,
+            &[
+                "E1a agrees with the reference order: true",
+                "E1c the texture in 2700G memory is right: true",
+                "E1d fast reorder written by the CPU straight in",
+                "E3 PVRTC 2 bpp layer",
+                "E4 a screen of text",
+            ],
+            false,
+            (0, 0, 0),
         ),
     ];
     for (name, bin, want, needs_model, (first, every, presses)) in runs {
