@@ -25,7 +25,7 @@ with the run that settles it, and stays unticked until then.
 | | Claim (source) | Our check |
 |---|---|---|
 | **V1** | The 2700G's local memory runs on the system clock, with no clock of its own (Linux `mbxfb`'s register map) | P2: the memory's timing measured as the system clock moves, against a core-only change |
-| **V2** | The local memory is rated 100 MHz, and CL3 is needed above it (Dell's table and rule) | P2's steps: where errors start, with CL2 and CL3 at each |
+| **V2** | The local memory is rated 100 MHz, and CL3 is needed above it (Dell's table and rule) | P2's steps: where errors start, with CL2 and CL3 at each (run G1: 3D all wrong at 108 MHz with CL3, where run 27 drew right at 133 with CL2; run G2 tries both) |
 | **V3** | The 2D engine takes 1, 2, 4 and 8 bpp sources (Dell's format table) | P7: each format copied and checked pixel by pixel |
 | **V4** | Dell rotates through the 3D core, so the 2D engine has no rotate (Dell's code) | P6/P13: the 2D engine's direction and rotate bits tried |
 | **V5** | The video plane's scaler registers and their meaning (Dell's register names) | P9 |
@@ -33,6 +33,7 @@ with the run that settles it, and stays unticked until then.
 | **V7** | Colour keys at scan-out (Dell's register names) | P10 |
 | **V8** | MVED1's registers, command windows and frame layout (Dell's code) | P11 |
 | **V9** | The second texture unit's words, fog bit 24, TSP bit 14 (static reading) | P5 |
+| **V11** | `PLLSTAT` bit 2 means the core PLL has locked at its new frequency (Linux `mbxfb`; run G1 read it set at once even across a frequency change) | Run G2's lock traces |
 | **V10** | Every other number in docs/hw/2700g.md and the datasheet marked static, Dell or `mbxfb` | Swept into this table, one line each, with its probe |
 
 ## How the work is judged

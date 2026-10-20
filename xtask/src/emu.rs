@@ -3193,7 +3193,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         (
             "run G",
             &run_g,
-            &["G: the clocks", "RETROPANE-GPUBENCH: done"],
+            &["G2: the clocks", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -3280,23 +3280,38 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         // Run G steps the clocks only from Windows Mobile's; a fork whose
         // core PLL reads 0 (rp-v0.29.0 and older: docs/hw/emulator.md) gets
         // the refusal, and one that starts as Windows Mobile leaves the
-        // chip must step every series and put everything back.
+        // chip must trace the lock bit, run both passes with every step
+        // GOOD twice (the models don't fail at any clock) and every control
+        // GOOD, and put everything back.
         if name == "run G" {
             let refused =
                 log.contains("not Windows Mobile's clock and bus timing: nothing changed");
             let stepped = [
-                "  series 1: the cores at divide 1",
-                "  series 2: the system clock past 100 MHz",
-                "  soak at ",
+                "  lock trace 99.67 -> 74.75 MHz",
+                "  lock trace 108.33 -> 99.67 MHz",
+                "  pass 1: rising",
+                "  pass 2: the same steps in reverse",
+                "    control at 99.67 MHz step 22: GOOD",
                 "  put back: COREPLL 0xbb1",
             ]
             .iter()
-            .all(|w| log.contains(w));
+            .all(|w| log.contains(w))
+                && log.matches("| GOOD").count() == 45
+                && !log.contains("| BAD")
+                && !log.contains("STOPPED");
             if !(refused && log.contains("as found: COREPLL 0x0,") || stepped) {
                 return Err(format!(
                     "gpubench run G: neither refused cleanly nor stepped every series:{log}"
                 ));
             }
+            eprintln!(
+                "    gpubench run G: {}",
+                if stepped {
+                    "every step and control GOOD on the modelled clocks, put back"
+                } else {
+                    "refused: this fork doesn't start the clocks as Windows Mobile leaves them"
+                }
+            );
         }
         // Run F's text must come out exactly: white pixels = lit coverage,
         // and F4's, F5's and F6a's pictures word for word F0's (F6b and F6c

@@ -133,11 +133,19 @@ const fn cycles(ns: u32, khz: u32) -> u32 {
 /// waits up to 50 ms; `rp-mbx3d` run 27 saw it lock at once).
 const LOCK_POLL_US: u32 = 20;
 const LOCK_POLLS: u32 = 2_500;
+/// A fixed wait after the lock bit before the system clock goes back on
+/// the PLL. The bit read set at the first poll in every run so far
+/// (`rp-mbx3d` run 27, `rp-gpubench` run G1), even across a change of the
+/// PLL's own frequency, so whether it follows a relock at all is unproven
+/// (run G2 traces it); until then a settle, cheap next to a clock
+/// change's other costs.
+const LOCK_SETTLE_US: u32 = 2_000;
 
 /// Sets the system clock and the memory timing to `speed`, as Dell's driver
 /// changes the PLL (`0x0211faf0`): the system clock on the 13 MHz
-/// reference, the memory timing and the PLL written, the lock awaited, the
-/// system clock back on the PLL. The timing is written on the reference,
+/// reference, the memory timing and the PLL written, the lock awaited, a
+/// fixed settle ([`LOCK_SETTLE_US`]: the lock bit is unproven), the system
+/// clock back on the PLL. The timing is written on the reference,
 /// where both the old and the new are slow enough. Nothing else may use
 /// the 2700G meanwhile (about half a millisecond; the display reads its
 /// picture slower and may show a flicker).
@@ -156,6 +164,7 @@ pub fn set_speed<B: RegisterBus>(
     if locked.is_none() {
         let _ = write_speed(bus, Speed::WM, &mut delay_us);
     }
+    delay_us(LOCK_SETTLE_US);
     bus.write32(SYSCLKSRC, 2);
     delay_us(250);
     locked
@@ -331,7 +340,7 @@ mod tests {
                 (SYSCLKSRC, 2),
             ]
         );
-        assert_eq!(waited, 500);
+        assert_eq!(waited, 500 + LOCK_SETTLE_US);
     }
 
     #[test]

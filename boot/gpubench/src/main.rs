@@ -2673,27 +2673,34 @@ mod image {
 
     // ---- Run G: the clocks (docs/research/2700g-full-potential.md P1, P2) ----
     //
-    // The cores at divide by 1 (version 29: 2D right, 3D 3 of 5 wrong at
-    // 74.75 MHz: is it divide 1 itself, or the speed?), then the system
-    // clock past Dell's 100 MHz with the memory timing Dell's rule gives
-    // (CL3 above 100 MHz), each step stressed and checked; each series
-    // stops at its first error; a 60 s soak at the fastest clean step of
-    // each. Windows Mobile's clock and bus timing go back at the end and
-    // from the fault handler.
+    // G2 (2026-10-20), after G1 (`local/rp-gpubench-runG1.txt`): the same
+    // step passed and later failed, and the 2700G stayed broken after its
+    // registers were put back, so no failure could be pinned on a clock.
+    // G2 traces the PLL's lock bit, reads every clock register back, runs
+    // each step twice, every step rising and then in reverse, checks
+    // Windows Mobile's clock after every step (a carried-over failure shows
+    // there, and stops the run if a second restore doesn't clear it), tries
+    // Dell's CL3 rule against CL2 past 100 MHz, and shows each step on the
+    // screen in large letters for the owner watching. Windows Mobile's clock
+    // and bus timing go back at the end and from the fault handler.
 
     /// CS3 timing (RDF, RDN, RRR): Windows Mobile's (Dell's tier for 99 MHz
     /// and up) and Dell's tier for 25-99 MHz.
     const CS3_WM: (u32, u32, u32) = (8, 4, 2);
     const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
 
-    /// A clock step: the core PLL (13 MHz x M / (N x 2^P)) and the cores'
-    /// divider (1 or 2).
+    /// A clock step: the core PLL (13 MHz x M / (N x 2^P)), the cores'
+    /// divider (1 or 2) and the local memory's CAS latency (`None`: Dell's
+    /// rule, CL3 above 100 MHz; run G1's 108 MHz step with CL3 drew no 3D
+    /// picture where `rp-mbx3d` run 27 drew right at 133 MHz with CL2, so
+    /// G2 tries both).
     #[derive(Clone, Copy)]
     struct ClockStep {
         m: u32,
         n: u32,
         p: u32,
         div: u32,
+        cl3: Option<bool>,
     }
 
     impl ClockStep {
@@ -2704,6 +2711,22 @@ mod image {
         const fn khz(self) -> u32 {
             ClockSpeed::rated(self.pll()).khz()
         }
+
+        /// The PLL and the memory timing for it.
+        const fn speed(self) -> ClockSpeed {
+            let mut s = ClockSpeed::rated(self.pll());
+            match self.cl3 {
+                Some(true) => s.lmtype = 0xEC8,
+                Some(false) => s.lmtype = 0xAC8,
+                None => {}
+            }
+            s
+        }
+
+        /// The CAS latency the step runs with.
+        const fn cl(self) -> u32 {
+            self.speed().lmtype >> 10 & 7
+        }
     }
 
     const WM_STEP: ClockStep = ClockStep {
@@ -2711,43 +2734,124 @@ mod image {
         n: 3,
         p: 0,
         div: 2,
+        cl3: None,
     };
 
+    /// The clock and memory registers as they read now.
+    fn clock_now<B: RegisterBus>(regs: &mut B) -> ClockSpeed {
+        ClockSpeed {
+            pll: regs.read32(clock::COREPLL),
+            lmtype: regs.read32(clock::LMTYPE),
+            lmtim: regs.read32(clock::LMTIM),
+            lmrefresh: regs.read32(clock::LMREFRESH),
+        }
+    }
+
     /// Windows Mobile's clock and bus timing back, wherever run G left
-    /// them (no state kept, so the fault handler can call it).
+    /// them (no state kept, so the fault handler can call it). The PLL is
+    /// always written again, even when it reads as Windows Mobile's: run
+    /// G1 put the registers back and the 2700G still didn't work.
     fn clock_restore<B: RegisterBus>(regs: &mut B) {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = regs.read32(MBXCLK);
         regs.write32(MBXCLK, (clk & !0xC) | 1 << 2);
         rt::delay_us(1_000);
-        let now = ClockSpeed {
-            pll: regs.read32(clock::COREPLL),
-            lmtype: regs.read32(clock::LMTYPE),
-            lmtim: regs.read32(clock::LMTIM),
-            lmrefresh: regs.read32(clock::LMREFRESH),
-        };
-        if now != ClockSpeed::WM {
-            let _ = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us);
-        }
+        let _ = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us);
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
     }
 
     /// Puts `s` in place: the long bus timing first (safe at any clock),
-    /// the cores at divide 2, the PLL and its memory timing (Dell's way),
-    /// then the step's divider and the bus timing of its tier. The PLL's
-    /// lock time, or `None` (Windows Mobile's speed is then back).
+    /// the cores at divide 2, the PLL and its memory timing (Dell's way;
+    /// skipped when they already read as `s`'s, so a divider-only step
+    /// changes nothing else), then the step's divider and the bus timing of
+    /// its tier. The PLL's lock time, or `None` (Windows Mobile's speed is
+    /// then back).
     fn clock_apply(g: &mut Rig, s: ClockStep) -> Option<u32> {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = g.e.regs.read32(MBXCLK);
         g.e.regs.write32(MBXCLK, (clk & !0xC) | 1 << 2);
         rt::delay_us(1_000);
-        let lock = clock::set_speed(&mut g.e.regs, ClockSpeed::rated(s.pll()), rt::delay_us);
+        let lock = if clock_now(&mut g.e.regs) == s.speed() {
+            Some(0)
+        } else {
+            clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us)
+        };
         let clk = g.e.regs.read32(MBXCLK);
         g.e.regs.write32(MBXCLK, (clk & !0xC) | (s.div - 1) << 2);
         rt::delay_us(1_000);
         let cs3 = if s.khz() < 99_000 { CS3_LONG } else { CS3_WM };
         let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
         lock
+    }
+
+    /// Every clock register read back and logged (what the 2700G holds,
+    /// not what was written).
+    fn clock_readback(g: &mut Rig) {
+        let r = &mut g.e.regs;
+        log!(
+            "    read back: SYSCLKSRC {} COREPLL 0x{:x} PLLSTAT 0x{:x} MBXCLK 0x{:x} LMTYPE 0x{:x} LMTIM 0x{:x} LMREFRESH 0x{:x}",
+            r.read32(clock::SYSCLKSRC),
+            r.read32(clock::COREPLL),
+            r.read32(clock::PLLSTAT),
+            r.read32(MBXCLK),
+            r.read32(clock::LMTYPE),
+            r.read32(clock::LMTIM),
+            r.read32(clock::LMREFRESH)
+        );
+    }
+
+    /// The PLL's lock bit traced across a change to `to` (the system clock
+    /// on the reference meanwhile, as `set_speed` does): `PLLSTAT` before,
+    /// at once after the write, and every change in the next 2 ms with its
+    /// time. Settles whether the lock bit follows a relock (V9 of the
+    /// verify list: run 27 and G1 read it set at the first poll).
+    fn lock_trace(g: &mut Rig, to: ClockSpeed, name: &str) {
+        let r = &mut g.e.regs;
+        r.write32(clock::SYSCLKSRC, 0);
+        rt::delay_us(250);
+        r.write32(clock::LMTIM, to.lmtim);
+        r.write32(clock::LMREFRESH, to.lmrefresh);
+        r.write32(clock::LMTYPE, to.lmtype);
+        let before = r.read32(clock::PLLSTAT);
+        r.write32(clock::COREPLL, to.pll);
+        let first = r.read32(clock::PLLSTAT);
+        let t0 = rt::ticks();
+        let mut last = first;
+        let mut changes = heapless_name();
+        let mut samples = 0u32;
+        while us_since(t0) < 2_000 {
+            let v = r.read32(clock::PLLSTAT);
+            samples += 1;
+            if v != last {
+                let _ = write!(changes, " {}us:0x{v:x}", us_since(t0));
+                last = v;
+            }
+        }
+        rt::delay_us(2_000);
+        r.write32(clock::SYSCLKSRC, 2);
+        rt::delay_us(250);
+        log!(
+            "  lock trace {name}: PLLSTAT 0x{before:x} before, 0x{first:x} at once after the write, {samples} reads in 2 ms, changes:{}",
+            if changes.n == 0 {
+                " none"
+            } else {
+                changes.as_str()
+            }
+        );
+    }
+
+    /// A full-screen card in large letters for the owner watching, held
+    /// `secs` seconds.
+    fn clock_card(g: &mut Rig, lines: [&str; 3], bg: u32, secs: u32) {
+        g.fill(SCREEN.at, (0, 0, 480, 640), bg);
+        for (k, l) in lines.iter().enumerate() {
+            g.text(SCREEN.at, 16, 200 + 80 * k as u32, l, 0xFFFF_FFFF, 4);
+        }
+        cpu::drain_write_buffer();
+        for _ in 0..secs * 10 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
     }
 
     /// Where run G's memory sits: the texture, the flush target, the
@@ -2771,6 +2875,9 @@ mod image {
         mem_wrong: u32,
         fill_us: u32,
         fill_wrong: u32,
+        /// The 2D fill didn't finish in 200 ms (G1 counted this as
+        /// `u32::MAX` wrong words, which wrapped).
+        fill_hung: bool,
         render_us: u32,
         render_wrong: u32,
         first_diff: Option<(u32, u32, u32)>,
@@ -2779,6 +2886,7 @@ mod image {
     impl ClockResult {
         fn good(&self) -> bool {
             self.bus_wrong + self.mem_wrong + self.fill_wrong + self.render_wrong == 0
+                && !self.fill_hung
                 && self.render_us != 0
         }
     }
@@ -2852,9 +2960,7 @@ mod image {
                 .and_then(|()| g.e.finish(g.mem.0, 200_000))
                 .is_ok();
         r.fill_us = us_since(t0);
-        if !ok {
-            r.fill_wrong = u32::MAX;
-        }
+        r.fill_hung = !ok;
         for k in 0..4096u32 {
             let at = SCREEN.at + (k * 7919 % (480 * 640)) * 4;
             r.fill_wrong += u32::from(g.mem.load(at as usize) != Some(colour));
@@ -2899,13 +3005,36 @@ mod image {
         r
     }
 
+    /// Windows Mobile's clock checked (after a restore): GOOD, or BAD
+    /// logged with the registers, restored once more and checked again.
+    fn clock_control(g: &mut Rig, c: &mut ClockRig, seed: u32, after: &str) -> bool {
+        let r = clock_check(g, c, false, seed);
+        if r.good() {
+            log!("    control at 99.67 MHz {after}: GOOD");
+            return true;
+        }
+        log!("    control at 99.67 MHz {after}: BAD");
+        clock_log(WM_STEP, Some(0), &r);
+        clock_readback(g);
+        clock_restore(&mut g.e.regs);
+        rt::delay_us(100_000);
+        let r = clock_check(g, c, false, seed + 0x1_0000);
+        clock_log(WM_STEP, Some(0), &r);
+        log!(
+            "    control again after a second restore: {}",
+            if r.good() { "GOOD" } else { "BAD" }
+        );
+        r.good()
+    }
+
     fn clock_log(s: ClockStep, lock: Option<u32>, r: &ClockResult) {
         let mhz = s.khz() / 1000;
         let mbs = |bytes: u32, us: u32| bytes / us.max(1);
         log!(
-            "  G {}.{:02} MHz, cores / {} = {} MHz: lock {lock:?} us | flush {} us {} MB/s, read 256K {} us {} MB/s, bus wrong {} | memory wrong {} | 2D fill {} us wrong {} | 3D {} us wrong {} | {}",
+            "  G {}.{:02} MHz CL{}, cores / {} = {} MHz: lock {lock:?} us | flush {} us {} MB/s, read 256K {} us {} MB/s, bus wrong {} | memory wrong {} | 2D fill {} us wrong {}{} | 3D {} us wrong {} | {}",
             mhz,
             s.khz() % 1000 / 10,
+            s.cl(),
             s.div,
             s.khz() / s.div / 1000,
             r.flush_us,
@@ -2916,6 +3045,7 @@ mod image {
             r.mem_wrong,
             r.fill_us,
             r.fill_wrong,
+            if r.fill_hung { " HUNG" } else { "" },
             r.render_us,
             r.render_wrong,
             if r.good() { "GOOD" } else { "BAD" }
@@ -2932,7 +3062,7 @@ mod image {
     #[inline(never)]
     fn clocks(g: &mut Rig) {
         log!(
-            "G: the clocks: the cores at divide 1, the system clock past 100 MHz (Dell's memory rule), every step stressed; each series stops at its first error"
+            "G2: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2 and CL3; each step twice, rising then in reverse, Windows Mobile's clock checked after each"
         );
         let found = (
             g.e.regs.read32(clock::COREPLL),
@@ -2985,86 +3115,122 @@ mod image {
             return;
         }
 
-        let step = |m, n, p, div| ClockStep { m, n, p, div };
-        let mut best = [None::<ClockStep>; 2];
-        let mut seed = 4;
-        // Series 1, the cores at divide 1, rising to today's system clock.
-        // Series 2, the system clock past 100 MHz, the cores at divide 2.
-        let series1 = [step(23, 3, 1, 1), step(23, 4, 0, 1), step(23, 3, 0, 1)];
-        let series2 = [
-            step(25, 3, 0, 2),
-            step(27, 3, 0, 2),
-            step(29, 3, 0, 2),
-            step(31, 3, 0, 2),
-            step(33, 3, 0, 2),
-            step(35, 3, 0, 2),
+        // The lock bit traced across a big change and a small one, each
+        // way; then Windows Mobile's clock checked again.
+        let a75 = ClockStep { n: 4, ..WM_STEP }.speed();
+        let f108 = ClockStep { m: 25, ..WM_STEP }.speed();
+        clock_card(
+            g,
+            ["LOCK TRACE", "4 PLL CHANGES", "TESTING"],
+            0xFF20_2040,
+            2,
+        );
+        lock_trace(g, a75, "99.67 -> 74.75 MHz");
+        lock_trace(g, ClockSpeed::WM, "74.75 -> 99.67 MHz");
+        lock_trace(g, f108, "99.67 -> 108.33 MHz");
+        lock_trace(g, ClockSpeed::WM, "108.33 -> 99.67 MHz");
+        let mut healthy = clock_control(g, &mut c, 3, "after the lock traces");
+
+        // Each step twice, every step in pass 1 and again in reverse in
+        // pass 2 (a failure that depends on the step before shows as a
+        // difference); Windows Mobile's clock checked after every step (a
+        // failure carried over shows there). Nothing stops at a BAD step:
+        // only a control that stays BAD stops the run.
+        let step = |m, n, p, div, cl3| ClockStep { m, n, p, div, cl3 };
+        let steps = [
+            step(23, 3, 0, 1, None),        // 99.67, the divider alone
+            step(23, 3, 1, 1, None),        // 49.83 /1 (G1: GOOD, then BAD)
+            step(23, 4, 0, 2, None),        // 74.75 /2: the PLL change alone
+            step(23, 4, 0, 1, None),        // 74.75 /1 (G1: BAD)
+            step(20, 4, 0, 1, None),        // 65.00 /1
+            step(25, 3, 0, 2, Some(false)), // 108.33 CL2
+            step(25, 3, 0, 2, Some(true)),  // 108.33 CL3 (G1: no 3D)
+            step(27, 3, 0, 2, Some(false)), // 117.00 CL2
+            step(27, 3, 0, 2, Some(true)),  // 117.00 CL3
+            step(41, 4, 0, 2, Some(false)), // 133.25 CL2 (run 27: right)
+            step(41, 4, 0, 2, Some(true)),  // 133.25 CL3
         ];
-        for (k, series) in [&series1[..], &series2[..]].into_iter().enumerate() {
+        let total = 2 * steps.len();
+        let mut seed = 4;
+        let mut k = 0;
+        'passes: for pass in 1..=2u32 {
             log!(
-                "  {}",
-                if k == 0 {
-                    "series 1: the cores at divide 1"
+                "  pass {pass}: {}",
+                if pass == 1 {
+                    "rising"
                 } else {
-                    "series 2: the system clock past 100 MHz, the cores at divide 2"
+                    "the same steps in reverse"
                 }
             );
-            for &s in series {
-                let lock = clock_apply(g, s);
-                let r = if lock.is_some() {
-                    clock_check(g, &mut c, false, seed)
+            for i in 0..steps.len() {
+                let s = if pass == 1 {
+                    steps[i]
                 } else {
-                    ClockResult::default()
+                    steps[steps.len() - 1 - i]
                 };
-                seed += 2;
-                clock_log(s, lock, &r);
-                clock_restore(&mut g.e.regs);
-                if !r.good() {
-                    break;
-                }
-                best[k] = Some(s);
-            }
-        }
-        // Series 3: both, if the cores ran right at divide 1 at 99.67 MHz.
-        if best[0].is_some_and(|s| s.khz() >= 99_000) {
-            log!("  series 3: past 100 MHz with the cores at divide 1");
-            for &s in &series2 {
-                let s = ClockStep { div: 1, ..s };
+                k += 1;
+                let (mut l1, mut l2, mut l3) = (heapless_name(), heapless_name(), heapless_name());
+                let _ = write!(l1, "STEP {k} OF {total}");
+                let _ = write!(
+                    l2,
+                    "{}.{:02} MHZ CORES/{}",
+                    s.khz() / 1000,
+                    s.khz() % 1000 / 10,
+                    s.div
+                );
+                let _ = write!(l3, "CL{} TESTING", s.cl());
+                clock_card(g, [l1.as_str(), l2.as_str(), l3.as_str()], 0xFF20_2040, 2);
                 let lock = clock_apply(g, s);
-                let r = if lock.is_some() {
-                    clock_check(g, &mut c, false, seed)
-                } else {
-                    ClockResult::default()
-                };
-                seed += 2;
-                clock_log(s, lock, &r);
-                clock_restore(&mut g.e.regs);
-                if !r.good() {
-                    break;
-                }
-                best[0] = Some(s);
-            }
-        }
-        // The soaks: 60 s at the fastest clean step of each divider.
-        for s in best.into_iter().flatten() {
-            let lock = clock_apply(g, s);
-            let t0 = rt::ticks();
-            let (mut rounds, mut bad) = (0u32, 0u32);
-            while lock.is_some() && us_since(t0) < 60_000_000 && bad == 0 {
-                let r = clock_check(g, &mut c, false, seed);
-                seed += 2;
-                rounds += 1;
-                if !r.good() {
-                    bad += 1;
+                clock_readback(g);
+                let mut good = 0;
+                for _ in 0..2 {
+                    let r = if lock.is_some() {
+                        clock_check(g, &mut c, false, seed)
+                    } else {
+                        ClockResult::default()
+                    };
+                    seed += 2;
                     clock_log(s, lock, &r);
+                    good += u32::from(r.good());
+                }
+                clock_restore(&mut g.e.regs);
+                let mut done = heapless_name();
+                let _ = write!(done, "step {k}");
+                healthy = clock_control(g, &mut c, seed, done.as_str());
+                seed += 2;
+                let mut l3 = heapless_name();
+                let _ = write!(
+                    l3,
+                    "{}",
+                    if good == 2 {
+                        "GOOD"
+                    } else if good == 0 {
+                        "BAD"
+                    } else {
+                        "MIXED"
+                    }
+                );
+                let bg = if good == 2 { 0xFF10_6020 } else { 0xFF80_2010 };
+                clock_card(g, [l1.as_str(), l2.as_str(), l3.as_str()], bg, 2);
+                if !healthy {
+                    break 'passes;
                 }
             }
-            clock_restore(&mut g.e.regs);
-            log!(
-                "  soak at {} kHz, cores / {}: {rounds} rounds in {} s, {} BAD",
-                s.khz(),
-                s.div,
-                us_since(t0) / 1_000_000,
-                bad
+        }
+        if healthy {
+            clock_card(
+                g,
+                ["RUN G2 DONE", "BACK TO NORMAL", "LOG SENT"],
+                0xFF10_6020,
+                3,
+            );
+        } else {
+            log!("  STOPPED: Windows Mobile's clock stayed BAD after a step");
+            clock_card(
+                g,
+                ["RUN G2 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
+                0xFF80_2010,
+                3,
             );
         }
         let after = (
@@ -3109,7 +3275,7 @@ mod image {
             } else if TEXT {
                 "F (text as 4 bpp coverage strips, against RGB565 pixels)"
             } else if CLOCK {
-                "G (the clocks: the cores at divide 1, the system clock past 100 MHz)"
+                "G2 (the clocks: lock traces, divide 1, past 100 MHz with CL2 and CL3, controls after each step)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
