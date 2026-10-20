@@ -349,53 +349,113 @@ pub fn get(root: &Path, file: &str, local: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
-/// `cargo xtask cardlog [image] [number]`: a run log kept on the card as
-/// the run went (rp-cardlog, `rplog/<image>-NNNN.txt`), the newest (of
-/// `image`, or of any image) or the one numbered; saved under
-/// `local/cardlog/`, its text printed. A log without the closing line is a
-/// run that didn't come back: said so.
-pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<(), String> {
-    let (entries, _) = query(root, &format!("ls {}", rp_cardlog::FOLDER))?;
-    let mut best: Option<(u32, String)> = None;
-    for e in &entries {
-        let Some((size, name)) = e.split_once(' ') else { continue };
+/// The name a run's card log carries: the image's, without `rp-` (lowercase
+/// letters, digits, `-`, `_`; `run` otherwise, as the loader would).
+pub fn card_log_name(image: &str) -> String {
+    let base = image.rsplit(['/', '\\']).next().unwrap_or(image);
+    let base = base.strip_suffix(".bin").unwrap_or(base);
+    let name = base
+        .strip_prefix("rp-")
+        .unwrap_or(base)
+        .to_ascii_lowercase();
+    if rp_hal_x51v::cardlog::name_ok(name.as_bytes()) {
+        name
+    } else {
+        "run".to_string()
+    }
+}
+
+/// The card logs listed in `entries` (`ls` lines): (number, file name), of
+/// `image` (or any) and `number` (or any).
+fn card_logs(entries: &[String], image: Option<&str>, number: Option<u32>) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for e in entries {
+        let Some((size, name)) = e.split_once(' ') else {
+            continue;
+        };
         if size == "d" {
             continue;
         }
-        let Some((who, rest)) = name.rsplit_once('-') else { continue };
-        let Some(n) = rest.strip_suffix(".txt").and_then(|d| d.parse::<u32>().ok()) else {
+        let Some((who, rest)) = name.rsplit_once('-') else {
+            continue;
+        };
+        let Some(n) = rest
+            .strip_suffix(".txt")
+            .and_then(|d| d.parse::<u32>().ok())
+        else {
             continue;
         };
         if image.is_some_and(|i| i != who) || number.is_some_and(|k| k != n) {
             continue;
         }
-        // Newest: the highest number (per image the numbers rise; across
-        // images, the listing's last of equal numbers).
-        if best.as_ref().is_none_or(|(b, _)| n >= *b) {
-            best = Some((n, name.to_string()));
-        }
+        out.push((n, name.to_string()));
     }
-    let Some((_, name)) = best else {
+    out
+}
+
+/// `cargo xtask cardlog [image] [number]`: a run's log kept on the cards
+/// as the run went (`rp_hal_x51v::cardlog`: `rplog/<image>-NNNN.txt` on
+/// the SD card, and on the CF card for what a program logged while it had
+/// the SD card), the newest (of `image`, or of any image) or the one
+/// numbered; both halves joined, saved under `local/cardlog/`, its text
+/// printed. A log without the closing line is a run that didn't come
+/// back: said so.
+pub fn cardlog(root: &Path, image: Option<&str>, number: Option<u32>) -> Result<(), String> {
+    let folder = rp_hal_x51v::cardlog::FOLDER;
+    let image = image.map(card_log_name);
+    let image = image.as_deref();
+    let sd = query(root, &format!("ls {folder}"))
+        .map(|(e, _)| card_logs(&e, image, number))
+        .unwrap_or_default();
+    let cf = query(root, &format!("ls cf:{folder}"))
+        .map(|(e, _)| card_logs(&e, image, number))
+        .unwrap_or_default();
+    // Newest: the highest number (per image the numbers rise; across
+    // images, the listing's last of equal numbers).
+    let Some((n, name)) = sd
+        .iter()
+        .chain(&cf)
+        .fold(None::<&(u32, String)>, |best, e| match best {
+            Some(b) if b.0 > e.0 => Some(b),
+            _ => Some(e),
+        })
+        .cloned()
+    else {
         return Err(format!(
-            "no card log{} in {}/ on the card",
+            "no card log{} in {folder}/ on either card",
             image.map(|i| format!(" of {i}")).unwrap_or_default(),
-            rp_cardlog::FOLDER
         ));
     };
-    let file = format!("{}/{name}", rp_cardlog::FOLDER);
-    let (lines, reply) = query(root, &format!("get {file}"))?;
-    let data = decode_file(&lines, &reply)?;
-    let end = data.iter().position(|&b| b == 0).unwrap_or(data.len());
-    let text = String::from_utf8_lossy(&data[..end]).into_owned();
+    let fetch = |unit: &str, list: &[(u32, String)]| -> Result<Option<Vec<u8>>, String> {
+        if !list.iter().any(|(k, f)| *k == n && *f == name) {
+            return Ok(None);
+        }
+        let (lines, reply) = query(root, &format!("get {unit}{folder}/{name}"))?;
+        decode_file(&lines, &reply).map(Some)
+    };
+    let sd_part = fetch("", &sd)?;
+    let cf_part = fetch("cf:", &cf)?;
+    let joined: Vec<u8> =
+        rp_hal_x51v::cardlog::join(sd_part.as_deref(), cf_part.as_deref()).collect();
+    let text = String::from_utf8_lossy(&joined).into_owned();
     let dir = root.join("local/cardlog");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let dest = dir.join(&name);
     std::fs::write(&dest, text.as_bytes()).map_err(|e| format!("{}: {e}", dest.display()))?;
     println!("{text}");
-    eprintln!("    {file}: {} bytes of log, saved as {}", text.len(), dest.display());
+    eprintln!(
+        "    {folder}/{name}: {} bytes of log ({}), saved as {}",
+        text.len(),
+        match (sd_part.is_some(), cf_part.is_some()) {
+            (true, true) => "the SD and CF cards' parts joined",
+            (true, false) => "from the SD card",
+            _ => "from the CF card",
+        },
+        dest.display()
+    );
     if !text.contains("[card log closed: ") {
         eprintln!(
-            "    no closing line: this run didn't come back (it hung or the device was reset); the log ends at its last line written"
+            "    no closing line: this run didn't come back and the loader hasn't closed it (a watchdog reset clears what it needs); the log ends at its last line written"
         );
     }
     Ok(())
@@ -589,6 +649,20 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
         ));
     }
     let (payload, frame) = image_frame(root, what)?;
+    // The run's card log is named after the image (rplog/<name>-NNNN.txt);
+    // a loader from before the card log for every run refuses the command,
+    // and the run goes ahead with the image's own logging only.
+    if !is_loader(&payload) {
+        let name = card_log_name(what);
+        match query(root, &format!("name {name}")) {
+            Ok(_) => eprintln!(
+                "    card log: rplog/{name}-NNNN.txt on the SD card (and the CF card when one is in)"
+            ),
+            Err(e) => eprintln!(
+                "    card log: the loader didn't take the name ({e}); an older loader keeps no card log for every run"
+            ),
+        }
+    }
     let mut out = powershell(&load_script(&frame))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
         // Windows still holds a stale entry for the port (Windows Mobile's

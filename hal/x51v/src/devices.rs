@@ -211,6 +211,23 @@ pub fn take_cf() -> Option<(Mmio, Mmio)> {
     Some(unsafe { (Mmio::new(attr, 0x1000), Mmio::new(common, 0x1000)) })
 }
 
+/// The CompactFlash socket's common memory (the task file) for the card log
+/// (`crate::cardlog`), only while this program hasn't taken them
+/// ([`take_cf`]), with the socket enabled and timed as the loader left it
+/// (nothing is written to the memory controller). Like
+/// `rt::mmc_if_untaken`: no owner exists, each use is one sector write.
+pub(crate) fn cf_if_untaken() -> Option<Mmio> {
+    // SAFETY: a plain read of the flag; single core.
+    if unsafe { core::ptr::addr_of!(CF_TAKEN).read() } {
+        return None;
+    }
+    let base = va(region("pcmcia1_cf")?.base as usize);
+    let common = NonNull::new((base + CF_COMMON) as *mut u32)?;
+    // SAFETY: as in `take_cf` (its common memory window); the flag
+    // (checked above) says no handle from `take_cf` exists in this program.
+    Some(unsafe { Mmio::new(common, 0x1000) })
+}
+
 /// Power manager `PCFR` and its GPIO reset enable (docs/hw/README.md
 /// "Software reset").
 const PCFR: usize = 0x00F0_001C;
@@ -312,6 +329,16 @@ pub fn log_start() {
     }
 }
 
+/// The run log's flags (bit 0 overflow, 1 returned, 2 crashed, 3 a
+/// hand-over), if a run log is there: the loader reads how the last run
+/// ended before [`log_take`] closes it (the card log's closing line).
+#[must_use]
+pub fn log_flags() -> Option<u32> {
+    log_used()?;
+    // SAFETY: the run log's flags word (valid: checked just above).
+    Some(unsafe { log_word(2).read_volatile() })
+}
+
 /// Marks the run just started as a hand-over to a new loader (the loader,
 /// before starting an image that carries [`LOADER_SIGNATURE`]): the new
 /// loader then doesn't report its predecessor's run as a hang (it had: a
@@ -328,10 +355,22 @@ pub fn log_mark_handover() {
 
 /// Appends to the run log, if this run has one. Past the end, bytes are
 /// dropped and the overflow flag is set (reported by the loader: never
-/// silently).
+/// silently). With a card log on (`crate::cardlog`, every run the loader
+/// starts with a card in), each line also goes onto a card as it ends, and
+/// what doesn't fit in the run log still does.
 #[inline(never)]
 pub fn log_write(data: &[u8]) {
-    let Some(used) = log_used() else { return };
+    if log_append(data) {
+        crate::cardsink::after_write(data);
+    }
+}
+
+/// [`log_write`] without the card: the card log's own notes (it is the
+/// one writing), and the loader's lines (it syncs the card itself, and so
+/// carries none of a program's card writes). Whether the run has a log.
+#[inline(never)]
+pub fn log_append(data: &[u8]) -> bool {
+    let Some(used) = log_used() else { return false };
     let n = data.len().min(LOG_CAPACITY - used);
     // SAFETY: LOG_BASE + LOG_HEADER + used.. stays inside the reservation
     // (n is clamped to the capacity left); single core, so no other writer.
@@ -343,6 +382,22 @@ pub fn log_write(data: &[u8]) {
             log_word(2).write_volatile(log_word(2).read_volatile() | 1);
         }
     }
+    if n < data.len() {
+        crate::cardsink::more(&data[n..]);
+    }
+    true
+}
+
+/// The run log's length so far (0 without one).
+pub(crate) fn log_len() -> usize {
+    log_used().unwrap_or(0)
+}
+
+/// The run log's text so far.
+pub(crate) fn log_text() -> &'static [u8] {
+    // SAFETY: the run log's `used` bytes, inside the reservation; read-only
+    // (appends only add after them).
+    unsafe { core::slice::from_raw_parts((LOG_BASE + LOG_HEADER) as *const u8, log_len()) }
 }
 
 /// A `core::fmt::Write` sink for [`log_write`].

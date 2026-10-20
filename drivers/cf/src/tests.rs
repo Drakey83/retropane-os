@@ -495,6 +495,23 @@ fn reads_and_writes_sectors_including_runs_over_256() {
     assert_eq!(cmds.iter().filter(|&&x| x == CMD_WRITE_SECTORS).count(), 2);
 }
 
+/// A card the loader attached, taken over for a program's card log: no
+/// reset or IDENTIFY, sectors written through the port, its end kept.
+#[test]
+fn an_adopted_card_writes_without_being_reset() {
+    let (c, attr, common) = card();
+    let (attr, common) = init(&c, attr, common).ok().unwrap().into_inner();
+    let commands = c.borrow().commands.len();
+    let resets = c.borrow().resets;
+    let mut cf = CfCard::adopt(attr, common, SECTORS);
+    let data = [0x6Bu8; SECTOR];
+    cf.write_blocks(77, &data).unwrap();
+    assert_eq!(c.borrow().disk[77 * SECTOR..78 * SECTOR], data[..]);
+    assert_eq!(c.borrow().commands[commands..], [CMD_WRITE_SECTORS]);
+    assert_eq!(c.borrow().resets, resets, "no reset");
+    assert_eq!(cf.write_blocks(SECTORS, &data), Err(BlockError::OutOfRange));
+}
+
 #[test]
 fn transfers_past_the_end_are_refused_before_the_card_sees_them() {
     let (c, attr, common) = card();

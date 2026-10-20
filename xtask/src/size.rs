@@ -181,7 +181,11 @@ pub const BUDGETS: &[Budget] = &[
         // results teed into the run log and a return to the loader, so the
         // real X51v's switch and interrupt numbers reach the PC, plus the
         // shared crash path; 28.1 KiB measured, +~10%.
-        max_load: 32 * 1024,
+        // Ratcheted 32 -> 40 KiB on 2026-10-20 (test image): the card log for
+        // every run the loader starts (rp_hal_x51v::cardsink, quality audit
+        // C24: each line onto the SD or CF card the loader set up, ~4.5 KiB
+        // of sector writes and the sync); 33.5 KiB measured, + ~10%.
+        max_load: 40 * 1024,
         // Lowered 30 -> 27 KiB on 2026-10-12: thread contexts moved onto the
         // threads' own stacks (24.3 KiB measured, +~10%).
         // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
@@ -289,9 +293,16 @@ pub const BUDGETS: &[Budget] = &[
     // Lowered 116 -> 112 KiB the same day by the loader diet: the audio
     // check (`tone`, the WM8750, I2C, I2S streaming, the headphone jack;
     // 3.5 KiB) moved to its own test image, rp-tone; 112,680 B measured.
+    // Raised 112 -> 124 KiB on 2026-10-20 (approved by the owner): the card
+    // log for every run (quality audit C24): the loader reserves each run's
+    // rplog/<image>-NNNN.txt on the SD and CF cards (rp-fat's reserve, the
+    // cleanup of old ones), leaves the state for the program, closes the log
+    // when the run comes back (or at the next start), and `ls`/`get` read the
+    // CF card (`cf:`) for the half a program kept there; one copy of the file
+    // systems for both cards. 121,224 B measured (Thumb).
     Budget {
         image: "rp-loader",
-        max_load: 112 * 1024,
+        max_load: 124 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Loader,
     },
@@ -299,9 +310,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 8 -> 14 KiB on 2026-10-12 (test image): it now draws the
     // crash box every image draws (the console and font), on a plane it
     // moves to offset 0 as Windows Mobile leaves it; 12.9 KiB measured, +~9%.
+    // Ratcheted 14 -> 20 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 17.5 KiB measured, + ~10%.
     Budget {
         image: "rp-crash",
-        max_load: 14 * 1024,
+        max_load: 20 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -309,9 +324,13 @@ pub const BUDGETS: &[Budget] = &[
     // measured, +~10%; then 9 -> 10 KiB (2026-10-14): every image now
     // reports its deepest stack on the way back to the loader (formatting
     // linked in), 9.1 KiB measured.
+    // Ratcheted 10 -> 20 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 17.4 KiB measured, + ~10%.
     Budget {
         image: "rp-hang",
-        max_load: 10 * 1024,
+        max_load: 20 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -334,15 +353,23 @@ pub const BUDGETS: &[Budget] = &[
     // verifies 2700G memory at each step. Budget set from the first build;
     // 2026-10-19 with a 2D fill check per step and the soak (the 2D
     // engine's driver): 18.2 KiB measured, + ~13%.
+    // Ratcheted 21 -> 29 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 26.3 KiB measured, + ~10%.
     Budget {
         image: "rp-cs3bus",
-        max_load: 21 * 1024,
+        max_load: 29 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Ratcheted 34 -> 40 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 39.5 KiB measured, + ~10%.
     Budget {
         image: "rp-blend",
-        max_load: 34 * 1024,
+        max_load: 40 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -389,9 +416,13 @@ pub const BUDGETS: &[Budget] = &[
     // over itself, checked and timed (2026-10-14), 39.1 KiB measured, + ~10%;
     // then 44 -> 50 KiB for the completion and interrupt-line stages (ADR-0022
     // question 5), 44.8 KiB measured, + ~10%.
+    // Ratcheted 50 -> 59 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 57.3 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 50 * 1024,
+        max_load: 59 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -399,9 +430,13 @@ pub const BUDGETS: &[Budget] = &[
     // event probe (2026-10-14): 37.4 KiB measured, + ~10%; then 42 -> 51
     // KiB for B6 (ADR-0023's unknowns: stride 0, 32 bpp blending and
     // scan-out, an ARGB4444 destination), 46.1 KiB measured, + ~10%.
+    // Ratcheted 51 -> 57 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 55.0 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx-blend",
-        max_load: 51 * 1024,
+        max_load: 57 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -423,15 +458,23 @@ pub const BUDGETS: &[Budget] = &[
     // Test image (ADR-0026, 2026-10-18): the alpha test, depth "less"
     // without it and 8-bit grey textures; rp-mbx3d's proven set-up only.
     // 20.3 KiB measured, + ~15%.
+    // Ratcheted 24 -> 32 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 28.7 KiB measured, + ~10%.
     Budget {
         image: "rp-glesfeat",
-        max_load: 24 * 1024,
+        max_load: 32 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Ratcheted 44 -> 51 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 46.0 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx3d",
-        max_load: 44 * 1024,
+        max_load: 51 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -440,9 +483,13 @@ pub const BUDGETS: &[Budget] = &[
     // rp-fat's writes for both FAT32 and exFAT cards, as in the loader;
     // then 104 -> 117 KiB for interrupt-timestamped ticks (the IRQ
     // dispatch code), 106.5 KiB measured, + ~10%.
+    // Ratcheted 117 -> 130 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 117.3 KiB measured, + ~10%.
     Budget {
         image: "rp-noise",
-        max_load: 117 * 1024,
+        max_load: 130 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -453,9 +500,13 @@ pub const BUDGETS: &[Budget] = &[
     // tightened 70 -> 66 KiB for run 4 (S8 done and removed), 60.0 KiB
     // measured, + ~10%; then 66 -> 72 KiB for S5's "less" and alpha-test
     // cases (ADR-0026 option a, 2026-10-18), 66.0 KiB measured, + ~9%.
+    // Ratcheted 72 -> 83 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 74.6 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx3d-api",
-        max_load: 72 * 1024,
+        max_load: 83 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -469,18 +520,26 @@ pub const BUDGETS: &[Budget] = &[
     // systems, to reserve the file; quality audit C24 has the smaller
     // design, the loader reserving it): 178.0 KiB measured, + ~10%; zeroed
     // RAM 23.7 KiB (+ the 4 KiB reservation scratch), + ~10%.
+    // Lowered 196 -> 117 KiB on 2026-10-20: the card log is the loader's
+    // now (every run keeps one, quality audit C24), so the image no longer
+    // carries the SD driver and the file systems; 109.5 KiB measured,
+    // + ~10%; zeroed RAM 26 -> 22 KiB (no reservation scratch).
     Budget {
         image: "rp-gpubench",
-        max_load: 196 * 1024,
-        max_zero: 26 * 1024,
+        max_load: 117 * 1024,
+        max_zero: 22 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
     // the card's CIS and IDENTIFY, five read paths timed; report only.
     // 32.8 KiB measured (2026-10-15), + ~10%.
+    // Ratcheted 37 -> 45 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 44.6 KiB measured, + ~10%.
     Budget {
         image: "rp-cftime",
-        max_load: 37 * 1024,
+        max_load: 45 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -488,9 +547,13 @@ pub const BUDGETS: &[Budget] = &[
     // and speeds by size, DMA, pre-erase, clock code and FAT layer. 74.7
     // KiB measured (2026-10-15, most of it the FAT layer, which also makes
     // the test file), + ~10%.
+    // Ratcheted 82 -> 94 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 84.9 KiB measured, + ~10%.
     Budget {
         image: "rp-sdtime",
-        max_load: 82 * 1024,
+        max_load: 94 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -506,9 +569,13 @@ pub const BUDGETS: &[Budget] = &[
     // Test image (ADR-0025 S0-S2): the MVED1 video decoder's clock, reset
     // and frame conversion. 27.7 KiB measured (2026-10-14; 36.6 KiB with
     // Debug formatting in its log, replaced by plain hex), + ~10%.
+    // Ratcheted 31 -> 40 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 36.1 KiB measured, + ~10%.
     Budget {
         image: "rp-mved",
-        max_load: 31 * 1024,
+        max_load: 40 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -517,24 +584,36 @@ pub const BUDGETS: &[Budget] = &[
     // measured (2026-10-15), + ~10%; then 32 -> 36 KiB for version 3
     // (breadcrumbs on screen and in 2700G memory after run 1 never
     // returned), 31.9 KiB measured, + ~12%.
+    // Ratcheted 36 -> 41 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 40.2 KiB measured, + ~10%.
     Budget {
         image: "rp-clocks",
-        max_load: 36 * 1024,
+        max_load: 41 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Bring-up experiment: USB reconnect candidates (ADR-0012). Provisional.
+    // Ratcheted 24 -> 34 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 30.2 KiB measured, + ~10%.
     Budget {
         image: "rp-reconnect",
-        max_load: 24 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Bring-up experiment: the USB disconnect hunt (docs/hw/udc.md T4).
     // Provisional, as rp-reconnect.
+    // Ratcheted 24 -> 34 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 29.7 KiB measured, + ~10%.
     Budget {
         image: "rp-unplug",
-        max_load: 24 * 1024,
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -544,35 +623,51 @@ pub const BUDGETS: &[Budget] = &[
     // 18 -> 21 KiB on 2026-10-15: the hand-off line (what the 2700G waited
     // for, item 72) and the CPLD shadow adopted from the shared table (item
     // 77); 19.0 KiB measured, +~10%.
+    // Ratcheted 21 -> 27 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 23.6 KiB measured, + ~10%.
     Budget {
         image: "rp-light",
-        max_load: 21 * 1024,
+        max_load: 27 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only: hand-over facts (items 72 and 77). Set at its first
     // build on 2026-10-15: 18.8 KiB measured, +~10%.
+    // Ratcheted 21 -> 26 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 23.0 KiB measured, + ~10%.
     Budget {
         image: "rp-handover",
-        max_load: 21 * 1024,
+        max_load: 26 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only: the night-light experiment (item 76), for the
     // owner's eyes and ears. Set at its first build on 2026-10-15: 19.6 KiB
     // measured, +~10%.
+    // Ratcheted 22 -> 28 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 24.4 KiB measured, + ~10%.
     Budget {
         image: "rp-nightlight",
-        max_load: 22 * 1024,
+        max_load: 28 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Diagnostics only: CF detect with the slot unpowered (the re-insert
     // fix, docs/hw/cf.md). Set at its first build on 2026-10-16: 18.3 KiB
     // measured, +~10%.
+    // Ratcheted 21 -> 26 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 22.7 KiB measured, + ~10%.
     Budget {
         image: "rp-cfdetect",
-        max_load: 21 * 1024,
+        max_load: 26 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -585,9 +680,13 @@ pub const BUDGETS: &[Budget] = &[
     // measured, 28 -> 31 KiB; then 31 -> 35 KiB for the I2C and DMA
     // diagnostics and the I2S off-time measurement (quality-audit B8),
     // 31.6 KiB measured.
+    // Ratcheted 35 -> 41 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 36.7 KiB measured, + ~10%.
     Budget {
         image: "rp-tone",
-        max_load: 35 * 1024,
+        max_load: 41 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -595,9 +694,13 @@ pub const BUDGETS: &[Budget] = &[
     // rp-audio. Set at its first build on 2026-10-18: 33.3 KiB measured,
     // +~10%. Then 37 -> 43 KiB for the speaker amplifier diagnostic
     // (`RP_AUDIO_AMP_TEST`, runs 2-3's unheard note): 38.7 KiB measured.
+    // Ratcheted 43 -> 48 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 43.3 KiB measured, + ~10%.
     Budget {
         image: "rp-audio-s1",
-        max_load: 43 * 1024,
+        max_load: 48 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -621,23 +724,35 @@ pub const BUDGETS: &[Budget] = &[
     // measure`). Set at its first build on 2026-10-17: 17.3 KiB measured,
     // +~10%. 2026-10-17 (C6): + the 8 KiB program room the PC writes a
     // measurement program into (28.4 KB measured).
+    // Ratcheted 30 -> 37 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 32.5 KiB measured, + ~10%.
     Budget {
         image: "rp-screen-measure",
-        max_load: 30 * 1024,
+        max_load: 37 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
     // Test image: the refresh-rate test (display calibration C3). Set at
     // its first build on 2026-10-17: 24.1 KiB measured, +~10%.
+    // Ratcheted 27 -> 32 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 28.4 KiB measured, + ~10%.
     Budget {
         image: "rp-refresh",
-        max_load: 27 * 1024,
+        max_load: 32 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
+    // Ratcheted 32 -> 40 KiB on 2026-10-20 (test image): the card log for
+    // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
+    // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
+    // writes and the sync); 35.3 KiB measured, + ~10%.
     Budget {
         image: "rp-display-cal",
-        max_load: 32 * 1024,
+        max_load: 40 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -892,6 +1007,9 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
             "{missing} has no size budget in xtask/src/size.rs (ADR-0005 rule 7)"
         ));
     }
+    // Every image is measured before any over its budget fails the check:
+    // one change that grows many images shows its whole cost at once.
+    let mut over = Vec::new();
     for b in BUDGETS {
         let path = release_dir.join(b.image);
         let elf = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -901,10 +1019,7 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
             b.image, s.load, b.max_load, s.zero, b.max_zero
         );
         if s.load > b.max_load || s.zero > b.max_zero {
-            return Err(format!(
-                "{} exceeds its size budget (ADR-0005). Shrink it, or justify raising the budget in review",
-                b.image
-            ));
+            over.push(b.image);
         }
         let floats = float_helpers(&elf)?;
         if !floats.is_empty() && FLOAT_ALLOWED.iter().all(|(i, _)| *i != b.image) {
@@ -914,6 +1029,14 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
                 floats.join(", ")
             ));
         }
+    }
+    if !over.is_empty() {
+        return Err(format!(
+            "{} exceed{} {} size budget (ADR-0005). Shrink, or justify raising the budget in review",
+            over.join(", "),
+            if over.len() == 1 { "s" } else { "" },
+            if over.len() == 1 { "its" } else { "their" }
+        ));
     }
     Ok(())
 }

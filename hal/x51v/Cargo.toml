@@ -7,9 +7,20 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# The card log's sector writes (cardwrite) go through register banks.
+rp-hal-api = { path = "../api" }
+
 # Device access (`devices`) exists only in bare-metal builds.
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-pxa27x = { path = "../pxa27x" }
+
+# The card log's writes are checked against the drivers' own, register for
+# register (cardwrite tests): tests only, exempt from layering.
+[dev-dependencies]
+rp-drv-sdcard = { path = "../../drivers/sdcard" }
+rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
+rp-drv-cf = { path = "../../drivers/cf" }
 
 [lints]
 workspace = true

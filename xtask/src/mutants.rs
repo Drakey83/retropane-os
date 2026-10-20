@@ -1644,6 +1644,53 @@ pub const MUTANTS: &[Mutant] = &[
             "a_stream_that_runs_dry_carries_on_where_it_stopped",
         ]),
     },
+    Mutant {
+        name: "card log: a card the program took is written anyway (two drivers on one controller)",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "state.off & (0x101 << unit) == 0 && !io.free(unit) {",
+        to: "state.off & (0x101 << unit) == 0 && false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "an_sd_test_moves_the_log_to_the_cf_card_and_the_halves_join",
+        ]),
+    },
+    Mutant {
+        name: "card log: after a reset any card in the slot is written (a swapped card's files overwritten)",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "held > 0 && held <= n && on_card[..held] == stream[..held]",
+        to: "true",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "after_a_reset_a_swapped_card_is_never_written",
+        ]),
+    },
+    Mutant {
+        name: "card log: a name from the PC with a path in it reaches the card",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "|| *b == b'-' || *b == b'_')",
+        to: "|| *b == b'-' || *b == b'_' || *b == b'/' || *b == b'.')",
+        check: Check::Host(&["-p", "rp-hal-x51v", "names_numbers_and_paths"]),
+    },
+    Mutant {
+        name: "card log: the CF card's part left out of the joined log",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "at(sd, i) | at(cf, i)",
+        to: "at(sd, i)",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "an_sd_test_moves_the_log_to_the_cf_card_and_the_halves_join",
+        ]),
+    },
+    Mutant {
+        name: "card log: programs' lines never reach the card (the run log's hook gone)",
+        file: "hal/x51v/src/devices.rs",
+        from: "        crate::cardsink::after_write(data);\n",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_cardlog),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

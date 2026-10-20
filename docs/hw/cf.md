@@ -205,6 +205,22 @@ on, and a card pulled out switches the slot off, with no READY before the
 loader attaches it again on re-insertion (rp-v0.11.1)
 ([`emulator.md`](emulator.md)).
 
+## The card log's second half (2026-10-20; emulator-checked, not yet on the X51v)
+
+With a CF card in, the loader reserves each run's card log there too,
+`rplog/<image>-NNNN.txt` beside the SD card's (`docs/hw/sd.md`, "Run logs
+on the card"; the owner's OK for a small `rplog/` folder on the CF card,
+same own-folder rule as the SD card). A program that takes the SD
+controller keeps logging here: one sector a line through the 16-bit data
+port of the socket the loader attached (`rp_hal_x51v::cardwrite`: the
+driver's WRITE SECTORS for one sector, no reset, no IDENTIFY, the socket
+timings as the loader left them; held to the driver's register writes by
+a host test). A program that
+takes the CF socket (`devices::take_cf`: rp-cftime, rp-storfast) has it
+to itself; its log stays on the SD card. `ls cf:<folder>` and `get
+cf:<file>` read the CF card through the loader. Nothing else on the card
+is written.
+
 ## Safety for experiments
 
 An access to a socket window with the card unpowered, or before its timing

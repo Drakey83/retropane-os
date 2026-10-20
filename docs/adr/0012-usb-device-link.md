@@ -159,6 +159,17 @@ Facts (docs/hw/udc.md):
   first contact and holds it to the end, run log included; a second caller
   waits, naming the holder, or fails at once with `--no-wait`. `cargo xtask
   axim` says who holds it. The rule is in docs/testing.md.
+- **The run log on the cards too (2026-10-20; owner's vote B, quality
+  audit C24; emulator-checked, not yet on the device):** a watchdog reset
+  into Dell's prompt clears the SDRAM run log, so every run the loader
+  starts also keeps its log on the SD card, and on the CF card while a
+  program has the SD card (`docs/hw/sd.md`, "Run logs on the card"). The
+  loader reserves the files (named by a new control command, `name
+  <image>`, which `cargo xtask load` sends first; an older loader refuses
+  it and the run goes ahead without), every image's run log writer copies
+  each finished line into them, and the loader closes the log when the
+  run comes back or at its next start. `ls` and `get` take `cf:` paths for
+  the CF card's half; `cargo xtask cardlog` joins the two.
 
 ## The four lenses
 

@@ -189,7 +189,11 @@ impl<'a> Fill<'a> {
         scratch: &mut [u8],
     ) -> Result<(), Error> {
         let mut one = [0u8; SECTOR];
-        let scratch = if scratch.len() < SECTOR { &mut one[..] } else { scratch };
+        let scratch = if scratch.len() < SECTOR {
+            &mut one[..]
+        } else {
+            scratch
+        };
         let n = self.len();
         let whole = match self {
             Self::Bytes(b) => {

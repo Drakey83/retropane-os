@@ -21,7 +21,6 @@ rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
 rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
-rp-cardlog = { path = "../cardlog" }
 
 [lints]
 workspace = true

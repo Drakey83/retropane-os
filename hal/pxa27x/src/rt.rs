@@ -617,6 +617,24 @@ pub fn take_mmc() -> Option<Mmio> {
     Some(unsafe { Mmio::new(base, 0x100) })
 }
 
+/// The MMC/SD controller's registers for the card log
+/// (`rp_hal_x51v::cardlog`), only while this program hasn't taken it
+/// ([`take_mmc`]): a program that drives the card itself has it to itself
+/// from then on, and the card log moves elsewhere. Not an owner's handle:
+/// each use is one sector write from the main thread, never interleaved
+/// with the owner's commands because there is no owner.
+pub fn mmc_if_untaken() -> Option<Mmio> {
+    // SAFETY: a plain read of the flag; single core.
+    if unsafe { core::ptr::addr_of!(MMC_TAKEN).read() } {
+        return None;
+    }
+    enable_clock(CKEN_MMC);
+    let base = NonNull::new(va(0x4110_0000) as *mut u32)?;
+    // SAFETY: as in `take_mmc`; the flag (checked above) says no handle
+    // from `take_mmc` exists in this program.
+    Some(unsafe { Mmio::new(base, 0x100) })
+}
+
 /// CKEN bit for the DMA controller.
 pub const CKEN_DMA: u32 = 24;
 

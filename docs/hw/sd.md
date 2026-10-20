@@ -127,34 +127,75 @@ new clusters first, FAT links in every copy, then one sector write switches
 the directory entry, then the old clusters are freed. The probe lists the
 root directory read-only; the loader takes `RPF1` frames (`cargo xtask put`).
 
-### Run logs on the card (`rp-cardlog`, 2026-10-20)
+### Run logs on the card (the card log, 2026-10-20)
 
 A test image's run log in SDRAM, and its copy in the internal SRAM, are
 cleared by a hardware watchdog reset into Dell's prompt (run Z: the
-2700G froze the bus): the runs that most needed their log lost it. An
-image built with `rp-cardlog` (so far `rp-gpubench`) reserves its own file
-before the test, `rplog/<image>-NNNN.txt` (the next number: a re-run never
-overwrites a log not yet fetched), 256 KiB zero-filled in one run of
-sectors (`reserve`, crash-safe like `put`), then writes each log line into
-it **in place**: one sector write a line, no directory or FAT change
-during the run, so a reset at any moment leaves the file system whole and
-every line written before it on the card (the text ends at the first zero
-byte). A clean return adds a closing line (`[card log closed: ...]`, with
-the slowest sector write); a file without it is a run that didn't come
-back. It uses the CPU's own transfers (no DMA: the SD DMA channel stays the
-image's) and writes only inside `rplog/`. `cargo xtask cardlog [image]
-[number]` fetches the newest (or numbered) one through the loader into
-`local/cardlog/`. `emu-gpubench` checks every run's card log against its
-run log, word for word. **Proven on the X51v (2026-10-20, run H,
-`local/rp-gpubench-runH1.txt`, `runH2.txt`, `local/cardlog/`):** H1 returned
-and its card log matched the SDRAM log line for line (50 lines, the
-closing line, 0 refused; slowest sector write 17.4 ms: keep log lines out
-of timed parts). H2 logged 40 numbered lines and fired the PXA's hardware
-watchdog (into Dell's restore prompt, Mail, the loader): the loader had no
-run log left, and the card had every line up to the last one before the
-reset, and no closing line. Open: the loader could
-reserve the file instead, sparing each image ~52 KiB of file-system code
-(quality audit C24).
+2700G froze the bus): the runs that most needed their log lost it.
+
+**First design, proven on the X51v (2026-10-20, rp-gpubench run H,
+`local/rp-gpubench-runH1.txt`, `runH2.txt`, `local/cardlog/`):** the
+image itself (`rp-cardlog`, built into rp-gpubench only) reserved
+`rplog/<image>-NNNN.txt`, 256 KiB zero-filled in one run of sectors
+(`reserve`, crash-safe like `put`), and wrote each log line into it **in
+place**: one sector write a line, no directory or FAT change during the
+run, so a reset at any moment leaves the file system whole and every line
+written before it on the card (the text ends at the first zero byte). H1
+returned and its card log matched the SDRAM log line for line (50 lines,
+the closing line, 0 refused; slowest sector write 17.4 ms: keep log lines
+out of timed parts). H2 logged 40 numbered lines and fired the PXA's
+hardware watchdog (into Dell's restore prompt, Mail, the loader): the
+loader had no run log left, and the card had every line up to the last
+one before the reset, and no closing line.
+
+**Every run now (owner's vote B, quality audit C24; emulator-checked, not
+yet run on the X51v):** the same file and the same in-place writes, but
+the loader reserves the file (it has the file systems) for every image it
+starts, named by `cargo xtask load` (`name <image>`, checked: 1-24 of
+`a-z 0-9 - _`), the next number on either card. It reserves one on the SD
+card and, when a CF card is in, one with the same name on the CF card
+(`docs/hw/cf.md`), deletes this image's files beyond the newest 32 (8 a
+run), and leaves the state in SDRAM (`rp_hal_x51v::cardlog`, at
+`0xA8511000`). Every program then gets it with no code of its own: the
+run log's writer (`devices::log_write`) puts each line on a card when it
+ends, through the controller the loader set up (`rp_hal_x51v::cardwrite`: the
+drivers' single-block write, CMD24 then CMD13, on the card the loader
+identified, its address and bus width from the loader; a host test holds
+it to the drivers' register writes; the CPU's own transfers, so the
+program's DMA channels stay its own). Each sector is built **from the run log itself**
+(sector `k` = bytes `k * 512..` of the run log, then of `0xA8520000` for
+what a long run logs past the run log's 64 KiB): the card can't say
+anything the run log doesn't. About 4.3 KiB of each image.
+
+- **A program that takes the SD controller** (`rt::take_mmc`: rp-sdtime,
+  rp-noise, rp-looks...) has it to itself: the log moves to the CF card
+  from its next line, with a line saying so (`[card log: the SD card was
+  taken by the program; continuing on the CF card]`). A CF test keeps it
+  on SD; a program that takes both (rp-storfast), or an SD test with no
+  CF card in, pauses it, with a line saying so; a card that refuses a
+  write hands over the same way.
+- **The loader closes it** when the program comes back (or, after a hang
+  that kept the RAM, at its next start): what a pause held back goes onto
+  a card, then `[card log closed: the run returned | crashed | did not
+  return (closed at the next start); N sector writes, M refused, slowest
+  T us, D bytes dropped]`. The closing line is in the run log the PC
+  receives too. A file without it is a run that didn't come back and whose
+  RAM didn't survive (a watchdog reset into Dell's prompt).
+- **After a reset the loader writes a card only if its file still starts
+  with the run's first bytes** (a card swapped meanwhile could hold other
+  files there).
+- `cargo xtask cardlog [image] [number]` fetches the SD card's part and
+  the CF card's (`ls cf:rplog`, `get cf:rplog/...`), joins them byte for
+  byte (each part holds its stretch at the same offsets, zeros elsewhere)
+  and saves the whole log under `local/cardlog/`.
+
+`emu-cardlog` checks it on the emulator with both cards in: rp-light (on
+SD, the CF file unwritten; numbered after 40 seeded files, the 8 oldest
+beyond 32 deleted), rp-sdtime (moved to CF, the halves joined), rp-crash
+(closed as crashed) and an image that hangs with interrupts off (the
+watchdog reset, closed at the next start): each card log equals the run
+log the PC received, word for word, and nothing outside `rplog/` changed
+on either card. `emu-gpubench` checks every gpubench run's.
 
 ### DMA (M; emulator-verified; reads confirmed on the device 2026-10-15)
 

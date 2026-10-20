@@ -76,7 +76,7 @@ mod image {
     use rp_hal_mem::{load32_volatile, store32_volatile, words_as_bytes};
     use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
-    use rp_cardlog::CardRunLog;
+    use rp_hal_x51v::devices::KeptRunLog;
     use rp_mbx3d_render::{
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
         UV_ONE, address, format, untwiddle,
@@ -88,7 +88,7 @@ mod image {
     rp_hal_pxa27x::entry!(main);
 
     macro_rules! log {
-        ($($t:tt)*) => {{ let _ = writeln!(CardRunLog, $($t)*); }};
+        ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
     }
 
     /// Run B: the texture-word probes instead of run A.
@@ -3635,14 +3635,6 @@ mod image {
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        // The run log on the card as the run goes (rp-cardlog): the SDRAM
-        // log and the SRAM copy don't survive a watchdog reset into Dell's
-        // prompt (run Z, 2026-10-20), and those were the runs that most
-        // needed their log. First, so everything after is on the card.
-        match rp_cardlog::start("gpubench") {
-            Ok(n) => log!("{MARKER}: card log rplog/gpubench-{n:04}.txt"),
-            Err(why) => log!("{MARKER}: card log off ({why}): the SDRAM log only"),
-        }
         let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
@@ -4511,7 +4503,9 @@ mod image {
         // brought on directly: the PXA's hardware watchdog (OS timer match
         // 3), the reset a frozen bus ends in, into Dell's prompt.
         log!("H: the read returned 0x{v:x}: no freeze");
-        log!("H: the hardware watchdog fires in 1 s (nothing feeds it from here); the device resets into Dell's prompt");
+        log!(
+            "H: the hardware watchdog fires in 1 s (nothing feeds it from here); the device resets into Dell's prompt"
+        );
         if FIRE_WATCHDOG {
             rt::watchdog().feed(3_250_000);
             loop {
@@ -4568,7 +4562,8 @@ mod image {
         let mut buf = [0u32; 64];
         for (k, chunk) in c.tex_copy.chunks(64).enumerate() {
             buf[..chunk.len()].copy_from_slice(chunk);
-            g.mem.store(c.tex.at as usize + 256 * k, &buf[..chunk.len()]);
+            g.mem
+                .store(c.tex.at as usize + 256 * k, &buf[..chunk.len()]);
         }
         g.mem.sync();
         let _ = show_screen(&mut g.e.regs);
@@ -4630,7 +4625,12 @@ mod image {
             let r = clock_check(g, &mut c, false, 6 + 2 * k as u32);
             rescue_log(g, what.split(':').next().unwrap_or(what), &r, &base);
         }
-        clock_card(g, ["RUN Y DONE", "BACK TO NORMAL", "LOG SENT"], 0xFF10_6020, 3);
+        clock_card(
+            g,
+            ["RUN Y DONE", "BACK TO NORMAL", "LOG SENT"],
+            0xFF10_6020,
+            3,
+        );
         clock_rig_free(g, c);
     }
 
@@ -5034,10 +5034,9 @@ mod image {
         saved
     }
 
-    /// Every clean return: the card log closed (its closing line marks a run
-    /// that came back), the SRAM copy cleared, back to the loader.
+    /// Every clean return: the SRAM copy cleared, back to the loader (which
+    /// closes the card log: its closing line marks a run that came back).
     fn back_to_loader() {
-        rp_cardlog::stop();
         rp_hal_x51v::devices::kept_stop();
         rp_hal_x51v::devices::return_to_loader();
     }
@@ -5052,8 +5051,6 @@ mod image {
         if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
         }
-        let _ = writeln!(rp_cardlog::CardOnly, "{msg}");
-        rp_cardlog::stop();
         rp_hal_x51v::devices::crash_to_loader(msg);
         loop {
             core::hint::spin_loop();

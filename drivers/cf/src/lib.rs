@@ -275,6 +275,29 @@ fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<u32, CfError> {
 }
 
 impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C> {
+    /// Takes over a card someone else attached (the loader, for a
+    /// program's card log: `rp_hal_x51v::cardlog`): no reset, no CIS walk,
+    /// no IDENTIFY, so the card stays as it was; `sectors` is its capacity
+    /// (transfers past it are refused). Sectors move through the 16-bit
+    /// data port.
+    pub fn adopt(attr: A, common: C, sectors: u32) -> Self {
+        Self {
+            attr,
+            common,
+            dma: NoDma,
+            window_phys: 0,
+            path: ReadPath::Port16,
+            proven: ReadPath::Port16,
+            path_mismatches: 0,
+            dma_refused: 0,
+            sectors,
+            model: [b' '; 40],
+            cache_off: false,
+            last_error: 0,
+            dead: false,
+        }
+    }
+
     /// Takes the card in the socket: `attr` and `common` are the socket's
     /// attribute and common memory windows (powered, timings set), `lines`
     /// its RESET and READY lines, `delay_us` waits (microseconds). The card

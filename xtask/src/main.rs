@@ -92,10 +92,11 @@ commands:
             attach and drop times; `cf soft`: no hardware reset (diagnostics)
   log       the last image's run log again, from the loader (for a log
             lost on the way back; `load` asks for it by itself)
-  cardlog   `cardlog [image] [number]`: a run log kept on the card as the
-            run went (rplog/<image>-NNNN.txt; images built with rp-cardlog,
-            e.g. rp-gpubench): the newest, or the one numbered; it survives
-            hangs, watchdog and soft resets; saved under local/cardlog/
+  cardlog   `cardlog [image] [number]`: a run's log kept on the cards as
+            the run went (rplog/<image>-NNNN.txt, every run the loader
+            starts; the SD card's part and the CF card's joined): the
+            newest, or the one numbered; it survives hangs, watchdog and
+            soft resets; saved under local/cardlog/
   cpld      the CPLD's registers as the loader found them at start-up
             (read-only diagnostics)
   handoff   which DMA channels the loader's start found running, how long
@@ -220,6 +221,9 @@ commands:
             the card as the PC's second drive)
   emu-stale only the stale-view check (a PC write from before an image's
             run is refused; the drive goes away; no file lost)
+  emu-cardlog  the card log for every run: on the SD card line for line, moved
+            to the CF card when a program takes the SD card, closed by the
+            loader (returned, crashed, a watchdog reset), old files cleaned
   emu-storfast the storage speed-ups' device test (rp-storfast) under the
             loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
@@ -243,7 +247,7 @@ fn main() -> ExitCode {
         | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
         | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
         | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
-        | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -558,6 +562,7 @@ fn run_step(step: &str) -> Result {
             cross().and_then(|()| emu::boot_loader_screen_measure(&workspace_root()))
         }
         "emu-storfast" => cross().and_then(|()| emu::boot_loader_storfast(&workspace_root())),
+        "emu-cardlog" => cross().and_then(|()| emu::boot_loader_cardlog(&workspace_root())),
         "emu-drive" => cross().and_then(|()| emu::boot_loader_drive_alone(&workspace_root())),
         // Every check that goes through the USB controller, in `emu`'s order
         // (UDC work: the rest of the suite doesn't touch it).
@@ -575,60 +580,78 @@ fn run_step(step: &str) -> Result {
             .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
             .and_then(|()| emu::boot_loader_full_size(&workspace_root())),
         "mutants" => mutants::run(&workspace_root(), args().any(|a| a == "--emu")),
-        "emu" => cross()
-            .and_then(|()| emu::boot_hello(&workspace_root()))
-            .and_then(|()| emu::boot_probe(&workspace_root()))
-            .and_then(|()| emu::boot_kernel(&workspace_root()))
-            .and_then(|()| emu::boot_threads(&workspace_root()))
-            .and_then(|()| emu::boot_quantum(&workspace_root()))
-            .and_then(|()| emu::boot_light(&workspace_root()))
-            .and_then(|()| emu::boot_usb(&workspace_root()))
-            .and_then(|()| emu::boot_loader(&workspace_root()))
-            .and_then(|()| emu::boot_loader_hang(&workspace_root()))
-            .and_then(|()| emu::boot_loader_run_limit(&workspace_root()))
-            .and_then(|()| emu::boot_loader_picture(&workspace_root()))
-            .and_then(|()| emu::boot_loader_blend(&workspace_root()))
-            .and_then(|()| emu::boot_loader_mbx(&workspace_root()))
-            .and_then(|()| emu::boot_loader_mbx_blend(&workspace_root()))
-            .and_then(|()| emu::boot_loader_mbx3d(&workspace_root()))
-            .and_then(|()| emu::boot_loader_glesfeat(&workspace_root()))
-            .and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root()))
-            .and_then(|()| emu::boot_loader_gpubench(&workspace_root()))
-            .and_then(|()| emu::boot_loader_cs3bus(&workspace_root()))
-            .and_then(|()| emu::boot_loader_mved(&workspace_root()))
-            .and_then(|()| emu::boot_loader_clocks(&workspace_root()))
-            .and_then(|()| emu::boot_loader_noise(&workspace_root()))
-            .and_then(|()| emu::boot_loader_today(&workspace_root()))
-            .and_then(|()| emu::boot_loader_crash(&workspace_root()))
-            .and_then(|()| emu::boot_loader_handover(&workspace_root()))
-            .and_then(|()| emu::boot_loader_nightlight(&workspace_root()))
-            .and_then(|()| emu::boot_loader_cfdetect(&workspace_root()))
-            .and_then(|()| emu::boot_loader_display_cal(&workspace_root()))
-            .and_then(|()| emu::boot_loader_looks(&workspace_root()))
-            .and_then(|()| emu::boot_loader_refresh(&workspace_root()))
-            .and_then(|()| emu::boot_usb_link(&workspace_root()))
-            .and_then(|()| emu::boot_loader_usb(&workspace_root()))
-            .and_then(|()| emu::boot_loader_trace(&workspace_root()))
-            .and_then(|()| emu::boot_loader_put(&workspace_root()))
-            .and_then(|()| emu::boot_loader_put_exfat(&workspace_root()))
-            .and_then(|()| emu::boot_loader_cf(&workspace_root()))
-            .and_then(|()| emu::boot_loader_tone(&workspace_root()))
-            .and_then(|()| emu::boot_loader_audio_s1(&workspace_root()))
-            .and_then(|()| emu::boot_loader_audio_sleep(&workspace_root()))
-            .and_then(|()| emu::boot_loader_dma_restart(&workspace_root()))
-            .and_then(|()| emu::boot_loader_audio_s2(&workspace_root()))
-            .and_then(|()| emu::boot_loader_audio_e3(&workspace_root()))
-            .and_then(|()| emu::boot_loader_silent_pc(&workspace_root()))
-            .and_then(|()| emu::boot_loader_drive(&workspace_root()))
-            .and_then(|()| emu::boot_loader_stale_view(&workspace_root()))
-            .and_then(|()| emu::boot_loader_fallback(&workspace_root()))
-            .and_then(|()| emu::boot_loader_locked(&workspace_root()))
-            .and_then(|()| emu::boot_loader_backlight(&workspace_root()))
-            .and_then(|()| emu::boot_loader_full_size(&workspace_root()))
-            .and_then(|()| emu::boot_loader_keeps_feeding(&workspace_root()))
+        "emu" => cross().and_then(|()| {
+            // `RETROPANE_EMU_FROM=<check>` resumes the suite at that check
+            // (its function's name), after a known flake stopped it
+            // (docs/quality-audit.md C25).
+            let checks: &[(&str, fn(&std::path::Path) -> Result)] = &[
+                ("boot_hello", emu::boot_hello),
+                ("boot_probe", emu::boot_probe),
+                ("boot_kernel", emu::boot_kernel),
+                ("boot_threads", emu::boot_threads),
+                ("boot_quantum", emu::boot_quantum),
+                ("boot_light", emu::boot_light),
+                ("boot_usb", emu::boot_usb),
+                ("boot_loader", emu::boot_loader),
+                ("boot_loader_hang", emu::boot_loader_hang),
+                ("boot_loader_run_limit", emu::boot_loader_run_limit),
+                ("boot_loader_picture", emu::boot_loader_picture),
+                ("boot_loader_blend", emu::boot_loader_blend),
+                ("boot_loader_mbx", emu::boot_loader_mbx),
+                ("boot_loader_mbx_blend", emu::boot_loader_mbx_blend),
+                ("boot_loader_mbx3d", emu::boot_loader_mbx3d),
+                ("boot_loader_glesfeat", emu::boot_loader_glesfeat),
+                ("boot_loader_mbx3d_api", emu::boot_loader_mbx3d_api),
+                ("boot_loader_gpubench", emu::boot_loader_gpubench),
+                ("boot_loader_cs3bus", emu::boot_loader_cs3bus),
+                ("boot_loader_mved", emu::boot_loader_mved),
+                ("boot_loader_clocks", emu::boot_loader_clocks),
+                ("boot_loader_noise", emu::boot_loader_noise),
+                ("boot_loader_today", emu::boot_loader_today),
+                ("boot_loader_crash", emu::boot_loader_crash),
+                ("boot_loader_handover", emu::boot_loader_handover),
+                ("boot_loader_nightlight", emu::boot_loader_nightlight),
+                ("boot_loader_cfdetect", emu::boot_loader_cfdetect),
+                ("boot_loader_display_cal", emu::boot_loader_display_cal),
+                ("boot_loader_looks", emu::boot_loader_looks),
+                ("boot_loader_refresh", emu::boot_loader_refresh),
+                ("boot_usb_link", emu::boot_usb_link),
+                ("boot_loader_usb", emu::boot_loader_usb),
+                ("boot_loader_trace", emu::boot_loader_trace),
+                ("boot_loader_put", emu::boot_loader_put),
+                ("boot_loader_put_exfat", emu::boot_loader_put_exfat),
+                ("boot_loader_cf", emu::boot_loader_cf),
+                ("boot_loader_tone", emu::boot_loader_tone),
+                ("boot_loader_audio_s1", emu::boot_loader_audio_s1),
+                ("boot_loader_audio_sleep", emu::boot_loader_audio_sleep),
+                ("boot_loader_dma_restart", emu::boot_loader_dma_restart),
+                ("boot_loader_audio_s2", emu::boot_loader_audio_s2),
+                ("boot_loader_audio_e3", emu::boot_loader_audio_e3),
+                ("boot_loader_silent_pc", emu::boot_loader_silent_pc),
+                ("boot_loader_drive", emu::boot_loader_drive),
+                ("boot_loader_stale_view", emu::boot_loader_stale_view),
+                ("boot_loader_fallback", emu::boot_loader_fallback),
+                ("boot_loader_locked", emu::boot_loader_locked),
+                ("boot_loader_backlight", emu::boot_loader_backlight),
+                ("boot_loader_full_size", emu::boot_loader_full_size),
+                ("boot_loader_keeps_feeding", emu::boot_loader_keeps_feeding),
+                ("boot_loader_cardlog", emu::boot_loader_cardlog),
+            ];
+            let from = std::env::var("RETROPANE_EMU_FROM").ok();
+            let start = match from.as_deref() {
+                Some(name) => checks
+                    .iter()
+                    .position(|(n, _)| *n == name)
+                    .ok_or_else(|| format!("RETROPANE_EMU_FROM: no check named {name}"))?,
+                None => 0,
+            };
+            for (_, check) in &checks[start..] {
+                check(&workspace_root())?;
+            }
             // The benchmark image's on-target checks (pixel paths, memory,
             // crypto, SD) and no regression past the baseline.
-            .and_then(|()| emu::bench(&workspace_root(), false)),
+            emu::bench(&workspace_root(), false)
+        }),
         "qemu" => emu::build_wsl(&workspace_root()),
         "coverage" => cargo(&[
             "llvm-cov",

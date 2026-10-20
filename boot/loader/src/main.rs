@@ -47,6 +47,7 @@ mod image {
     use rp_hal_pxa27x::{Mmio, dma_map, handoff, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, IMAGE_BASE};
+    use rp_hal_x51v::{cardlog, cardsink};
     use rp_loadproto::{Frame, Kind, LoadError, READY, Receiver, crc32_update, feed_slice};
     use rp_usb_msc::{BulkPipe, Msc, Storage};
 
@@ -268,7 +269,10 @@ mod image {
             let was = self.read_only();
             self.guard = self.card.as_mut().and_then(|sd| {
                 let start = partition_start(sd).ok()?;
-                Volume::mount(Fed(sd), start).ok()?.guard(&BOOT_FILES).ok()
+                Volume::mount(Fed::Sd(sd), start)
+                    .ok()?
+                    .guard(&BOOT_FILES)
+                    .ok()
             });
             was != self.read_only()
         }
@@ -476,13 +480,43 @@ mod image {
     /// it (as a drive) since the last time, so nothing cached is trusted.
     fn mount(sd: &mut Sd) -> Result<Volume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        Volume::mount(Fed(sd), start).map_err(|_| "not FAT32")
+        Volume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT32")
     }
 
     /// Mounts the first partition as FAT32 or exFAT, for storing files.
     fn mount_any(sd: &mut Sd) -> Result<AnyVolume<Fed<'_>>, &'static str> {
         let start = partition_start(sd)?;
-        AnyVolume::mount(Fed(sd), start).map_err(|_| "not FAT32 or exFAT")
+        AnyVolume::mount(Fed::Sd(sd), start).map_err(|_| "not FAT32 or exFAT")
+    }
+
+    /// [`mount_any`] for the CF card's first partition (the card log's
+    /// half on it, `cf:` paths).
+    fn mount_cf(cf: &mut CfLun) -> Result<AnyVolume<Fed<'_>>, &'static str> {
+        let card = match &mut cf.slot {
+            CfSlot::Card(c) if cf.inserted => c,
+            _ => return Err("no CF card"),
+        };
+        let mut block = [0u8; rp_drv_cf::SECTOR];
+        card.read_blocks(0, &mut block)
+            .map_err(|_| "CF card read")?;
+        let start = mbr_partitions(&block)
+            .and_then(|p| p[0])
+            .map_or(0, |p| p.start);
+        AnyVolume::mount(Fed::Cf(card), start).map_err(|_| "not FAT32 or exFAT")
+    }
+
+    /// The volume a path names: `cf:` first for the CF card's, else the
+    /// SD card's; and the path on it.
+    fn mount_path<'a>(
+        lun: &'a mut Lun,
+        cf: &'a mut CfLun,
+        path: &'a str,
+    ) -> Result<(AnyVolume<Fed<'a>>, &'a str), &'static str> {
+        if let Some(rest) = path.strip_prefix("cf:") {
+            return Ok((mount_cf(cf)?, rest));
+        }
+        let sd = lun.card.as_mut().ok_or("no card")?;
+        Ok((mount_any(sd)?, path))
     }
 
     /// The card as the file systems see it: every block read or written
@@ -490,16 +524,49 @@ mod image {
     /// is making progress (checking a 4 GB card reads ~34,000 blocks, about
     /// 40 s) is then never taken for a hang, while a real hang, which reads
     /// nothing, still is. Found on the device: `card check` reset the Axim.
-    struct Fed<'a>(&'a mut Sd);
+    /// The CF card too (the card log's half, `cf:` paths): one device
+    /// type, so the loader carries one copy of the file systems.
+    enum Fed<'a> {
+        Sd(&'a mut Sd),
+        Cf(&'a mut CfCard<Mmio, Mmio, Option<Dma>>),
+    }
+
+    impl Fed<'_> {
+        /// The SD card's error behind a failure, for the reply.
+        fn note(&self) -> Note {
+            match self {
+                Fed::Sd(sd) => card_note(sd),
+                Fed::Cf(_) => Note {
+                    what: "",
+                    failure: None,
+                    status: 0,
+                },
+            }
+        }
+
+        /// Read commands the SD card has had.
+        fn reads(&self) -> u32 {
+            match self {
+                Fed::Sd(sd) => sd.reads(),
+                Fed::Cf(_) => 0,
+            }
+        }
+    }
 
     impl BlockDevice for Fed<'_> {
         fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
             keep_alive();
-            self.0.read_blocks(lba, buf)
+            match self {
+                Fed::Sd(sd) => sd.read_blocks(lba, buf),
+                Fed::Cf(cf) => cf.read_blocks(lba, buf),
+            }
         }
         fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
             keep_alive();
-            self.0.write_blocks(lba, buf)
+            match self {
+                Fed::Sd(sd) => sd.write_blocks(lba, buf),
+                Fed::Cf(cf) => cf.write_blocks(lba, buf),
+            }
         }
     }
 
@@ -554,21 +621,16 @@ mod image {
         // Whatever happens next, the PC must re-read the volume.
         msc.medium_changed(0);
         let t0 = rt::ticks();
-        let reads0 = vol.device().0.reads();
+        let reads0 = vol.device().reads();
         let written = match vol.put(name, contents, scratch) {
             Ok(w) => w,
             Err(e) => {
-                let _ = write!(
-                    reply,
-                    "RPL ERR {}{}\r\n",
-                    e.name(),
-                    card_note(vol.device().0)
-                );
+                let _ = write!(reply, "RPL ERR {}{}\r\n", e.name(), vol.device().note());
                 return;
             }
         };
         let t_write = rt::ticks().wrapping_sub(t0);
-        let reads = vol.device().0.reads().wrapping_sub(reads0);
+        let reads = vol.device().reads().wrapping_sub(reads0);
         // Read back through the FAT code and compare with what was sent;
         // the SHA-256 of what the card now holds goes back to the PC.
         let mut crc = !0u32;
@@ -611,7 +673,7 @@ mod image {
                     reply,
                     "RPL ERR verify: {}{}\r\n",
                     e.name(),
-                    card_note(vol.device().0)
+                    vol.device().note()
                 );
             }
         }
@@ -779,18 +841,21 @@ mod image {
     }
 
     /// `ls [folder]`: one `RPD` line per entry (`d` for a folder, else its
-    /// size in bytes, then the name), then the reply. Read-only.
+    /// size in bytes, then the name), then the reply. Read-only. `cf:`
+    /// first lists the CF card's.
     #[inline(never)]
-    fn ls_command(lun: &mut Lun, args: &[u8], out: &mut dyn FnMut(&[u8]), reply: &mut Line) {
+    fn ls_command(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        args: &[u8],
+        out: &mut dyn FnMut(&[u8]),
+        reply: &mut Line,
+    ) {
         let Some(path) = arg_path(args) else {
             let _ = reply.write_str("RPL ERR bad name\r\n");
             return;
         };
-        let Some(sd) = lun.card.as_mut() else {
-            let _ = reply.write_str("RPL ERR card: no card\r\n");
-            return;
-        };
-        let mut vol = match mount_any(sd) {
+        let (mut vol, path) = match mount_path(lun, cf, path) {
             Ok(v) => v,
             Err(why) => {
                 let _ = write!(reply, "RPL ERR card: {why}\r\n");
@@ -910,10 +975,12 @@ mod image {
     }
 
     /// `get <file>`: the file as base64 `RPD` lines, then `RPL OK <bytes>
-    /// bytes crc <crc32>` so the PC checks what it got. Read-only.
+    /// bytes crc <crc32>` so the PC checks what it got. Read-only. `cf:`
+    /// first reads the CF card's.
     #[inline(never)]
     fn get_command(
         lun: &mut Lun,
+        cf: &mut CfLun,
         args: &[u8],
         scratch: &mut [u8],
         out: &mut dyn FnMut(&[u8]),
@@ -923,11 +990,7 @@ mod image {
             let _ = reply.write_str("RPL ERR usage: get <file>\r\n");
             return;
         };
-        let Some(sd) = lun.card.as_mut() else {
-            let _ = reply.write_str("RPL ERR card: no card\r\n");
-            return;
-        };
-        let mut vol = match mount_any(sd) {
+        let (mut vol, path) = match mount_path(lun, cf, path) {
             Ok(v) => v,
             Err(why) => {
                 let _ = write!(reply, "RPL ERR card: {why}\r\n");
@@ -1866,6 +1929,8 @@ mod image {
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
         // The previous program's run: if it crashed or hung, the crash
         // screen goes above the log.
+        // The previous run's card log first: its run log is still open.
+        card_log_finish(&mut LogCards(&mut lun, &mut cf));
         let mut pending = devices::log_take();
         // Kept for `log`: a log sent while Windows was re-finding the
         // device can be lost on the way; its bytes stay in RAM until the
@@ -2009,6 +2074,11 @@ mod image {
         let _ = writeln!(uart, "BENCH boot_loader_ready {ready_at} 1");
         // The next image's soft run limit (`limit`), in milliseconds.
         let mut limit_ms = RUN_LIMIT / TICK_1S * 1000;
+        // The next image's name for its card log (`name`): `run` unless
+        // the PC says.
+        let mut run_name = [0u8; cardlog::NAME_MAX];
+        run_name[..3].copy_from_slice(b"run");
+        let mut run_name_len = 3;
         // LINK_PATIENCE is for a loader started as an image only (the run
         // log says so: `handover`). The card's own loader starts afresh after
         // every image too, with the watchdog still armed from the run; it
@@ -2253,6 +2323,7 @@ mod image {
                             } else {
                                 ls_command(
                                     &mut lun,
+                                    &mut cf,
                                     &c[2..],
                                     &mut |b| usb_bytes(&mut udc, b),
                                     &mut status,
@@ -2266,6 +2337,7 @@ mod image {
                             } else {
                                 get_command(
                                     &mut lun,
+                                    &mut cf,
                                     &c[4..],
                                     &mut fat_scratch[..SCRATCH],
                                     &mut |b| usb_bytes(&mut udc, b),
@@ -2361,6 +2433,18 @@ mod image {
                                 // The PC must re-read the volume.
                                 msc.medium_changed(0);
                                 status.as_str()
+                            }
+                        }
+                        Ok(c) if c.starts_with(b"name ") => {
+                            // The next image's name, for its card log's
+                            // file (a path on the cards: checked).
+                            let n = c[5..].trim_ascii();
+                            if cardlog::name_ok(n) {
+                                run_name[..n.len()].copy_from_slice(n);
+                                run_name_len = n.len();
+                                "RPL OK name\r\n"
+                            } else {
+                                "RPL ERR name: 1-24 of a-z 0-9 - _\r\n"
                             }
                         }
                         Ok(c) if c.starts_with(b"limit ") => {
@@ -2495,10 +2579,26 @@ mod image {
                     }
                     gpio.write(USB_PULLUP, false);
                     udc.disable();
-                    devices::log_start();
                     // A new loader never returns: it takes over (and must not
-                    // report this run as a hang).
-                    if dest.get(4..12) == Some(&rp_hal_pxa27x::handoff::LOADER_SIGNATURE[..]) {
+                    // report this run as a hang); it keeps no card log.
+                    let handover =
+                        dest.get(4..12) == Some(&rp_hal_pxa27x::handoff::LOADER_SIGNATURE[..]);
+                    // The card log's files, reserved with the PC away (its
+                    // views of the cards are re-read when it comes back).
+                    let mut card_note = Line::new();
+                    if handover {
+                        cardsink::end();
+                    } else {
+                        card_log_begin(
+                            &mut lun,
+                            &mut cf,
+                            &run_name[..run_name_len],
+                            &mut fat_scratch[..SCRATCH],
+                            &mut card_note,
+                        );
+                    }
+                    devices::log_start();
+                    if handover {
                         devices::log_mark_handover();
                     }
                     if let Some(area) = trace_area.as_deref_mut() {
@@ -2506,11 +2606,13 @@ mod image {
                     }
                     // The verdict goes at the top of the image's run log, so
                     // it reaches the PC whatever the image then does.
-                    devices::log_write(if intact {
+                    devices::log_append(if intact {
                         b"[loader: image intact after the cache flush]\n"
                     } else {
                         b"[loader: image CHANGED after the cache flush]\n"
                     });
+                    devices::log_append(card_note.as_str().as_bytes());
+                    cardsink::sync_with(&mut LogCards(&mut lun, &mut cf));
                     // A run limit: an image that hangs (never returns, never
                     // feeds the watchdog) resets the device, and the loader
                     // comes back (started again by Windows Mobile's StartUp
@@ -2665,6 +2767,190 @@ mod image {
 
     /// The run log, framed for `cargo xtask load`; a run that didn't
     /// return (a hang the watchdog reset) says so before the end marker.
+    /// The run's card log (`rp_hal_x51v::cardlog`): reserves
+    /// `rplog/<name>-NNNN.txt` on each card that's in (the next number of
+    /// either, so both halves share it; the oldest beyond `KEEP` deleted)
+    /// and leaves the state for the program. `note` gets the line for the
+    /// top of the run log. Run with the PC away (the USB disconnected), so
+    /// no cached view of either card goes stale.
+    #[inline(never)]
+    fn card_log_begin(
+        lun: &mut Lun,
+        cf: &mut CfLun,
+        name: &[u8],
+        scratch: &mut [u8],
+        note: &mut Line,
+    ) {
+        cardsink::end();
+        let mut highest = 0u32;
+        let mut seen = |vol: &mut AnyVolume<Fed<'_>>| {
+            let _ = vol.list(cardlog::FOLDER, &mut |file, dir, _| {
+                if let Some(n) = cardlog::number_of(name, file).filter(|_| !dir) {
+                    highest = highest.max(n);
+                }
+            });
+        };
+        let sd_ok = !lun.locked;
+        if let Some(sd) = lun.card.as_mut().filter(|_| sd_ok)
+            && let Ok(mut vol) = mount_any(sd)
+        {
+            seen(&mut vol);
+        }
+        if let Ok(mut vol) = mount_cf(cf) {
+            seen(&mut vol);
+        }
+        let number = highest + 1;
+        let mut path = [0u8; 64];
+        let len = cardlog::path(name, number, &mut path);
+        let path = core::str::from_utf8(&path[..len]).unwrap_or("");
+        let mut files = [cardlog::File::default(); 2];
+        let mut reserve = |vol: &mut AnyVolume<Fed<'_>>, unit: usize| {
+            // This image's files beyond the newest KEEP (with this one),
+            // up to 8 a run: the folder can't grow without end.
+            let mut stale = [0u32; 8];
+            let mut k = 0;
+            let _ = vol.list(cardlog::FOLDER, &mut |file, dir, _| {
+                if let Some(n) = cardlog::number_of(name, file).filter(|_| !dir)
+                    && n + cardlog::KEEP <= number
+                    && k < stale.len()
+                {
+                    stale[k] = n;
+                    k += 1;
+                }
+            });
+            for &old in &stale[..k] {
+                let mut p = [0u8; 64];
+                let n = cardlog::path(name, old, &mut p);
+                if let Ok(p) = core::str::from_utf8(&p[..n]) {
+                    let _ = vol.remove(p);
+                }
+            }
+            if let Ok(r) = vol.reserve(path, cardlog::FILE_BYTES, scratch) {
+                files[unit] = cardlog::File {
+                    lba: r.lba,
+                    sectors: r.sectors,
+                };
+            }
+        };
+        let mut sd_id = cardlog::SdCard::default();
+        if let Some(sd) = lun.card.as_mut().filter(|_| sd_ok) {
+            let id = sd.identity();
+            sd_id = cardlog::SdCard {
+                rca: u32::from(id.rca),
+                flags: u32::from(id.high_capacity) | u32::from(id.wide) << 1,
+                blocks: id.blocks,
+            };
+            if let Ok(mut vol) = mount_any(sd) {
+                reserve(&mut vol, cardlog::SD);
+            }
+        }
+        if let Ok(mut vol) = mount_cf(cf) {
+            reserve(&mut vol, cardlog::CF);
+        }
+        let cf_sectors = match &cf.slot {
+            CfSlot::Card(c) => c.sectors(),
+            _ => 0,
+        };
+        let state = cardlog::State::new(number, files, sd_id, cf_sectors);
+        if !state.valid() {
+            let _ = note.write_str("[loader: no card log: no card took the file]\n");
+            return;
+        }
+        cardsink::begin(state);
+        let _ = write!(
+            note,
+            "[loader: card log {path} on the {}]\n",
+            match (files[0].sectors > 0, files[1].sectors > 0) {
+                (true, true) => "SD and CF cards",
+                (true, false) => "SD card (no CF card)",
+                _ => "CF card (none on SD)",
+            }
+        );
+    }
+
+    /// The loader's cards for the card log's writes.
+    struct LogCards<'a>(&'a mut Lun, &'a mut CfLun);
+
+    impl LogCards<'_> {
+        fn read(&mut self, unit: usize, lba: u32, out: &mut [u8; 512]) -> bool {
+            match unit {
+                cardlog::SD => self
+                    .0
+                    .card
+                    .as_mut()
+                    .is_some_and(|sd| sd.read(lba, out).is_ok()),
+                _ => match &mut self.1.slot {
+                    CfSlot::Card(c) if self.1.inserted => c.read_blocks(lba, out).is_ok(),
+                    _ => false,
+                },
+            }
+        }
+    }
+
+    impl cardsink::LoaderCards for LogCards<'_> {
+        fn write(&mut self, unit: usize, lba: u32, sector: &[u8; 512]) -> bool {
+            match unit {
+                cardlog::SD if !self.0.locked => self
+                    .0
+                    .card
+                    .as_mut()
+                    .is_some_and(|sd| sd.write(lba, sector).is_ok()),
+                cardlog::CF => match &mut self.1.slot {
+                    CfSlot::Card(c) if self.1.inserted => c.write_blocks(lba, sector).is_ok(),
+                    _ => false,
+                },
+                _ => false,
+            }
+        }
+    }
+
+    /// The previous run's card log, on start (before `log_take` closes its
+    /// run log): what a pause held back goes onto a card, then the closing
+    /// line, saying how the run ended. A card is written only if its file
+    /// still starts with this run's first bytes (after a reset the card in
+    /// the slot may not be the one the run reserved on).
+    #[inline(never)]
+    fn card_log_finish(cards: &mut LogCards<'_>) {
+        let Some(flags) = devices::log_flags() else {
+            cardsink::end();
+            return;
+        };
+        let Some(state) = cardsink::current() else {
+            return;
+        };
+        state.reclaim();
+        let gone = cardsink::keep_after_reset(&mut |unit, lba, out| cards.read(unit, lba, out));
+        cardsink::sync_with(cards);
+        let Some(state) = cardsink::current() else {
+            return;
+        };
+        let mut line = Line::new();
+        let _ = write!(
+            line,
+            "[card log closed: the run {}; {} sector writes before this line, {} refused, slowest {} us, {} bytes dropped{}]\n",
+            if flags & 4 != 0 {
+                "crashed"
+            } else if flags & 2 != 0 {
+                "returned"
+            } else {
+                "did not return (closed at the next start)"
+            },
+            state.writes,
+            state.failed,
+            // The OS timer counts 3.25 MHz.
+            state.worst * 4 / 13,
+            cardsink::dropped(),
+            if gone != 0 {
+                "; a card's file wasn't where the run left it: not written"
+            } else {
+                ""
+            },
+        );
+        devices::log_append(line.as_str().as_bytes());
+        cardsink::sync_with(cards);
+        cardsink::end();
+    }
+
     /// Keeps a crash or hang report on the card as `crashlog.txt`
     /// (replaced each time, crash-safe like every card write).
     #[inline(never)]

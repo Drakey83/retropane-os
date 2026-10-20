@@ -198,6 +198,19 @@ pub const INIT_HZ: u32 = 400_000;
 /// Clock for data transfer (default speed).
 pub const TRANSFER_HZ: u32 = 25_000_000;
 
+/// An identified, selected card as [`SdCard::adopt`] takes it over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    /// Relative card address.
+    pub rca: u16,
+    /// Block addressing (SDHC/SDXC).
+    pub high_capacity: bool,
+    /// Switched to the 4-bit bus.
+    pub wide: bool,
+    /// Capacity in 512-byte blocks.
+    pub blocks: u32,
+}
+
 /// An initialised, selected SD card.
 #[derive(Debug)]
 pub struct SdCard<H> {
@@ -254,6 +267,44 @@ impl<H: SdHost> SdCard<H> {
                 weak_next: 0,
             }),
             Err(e) => Err((e, host)),
+        }
+    }
+
+    /// Takes over a card someone else identified and selected on this
+    /// controller (the loader, for a program's card log: `rp_hal_x51v::
+    /// cardlog`), as [`SdCard::identity`] described it: no command is sent,
+    /// so the card stays as it was (transfer state, its bus width and
+    /// clock), and the host is told of the 4-bit bus.
+    pub fn adopt(mut host: H, id: Identity) -> Self {
+        if id.wide {
+            host.set_wide_bus();
+        }
+        Self {
+            host,
+            rca: id.rca,
+            pre_erase: false,
+            high_capacity: id.high_capacity,
+            wide: id.wide,
+            blocks: id.blocks,
+            last_error: None,
+            reads: 0,
+            read_retries: 0,
+            read_fallbacks: 0,
+            slow_reads: 0,
+            weak: [(0, 0); WEAK_RANGES],
+            weak_len: 0,
+            weak_next: 0,
+        }
+    }
+
+    /// What [`SdCard::adopt`] needs to take this card over.
+    #[must_use]
+    pub fn identity(&self) -> Identity {
+        Identity {
+            rca: self.rca,
+            high_capacity: self.high_capacity,
+            wide: self.wide,
+            blocks: self.blocks,
         }
     }
 
@@ -1017,6 +1068,28 @@ mod tests {
             [24, 13, 13, 13, 55, 23, 25, 12, 13, 13, 13, 13, 18, 12]
         );
         assert_eq!(cmds[5].1, 3, "ACMD23 carries the block count");
+    }
+
+    /// A card taken over (the loader's, for a program's card log): no
+    /// command until the first write, which goes to the same place as the
+    /// identifying owner's would.
+    #[test]
+    fn an_adopted_card_writes_without_being_identified_again() {
+        let mut fake = FakeCard::new(true, true);
+        fake.capable = true;
+        let owner = SdCard::init(fake).unwrap();
+        let id = owner.identity();
+        assert!(id.high_capacity && id.wide);
+        let mut host = owner.into_inner();
+        let before = host.log.len();
+        host.wide = false;
+        let mut card = SdCard::adopt(host, id);
+        assert_eq!(card.host().log.len(), before, "no command at adoption");
+        assert!(card.host().wide, "the host is told of the 4-bit bus");
+        card.write(3, &[0x3Cu8; BLOCK]).unwrap();
+        let host = card.into_inner();
+        assert_eq!(host.log[before].0, 24);
+        assert!(host.data[3 * BLOCK..4 * BLOCK].iter().all(|&b| b == 0x3C));
     }
 
     /// A card that refuses ACMD23 (item 58): its status is read (clearing

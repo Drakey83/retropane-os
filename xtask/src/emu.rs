@@ -3345,7 +3345,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ),
     ];
     // One card for every run, with someone else's file on it: each run
-    // keeps its log there as it goes (rp-cardlog), the next number each
+    // keeps its log there as it goes (the loader's card log), the next number each
     // time, and touches nothing outside rplog/ (the card is shared).
     let other = b"another session's file: must stay as it is".to_vec();
     let card = rp_fat::format::build(&rp_fat::format::Image {
@@ -3360,10 +3360,11 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     });
     let sd = scratch(root, "sd-gpubench.img")?;
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
-    for (number, (name, bin, want, needs_model, (first, every, presses))) in
-        (1u32..).zip(runs)
-    {
+    for (number, (name, bin, want, needs_model, (first, every, presses))) in (1u32..).zip(runs) {
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+        // Named, so each run's card log is rplog/gpubench-NNNN.txt.
+        let mut input = rp_loadproto::control_frame("name gpubench");
+        input.extend(rp_loadproto::frame(&payload));
         let keys = || -> Result<(), String> {
             if presses == 0 {
                 return Ok(());
@@ -3419,7 +3420,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 extra: &[],
                 // The loader's start of the image: the steps below run
                 // while it is on screen (its own marker comes at its end).
-                input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+                input: Some((&input, "RPL OK sha256")),
                 during: Some(&keys),
                 then: Some("RPL END"),
                 timeout: Duration::from_secs(900),
@@ -3586,7 +3587,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     if card_file(&sd, "other.txt")? != other {
         return Err("gpubench: the card logs changed a file outside rplog/".into());
     }
-    eprintln!("    gpubench: every run's card log matched its run log; nothing else on the card changed");
+    eprintln!(
+        "    gpubench: every run's card log matched its run log; nothing else on the card changed"
+    );
     Ok(())
 }
 
@@ -4971,38 +4974,257 @@ impl rp_hal_api::BlockDevice for Disk {
     }
 }
 
-/// A gpubench run's card log (rp-cardlog) against its run log: the run's
-/// own number, every line the image logged from its first on, in order,
-/// then the closing line (a run that came back), nothing after.
+/// A test card for the card log: FAT32 with someone else's file on it
+/// (`other`), and `seeded` old `rplog/light-NNNN.txt` files (for the
+/// cleanup that keeps each image's newest `KEEP`).
+fn cardlog_card(path: &Path, other: &[u8], seeded: u32) -> Result<(), String> {
+    let card = rp_fat::format::build(&rp_fat::format::Image {
+        total_sectors: 64 * 1024,
+        sectors_per_cluster: 8,
+        files: &[rp_fat::format::Entry {
+            name: "other.txt",
+            data: other,
+        }],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut vol = rp_fat::AnyVolume::mount(Disk(card), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut scratch = vec![0u8; 64 * 1024];
+    for n in 1..=seeded {
+        vol.put(&format!("rplog/light-{n:04}.txt"), b"old", &mut scratch)
+            .map_err(|e| format!("seeding the card: {}", e.name()))?;
+    }
+    std::fs::write(path, &vol.device().0).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The files in `folder` on a card image (names only).
+fn card_names(image: &Path, folder: &str) -> Result<Vec<String>, String> {
+    let data = std::fs::read(image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let mut vol = rp_fat::AnyVolume::mount(Disk(data), rp_fat::format::PARTITION_START)
+        .map_err(|e| format!("card image: {}", e.name()))?;
+    let mut names = Vec::new();
+    vol.list(folder, &mut |n, dir, _| {
+        if !dir {
+            names.push(String::from_utf8_lossy(n).into_owned());
+        }
+    })
+    .map_err(|e| format!("{folder}: {}", e.name()))?;
+    Ok(names)
+}
+
+/// The run log as the PC received it (after the last `RPL LOG`), with
+/// `\n` line ends, the notes the loader adds after the image's text left
+/// out.
+fn received_log(output: &str) -> Result<String, String> {
+    let (_, log) = output.rsplit_once("RPL LOG").ok_or("no run log")?;
+    let log = log.split("RPL END").next().unwrap_or(log);
+    let text = log.replace("\r\n", "\n");
+    let text = text.trim_start_matches('\n');
+    let end = text
+        .find("\n[the image ")
+        .or_else(|| text.find("\n[run log full"))
+        .unwrap_or(text.len());
+    Ok(text[..end].trim_end_matches('\n').to_string())
+}
+
+/// A run's card log: both cards' files of `file` joined, as `cargo xtask
+/// cardlog` joins them.
+fn joined_card_log(sd: &Path, cf: &Path, file: &str) -> Result<String, String> {
+    let sd_part = card_file(sd, file).ok();
+    let cf_part = card_file(cf, file).ok();
+    if sd_part.is_none() && cf_part.is_none() {
+        return Err(format!("{file} is on neither card"));
+    }
+    for part in [&sd_part, &cf_part].into_iter().flatten() {
+        if part.len() != rp_hal_x51v::cardlog::FILE_BYTES {
+            return Err(format!(
+                "{file} is {} bytes, reserved {}",
+                part.len(),
+                rp_hal_x51v::cardlog::FILE_BYTES
+            ));
+        }
+    }
+    let bytes: Vec<u8> =
+        rp_hal_x51v::cardlog::join(sd_part.as_deref(), cf_part.as_deref()).collect();
+    Ok(String::from_utf8_lossy(&bytes)
+        .replace("\r\n", "\n")
+        .trim_end_matches('\n')
+        .to_string())
+}
+
+/// The card log for every run the loader starts (quality audit C24, the
+/// owner's vote B): with an SD and a CF card in, each run's log is on the
+/// cards line for line as the run goes, joined it is exactly the run log
+/// the PC receives (the loader's closing line included), and nothing
+/// outside `rplog/` changes on either card.
+///
+/// - rp-light: on the SD card; the CF card's file stays unwritten. The
+///   number follows the 40 seeded files (41), and the oldest beyond the
+///   newest 32 are deleted, 8 a run.
+/// - rp-sdtime takes the SD controller: the log moves to the CF card with
+///   a line saying so, and the two halves join into the whole log.
+/// - rp-crash: closed as crashed.
+/// - An image that hangs with interrupts off: the hardware watchdog resets
+///   the machine (RAM kept, as a soft reset keeps it), and the loader closes
+///   the log at its next start as a run that didn't return.
+pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
+    let loader = raw_image(root, "rp-loader")?;
+    let other = b"another session's file: must stay as it is".to_vec();
+    let sd = scratch(root, "sd-cardlog.img")?;
+    let cf = scratch(root, "cf-cardlog.img")?;
+    cardlog_card(&sd, &other, 40)?;
+    cardlog_card(&cf, &other, 0)?;
+    let cf_drive = drive_arg(root, "ide", &cf)?;
+    let run =
+        |name: &str, payload: &[u8], limit: Option<u32>, until: &str| -> Result<String, String> {
+            let mut input = rp_loadproto::control_frame(&format!("name {name}"));
+            if let Some(s) = limit {
+                input.extend(rp_loadproto::control_frame(&format!("limit {s}")));
+            }
+            input.extend(rp_loadproto::frame(payload));
+            let output = boot(
+                root,
+                &Boot {
+                    image: &loader,
+                    marker: LOADER_MARKER,
+                    screenshot: None,
+                    sd_image: Some(&sd),
+                    steps: &[],
+                    extra: &["-drive", &cf_drive],
+                    input: Some((&input, until)),
+                    during: None,
+                    then: Some("RPL END"),
+                    timeout: Duration::from_secs(600),
+                },
+            )?;
+            if !output.contains("RPL OK name") {
+                return Err(format!("cardlog {name}: the loader didn't take the name"));
+            }
+            Ok(output)
+        };
+    let check = |name: &str, number: u32, output: &str, how: &str| -> Result<String, String> {
+        let file = format!("rplog/{name}-{number:04}.txt");
+        let card = joined_card_log(&sd, &cf, &file).map_err(|e| format!("cardlog {name}: {e}"))?;
+        let log = received_log(output).map_err(|e| format!("cardlog {name}: {e}"))?;
+        if card != log {
+            return Err(format!(
+                "cardlog {name}: {file} differs from the run log:\n--- card ---\n{card}\n--- run log ---\n{log}"
+            ));
+        }
+        let first = format!("[loader: card log {file} on the SD and CF cards]");
+        if !card.contains(&first) {
+            return Err(format!("cardlog {name}: no `{first}` in:\n{card}"));
+        }
+        let closing = card.lines().last().unwrap_or("");
+        if !closing.starts_with(&format!("[card log closed: the run {how}"))
+            || !closing.contains(" 0 refused")
+        {
+            return Err(format!(
+                "cardlog {name}: the closing line is wrong: {closing}"
+            ));
+        }
+        Ok(card)
+    };
+    let image = |n: &str| -> Result<Vec<u8>, String> {
+        let p = raw_image(root, n)?;
+        std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
+    };
+
+    let out = run("light", &image("rp-light")?, None, "RPL END")?;
+    check("light", 41, &out, "returned")?;
+    if card_file(&cf, "rplog/light-0041.txt")?
+        .iter()
+        .any(|&b| b != 0)
+    {
+        return Err(
+            "cardlog light: the CF card's file was written though the SD card was free".into(),
+        );
+    }
+    let mut lights: Vec<String> = card_names(&sd, "rplog")?
+        .into_iter()
+        .filter(|n| n.starts_with("light-"))
+        .collect();
+    lights.sort();
+    if lights.len() != 33 || lights[0] != "light-0009.txt" {
+        return Err(format!(
+            "cardlog light: the SD card should keep light-0009..0041 (the 8 oldest of those beyond 32 deleted): {lights:?}"
+        ));
+    }
+    eprintln!(
+        "    cardlog light OK: the run log on the SD card line for line, numbered 41, the 8 oldest beyond 32 deleted"
+    );
+
+    let out = run("sdtime", &image("rp-sdtime")?, None, "RPL END")?;
+    let card = check("sdtime", 1, &out, "returned")?;
+    let moved = "[card log: the SD card was taken by the program; continuing on the CF card]";
+    if card.matches(moved).count() != 1 {
+        return Err(format!("cardlog sdtime: no `{moved}` once:\n{card}"));
+    }
+    if card_file(&cf, "rplog/sdtime-0001.txt")?
+        .iter()
+        .all(|&b| b == 0)
+    {
+        return Err("cardlog sdtime: nothing on the CF card".into());
+    }
+    eprintln!(
+        "    cardlog sdtime OK: the SD test moved the log to the CF card; the halves join into the run log"
+    );
+
+    let out = run("crash", &image("rp-crash")?, None, "RPL END")?;
+    check("crash", 1, &out, "crashed")?;
+    eprintln!("    cardlog crash OK: closed as crashed");
+
+    // mov r0, #1; mcr p14, 0, r0, c0, c1, 0 (PMNC: count); b .
+    let words = [0xE3A0_0001u32, 0xEE00_0E11, 0xEAFF_FFFE];
+    let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let out = run("hang", &code, Some(1), "did not return")?;
+    check("hang", 1, &out, "did not return")?;
+    eprintln!(
+        "    cardlog hang OK: a watchdog reset with RAM kept, closed at the loader's next start"
+    );
+
+    for (card, what) in [(&sd, "SD"), (&cf, "CF")] {
+        if card_file(card, "other.txt")? != other {
+            return Err(format!(
+                "cardlog: the card log changed a file outside rplog/ on the {what} card"
+            ));
+        }
+    }
+    eprintln!("    cardlog OK: nothing outside rplog/ changed on either card");
+    Ok(())
+}
+
+/// A gpubench run's card log (the loader's, `rp_hal_x51v::cardlog`)
+/// against its run log: the run's own number, word for word the run log
+/// the PC received (from the loader's first line to its closing line),
+/// closed as a run that returned, no write refused.
 fn gpubench_card_log(sd: &Path, name: &str, number: u32, log: &str) -> Result<(), String> {
     let file = format!("rplog/gpubench-{number:04}.txt");
     let raw = card_file(sd, &file).map_err(|e| format!("gpubench {name}: card log: {e}"))?;
-    if raw.len() != rp_cardlog::FILE_BYTES {
+    if raw.len() != rp_hal_x51v::cardlog::FILE_BYTES {
         return Err(format!(
             "gpubench {name}: {file} is {} bytes, reserved {}",
             raw.len(),
-            rp_cardlog::FILE_BYTES
+            rp_hal_x51v::cardlog::FILE_BYTES
         ));
     }
-    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-    let text = String::from_utf8_lossy(&raw[..end]).replace("\r\n", "\n");
-    let Some((body, closing)) = text.trim_end_matches('\n').rsplit_once('\n') else {
-        return Err(format!("gpubench {name}: {file} has no lines"));
-    };
-    if !closing.starts_with("[card log closed: ") || !closing.contains(" 0 refused") {
+    let card: Vec<u8> = rp_hal_x51v::cardlog::join(Some(&raw), None).collect();
+    let card = String::from_utf8_lossy(&card)
+        .replace("\r\n", "\n")
+        .trim_end_matches('\n')
+        .to_string();
+    let log = received_log(&format!("RPL LOG{log}"))?;
+    if card != log {
+        return Err(format!(
+            "gpubench {name}: {file} differs from the run log:\n--- card ---\n{card}\n--- run log ---\n{log}"
+        ));
+    }
+    let closing = card.lines().last().unwrap_or("");
+    if !closing.starts_with("[card log closed: the run returned") || !closing.contains(" 0 refused")
+    {
         return Err(format!(
             "gpubench {name}: {file} doesn't end with a clean closing line: {closing}"
-        ));
-    }
-    let first = format!("RETROPANE-GPUBENCH: card log {file}");
-    let log = log.replace("\r\n", "\n");
-    let Some(from) = log.find(&first) else {
-        return Err(format!("gpubench {name}: the run log has no `{first}`:{log}"));
-    };
-    if !body.starts_with(&first) || !log[from..].starts_with(body) {
-        return Err(format!(
-            "gpubench {name}: {file} differs from the run log:\n--- card ---\n{body}\n--- run log ---\n{}",
-            &log[from..]
         ));
     }
     Ok(())
@@ -5590,18 +5812,18 @@ fn variant_image_with(
         cmd.env(k, v);
     }
     run(cmd.args([
-            "build",
-            "--release",
-            "--target",
-            crate::TARGET_SPEC,
-            "-Zbuild-std=core,compiler_builtins",
-            "-Zjson-target-spec",
-            "-q",
-            "-p",
-            image,
-            "--target-dir",
-            &dir,
-        ]))?;
+        "build",
+        "--release",
+        "--target",
+        crate::TARGET_SPEC,
+        "-Zbuild-std=core,compiler_builtins",
+        "-Zjson-target-spec",
+        "-q",
+        "-p",
+        image,
+        "--target-dir",
+        &dir,
+    ]))?;
     let out = emu_dir(root)?.join(format!("{image}-{name}.bin"));
     crate::sdkit::raw_binary(
         &root
@@ -8596,7 +8818,14 @@ fn boot(root: &Path, cfg: &Boot<'_>) -> Result<String, String> {
             sent_at = serial.output.len();
             send_input(&mut serial, &link, input)
         })
-        .and_then(|()| during.map_or(Ok(()), |f| f()))
+        .and_then(|()| {
+            // The time limit is the run's, from here: the upload before it
+            // grows with the image (rp-picture's 630 KiB takes ~55 s over
+            // the emulated serial line, and a 4.8 KiB larger build ran out
+            // of its 90 s, 2026-10-20). A hang still ends at the limit.
+            serial.deadline = Instant::now() + timeout;
+            during.map_or(Ok(()), |f| f())
+        })
         .and_then(|()| match then {
             Some(text) if !serial.wait_for(text, sent_at) => {
                 Err(format!("no `{text}` on serial after the check"))

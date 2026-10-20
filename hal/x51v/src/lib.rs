@@ -6,6 +6,10 @@
 
 #![no_std]
 
+pub mod cardlog;
+#[cfg(all(target_arch = "arm", target_os = "none"))]
+pub mod cardsink;
+pub mod cardwrite;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod devices;
 pub mod kept;
