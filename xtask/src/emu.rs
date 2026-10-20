@@ -3100,6 +3100,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_r = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REVIVE", "1"))?;
     let run_s = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SNAPSHOT", "1"))?;
     let run_u = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_UNDERRUN", "1"))?;
+    let run_v = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LOAD", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3117,7 +3118,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 10] = [
+    let runs: [GpubenchRun; 11] = [
         (
             "run A",
             &run_a,
@@ -3246,6 +3247,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "U6: G4's lock traces",
                 "U: at the end",
                 "RETROPANE-GPUBENCH: done (run U)",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run V (which work at which clock starves the display): every
+        // clock's line (no underrun in the emulator), put back.
+        (
+            "run V",
+            &run_v,
+            &[
+                "V: which work at which clock",
+                "  99.66 MHz, cores / 2: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
+                "  99.66 MHz, cores / 1: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
+                "  133.25 MHz, cores / 2: flush x5 false",
+                "  put back: COREPLL 0xbb1",
             ],
             false,
             (0, 0, 0),
