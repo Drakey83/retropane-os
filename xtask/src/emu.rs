@@ -3182,6 +3182,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  F3b one 2D command for all",
                 "  F4 fill + a plain 2D copy a glyph",
                 "  F5 fill",
+                "  F6a full commands, batched",
+                "  F6b surfaces once",
+                "  F6c surfaces once",
             ],
             false,
             (0, 0, 0),
@@ -3267,10 +3270,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             }
         }
         // Run F's text must come out exactly: white pixels = lit coverage,
-        // and F4's and F5's pictures word for word F0's.
-        if name == "run F" && log.matches("words differing from F0: 0").count() != 2 {
+        // and F4's, F5's and F6a's pictures word for word F0's (F6b and F6c
+        // ask whether the engine keeps its surfaces: the device answers;
+        // here they need only to run).
+        if name == "run F" && log.matches("words differing from F0: 0").count() < 3 {
             return Err(format!(
-                "gpubench run F: F4 or F5 differs from F0's picture:{log}"
+                "gpubench run F: F4, F5 or F6a differs from F0's picture:{log}"
             ));
         }
         if name == "run F" {
