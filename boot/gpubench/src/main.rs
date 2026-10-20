@@ -2469,6 +2469,113 @@ mod image {
             );
             rt::check_in();
         }
+
+        // The words of 2700G memory's picture that differ from F0's (the
+        // reference, still in SDRAM).
+        let differ = |g: &Rig, reference: &[u8]| -> u32 {
+            let mut n = 0;
+            for (i, w) in reference.as_chunks::<4>().0.iter().enumerate() {
+                if g.mem.load(PIC16.at as usize + 4 * i) != Some(u32::from_le_bytes(*w)) {
+                    n += 1;
+                }
+            }
+            n
+        };
+
+        // F4: a pre-coloured RGB565 atlas (white on black, the edges baked
+        // in: a solid background's text) kept in 2700G memory, every glyph a
+        // plain 2D copy (no blend), after a 2D fill of the background.
+        const ATLAS565_STRIDE: usize = 2304; // 95 x 12 px x 2 bytes, rounded up
+        let a565 = map::GLYPHS.at as usize + F_TEXT_BYTES.next_multiple_of(4096);
+        let t0 = rt::ticks();
+        let mut row = [0u32; ATLAS565_STRIDE / 4];
+        for y in 0..16usize {
+            for (i, word) in row.iter_mut().enumerate() {
+                let mut v = 0u32;
+                for half in 0..2usize {
+                    let x = 2 * i + half;
+                    let (k, cx) = (x / 12, x % 12);
+                    if k < 95 {
+                        let nib = table[k * F_GLYPH_BYTES + y * 6 + cx / 2] >> (4 * (1 - (cx & 1)));
+                        if nib & 0xF != 0 {
+                            v |= 0xFFFF << (16 * half);
+                        }
+                    }
+                }
+                *word = v;
+            }
+            g.mem.store(a565 + y * ATLAS565_STRIDE, &row);
+        }
+        g.mem.sync();
+        log!(
+            "  F4 the coloured atlas made once: {} us ({} bytes)",
+            us_since(t0),
+            16 * ATLAS565_STRIDE
+        );
+        let t0 = rt::ticks();
+        let w = cmd::fill(
+            Format::RGB565,
+            PIC16.at as usize,
+            PIC16.stride as usize,
+            (0, 0, 480, 640),
+            0,
+        );
+        let mut ok = g.e.submit(&w).is_ok();
+        let mut sent = w.len();
+        for l in 0..F_LINES {
+            for c in 0..F_COLS {
+                let k = f_glyph(l, c) as u16;
+                let (x, y) = ((4 + c * 12) as u16, (8 + l * 16) as u16);
+                let (cw, n) = cmd::copy(
+                    Format::RGB565,
+                    (PIC16.at as usize, PIC16.stride as usize),
+                    (a565, ATLAS565_STRIDE),
+                    (k * 12, 0),
+                    (x, y, x + 12, y + 16),
+                    0,
+                );
+                ok &= g.e.submit(&cw[..n]).is_ok();
+                sent += n;
+            }
+        }
+        let queued = us_since(t0);
+        let done = g.e.finish(g.mem.0, 500_000).is_ok();
+        let us = us_since(t0);
+        log!(
+            "  F4 fill + a plain 2D copy a glyph from the coloured atlas: {us} us in all (the CPU queueing {queued}; finished {}); {} bytes over the bus; words differing from F0: {}",
+            ok && done,
+            sent * 4,
+            differ(g, px565)
+        );
+        rt::check_in();
+
+        // F5: the engine fills the background (and is waited for), then the
+        // CPU writes only the words that hold ink.
+        let t0 = rt::ticks();
+        let w = cmd::fill(
+            Format::RGB565,
+            PIC16.at as usize,
+            PIC16.stride as usize,
+            (0, 0, 480, 640),
+            0,
+        );
+        let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
+        let filled = us_since(t0);
+        let mut words = 0u32;
+        for (i, w) in px565.as_chunks::<4>().0.iter().enumerate() {
+            let v = u32::from_le_bytes(*w);
+            if v != 0 {
+                let _ = store32_volatile(g.mem.0, PIC16.at as usize + 4 * i, v);
+                words += 1;
+            }
+        }
+        cpu::drain_write_buffer();
+        let us = us_since(t0);
+        log!(
+            "  F5 fill ({filled} us) + the CPU writing only the ink: {us} us in all; {words} words of ink ({} bytes over the bus); words differing from F0: {}",
+            4 * words,
+            differ(g, px565)
+        );
     }
 
     fn main() -> ! {

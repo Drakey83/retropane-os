@@ -3180,6 +3180,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  F1 4 bpp strips",
                 "  F3a one 2D command a line",
                 "  F3b one 2D command for all",
+                "  F4 fill + a plain 2D copy a glyph",
+                "  F5 fill",
             ],
             false,
             (0, 0, 0),
@@ -3264,7 +3266,13 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
             }
         }
-        // Run F's text must come out exactly: white pixels = lit coverage.
+        // Run F's text must come out exactly: white pixels = lit coverage,
+        // and F4's and F5's pictures word for word F0's.
+        if name == "run F" && log.matches("words differing from F0: 0").count() != 2 {
+            return Err(format!(
+                "gpubench run F: F4 or F5 differs from F0's picture:{log}"
+            ));
+        }
         if name == "run F" {
             for l in log.lines().filter(|l| l.contains("; white ")) {
                 let nums: Vec<&str> = l
