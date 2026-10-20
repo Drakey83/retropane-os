@@ -318,7 +318,7 @@ the SPB look smooth instead of merely possible.
 - **Scrolling lists, the launcher's pages, contacts' photo grid:** the
   content is a tall layer (or tiles of it); a scroll is a new texture
   offset, so flick-scrolling with momentum runs at the panel's full
-  56.46 Hz however long the list. The CPU draws only the rows coming into
+  60 Hz however long the list. The CPU draws only the rows coming into
   view.
 - **Sheets over a dimmed screen** (menus, the "change background" sheet,
   the on-screen keyboard): the dim is one translucent quad; the sheet
@@ -353,8 +353,9 @@ the SPB look smooth instead of merely possible.
   dropped after.
 - **Speed (measured, docs/hw/2700g.md S26):** a full-screen render (2,400
   tiles of 8 x 16) took **12.5 ms** with Windows Mobile's core clock
-  (49.8 MHz), exactly in proportion to the clock. A 56.46 Hz frame is
-  17.7 ms, so at today's clock one full-screen composition a frame fits
+  (49.8 MHz), exactly in proportion to the clock. A frame is 16.6 ms at
+  the 60 Hz panel clock every program sets (`Display::adopt`; 17.7 ms at
+  Windows Mobile's 56.46 Hz), so at today's clock one full-screen composition a frame fits
   with ~5 ms to spare: smooth for a carousel or a sliding sheet, but not
   for stacking many full-screen translucent layers. The levers, each
   measured or queued: render only the tiles that changed (a sheet sliding
@@ -395,7 +396,7 @@ the SPB look smooth instead of merely possible.
 - **D: hybrid (added 2026-10-19 from the measurements).** Whole-screen
   moves (page swipes, flick-scrolling, sliding whole screens) by the
   display itself: pointing the plane at another picture or another place
-  in a taller one, in the blanking, at the full 56.46 Hz for no render
+  in a taller one, in the blanking, at the full 60 Hz for no render
   at all. The 3D core composes what changes in part (sheets, dimming,
   glass, fades, the weather's clouds, the carousel's panels), rendering
   only the changed tiles under a frame budget. The SPB look smooth at
@@ -405,7 +406,9 @@ the SPB look smooth instead of merely possible.
 
 **Owner's vote (2026-10-19): D, the hybrid**, after `rp-gpubench`'s
 numbers (below). It amends ADR-0022's point 3: the amendment was signed
-off by the owner the same day (ADR-0022, "Amendment to point 3").
+off by the owner the same day (ADR-0022, "Amendment to point 3"). The
+compositor that implements it was designed and voted the same night
+([compositor.md](compositor.md), [ADR-0034](../adr/0034-compositor.md)).
 
 **To measure first** (a GPU facts batch, on the device, owner watching,
 only on the owner's go; listed for the work order: GPU facts before UI
@@ -422,7 +425,7 @@ decision:**
 - A 480 x 640 layer is one 512 x 1024 texture (1 MiB at 16 bits):
   rectangles drawn right.
 - **One full-screen textured layer takes 25-29 ms** (the background alone
-  12.7 ms), longer than a 17.7 ms frame; each translucent full-screen
+  12.7 ms), longer than a 16.6 ms frame (60 Hz); each translucent full-screen
   layer adds ~20 ms; hidden opaque layers are almost free (8 stacked:
   40 ms). PVRTC is the cheapest texture (21-23 ms). A 16-bit screen saves
   0-3 ms. So **recomposing the whole screen every frame runs at ~35 Hz

@@ -5,6 +5,9 @@
   conditions, all landing before S1 (listed under "The owner's
   conditions" below; written into R2-R7, A2-A5 and the steps). Proposed
   and revised after a review the same day.
+- **A7 (virtual bass on the speaker): proposed 2026-10-19, waiting for
+  the owner's vote** (B recommended; a speaker sweep and an A/B by ear
+  before it ships).
 - **A6 (quality audit E3, the DMA chain that stops at the mix's end):
   the owner chose B on 2026-10-19, conditional on the two device
   measurements; both passed on the X51v the same evening; B built the
@@ -853,6 +856,73 @@ mutants and the emulator; no vote changes.
 - **Security:** a program that starves the audio thread gets silence, not
   a loud replay; nothing new is exposed to programs (the descriptors stay
   in the audio host).
+
+## A7. Virtual bass on the speaker (proposal, 2026-10-19: for the owner's vote)
+
+**A proposal, not a decision; nothing is built.** It needs the owner's A/B
+by ear before it ships (the order agreed for ADR-0032's follow-ups).
+
+### In plain words
+
+The X51v's speaker is tiny: below a few hundred hertz it barely moves air,
+and pushing bass into it only makes it rattle, which is why the speaker
+output already cuts bass (A4's speaker protection). Music then sounds thin.
+**Virtual bass** uses a trick of hearing: when you hear the overtones of a
+low note (twice, three times, four times its frequency), your brain fills
+in the low note itself, even if it isn't there (the "missing
+fundamental"). Small speakers in phones and laptops use it: the bass
+the speaker can't play is replaced by overtones it can, so music sounds
+fuller without the rattle. It only applies to the speaker; headphones get
+the real bass.
+
+### How it would work (in the mixer's output stage, speaker only)
+
+1. Split the mix: the band the speaker can't play (below its cut-off,
+   **not yet measured**: a few hundred hertz) goes to the bass path; the
+   rest passes untouched.
+2. The bass path makes overtones: a smooth nonlinear curve (a low-order
+   polynomial; a rectifier is the cruder form) on the low band, then a
+   filter keeping only the overtones the speaker can play (roughly 1-4 x
+   the cut-off), at a level that follows the bass's own loudness.
+3. The overtones are added back, and the speaker protection (A4) removes
+   what's left below the cut-off, as today. Then the limiter, as today.
+
+Cost, estimated: a few filters and a polynomial on one mono bass signal at
+44.1 kHz, about **50-80 CPU cycles a sample: under 1% of the CPU** at 624
+MHz (measured before shipping, host-tested for quality first).
+
+### The options
+
+| | **A: none (today)** | **B: overtone virtual bass (recommended)** | C: pitch-shifted bass (vocoder) | D: just boost the bass |
+|---|---|---|---|---|
+| How | The speaker protection cuts the bass the speaker can't play | Overtones of the missing bass added, as above | The bass band shifted up an octave by a phase vocoder | More bass sent to the speaker |
+| Sounds | Thin, but clean | Fuller; the low notes' pitch "heard" | Can sound smeared or phasey | Rattle and distortion: the speaker can't move that air |
+| CPU | none | <1% (estimated) | several % (FFTs) | none (codec) |
+| Risk | none | Overtones too strong sound fuzzy: tuned by ear, switchable | Quality hard to get right | Damages the sound, maybe the speaker |
+
+**Recommendation: B**, on the speaker output only, with a switch in Settings
+(on by default once the owner's A/B approves it), tuned by ear on the X51v.
+C costs much more for a doubtful gain; D is what the protection exists to
+prevent.
+
+### What must be measured first (device, owner's go, speaker only)
+
+1. **The speaker's cut-off:** a slow sine sweep (60 Hz to 2 kHz) on the
+   speaker at a fixed level, the owner noting where it becomes clearly
+   audible and where it starts to rattle (a phone's sound meter app can
+   add numbers). This sets the crossover and the protection filter alike.
+2. **The A/B:** the same music clips with B off and on (and two strengths),
+   in a random order the image logs, the owner picking which sounds better
+   without knowing which is which.
+
+### Build order (after the vote and the sweep)
+
+1. The bass path in the host mixer, host-tested (a 100 Hz tone in: 200,
+   300, 400 Hz out at the designed levels; nothing below the cut-off; no
+   overload at full scale; CPU cycles counted on the device).
+2. The device A/B run (above), the owner's ears deciding.
+3. The Settings switch, the emulator check (the mixer's output on the
+   emulated speaker carries the overtones), size and CPU budgets.
 
 ## The four lenses
 

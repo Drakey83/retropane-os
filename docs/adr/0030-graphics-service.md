@@ -36,6 +36,10 @@ who draws where on the screen); the rest has a recommendation.
 
 ### G1. Who draws where on the screen: **A, areas (owner, 2026-10-15)**
 
+**Amended 2026-10-19 by [ADR-0034](0034-compositor.md) C5:** layers replace
+areas; text and glass may sit over 3D content, the 3D core composing them
+(priced per tile). The single GPU owner and the per-client quotas stay.
+
 | | **A: areas (recommended first)** | B: 3D under 2D | C: 3D over 2D through a texture |
 |---|---|---|---|
 | How | Each frame, every tile-aligned area of the picture belongs to one engine: the 3D scene owns its rectangles (an animation, a transition, a rotating icon); the 2D renderer leaves them out | The 3D scene renders first; the 2D renderer then draws its commands over those areas, starting from the 3D result instead of the wallpaper | The 2D result is copied into a texture that the 3D scene draws (e.g. a page turning) |

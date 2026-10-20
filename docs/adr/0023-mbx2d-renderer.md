@@ -4,6 +4,9 @@
   opaque full-colour picture composed by the engine, double-buffered).
   Stride 0 and 32 bpp scan-out are measured by `rp-mbx-blend` B6 before
   the renderer runs on the device.
+- **Amended 2026-10-19 by [ADR-0034](0034-compositor.md) C2:** opaque
+  pictures are RGB565 (16-bit), with ordered dither at draw time for
+  gradients; 32-bit (ARGB8888) only for glass with smooth gradients.
 - **Date:** 2026-10-14
 
 ## In plain words

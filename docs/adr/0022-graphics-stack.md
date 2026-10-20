@@ -219,7 +219,7 @@ replaces point 3.
 it is measured best at. When the whole screen moves (a page swipe, a
 flick through a list, a screen sliding in), the display is pointed at a
 different picture, or a different place in a taller one: nothing is
-redrawn, at the panel's full 56 frames a second. When part of the screen
+redrawn, at the panel's full 60 frames a second. When part of the screen
 changes (a sheet sliding up, a dimmed backdrop, glass, a fade, moving
 clouds, the carousel's panels), the 3D core redraws only the tiles that
 changed, under a frame budget so a frame never runs late. The 2D engine
@@ -305,7 +305,7 @@ fills with the 2D engine, and draws on the CPU last.*
   one:** reordering a full layer for the 3D core in SDRAM (37 ms) and
   copying it by DMA (34 ms, the CPU 79% free) is ~71 ms, four frames, paid
   once when the layer's content changes. Consequence: **a CPU-drawn
-  full-screen layer can't animate its content at 56 frames a second**;
+  full-screen layer can't animate its content at 60 frames a second**;
   only its position, transform and alpha animate (the 3D core), and its
   content changes in strips (a 480 x 48 strip 3.0 ms in texture order).
 - **The emulator:** the pan path isn't called done until the fork models
