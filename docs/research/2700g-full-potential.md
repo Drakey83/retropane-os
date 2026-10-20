@@ -88,6 +88,9 @@ with a fallback** (below), the owner's any-Axim rule.
 | **P18** | Every status and interrupt bit of every unit | No polling anywhere |
 | **P19** | A full read of Dell's GPU code (`ddi_2700g`, `libGLES_CL`, `pvrvadd`) for every register and feature it touches that RetroPane hasn't used | Nothing the chip does goes unnoticed (facts only, never copied) |
 
+The CPU's own map, and the CPU, 2D engine and 3D core working together,
+are in [cpu-full-potential.md](cpu-full-potential.md).
+
 ## The checklist rule
 
 The map is the checklist. Every unit and feature has a line here, and
