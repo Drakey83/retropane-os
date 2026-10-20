@@ -34,6 +34,31 @@ known part), **likely** (strong evidence, not proven), **guess**.
   calibration at boot with Dell's value as the fallback (the owner's
   choice once the results are in).
 
+## `rp-cs3bus` on the device (2026-10-19, `local/rp-cs3bus-run1.txt`)
+
+CS3 stepped from Windows Mobile's `MSC1` (`0x24842481`), one notch at a
+time, each step checked (a full-screen flush verified word by word,
+256 KiB read back, six patterns over 512 KiB, a register, a 2D fill):
+
+| Step | RDF / RDN | Clocks a beat | Flush (1.2 MB) | Read 256 KiB | Result |
+|---|---|---|---|---|---|
+| 0 (WM) | 8 / 4 | 17 | 36.9 ms, 33 MB/s | 21.5 ms, 12 MB/s | all good |
+| 1 | 7 / 4 | 16 | 35.5 ms, 34 MB/s | 21.5 ms | all good |
+| 2 | 6 / 4 | 15 | 35.4 ms, 34 MB/s | 21.5 ms | all good |
+| 3 | 5 / 4 | 14 | 34.4 ms, 35 MB/s | 21.5 ms | all good |
+| 4 | 4 / 4 | 13 | 31.6 ms | (wrong data) | **reads wrong** (the flush's words, re-read at WM's timing, were right: a read fault); the 2D engine's fence never read back |
+| soak at step 1 | 7 / 4 | 16 | 231 rounds in 60 s | | **0 misses** |
+
+- **The 2700G sets the pace, not `MSC1`:** three clocks off a beat
+  bought ~7% on writes and nothing on reads (12 MB/s throughout), so the
+  2700G holds RDY; the hoped-for 60-75 MB/s isn't there.
+- **Its read strobe needs at least 6 clocks** (`RDF` 5) on this unit;
+  writes still landed at `RDF` 4.
+- **With the any-Axim margin** (two steps looser than the tightest pass:
+  step 1) the gain is **~4%** (a flush 36.9 -> 35.5 ms).
+- Open for the owner: keep Windows Mobile's value (recommended: the gain
+  is small and proven on one unit) or step 1 as a fixed value.
+
 ## The answer in brief
 
 - **The SDRAM clock is already at the PXA270's maximum.** SDCLK2 =
