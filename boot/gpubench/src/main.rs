@@ -155,13 +155,17 @@ mod image {
     /// after it, and after each of three memory restarts, gentlest first,
     /// then with `SYSCFG` put back.
     const RESCUE: bool = option_env!("RP_GPUBENCH_RESCUE").is_some();
-    /// Run H: the card log's proof against the failure that lost every
+    /// Run H: the card log's proof against the reset that lost every
     /// earlier log: a bus the 2700G never answers (runs G2 and Z froze it;
     /// the hardware watchdog reset the device into Dell's prompt, which
     /// clears the SDRAM and SRAM copies). 40 numbered lines, then a read of
     /// the system block's `0x12C` (no register there: it froze Windows
     /// Mobile each time, docs/hw/2700g.md). Every line must be on the card.
     const FREEZE: bool = option_env!("RP_GPUBENCH_FREEZE").is_some();
+    /// Run H fires the hardware watchdog (on the device); the emulator's
+    /// check builds it with `RP_GPUBENCH_NO_WATCHDOG` too and the run
+    /// returns.
+    const FIRE_WATCHDOG: bool = option_env!("RP_GPUBENCH_NO_WATCHDOG").is_none();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -4500,9 +4504,21 @@ mod image {
             rt::delay_us(50_000);
             rt::check_in();
         }
-        log!("H: reading 0x{NOTHING:x} next (on the X51v the bus freezes here)");
+        log!("H: reading 0x{NOTHING:x} next (it froze Windows Mobile's bus)");
         let v = g.e.regs.read32(NOTHING);
-        log!("H: the read returned 0x{v:x}: no freeze (the emulator answers every address)");
+        // Run H1 on the X51v (2026-10-20): it read 0 under the loader, no
+        // freeze. So the reset that clears the SDRAM and SRAM logs is
+        // brought on directly: the PXA's hardware watchdog (OS timer match
+        // 3), the reset a frozen bus ends in, into Dell's prompt.
+        log!("H: the read returned 0x{v:x}: no freeze");
+        log!("H: the hardware watchdog fires in 1 s (nothing feeds it from here); the device resets into Dell's prompt");
+        if FIRE_WATCHDOG {
+            rt::watchdog().feed(3_250_000);
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        log!("H: the watchdog left unarmed (an emulator run: RP_GPUBENCH_NO_WATCHDOG)");
     }
 
     /// Run Y (see [`RESCUE`]).

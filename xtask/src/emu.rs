@@ -3105,7 +3105,13 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LADDER", "1"))?;
     let run_z = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REBUILD", "1"))?;
     let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
-    let run_h = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FREEZE", "1"))?;
+    // Run H without its watchdog (the emulator's check needs it back).
+    let run_h = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_FREEZE", "1"),
+        Some(("RP_GPUBENCH_NO_WATCHDOG", "1")),
+    )?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3323,6 +3329,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "H: line 40 of 40 before the freeze",
                 "H: reading 0x12c next",
                 "H: the read returned",
+                "H: the watchdog left unarmed",
             ],
             false,
             (0, 0, 0),
@@ -5562,11 +5569,27 @@ pub fn boot_loader_tone(root: &Path) -> Result<(), String> {
 /// value)`), in its own target folder so the plain build stays as it is;
 /// the raw file to load.
 fn variant_image(root: &Path, image: &str, env: (&str, &str)) -> Result<PathBuf, String> {
-    let dir = format!("target/variants/{}", env.0.to_ascii_lowercase());
-    run(Command::new("cargo")
-        .current_dir(root)
-        .env(env.0, env.1)
-        .args([
+    variant_image_with(root, image, env, None)
+}
+
+/// [`variant_image`] with a second switch `also` set (its own folder too).
+fn variant_image_with(
+    root: &Path,
+    image: &str,
+    env: (&str, &str),
+    also: Option<(&str, &str)>,
+) -> Result<PathBuf, String> {
+    let name = match also {
+        Some(a) => format!("{}-{}", env.0, a.0).to_ascii_lowercase(),
+        None => env.0.to_ascii_lowercase(),
+    };
+    let dir = format!("target/variants/{name}");
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(root).env(env.0, env.1);
+    if let Some((k, v)) = also {
+        cmd.env(k, v);
+    }
+    run(cmd.args([
             "build",
             "--release",
             "--target",
@@ -5579,7 +5602,7 @@ fn variant_image(root: &Path, image: &str, env: (&str, &str)) -> Result<PathBuf,
             "--target-dir",
             &dir,
         ]))?;
-    let out = emu_dir(root)?.join(format!("{image}-{}.bin", env.0.to_ascii_lowercase()));
+    let out = emu_dir(root)?.join(format!("{image}-{name}.bin"));
     crate::sdkit::raw_binary(
         &root
             .join(&dir)

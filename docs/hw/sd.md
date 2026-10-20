@@ -145,8 +145,14 @@ back. It uses the CPU's own transfers (no DMA: the SD DMA channel stays the
 image's) and writes only inside `rplog/`. `cargo xtask cardlog [image]
 [number]` fetches the newest (or numbered) one through the loader into
 `local/cardlog/`. `emu-gpubench` checks every run's card log against its
-run log, word for word. Run H (`RP_GPUBENCH_FREEZE`) is the device proof:
-40 lines, then a read the 2700G never answers. Open: the loader could
+run log, word for word. **Proven on the X51v (2026-10-20, run H,
+`local/rp-gpubench-runH1.txt`, `runH2.txt`, `local/cardlog/`):** H1 returned
+and its card log matched the SDRAM log line for line (50 lines, the
+closing line, 0 refused; slowest sector write 17.4 ms: keep log lines out
+of timed parts). H2 logged 40 numbered lines and fired the PXA's hardware
+watchdog (into Dell's restore prompt, Mail, the loader): the loader had no
+run log left, and the card had every line up to the last one before the
+reset, and no closing line. Open: the loader could
 reserve the file instead, sparing each image ~52 KiB of file-system code
 (quality audit C24).
 
