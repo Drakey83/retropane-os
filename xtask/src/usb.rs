@@ -74,16 +74,20 @@ $sp.Close()
         )
 }
 
+#[cfg(test)]
 fn load_script(frame: &Path) -> String {
-    load_script_opts(frame, true)
+    load_script_opts(frame, true, 1)
 }
 
 /// [`load_script`], or with `wait_log` false only the send and the
-/// loader's reply (for [`start`]).
-fn load_script_opts(frame: &Path, wait_log: bool) -> String {
+/// loader's reply (for [`start`]). `frames`: control frames before the
+/// image in the same send (the card log's `name`) each get their own
+/// reply first (`EARLY`); the image's is the last.
+fn load_script_opts(frame: &Path, wait_log: bool, frames: usize) -> String {
     let log_wait = log_wait_secs();
     let path = frame.display().to_string().replace('\'', "''");
     let stop = if wait_log { "" } else { "exit 0\n" };
+    let early = frames.saturating_sub(1);
     open_port()
         + &format!(
             r#"$bytes = [System.IO.File]::ReadAllBytes('{path}')
@@ -98,9 +102,13 @@ $sp.Write($bytes, 0, $bytes.Length)
 "SENT " + $bytes.Length
 $deadline = (Get-Date).AddSeconds(10)
 $reply = ''
+$early = {early}
 while ((Get-Date) -lt $deadline) {{
     try {{ $l = $sp.ReadLine() }} catch {{ break }}
-    if ($l -match '^RPL (OK|ERR)') {{ $reply = $l; "REPLY " + $l; break }}
+    if ($l -match '^RPL (OK|ERR)') {{
+        if ($early -gt 0) {{ $early -= 1; "EARLY " + $l; continue }}
+        $reply = $l; "REPLY " + $l; break
+    }}
 }}
 try {{ $sp.Close() }} catch {{ }}
 if ($reply -like 'RPL ERR*') {{ exit 0 }}
@@ -588,7 +596,10 @@ fn is_loader(image: &[u8]) -> bool {
 
 /// The image `what` (a name, built first, or a `.bin` file) as bytes, and
 /// its load frame written next to it.
-fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf), String> {
+/// The image's raw bytes, and a frame file to send: for any image but a
+/// loader, the card log's `name` first, in the same send (so it can't be
+/// lost on its own); and how many frames the file holds.
+fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf, usize), String> {
     let bin = if what.ends_with(".bin") {
         Path::new(what).to_path_buf()
     } else {
@@ -607,17 +618,23 @@ fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf),
     };
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let frame = bin.with_extension("frame");
-    std::fs::write(&frame, rp_loadproto::frame(&payload))
-        .map_err(|e| format!("{}: {e}", frame.display()))?;
-    Ok((payload, frame))
+    let mut bytes = Vec::new();
+    let mut frames = 1;
+    if !is_loader(&payload) {
+        bytes = rp_loadproto::control_frame(&format!("name {}", card_log_name(what)));
+        frames = 2;
+    }
+    bytes.extend(rp_loadproto::frame(&payload));
+    std::fs::write(&frame, bytes).map_err(|e| format!("{}: {e}", frame.display()))?;
+    Ok((payload, frame, frames))
 }
 
 /// Sends image `what` and returns as soon as the loader has said it starts
 /// it, with that moment: for `cargo xtask measure`, whose schedule counts
 /// from the image's start. The run log is left for `cargo xtask log`.
 pub fn start(root: &Path, what: &str) -> Result<std::time::Instant, String> {
-    let (payload, frame) = image_frame(root, what)?;
-    let out = powershell(&load_script_opts(&frame, false))?;
+    let (payload, frame, frames) = image_frame(root, what)?;
+    let out = powershell(&load_script_opts(&frame, false, frames))?;
     let at = std::time::Instant::now();
     let text = String::from_utf8_lossy(&out.stdout);
     if text.contains("NOPORT") || !text.contains("PORT ") {
@@ -648,22 +665,8 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
              benchmarks on the device. Add --force to send it anyway."
         ));
     }
-    let (payload, frame) = image_frame(root, what)?;
-    // The run's card log is named after the image (rplog/<name>-NNNN.txt);
-    // a loader from before the card log for every run refuses the command,
-    // and the run goes ahead with the image's own logging only.
-    if !is_loader(&payload) {
-        let name = card_log_name(what);
-        match query(root, &format!("name {name}")) {
-            Ok(_) => eprintln!(
-                "    card log: rplog/{name}-NNNN.txt on the SD card (and the CF card when one is in)"
-            ),
-            Err(e) => eprintln!(
-                "    card log: the loader didn't take the name ({e}); an older loader keeps no card log for every run"
-            ),
-        }
-    }
-    let mut out = powershell(&load_script(&frame))?;
+    let (payload, frame, frames) = image_frame(root, what)?;
+    let mut out = powershell(&load_script_opts(&frame, true, frames))?;
     if String::from_utf8_lossy(&out.stdout).contains("NOPORT") {
         // Windows still holds a stale entry for the port (Windows Mobile's
         // device after a fresh start, or ours): restart it and look again.
@@ -671,7 +674,7 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
         let _ = powershell(&format!(
             "schtasks /Run /TN '{RESTART_TASK}' | Out-Null; Start-Sleep 6"
         ));
-        out = powershell(&load_script(&frame))?;
+        out = powershell(&load_script_opts(&frame, true, frames))?;
     }
     let text = String::from_utf8_lossy(&out.stdout);
     let mut port = None;
@@ -685,6 +688,20 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
             port.get_or_insert_with(|| p.to_string());
         } else if let Some(r) = trimmed.strip_prefix("REPLY ") {
             reply = Some(r.to_string());
+        } else if let Some(r) = trimmed.strip_prefix("EARLY ") {
+            // The card log's name, sent with the image (2026-10-20: sent
+            // on its own first, it was lost while Windows re-found the
+            // port after the previous run, and the log was named `run`).
+            if r.starts_with("RPL OK") {
+                eprintln!(
+                    "    card log: rplog/{}-NNNN.txt on the SD card (and the CF card when one is in)",
+                    card_log_name(what)
+                );
+            } else {
+                eprintln!(
+                    "    card log: the loader refused the name ({r}); an older loader keeps no card log for every run"
+                );
+            }
         } else if let Some(l) = trimmed.strip_prefix("LOG ") {
             log.push(l.to_string());
         } else if trimmed == "LOG" {
@@ -1145,6 +1162,16 @@ mod tests {
     fn the_script_looks_for_our_ids() {
         assert!(script().contains("USB\\VID_1209&PID_0001*"));
         assert!(load_script(Path::new("x.frame")).contains("USB\\VID_1209&PID_0001*"));
+    }
+
+    /// The card log's name goes in the same send as the image: its reply
+    /// comes first and is set apart, the image's is the one acted on.
+    #[test]
+    fn a_name_sent_with_the_image_has_its_reply_set_apart() {
+        let s = load_script_opts(Path::new("x.frame"), true, 2);
+        assert!(s.contains("$early = 1"));
+        assert!(s.contains("\"EARLY \" + $l"));
+        assert!(load_script(Path::new("x.frame")).contains("$early = 0"));
     }
 
     #[test]

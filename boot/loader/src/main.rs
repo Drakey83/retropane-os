@@ -2039,6 +2039,11 @@ mod image {
         let (mut asleep, mut idle_pct) = (0u32, 0u32);
         // Whole packets go straight from the FIFO into it (both buffers).
         let mut buf = [0u8; 512];
+        // What of `buf` a frame's end left unread: the next frame's start,
+        // sent in the same transfer (the card log's `name` before an image,
+        // 2026-10-20: the image's first bytes were dropped with the rest of
+        // the read, and the image never arrived).
+        let mut carry = 0..0usize;
         // Naps taken with a drive command under way: must stay 0 (a loader
         // napping mid-transfer once made a 1 MiB read take 17 s). Counted,
         // so the check needn't time the transfer on a busy PC's clock.
@@ -2198,12 +2203,14 @@ mod image {
                 outcome = feed_slice(&mut rx, &[b], dest).1;
             }
             if outcome.is_none() {
-                let n = udc.read(&mut buf);
-                heard |= n > 0;
-                let mut used = 0;
-                while outcome.is_none() && used < n {
-                    let (u, r) = feed_slice(&mut rx, &buf[used..n], dest);
-                    used += u;
+                if carry.is_empty() {
+                    let n = udc.read(&mut buf);
+                    heard |= n > 0;
+                    carry = 0..n;
+                }
+                while outcome.is_none() && !carry.is_empty() {
+                    let (u, r) = feed_slice(&mut rx, &buf[carry.clone()], dest);
+                    carry.start += u;
                     outcome = r;
                 }
             }

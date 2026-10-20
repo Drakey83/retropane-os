@@ -148,8 +148,8 @@ hardware watchdog (into Dell's restore prompt, Mail, the loader): the
 loader had no run log left, and the card had every line up to the last
 one before the reset, and no closing line.
 
-**Every run now (owner's vote B, quality audit C24; emulator-checked, not
-yet run on the X51v):** the same file and the same in-place writes, but
+**Every run now (owner's vote B, quality audit C24; proven on the X51v
+2026-10-20, below):** the same file and the same in-place writes, but
 the loader reserves the file (it has the file systems) for every image it
 starts, named by `cargo xtask load` (`name <image>`, checked: 1-24 of
 `a-z 0-9 - _`), the next number on either card. It reserves one on the SD
@@ -188,6 +188,22 @@ anything the run log doesn't. About 4.3 KiB of each image.
   the CF card's (`ls cf:rplog`, `get cf:rplog/...`), joins them byte for
   byte (each part holds its stretch at the same offsets, zeros elsewhere)
   and saves the whole log under `local/cardlog/`.
+
+**On the X51v (2026-10-20, the loader installed, CF card in;
+`local/cardlog/light-0001.txt`, `run-0001.txt`):** rp-light's card log
+was the run log byte for byte (559 bytes, on the SD card, 17 sector
+writes, 0 refused). rp-sdtime, the SD speed test, took the SD controller:
+the log moved to the CF card with its line, and the two halves joined
+into the run log byte for byte (4,694 bytes, 59 sector writes, 0
+refused). The slowest sector write was **48 ms** (rp-light) and **141 ms**
+(rp-sdtime, on the CF card or the SD card right after its tests), against
+run H's 17.4 ms: a log line can cost tens of milliseconds, so timed parts
+of a test log after they finish, never inside. Found on the way: the
+image's name, sent as its own command before the image, was lost once
+while Windows re-found the port after a run (the log was named `run`); it
+now goes in the same transfer as the image, and the loader keeps the
+bytes after a frame's end for the next frame (it had dropped the rest of
+the USB read: the image never arrived).
 
 `emu-cardlog` checks it on the emulator with both cards in: rp-light (on
 SD, the CF file unwritten; numbered after 40 seeded files, the 8 oldest

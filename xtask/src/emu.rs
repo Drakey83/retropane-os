@@ -4657,8 +4657,14 @@ pub fn boot_loader_usb(root: &Path) -> Result<(), String> {
         }
         // The same image again under the same loader: it must start fresh
         // (rt::Slot: filled once per start, `.bss` zeroed by `_start`), not
-        // find the first run's state.
-        s.write_all(&frame).map_err(|e| e.to_string())?;
+        // find the first run's state. Sent with the card log's name in the
+        // same transfer, as `cargo xtask load` sends it: the image's first
+        // bytes share a packet with the name's end (2026-10-20, on the
+        // X51v: the loader dropped them and the image never arrived).
+        let mut both = rp_loadproto::control_frame("name light");
+        both.extend_from_slice(&frame);
+        s.write_all(&both).map_err(|e| e.to_string())?;
+        usb_read_line(&mut s, "RPL OK name", 15)?;
         usb_read_line(&mut s, "RPL OK sha256 ", 15)?;
         let again = usb_read_until(&mut s, "RPL END", 30)?;
         if !again.contains("all steps OK") || !again.contains("slot: fresh") {

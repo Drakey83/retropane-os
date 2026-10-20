@@ -499,6 +499,9 @@ fn main() -> ExitCode {
 
 type Result<T = ()> = std::result::Result<T, String>;
 
+/// One emulator check of the `emu` suite.
+type EmuCheck = fn(&std::path::Path) -> Result;
+
 /// The command line without `--no-wait` (devlock reads that one itself),
 /// so it can go anywhere without shifting the positional arguments.
 fn args() -> impl Iterator<Item = String> {
@@ -584,7 +587,7 @@ fn run_step(step: &str) -> Result {
             // `RETROPANE_EMU_FROM=<check>` resumes the suite at that check
             // (its function's name), after a known flake stopped it
             // (docs/quality-audit.md C25).
-            let checks: &[(&str, fn(&std::path::Path) -> Result)] = &[
+            let checks: &[(&str, EmuCheck)] = &[
                 ("boot_hello", emu::boot_hello),
                 ("boot_probe", emu::boot_probe),
                 ("boot_kernel", emu::boot_kernel),

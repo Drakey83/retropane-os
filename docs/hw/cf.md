@@ -205,7 +205,7 @@ on, and a card pulled out switches the slot off, with no READY before the
 loader attaches it again on re-insertion (rp-v0.11.1)
 ([`emulator.md`](emulator.md)).
 
-## The card log's second half (2026-10-20; emulator-checked, not yet on the X51v)
+## The card log's second half (2026-10-20; proven on the X51v: rp-sdtime's log moved here)
 
 With a CF card in, the loader reserves each run's card log there too,
 `rplog/<image>-NNNN.txt` beside the SD card's (`docs/hw/sd.md`, "Run logs
