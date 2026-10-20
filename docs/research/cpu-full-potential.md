@@ -18,6 +18,20 @@ so the search covers whole ranges rather than a guess or two. Dell's
 values and Windows Mobile's behaviour are findings to beat, never limits
 (docs/research/imitation-audit.md).
 
+**Verify everything ourselves (owner, 2026-10-20).** Nothing here is
+known because Dell, Windows Mobile, Intel's manual or one of RetroPane's
+own docs says so. Every fact carries its source:
+
+- **[us]** measured by RetroPane on the X51v (the run and date given);
+- **[Dell]** read from Dell's or Windows Mobile's code (static, unproven);
+- **[Intel]** Intel's manual (the part as designed, not this board).
+
+Only **[us]** counts as known. Every **[Dell]** and **[Intel]** fact has
+a verify line in Part 0 and stays unticked until our own measurement
+agrees or shows otherwise. A fact that can't be checked without opening
+the device (never done: the any-Axim rule) is marked so, with the best
+indirect check, and never quietly becomes known.
+
 The same rules as the GPU program: device runs only on the owner's go
 with numbered steps first; results into docs/hw and the datasheet the same
 day; the emulator models what it can or lists what it can't; settings
@@ -25,25 +39,41 @@ past the parts' ratings only through a per-device self-test with a
 fallback, the owner's any-Axim rule (the RAM's timing excepted: the owner
 decided it stays Dell's).
 
+## Part 0: verify what's written down
+
+Each of these is a claim until our own run settles it.
+
+| | Claim (source) | Our check |
+|---|---|---|
+| **V1** | The CPU is a PXA270 at C5 stepping with iWMMXt, 32+32 KiB caches, a 2 KiB mini cache (Intel, our CPU ID) | Read the CPU ID, cache type and coprocessor access registers; time a walk over 16-64 KiB to see where each cache really ends; run an iWMMXt instruction |
+| **V2** | 256 KiB internal SRAM, and its speed (Intel) | Write and read every byte with patterns; time it against the caches and SDRAM |
+| **V3** | WM's seven speeds and the voltage pattern for each (Dell) | Set each one ourselves, measure the clock with the cycle counter against the 13 MHz-derived timer, and run a stress test at each |
+| **V4** | The mV labels for the pin patterns, and that 1470 and 1364 share a pattern (Dell) | The real voltage can't be read without opening the device. Indirect check: the lowest speed each pattern runs cleanly at, which ranks the patterns; and the battery's drain at each |
+| **V5** | 624 MHz is the top (Intel) | C2's stepped test |
+| **V6** | The memory clock 104 MHz and refresh ~7.5 us as WM leaves them (our rp-probe read of the registers) | Measure the memory clock from timing, not just the register, at each CPU speed |
+| **V7** | WM's ~280 ns memory hop, and the TLB walks as the cause (estimate) | Time the same chase with large mappings and with the tables in SRAM; read the TLB miss counter (C8) |
+| **V8** | 32 DMA channels, their bursts and priorities (Intel) | C11's sweep |
+| **V9** | Every number our own docs quote from Dell or Intel about the CPU, clocks, memory and power | Swept from clocks.md, ADR-0031, memory-timing.md and the datasheet into this table, one line each |
+
 ## Part 1: the CPU (Intel PXA270, XScale, 624 MHz)
 
 What's public: Intel's developer's manual and electrical specs (unlike the
 2700G). What's not: how this board's clocks, voltage and memory really
 behave at the edges, and how well RetroPane's own code uses the core.
 
-| | Known | Unknown or unused | Probe | Payoff |
+| | What we have, by source | Unknown or unused | Probe | Payoff |
 |---|---|---|---|---|
-| **C1. Clocks** | 13 MHz x L (run) x 2N/2 (turbo); WM's table 91-624 MHz, the 208 MHz bus (`CCCR` A=1), 624 = 16 x 3 (ADR-0031, clocks.md) | Half-turbo (`CLKCFG` HT, never used by WM); the fastest **run** (bus) for a given core speed; switching cost; which point is best for each workload | Every operating point timed on a fixed set of workloads (integer, memory, copies, the mixer, the renderer's CPU side) and its switch time | The right speed for each job: faster where it matters, slower where it doesn't |
-| **C2. Overclocking** | 624 MHz is the part's rated top (C5 stepping); the core voltage is three GPIO VID pins (GPIO3/4/38), WM's top pattern at 624 (1574 mV label, unmeasured) | Whether this core runs past 624 (L 17-19 with 2N 6 is 663-741 MHz) at the top VID; what the bus and memory clocks then do (raising L raises the bus: the SDRAM clock must stay at 104 MHz, so its divider changes); heat; battery | **C2a** static: the clock tree at L 17-19 (bus, SDCLK dividers) and which keep the SDRAM at or under 104 MHz; **C2b** a stepped device test like run G (each step stressed: integer, memory patterns, caches, DMA, a long soak), stopping at the first error; the board's temperature where readable | Up to ~10-19% more CPU, only through the per-device self-test (the voltage can't go past WM's top pattern: no control exists) |
-| **C3. Internal SRAM** (256 KiB, on chip) | Barely used (the loader's clock-change code is the main user under WM) | Its speed against SDRAM and the caches; what lives best there | Measured; candidates moved there one at a time and timed: page tables (ADR-0006: a TLB miss 5.2x cheaper), the mixer's buffers, the 2700G upload staging (Part 3), hot interrupt paths | Faster memory for what's touched constantly |
-| **C4. Memory lookups** | RetroPane's random SDRAM access ~490 ns against WM's ~280 ns, most of it TLB walks (memory-timing.md) | The best page sizes, table placement, TLB lock-down (the XScale can lock entries) | Large mappings (64 KiB / 1 MiB), tables in SRAM, locked TLB entries for the kernel and the GPU's windows, each timed | Up to ~1.8x on memory-bound work, no risk |
-| **C5. Caches** | 32 KiB I and D, write-back, a 2 KiB mini data cache, the write buffer and fill buffers, `pld` | How RetroPane's hot loops use them; the mini cache's best use (streaming data that would evict the main one); cache locking (the XScale can lock lines) | Each hot path profiled with the performance counters (C8); the mini cache for streams; locked lines for the kernel's hottest code | Fewer misses everywhere |
-| **C6. iWMMXt** (64-bit SIMD, 16 registers) | Present; little used | Its speed on pixel work (reorder, colour conversion, blends, dithering), audio (mixing, filters, the virtual bass), copies | Each routine written plainly and in iWMMXt, timed, checked equal | 2-4x on pixel and audio loops |
-| **C7. Copies and fills** | `memcpy_64k` ~95 MB/s (perf.md) | The best copy for each case: cache-line bursts, `pld` distance, iWMMXt 64-bit, DMA for large ones | A sweep of methods and sizes | Every subsystem's copies faster |
-| **C8. Performance counters** | The XScale has them (cycles, cache and TLB misses, stalls) | Not yet wired into RetroPane's benches | A counter reader in the bench harness; every benchmark reports misses and stalls, not only time | Seeing why something is slow, not guessing |
-| **C9. Code** | Rust, release builds | ARM against Thumb density and speed, inlining, layout of hot code (cache), link-time optimisation, the compiler's XScale tuning | A/B builds of the same workload | Smaller and faster code |
-| **C10. Interrupts and sleep** | Interrupts and the run limit work; idle measured | Wake latency from each sleep depth; the cost of each interrupt path | Measured | Low latency and long battery together |
-| **C11. DMA** | 32 channels; SD, audio, CF, UDC use some | Memory-to-memory speed by burst and width, descriptor chains as a general copy engine, priorities | A sweep | The CPU free while data moves |
+| **C1. Clocks** | [us] the core at 624 MHz under the loader (`CCCR 0x02000310`, `CLKCFG 0xB`; the cycle counter 624.001 MHz against the OS timer: rp-noise run 1, 2026-10-15); [Dell] WM's table of 91-624 MHz and its switching code (clocks.md); [Intel] 13 MHz x L x 2N/2, the fast bus (`A`) | Half-turbo (`CLKCFG` HT, never used by WM); the fastest **run** (bus) for a given core speed; switching cost; which point is best for each workload | Every operating point timed on a fixed set of workloads (integer, memory, copies, the mixer, the renderer's CPU side) and its switch time | The right speed for each job: faster where it matters, slower where it doesn't |
+| **C2. Overclocking** | [Intel] 624 MHz is the part's rated top; [Dell] the core voltage set by three pins (GPIO3/4/38) and WM's pattern for each speed, with mV labels (1050-1574) whose real voltages nobody has measured; [Dell] no PMIC on I2C found | Whether this core runs past 624 (L 17-19 with 2N 6 is 663-741 MHz) at the top VID; what the bus and memory clocks then do (raising L raises the bus: the SDRAM clock must stay at 104 MHz, so its divider changes); heat; battery | **C2a** static: the clock tree at L 17-19 (bus, SDCLK dividers) and which keep the SDRAM at or under 104 MHz; **C2b** a stepped device test like run G (each step stressed: integer, memory patterns, caches, DMA, a long soak), stopping at the first error; the board's temperature where readable | Up to ~10-19% more CPU, only through the per-device self-test (the voltage can't go past WM's top pattern: no control exists) |
+| **C3. Internal SRAM** (256 KiB, on chip) | [Intel] 256 KiB, four banks; [Dell] barely used by WM; [us] a TLB miss 5.2x cheaper with the page table in SRAM (`tlb_spill_60`, perf.md) | Its speed against SDRAM and the caches; what lives best there | Measured; candidates moved there one at a time and timed: page tables (ADR-0006: a TLB miss 5.2x cheaper), the mixer's buffers, the 2700G upload staging (Part 3), hot interrupt paths | Faster memory for what's touched constantly |
+| **C4. Memory lookups** | [us] RetroPane's random SDRAM hop 491 ns (`chase_sdram_256k`, perf.md); WM's ~280 ns and "most of the gap is TLB walks" are **unsourced estimates** in memory-timing.md: to measure | The best page sizes, table placement, TLB lock-down (the XScale can lock entries) | Large mappings (64 KiB / 1 MiB), tables in SRAM, locked TLB entries for the kernel and the GPU's windows, each timed | Up to ~1.8x on memory-bound work, no risk |
+| **C5. Caches** | [Intel] 32 KiB I and D, a 2 KiB mini data cache, the write and fill buffers, line locking; [us] `pld` helps our `memcpy` (perf.md) | How RetroPane's hot loops use them; the mini cache's best use (streaming data that would evict the main one); cache locking (the XScale can lock lines) | Each hot path profiled with the performance counters (C8); the mini cache for streams; locked lines for the kernel's hottest code | Fewer misses everywhere |
+| **C6. iWMMXt** (64-bit SIMD, 16 registers) | [Intel] 64-bit SIMD, 16 registers; [us] the CPU ID `0x69054117` (the coprocessor itself never exercised by us) | Its speed on pixel work (reorder, colour conversion, blends, dithering), audio (mixing, filters, the virtual bass), copies | Each routine written plainly and in iWMMXt, timed, checked equal | 2-4x on pixel and audio loops |
+| **C7. Copies and fills** | [us] `memcpy_64k` ~95 MB/s (perf.md) | The best copy for each case: cache-line bursts, `pld` distance, iWMMXt 64-bit, DMA for large ones | A sweep of methods and sizes | Every subsystem's copies faster |
+| **C8. Performance counters** | [us] the cycle counter used (audio, rp-noise); [Intel] the event counters (cache and TLB misses, stalls), never used by us | Not yet wired into RetroPane's benches | A counter reader in the bench harness; every benchmark reports misses and stalls, not only time | Seeing why something is slow, not guessing |
+| **C9. Code** | [us] Rust, release builds | ARM against Thumb density and speed, inlining, layout of hot code (cache), link-time optimisation, the compiler's XScale tuning | A/B builds of the same workload | Smaller and faster code |
+| **C10. Interrupts and sleep** | [us] interrupts and the run limit work; idle measured | Wake latency from each sleep depth; the cost of each interrupt path | Measured | Low latency and long battery together |
+| **C11. DMA** | [Intel] 32 channels; [us] SD, audio, CF, UDC and the 2700G uploads use them | Memory-to-memory speed by burst and width, descriptor chains as a general copy engine, priorities | A sweep | The CPU free while data moves |
 
 ## Part 2: the CPU's overclock, plainly
 

@@ -14,6 +14,27 @@ in the emulator or listed as not modellable, with an emulator check before
 it runs. Settings past Dell's limits go through a **per-device self-test
 with a fallback** (below), the owner's any-Axim rule.
 
+## Verify everything ourselves (owner, 2026-10-20)
+
+Nothing on this page is known because Dell's code, Windows Mobile, Linux's
+`mbxfb` or one of RetroPane's own docs says so. "Known" in the tables
+below means **measured by RetroPane on the X51v** (the run is named);
+everything else read from someone else's code is a claim, listed here
+with the run that settles it, and stays unticked until then.
+
+| | Claim (source) | Our check |
+|---|---|---|
+| **V1** | The 2700G's local memory runs on the system clock, with no clock of its own (Linux `mbxfb`'s register map) | P2: the memory's timing measured as the system clock moves, against a core-only change |
+| **V2** | The local memory is rated 100 MHz, and CL3 is needed above it (Dell's table and rule) | P2's steps: where errors start, with CL2 and CL3 at each |
+| **V3** | The 2D engine takes 1, 2, 4 and 8 bpp sources (Dell's format table) | P7: each format copied and checked pixel by pixel |
+| **V4** | Dell rotates through the 3D core, so the 2D engine has no rotate (Dell's code) | P6/P13: the 2D engine's direction and rotate bits tried |
+| **V5** | The video plane's scaler registers and their meaning (Dell's register names) | P9 |
+| **V6** | The cursor plane's formats and size (Dell's register names) | P10 |
+| **V7** | Colour keys at scan-out (Dell's register names) | P10 |
+| **V8** | MVED1's registers, command windows and frame layout (Dell's code) | P11 |
+| **V9** | The second texture unit's words, fog bit 24, TSP bit 14 (static reading) | P5 |
+| **V10** | Every other number in docs/hw/2700g.md and the datasheet marked static, Dell or `mbxfb` | Swept into this table, one line each, with its probe |
+
 ## How the work is judged
 
 - **Payoff:** how much faster, smoother or cheaper it makes what people
