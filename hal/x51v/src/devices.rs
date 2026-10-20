@@ -355,6 +355,108 @@ impl core::fmt::Write for RunLog {
     }
 }
 
+/// [`RunLog`] that also writes the kept log while it's on
+/// ([`kept_start`]); a separate sink so images that don't keep a log don't
+/// carry its code.
+pub struct KeptRunLog;
+
+impl core::fmt::Write for KeptRunLog {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        log_write(s.as_bytes());
+        kept_write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// The internal SRAM's address while the kept log is on ([`kept_start`]),
+/// else 0. Single core, written only by the main thread.
+static mut KEPT_SRAM: usize = 0;
+
+fn kept_base() -> usize {
+    // SAFETY: a plain word read; single core (see KEPT_SRAM).
+    unsafe { core::ptr::addr_of!(KEPT_SRAM).read_volatile() }
+}
+
+/// Takes the internal SRAM for the kept log ([`crate::kept`]) and reports
+/// each copy an earlier run left there: `report(copy, text or why not)`.
+/// Nothing is written yet. `false` if the SRAM was already taken.
+pub fn kept_open(mut report: impl FnMut(usize, Result<&str, &'static str>)) -> bool {
+    let Some(sram) = rp_hal_pxa27x::diag::take_sram() else {
+        return false;
+    };
+    for (k, off) in crate::kept::COPIES.iter().enumerate() {
+        report(k, crate::kept::parse(&sram[*off..*off + crate::kept::SIZE]));
+    }
+    // SAFETY: as in `kept_base`.
+    unsafe { core::ptr::addr_of_mut!(KEPT_SRAM).write_volatile(sram.as_mut_ptr() as usize) };
+    true
+}
+
+/// Starts an empty kept log in both copies: from here every [`RunLog`]
+/// write goes there too ([`KeptRunLog`]'s; each cleaned from the cache to the SRAM at once,
+/// so a reset loses nothing written). Only [`KeptRunLog`] writes it.
+pub fn kept_start() {
+    let base = kept_base();
+    if base == 0 {
+        return;
+    }
+    for off in crate::kept::COPIES {
+        kept_header(base + off, crate::kept::header(0, 0));
+    }
+    // Marks the log on (bit 0: the base is 256 KiB aligned).
+    // SAFETY: as in `kept_base`.
+    unsafe { core::ptr::addr_of_mut!(KEPT_SRAM).write_volatile(base | 1) };
+}
+
+/// Ends the kept log and clears both copies (the run came back: the
+/// loader has its log).
+pub fn kept_stop() {
+    let base = kept_base() & !1;
+    if base == 0 {
+        return;
+    }
+    // SAFETY: as in `kept_base`.
+    unsafe { core::ptr::addr_of_mut!(KEPT_SRAM).write_volatile(base) };
+    for off in crate::kept::COPIES {
+        kept_header(base + off, [0; 4]);
+    }
+}
+
+fn kept_header(at: usize, h: [u32; 4]) {
+    for (i, w) in h.iter().enumerate() {
+        // SAFETY: the copy's header words, inside the SRAM taken by
+        // `kept_open` (COPIES and SIZE fit its 256 KiB: host-tested).
+        unsafe { ((at + 4 * i) as *mut u32).write_volatile(*w) };
+    }
+    rp_hal_pxa27x::cpu::clean_range(at as u32, crate::kept::HEADER as u32);
+}
+
+fn kept_write(data: &[u8]) {
+    let base = kept_base();
+    if base & 1 == 0 {
+        return;
+    }
+    let base = base & !1;
+    for off in crate::kept::COPIES {
+        let at = base + off;
+        // SAFETY: the copy's header and `used + n <= CAPACITY` text bytes
+        // after it, inside the SRAM taken by `kept_open`.
+        let (used, total) = unsafe {
+            (
+                (at as *const u32).add(1).read_volatile() as usize,
+                (at as *const u32).add(2).read_volatile(),
+            )
+        };
+        let n = data.len().min(crate::kept::CAPACITY.saturating_sub(used));
+        let dst = at + crate::kept::HEADER + used;
+        // SAFETY: as above.
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, n) };
+        rp_hal_pxa27x::cpu::clean_range(dst as u32, n as u32);
+        let total = crate::kept::sum(total, &data[..n]);
+        kept_header(at, crate::kept::header(used + n, total));
+    }
+}
+
 /// The previous run, as the loader finds it on start.
 #[derive(Clone, Copy)]
 pub struct PreviousRun {

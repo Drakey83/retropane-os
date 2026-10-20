@@ -3193,7 +3193,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         (
             "run G",
             &run_g,
-            &["G2: the clocks", "RETROPANE-GPUBENCH: done"],
+            &["G3: the clocks", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -3291,12 +3291,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  lock trace 108.33 -> 99.67 MHz",
                 "  pass 1: rising",
                 "  pass 2: the same steps in reverse",
-                "    control at 99.67 MHz step 22: GOOD",
+                "    control at 99.67 MHz step 28: GOOD",
                 "  put back: COREPLL 0xbb1",
             ]
             .iter()
             .all(|w| log.contains(w))
-                && log.matches("| GOOD").count() == 45
+                && log.matches("| GOOD").count() == 57
                 && !log.contains("| BAD")
                 && !log.contains("STOPPED");
             if !(refused && log.contains("as found: COREPLL 0x0,") || stepped) {

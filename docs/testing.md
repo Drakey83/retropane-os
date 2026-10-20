@@ -85,6 +85,7 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
   `RETROPANE_EMU_LOAD=1` runs any check with one spinner per WSL core
   (a fixed count, each ended by `timeout`), to prove it; the full suite
   passes under it.
+- **A long device run:** `cargo xtask load` waits 120 s for the image's run log; `RETROPANE_LOG_WAIT_SECS=1500` waits longer (`rp-gpubench` run G takes up to ~20 minutes). If the PC gives up first, `cargo xtask log` fetches the log once the image is back at the loader.
 - **Watching a check:** `RETROPANE_EMU_SHOW=1` opens the emulated screen
   in a window while any check runs (SDL; from WSL through Windows 11's
   own Linux windows), so a person can see what the check looks for. For

@@ -81,6 +81,7 @@ fn load_script(frame: &Path) -> String {
 /// [`load_script`], or with `wait_log` false only the send and the
 /// loader's reply (for [`start`]).
 fn load_script_opts(frame: &Path, wait_log: bool) -> String {
+    let log_wait = log_wait_secs();
     let path = frame.display().to_string().replace('\'', "''");
     let stop = if wait_log { "" } else { "exit 0\n" };
     open_port()
@@ -107,7 +108,7 @@ if ($reply -like 'RPL ERR*') {{ exit 0 }}
 # within half a second of saying OK, and the port may go away first.
 # The device disconnects to run the image. If the image returns to the
 # loader, it reconnects and sends the run log: reopen the port and read it.
-    $deadline = (Get-Date).AddSeconds({LOG_WAIT_SECS})
+    $deadline = (Get-Date).AddSeconds({log_wait})
 $done = $false
 # The PC doesn't notice the device leaving and returning by itself: every
 # few seconds, restart its device entry (admin rights come from the
@@ -355,6 +356,16 @@ const PUT_WAIT_SECS: u32 = 90;
 /// with its run log: the loader's 30 s run limit, then a watchdog reset and
 /// Windows Mobile's boot back into the loader.
 const LOG_WAIT_SECS: u32 = 120;
+
+/// [`LOG_WAIT_SECS`], or `RETROPANE_LOG_WAIT_SECS` for a run known to take
+/// longer (`rp-gpubench` run G: up to ~20 minutes; run G2's log was given
+/// up on at 120 s while the image still ran).
+fn log_wait_secs() -> u32 {
+    std::env::var("RETROPANE_LOG_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(LOG_WAIT_SECS)
+}
 
 /// Base64 of `text` as UTF-16LE, for PowerShell's `-EncodedCommand`.
 fn encode_command(text: &str) -> String {
@@ -622,7 +633,10 @@ pub fn load(root: &Path, what: &str, force: bool) -> Result<(), String> {
                 run_verdict(&log)?;
             } else {
                 if log.is_empty() {
-                    eprintln!("    no run log within {LOG_WAIT_SECS} s; asking the loader for it");
+                    eprintln!(
+                        "    no run log within {} s; asking the loader for it",
+                        log_wait_secs()
+                    );
                 } else {
                     eprintln!(
                         "    the run log arrived cut short ({} lines); asking for it again",

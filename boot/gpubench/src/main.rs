@@ -76,7 +76,7 @@ mod image {
     use rp_hal_mem::{load32_volatile, store32_volatile, words_as_bytes};
     use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
-    use rp_hal_x51v::devices::RunLog;
+    use rp_hal_x51v::devices::KeptRunLog;
     use rp_mbx3d_render::{
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
         UV_ONE, address, format, untwiddle,
@@ -88,7 +88,7 @@ mod image {
     rp_hal_pxa27x::entry!(main);
 
     macro_rules! log {
-        ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
+        ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
     }
 
     /// Run B: the texture-word probes instead of run A.
@@ -105,6 +105,9 @@ mod image {
     /// Run G: the clocks (the cores at divide 1, the system clock past
     /// 100 MHz).
     const CLOCK: bool = option_env!("RP_GPUBENCH_CLOCK").is_some();
+    /// Run K: only report a log kept in SRAM by an earlier run that didn't
+    /// return (every run reports one; this one does nothing else).
+    const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -2701,6 +2704,13 @@ mod image {
         p: u32,
         div: u32,
         cl3: Option<bool>,
+        /// After the PLL and timing: `LMPWR` written active again and a
+        /// few reads, as Linux mbxfb's set-up does after `LMTYPE` ("enable
+        /// memory controller", then dummy reads). Whether the controller
+        /// re-sends the SDRAM's mode (its CAS latency) only then is the
+        /// question: Dell's routine writes no `LMPWR`, and on the X51v it
+        /// never chooses CL3 (its clock is clamped to 100 MHz).
+        restart: bool,
     }
 
     impl ClockStep {
@@ -2735,7 +2745,12 @@ mod image {
         p: 0,
         div: 2,
         cl3: None,
+        restart: false,
     };
+
+    /// The local memory's power control (Linux mbxfb: 0 active, 1
+    /// self-refresh, 3 deep power-down).
+    const LMPWR: usize = 0x1008;
 
     /// The clock and memory registers as they read now.
     fn clock_now<B: RegisterBus>(regs: &mut B) -> ClockSpeed {
@@ -2776,6 +2791,13 @@ mod image {
         } else {
             clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us)
         };
+        if s.restart {
+            g.e.regs.write32(LMPWR, 0);
+            rt::delay_us(100);
+            for k in 0..8 {
+                let _ = g.mem.load(4 * k);
+            }
+        }
         let clk = g.e.regs.read32(MBXCLK);
         g.e.regs.write32(MBXCLK, (clk & !0xC) | (s.div - 1) << 2);
         rt::delay_us(1_000);
@@ -2878,6 +2900,9 @@ mod image {
         /// The 2D fill didn't finish in 200 ms (G1 counted this as
         /// `u32::MAX` wrong words, which wrapped).
         fill_hung: bool,
+        /// Parts stopped at their time limit ([`PART_US`]): bit 0 the
+        /// flush, 1 the read-back, 2 the memory pattern.
+        slow: u32,
         render_us: u32,
         render_wrong: u32,
         first_diff: Option<(u32, u32, u32)>,
@@ -2887,6 +2912,7 @@ mod image {
         fn good(&self) -> bool {
             self.bus_wrong + self.mem_wrong + self.fill_wrong + self.render_wrong == 0
                 && !self.fill_hung
+                && self.slow == 0
                 && self.render_us != 0
         }
     }
@@ -2897,15 +2923,26 @@ mod image {
         if seed & 1 == 1 { !w } else { w }
     }
 
+    /// Each part of a check stops here (run G2 never came back from a step
+    /// whose bus ran at a fraction of its speed: every loop is bounded by
+    /// time, not only by count).
+    const PART_US: u32 = 4_000_000;
+
     /// Every test at the current clock. `take_reference`: the 3D picture
     /// becomes the reference (Windows Mobile's clock, first).
     fn clock_check(g: &mut Rig, c: &mut ClockRig, take_reference: bool, seed: u32) -> ClockResult {
         let mut r = ClockResult::default();
-        let flush_bytes = c.src.len() * 4;
         // The bus: the flush and every word of it; 256 KiB read back.
         let t0 = rt::ticks();
-        g.mem.0[c.flush_at as usize..c.flush_at as usize + flush_bytes]
-            .copy_from_slice(words_as_bytes(c.src));
+        let src = words_as_bytes(c.src);
+        for (k, chunk) in src.chunks(64 * 1024).enumerate() {
+            let at = c.flush_at as usize + k * 64 * 1024;
+            g.mem.0[at..at + chunk.len()].copy_from_slice(chunk);
+            if us_since(t0) > PART_US {
+                r.slow |= 1;
+                break;
+            }
+        }
         cpu::drain_write_buffer();
         r.flush_us = us_since(t0);
         rt::check_in();
@@ -2915,15 +2952,25 @@ mod image {
             let v = g.mem.load(c.flush_at as usize + 4 * k).unwrap_or(0);
             sum = sum.wrapping_add(v);
             r.bus_wrong += u32::from(v != c.src[k]);
+            if k % 1024 == 1023 && us_since(t0) > PART_US {
+                r.slow |= 2;
+                break;
+            }
         }
         r.read_us = us_since(t0);
         let _ = core::hint::black_box(sum);
         for k in 256 * 1024 / 4..c.src.len() {
             r.bus_wrong += u32::from(g.mem.load(c.flush_at as usize + 4 * k) != Some(c.src[k]));
+            if k % 1024 == 1023 && us_since(t0) > PART_US {
+                r.slow |= 2;
+                break;
+            }
         }
         rt::check_in();
-        // Memory: a pattern and its inverse over the pattern region.
-        for s in [seed, seed + 1] {
+        // Memory: a pattern and its inverse over the pattern region (only
+        // what was written in time is read back).
+        let t0 = rt::ticks();
+        'pattern: for s in [seed, seed + 1] {
             let mut buf = [0u32; 64];
             let mut a = 0;
             while a < c.pat_bytes {
@@ -2932,17 +2979,29 @@ mod image {
                 }
                 g.mem.store((c.pat_at + a) as usize, &buf);
                 a += 256;
+                if a % (64 * 1024) == 0 && us_since(t0) > PART_US {
+                    r.slow |= 4;
+                    break;
+                }
             }
+            let written = a;
             g.mem.sync();
             rt::check_in();
             let mut a = 0;
-            while a < c.pat_bytes {
+            while a < written {
                 r.mem_wrong +=
                     u32::from(g.mem.load((c.pat_at + a) as usize) != Some(clock_pat(a, s)));
                 a += 4;
-                if a % (1 << 20) == 0 {
+                if a % (64 * 1024) == 0 {
                     rt::check_in();
+                    if us_since(t0) > PART_US {
+                        r.slow |= 4;
+                        break 'pattern;
+                    }
                 }
+            }
+            if r.slow & 4 != 0 {
+                break;
             }
         }
         // The 2D engine: a full-screen fill, timed, 4096 words checked.
@@ -3024,6 +3083,23 @@ mod image {
             "    control again after a second restore: {}",
             if r.good() { "GOOD" } else { "BAD" }
         );
+        if r.slow != 0 {
+            log!(
+                "    stopped at {} s: {}{}{}",
+                PART_US / 1_000_000,
+                if r.slow & 1 != 0 { "the flush " } else { "" },
+                if r.slow & 2 != 0 {
+                    "the read-back "
+                } else {
+                    ""
+                },
+                if r.slow & 4 != 0 {
+                    "the memory pattern"
+                } else {
+                    ""
+                }
+            );
+        }
         r.good()
     }
 
@@ -3031,10 +3107,11 @@ mod image {
         let mhz = s.khz() / 1000;
         let mbs = |bytes: u32, us: u32| bytes / us.max(1);
         log!(
-            "  G {}.{:02} MHz CL{}, cores / {} = {} MHz: lock {lock:?} us | flush {} us {} MB/s, read 256K {} us {} MB/s, bus wrong {} | memory wrong {} | 2D fill {} us wrong {}{} | 3D {} us wrong {} | {}",
+            "  G {}.{:02} MHz CL{}{}, cores / {} = {} MHz: lock {lock:?} us | flush {} us {} MB/s, read 256K {} us {} MB/s, bus wrong {} | memory wrong {} | 2D fill {} us wrong {}{} | 3D {} us wrong {} | {}",
             mhz,
             s.khz() % 1000 / 10,
             s.cl(),
+            if s.restart { " restarted" } else { "" },
             s.div,
             s.khz() / s.div / 1000,
             r.flush_us,
@@ -3062,7 +3139,7 @@ mod image {
     #[inline(never)]
     fn clocks(g: &mut Rig) {
         log!(
-            "G2: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2 and CL3; each step twice, rising then in reverse, Windows Mobile's clock checked after each"
+            "G3: the clocks: the lock bit traced; the cores at divide 1, the system clock past 100 MHz with CL2, CL3 with the memory restarted, and CL3; each step twice, rising then in reverse, every part time-limited, Windows Mobile's clock checked after each"
         );
         let found = (
             g.e.regs.read32(clock::COREPLL),
@@ -3136,19 +3213,32 @@ mod image {
         // difference); Windows Mobile's clock checked after every step (a
         // failure carried over shows there). Nothing stops at a BAD step:
         // only a control that stays BAD stops the run.
-        let step = |m, n, p, div, cl3| ClockStep { m, n, p, div, cl3 };
+        // G2 on the device: steps 1-6 GOOD (the owner saw them green), then
+        // 108.33 MHz CL3 never came back. CL3 last in each pass now, the
+        // memory-restart variant first.
+        let step = |m, n, p, div, cl3, restart| ClockStep {
+            m,
+            n,
+            p,
+            div,
+            cl3,
+            restart,
+        };
         let steps = [
-            step(23, 3, 0, 1, None),        // 99.67, the divider alone
-            step(23, 3, 1, 1, None),        // 49.83 /1 (G1: GOOD, then BAD)
-            step(23, 4, 0, 2, None),        // 74.75 /2: the PLL change alone
-            step(23, 4, 0, 1, None),        // 74.75 /1 (G1: BAD)
-            step(20, 4, 0, 1, None),        // 65.00 /1
-            step(25, 3, 0, 2, Some(false)), // 108.33 CL2
-            step(25, 3, 0, 2, Some(true)),  // 108.33 CL3 (G1: no 3D)
-            step(27, 3, 0, 2, Some(false)), // 117.00 CL2
-            step(27, 3, 0, 2, Some(true)),  // 117.00 CL3
-            step(41, 4, 0, 2, Some(false)), // 133.25 CL2 (run 27: right)
-            step(41, 4, 0, 2, Some(true)),  // 133.25 CL3
+            step(23, 3, 0, 1, None, false),        // 99.67, the divider alone
+            step(23, 3, 1, 1, None, false),        // 49.83 /1 (G1: GOOD, then BAD)
+            step(23, 4, 0, 2, None, false),        // 74.75 /2: the PLL change alone
+            step(23, 4, 0, 1, None, false),        // 74.75 /1 (G1: BAD)
+            step(20, 4, 0, 1, None, false),        // 65.00 /1
+            step(25, 3, 0, 2, Some(false), false), // 108.33 CL2 (G2: GOOD)
+            step(27, 3, 0, 2, Some(false), false), // 117.00 CL2
+            step(41, 4, 0, 2, Some(false), false), // 133.25 CL2 (run 27: right)
+            step(25, 3, 0, 2, Some(true), true),   // 108.33 CL3, the memory restarted
+            step(27, 3, 0, 2, Some(true), true),   // 117.00 CL3, restarted
+            step(41, 4, 0, 2, Some(true), true),   // 133.25 CL3, restarted
+            step(25, 3, 0, 2, Some(true), false),  // 108.33 CL3 (G1: no 3D; G2: hung)
+            step(27, 3, 0, 2, Some(true), false),  // 117.00 CL3
+            step(41, 4, 0, 2, Some(true), false),  // 133.25 CL3
         ];
         let total = 2 * steps.len();
         let mut seed = 4;
@@ -3178,7 +3268,12 @@ mod image {
                     s.khz() % 1000 / 10,
                     s.div
                 );
-                let _ = write!(l3, "CL{} TESTING", s.cl());
+                let _ = write!(
+                    l3,
+                    "CL{}{} TESTING",
+                    s.cl(),
+                    if s.restart { " RESTART" } else { "" }
+                );
                 clock_card(g, [l1.as_str(), l2.as_str(), l3.as_str()], 0xFF20_2040, 2);
                 let lock = clock_apply(g, s);
                 clock_readback(g);
@@ -3220,7 +3315,7 @@ mod image {
         if healthy {
             clock_card(
                 g,
-                ["RUN G2 DONE", "BACK TO NORMAL", "LOG SENT"],
+                ["RUN G3 DONE", "BACK TO NORMAL", "LOG SENT"],
                 0xFF10_6020,
                 3,
             );
@@ -3228,7 +3323,7 @@ mod image {
             log!("  STOPPED: Windows Mobile's clock stayed BAD after a step");
             clock_card(
                 g,
-                ["RUN G2 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
+                ["RUN G3 STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
                 0xFF80_2010,
                 3,
             );
@@ -3274,12 +3369,36 @@ mod image {
                 "E (faster uploads: overlapped reorder and DMA, 8-bit, PVRTC, text by commands)"
             } else if TEXT {
                 "F (text as 4 bpp coverage strips, against RGB565 pixels)"
+            } else if KEPT {
+                "K (a log kept in SRAM by an earlier run, only)"
             } else if CLOCK {
-                "G2 (the clocks: lock traces, divide 1, past 100 MHz with CL2 and CL3, controls after each step)"
+                "G3 (the clocks: lock traces, divide 1, past 100 MHz with CL2, CL3 and CL3 with the memory restarted, time limits, controls after each step, the log kept in SRAM)"
             } else {
                 "A (fill, layers, partial frames, rectangles, uploads, frame event)"
             }
         );
+        // A log an earlier run kept in the internal SRAM (it hung and the
+        // device was reset: docs/hw/memory-map.md), reported; run G keeps
+        // its own there (rp_hal_x51v::kept).
+        let opened = rp_hal_x51v::devices::kept_open(|k, copy| match copy {
+            Ok(text) => {
+                log!(
+                    "SRAM copy {k}: a kept log from an earlier run ({} bytes):",
+                    text.len()
+                );
+                log!("{text}");
+                log!("SRAM copy {k}: end of the kept log");
+            }
+            Err(why) => log!("SRAM copy {k}: {why}"),
+        });
+        if opened {
+            rp_hal_x51v::devices::kept_start();
+            if CLOCK {
+                log!("{MARKER}: the log kept in SRAM from here");
+            } else {
+                rp_hal_x51v::devices::kept_stop();
+            }
+        }
         let keypad = rt::take_keypad().map(|kp| {
             let mut k = Keypad::new(kp);
             k.enable();
@@ -3316,8 +3435,11 @@ mod image {
             uploads(&mut g);
         } else if TEXT {
             text_strips(&mut g);
+        } else if KEPT {
+            // Only the kept log, reported above.
         } else if CLOCK {
             clocks(&mut g);
+            rp_hal_x51v::devices::kept_stop();
         } else {
             g4a(&mut g);
             if let Some(set) = textures(&mut g) {

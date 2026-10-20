@@ -29,7 +29,7 @@ the PXA27x developer's manual memory map.
 | `0x4C000000` | 1 MiB | `0x8A200000` | USB host | confirmed | OAL table; PXA manual |
 | `0x50000000` | 1 MiB | `0x8A300000` | Quick Capture (camera) | confirmed (mapped) | OAL table; PXA manual |
 | `0x58000000` | 1 MiB | `0x8A400000` | Internal memory control | confirmed (mapped) | OAL table; PXA manual |
-| `0x5C000000` | 1 MiB | `0x8A500000`, `0x9BD00000` | Internal SRAM (256 KiB) | confirmed | OAL table; PXA manual |
+| `0x5C000000` | 1 MiB | `0x8A500000`, `0x9BD00000` | Internal SRAM (256 KiB). RetroPane's kept log (a run log's copy for a run that may hang, `rp_hal_x51v::kept`): 16 KiB at +64 KiB and at +192 KiB; whether it survives a soft reset is unproven (2026-10-20) | confirmed | OAL table; PXA manual |
 | **`0xA8000000`** | **64 MiB** | `0x8C000000` | **SDRAM (SDCS2)** | **confirmed** | OAL table; HaRET boots the X50/X51 with `ramaddr 0xa8000000`, `ramsize 64M` |
 | `0xAC000000` | 64 MiB | `0x90000000` | SDCS3 | likely empty on 64 MB units | OAL table maps it; HaRET's RAM size says 64 MiB in total |
 | `0xE0000000` | 4 MiB | `0x8A600000` | Not a PXA27x device window | unknown | OAL table (possibly a cache-clean area) |
