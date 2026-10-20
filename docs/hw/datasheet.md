@@ -148,7 +148,7 @@ watching.
   2026-10-19); Dell's GLES has no row-order mode. At WM's clock a bare
   tile renders in ~5.3 us, a textured one ~11.3 us, each translucent
   layer adds ~8 us: a full-screen textured layer takes 25-29 ms. A
-  `GSCADR` or `VSCADR` repoint takes effect at once (write it in the blanking); a pan by repointing either plane is smooth (`rp-gpubench` run C).
+  `GSCADR` or `VSCADR` repoint takes effect at once (write it in the blanking); a pan by repointing either plane is smooth (`rp-gpubench` run C). The video plane takes the graphics plane's RGB formats too (`VSCTRL` 4-8; RGB565 shown exactly, run D), not only YUV.
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),

@@ -284,7 +284,11 @@ fills with the 2D engine, and draws on the CPU last.*
      (as the graphics plane's); a YUV pan under per-pixel glass and an RGB
      pan under a video-plane tint were both smooth, and the YUV text looked
      "the same mostly, maybe a little soft" in motion (owner). Run D is
-     still to run.
+     still to run. **Run D (2026-10-19, owner's photos):** the caveat is
+     lifted: the video plane takes the graphics plane's RGB formats
+     (`VSCTRL` 7 showed an RGB565 card exactly; 4, 5, 6 and 8 read as
+     ARGB4444, ARGB1555, RGB888 and ARGB8888), so content panned on it is
+     RGB, at full quality and with no conversion.
   2. **Fallback, dropping the translucency:** for a second translucent
      layer, or if the video plane's repoint doesn't behave, the layer's
      translucency is dropped for the pan's duration (shown as an opaque
