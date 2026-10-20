@@ -35,7 +35,8 @@ with the run that settles it, and stays unticked until then.
 | **V9** | The second texture unit's words, fog bit 24, TSP bit 14 (static reading) | P5 |
 | **V11** | `PLLSTAT` bit 2 means the core PLL has locked at its new frequency (Linux `mbxfb`; run G1 read it set at once even across a frequency change) | **Settled (run G3):** it drops after the write and relocks in ~16 us; read at once it still shows the old lock |
 | **V12** | Writes to the memory controller take effect when written (our assumption; Linux waits 1 ms after each) | Run G3: some didn't (`LMTYPE`, `LMREFRESH` read back unchanged); `set_speed` now reads back and rewrites; run G4 counts them |
-| **V13** | The cores run at most 75 MHz (Dell's driver's cap) | Run G3: right at 99.67 MHz with divide 1, twice; G4 repeats, soaks to come |
+| **V13** | The cores run at most 75 MHz (Dell's driver's cap) | Run G3: right at 99.67 MHz with divide 1, twice; **G4: right in 4 more checks, 2D 1.89x, 3D 1.81x**; soaks, warm and cold to come |
+| **V14** | CL3 above 100 MHz (Dell's rule) | **Run G4: CL3 breaks the 3D core every time at 108-133 MHz; CL2 right to 133.25 MHz** (short checks) |
 | **V10** | Every other number in docs/hw/2700g.md and the datasheet marked static, Dell or `mbxfb` | Swept into this table, one line each, with its probe |
 
 ## How the work is judged
