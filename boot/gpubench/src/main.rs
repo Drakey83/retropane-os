@@ -134,6 +134,12 @@ mod image {
     /// 146 registers) cleared, nothing else touched: the flag cleared
     /// Dell's way, then a card.
     const CLEAR: bool = option_env!("RP_GPUBENCH_CLEAR").is_some();
+    /// Run L: the recovery ladder for the dark display (run X: the flag
+    /// cleared, then the sync generator, the plane and the whole display
+    /// set-up restarted, and still nothing sent). Rungs from the gentlest,
+    /// each one Linux mbxfb's resume or set-up also touches, stopping at
+    /// the first after which the display sends (`DSIG` nonzero).
+    const LADDER: bool = option_env!("RP_GPUBENCH_LADDER").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3600,6 +3606,9 @@ mod image {
         if CLEAR {
             clear_underrun(regs, vram);
         }
+        if LADDER {
+            ladder(regs, vram);
+        }
         if REVIVE {
             revive(regs, vram);
         }
@@ -4013,6 +4022,127 @@ mod image {
             log!("X: no plane decoded: no card");
         }
         log!("{MARKER}: done (run X)");
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Waits up to `ms` for `reg & mask == want`; whether it got there.
+    fn wait_for(regs: &mut Mmio, reg: usize, mask: u32, want: u32, ms: u32) -> bool {
+        for _ in 0..ms * 10 {
+            if regs.read32(reg) & mask == want {
+                return true;
+            }
+            rt::delay_us(100);
+        }
+        false
+    }
+
+    /// Run L (see [`LADDER`]).
+    fn ladder(regs: Mmio, vram: &mut [u8]) -> ! {
+        const PIXCLK: usize = 0x048;
+        const PIXCLKSRC: usize = 0x030;
+        const LMPWRSTAT: usize = 0x100C;
+        const ODFBPWR: usize = 0x064;
+        const ODFBSTAT: usize = 0x068;
+        const MEMCLK: usize = 0x04C;
+        let mut regs = regs;
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("L: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        let plane = Plane::decode(
+            regs.read32(dreg::GSCTRL),
+            regs.read32(dreg::GSCADR),
+            regs.read32(dreg::GSADR),
+            vram.len(),
+        );
+        let rungs: [(&str, &str); 6] = [
+            ("L1: the pixel clock off and on (PIXCLK)", "L1: PIXCLK"),
+            (
+                "L2: the pixel clock's source to the reference and back (PIXCLKSRC)",
+                "L2: PIXSRC",
+            ),
+            (
+                "L3: the display PLL off and on (DISPPLL bit 0)",
+                "L3: DISPPLL",
+            ),
+            (
+                "L4: the local memory to self-refresh and back (LMPWR, as Linux suspends it)",
+                "L4: SELFREF",
+            ),
+            (
+                "L5: the on-die frame buffer to sleep and back (ODFBPWR)",
+                "L5: ODFB",
+            ),
+            ("L6: the memory clock off for 1 ms (MEMCLK)", "L6: MEMCLK"),
+        ];
+        let mut recovered = None;
+        for (k, (what, card)) in rungs.into_iter().enumerate() {
+            match k {
+                0 => {
+                    regs.write32(PIXCLK, 0);
+                    rt::delay_us(1_000);
+                    regs.write32(PIXCLK, 1);
+                }
+                1 => {
+                    let v = regs.read32(PIXCLKSRC);
+                    regs.write32(PIXCLKSRC, 0);
+                    rt::delay_us(1_000);
+                    regs.write32(PIXCLKSRC, v);
+                }
+                2 => {
+                    let v = regs.read32(dreg::DISPPLL);
+                    regs.write32(dreg::DISPPLL, v & !1);
+                    rt::delay_us(1_000);
+                    regs.write32(dreg::DISPPLL, v | 1);
+                    let locked = wait_for(&mut regs, dreg::PLLSTAT, 1, 1, 50);
+                    log!("  the display PLL locked again: {locked}");
+                }
+                3 => {
+                    regs.write32(0x1008, 1);
+                    let sr = wait_for(&mut regs, LMPWRSTAT, 3, 1, 100);
+                    rt::delay_us(1_000);
+                    regs.write32(0x1008, 0);
+                    let act = wait_for(&mut regs, LMPWRSTAT, 3, 0, 100);
+                    log!("  self-refresh entered: {sr}, active again: {act}");
+                }
+                4 => {
+                    let v = regs.read32(ODFBPWR);
+                    regs.write32(ODFBPWR, (v & !3) | 2);
+                    let sl = wait_for(&mut regs, ODFBSTAT, 7, 2, 100);
+                    rt::delay_us(1_000);
+                    regs.write32(ODFBPWR, v);
+                    let act = wait_for(&mut regs, ODFBSTAT, 7, 4, 100);
+                    log!(
+                        "  ODFBPWR 0x{v:x}: asleep {sl}, active again {act} (ODFBSTAT 0x{:x})",
+                        regs.read32(ODFBSTAT)
+                    );
+                }
+                _ => {
+                    regs.write32(MEMCLK, 0);
+                    rt::delay_us(1_000);
+                    regs.write32(MEMCLK, 1);
+                }
+            }
+            rt::delay_us(1_000);
+            let _ = underrun_take(&mut regs);
+            rt::delay_us(40_000);
+            let (f, s0, s1) = underrun_state(&mut regs);
+            let sending = s0 | s1 != 0;
+            log!("{what}: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x} (sending: {sending})");
+            if let Some(p) = &plane {
+                card_text(vram, p, card, 0xFF10_6020, 4);
+            }
+            if sending {
+                recovered = Some(k + 1);
+                break;
+            }
+        }
+        match recovered {
+            Some(n) => log!("L: the display sends again after rung {n}"),
+            None => log!("L: no rung brought the display back"),
+        }
+        log!("{MARKER}: done (run L)");
         rp_hal_x51v::devices::return_to_loader();
         loop {
             core::hint::spin_loop();
