@@ -3104,6 +3104,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_x = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CLEAR", "1"))?;
     let run_l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LADDER", "1"))?;
     let run_z = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REBUILD", "1"))?;
+    let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
     // What the X51v showed that the fork models from rp-v0.29.0
     // (rp-gpubench, 2026-10-19): rectangular textures, a plane start
@@ -3121,7 +3122,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 14] = [
+    let runs: [GpubenchRun; 15] = [
         (
             "run A",
             &run_a,
@@ -3259,13 +3260,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         (
             "run V",
             &run_v,
-            &[
-                "V: which work at which clock",
-                "  99.66 MHz, cores / 2: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
-                "  99.66 MHz, cores / 1: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
-                "  133.25 MHz, cores / 2: flush x5 false",
-                "  put back: COREPLL 0xbb1",
-            ],
+            &["RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -3313,6 +3308,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "Z7: every register after the rebuild",
                 "RETROPANE-GPUBENCH: done (run Z)",
             ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run Y (the rescue measured): checked below (refused cleanly
+        // on a fork that doesn't start as Windows Mobile leaves the clocks).
+        (
+            "run Y",
+            &run_y,
+            &["Y: the rescue measured", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -3438,6 +3442,66 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "    gpubench run G: {}",
                 if stepped {
                     "every step and control GOOD on the modelled clocks, put back"
+                } else {
+                    "refused: this fork doesn't start the clocks as Windows Mobile leaves them"
+                }
+            );
+        }
+        // Run V is built on run G's set-up: on a fork that doesn't start the
+        // clocks as Windows Mobile leaves them it refuses as G does (its
+        // lines were wanted unconditionally: the check failed on such forks).
+        if name == "run V" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let loaded = [
+                "V: which work at which clock",
+                "  99.66 MHz, cores / 2: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
+                "  99.66 MHz, cores / 1: flush x5 false, 2D fill x20 false, whole check false (GOOD)",
+                "  133.25 MHz, cores / 2: flush x5 false",
+                "  put back: COREPLL 0xbb1",
+            ]
+            .iter()
+            .all(|w| log.contains(w));
+            if !(refused && log.contains("as found: COREPLL 0x0,") || loaded) {
+                return Err(format!(
+                    "gpubench run V: neither refused cleanly nor ran every load:{log}"
+                ));
+            }
+            eprintln!(
+                "    gpubench run V: {}",
+                if loaded {
+                    "every load at every clock, the display never short"
+                } else {
+                    "refused: this fork doesn't start the clocks as Windows Mobile leaves them"
+                }
+            );
+        }
+        if name == "run Y" {
+            let refused = log.contains("not Windows Mobile's clock and bus timing (COREPLL 0x0,");
+            let rescued = [
+                "Y0: before the rebuild (the reference): speed against Y0",
+                "Z1: SYSRST next",
+                "Z5: the display",
+                "Y1: after the rebuild: speed against Y0",
+                "Y2: speed against Y0",
+                "Y3: speed against Y0",
+                "  self-refresh entered: true, active again: true",
+                "Y5: speed against Y0",
+                "everything given back: true",
+            ]
+            .iter()
+            .all(|w| log.contains(w))
+                && log.matches("| GOOD").count() == 6
+                && !log.contains("| BAD");
+            if !(refused || rescued) {
+                return Err(format!(
+                    "gpubench run Y: neither refused cleanly nor every check GOOD:{log}"
+                ));
+            }
+            eprintln!(
+                "    gpubench run Y: {}",
+                if rescued {
+                    "the reference, the rebuild and every restart checked GOOD"
                 } else {
                     "refused: this fork doesn't start the clocks as Windows Mobile leaves them"
                 }

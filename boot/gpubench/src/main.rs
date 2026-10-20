@@ -145,6 +145,16 @@ mod image {
     /// order: clocks, the local memory, the system block, the display. Run L
     /// found no clock or power rung that brings the dark display back.
     const REBUILD: bool = option_env!("RP_GPUBENCH_REBUILD").is_some();
+    /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
+    /// every 2D fill and 3D render right, but its first pass ran slower
+    /// than the same steps before any rebuild (the 3D render at 99.67 MHz,
+    /// cores / 1: 25.7 ms against 20.9; reads 6 MB/s against 8) until its
+    /// first step that restarted the memory (`LMPWR` and dummy reads after
+    /// `LMTYPE` changed to CL3); from then on every step ran at G4's
+    /// speeds. Y measures at Windows Mobile's clock before the rebuild,
+    /// after it, and after each of three memory restarts, gentlest first,
+    /// then with `SYSCFG` put back.
+    const RESCUE: bool = option_env!("RP_GPUBENCH_RESCUE").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3348,6 +3358,52 @@ mod image {
         }
     }
 
+    /// Run G's memory (see [`ClockRig`]): the flush source and the
+    /// reference picture in the SDRAM pool, the texture, the flush target
+    /// and the pattern region in 2700G memory. `None` (logged) if any is
+    /// missing.
+    fn clock_rig(g: &mut Rig) -> Option<ClockRig<'static>> {
+        let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
+            log!("  no RAM pool");
+            return None;
+        };
+        let (src, rest) = ram.split_at_mut(480 * 640);
+        let (reference, rest) = rest.split_at_mut(480 * 640);
+        for (i, w) in src.iter_mut().enumerate() {
+            *w = clock_pat(4 * i as u32, 0xF1A5);
+        }
+        let Some(tex) = tex16(g, 6, format::RGB565, 1, &pattern565) else {
+            log!("  no memory for the texture");
+            return None;
+        };
+        let (Some(flush_at), Some(pat_at)) =
+            (g.pool.alloc(480 * 640 * 4, 128), g.pool.alloc(4 << 20, 128))
+        else {
+            log!("  no 2700G memory");
+            return None;
+        };
+        let (tex_copy, _) = rest.split_at_mut(tex.bytes() as usize / 4);
+        for (k, w) in tex_copy.iter_mut().enumerate() {
+            *w = g.mem.load(tex.at as usize + 4 * k).unwrap_or(0);
+        }
+        Some(ClockRig {
+            tex,
+            tex_copy,
+            flush_at,
+            pat_at,
+            pat_bytes: 4 << 20,
+            src,
+            reference,
+        })
+    }
+
+    /// Gives [`clock_rig`]'s 2700G memory back.
+    fn clock_rig_free(g: &mut Rig, c: ClockRig) {
+        let _ = g.pool.free(c.flush_at, 480 * 640 * 4);
+        let _ = g.pool.free(c.pat_at, c.pat_bytes);
+        let _ = rp_mbx3d_render::release(&mut g.pool, c.tex);
+    }
+
     #[inline(never)]
     fn clocks(g: &mut Rig) {
         log!(
@@ -3368,37 +3424,8 @@ mod image {
             log!("  not Windows Mobile's clock and bus timing: nothing changed");
             return;
         }
-        let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
-            log!("  no RAM pool");
+        let Some(mut c) = clock_rig(g) else {
             return;
-        };
-        let (src, rest) = ram.split_at_mut(480 * 640);
-        let (reference, rest) = rest.split_at_mut(480 * 640);
-        for (i, w) in src.iter_mut().enumerate() {
-            *w = clock_pat(4 * i as u32, 0xF1A5);
-        }
-        let Some(tex) = tex16(g, 6, format::RGB565, 1, &pattern565) else {
-            log!("  no memory for the texture");
-            return;
-        };
-        let (Some(flush_at), Some(pat_at)) =
-            (g.pool.alloc(480 * 640 * 4, 128), g.pool.alloc(4 << 20, 128))
-        else {
-            log!("  no 2700G memory");
-            return;
-        };
-        let (tex_copy, _) = rest.split_at_mut(tex.bytes() as usize / 4);
-        for (k, w) in tex_copy.iter_mut().enumerate() {
-            *w = g.mem.load(tex.at as usize + 4 * k).unwrap_or(0);
-        }
-        let mut c = ClockRig {
-            tex,
-            tex_copy,
-            flush_at,
-            pat_at,
-            pat_bytes: 4 << 20,
-            src,
-            reference,
         };
 
         // Windows Mobile's clock: the reference.
@@ -3591,9 +3618,7 @@ mod image {
             after.1,
             after.2
         );
-        let _ = g.pool.free(flush_at, 480 * 640 * 4);
-        let _ = g.pool.free(pat_at, 4 << 20);
-        let _ = rp_mbx3d_render::release(&mut g.pool, tex);
+        clock_rig_free(g, c);
     }
 
     fn main() -> ! {
@@ -3661,6 +3686,8 @@ mod image {
                 "F (text as 4 bpp coverage strips, against RGB565 pixels)"
             } else if KEPT {
                 "K (a log kept in SRAM by an earlier run, only)"
+            } else if RESCUE {
+                "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
             } else if CLOCK {
@@ -3707,6 +3734,9 @@ mod image {
             text_strips(&mut g);
         } else if KEPT {
             // Only the kept log, reported above.
+        } else if RESCUE {
+            rescue(&mut g);
+            rp_hal_x51v::devices::kept_stop();
         } else if CLOCK || LOAD {
             clocks(&mut g);
             rp_hal_x51v::devices::kept_stop();
@@ -4275,12 +4305,29 @@ mod image {
         let mut pwm = rt::take_pwm0();
         let (f, s0, s1) = underrun_state(&mut regs);
         log!("Z: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        rebuild_chip(&mut regs, vram, &mut pwm);
+        dump_all(&mut regs, "Z7: every register after the rebuild");
+        // The cold state (what a flash boot finds) is left for a later run,
+        // once a rebuild is proven: reading it froze the first try.
+        log!("{MARKER}: done (run Z)");
+        rp_hal_x51v::devices::kept_stop();
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Run Z's reset and rebuild (Z1-Z6), the card drawn on the plane
+    /// after; the backlight blinks each phase's number first. Proven on the
+    /// X51v (runs Z4, Z5): the display sends again. The local memory's
+    /// contents are lost (the picture, textures, the fence word).
+    fn rebuild_chip(regs: &mut Mmio, vram: &mut [u8], pwm: &mut Option<Mmio>) {
         // Z1: the reset. Run Z's first try read registers at once after it
         // (to log the cold state) and froze (the watchdog reset): Linux
         // mbxfb only writes, 1 ms apart, until the clocks and the memory
         // run. So here: writes only, in its order, until Z3's end; each
         // phase noted in the kept log first (a freeze shows where).
-        blink(&mut pwm, 1);
+        blink(pwm, 1);
         log!("Z1: SYSRST next (writes only from here to Z3)");
         regs.write32(0x010, 1);
         rt::delay_us(10_000);
@@ -4288,14 +4335,14 @@ mod image {
         // drive strength". Without a timeout, an access the reset 2700G
         // never answers holds the bus (RDY) for good: the suspect for the
         // freeze. Kept to the end (Z4 doesn't put WM's 0 back).
-        blink(&mut pwm, 2);
+        blink(pwm, 2);
         log!("Z1b: SYSCFG 0xffffff0c (Linux's timeout and drive strength) next");
         regs.write32(0x000, 0xFFFF_FF0C);
         rt::delay_us(1_000);
-        blink(&mut pwm, 3);
+        blink(pwm, 3);
         log!("Z2: the clocks next");
         for name in ["SYSCLKSRC", "PIXCLKSRC", "CLKSLEEP", "COREPLL", "DISPPLL"] {
-            write_healthy(&mut regs, name);
+            write_healthy(regs, name);
         }
         rt::delay_us(10_000);
         for name in [
@@ -4307,14 +4354,14 @@ mod image {
             "SDCLK",
             "PIXCLKDIV",
         ] {
-            write_healthy(&mut regs, name);
+            write_healthy(regs, name);
         }
-        blink(&mut pwm, 4);
+        blink(pwm, 4);
         log!("Z3: the local memory next (Linux's setup_memc order)");
         for name in ["LMCFG", "LMPWR", "LMTIM", "LMREFRESH", "LMTYPE", "LMPWR"] {
-            write_healthy(&mut regs, name);
+            write_healthy(regs, name);
         }
-        blink(&mut pwm, 5);
+        blink(pwm, 5);
         log!("Z3: first reads after the reset next (PLLSTAT)");
         log!(
             "Z3: PLLSTAT 0x{:x}, LMPWRSTAT 0x{:x}",
@@ -4325,7 +4372,7 @@ mod image {
             let _ = load32_volatile(vram, 4 * k);
         }
         let mut off_by = put_healthy(
-            &mut regs,
+            regs,
             &[
                 "SYSCLKSRC",
                 "PIXCLKSRC",
@@ -4351,11 +4398,11 @@ mod image {
             ],
         );
         log!("Z3: the clocks and memory read back: {off_by} differ");
-        blink(&mut pwm, 6);
+        blink(pwm, 6);
         log!("Z4: the system block next");
         // Z4: the system block's other settings (SYSCFG stays Linux's).
         off_by += put_healthy(
-            &mut regs,
+            regs,
             &[
                 "PFBASE",
                 "PFCEIL",
@@ -4376,7 +4423,7 @@ mod image {
                 "PWM1PER",
             ],
         );
-        blink(&mut pwm, 7);
+        blink(pwm, 7);
         log!("Z5: the display next");
         // Z5: the display, every setting but the status and counters; the
         // sync generator last. DHDET and DVDET are the display-enable
@@ -4392,15 +4439,15 @@ mod image {
                 nd += 1;
             }
         }
-        off_by += put_healthy(&mut regs, &display[..nd]);
+        off_by += put_healthy(regs, &display[..nd]);
         let ds = healthy("DSCTRL");
         regs.write32(dreg::DSCTRL, ds & !(1 << 31));
         rt::delay_us(1_000);
         regs.write32(dreg::DSCTRL, ds);
         rt::delay_us(40_000);
         log!("Z5: the display: {nd} registers; {off_by} writes in all read back differently");
-        let _ = underrun_take(&mut regs);
-        let (f, s0, s1) = underrun_state(&mut regs);
+        let _ = underrun_take(regs);
+        let (f, s0, s1) = underrun_state(regs);
         log!(
             "Z6: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x} (sending: {})",
             s0 | s1 != 0
@@ -4411,20 +4458,146 @@ mod image {
             regs.read32(dreg::GSADR),
             vram.len(),
         ) {
-            blink(&mut pwm, 8);
+            blink(pwm, 8);
             card_text(vram, &p, "Z: BACK", 0xFF10_6020, 6);
-            let (f, s0, s1) = underrun_state(&mut regs);
+            let (f, s0, s1) = underrun_state(regs);
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         }
-        dump_all(&mut regs, "Z7: every register after the rebuild");
-        // The cold state (what a flash boot finds) is left for a later run,
-        // once a rebuild is proven: reading it froze the first try.
-        log!("{MARKER}: done (run Z)");
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
+    }
+
+    /// Run Y (see [`RESCUE`]).
+    #[inline(never)]
+    fn rescue(g: &mut Rig) {
+        const SYSCFG: usize = 0x000;
+        const LMPWR: usize = 0x1008;
+        const LMPWRSTAT: usize = 0x100C;
+        const LMTYPE: usize = 0x1014;
+        /// `LMTYPE`'s CAS latency field (bits 12-10).
+        const CL_BITS: u32 = 7 << 10;
+        log!(
+            "Y: the rescue measured: Windows Mobile's clock checked before run Z's rebuild (Y0), after it (Y1), after each memory restart (Y2-Y4), and with SYSCFG put back (Y5)"
+        );
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        if found.0 != ClockSpeed::WM.pll || found.1 != 0x2484_2481 {
+            log!(
+                "  not Windows Mobile's clock and bus timing (COREPLL 0x{:x}, MSC1 0x{:08x}): nothing changed",
+                found.0,
+                found.1
+            );
+            return;
         }
+        let Some(mut c) = clock_rig(g) else {
+            return;
+        };
+        clock_card(
+            g,
+            ["RUN Y: RESCUE", "WHITE, THEN BACK", "STEP 1 OF 5"],
+            0xFF20_2040,
+            3,
+        );
+        let base = clock_check(g, &mut c, true, 2);
+        rescue_log(g, "Y0: before the rebuild (the reference)", &base, &base);
+        if !base.good() {
+            log!("  the reference itself is BAD: stopped");
+            clock_rig_free(g, c);
+            return;
+        }
+        let mut pwm = rt::take_pwm0();
+        rebuild_chip(&mut g.e.regs, g.mem.0, &mut pwm);
+        // The reset lost the local memory: the 2D engine's window starts
+        // again, the fence word is unknown, the texture is uploaded again;
+        // the plane goes back to the check's picture.
+        g.e.after_core_reset();
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        let mut buf = [0u32; 64];
+        for (k, chunk) in c.tex_copy.chunks(64).enumerate() {
+            buf[..chunk.len()].copy_from_slice(chunk);
+            g.mem.store(c.tex.at as usize + 256 * k, &buf[..chunk.len()]);
+        }
+        g.mem.sync();
+        let _ = show_screen(&mut g.e.regs);
+        let r = clock_check(g, &mut c, false, 4);
+        rescue_log(g, "Y1: after the rebuild", &r, &base);
+        // The restarts, each measured; each stays done for the next.
+        let rungs: [(&str, [&str; 3]); 4] = [
+            (
+                "Y2: LMPWR written active and 8 dummy reads (G4's restart, alone)",
+                ["Y: STEP 2 OF 5", "MEMORY RESTART", "TESTING"],
+            ),
+            (
+                "Y3: LMTYPE to CL3 and back to CL2, then LMPWR active and dummy reads (G4's first restarted step and the restore after it, at one clock)",
+                ["Y: STEP 3 OF 5", "MEMORY MODE", "TESTING"],
+            ),
+            (
+                "Y4: the local memory to self-refresh and back (run L's rung 4)",
+                ["Y: STEP 4 OF 5", "SELF-REFRESH", "TESTING"],
+            ),
+            (
+                "Y5: SYSCFG back to Windows Mobile's 0 (Linux's timeout was needed only after the reset)",
+                ["Y: STEP 5 OF 5", "SYSCFG BACK", "TESTING"],
+            ),
+        ];
+        let restart = |g: &mut Rig| {
+            g.e.regs.write32(LMPWR, 0);
+            rt::delay_us(100);
+            for k in 0..8 {
+                let _ = g.mem.load(4 * k);
+            }
+        };
+        for (k, (what, card)) in rungs.into_iter().enumerate() {
+            clock_card(g, card, 0xFF20_2040, 2);
+            log!("{what}");
+            match k {
+                0 => restart(g),
+                1 => {
+                    let t = g.e.regs.read32(LMTYPE);
+                    g.e.regs.write32(LMTYPE, (t & !CL_BITS) | 3 << 10);
+                    rt::delay_us(1_000);
+                    g.e.regs.write32(LMTYPE, t);
+                    rt::delay_us(1_000);
+                    restart(g);
+                    log!("  LMTYPE 0x{:x} (was 0x{t:x})", g.e.regs.read32(LMTYPE));
+                }
+                2 => {
+                    g.e.regs.write32(LMPWR, 1);
+                    let sr = wait_for(&mut g.e.regs, LMPWRSTAT, 3, 1, 100);
+                    rt::delay_us(1_000);
+                    g.e.regs.write32(LMPWR, 0);
+                    let act = wait_for(&mut g.e.regs, LMPWRSTAT, 3, 0, 100);
+                    log!("  self-refresh entered: {sr}, active again: {act}");
+                }
+                _ => {
+                    g.e.regs.write32(SYSCFG, 0);
+                    rt::delay_us(1_000);
+                }
+            }
+            let r = clock_check(g, &mut c, false, 6 + 2 * k as u32);
+            rescue_log(g, what.split(':').next().unwrap_or(what), &r, &base);
+        }
+        clock_card(g, ["RUN Y DONE", "BACK TO NORMAL", "LOG SENT"], 0xFF10_6020, 3);
+        clock_rig_free(g, c);
+    }
+
+    /// One run Y check: its speed against the reference (100 = as fast;
+    /// the bus read, the 2D fill, the 3D render), the memory controller's
+    /// state, then the clock check's own line.
+    fn rescue_log(g: &mut Rig, what: &str, r: &ClockResult, base: &ClockResult) {
+        let pct = |now: u32, then: u32| then * 100 / now.max(1);
+        log!(
+            "{what}: speed against Y0 (100 = as fast): read {}, 2D {}, 3D {}; SYSCFG 0x{:x}, LMPWRSTAT 0x{:x}, LMTYPE 0x{:x}{}",
+            pct(r.read_us, base.read_us),
+            pct(r.fill_us, base.fill_us),
+            pct(r.render_us, base.render_us),
+            g.e.regs.read32(0x000),
+            g.e.regs.read32(0x100C),
+            g.e.regs.read32(0x1014),
+            if r.tex_damaged != 0 {
+                " (the texture was damaged: repaired)"
+            } else {
+                ""
+            }
+        );
+        clock_log(WM_STEP, Some(0), r);
     }
 
     /// Run L (see [`LADDER`]).
