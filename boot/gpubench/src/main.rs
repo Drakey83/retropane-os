@@ -117,6 +117,13 @@ mod image {
     /// written (run R's display stayed dark with a running sync generator:
     /// this snapshot, dark and again after a reset, is diffed).
     const SNAPSHOT: bool = option_env!("RP_GPUBENCH_SNAPSHOT").is_some();
+    /// Run U: the dark display reproduced and cleared. Runs R and S found
+    /// it: the graphics stream's underrun flag (`DINTRS` bit 4) set and the
+    /// output signature (`DSIG`) 0, the sync generator running. U holds
+    /// the system clock on the 13 MHz reference for 1, 3, 10 and 30 ms
+    /// (what a clock change does), and after each clears the flag Dell's
+    /// way, the owner watching cards.
+    const UNDERRUN: bool = option_env!("RP_GPUBENCH_UNDERRUN").is_some();
 
     const RENDER_DONE: u32 = 1 << 2;
     const GREY: u32 = 0xFF20_2020;
@@ -3417,6 +3424,9 @@ mod image {
         if SNAPSHOT {
             snapshot(regs, vram);
         }
+        if UNDERRUN {
+            underrun(regs, vram);
+        }
         if REVIVE {
             revive(regs, vram);
         }
@@ -3733,6 +3743,71 @@ mod image {
         }
     }
 
+    // ---- Run U: the underrun reproduced and cleared (2026-10-20) ----------
+
+    /// `DINTRS` bit 4: the graphics stream ran short (Linux mbxfb's
+    /// `STR1_UR`).
+    const GFX_UNDERRUN: u32 = 1 << 4;
+    const DINTRS: usize = 0x2178;
+    const DSIG: usize = 0x2184;
+
+    /// The flag and the output signature now, and the signature 20 ms on.
+    fn underrun_state(regs: &mut Mmio) -> (u32, u32, u32) {
+        let (flags, sig) = (regs.read32(DINTRS), regs.read32(DSIG));
+        rt::delay_us(20_000);
+        (flags, sig, regs.read32(DSIG))
+    }
+
+    /// Run U (see [`UNDERRUN`]).
+    fn underrun(regs: Mmio, vram: &mut [u8]) -> ! {
+        let mut d = Display::new(regs);
+        let (plane, _) = d.adopt(vram.len());
+        let mut regs = d.into_inner();
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("U: as found: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        card_text(vram, &plane, "U: START", 0xFF20_2080, 4);
+        for (k, ms) in [1u32, 3, 10, 30].into_iter().enumerate() {
+            let n = k + 1;
+            let mut l = heapless_name();
+            let _ = write!(l, "U{n}: {ms} MS");
+            card_text(vram, &plane, l.as_str(), 0xFF10_6020, 3);
+            regs.write32(clock::SYSCLKSRC, 0);
+            rt::delay_us(ms * 1_000);
+            regs.write32(clock::SYSCLKSRC, 2);
+            rt::delay_us(20_000);
+            let (f, s0, s1) = underrun_state(&mut regs);
+            let dark = f & GFX_UNDERRUN != 0;
+            log!(
+                "U{n}: {ms} ms on the reference clock: DINTRS 0x{f:x} (underrun {dark}), DSIG 0x{s0:x} then 0x{s1:x}"
+            );
+            // Held 4 s as it is: the owner sees whether it went dark.
+            for _ in 0..40 {
+                rt::delay_us(100_000);
+                rt::check_in();
+            }
+            if dark {
+                let v = regs.read32(DINTRS);
+                regs.write32(DINTRS, v & !GFX_UNDERRUN);
+                rt::delay_us(40_000);
+                let (f, s0, s1) = underrun_state(&mut regs);
+                log!(
+                    "U{n}: the flag cleared (Dell's way): DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}"
+                );
+            }
+            let mut l = heapless_name();
+            let _ = write!(l, "U{n} BACK");
+            card_text(vram, &plane, l.as_str(), 0xFF80_6010, 4);
+        }
+        let (f, s0, s1) = underrun_state(&mut regs);
+        log!("U: at the end: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
+        card_text(vram, &plane, "U: DONE", 0xFF20_2080, 3);
+        log!("{MARKER}: done (run U)");
+        rp_hal_x51v::devices::return_to_loader();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     // ---- Run R: the dark display (2026-10-20, after run G4) ---------------
 
     /// Every register Dell's driver saves, the PLLs and the system clock's
@@ -3780,6 +3855,14 @@ mod image {
     /// letters, drawn by the CPU (the 2D engine isn't trusted here); held
     /// 8 s.
     fn revive_card(vram: &mut [u8], plane: &Plane, n: u32, bg: u32) {
+        let mut label = heapless_name();
+        let _ = write!(label, "REVIVE {n}");
+        card_text(vram, plane, label.as_str(), bg, 8);
+    }
+
+    /// A full-screen card in `plane` drawn by the CPU: `bg`, and `text` in
+    /// large white letters; held `secs` seconds.
+    fn card_text(vram: &mut [u8], plane: &Plane, text: &str, bg: u32, secs: u32) {
         let bpp = if plane.format == PlaneFormat::Rgb565 {
             2
         } else {
@@ -3793,18 +3876,16 @@ mod image {
                 c
             }
         };
-        let mut label = heapless_name();
-        let _ = write!(label, "REVIVE {n}");
-        let scale = 8;
+        let scale = if text.len() > 9 { 4 } else { 8 };
         for y in 0..u32::from(plane.height) {
             for x in (0..u32::from(plane.width)).step_by(4 / bpp) {
-                let lit = in_text(x, y, label.as_str(), 24, 280, scale);
+                let lit = in_text(x, y, text, 24, 280, scale);
                 let at = plane.offset + y as usize * plane.stride + x as usize * bpp;
                 let _ = store32_volatile(vram, at, px(if lit { 0xFFFF_FFFF } else { bg }));
             }
         }
         cpu::drain_write_buffer();
-        for _ in 0..80 {
+        for _ in 0..secs * 10 {
             rt::delay_us(100_000);
             rt::check_in();
         }
