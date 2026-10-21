@@ -171,6 +171,9 @@ mod image {
                 self.pe_refs -= 1;
             }
         }
+        fn holds(&self, phys: u32) -> bool {
+            phys != 0 && (phys == self.phys || self.pe.contains(&phys) || self.host.contains(&phys))
+        }
     }
 
     /// The pool, seen as physical memory. Under this image's map, physical

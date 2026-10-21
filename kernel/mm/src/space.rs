@@ -580,6 +580,11 @@ pub trait PageCache {
     fn get(&mut self, object: u32, page: u32) -> Result<u32, IoError>;
     /// Drops a reference taken by [`get`](Self::get).
     fn release(&mut self, phys: u32);
+    /// Whether `phys` is one of the cache's frames. A private file page
+    /// mapped at `phys` is then the cache's (shared, copied on write);
+    /// otherwise it is the process's own copy. Ownership comes from here,
+    /// never from the mapping's permissions, which [`Vm::protect`] changes.
+    fn holds(&self, phys: u32) -> bool;
 }
 
 /// A page couldn't be read.
@@ -643,6 +648,9 @@ pub enum Outcome {
     /// The page was already mapped with enough permission (another path
     /// resolved it first).
     Spurious,
+    /// A mapped page was given the wider permission its region gained
+    /// ([`Vm::protect`] widens lazily).
+    Widened,
 }
 
 /// Why a fault couldn't be resolved (the process gets an access violation,
@@ -734,6 +742,15 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         space.map(&mut self.region_pages(), r)
     }
 
+    /// Whether the page at `phys` of region `r` may be mapped writable now:
+    /// the region allows writes and the page isn't the cache's page of a
+    /// private file (that one is copied on the first write).
+    fn writable_now(&self, r: &Region, phys: u32) -> bool {
+        let cache_page =
+            matches!(r.backing, Backing::File { shared: false, .. }) && self.cache.holds(phys);
+        r.prot.write() && !cache_page
+    }
+
     /// Resolves a fault at `mva` in `space`.
     pub fn handle_fault(
         &mut self,
@@ -756,10 +773,10 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         let private_file = matches!(r.backing, Backing::File { shared: false, .. });
 
         if let Some(raw) = self.tables.stored(self.mem, page) {
-            if let Some((f, writable)) = decode_aged(raw) {
-                // Writable only if it was and the region still allows it.
-                let attrs = attrs_for(&r, writable && r.prot.write());
+            if let Some(f) = decode_aged(raw) {
+                // Mapped again with what the region allows now.
                 let phys = self.mem.frame_phys(f);
+                let attrs = attrs_for(&r, self.writable_now(&r, phys));
                 self.tables
                     .restore(self.mem, page, phys, attrs)
                     .map_err(FaultError::Map)?;
@@ -769,13 +786,22 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         }
 
         if let Some((phys, attrs)) = self.tables.translate(self.mem, page) {
-            if access != Access::Write || attrs.ap.user_writable() {
+            let mapped_allows = match access {
+                Access::Write => attrs.ap.user_writable(),
+                Access::Read | Access::Exec => attrs.ap != Ap::None,
+            };
+            if mapped_allows {
                 return Ok(Outcome::Spurious);
             }
-            if private_file && r.prot.write() {
+            // The region allows the access but the mapping doesn't: a
+            // write to the cache's page of a private file (copy it), or a
+            // mapping left narrower by `protect` (widen it).
+            if access == Access::Write && private_file && self.cache.holds(phys) {
                 return self.copy_on_write(space, &r, page, phys);
             }
-            return Err(FaultError::Protection);
+            let ap = attrs_for(&r, self.writable_now(&r, phys)).ap;
+            self.tables.protect(self.mem, self.mmu, page, PAGE, ap);
+            return Ok(Outcome::Widened);
         }
 
         let (phys, writable) = match r.backing {
@@ -819,7 +845,7 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
                 .map_small(self.mem, self.frames, page, phys, space.domain(), attrs)
         {
             let base = self.mem.frame_phys(0);
-            release_page(&r, phys, writable, base, self.frames, self.cache);
+            release_page(&r, phys, base, self.frames, self.cache);
             return Err(FaultError::Map(e));
         }
         Ok(Outcome::Mapped)
@@ -1008,11 +1034,11 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
             let Some(r) = space.find(&mut self.region_pages(), page) else {
                 break;
             };
-            if let Some((phys, attrs)) = self.tables.translate(self.mem, page) {
+            if let Some((phys, _)) = self.tables.translate(self.mem, page) {
                 // First visit: a second chance.
                 self.mmu.clean_page(page);
                 let f = self.mem.phys_frame(phys);
-                let payload = aged(f, attrs.ap.user_writable());
+                let payload = aged(f);
                 if self
                     .tables
                     .store(self.mem, self.mmu, page, payload)
@@ -1022,14 +1048,13 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
                 }
                 continue;
             }
-            let Some((f, writable)) = self.tables.stored(self.mem, page).and_then(decode_aged)
-            else {
+            let Some(f) = self.tables.stored(self.mem, page).and_then(decode_aged) else {
                 continue; // unmapped, or compressed already
             };
             let phys = self.mem.frame_phys(f);
             let owned = match r.backing {
                 Backing::Zero => true,
-                Backing::File { shared, .. } => !shared && writable,
+                Backing::File { shared, .. } => !shared && !self.cache.holds(phys),
                 Backing::Phys { .. } => continue,
             };
             if owned {
@@ -1070,10 +1095,10 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
             while at < end {
                 let (k, next) = self.tables.take_stored(self.mem, at, end, &mut batch);
                 for &raw in &batch[..k] {
-                    if let Some((f, writable)) = decode_aged(raw) {
+                    if let Some(f) = decode_aged(raw) {
                         // Aged but resident: released like a mapped page.
                         let phys = self.mem.frame_phys(f);
-                        release_page(p, phys, writable, base, self.frames, self.cache);
+                        release_page(p, phys, base, self.frames, self.cache);
                     } else {
                         self.zpool.free(
                             self.frames,
@@ -1092,7 +1117,7 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
                 p.start,
                 p.len,
                 |u, frames| {
-                    release_page(p, u.phys, u.attrs.ap.user_writable(), base, frames, cache);
+                    release_page(p, u.phys, base, frames, cache);
                 },
             );
         }
@@ -1110,9 +1135,12 @@ impl<M: PhysMem, F: FrameAlloc, U: Mmu, C: PageCache> Vm<'_, M, F, U, C> {
         prot: Prot,
     ) -> Result<(), SpaceError> {
         space.protect(&mut self.region_pages(), start, len, prot)?;
-        // Downgrades take effect now; upgrades happen lazily through faults,
-        // which keeps copy-on-write correct with no extra bookkeeping. Only
-        // permissions change: each page keeps its cache policy.
+        // Downgrades take effect now; upgrades happen lazily through faults
+        // (`handle_fault` widens a mapping narrower than its region, and
+        // copies the cache's page of a private file on write), so a page is
+        // only ever widened by the one path that knows whether it must be
+        // copied first. Only permissions change: each page keeps its cache
+        // policy.
         if !prot.write() || !prot.read() {
             let ap = if prot.read() { Ap::UserRead } else { Ap::None };
             self.tables.protect(self.mem, self.mmu, start, len, ap);
@@ -1161,21 +1189,22 @@ pub struct Reclaimed {
     pub dropped: u32,
 }
 
-/// An aged page's stored payload: still resident (its frame, and whether
-/// it was mapped writable), in a size class the compressed store never
-/// uses, so it can't be mistaken for a compressed copy's handle.
+/// An aged page's stored payload: still resident (its frame), in a size
+/// class the compressed store never uses, so it can't be mistaken for a
+/// compressed copy's handle. Its permissions aren't kept: the fault that
+/// maps it again takes them from the region (and the cache) as they are
+/// then.
 const AGED_CLASS: u32 = 0xFF;
 const _: () = assert!(crate::zpool::CLASSES < AGED_CLASS as usize);
 
-fn aged(frame: usize, writable: bool) -> u32 {
+fn aged(frame: usize) -> u32 {
     use crate::zpool::{FRAME_SHIFT, MAX_FRAMES};
     debug_assert!(frame < MAX_FRAMES, "stored payloads have 30 bits");
-    (frame as u32) << FRAME_SHIFT | AGED_CLASS << 8 | u32::from(writable)
+    (frame as u32) << FRAME_SHIFT | AGED_CLASS << 8
 }
 
-fn decode_aged(raw: u32) -> Option<(usize, bool)> {
-    let frame = (raw >> crate::zpool::FRAME_SHIFT) as usize;
-    ((raw >> 8) & 0xFF == AGED_CLASS).then_some((frame, raw & 1 != 0))
+fn decode_aged(raw: u32) -> Option<usize> {
+    ((raw >> 8) & 0xFF == AGED_CLASS).then_some((raw >> crate::zpool::FRAME_SHIFT) as usize)
 }
 
 /// Whether reclaim may take pages from `r` (everything but device and
@@ -1204,7 +1233,6 @@ fn next_reclaimable(space: &AddressSpace, rp: &mut impl RegionPages, hand: u32) 
 fn release_page<F: FrameAlloc, C: PageCache>(
     r: &Region,
     phys: u32,
-    writable: bool,
     base: u32,
     frames: &mut F,
     cache: &mut C,
@@ -1213,13 +1241,12 @@ fn release_page<F: FrameAlloc, C: PageCache>(
     match r.backing {
         Backing::Zero => frames.free(frame),
         Backing::File { shared: true, .. } => cache.release(phys),
-        // Private: a writable mapping is the process's copy, a read-only one
-        // the cache's.
+        // Private: the cache's page, or the process's copy.
         Backing::File { shared: false, .. } => {
-            if writable {
-                frames.free(frame);
-            } else {
+            if cache.holds(phys) {
                 cache.release(phys);
+            } else {
+                frames.free(frame);
             }
         }
         Backing::Phys { .. } => {}
@@ -1269,6 +1296,9 @@ mod tests {
                 .expect("released a page never taken");
             *r -= 1;
             assert!(*r >= 0, "page released twice");
+        }
+        fn holds(&self, phys: u32) -> bool {
+            self.refs.contains_key(&phys)
         }
     }
 
@@ -2005,6 +2035,119 @@ mod tests {
             w.vm().handle_fault(&s, a, Access::Write),
             Err(FaultError::Protection)
         );
+    }
+
+    /// A read-only page made writable by `protect` takes the write: the
+    /// fault widens the mapping (anonymous and shared file pages alike),
+    /// and the kernel's own writes on the process's behalf work too.
+    #[test]
+    fn protect_upgrades_take_the_next_write() {
+        for shared_file in [false, true] {
+            let mut w = World::new();
+            // Shared writable file mappings live in the shared area.
+            let (mut s, a, region) = if shared_file {
+                let a = layout::SHARED_BASE;
+                (AddressSpace::shared(1), a, file(a, 0x2000, Prot::R, true))
+            } else {
+                let a = base() + 0x10000;
+                (AddressSpace::process(SLOT, 2), a, zero(a, 0x2000, Prot::R))
+            };
+            s.map(&mut w.rp(), region).unwrap();
+            for page in [a, a + 0x1000] {
+                w.vm().handle_fault(&s, page, Access::Read).unwrap();
+            }
+            w.vm().protect(&mut s, a, 0x2000, Prot::RW).unwrap();
+            assert_eq!(
+                w.vm().handle_fault(&s, a, Access::Write),
+                Ok(Outcome::Widened),
+                "shared file: {shared_file}"
+            );
+            assert_eq!(
+                w.tables.translate(&mut w.ram, a).unwrap().1.ap,
+                Ap::UserWrite
+            );
+            // The kernel writing for the process: the same widening.
+            w.vm().prepare_user_write(&s, a + 0x1000, 8).unwrap();
+            assert_eq!(
+                w.tables.translate(&mut w.ram, a + 0x1000).unwrap().1.ap,
+                Ap::UserWrite
+            );
+            // Already widened: a second fault is spurious.
+            assert_eq!(
+                w.vm().handle_fault(&s, a, Access::Write),
+                Ok(Outcome::Spurious)
+            );
+            w.vm().unmap(&mut s, a, 0x2000).unwrap();
+            assert_eq!(w.frames.free_frames(), 512);
+            assert_eq!(w.cache.total_refs(), 0);
+        }
+    }
+
+    /// A page made inaccessible, then readable and writable again: the
+    /// read widens it (it used to be called spurious and fault again,
+    /// forever: `protect` applied only downgrades, and RW isn't one).
+    #[test]
+    fn protect_none_then_read_widens() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(&mut w.rp(), zero(a, 0x1000, Prot::RW)).unwrap();
+        w.vm().handle_fault(&s, a, Access::Write).unwrap();
+        w.vm().protect(&mut s, a, 0x1000, Prot::NONE).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Read),
+            Err(FaultError::Protection)
+        );
+        w.vm().protect(&mut s, a, 0x1000, Prot::RW).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Read),
+            Ok(Outcome::Widened)
+        );
+        assert_eq!(
+            w.tables.translate(&mut w.ram, a).unwrap().1.ap,
+            Ap::UserWrite
+        );
+    }
+
+    /// A private file page the process has copied stays the process's
+    /// through a downgrade: made writable again it is widened, not copied
+    /// a second time (the cache's reference count untouched), reclaim
+    /// compresses it rather than dropping it as a cache page, and unmap
+    /// frees its frame rather than releasing it to the cache.
+    #[test]
+    fn a_private_copy_survives_a_downgrade() {
+        let mut w = World::new();
+        let mut s = AddressSpace::process(SLOT, 2);
+        let a = base() + 0x10000;
+        s.map(&mut w.rp(), file(a, 0x1000, Prot::RW, false))
+            .unwrap();
+        w.vm().handle_fault(&s, a, Access::Write).unwrap();
+        let (copy, _) = w.tables.translate(&mut w.ram, a).unwrap();
+        assert!(copy < CACHE_PHYS);
+        w.ram.page(copy)[0] = 0x0BAD_F00D;
+        w.vm().protect(&mut s, a, 0x1000, Prot::R).unwrap();
+        w.vm().protect(&mut s, a, 0x1000, Prot::RW).unwrap();
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Write),
+            Ok(Outcome::Widened)
+        );
+        assert_eq!(w.tables.translate(&mut w.ram, a).unwrap().0, copy);
+        assert_eq!(w.cache.total_refs(), 0);
+        // Read-only again, then reclaimed: compressed, not dropped.
+        w.vm().protect(&mut s, a, 0x1000, Prot::R).unwrap();
+        let mut hand = a;
+        w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        let mut hand = a;
+        let r = w.vm().reclaim(&s, &mut hand, 1, u32::MAX).unwrap();
+        assert_eq!((r.compressed, r.dropped), (1, 0));
+        assert_eq!(
+            w.vm().handle_fault(&s, a, Access::Read),
+            Ok(Outcome::Restored)
+        );
+        assert_eq!(w.peek(a), Some(0x0BAD_F00D), "the process's data kept");
+        w.vm().unmap(&mut s, a, 0x1000).unwrap();
+        assert_eq!(w.frames.free_frames(), 512);
+        assert_eq!(w.cache.total_refs(), 0);
     }
 
     #[test]
