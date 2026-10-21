@@ -3106,6 +3106,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_z = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REBUILD", "1"))?;
     let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
     let run_n = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_START", "1"))?;
+    let run_q = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SLOW", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3130,7 +3131,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 17] = [
+    let runs: [GpubenchRun; 18] = [
         (
             "run A",
             &run_a,
@@ -3341,6 +3342,16 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run Y",
             &run_y,
             &["Y: the rescue measured", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run Q (what ends the slow state): refused cleanly on a fork that
+        // doesn't start the clocks as Windows Mobile leaves them, else every
+        // step measured.
+        (
+            "run Q",
+            &run_q,
+            &["RETROPANE-GPUBENCH: run Q", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),

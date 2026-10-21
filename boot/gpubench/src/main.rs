@@ -154,6 +154,15 @@ mod image {
     /// others by the 2D engine as G5's are; then G5's first clock changes,
     /// its four lock traces, each followed by a CPU card and a read.
     const START: bool = option_env!("RP_GPUBENCH_START").is_some();
+    /// Run Q: what ends the slow state. Since run H2's watchdog reset the
+    /// chip runs slow at Windows Mobile's clock (cores / 2: 3D 37.9 ms
+    /// against 34.3); run Y's restarts at that clock (`LMPWR` alone,
+    /// `LMTYPE` CL3 and back, self-refresh, `SYSCFG` 0) and G5's CL2 steps
+    /// left it so, and G4c's first 108.33 MHz CL3 step with the memory
+    /// restarted ended it. Three steps of rising reach, Windows Mobile's
+    /// clock measured before and after each: 108.33 MHz CL2; the memory
+    /// restarted at Windows Mobile's clock; G4c's step.
+    const SLOW: bool = option_env!("RP_GPUBENCH_SLOW").is_some();
     /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
     /// every 2D fill and 3D render right, but its first pass ran slower
     /// than the same steps before any rebuild (the 3D render at 99.67 MHz,
@@ -3724,6 +3733,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if SLOW {
+                "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
             } else if CLOCK {
@@ -3786,6 +3797,9 @@ mod image {
             freeze(&mut g);
         } else if RESCUE {
             rescue(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if SLOW {
+            slow_state(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
@@ -4512,6 +4526,117 @@ mod image {
             let (f, s0, s1) = underrun_state(regs);
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         }
+    }
+
+    // ---- Run Q: what ends the slow state (2026-10-20) ------------------------
+
+    /// Windows Mobile's clock checked twice, logged under `when`; the 3D
+    /// render time of the second (the first after a change warms caches).
+    fn slow_measure(g: &mut Rig, c: &mut ClockRig, seed: &mut u32, when: &str) -> u32 {
+        let mut r3d = 0;
+        for _ in 0..2 {
+            let r = clock_check(g, c, false, *seed);
+            *seed += 2;
+            log!("  Q {when}:");
+            clock_log(WM_STEP, Some(0), &r);
+            r3d = r.render_us;
+        }
+        r3d
+    }
+
+    /// Run Q (see [`SLOW`]).
+    #[inline(never)]
+    fn slow_state(g: &mut Rig) {
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        if found.0 != ClockSpeed::WM.pll || found.1 != 0x2484_2481 {
+            log!("Q: not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(mut c) = clock_rig(g) else {
+            log!("Q: no memory for the set-up: stopped");
+            return;
+        };
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        if !base.good() {
+            log!("Q: the reference itself is BAD: stopped");
+            clock_rig_free(g, c);
+            return;
+        }
+        let mut seed = 4;
+        clock_card(
+            g,
+            ["RUN Q: SLOW STATE", "MEASURING", "STEP 1 OF 4"],
+            0xFF20_2040,
+            2,
+        );
+        let before = slow_measure(g, &mut c, &mut seed, "before any step");
+        let steps = [
+            (
+                ClockStep {
+                    m: 25,
+                    cl3: Some(false),
+                    ..WM_STEP
+                },
+                "after 108.33 MHz CL2",
+                "108.33 MHZ CL2",
+            ),
+            (
+                ClockStep {
+                    restart: true,
+                    ..WM_STEP
+                },
+                "after the memory restarted at Windows Mobile's clock",
+                "MEMORY RESTART",
+            ),
+            (
+                ClockStep {
+                    m: 25,
+                    cl3: Some(true),
+                    restart: true,
+                    ..WM_STEP
+                },
+                "after G4c's 108.33 MHz CL3 with the restart",
+                "108.33 MHZ CL3",
+            ),
+        ];
+        let mut after = [0u32; 3];
+        for (k, (s, when, label)) in steps.into_iter().enumerate() {
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "STEP {} OF 4", k + 2);
+            clock_card(g, ["RUN Q: SLOW STATE", label, l3.as_str()], 0xFF20_2040, 2);
+            let lock = clock_apply(g, s);
+            clock_readback(g);
+            let r = if lock.is_some() {
+                clock_check(g, &mut c, false, seed)
+            } else {
+                ClockResult::default()
+            };
+            seed += 2;
+            clock_log(s, lock, &r);
+            clock_restore(&mut g.e.regs);
+            rt::delay_us(10_000);
+            after[k] = slow_measure(g, &mut c, &mut seed, when);
+        }
+        log!(
+            "Q: the 3D render at Windows Mobile's clock (cores / 2; slow 37.9 ms, normal 34.3 ms): before {} us; after 108.33 CL2 {} us; after the memory restart {} us; after 108.33 CL3 with the restart {} us",
+            before,
+            after[0],
+            after[1],
+            after[2]
+        );
+        let ok = clock_control(g, &mut c, seed, "at the end");
+        clock_card(
+            g,
+            [
+                "RUN Q DONE",
+                if ok { "BACK TO NORMAL" } else { "CONTROL BAD" },
+                "LOG SENT",
+            ],
+            if ok { 0xFF10_6020 } else { 0xFF80_2010 },
+            3,
+        );
+        clock_rig_free(g, c);
     }
 
     // ---- Run N: the start-up watched (2026-10-20) ---------------------------
