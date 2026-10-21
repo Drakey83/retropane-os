@@ -1177,6 +1177,46 @@ fn sixteen_bit_targets_as_measured() {
     }
 }
 
+/// `rp-gpubench` run P (X51v, 2026-10-21): every `0x650` layout, bits 2-0
+/// (codes 8-15 lay out like 0-7), each as the device wrote pixel (1, 0) of
+/// the placed texture: red 8, green 0, blue `0xA0`, opaque.
+#[test]
+fn every_target_layout_as_run_p_measured() {
+    const C: u32 = 0xFF08_00A0;
+    for (code, bytes, want) in [
+        (0u32, 2usize, 0x0414u32),
+        (1, 2, 0x0814),
+        (2, 2, 0xF00A),
+        (3, 2, 0x8414),
+        (4, 3, 0x0800A0),
+        (5, 4, 0x0008_00A0),
+        (6, 4, 0xFF08_00A0),
+        (7, 2, 0xF00A),
+        (9, 2, 0x0814),
+        (0x0010_0006, 4, 0xFF08_00A0),
+    ] {
+        let mut g = rig(32, 32);
+        g.set(0, Some(Draw::rect(0, 0, 32, 32, Paint::Flat(C))));
+        let pic = Picture::packed(0x00A0_0000, 32, 32, PixelFormat::Argb8888);
+        let t = Target {
+            picture: pic,
+            x: 0,
+            y: 0,
+        };
+        g.frame_into(t);
+        // The renderer writes only changed registers: run P's own way in.
+        g.gpu.write32(MBX + 0x650, code);
+        g.r.invalidate_all();
+        g.frame_into(t);
+        let row = pic.at + pic.stride;
+        let got = (0..bytes).fold(0, |v, k| {
+            let a = row as usize + bytes + k;
+            v | ((g.mem.load(a & !3).unwrap() >> (8 * (a & 3))) & 0xFF) << (8 * k)
+        });
+        assert_eq!(got, want, "code {code:#x}");
+    }
+}
+
 #[test]
 fn slot_words_at_finds_the_texture_words_set_stored() {
     let mut g = rig(480, 640);

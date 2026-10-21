@@ -1746,15 +1746,27 @@ mod image {
         } else {
             P_SIDE * P_SIDE * l.bytes
         };
+        // Rows in the picture's stride start every 128 bytes, which isn't
+        // a multiple of 3: each row is walked from its own start (run P on
+        // the X51v scored code 4's exact 24-bit rows 352/1024 walking the
+        // whole target in 3-byte steps).
+        let (row, rows) = if order == 0 {
+            (P_SIDE * 4, P_SIDE)
+        } else {
+            (end, 1)
+        };
         let mut score = 0;
-        let mut off = 0;
-        while off < end {
-            if let Some((x, y)) = p_order(order, off, l.bytes)
-                && (l.place)(p_value(mem, at, off, l.bytes)) == Some((x >> l.shift, y >> l.shift))
-            {
-                score += 1;
+        for r in 0..rows {
+            let mut off = r * row;
+            while off < (r * row + row).min(end) {
+                if let Some((x, y)) = p_order(order, off, l.bytes)
+                    && (l.place)(p_value(mem, at, off, l.bytes))
+                        == Some((x >> l.shift, y >> l.shift))
+                {
+                    score += 1;
+                }
+                off += l.bytes;
             }
-            off += l.bytes;
         }
         score
     }

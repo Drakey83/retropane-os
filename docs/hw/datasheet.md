@@ -143,7 +143,7 @@ watching.
   fog bit 24 / no fog bit 25) and texture words (texture code 10 = 8-bit
   grey, code 8 = grey + alpha, code 7 = ARGB4444; full list in 2700g.md);
   all eight depth modes proven (ADR-0026); render done is bit 2 of the
-  interrupt status `0x12c`. Textures are twiddled, sides powers of two up
+  interrupt status `0x12c`. **The target format `0x650`** (`rp-gpubench` run P, 2026-10-21, X51v): bits 2-0 the layout (0 RGB555 with the top bit 0, 1 RGB565, 2 ARGB4444, 3 ARGB1555 with the alpha bit set for opaque, 4 packed 24-bit RGB888 (3 bytes a pixel, blue first), 5 xRGB8888 with the top byte 0, 6 ARGB8888, 7 ARGB4444 like 2 for opaque pixels), **bit 3 dithers** (a 2 x 2 checker seen at half steps in 4444), bits 4-19 kept but no effect seen, bits 20-31 read back 0; every code writes rows at `0x660`'s stride, none twiddled (no render-to-texture by this register), none past its rows. Textures are twiddled, sides powers of two up
   to 2048, rectangles too (512 x 1024 drawn right, `rp-gpubench`
   2026-10-19); Dell's GLES has no row-order mode. At WM's clock a bare
   tile renders in ~5.3 us, a textured one ~11.3 us, each translucent

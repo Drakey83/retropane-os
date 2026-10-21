@@ -278,10 +278,13 @@ impl Gpu {
                     quads += quad_cost(o.tex.is_some(), o.tsp & m3::TSP_BLEND != 0);
                 }
             }
-            // The target's format (`0x650`, version 26): 6 ARGB8888, 1
-            // RGB565, 3 ARGB1555 (channels truncated; the alpha bit set for
-            // opaque pixels: from bit 7, assumed).
-            let format = self.reg(0x650);
+            // The target's format (`0x650`, version 26 and `rp-gpubench`
+            // run P): bits 2-0 the layout, 0 RGB555 with the top bit 0, 1
+            // RGB565, 2 and 7 ARGB4444, 3 ARGB1555 (the alpha bit from bit
+            // 7: assumed), 4 packed 24-bit (blue first), 5 xRGB8888 with
+            // the top byte 0, 6 ARGB8888; channels truncated. Bit 3 dithers
+            // on the device: not modelled (its matrix isn't measured).
+            let format = self.reg(0x650) & 7;
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
                     let c = tile.c[(py * m3::TILE_W + px) as usize];
@@ -289,20 +292,25 @@ impl Gpu {
                     let x = tile.x + px;
                     let row = target + (tile.y + py) * stride;
                     match format {
-                        1 | 3 => {
-                            let v = if format == 1 {
-                                (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
-                            } else {
-                                (c >> 31) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3
+                        0..=3 | 7 => {
+                            let v = match format {
+                                0 => (r >> 3) << 10 | (g >> 3) << 5 | b >> 3,
+                                1 => (r >> 3) << 11 | (g >> 2) << 5 | b >> 3,
+                                3 => (c >> 31) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3,
+                                _ => (c >> 28) << 12 | (r >> 4) << 8 | (g >> 4) << 4 | b >> 4,
                             };
                             let a = (row + 2 * x) as usize;
                             m[a..a + 2].copy_from_slice(&(v as u16).to_le_bytes());
                         }
-                        6 => {
-                            let a = (row + 4 * x) as usize;
-                            m[a..a + 4].copy_from_slice(&c.to_le_bytes());
+                        4 => {
+                            let a = (row + 3 * x) as usize;
+                            m[a..a + 3].copy_from_slice(&c.to_le_bytes()[..3]);
                         }
-                        f => panic!("target format 0x650 = {f} never measured"),
+                        _ => {
+                            let v = if format == 5 { c & 0x00FF_FFFF } else { c };
+                            let a = (row + 4 * x) as usize;
+                            m[a..a + 4].copy_from_slice(&v.to_le_bytes());
+                        }
                     }
                 }
             }
