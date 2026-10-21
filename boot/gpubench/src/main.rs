@@ -219,6 +219,10 @@ mod image {
     /// pixel compared between renders (the same places: logic; others:
     /// a glitch). Unattended.
     const SPECKS: bool = option_env!("RP_GPUBENCH_SPECKS").is_some();
+    /// Run P2Y: what P2X's errors need: one render read back three times
+    /// (the CPU's reads), then 32-bit renders with the screen at 32 bits,
+    /// 16 bits and stopped (the display's fetch). Unattended.
+    const SPECKS2: bool = option_env!("RP_GPUBENCH_SPECKS2").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -3068,6 +3072,81 @@ mod image {
         clock_card(g, ["RUN P2X", "DONE", ""], 0xFF10_6020, 3);
     }
 
+    /// Run P2Y (see [`SPECKS2`]).
+    #[inline(never)]
+    fn specks2(g: &mut Rig) {
+        log!(
+            "P2Y: what P2X's errors need. Y1: one 32-bit render read back three times, word by word (the CPU's reads); Y2: P2W's picture rendered 5 times at 32 bits (code 6) with the screen shown at 32 bits, at 16 bits (the same memory as RGB565) and stopped (GSCADR bit 31 clear), checked as in P2X"
+        );
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        p2w_scene(g, &mut r);
+        let (a, b) = (map::BACKGROUND.at, map::SCREENS[1].at);
+        // Y1: the reads.
+        p_card(g, "RUN P2Y READS", 0, 4, 6);
+        p2x_check(g, &mut r, a, 1920, 4, 6, None, 1);
+        let words = 480 * 640;
+        let mut differ = [0u32; 2];
+        for (pass, d) in differ.iter_mut().enumerate() {
+            let mut list = heapless_name();
+            for k in 0..words {
+                let o = (a + 4 * k) as usize;
+                let (x, y) = (g.mem.load(o), g.mem.load(o));
+                if x != y {
+                    if *d < 4 {
+                        let _ = write!(list, " word {k}: {x:x?} then {y:x?}");
+                    }
+                    *d += 1;
+                }
+            }
+            log!(
+                "  Y1 pass {}: {} of {words} words read differently twice in a row{}",
+                pass + 1,
+                *d,
+                list.as_str()
+            );
+        }
+        // Y2: the display's fetch.
+        let configs: [(&str, Option<(u32, u32)>); 3] = [
+            (
+                "the screen at 32 bits",
+                Some((1920, PlaneFormat::Argb8888 as u32)),
+            ),
+            (
+                "the screen at 16 bits",
+                Some((960, PlaneFormat::Rgb565 as u32)),
+            ),
+            ("the screen stopped", None),
+        ];
+        for (ci, (name, cfg)) in configs.into_iter().enumerate() {
+            p_card(g, "RUN P2Y FETCH", ci + 1, 4, ci as u32);
+            match cfg {
+                Some((stride, fmt)) => p2w_show(&mut g.e.regs, SCREEN.at, stride, fmt),
+                None => {
+                    let v = g.e.regs.read32(dreg::GSCADR);
+                    g.e.regs.write32(dreg::GSCADR, v & !(1 << 31));
+                }
+            }
+            rt::delay_us(50_000);
+            log!("  Y2 {name}:");
+            p2x_check(g, &mut r, a, 1920, 4, 6, None, 1);
+            for k in 2..=5 {
+                p2x_check(g, &mut r, b, 1920, 4, 6, Some(a), k);
+            }
+            let _ = show_screen(&mut g.e.regs);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        for k in 0..12 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!("P2Y: done");
+        clock_card(g, ["RUN P2Y", "DONE", ""], 0xFF10_6020, 3);
+    }
+
     // ---- Run C: the video plane (the owner watches) --------------------------
     //
     // ADR-0022 point 3, the translucent-layer-over-a-pan rule: does a
@@ -5279,6 +5358,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if SPECKS2 {
+                "P2Y (what P2X's errors need: the CPU's reads, the display's fetch at 32 bits, 16 bits and stopped)"
             } else if SPECKS {
                 "P2X (P2W's white specks: the picture rendered 5 times a format, checked and compared)"
             } else if RESOLVE {
@@ -5358,6 +5439,8 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if SPECKS2 {
+            specks2(&mut g);
         } else if SPECKS {
             specks(&mut g);
         } else if RESOLVE {
