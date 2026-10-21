@@ -3679,6 +3679,22 @@ mod image {
             rp_hal_x51v::devices::kept_start();
             log!("{MARKER}: the log kept in SRAM from here");
         }
+        // The CPU's own clocks and SDRAM timing as this run found them (the
+        // slow state since run H2's watchdog reset survived every 2700G
+        // restart run Q tried: is it the PXA's clock Windows Mobile chose
+        // at its boot?), and the core clock counted.
+        {
+            let raw = rp_hal_pxa27x::clocks::read();
+            log!(
+                "PXA clocks: CCCR 0x{:08x} CCSR 0x{:08x} CLKCFG 0x{:x} MDREFR 0x{:08x} MDCNFG 0x{:08x}; core {} kHz counted",
+                raw.cccr,
+                raw.ccsr,
+                raw.clkcfg,
+                raw.mdrefr,
+                raw.mdcnfg,
+                rp_hal_pxa27x::clocks::measure_core_khz(10)
+            );
+        }
         if START {
             start_watch(&mut regs, "N1 the SRAM log opened");
         }
