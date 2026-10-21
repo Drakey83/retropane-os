@@ -209,6 +209,10 @@ mod image {
     /// at 32 bits, 16 bits, stopped and 32 again; then `0x644`'s
     /// orientation bits mapped pixel by pixel. Unattended.
     const FETCH: bool = option_env!("RP_GPUBENCH_FETCH").is_some();
+    /// Run T3: what `0x644`'s averaging write-out costs (anti-aliasing's
+    /// price): one full-screen render timed at each of its settings.
+    /// Unattended.
+    const RESOLVE: bool = option_env!("RP_GPUBENCH_RESOLVE").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -2774,6 +2778,125 @@ mod image {
         let _ = r.release(&mut g.pool);
     }
 
+    /// Run T3 (see [`RESOLVE`]): a full-screen render (2400 tiles: a
+    /// textured quad over a Gouraud background) timed five times at each
+    /// `0x644` (0 plain, 1 rows halved, 2 columns, 3 both) into the
+    /// background picture; the exact time from the status bit as
+    /// [`Rig::frame`] takes it.
+    #[inline(never)]
+    fn resolve(g: &mut Rig) {
+        log!(
+            "T3: the write-out downsample's cost: one full-screen render (2400 tiles), 5 times at each 0x644 (0, 1, 2, 3), code 6, into the background picture"
+        );
+        let Some(tex) = p_texture(g, 2, p_texel) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        g.set(
+            &mut r,
+            1,
+            Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
+        );
+        let t = Target {
+            picture: Picture::screen(0),
+            x: 0,
+            y: 0,
+        };
+        let t = Target {
+            picture: Picture {
+                at: map::BACKGROUND.at,
+                ..t.picture
+            },
+            ..t
+        };
+        let mut medians = [0u32; 4];
+        for v in 0..4u32 {
+            p_card(g, "RUN T3 RESOLVE", v as usize, 4, v);
+            let mut times = Times::default();
+            for _ in 0..5 {
+                g.e.regs.write32(MBX + 0x644, v);
+                r.invalidate_all();
+                let res = r.render(
+                    &mut CodeBus {
+                        bus: &mut g.e.regs,
+                        code: 6,
+                        extra: Some((0x644, v)),
+                    },
+                    &mut g.mem,
+                    &mut g.clock,
+                    t,
+                );
+                if res.is_err() {
+                    log!("    render refused: {res:?}");
+                    continue;
+                }
+                let t0 = g.clock.now_us();
+                let mut exact = None;
+                while g.clock.now_us().wrapping_sub(t0) < 500_000 {
+                    if g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
+                        exact = Some(g.clock.now_us().wrapping_sub(t0));
+                        break;
+                    }
+                }
+                loop {
+                    match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                        Poll::Wait(_) => {}
+                        Poll::Done(_) => break,
+                        p => {
+                            g.sync_resets(&r);
+                            log!("    {p:?}");
+                            break;
+                        }
+                    }
+                }
+                if let Some(us) = exact {
+                    times.add(us);
+                    g.measured += 1;
+                }
+            }
+            medians[v as usize] = times.median();
+            log!(
+                "  T3 0x644 = {v}: {} us median ({} - {} us, {} renders)",
+                times.median(),
+                times.min(),
+                times.max(),
+                times.n
+            );
+        }
+        g.e.regs.write32(MBX + 0x644, 0);
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!(
+            "T3: plain {} us; rows halved {} us; columns halved {} us; both {} us",
+            medians[0],
+            medians[1],
+            medians[2],
+            medians[3]
+        );
+        for k in 0..2 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        clock_card(g, ["RUN T3", "DONE", ""], 0xFF10_6020, 3);
+    }
+
     // ---- Run C: the video plane (the owner watches) --------------------------
     //
     // ADR-0022 point 3, the translucent-layer-over-a-pan rule: does a
@@ -4985,6 +5108,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if RESOLVE {
+                "T3 (the write-out downsample's cost: a full-screen render at each 0x644)"
             } else if FETCH {
                 "T (the display's fetch against the engines: the plane at 32 bits, 16 bits, stopped; then 0x644's orientation bits mapped)"
             } else if FINGERPRINT {
@@ -5060,6 +5185,8 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if RESOLVE {
+            resolve(&mut g);
         } else if FETCH {
             fetch(&mut g);
         } else if FINGERPRINT {
