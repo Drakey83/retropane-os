@@ -279,25 +279,29 @@ impl Gpu {
                 }
             }
             // The target's format (`0x650`, version 26 and `rp-gpubench`
-            // run P): bits 2-0 the layout, 0 RGB555 with the top bit 0, 1
-            // RGB565, 2 and 7 ARGB4444, 3 ARGB1555 (the alpha bit from bit
-            // 7: assumed), 4 packed 24-bit (blue first), 5 xRGB8888 with
-            // the top byte 0, 6 ARGB8888; channels truncated. Bit 3 dithers
-            // on the device: not modelled (its matrix isn't measured).
+            // runs P and P2): bits 2-0 the layout, 0 RGB555 with the top
+            // bit 0, 1 RGB565, 2 and 7 ARGB4444, 3 ARGB1555 with the top
+            // bit 1 whatever the alpha, 4 packed 24-bit (blue first), 5
+            // xRGB8888 with the top byte 0, 6 ARGB8888; channels truncated,
+            // or with bit 3 on a 16-bit layout dithered by run P2's 4 x 4
+            // matrix (alpha not dithered: P2's alpha was exact).
             let format = self.reg(0x650) & 7;
+            let dither = self.reg(0x650) & 8 != 0;
             for py in 0..m3::TILE_H {
                 for px in 0..m3::TILE_W {
                     let c = tile.c[(py * m3::TILE_W + px) as usize];
-                    let (r, g, b) = ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF);
                     let x = tile.x + px;
                     let row = target + (tile.y + py) * stride;
+                    let t = dither.then(|| DITHER[((tile.y + py) % 4 * 4 + x % 4) as usize]);
+                    let ch = |v: u32, bits: u32| channel(v & 0xFF, bits, t);
+                    let (r, g, b) = (c >> 16, c >> 8, c);
                     match format {
                         0..=3 | 7 => {
                             let v = match format {
-                                0 => (r >> 3) << 10 | (g >> 3) << 5 | b >> 3,
-                                1 => (r >> 3) << 11 | (g >> 2) << 5 | b >> 3,
-                                3 => (c >> 31) << 15 | (r >> 3) << 10 | (g >> 3) << 5 | b >> 3,
-                                _ => (c >> 28) << 12 | (r >> 4) << 8 | (g >> 4) << 4 | b >> 4,
+                                0 => ch(r, 5) << 10 | ch(g, 5) << 5 | ch(b, 5),
+                                1 => ch(r, 5) << 11 | ch(g, 6) << 5 | ch(b, 5),
+                                3 => 1 << 15 | ch(r, 5) << 10 | ch(g, 5) << 5 | ch(b, 5),
+                                _ => (c >> 28) << 12 | ch(r, 4) << 8 | ch(g, 4) << 4 | ch(b, 4),
                             };
                             let a = (row + 2 * x) as usize;
                             m[a..a + 2].copy_from_slice(&(v as u16).to_le_bytes());
@@ -320,6 +324,24 @@ impl Gpu {
             }
         }
         panic!("region array without a last entry");
+    }
+}
+
+/// The 3D core's dither (`0x650` bit 3, `rp-gpubench` run P2 on the
+/// X51v): a 4 x 4 ordered matrix from the target's first pixel, in
+/// sixteenths of a step; 16 never rounds up.
+const DITHER: [u32; 16] = [11, 3, 9, 1, 7, 15, 5, 13, 10, 2, 12, 4, 6, 14, 8, 16];
+
+/// An 8-bit channel `v` to `bits`: truncated, or one step up where the
+/// dropped fraction reaches threshold `t` (sixteenths of a step; run P2:
+/// the 5- and 6-bit channels use the same matrix at their coarser steps),
+/// never past the top.
+fn channel(v: u32, bits: u32, t: Option<u32>) -> u32 {
+    let lost = 8 - bits;
+    let (q, frac) = (v >> lost, v & ((1 << lost) - 1));
+    match t {
+        Some(t) if frac * 16 >= t << lost && q < (1 << bits) - 1 => q + 1,
+        _ => q,
     }
 }
 

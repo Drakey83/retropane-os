@@ -1217,6 +1217,43 @@ fn every_target_layout_as_run_p_measured() {
     }
 }
 
+/// `rp-gpubench` run P2 (X51v, 2026-10-21): bit 3 dithers 16-bit layouts
+/// by a 4 x 4 matrix from the target's first pixel, and code 3 writes the
+/// top bit 1 even for a transparent pixel (P2c: alpha 0 drawn as 0xE208).
+#[test]
+fn dither_and_forced_alpha_bit_as_run_p2_measured() {
+    // (code, colour, pixel, value): grey 76 is 9.5 steps of 8 (565 red
+    // and blue), 19 of 4 (green): up where the matrix's threshold is 8 or
+    // less for 5 bits, 16 or less (never 16 itself) for 6 bits.
+    for (code, c, (x, y), want) in [
+        (9u32, 0xFF4C_4C4Cu32, (0u32, 0u32), 9 << 11 | 19 << 5 | 9),
+        (9, 0xFF4C_4C4C, (1, 0), 10 << 11 | 19 << 5 | 10),
+        (9, 0xFF4C_4C4C, (3, 3), 9 << 11 | 19 << 5 | 9),
+        (1, 0xFF4C_4C4C, (1, 0), 9 << 11 | 19 << 5 | 9),
+        // 4444 at level 72 (4.5 steps of 16): up where the threshold is 8
+        // or less.
+        (10, 0xFF48_4848, (0, 0), 0xF444),
+        (10, 0xFF48_4848, (1, 0), 0xF555),
+        (3, 0x00C0_8040, (0, 0), 0xE208),
+    ] {
+        let mut g = rig(32, 32);
+        g.set(0, Some(Draw::rect(0, 0, 32, 32, Paint::Flat(c))));
+        let pic = Picture::packed(0x00A0_0000, 32, 32, PixelFormat::Argb8888);
+        let t = Target {
+            picture: pic,
+            x: 0,
+            y: 0,
+        };
+        g.frame_into(t);
+        g.gpu.write32(MBX + 0x650, code);
+        g.r.invalidate_all();
+        g.frame_into(t);
+        let a = (pic.at + y * pic.stride + 2 * x) as usize;
+        let got = (g.mem.load(a & !3).unwrap() >> (8 * (a & 2))) & 0xFFFF;
+        assert_eq!(got, want, "code {code}, pixel ({x}, {y})");
+    }
+}
+
 #[test]
 fn slot_words_at_finds_the_texture_words_set_stored() {
     let mut g = rig(480, 640);
