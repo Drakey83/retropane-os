@@ -3072,8 +3072,9 @@ type GpubenchRun<'a> = (&'a str, &'a PathBuf, &'a [&'a str], bool, (u32, u32, u3
 /// loader, then run C (the video plane's repoint and pans,
 /// `RP_GPUBENCH_PLANES`) and run D (its undocumented format codes,
 /// `RP_GPUBENCH_VFMT`), run E (faster uploads, `RP_GPUBENCH_UPLOAD`) and
-/// run F (text as 4 bpp strips, `RP_GPUBENCH_TEXT`), run P (the 3D
-/// core's target formats, `RP_GPUBENCH_TARGETS`) and the clock runs,
+/// run F (text as 4 bpp strips, `RP_GPUBENCH_TEXT`), runs P, P2 and P2W
+/// (the 3D core's target formats, `RP_GPUBENCH_TARGETS`,
+/// `RP_GPUBENCH_TARGETS2`, `RP_GPUBENCH_TARGETS_WATCH`) and the clock runs,
 /// with key presses for their watch steps. The
 /// models' times say nothing about the device's (the fork's 3D
 /// core doesn't model the clock or the fill costs: emulator.md), so this
@@ -3109,6 +3110,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_n = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_START", "1"))?;
     let run_q = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SLOW", "1"))?;
     let run_p = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS", "1"))?;
+    let run_p2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS2", "1"))?;
+    let run_p2w = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS_WATCH", "1"))?;
+    let run_w = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FINGERPRINT", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3133,7 +3137,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 19] = [
+    let runs: [GpubenchRun; 22] = [
         (
             "run A",
             &run_a,
@@ -3393,6 +3397,62 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
+            (0, 0, 0),
+        ),
+        // Run P2 (run P's follow-up): every part runs. The fork writes
+        // codes 1 and 3 as RGB565 and ARGB1555 and the rest as ARGB8888,
+        // undithered (emulator.md), so both shapes decode in every code
+        // and RGB565's ramp truncates; the device's answers are the run's.
+        (
+            "run P2",
+            &run_p2,
+            &[
+                "P2a: target shapes",
+                "  P2a 16 x 16: 8 of 8 decoded",
+                "  P2a 32 x 16: 8 of 8 decoded",
+                "  P2b code 1",
+                "    red (5 bits): 0 rounded up, 0 other, 0 of 64 places not a threshold",
+                "  P2b code 15",
+                "  P2c code 6: as drawn",
+                "  P2d: 192 tries, 0 hung, 0 not plain ARGB8888 rows",
+                "P2: 232 tries, 0 hung",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run P2W (watched): its four pictures, each to its 30 s cap (no
+        // presses), back at the loader.
+        (
+            "run P2W",
+            &run_p2w,
+            &[
+                "  P2W step 1: 24-BIT (0x650 4",
+                "  P2W step 4: 32-BIT (0x650 6",
+                "P2W: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run W (the fingerprint): every register line; the release fork
+        // doesn't start the clocks as Windows Mobile leaves them, so it
+        // says so and measures nothing (the wm-clocks build measures).
+        (
+            "run W",
+            &run_w,
+            &[
+                "W PXA CLOCKS: CCCR 0x",
+                "W PXA MEMORY",
+                "W CPU: ID 0x69054",
+                "W: every named 2700G register",
+                " SYSCFG 0x",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
             (0, 0, 0),
         ),
     ];

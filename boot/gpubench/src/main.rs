@@ -63,6 +63,24 @@
 //! the renderer's `0x650` write, so the OS's renderer has no way to set
 //! one. A hung try is recovered by the renderer, and the log line is
 //! written before each.
+//!
+//! **Run P2** (`RP_GPUBENCH_TARGETS2`, unattended; run P's follow-up):
+//! P2a codes 0-7 into a 16 x 16 target at a 96-byte stride and a 32 x 16
+//! one at 256 bytes (whether any shape twiddles); P2b a 64 x 64 grey ramp
+//! at codes 0-15, every pixel against its level truncated to each
+//! channel's bits: the dither matrix per layout (bit 3), over an 8 x 8
+//! cell; P2c four strips at alpha 0, 0x55, 0xaa and 0xff drawn as they are
+//! and blended, codes 0-7: what each layout stores for alpha; P2d each bit
+//! of the render table's unexplained words (`0x61C`, `0x644`, `0x648`,
+//! `0x64C`, `0x6D0`, `0x6D8`) flipped alone, decoded as in run P: whether
+//! any bit twiddles the target (render-to-texture; Dell's code has none,
+//! P19).
+//!
+//! **Run P2W** (`RP_GPUBENCH_TARGETS_WATCH`, the owner watches four
+//! pictures, each until a button): colour bars and ramps rendered 24-bit
+//! (code 4) and shown as RGB888 (display format 6), then RGB565 plain,
+//! RGB565 dithered (code 9) and ARGB8888: whether the 24-bit picture shows
+//! right and which ramps look smooth.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -92,7 +110,7 @@ mod image {
     use rp_hal_x51v::devices::KeptRunLog;
     use rp_mbx3d_render::{
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
-        UV_ONE, address, format, untwiddle,
+        UV_ONE, address, factor, format, untwiddle,
     };
     use rp_vram_map::{self as map, Pool};
 
@@ -167,18 +185,33 @@ mod image {
     /// others by the 2D engine as G5's are; then G5's first clock changes,
     /// its four lock traces, each followed by a CPU card and a read.
     const START: bool = option_env!("RP_GPUBENCH_START").is_some();
-    /// Run Q: what ends the slow state. Since run H2's watchdog reset the
-    /// chip runs slow at Windows Mobile's clock (cores / 2: 3D 37.9 ms
-    /// against 34.3); run Y's restarts at that clock (`LMPWR` alone,
-    /// `LMTYPE` CL3 and back, self-refresh, `SYSCFG` 0) and G5's CL2 steps
-    /// left it so, and G4c's first 108.33 MHz CL3 step with the memory
-    /// restarted ended it. Three steps of rising reach, Windows Mobile's
-    /// clock measured before and after each: 108.33 MHz CL2; the memory
-    /// restarted at Windows Mobile's clock; G4c's step.
+    /// Run Q: what moves the chip from 3D 37.9 ms at Windows Mobile's
+    /// clock (cores / 2) to the 34.3 ms G4b and G4c reached (written as
+    /// "what ends the slow state": the log re-read of 2026-10-21 found
+    /// 37.9 ms is where every run starts, 2700g.md). Three steps of rising
+    /// reach, Windows Mobile's clock measured before and after each:
+    /// 108.33 MHz CL2; the memory restarted at Windows Mobile's clock; a
+    /// 108.33 MHz CL3 step with the restart. None moved it.
     const SLOW: bool = option_env!("RP_GPUBENCH_SLOW").is_some();
+    /// Run W: the fingerprint of the state the device is in (the hunt for
+    /// what gives G4b's and G4c's faster 3D): every whitelisted PXA
+    /// register, the coprocessors,
+    /// every named 2700G register, then the speed at Windows Mobile's clock
+    /// measured three times, the MBX core reset (as hang recovery does),
+    /// and three times again; then W2, G4c's ending (65 and 74.75 MHz with
+    /// the cores at divide 1, Windows Mobile's clock put back: the only
+    /// way the faster state, 3D 34.3 against 37.9 ms, has come so far),
+    /// measured and every 2700G register dumped again to diff. Run in each
+    /// state (now, after a soft reset, after a full power-off).
+    const FINGERPRINT: bool = option_env!("RP_GPUBENCH_FINGERPRINT").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
+    /// Run P2: run P's follow-up (dither, alpha, two more target shapes).
+    const TARGETS2: bool = option_env!("RP_GPUBENCH_TARGETS2").is_some();
+    /// Run P2W: a rendered 24-bit picture and dithered 16 bits on screen
+    /// (the owner watches).
+    const TARGETS_WATCH: bool = option_env!("RP_GPUBENCH_TARGETS_WATCH").is_some();
     /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
     /// every 2D fill and 3D render right, but its first pass ran slower
     /// than the same steps before any rebuild (the 3D render at 99.67 MHz,
@@ -1560,12 +1593,48 @@ mod image {
         let _ = g.pool.free(at, 512 * 512 * 2);
     }
 
-    // ---- Run P: the 3D core's target formats (P3) ------------------------------
+    // ---- Runs P, P2, P2W: the 3D core's target formats (P3) -------------------
 
-    /// The target's side in pixels (4 x 2 tiles).
-    const P_SIDE: u32 = 32;
-    /// The target's 4 KiB: its pixels at 32 bits in rows of 128 bytes.
-    const P_BYTES: u32 = P_SIDE * P_SIDE * 4;
+    /// A target the target-format runs draw into: its size in pixels and its
+    /// picture's stride in bytes.
+    #[derive(Clone, Copy)]
+    struct PGeom {
+        w: u32,
+        h: u32,
+        stride: u32,
+    }
+
+    impl PGeom {
+        /// The bytes its rows cover at the stride.
+        const fn bytes(self) -> u32 {
+            self.h * self.stride
+        }
+    }
+
+    /// Run P's target: 32 x 32 (4 x 2 tiles) at a 32-bit picture's stride.
+    const P_SQUARE: PGeom = PGeom {
+        w: 32,
+        h: 32,
+        stride: 128,
+    };
+    /// Run P2's other two: 16 x 16 (2 tiles) at a 96-byte stride (not a
+    /// 32-bit row's 64), and 32 x 16 (4 tiles in a row) at 256 bytes.
+    const P_SMALL: PGeom = PGeom {
+        w: 16,
+        h: 16,
+        stride: 96,
+    };
+    const P_WIDE: PGeom = PGeom {
+        w: 32,
+        h: 16,
+        stride: 256,
+    };
+    /// Run P2's dither ramp: 64 x 64 (8 x 4 tiles), 32-bit rows.
+    const P_RAMP: PGeom = PGeom {
+        w: 64,
+        h: 64,
+        stride: 256,
+    };
     /// Guard memory before the target, and the whole area (both guards and
     /// the target), bytes.
     const P_BEFORE: u32 = 4096;
@@ -1580,11 +1649,26 @@ mod image {
         0xFF00_00A0 | (x << 3) << 16 | (y << 3) << 8
     }
 
-    /// The renderer's register writes with `0x650` replaced by `code`
-    /// (only this image can set a code the renderer has no name for).
+    /// Run P2b's grey level at `(x, y)`: 64 + one step a 8 x 8 block (64 to
+    /// 127 over the 64 x 64 target), so every place in an 8 x 8 dither
+    /// matrix sees every level, and so every fraction of a 4-, 5- and 6-bit
+    /// step.
+    const fn p_level(x: u32, y: u32) -> u32 {
+        64 + x / 8 + 8 * (y / 8)
+    }
+
+    const fn p_grey(x: u32, y: u32) -> u32 {
+        let v = p_level(x, y);
+        0xFF00_0000 | v << 16 | v << 8 | v
+    }
+
+    /// The renderer's register writes with `0x650` replaced by `code`, and
+    /// one more MBX register by a value of the run's (P2d) if `extra` names
+    /// one: only this image can set what the renderer has no name for.
     struct CodeBus<'a> {
         bus: &'a mut Mmio,
         code: u32,
+        extra: Option<(usize, u32)>,
     }
 
     impl RegisterBus for CodeBus<'_> {
@@ -1593,12 +1677,16 @@ mod image {
         }
 
         fn write32(&mut self, off: usize, v: u32) {
-            let v = if off == MBX + 0x650 { self.code } else { v };
+            let v = match self.extra {
+                _ if off == MBX + 0x650 => self.code,
+                Some((reg, x)) if off == MBX + reg => x,
+                _ => v,
+            };
             self.bus.write32(off, v);
         }
     }
 
-    /// One pixel layout run P tries: its name, bytes a pixel, the bits of
+    /// One pixel layout the runs try: its name, bytes a pixel, the bits of
     /// the place it drops, and the place a value names (`None` if its blue
     /// isn't the texel's), shifted right by those bits.
     struct PLayout {
@@ -1687,7 +1775,7 @@ mod image {
         },
     ];
 
-    /// The pixel orders run P tries.
+    /// The pixel orders the runs try.
     const P_ORDERS: [&str; 5] = [
         "rows (the picture's stride)",
         "rows (packed)",
@@ -1696,40 +1784,26 @@ mod image {
         "8 x 16 tiles, rows inside",
     ];
 
-    /// Where the pixel at byte `off` from the target sits in `order` for
-    /// pixels of `bytes`, if that offset starts one.
-    fn p_order(order: usize, off: u32, bytes: u32) -> Option<(u32, u32)> {
-        let stride = P_SIDE * 4;
-        let (x, y) = if order == 0 {
-            let col = off % stride;
-            if !col.is_multiple_of(bytes) {
-                return None;
+    /// Where pixel `(x, y)` of `gm` sits in `order` for pixels of `bytes`:
+    /// its byte offset from the target. Texture order is the GLES driver's
+    /// (`tex::twiddle_rect`: the shorter side twiddled, the longer side's
+    /// bits above).
+    fn p_offset(order: usize, x: u32, y: u32, bytes: u32, gm: PGeom) -> u32 {
+        let (bu, bv) = (gm.w.trailing_zeros(), gm.h.trailing_zeros());
+        match order {
+            0 => y * gm.stride + x * bytes,
+            1 => (y * gm.w + x) * bytes,
+            2 => tex::twiddle_rect(x, y, bu, bv) * bytes,
+            3 => tex::twiddle_rect(y, x, bv, bu) * bytes,
+            _ => {
+                let tile = (y / 16) * (gm.w / 8) + x / 8;
+                (tile * 128 + (y % 16) * 8 + x % 8) * bytes
             }
-            (col / bytes, off / stride)
-        } else {
-            if !off.is_multiple_of(bytes) {
-                return None;
-            }
-            let i = off / bytes;
-            match order {
-                1 => (i % P_SIDE, i / P_SIDE),
-                2 => untwiddle(i),
-                3 => {
-                    let (x, y) = untwiddle(i);
-                    (y, x)
-                }
-                _ => {
-                    let (t, w) = (i / 128, i % 128);
-                    ((t % 4) * 8 + w % 8, (t / 4) * 16 + w / 8)
-                }
-            }
-        };
-        (x < P_SIDE && y < P_SIDE).then_some((x, y))
+        }
     }
 
     /// The `bytes` bytes at `off` of the target at `at`, little-endian,
-    /// read from 2700G memory (a copy would cost 4 KiB of the 16 KiB
-    /// stack).
+    /// read from 2700G memory (a copy would cost the 16 KiB stack).
     fn p_value(mem: &Vram, at: u32, off: u32, bytes: u32) -> u32 {
         (0..bytes).fold(0, |v, k| {
             let o = off + k;
@@ -1738,34 +1812,18 @@ mod image {
         })
     }
 
-    /// How many of the target's pixels read as `l` in `order` name their
-    /// own place.
-    fn p_score(mem: &Vram, at: u32, l: &PLayout, order: usize) -> u32 {
-        let end = if order == 0 {
-            P_BYTES
-        } else {
-            P_SIDE * P_SIDE * l.bytes
-        };
-        // Rows in the picture's stride start every 128 bytes, which isn't
-        // a multiple of 3: each row is walked from its own start (run P on
-        // the X51v scored code 4's exact 24-bit rows 352/1024 walking the
-        // whole target in 3-byte steps).
-        let (row, rows) = if order == 0 {
-            (P_SIDE * 4, P_SIDE)
-        } else {
-            (end, 1)
-        };
+    /// How many of `gm`'s pixels, read as `l` in `order`, name their own
+    /// place. Each pixel's offset comes from its place (run P's first
+    /// decoder walked offsets instead and missed two rows in three of
+    /// 24-bit pixels at a 128-byte stride: 352/1024 on the X51v).
+    fn p_score(mem: &Vram, at: u32, l: &PLayout, order: usize, gm: PGeom) -> u32 {
         let mut score = 0;
-        for r in 0..rows {
-            let mut off = r * row;
-            while off < (r * row + row).min(end) {
-                if let Some((x, y)) = p_order(order, off, l.bytes)
-                    && (l.place)(p_value(mem, at, off, l.bytes))
-                        == Some((x >> l.shift, y >> l.shift))
-                {
-                    score += 1;
-                }
-                off += l.bytes;
+        for y in 0..gm.h {
+            for x in 0..gm.w {
+                let off = p_offset(order, x, y, l.bytes, gm);
+                score += u32::from(
+                    (l.place)(p_value(mem, at, off, l.bytes)) == Some((x >> l.shift, y >> l.shift)),
+                );
             }
         }
         score
@@ -1773,16 +1831,27 @@ mod image {
 
     /// Renders what `r` holds into `t` with `0x650` = `code`: whether it
     /// finished (false: refused, or hung and recovered).
-    fn p_frame(g: &mut Rig, r: &mut Renderer, t: Target, code: u32) -> bool {
+    fn p_frame(
+        g: &mut Rig,
+        r: &mut Renderer,
+        t: Target,
+        code: u32,
+        extra: Option<(usize, u32)>,
+    ) -> bool {
         rt::check_in();
-        // The renderer writes only changed registers: the code goes in
-        // first, and the bus replaces the renderer's own if it writes one.
+        // The renderer writes only changed registers: the code (and the
+        // extra register) go in first, and the bus replaces the renderer's
+        // own if it writes them.
         g.e.regs.write32(MBX + 0x650, code);
+        if let Some((reg, v)) = extra {
+            g.e.regs.write32(MBX + reg, v);
+        }
         r.invalidate_all();
         let res = r.render(
             &mut CodeBus {
                 bus: &mut g.e.regs,
                 code,
+                extra,
             },
             &mut g.mem,
             &mut g.clock,
@@ -1802,6 +1871,7 @@ mod image {
                 &mut CodeBus {
                     bus: &mut g.e.regs,
                     code,
+                    extra,
                 },
                 &mut g.mem,
                 &mut g.clock,
@@ -1820,6 +1890,213 @@ mod image {
                 }
             }
         }
+    }
+
+    /// A square ARGB8888 texture of side `8 << code`, `texel(x, y)` each,
+    /// written twiddled a word at a time straight into 2700G memory (no
+    /// buffer: the 16 KiB stack overflowed with one, run P's first
+    /// emulator check).
+    fn p_texture(g: &mut Rig, code: u8, texel: fn(u32, u32) -> u32) -> Option<Texture> {
+        let side = 8u32 << code;
+        let at = g.pool.alloc(side * side * 4, 128)?;
+        for i in 0..side * side {
+            let (x, y) = untwiddle(i);
+            g.mem.store((at + 4 * i) as usize, &[texel(x, y)]);
+        }
+        g.mem.sync();
+        Some(Texture {
+            at,
+            code,
+            format: format::ARGB8888 as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        })
+    }
+
+    /// Gives back a texture from [`p_texture`].
+    fn p_texture_free(g: &mut Rig, t: Texture) {
+        let side = 8u32 << t.code;
+        let _ = g.pool.free(t.at, side * side * 4);
+    }
+
+    /// `gm`'s target in the area at `area`, after the guard.
+    const fn p_target(area: u32, gm: PGeom) -> Target {
+        Target {
+            picture: Picture {
+                at: area + P_BEFORE,
+                stride: gm.stride,
+                w: gm.w as u16,
+                h: gm.h as u16,
+                format: PixelFormat::Argb8888,
+            },
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// The area filled with [`P_FILL`].
+    fn p_fill(g: &mut Rig, area: u32) {
+        let fill = [P_FILL; 64];
+        for off in (0..P_AREA).step_by(4 * fill.len()) {
+            g.mem.store((area + off) as usize, &fill);
+        }
+        g.mem.sync();
+    }
+
+    /// How a try ended.
+    #[derive(PartialEq, Eq)]
+    enum PTry {
+        /// Hung, the core reset by the renderer.
+        Hung,
+        /// Refused or nothing rendered.
+        Missed,
+        /// Rendered: nothing in the area changed.
+        Silent,
+        /// Rendered: whether 9 in 10 pixels were in place in some reading.
+        Done(bool),
+    }
+
+    /// One try of `code` into `gm`'s target (with `r` holding the placed
+    /// texture drawn 1:1): the area filled, rendered, what changed counted
+    /// (before the target, in its rows, after it), the best three readings
+    /// and the raw words logged.
+    fn p_try(g: &mut Rig, r: &mut Renderer, area: u32, gm: PGeom, code: u32) -> PTry {
+        p_try_with(g, r, area, gm, code, None, false)
+    }
+
+    /// [`p_try`] with an extra register set (P2d), `quiet`: one line for
+    /// the try (what changed and the best reading), no raw words.
+    fn p_try_with(
+        g: &mut Rig,
+        r: &mut Renderer,
+        area: u32,
+        gm: PGeom,
+        code: u32,
+        extra: Option<(usize, u32)>,
+        quiet: bool,
+    ) -> PTry {
+        p_fill(g, area);
+        let hangs = g.hangs;
+        let ok = p_frame(g, r, p_target(area, gm), code, extra);
+        let back = g.e.regs.read32(MBX + 0x650);
+        if g.hangs != hangs {
+            log!("    HUNG (the core was reset); 0x650 reads 0x{back:x}");
+            return PTry::Hung;
+        }
+        if !ok {
+            log!("    not rendered; 0x650 reads 0x{back:x}");
+            return PTry::Missed;
+        }
+        let (mut before, mut inside, mut after) = (0u32, 0u32, 0u32);
+        let (mut first, mut last) = (None, 0u32);
+        for off in (0..P_AREA).step_by(4) {
+            if g.mem.load((area + off) as usize).unwrap_or(0) != P_FILL {
+                if off < P_BEFORE {
+                    before += 1;
+                } else if off < P_BEFORE + gm.bytes() {
+                    inside += 1;
+                } else {
+                    after += 1;
+                }
+                first.get_or_insert(off);
+                last = off;
+            }
+        }
+        let rel = |o: u32| o as i32 - P_BEFORE as i32;
+        if !quiet {
+            log!(
+                "    done; 0x650 reads 0x{back:x}; words changed: {before} before, {inside} in the target's {} bytes, {after} after; first at {}, last at {} (bytes from the target)",
+                gm.bytes(),
+                first.map_or(0, rel),
+                rel(last)
+            );
+        }
+        if first.is_none() {
+            if quiet {
+                log!("    wrote nothing");
+            }
+            return PTry::Silent;
+        }
+        let at = area + P_BEFORE;
+        let mut best = [(0u32, 0usize, 0usize); 3];
+        for (li, l) in P_LAYOUTS.iter().enumerate() {
+            for order in 0..P_ORDERS.len() {
+                let score = p_score(&g.mem, at, l, order, gm);
+                if score > best[2].0 {
+                    best[2] = (score, li, order);
+                    best.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                }
+            }
+        }
+        if quiet {
+            let (score, li, order) = best[0];
+            log!(
+                "    changed {before}/{inside}/{after} (before/in/after); best {} {}: {score}/{}",
+                P_LAYOUTS[li].name,
+                P_ORDERS[order],
+                gm.w * gm.h
+            );
+            return PTry::Done(score >= gm.w * gm.h * 9 / 10 && order == 0 && li == 0);
+        }
+        for &(score, li, order) in best.iter().filter(|b| b.0 > 0) {
+            log!(
+                "    {} {}: {score}/{} pixels in place",
+                P_LAYOUTS[li].name,
+                P_ORDERS[order],
+                gm.w * gm.h
+            );
+        }
+        // The raw words: the target's first 8, and the first 4 of the next
+        // three rows at the stride.
+        let word = |o: u32| g.mem.load((at + o) as usize).unwrap_or(0xDEAD_BEEF);
+        log!(
+            "    words: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+            word(0),
+            word(4),
+            word(8),
+            word(12),
+            word(16),
+            word(20),
+            word(24),
+            word(28)
+        );
+        for line in 1..4 {
+            let o = line * gm.stride;
+            log!(
+                "    line {line}: {:08x} {:08x} {:08x} {:08x}",
+                word(o),
+                word(o + 4),
+                word(o + 8),
+                word(o + 12)
+            );
+        }
+        PTry::Done(best[0].0 >= gm.w * gm.h * 9 / 10)
+    }
+
+    /// `r` (`gm`'s size) set to hold the placed texture `tex` drawn 1:1
+    /// (its top left `gm.w` x `gm.h` texels). The caller builds `r` in
+    /// place: a renderer returned by value costs its size again on the
+    /// stack.
+    fn p_setup(g: &mut Rig, r: &mut Renderer, gm: PGeom, tex: Texture) {
+        let _ = r.set_background(Some(BLACK));
+        let (u, v) = (
+            (i64::from(UV_ONE) * i64::from(gm.w) / 32) as i32,
+            (i64::from(UV_ONE) * i64::from(gm.h) / 32) as i32,
+        );
+        let draw = Draw::rect(
+            0,
+            0,
+            gm.w as i32,
+            gm.h as i32,
+            Paint::Texture {
+                tex,
+                uv: [(0, 0), (u, 0), (u, v), (0, v)],
+                tint: WHITE,
+            },
+        );
+        g.set(r, 0, Some(draw));
     }
 
     /// The codes run P tries: 0-15, then bits 4-11 added to 1 (RGB565) and
@@ -1842,25 +2119,12 @@ mod image {
         (tries, n)
     }
 
-    /// The placed texels as a 32 x 32 ARGB8888 texture, written twiddled
-    /// a word at a time straight into 2700G memory (no buffer: the 16 KiB
-    /// stack overflowed with one, run P's first emulator check).
-    fn p_texture(g: &mut Rig) -> Option<Texture> {
-        let at = g.pool.alloc(P_BYTES, 128)?;
-        for i in 0..P_SIDE * P_SIDE {
-            let (x, y) = untwiddle(i);
-            g.mem.store((at + 4 * i) as usize, &[p_texel(x, y)]);
-        }
-        g.mem.sync();
-        Some(Texture {
-            at,
-            code: 2,
-            format: format::ARGB8888 as u8,
-            u_mode: address::CLAMP as u8,
-            v_mode: address::CLAMP as u8,
-            linear: false,
-            levels: 1,
-        })
+    /// Run P's on-screen label for try `k` of `n`.
+    fn p_card(g: &mut Rig, run: &str, k: usize, n: usize, code: u32) {
+        let (mut l2, mut l3) = (heapless_name(), heapless_name());
+        let _ = write!(l2, "TRY {} OF {n}", k + 1);
+        let _ = write!(l3, "CODE 0X{code:X}");
+        clock_card(g, [run, l2.as_str(), l3.as_str()], 0xFF20_4020, 0);
     }
 
     #[inline(never)]
@@ -1868,146 +2132,32 @@ mod image {
         log!(
             "P3: render targets: 0x650 codes 0-15, then bits 4-11 added to 1 and 4-31 added to 6; a 32 x 32 texture of placed texels (red x * 8, green y * 8, blue 0xa0) drawn 1:1 into a target at a 32-bit picture's stride (128 bytes), 4 KiB of guard before it, 56 KiB after"
         );
-        let Some(tex) = p_texture(g) else {
+        let Some(tex) = p_texture(g, 2, p_texel) else {
             log!("  no memory for the texture");
             return;
         };
         let Some(area) = g.pool.alloc(P_AREA, 4096) else {
             log!("  no memory for the target");
-            let _ = g.pool.free(tex.at, P_BYTES);
+            p_texture_free(g, tex);
             return;
         };
-        let Some(mut r) = Renderer::new(&mut g.pool, P_SIDE as u16, P_SIDE as u16) else {
+        let Some(mut r) = Renderer::new(&mut g.pool, P_SQUARE.w as u16, P_SQUARE.h as u16) else {
             log!("  no renderer");
             let _ = g.pool.free(area, P_AREA);
-            let _ = g.pool.free(tex.at, P_BYTES);
+            p_texture_free(g, tex);
             return;
         };
-        let _ = r.set_background(Some(BLACK));
-        let side = P_SIDE as i32;
-        let draw = Draw::rect(
-            0,
-            0,
-            side,
-            side,
-            Paint::Texture {
-                tex,
-                uv: [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)],
-                tint: WHITE,
-            },
-        );
-        g.set(&mut r, 0, Some(draw));
-        let t = Target {
-            picture: Picture::packed(
-                area + P_BEFORE,
-                P_SIDE as u16,
-                P_SIDE as u16,
-                PixelFormat::Argb8888,
-            ),
-            x: 0,
-            y: 0,
-        };
+        p_setup(g, &mut r, P_SQUARE, tex);
         let (tries, n) = p_tries();
         let (mut hung, mut decoded, mut silent) = (0, 0, 0);
-        let fill = [P_FILL; 64];
         for (k, &code) in tries[..n].iter().enumerate() {
-            let (mut l2, mut l3) = (heapless_name(), heapless_name());
-            let _ = write!(l2, "TRY {} OF {n}", k + 1);
-            let _ = write!(l3, "CODE 0X{code:X}");
-            clock_card(
-                g,
-                ["RUN P TARGETS", l2.as_str(), l3.as_str()],
-                0xFF20_4020,
-                0,
-            );
+            p_card(g, "RUN P TARGETS", k, n, code);
             log!("  P3 try {} 0x650 0x{code:08x}", k + 1);
-            for off in (0..P_AREA).step_by(4 * fill.len()) {
-                g.mem.store((area + off) as usize, &fill);
-            }
-            g.mem.sync();
-            let hangs = g.hangs;
-            let ok = p_frame(g, &mut r, t, code);
-            let back = g.e.regs.read32(MBX + 0x650);
-            if g.hangs != hangs {
-                hung += 1;
-                log!("    HUNG (the core was reset); 0x650 reads 0x{back:x}");
-                continue;
-            }
-            if !ok {
-                log!("    not rendered; 0x650 reads 0x{back:x}");
-                continue;
-            }
-            // What changed: before the target, in its 4 KiB, after it.
-            let (mut before, mut inside, mut after) = (0u32, 0u32, 0u32);
-            let (mut first, mut last) = (None, 0u32);
-            for off in (0..P_AREA).step_by(4) {
-                let w = g.mem.load((area + off) as usize).unwrap_or(0);
-                if w != P_FILL {
-                    if off < P_BEFORE {
-                        before += 1;
-                    } else if off < P_BEFORE + P_BYTES {
-                        inside += 1;
-                    } else {
-                        after += 1;
-                    }
-                    first.get_or_insert(off);
-                    last = off;
-                }
-            }
-            silent += u32::from(first.is_none());
-            let rel = |o: u32| o as i32 - P_BEFORE as i32;
-            log!(
-                "    done; 0x650 reads 0x{back:x}; words changed: {before} before, {inside} in the target's 4 KiB, {after} after; first at {}, last at {} (bytes from the target)",
-                first.map_or(0, rel),
-                rel(last)
-            );
-            // Each layout in each order: how many pixels name their place.
-            let mut best = [(0u32, 0usize, 0usize); 3];
-            for (li, l) in P_LAYOUTS.iter().enumerate() {
-                for order in 0..P_ORDERS.len() {
-                    let score = p_score(&g.mem, area + P_BEFORE, l, order);
-                    if score > best[2].0 {
-                        best[2] = (score, li, order);
-                        best.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-                    }
-                }
-            }
-            for &(score, li, order) in best.iter().filter(|b| b.0 > 0) {
-                log!(
-                    "    {} {}: {score}/{} pixels in place",
-                    P_LAYOUTS[li].name,
-                    P_ORDERS[order],
-                    P_SIDE * P_SIDE
-                );
-            }
-            decoded += u32::from(best[0].0 >= P_SIDE * P_SIDE * 9 / 10);
-            // The raw words: the target's first 8, and the first 4 of the
-            // next three 128-byte lines.
-            let word = |k: u32| {
-                g.mem
-                    .load((area + P_BEFORE + 4 * k) as usize)
-                    .unwrap_or(0xDEAD_BEEF)
-            };
-            log!(
-                "    words: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
-                word(0),
-                word(1),
-                word(2),
-                word(3),
-                word(4),
-                word(5),
-                word(6),
-                word(7)
-            );
-            for line in 1..4 {
-                let k = line * P_SIDE;
-                log!(
-                    "    line {line}: {:08x} {:08x} {:08x} {:08x}",
-                    word(k),
-                    word(k + 1),
-                    word(k + 2),
-                    word(k + 3)
-                );
+            match p_try(g, &mut r, area, P_SQUARE, code) {
+                PTry::Hung => hung += 1,
+                PTry::Silent => silent += 1,
+                PTry::Done(d) => decoded += u32::from(d),
+                PTry::Missed => {}
             }
         }
         // The renderer's own code back for anything after.
@@ -2018,8 +2168,482 @@ mod image {
         g.set(&mut r, 0, None);
         let _ = r.release(&mut g.pool);
         let _ = g.pool.free(area, P_AREA);
-        let _ = g.pool.free(tex.at, P_BYTES);
+        p_texture_free(g, tex);
         clock_card(g, ["RUN P TARGETS", "DONE", ""], 0xFF20_4020, 3);
+    }
+
+    // ---- Run P2: dither, alpha, other target shapes --------------------------
+
+    /// Bytes a pixel and each channel's bits for layout code `c` (bits 2-0
+    /// of `0x650`, run P), and the channels of value `v`: red, green, blue,
+    /// alpha (0 bits where the layout has none).
+    fn p2_channels(c: u32, v: u32) -> (u32, [u32; 4], [u32; 4]) {
+        match c & 7 {
+            0 | 3 => (
+                2,
+                [5, 5, 5, 1],
+                [(v >> 10) & 31, (v >> 5) & 31, v & 31, (v >> 15) & 1],
+            ),
+            1 => (2, [5, 6, 5, 0], [(v >> 11) & 31, (v >> 5) & 63, v & 31, 0]),
+            2 | 7 => (
+                2,
+                [4, 4, 4, 4],
+                [(v >> 8) & 15, (v >> 4) & 15, v & 15, (v >> 12) & 15],
+            ),
+            4 => (
+                3,
+                [8, 8, 8, 0],
+                [(v >> 16) & 255, (v >> 8) & 255, v & 255, 0],
+            ),
+            _ => (
+                4,
+                [8, 8, 8, 8],
+                [(v >> 16) & 255, (v >> 8) & 255, v & 255, v >> 24],
+            ),
+        }
+    }
+
+    /// Run P2b, one code into the ramp: for each of red, green and blue,
+    /// each pixel's value against the grey level truncated to the
+    /// channel's bits: how many rounded up by one, how many did anything
+    /// else, and the threshold matrix over an 8 x 8 cell (the least
+    /// fraction of a step, in the channel's own units below its bit, that
+    /// rounded up there; `-` never), with the places where a larger
+    /// fraction stayed down (not a threshold) counted.
+    fn p2_dither(g: &mut Rig, area: u32, code: u32) {
+        let at = area + P_BEFORE;
+        let names = ["red", "green", "blue"];
+        for ch in 0..3 {
+            let (bytes, bits, _) = p2_channels(code, 0);
+            let lost = 8 - bits[ch];
+            let mut thr = [255u32; 64];
+            let mut down = [0u32; 64];
+            let (mut ups, mut odd) = (0u32, 0u32);
+            for y in 0..P_RAMP.h {
+                for x in 0..P_RAMP.w {
+                    let v = p_value(&g.mem, at, y * P_RAMP.stride + x * bytes, bytes);
+                    let got = p2_channels(code, v).2[ch];
+                    let lv = p_level(x, y);
+                    let (trunc, frac) = (lv >> lost, lv & ((1 << lost) - 1));
+                    let cell = ((y % 8) * 8 + x % 8) as usize;
+                    if got == trunc + 1 {
+                        ups += 1;
+                        thr[cell] = thr[cell].min(frac);
+                    } else if got == trunc {
+                        down[cell] = down[cell].max(frac + 1);
+                    } else {
+                        odd += 1;
+                    }
+                }
+            }
+            let mixed = (0..64)
+                .filter(|&k| thr[k] != 255 && down[k] > thr[k])
+                .count();
+            log!(
+                "    {} ({} bits): {ups} rounded up, {odd} other, {mixed} of 64 places not a threshold",
+                names[ch],
+                bits[ch]
+            );
+            if ups == 0 {
+                continue;
+            }
+            for row in 0..8 {
+                let mut line = heapless_name();
+                for k in 0..8 {
+                    let t = thr[row * 8 + k];
+                    let _ = if t == 255 {
+                        write!(line, "  -")
+                    } else {
+                        write!(line, " {t:2}")
+                    };
+                }
+                log!("     {}", line.as_str());
+            }
+        }
+    }
+
+    /// Run P2c's strips: their alpha (the colour `0x__C08040`).
+    const P2_ALPHAS: [u32; 4] = [0x00, 0x55, 0xAA, 0xFF];
+
+    /// P2a, one shape: codes 0-7 into `gm` (its own frame: one renderer
+    /// on the stack at a time). Returns (tries, hung).
+    #[inline(never)]
+    fn p2_shape(g: &mut Rig, area: u32, name: &str, gm: PGeom, tex: Texture) -> (u32, u32) {
+        let Some(mut r) = Renderer::new(&mut g.pool, gm.w as u16, gm.h as u16) else {
+            log!("  no renderer");
+            return (0, 0);
+        };
+        p_setup(g, &mut r, gm, tex);
+        let (mut decoded, mut hung) = (0, 0);
+        for code in 0..8u32 {
+            p_card(g, "RUN P2 SHAPES", code as usize, 8, code);
+            log!("  P2a {name} code {code}");
+            match p_try(g, &mut r, area, gm, code) {
+                PTry::Hung => hung += 1,
+                PTry::Done(d) => decoded += u32::from(d),
+                _ => {}
+            }
+        }
+        log!("  P2a {name}: {decoded} of 8 decoded");
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        (8, hung)
+    }
+
+    /// P2b: the ramp at codes 0-15. Returns (tries, hung).
+    #[inline(never)]
+    fn p2_ramp(g: &mut Rig, area: u32) -> (u32, u32) {
+        let Some(tex) = p_texture(g, 3, p_grey) else {
+            log!("  no memory for the texture");
+            return (0, 0);
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 64, 64) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return (0, 0);
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(0, 0, 64, 64, Paint::texture(tex))),
+        );
+        let mut hung = 0;
+        for code in 0..16u32 {
+            p_card(g, "RUN P2 DITHER", code as usize, 16, code);
+            log!("  P2b code {code}");
+            p_fill(g, area);
+            let hangs = g.hangs;
+            let ok = p_frame(g, &mut r, p_target(area, P_RAMP), code, None);
+            if g.hangs != hangs {
+                hung += 1;
+                log!("    HUNG (the core was reset)");
+                continue;
+            }
+            if !ok {
+                log!("    not rendered");
+                continue;
+            }
+            p2_dither(g, area, code);
+        }
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        (16, hung)
+    }
+
+    /// P2c: the alpha strips at codes 0-7. Returns (tries, hung).
+    #[inline(never)]
+    fn p2_alpha(g: &mut Rig, area: u32) -> (u32, u32) {
+        let Some(mut r) = Renderer::new(&mut g.pool, 32, 32) else {
+            log!("  no renderer");
+            return (0, 0);
+        };
+        let _ = r.set_background(Some(0));
+        for (k, &a) in P2_ALPHAS.iter().enumerate() {
+            let c = a << 24 | 0x00C0_8040;
+            let x = 8 * k as i32;
+            g.set(&mut r, k, Some(Draw::rect(x, 0, 8, 16, Paint::Flat(c))));
+            g.set(
+                &mut r,
+                4 + k,
+                Some(Draw {
+                    blend: Some((factor::SRC_ALPHA, factor::INV_SRC_ALPHA)),
+                    ..Draw::rect(x, 16, 8, 16, Paint::Flat(c))
+                }),
+            );
+        }
+        let mut hung = 0;
+        for code in 0..8u32 {
+            p_card(g, "RUN P2 ALPHA", code as usize, 8, code);
+            p_fill(g, area);
+            let hangs = g.hangs;
+            let ok = p_frame(g, &mut r, p_target(area, P_SQUARE), code, None);
+            if g.hangs != hangs {
+                hung += 1;
+                log!("  P2c code {code}: HUNG (the core was reset)");
+                continue;
+            }
+            if !ok {
+                log!("  P2c code {code}: not rendered");
+                continue;
+            }
+            p2_alpha_line(g, area, code);
+        }
+        for k in 0..8 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        (8, hung)
+    }
+
+    /// P2c's log line for `code`: each strip's pixel value at rows 8 (as
+    /// drawn) and 24 (blended), and the alpha field of each.
+    fn p2_alpha_line(g: &Rig, area: u32, code: u32) {
+        let (bytes, _, _) = p2_channels(code, 0);
+        let px = |x: u32, y: u32| {
+            p_value(
+                &g.mem,
+                area + P_BEFORE,
+                y * P_SQUARE.stride + x * bytes,
+                bytes,
+            )
+        };
+        let top: [u32; 4] = core::array::from_fn(|k| px(4 + 8 * k as u32, 8));
+        let low: [u32; 4] = core::array::from_fn(|k| px(4 + 8 * k as u32, 24));
+        let a = |v: u32| p2_channels(code, v).2[3];
+        log!(
+            "  P2c code {code}: as drawn {:x} {:x} {:x} {:x}; blended {:x} {:x} {:x} {:x}; alpha field as drawn {} {} {} {}, blended {} {} {} {}",
+            top[0],
+            top[1],
+            top[2],
+            top[3],
+            low[0],
+            low[1],
+            low[2],
+            low[3],
+            a(top[0]),
+            a(top[1]),
+            a(top[2]),
+            a(top[3]),
+            a(low[0]),
+            a(low[1]),
+            a(low[2]),
+            a(low[3])
+        );
+    }
+
+    /// P2d's registers: the render table's words with no known meaning,
+    /// and what the renderer leaves in each (`m3::start_table`; `0x64C`
+    /// and `0x6D0` it never writes: Dell's GLES writes 0 and 1).
+    const P2D_REGS: [(usize, u32); 6] = [
+        (0x61C, 0x0002_0004),
+        (0x644, 0),
+        (0x648, 0),
+        (0x64C, 0),
+        (0x6D0, 0),
+        (0x6D8, 0x0100_0000),
+    ];
+
+    /// P2d: each bit of each of [`P2D_REGS`] flipped alone (code 6, the
+    /// placed texture 1:1 into run P's target), one line a try: whether any
+    /// bit changes the target's order (twiddled: render-to-texture) or
+    /// anything else. The register is put back after each try. Returns
+    /// (tries, hung, tries that read other than ARGB8888 rows).
+    #[inline(never)]
+    fn p2_bits(g: &mut Rig, area: u32, tex: Texture) -> (u32, u32, u32) {
+        let Some(mut r) = Renderer::new(&mut g.pool, P_SQUARE.w as u16, P_SQUARE.h as u16) else {
+            log!("  no renderer");
+            return (0, 0, 0);
+        };
+        p_setup(g, &mut r, P_SQUARE, tex);
+        let (mut tries, mut hung, mut other) = (0, 0, 0);
+        for (ri, &(reg, base)) in P2D_REGS.iter().enumerate() {
+            for bit in 0..32u32 {
+                let v = base ^ 1 << bit;
+                p_card(g, "RUN P2 BITS", ri * 32 + bit as usize, 6 * 32, v);
+                log!("  P2d 0x{reg:03x} = 0x{v:08x} (bit {bit})");
+                tries += 1;
+                match p_try_with(g, &mut r, area, P_SQUARE, 6, Some((reg, v)), true) {
+                    PTry::Hung => hung += 1,
+                    PTry::Done(true) => {}
+                    _ => other += 1,
+                }
+                g.e.regs.write32(MBX + reg, base);
+            }
+        }
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        (tries, hung, other)
+    }
+
+    #[inline(never)]
+    fn target_formats2(g: &mut Rig) {
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("P2: no memory for the target");
+            return;
+        };
+        let (mut tries, mut hung) = (0u32, 0u32);
+        log!(
+            "P2a: target shapes: codes 0-7 into 16 x 16 at a 96-byte stride and 32 x 16 at 256 bytes, the placed texture 1:1"
+        );
+        let tex = p_texture(g, 2, p_texel);
+        if let Some(tex) = tex {
+            for (name, gm) in [("16 x 16", P_SMALL), ("32 x 16", P_WIDE)] {
+                let (t, h) = p2_shape(g, area, name, gm, tex);
+                tries += t;
+                hung += h;
+            }
+        } else {
+            log!("  no memory for the texture");
+        }
+        log!(
+            "P2b: dither: a 64 x 64 grey ramp (level 64 + x / 8 + 8 * (y / 8): every level 64-127 at every place of an 8 x 8 cell), codes 0-15; thresholds in each channel's own fraction of a step (0 to 2^(8 - bits) - 1)"
+        );
+        let (t, h) = p2_ramp(g, area);
+        tries += t;
+        hung += h;
+        log!(
+            "P2c: alpha: four strips 0x__c08040 at alpha 0x00, 0x55, 0xaa, 0xff over a background of 0x00000000, drawn as they are (rows 0-15) and blended by their alpha (rows 16-31); codes 0-7; each strip's pixel value at rows 8 and 24"
+        );
+        let (t, h) = p2_alpha(g, area);
+        tries += t;
+        hung += h;
+        log!(
+            "P2d: render-table bits: each bit of 0x61c, 0x644, 0x648, 0x64c, 0x6d0 and 0x6d8 flipped alone from what the renderer leaves (0x20004, 0, 0, 0, 0, 0x1000000), code 6, run P's placed texture into its 32 x 32 target; one line a try"
+        );
+        if let Some(tex) = tex {
+            let (t, h, o) = p2_bits(g, area, tex);
+            tries += t;
+            hung += h;
+            log!("  P2d: {t} tries, {h} hung, {o} not plain ARGB8888 rows");
+            p_texture_free(g, tex);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!("P2: {tries} tries, {hung} hung");
+        let _ = g.pool.free(area, P_AREA);
+        clock_card(g, ["RUN P2", "DONE", ""], 0xFF20_4020, 3);
+    }
+
+    // ---- Run P2W: a 24-bit picture and dithered 16 bits on screen -----------
+
+    /// Run P2W's picture: eight colour bars, then ramps from black to
+    /// white, red, green and blue, across the screen.
+    fn p2w_scene(g: &mut Rig, r: &mut Renderer) {
+        const BARS: [u32; 8] = [
+            0xFFFF_FFFF,
+            0xFFFF_FF00,
+            0xFF00_FFFF,
+            0xFF00_FF00,
+            0xFFFF_00FF,
+            0xFFFF_0000,
+            0xFF00_00FF,
+            0xFF00_0000,
+        ];
+        for (k, &c) in BARS.iter().enumerate() {
+            g.set(
+                r,
+                k,
+                Some(Draw::rect(60 * k as i32, 0, 60, 320, Paint::Flat(c))),
+            );
+        }
+        for (k, &c) in [0xFFFF_FFFFu32, 0xFFFF_0000, 0xFF00_FF00, 0xFF00_00FF]
+            .iter()
+            .enumerate()
+        {
+            let y = 320 + 80 * k as i32;
+            g.set(
+                r,
+                8 + k,
+                Some(Draw::rect(
+                    0,
+                    y,
+                    480,
+                    80,
+                    Paint::Gouraud([BLACK, c, c, BLACK]),
+                )),
+            );
+        }
+    }
+
+    /// The graphics plane on `at` (480 x 640, `stride` bytes a row) in
+    /// display format `fmt` (`GSCTRL` bits 30-27: run D's codes, 6 RGB888
+    /// included, which the display driver doesn't name).
+    fn p2w_show(regs: &mut Mmio, at: u32, stride: u32, fmt: u32) {
+        let plane = Plane {
+            format: PlaneFormat::Argb8888,
+            width: 480,
+            height: 640,
+            offset: at as usize,
+            stride: stride as usize,
+        };
+        let gamma = regs.read32(dreg::GSCTRL) & (1 << 26);
+        for (off, v) in plane.registers() {
+            let v = match off {
+                dreg::GSCTRL => (v & !(0xF << 27)) | fmt << 27 | gamma,
+                dreg::GSCADR => Layer::SOLO.scadr(v),
+                dreg::GBBASE => Layer::SOLO.bbase(v),
+                _ => v,
+            };
+            regs.write32(off, v);
+        }
+    }
+
+    #[inline(never)]
+    fn target_watch(g: &mut Rig) {
+        log!(
+            "P2W: the owner watches four pictures, each until a button (30 s at most): 1 rendered 24-bit (0x650 4) shown as RGB888 (GSCTRL format 6, 1920-byte rows); 2 RGB565 (0x650 1); 3 RGB565 dithered (0x650 9); 4 ARGB8888 (0x650 6)"
+        );
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        p2w_scene(g, &mut r);
+        let at = map::BACKGROUND.at;
+        let steps: [(&str, u32, u32, u32); 4] = [
+            ("24-BIT", 4, 1920, 6),
+            ("16-BIT PLAIN", 1, 960, PlaneFormat::Rgb565 as u32),
+            ("16-BIT DITHERED", 9, 960, PlaneFormat::Rgb565 as u32),
+            ("32-BIT", 6, 1920, PlaneFormat::Argb8888 as u32),
+        ];
+        for (k, &(name, code, stride, fmt)) in steps.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "STEP {} OF 4", k + 1);
+            clock_card(g, [l1.as_str(), name, "BUTTON: NEXT"], 0xFF20_2040, 3);
+            let bytes = if code == 4 {
+                3
+            } else if stride == 960 {
+                2
+            } else {
+                4
+            };
+            let t = Target {
+                picture: Picture {
+                    at,
+                    stride,
+                    w: 480,
+                    h: 640,
+                    format: if stride == 960 {
+                        PixelFormat::Rgb565
+                    } else {
+                        PixelFormat::Argb8888
+                    },
+                },
+                x: 0,
+                y: 0,
+            };
+            let t0 = g.clock.now_us();
+            let ok = p_frame(g, &mut r, t, code, None);
+            let us = g.clock.now_us().wrapping_sub(t0);
+            log!(
+                "  P2W step {}: {name} (0x650 {code}, {bytes} bytes a pixel, {stride}-byte rows, display format {fmt}): rendered {ok} in {us} us",
+                k + 1
+            );
+            p2w_show(&mut g.e.regs, at, stride, fmt);
+            g.arm_button();
+            let w0 = rt::ticks();
+            while us_since(w0) < WATCH_US && !g.button() {
+                rt::check_in();
+            }
+            log!(
+                "    shown {} s{}",
+                us_since(w0) / 1_000_000,
+                if us_since(w0) < WATCH_US {
+                    ", a button"
+                } else {
+                    ", no button (30 s)"
+                }
+            );
+            let _ = show_screen(&mut g.e.regs);
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        for k in 0..12 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!("P2W: done");
+        clock_card(g, ["RUN P2W", "DONE", ""], 0xFF20_2040, 3);
     }
 
     // ---- Run C: the video plane (the owner watches) --------------------------
@@ -4157,10 +4781,10 @@ mod image {
             rp_hal_x51v::devices::kept_start();
             log!("{MARKER}: the log kept in SRAM from here");
         }
-        // The CPU's own clocks and SDRAM timing as this run found them (the
-        // slow state since run H2's watchdog reset survived every 2700G
-        // restart run Q tried: is it the PXA's clock Windows Mobile chose
-        // at its boot?), and the core clock counted.
+        // The CPU's own clocks and SDRAM timing as this run found them
+        // (asked when the 37.9 ms 3D at Windows Mobile's clock was taken
+        // for a slow state: is it the PXA's clock Windows Mobile chose at
+        // its boot? It wasn't, run K), and the core clock counted.
         {
             let raw = rp_hal_pxa27x::clocks::read();
             log!(
@@ -4211,6 +4835,10 @@ mod image {
             "{MARKER}: run {}, MBXCLK 0x{clk0:x}",
             if PROBES {
                 "B (texture-word probes)"
+            } else if TARGETS2 {
+                "P2 (the target formats' follow-up: two more shapes, the dither matrix per layout, what each layout stores for alpha)"
+            } else if TARGETS_WATCH {
+                "P2W (watched: a rendered 24-bit picture shown as RGB888, RGB565 plain and dithered, ARGB8888)"
             } else if TARGETS {
                 "P (the 3D core's target formats: 0x650 codes 0-15 and bits 4-31, each read back and decoded)"
             } else if PLANES {
@@ -4229,6 +4857,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if FINGERPRINT {
+                "W (the fingerprint: every PXA and 2700G register named, then the speed at Windows Mobile's clock)"
             } else if SLOW {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
@@ -4279,6 +4909,10 @@ mod image {
         }
         if PROBES {
             probes(&mut g);
+        } else if TARGETS2 {
+            target_formats2(&mut g);
+        } else if TARGETS_WATCH {
+            target_watch(&mut g);
         } else if TARGETS {
             target_formats(&mut g);
         } else if PLANES {
@@ -4295,6 +4929,9 @@ mod image {
             freeze(&mut g);
         } else if RESCUE {
             rescue(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if FINGERPRINT {
+            fingerprint(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if SLOW {
             slow_state(&mut g);
@@ -5042,6 +5679,167 @@ mod image {
         r3d
     }
 
+    /// Run W (see [`FINGERPRINT`]).
+    #[inline(never)]
+    fn fingerprint(g: &mut Rig) {
+        log!(
+            "W: the fingerprint: every whitelisted PXA register, the CPU's coprocessor state, every named 2700G register, then the speed at Windows Mobile's clock (nothing written but the test's own 2700G memory)"
+        );
+        let mut v = [0u32; diag::COUNT];
+        diag::snapshot(&mut v);
+        let mut i = 0;
+        for (group, regs) in diag::GROUPS {
+            let mut line = heapless_name();
+            let _ = write!(line, "W PXA {group}:");
+            for reg in *regs {
+                if line.n > 80 {
+                    log!("{}", line.as_str());
+                    line = heapless_name();
+                    let _ = write!(line, "W PXA {group}:");
+                }
+                let _ = write!(line, " {} 0x{:x}", reg.name, v[i]);
+                i += 1;
+            }
+            log!("{}", line.as_str());
+        }
+        let cp = diag::coprocessors();
+        log!(
+            "W CPU: ID 0x{:08x} control 0x{:08x} aux 0x{:x} CPAR 0x{:x} CLKCFG 0x{:x}",
+            cp.id,
+            cp.control,
+            cp.aux,
+            cp.cpar,
+            cp.clkcfg
+        );
+        dump_all(&mut g.e.regs, "W: every named 2700G register");
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        if found.0 != ClockSpeed::WM.pll || found.1 != 0x2484_2481 {
+            log!(
+                "W: not Windows Mobile's clock and bus timing (COREPLL 0x{:x}, MSC1 0x{:x}): no speed measured",
+                found.0,
+                found.1
+            );
+            return;
+        }
+        let Some(mut c) = clock_rig(g) else {
+            log!("W: no memory for the speed test");
+            return;
+        };
+        clock_card(g, ["RUN W", "FINGERPRINT", "MEASURING"], 0xFF20_2040, 1);
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        // Then the whole MBX core reset, as the renderer's hang recovery
+        // does (`reset_core`): runs G4b and G4c ran faster at this clock
+        // only after a recovered 2D hang (3D 34.3 against 37.9 ms, the read
+        // 31.8 against 38.1, the 2D fill 6.18 against 6.54): something
+        // in the MBX block using memory in the state the run starts in?
+        let mut r3d = [[0u32; 3]; 2];
+        let mut read = [[0u32; 3]; 2];
+        for pass in 0..2 {
+            if pass == 1 {
+                let (st, en) = (
+                    g.e.regs.read32(MBX + reg::STATUS),
+                    g.e.regs.read32(MBX + reg::ENABLE),
+                );
+                g.e.reset(rt::delay_us);
+                log!(
+                    "W: the MBX core reset (status 0x{st:08x} enable 0x{en:08x} before; status 0x{:08x} enable 0x{:08x} after)",
+                    g.e.regs.read32(MBX + reg::STATUS),
+                    g.e.regs.read32(MBX + reg::ENABLE)
+                );
+            }
+            for k in 0..3 {
+                let r = clock_check(g, &mut c, false, 4 + 2 * (3 * pass + k) as u32);
+                clock_log(WM_STEP, Some(0), &r);
+                r3d[pass][k] = r.render_us;
+                read[pass][k] = r.read_us;
+            }
+        }
+        log!(
+            "W: at Windows Mobile's clock (cores / 2; every run starts at 37.9 ms; 34.3 ms seen only after G4c's ending): 3D {} / {} / {} us and read {} / {} / {} us as found; after the MBX core reset 3D {} / {} / {} us and read {} / {} / {} us",
+            r3d[0][0],
+            r3d[0][1],
+            r3d[0][2],
+            read[0][0],
+            read[0][1],
+            read[0][2],
+            r3d[1][0],
+            r3d[1][1],
+            r3d[1][2],
+            read[1][0],
+            read[1][1],
+            read[1][2]
+        );
+        // W2: G4c's ending, the only way the faster state has come so far
+        // (G4b and G4c: a step with the cores at divide 1 at 74.75 MHz or
+        // below, then Windows Mobile's clock put back, the first control
+        // BAD with a 2D hang, then 3D 34.3 ms with every register read
+        // back as Windows Mobile's). Every named register dumped after, to
+        // diff against the dump above.
+        clock_card(
+            g,
+            ["RUN W", "G4C'S ENDING", "65 + 74.75 MHZ / 1"],
+            0xFF20_2040,
+            1,
+        );
+        let mut seed = 0x100;
+        for s in [
+            ClockStep {
+                m: 20,
+                n: 4,
+                p: 0,
+                div: 1,
+                cl3: None,
+                restart: false,
+            },
+            ClockStep {
+                m: 23,
+                n: 4,
+                p: 0,
+                div: 1,
+                cl3: None,
+                restart: false,
+            },
+        ] {
+            let lock = clock_apply(g, s);
+            clock_readback(g);
+            let r = if lock.is_some() {
+                clock_check(g, &mut c, false, seed)
+            } else {
+                ClockResult::default()
+            };
+            seed += 2;
+            clock_log(s, lock, &r);
+            clock_restore(&mut g.e.regs);
+            rt::delay_us(10_000);
+            let _ = clock_control(g, &mut c, seed, "after the step");
+            seed += 2;
+        }
+        let mut after = [[0u32; 2]; 3];
+        for a in &mut after {
+            let r = clock_check(g, &mut c, false, seed);
+            seed += 2;
+            clock_log(WM_STEP, Some(0), &r);
+            *a = [r.render_us, r.read_us];
+        }
+        clock_readback(g);
+        log!(
+            "W2: after G4c's ending at Windows Mobile's clock: 3D {} / {} / {} us, read {} / {} / {} us",
+            after[0][0],
+            after[1][0],
+            after[2][0],
+            after[0][1],
+            after[1][1],
+            after[2][1]
+        );
+        dump_all(
+            &mut g.e.regs,
+            "W2: every named 2700G register after G4c's ending",
+        );
+        clock_rig_free(g, c);
+        clock_card(g, ["RUN W", "DONE", ""], 0xFF10_6020, 3);
+    }
+
     /// Run Q (see [`SLOW`]).
     #[inline(never)]
     fn slow_state(g: &mut Rig) {
@@ -5117,7 +5915,7 @@ mod image {
             after[k] = slow_measure(g, &mut c, &mut seed, when);
         }
         log!(
-            "Q: the 3D render at Windows Mobile's clock (cores / 2; slow 37.9 ms, normal 34.3 ms): before {} us; after 108.33 CL2 {} us; after the memory restart {} us; after 108.33 CL3 with the restart {} us",
+            "Q: the 3D render at Windows Mobile's clock (cores / 2; every run starts at 37.9 ms; 34.3 ms seen only after G4c's ending): before {} us; after 108.33 CL2 {} us; after the memory restart {} us; after 108.33 CL3 with the restart {} us",
             before,
             after[0],
             after[1],
