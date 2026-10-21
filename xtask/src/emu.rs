@@ -3431,6 +3431,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_p2w,
             &[
                 "  P2W step 1: 24-BIT (0x650 4",
+                "    the black bar after the render: 0 of 19200 pixels not black",
+                "    planes: GSCTRL 0x",
                 "  P2W step 4: 32-BIT (0x650 6",
                 "P2W: done",
                 "everything given back: true",

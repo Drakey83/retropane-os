@@ -2578,6 +2578,31 @@ mod image {
         }
     }
 
+    /// The black bar (x 420-479, y 0-319) of P2W's picture at `at` read
+    /// back from memory: every pixel that isn't black counted, the first
+    /// four logged. The owner saw white specks there on screen in the 24-
+    /// and 32-bit pictures (more in 32), none in the 16-bit ones: in memory
+    /// (the render or the memory) or added at scan-out?
+    fn p2w_bar(g: &Rig, at: u32, stride: u32, bytes: u32, when: &str) {
+        let (mut n, mut first) = (0u32, heapless_name());
+        for y in 0..320 {
+            for x in 420..480 {
+                let v = p_value(&g.mem, at, y * stride + x * bytes, bytes);
+                let rgb = if bytes == 4 { v & 0x00FF_FFFF } else { v };
+                if rgb != 0 {
+                    if n < 4 {
+                        let _ = write!(first, " ({x},{y}) 0x{v:x}");
+                    }
+                    n += 1;
+                }
+            }
+        }
+        log!(
+            "    the black bar {when}: {n} of 19200 pixels not black{}",
+            first.as_str()
+        );
+    }
+
     #[inline(never)]
     fn target_watch(g: &mut Rig) {
         log!(
@@ -2629,7 +2654,21 @@ mod image {
                 "  P2W step {}: {name} (0x650 {code}, {bytes} bytes a pixel, {stride}-byte rows, display format {fmt}): rendered {ok} in {us} us",
                 k + 1
             );
+            p2w_bar(g, at, stride, bytes, "after the render");
             p2w_show(&mut g.e.regs, at, stride, fmt);
+            log!(
+                "    planes: GSCTRL 0x{:08x} GBBASE 0x{:08x} GDRCTRL 0x{:08x} VSCTRL 0x{:08x} VSCADR 0x{:08x} VBBASE 0x{:08x} HCCTRL 0x{:08x}",
+                g.e.regs.read32(dreg::GSCTRL),
+                g.e.regs.read32(dreg::GBBASE),
+                g.e.regs.read32(dreg::GDRCTRL),
+                g.e.regs.read32(lreg::VSCTRL),
+                g.e.regs.read32(lreg::VSCADR),
+                g.e.regs.read32(lreg::VBBASE),
+                g.e.regs.read32(lreg::HCCTRL)
+            );
+            // A second before a press counts: in the owner's third run a
+            // press meant for one picture also ended the next at once.
+            rt::delay_us(1_000_000);
             g.arm_button();
             let w0 = rt::ticks();
             while us_since(w0) < WATCH_US && !g.button() {
@@ -2644,6 +2683,7 @@ mod image {
                     ", no button (30 s)"
                 }
             );
+            p2w_bar(g, at, stride, bytes, "after it was shown");
             let _ = show_screen(&mut g.e.regs);
         }
         g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
