@@ -155,7 +155,9 @@ watching.
   99.67, 2D likewise); the CPU's bus to it capped at ~33 MB/s writes from
   99.67 MHz up. A stopped display (`DSIG` 0) is brought back by the
   rebuild (run Z) without a soft reset; G4's dark display was an underrun
-  (`DINTRS` bit 4), G5's start-up one was not. Details: 2700g.md.
+  (`DINTRS` bit 4), G5's start-up one was not. `DSIG` (the output
+  signature) reads 0 for an all-black picture (run N): it tells a stopped
+  display only with non-black pixels on screen. Details: 2700g.md.
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),
