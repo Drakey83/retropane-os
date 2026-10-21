@@ -155,6 +155,7 @@ pub(crate) fn after_write(text: &[u8]) {
                 rca: s.sd.rca as u16,
                 high_capacity: s.sd.flags & 1 != 0,
                 wide: s.sd.flags & 2 != 0,
+                blocks: s.sd.blocks,
             },
             cf_sectors: s.cf_sectors,
         };

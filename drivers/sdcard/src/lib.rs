@@ -137,6 +137,10 @@ pub enum Error {
     BadInterfaceCondition,
     /// The card reported an error in its status.
     CardStatus(u32),
+    /// The blocks asked for aren't all on the card (past its capacity, or
+    /// the capacity is unknown): refused before any command, since an
+    /// SDSC card's byte address would wrap onto another block.
+    OutOfRange,
 }
 
 impl Error {
@@ -150,6 +154,7 @@ impl Error {
             Self::InitTimeout => "init timeout",
             Self::BadInterfaceCondition => "bad CMD8 echo",
             Self::CardStatus(_) => "card status error",
+            Self::OutOfRange => "block out of range",
         }
     }
 }
@@ -399,6 +404,16 @@ impl<H: SdHost> SdCard<H> {
         self.rca
     }
 
+    /// Checks `count` blocks from `lba` lie on the card. Every public read
+    /// and write starts here: below it, `address` may wrap.
+    fn on_card(&self, lba: u32, count: usize) -> Result<(), Error> {
+        let fits = u32::try_from(count)
+            .ok()
+            .and_then(|n| lba.checked_add(n))
+            .is_some_and(|end| end <= self.blocks);
+        if fits { Ok(()) } else { Err(Error::OutOfRange) }
+    }
+
     fn address(&self, lba: u32) -> u32 {
         if self.high_capacity {
             lba
@@ -411,6 +426,7 @@ impl<H: SdHost> SdCard<H> {
     // One copy, however many callers (ADR-0005 rule 8: size).
     #[inline(never)]
     pub fn read(&mut self, lba: u32, buf: &mut [u8; BLOCK]) -> Result<(), Error> {
+        self.on_card(lba, 1)?;
         let first = self.read_once(lba, buf);
         if !matches!(first, Err(Error::Host(_))) {
             return first;
@@ -472,6 +488,7 @@ impl<H: SdHost> SdCard<H> {
         buf: &mut [u8],
         wait: &mut dyn FnMut(),
     ) -> Result<(), Error> {
+        self.on_card(lba, buf.len() / BLOCK)?;
         let blocks = (buf.len() / BLOCK) as u32;
         if blocks > 1 && self.touches_weak(lba, blocks) {
             // A range a multi-block read failed on before: block by block,
@@ -608,6 +625,7 @@ impl<H: SdHost> SdCard<H> {
 
     /// Writes block `lba` (512 bytes).
     pub fn write(&mut self, lba: u32, buf: &[u8; BLOCK]) -> Result<(), Error> {
+        self.on_card(lba, 1)?;
         let addr = self.address(lba);
         check(
             self.host
@@ -641,6 +659,7 @@ impl<H: SdHost> SdCard<H> {
     #[inline(never)]
     pub fn write_many(&mut self, lba: u32, buf: &[u8]) -> Result<(), Error> {
         assert_eq!(buf.len() % BLOCK, 0, "not a whole number of blocks");
+        self.on_card(lba, buf.len() / BLOCK)?;
         if buf.len() > BLOCK && self.host.can_write_multiple() {
             self.announce_write((buf.len() / BLOCK) as u32);
             let addr = self.address(lba);
@@ -707,21 +726,25 @@ impl<H: SdHost> SdCard<H> {
     pub fn into_inner(self) -> H {
         self.host
     }
+
+    /// A card error as the block-device interface names it (the card's
+    /// own reason kept for [`last_error`](Self::last_error)).
+    fn block_error(&mut self, e: Error) -> BlockError {
+        if e == Error::OutOfRange {
+            return BlockError::OutOfRange;
+        }
+        self.last_error = Some(e);
+        BlockError::Device
+    }
 }
 
 impl<H: SdHost> BlockDevice for SdCard<H> {
     fn read_blocks(&mut self, lba: u32, buf: &mut [u8]) -> Result<(), BlockError> {
-        self.read_many(lba, buf).map_err(|e| {
-            self.last_error = Some(e);
-            BlockError::Device
-        })
+        self.read_many(lba, buf).map_err(|e| self.block_error(e))
     }
 
     fn write_blocks(&mut self, lba: u32, buf: &[u8]) -> Result<(), BlockError> {
-        self.write_many(lba, buf).map_err(|e| {
-            self.last_error = Some(e);
-            BlockError::Device
-        })
+        self.write_many(lba, buf).map_err(|e| self.block_error(e))
     }
 }
 
@@ -1312,6 +1335,56 @@ mod tests {
         let cmds: Vec<u8> = host.log.iter().map(|&(i, _)| i).collect();
         assert_eq!(cmds, [0, 8, 55, 41, 55, 41, 55, 41, 2, 3, 9, 7, 17]); // no CMD16
         assert_eq!(host.log.last(), Some(&(17, 3)));
+    }
+
+    /// Blocks past the card's end are refused before any command, by all
+    /// four entry points and the block-device interface; an SDSC card's
+    /// byte address would otherwise wrap onto block 0 (2^23 blocks of 512
+    /// bytes is 2^32).
+    #[test]
+    fn blocks_past_the_end_are_refused_without_a_command() {
+        for sdhc in [false, true] {
+            let mut card = SdCard::init(FakeCard::new(sdhc, sdhc)).unwrap();
+            let end = card.blocks();
+            let before = card.host().log.len();
+            let mut one = [0u8; BLOCK];
+            let mut two = [0u8; 2 * BLOCK];
+            for lba in [end, end + 1, 1 << 23, u32::MAX] {
+                assert_eq!(card.read(lba, &mut one), Err(Error::OutOfRange));
+                assert_eq!(card.write(lba, &one), Err(Error::OutOfRange));
+                assert_eq!(card.read_many(lba, &mut two), Err(Error::OutOfRange));
+                assert_eq!(card.write_many(lba, &two), Err(Error::OutOfRange));
+            }
+            // A run that starts on the card and ends past it.
+            assert_eq!(card.read_many(end - 1, &mut two), Err(Error::OutOfRange));
+            assert_eq!(card.write_many(end - 1, &two), Err(Error::OutOfRange));
+            assert_eq!(
+                BlockDevice::read_blocks(&mut card, end, &mut two),
+                Err(BlockError::OutOfRange)
+            );
+            assert_eq!(
+                BlockDevice::write_blocks(&mut card, end - 1, &two),
+                Err(BlockError::OutOfRange)
+            );
+            assert_eq!(card.last_error(), None, "not a card failure");
+            assert_eq!(card.host().log.len(), before, "no command sent");
+            // The last block itself is fine (the fake holds 8 blocks; the
+            // SDSC fake's capacity is exactly that).
+            if !sdhc {
+                card.read(end - 1, &mut one).unwrap();
+                assert_eq!(one[0], (end - 1) as u8);
+            }
+        }
+    }
+
+    /// A card whose capacity couldn't be read refuses every transfer.
+    #[test]
+    fn an_unknown_capacity_refuses_transfers() {
+        let mut card = SdCard::init(FakeCard::new(true, true)).unwrap();
+        card.blocks = 0;
+        let mut one = [0u8; BLOCK];
+        assert_eq!(card.read(0, &mut one), Err(Error::OutOfRange));
+        assert_eq!(card.write(0, &one), Err(Error::OutOfRange));
     }
 
     #[test]

@@ -124,6 +124,7 @@ fn an_sd_sector_goes_through_the_same_registers_as_the_drivers() {
             rca: 0xB368,
             high_capacity,
             wide,
+            blocks: lba + 1,
         };
         assert!(sd_write(&mut ours, card, lba, &sector()));
         assert_eq!(
@@ -150,7 +151,21 @@ fn sd_refusals_and_timeouts_are_false_never_a_hang() {
         rca: 1,
         high_capacity: true,
         wide: true,
+        blocks: 8,
     };
+    // Past the card's end: refused before any command (an SDSC card's
+    // address would wrap: 2^23 blocks of 512 bytes is block 0 again).
+    for high_capacity in [false, true] {
+        let card = Sd {
+            high_capacity,
+            ..card
+        };
+        for lba in [8, 1 << 23, u32::MAX] {
+            let mut bus = Bus::new();
+            assert!(!sd_write(&mut bus, card, lba, &sector()));
+            assert!(writes(&bus.trace()).is_empty(), "no register written");
+        }
+    }
     // No response.
     let mut bus = Bus::new();
     bus.stat = mmc::STAT_TOUT_RES;

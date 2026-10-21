@@ -73,6 +73,9 @@ pub struct Sd {
     pub high_capacity: bool,
     /// The 4-bit bus.
     pub wide: bool,
+    /// Capacity in blocks: writes past it are refused (an SDSC card's byte
+    /// address would wrap onto another block).
+    pub blocks: u32,
 }
 
 fn wait<B: RegisterBus>(regs: &mut B, offset: usize, mask: u32, limit: u32) -> Option<u32> {
@@ -120,6 +123,9 @@ pub fn sd_write<B: RegisterBus + RegisterBus8>(
     lba: u32,
     sector: &[u8; SECTOR],
 ) -> bool {
+    if lba >= card.blocks {
+        return false;
+    }
     let addr = if card.high_capacity {
         lba
     } else {
