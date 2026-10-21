@@ -557,10 +557,12 @@ pub const BUDGETS: &[Budget] = &[
     // now (every run keeps one, quality audit C24), so the image no longer
     // carries the SD driver and the file systems; 109.5 KiB measured,
     // + ~10%; zeroed RAM 26 -> 22 KiB (no reservation scratch).
+    // Zeroed RAM ratcheted 22 -> 24 KiB on 2026-10-21 (test image): run
+    // FF's 2D renderer frame (`FF_FRAME`), 22,840 B measured.
     Budget {
         image: "rp-gpubench",
         max_load: 117 * 1024,
-        max_zero: 22 * 1024,
+        max_zero: 24 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
