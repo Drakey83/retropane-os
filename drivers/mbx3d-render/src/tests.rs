@@ -1254,6 +1254,43 @@ fn dither_and_forced_alpha_bit_as_run_p2_measured() {
     }
 }
 
+/// `rp-gpubench` run T (X51v, 2026-10-21): `0x644` bit 0 halves the rows
+/// on write-out, bit 1 the columns, each pixel the average of the rendered
+/// ones; with run P's placed colours (red `x * 8`, green `y * 8`) the
+/// device wrote row 0, 1 as green `0x04`, `0x14` (bit 0) and pixel 0, 1 as
+/// red `0x04`, `0x14` (bit 1).
+#[test]
+fn write_out_downsample_as_run_t_measured() {
+    for (v, want) in [
+        (1u32, [0xFF00_04A0u32, 0xFF08_04A0, 0xFF00_14A0]),
+        (2, [0xFF04_00A0, 0xFF14_00A0, 0xFF04_08A0]),
+        (3, [0xFF04_04A0, 0xFF14_04A0, 0xFF04_14A0]),
+    ] {
+        let mut g = rig(32, 32);
+        let texels: Vec<u32> = (0..1024u32)
+            .map(|i| 0xFF00_00A0 | ((i % 32) << 3) << 16 | ((i / 32) << 3) << 8)
+            .collect();
+        let tex = upload32(&mut g.pool, &mut g.mem, 2, &texels).unwrap();
+        g.set(0, Some(Draw::rect(0, 0, 32, 32, Paint::texture(tex))));
+        let pic = Picture::packed(0x00A0_0000, 32, 32, PixelFormat::Argb8888);
+        let t = Target {
+            picture: pic,
+            x: 0,
+            y: 0,
+        };
+        g.frame_into(t);
+        g.gpu.write32(MBX + 0x644, v);
+        g.r.invalidate_all();
+        g.frame_into(t);
+        let px = |x: u32, y: u32| {
+            g.mem
+                .load((pic.at + y * pic.stride + 4 * x) as usize)
+                .unwrap()
+        };
+        assert_eq!([px(0, 0), px(1, 0), px(0, 1)], want, "0x644 = {v}");
+    }
+}
+
 #[test]
 fn slot_words_at_finds_the_texture_words_set_stored() {
     let mut g = rig(480, 640);

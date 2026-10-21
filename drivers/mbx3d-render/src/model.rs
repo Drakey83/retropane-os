@@ -287,12 +287,28 @@ impl Gpu {
             // matrix (alpha not dithered: P2's alpha was exact).
             let format = self.reg(0x650) & 7;
             let dither = self.reg(0x650) & 8 != 0;
-            for py in 0..m3::TILE_H {
-                for px in 0..m3::TILE_W {
-                    let c = tile.c[(py * m3::TILE_W + px) as usize];
-                    let x = tile.x + px;
-                    let row = target + (tile.y + py) * stride;
-                    let t = dither.then(|| DITHER[((tile.y + py) % 4 * 4 + x % 4) as usize]);
+            // `0x644` bit 0 / bit 1 (run T): the write-out halves the rows /
+            // the columns, each pixel the average of the two (both: of
+            // four) rendered ones; an odd sum truncated (assumed).
+            let (bx, by) = ((self.reg(0x644) >> 1) & 1, self.reg(0x644) & 1);
+            for py in 0..m3::TILE_H >> by {
+                for px in 0..m3::TILE_W >> bx {
+                    let mut sum = [0u32; 4];
+                    for j in 0..1 << by {
+                        for i in 0..1 << bx {
+                            let v =
+                                tile.c[(((py << by) + j) * m3::TILE_W + (px << bx) + i) as usize];
+                            for (k, s) in sum.iter_mut().enumerate() {
+                                *s += (v >> (8 * k)) & 0xFF;
+                            }
+                        }
+                    }
+                    let n = bx + by;
+                    let c = (0..4).fold(0, |c, k| c | (sum[k] >> n) << (8 * k));
+                    let x = (tile.x >> bx) + px;
+                    let y = (tile.y >> by) + py;
+                    let row = target + y * stride;
+                    let t = dither.then(|| DITHER[(y % 4 * 4 + x % 4) as usize]);
                     let ch = |v: u32, bits: u32| channel(v & 0xFF, bits, t);
                     let (r, g, b) = (c >> 16, c >> 8, c);
                     match format {
