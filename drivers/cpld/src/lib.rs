@@ -13,25 +13,38 @@ use rp_hal_api::RegisterBus16;
 
 pub mod handover;
 
-/// Register offsets.
+/// Register offsets. What each bit does, and how sure we are, is
+/// `docs/hw/cpld.md`'s register table (the source of truth: these comments
+/// follow it, "confirmed" meaning proven on the X51v).
 pub mod reg {
-    /// Wi-Fi power (bit 6).
+    /// Wi-Fi power sequence step 1 (bit 6, likely). Dell writes this bit
+    /// at `0x02`, AxDroid at `0x00` (cpld.md): which offset is open.
     pub const PWR0: usize = 0x00;
-    /// Status (read): bit 1 clear while a CompactFlash card is in.
+    /// Status (read): bit 1 clear while a CompactFlash card is in (likely).
     pub const STATUS04: usize = 0x04;
     /// Bit 1 set by Windows Mobile's reboot just before its board reset
     /// (purpose unknown; docs/hw/cpld.md).
     pub const CTL08: usize = 0x08;
-    /// Wi-Fi power (bits 3, 13), CompactFlash power stage 2 (bit 12).
+    /// Bluetooth power stage 2 (bit 2, likely), Wi-Fi sequence steps 5 and
+    /// 4 (bits 3, 13, likely), CompactFlash power stage 2 (bit 12,
+    /// confirmed), notification (bit 15, guess).
     pub const PWR10: usize = 0x10;
-    /// Audio amplifier (bit 3, guess).
+    /// Speaker amplifier (bit 1, confirmed: the audio service's
+    /// `SPEAKER_AMP`), peripheral / serial (bit 2, guess), display (bit 3,
+    /// guess; clearing it wedged the device: never cleared outside a run
+    /// built to find out).
     pub const PWR14: usize = 0x14;
-    /// SD power (bit 0), CompactFlash power stage 1 (bit 1), Wi-Fi (bit 2).
+    /// SD power (bit 0, confirmed), CompactFlash power stage 1 (bit 1,
+    /// confirmed), Wi-Fi sequence step 3 (bit 2, likely), Bluetooth power
+    /// stage 1 (bit 3, likely).
     pub const PWR16: usize = 0x16;
-    /// Serial (bit 0), CompactFlash RESET (bit 1, set = held in reset),
-    /// backlight enable (bit 2), display (bit 3).
+    /// Bluetooth reset, active low (bit 0, likely), CompactFlash RESET (bit
+    /// 1, set = held in reset, likely), backlight enable (bit 2, confirmed),
+    /// display (bit 3, guess).
     pub const CTL18: usize = 0x18;
-    /// Wi-Fi (bit 0), boot bits (1, 2), USB? (bit 3).
+    /// Wi-Fi sequence step 2 (bit 0, likely), audio codec power (bit 1,
+    /// confirmed: the audio service's `CODEC_POWER`), USB / dock (bit 3,
+    /// likely; set docked).
     pub const PWR1C: usize = 0x1C;
     /// LCD type readout: write bit 3 to enable, read bits 1:0.
     pub const LCD_ID: usize = 0x1E;
@@ -364,7 +377,7 @@ mod tests {
         let mut wm = [0u32; handover::WORDS];
         wm[1] = 0x8004; // 0x10: notification + serial guesses
         wm[3] = 0x0008; // 0x14: display
-        wm[5] = 0x000D; // 0x18: serial, backlight, display
+        wm[5] = 0x000D; // 0x18: Bluetooth running, backlight, display
         wm[8] = 0x0003; // 0x1E: battery bits
         let (shadow, src) = handover::Table::adopt(&mut wm);
         assert_eq!(src, handover::Source::Adopted);
