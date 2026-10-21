@@ -5683,7 +5683,7 @@ mod image {
     #[inline(never)]
     fn fingerprint(g: &mut Rig) {
         log!(
-            "W: the fingerprint: every whitelisted PXA register, the CPU's coprocessor state, every named 2700G register, then the speed at Windows Mobile's clock (nothing written but the test's own 2700G memory)"
+            "W: the fingerprint: every whitelisted PXA register, the CPU's coprocessor state, every named 2700G register, then the speed at Windows Mobile's clock, an MBX core reset and the speed again, then W2: G4c's ending (65 and 74.75 MHz with the cores at divide 1, Windows Mobile's clock put back), the speed and every 2700G register again"
         );
         let mut v = [0u32; diag::COUNT];
         diag::snapshot(&mut v);
