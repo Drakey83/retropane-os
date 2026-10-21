@@ -151,7 +151,8 @@ mod image {
     /// after every start-up stage, then G5's opening up to its first clock
     /// change (its memory set-up, the reference check at Windows Mobile's
     /// clock), with cards the owner reports: one drawn by the CPU, the
-    /// others by the 2D engine as G5's are.
+    /// others by the 2D engine as G5's are; then G5's first clock changes,
+    /// its four lock traces, each followed by a CPU card and a read.
     const START: bool = option_env!("RP_GPUBENCH_START").is_some();
     /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
     /// every 2D fill and 3D render right, but its first pass ran slower
@@ -4573,8 +4574,38 @@ mod image {
             4,
         );
         start_watch(&mut g.e.regs, "N11 card 3 (the 2D engine's, red) shown 4 s");
+        // G5's next part, its first clock changes: the lock traces (99.67 ->
+        // 74.75 -> 99.67 -> 108.33 -> 99.67 MHz). After each a card drawn by
+        // the CPU (never black: run N found an all-black picture reads `DSIG`
+        // 0), then the display read: a stopped display reads 0 under it.
+        if base.good() {
+            let a75 = ClockStep { n: 4, ..WM_STEP }.speed();
+            let f108 = ClockStep { m: 25, ..WM_STEP }.speed();
+            let traces = [
+                (a75, "99.67 -> 74.75 MHz", "N TRACE 1"),
+                (ClockSpeed::WM, "74.75 -> 99.67 MHz", "N TRACE 2"),
+                (f108, "99.67 -> 108.33 MHz", "N TRACE 3"),
+                (ClockSpeed::WM, "108.33 -> 99.67 MHz", "N TRACE 4"),
+            ];
+            for (k, (speed, what, label)) in traces.into_iter().enumerate() {
+                lock_trace(g, speed, what);
+                if let Some(p) = Plane::decode(
+                    g.e.regs.read32(dreg::GSCTRL),
+                    g.e.regs.read32(dreg::GSCADR),
+                    g.e.regs.read32(dreg::GSADR),
+                    g.mem.0.len(),
+                ) {
+                    card_text(g.mem.0, &p, label, 0xFF60_6010, 2);
+                }
+                let mut stage = heapless_name();
+                let _ = write!(stage, "N{} after the lock trace {what}, a CPU card", 12 + k);
+                start_watch(&mut g.e.regs, stage.as_str());
+            }
+        }
         clock_rig_free(g, c);
-        log!("N: done; the owner reports which cards showed (1 green, 2 blue, 3 red)");
+        log!(
+            "N: done; the owner reports which cards showed (1 green, 2 blue, 3 red, traces yellow)"
+        );
     }
 
     /// Run H (see [`FREEZE`]).

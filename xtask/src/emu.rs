@@ -3354,6 +3354,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "N7 card 1",
                 "N8 card 2",
                 "N11 card 3",
+                "N15 after the lock trace 108.33 -> 99.67 MHz",
                 "N: done",
                 "RETROPANE-GPUBENCH: done",
             ],
