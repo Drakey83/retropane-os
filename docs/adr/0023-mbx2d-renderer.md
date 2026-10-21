@@ -7,6 +7,9 @@
 - **Amended 2026-10-19 by [ADR-0034](0034-compositor.md) C2:** opaque
   pictures are RGB565 (16-bit), with ordered dither at draw time for
   gradients; 32-bit (ARGB8888) only for glass with smooth gradients.
+- **Amended 2026-10-21 by the project owner: the scanned-out screen is
+  RGB565 with the 2700G's ordered dither** (see "The screen goes 16-bit"
+  below). Layers and textures may stay 32-bit.
 - **Date:** 2026-10-14
 
 ## In plain words
@@ -242,6 +245,35 @@ its glass can be checked at either depth too. One wallpaper per build.
   yet: it needs the real RGB565 storage (the test stores the widened
   pixels at 32 bits). Logs: `local/rp-today-compare-pier.txt`,
   `local/rp-today-compare-milkyway.txt`.
+
+## The screen goes 16-bit (2026-10-21, owner's vote)
+
+Runs P2X and P2Y (`docs/hw/2700g.md`, quality audit C28) found that 3D
+renders into a 32-bit picture get wrong pixels (~40-57 a full-screen
+render, each one the next object's colour) **only while the display
+scans out a 32-bit screen**, at Windows Mobile's clock and memory timing.
+With the screen scanned out as 16-bit (or stopped), five 32-bit renders
+were exact and identical, and RGB565 renders were exact in every run.
+Run P2W showed dithered RGB565 ramps smooth to the owner's eye (4 x 4
+ordered dither, measured on every 16-bit layout in run P2). Run T: a
+16-bit screen makes 3D ~6% and the CPU's reads ~15% faster than a 32-bit
+one, and the screen takes half the memory.
+
+**Options put to the owner:** A, keep 32-bit screens and live with the
+wrong pixels (the any-Axim rule rules out memory timings beyond Dell's /
+Windows Mobile's, so there's no fix that keeps A); B, scan out a dithered
+RGB565 screen, with 32-bit layers and textures kept where compositing
+needs the precision.
+
+**Owner's vote: B** (2026-10-21). The vote's verification: a device run
+that counts wrong pixels over many 32-bit layer renders while the screen
+is shown as dithered RGB565, kept as a regression test (C28's proper
+fix). P2Y's five clean renders already show it; the long count checks for
+rare errors. If it finds any, layers go to RGB565 too and B stands.
+
+Still to design (in the renderer's next step): which engine writes the
+final dithered picture (the 3D core has the dither, bit 3 of `0x650`; the
+2D engine's isn't measured) and the double-buffer sizes at 16 bits.
 
 ## Open questions
 
