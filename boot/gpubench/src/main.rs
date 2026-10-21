@@ -50,6 +50,19 @@
 //! the video plane at each unnamed format code 0-8, colour conversion off,
 //! the chroma bases pointed at zeroed memory first (mbxfb: a planar format
 //! with them unset hangs the chip); which show the card right.
+//!
+//! **Run P** (`RP_GPUBENCH_TARGETS`, unattended; P3 of
+//! docs/research/2700g-full-potential.md): the 3D core's target format
+//! (`0x650`) at every code 0-15 and with each of its bits 4-31 added to
+//! the known ones (bits 4-11 on code 1, 4-31 on code 6), one try each: a
+//! 32 x 32 texture whose every texel names its place, drawn 1:1 into a
+//! target with 4 KiB of guard memory before it and 56 KiB after (all of
+//! it a known pattern first), read back and decoded (bytes a pixel,
+//! channel order, rows or twiddled or tiles: a twiddled target would be
+//! render-to-texture). The code goes in by a register bus that rewrites
+//! the renderer's `0x650` write, so the OS's renderer has no way to set
+//! one. A hung try is recovered by the renderer, and the log line is
+//! written before each.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -163,6 +176,9 @@ mod image {
     /// clock measured before and after each: 108.33 MHz CL2; the memory
     /// restarted at Windows Mobile's clock; G4c's step.
     const SLOW: bool = option_env!("RP_GPUBENCH_SLOW").is_some();
+    /// Run P: the 3D core's target formats (`0x650`), every code read back
+    /// and decoded.
+    const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
     /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
     /// every 2D fill and 3D render right, but its first pass ran slower
     /// than the same steps before any rebuild (the 3D render at 99.67 MHz,
@@ -1542,6 +1558,456 @@ mod image {
         g.set(&mut r, 0, None);
         let _ = r.release(&mut g.pool);
         let _ = g.pool.free(at, 512 * 512 * 2);
+    }
+
+    // ---- Run P: the 3D core's target formats (P3) ------------------------------
+
+    /// The target's side in pixels (4 x 2 tiles).
+    const P_SIDE: u32 = 32;
+    /// The target's 4 KiB: its pixels at 32 bits in rows of 128 bytes.
+    const P_BYTES: u32 = P_SIDE * P_SIDE * 4;
+    /// Guard memory before the target, and the whole area (both guards and
+    /// the target), bytes.
+    const P_BEFORE: u32 = 4096;
+    const P_AREA: u32 = 64 * 1024;
+    /// What the area holds before each try.
+    const P_FILL: u32 = 0x5A5A_5A5A;
+
+    /// The texel at `(x, y)`: red `x * 8`, green `y * 8`, blue `0xA0` (the
+    /// place in each channel's top five bits, so it survives 16-bit
+    /// formats; blue tells the channel order and the format's own bits).
+    const fn p_texel(x: u32, y: u32) -> u32 {
+        0xFF00_00A0 | (x << 3) << 16 | (y << 3) << 8
+    }
+
+    /// The renderer's register writes with `0x650` replaced by `code`
+    /// (only this image can set a code the renderer has no name for).
+    struct CodeBus<'a> {
+        bus: &'a mut Mmio,
+        code: u32,
+    }
+
+    impl RegisterBus for CodeBus<'_> {
+        fn read32(&mut self, off: usize) -> u32 {
+            self.bus.read32(off)
+        }
+
+        fn write32(&mut self, off: usize, v: u32) {
+            let v = if off == MBX + 0x650 { self.code } else { v };
+            self.bus.write32(off, v);
+        }
+    }
+
+    /// One pixel layout run P tries: its name, bytes a pixel, the bits of
+    /// the place it drops, and the place a value names (`None` if its blue
+    /// isn't the texel's), shifted right by those bits.
+    struct PLayout {
+        name: &'static str,
+        bytes: u32,
+        shift: u32,
+        place: fn(u32) -> Option<(u32, u32)>,
+    }
+
+    fn p_8888(v: u32) -> Option<(u32, u32)> {
+        (v & 0xFF == 0xA0).then_some(((v >> 19) & 31, (v >> 11) & 31))
+    }
+
+    fn p_8888_bgr(v: u32) -> Option<(u32, u32)> {
+        ((v >> 16) & 0xFF == 0xA0).then_some(((v >> 3) & 31, (v >> 11) & 31))
+    }
+
+    fn p_565(v: u32) -> Option<(u32, u32)> {
+        (v & 31 == 20).then_some(((v >> 11) & 31, (v >> 6) & 31))
+    }
+
+    fn p_565_bgr(v: u32) -> Option<(u32, u32)> {
+        ((v >> 11) & 31 == 20).then_some((v & 31, (v >> 6) & 31))
+    }
+
+    fn p_1555(v: u32) -> Option<(u32, u32)> {
+        (v & 31 == 20).then_some(((v >> 10) & 31, (v >> 5) & 31))
+    }
+
+    fn p_4444(v: u32) -> Option<(u32, u32)> {
+        (v & 15 == 10).then_some(((v >> 8) & 15, (v >> 4) & 15))
+    }
+
+    fn p_332(v: u32) -> Option<(u32, u32)> {
+        (v & 3 == 2).then_some(((v >> 5) & 7, (v >> 2) & 7))
+    }
+
+    const P_LAYOUTS: [PLayout; 8] = [
+        PLayout {
+            name: "8888",
+            bytes: 4,
+            shift: 0,
+            place: p_8888,
+        },
+        PLayout {
+            name: "8888 BGR",
+            bytes: 4,
+            shift: 0,
+            place: p_8888_bgr,
+        },
+        PLayout {
+            name: "888",
+            bytes: 3,
+            shift: 0,
+            place: p_8888,
+        },
+        PLayout {
+            name: "565",
+            bytes: 2,
+            shift: 0,
+            place: p_565,
+        },
+        PLayout {
+            name: "565 BGR",
+            bytes: 2,
+            shift: 0,
+            place: p_565_bgr,
+        },
+        PLayout {
+            name: "1555",
+            bytes: 2,
+            shift: 0,
+            place: p_1555,
+        },
+        PLayout {
+            name: "4444",
+            bytes: 2,
+            shift: 1,
+            place: p_4444,
+        },
+        PLayout {
+            name: "332",
+            bytes: 1,
+            shift: 2,
+            place: p_332,
+        },
+    ];
+
+    /// The pixel orders run P tries.
+    const P_ORDERS: [&str; 5] = [
+        "rows (the picture's stride)",
+        "rows (packed)",
+        "twiddled (texture order)",
+        "twiddled (x on the low bits)",
+        "8 x 16 tiles, rows inside",
+    ];
+
+    /// Where the pixel at byte `off` from the target sits in `order` for
+    /// pixels of `bytes`, if that offset starts one.
+    fn p_order(order: usize, off: u32, bytes: u32) -> Option<(u32, u32)> {
+        let stride = P_SIDE * 4;
+        let (x, y) = if order == 0 {
+            let col = off % stride;
+            if !col.is_multiple_of(bytes) {
+                return None;
+            }
+            (col / bytes, off / stride)
+        } else {
+            if !off.is_multiple_of(bytes) {
+                return None;
+            }
+            let i = off / bytes;
+            match order {
+                1 => (i % P_SIDE, i / P_SIDE),
+                2 => untwiddle(i),
+                3 => {
+                    let (x, y) = untwiddle(i);
+                    (y, x)
+                }
+                _ => {
+                    let (t, w) = (i / 128, i % 128);
+                    ((t % 4) * 8 + w % 8, (t / 4) * 16 + w / 8)
+                }
+            }
+        };
+        (x < P_SIDE && y < P_SIDE).then_some((x, y))
+    }
+
+    /// The `bytes` bytes at `off` of the target at `at`, little-endian,
+    /// read from 2700G memory (a copy would cost 4 KiB of the 16 KiB
+    /// stack).
+    fn p_value(mem: &Vram, at: u32, off: u32, bytes: u32) -> u32 {
+        (0..bytes).fold(0, |v, k| {
+            let o = off + k;
+            let w = mem.load((at + (o & !3)) as usize).unwrap_or(0);
+            v | ((w >> (8 * (o % 4))) & 0xFF) << (8 * k)
+        })
+    }
+
+    /// How many of the target's pixels read as `l` in `order` name their
+    /// own place.
+    fn p_score(mem: &Vram, at: u32, l: &PLayout, order: usize) -> u32 {
+        let end = if order == 0 {
+            P_BYTES
+        } else {
+            P_SIDE * P_SIDE * l.bytes
+        };
+        let mut score = 0;
+        let mut off = 0;
+        while off < end {
+            if let Some((x, y)) = p_order(order, off, l.bytes)
+                && (l.place)(p_value(mem, at, off, l.bytes)) == Some((x >> l.shift, y >> l.shift))
+            {
+                score += 1;
+            }
+            off += l.bytes;
+        }
+        score
+    }
+
+    /// Renders what `r` holds into `t` with `0x650` = `code`: whether it
+    /// finished (false: refused, or hung and recovered).
+    fn p_frame(g: &mut Rig, r: &mut Renderer, t: Target, code: u32) -> bool {
+        rt::check_in();
+        // The renderer writes only changed registers: the code goes in
+        // first, and the bus replaces the renderer's own if it writes one.
+        g.e.regs.write32(MBX + 0x650, code);
+        r.invalidate_all();
+        let res = r.render(
+            &mut CodeBus {
+                bus: &mut g.e.regs,
+                code,
+            },
+            &mut g.mem,
+            &mut g.clock,
+            t,
+        );
+        let mut at = match res {
+            Ok(Some(at)) => at,
+            Ok(None) => return false,
+            Err(err) => {
+                log!("    render refused: {err:?}");
+                return false;
+            }
+        };
+        loop {
+            while (g.clock.now_us().wrapping_sub(at) as i32) < 0 {}
+            let p = r.poll(
+                &mut CodeBus {
+                    bus: &mut g.e.regs,
+                    code,
+                },
+                &mut g.mem,
+                &mut g.clock,
+            );
+            match p {
+                Poll::Wait(next) => at = next,
+                Poll::Done(_) => {
+                    g.measured += 1;
+                    return true;
+                }
+                p => {
+                    g.sync_resets(r);
+                    g.hangs += u32::from(p == Poll::Recovered);
+                    log!("    {p:?}");
+                    return false;
+                }
+            }
+        }
+    }
+
+    /// The codes run P tries: 0-15, then bits 4-11 added to 1 (RGB565) and
+    /// bits 4-31 added to 6 (ARGB8888).
+    fn p_tries() -> ([u32; 52], usize) {
+        let mut tries = [0u32; 52];
+        let mut n = 0;
+        for code in 0..16 {
+            tries[n] = code;
+            n += 1;
+        }
+        for b in 4..12 {
+            tries[n] = 1 | 1 << b;
+            n += 1;
+        }
+        for b in 4..32 {
+            tries[n] = 6 | 1 << b;
+            n += 1;
+        }
+        (tries, n)
+    }
+
+    /// The placed texels as a 32 x 32 ARGB8888 texture, written twiddled
+    /// a word at a time straight into 2700G memory (no buffer: the 16 KiB
+    /// stack overflowed with one, run P's first emulator check).
+    fn p_texture(g: &mut Rig) -> Option<Texture> {
+        let at = g.pool.alloc(P_BYTES, 128)?;
+        for i in 0..P_SIDE * P_SIDE {
+            let (x, y) = untwiddle(i);
+            g.mem.store((at + 4 * i) as usize, &[p_texel(x, y)]);
+        }
+        g.mem.sync();
+        Some(Texture {
+            at,
+            code: 2,
+            format: format::ARGB8888 as u8,
+            u_mode: address::CLAMP as u8,
+            v_mode: address::CLAMP as u8,
+            linear: false,
+            levels: 1,
+        })
+    }
+
+    #[inline(never)]
+    fn target_formats(g: &mut Rig) {
+        log!(
+            "P3: render targets: 0x650 codes 0-15, then bits 4-11 added to 1 and 4-31 added to 6; a 32 x 32 texture of placed texels (red x * 8, green y * 8, blue 0xa0) drawn 1:1 into a target at a 32-bit picture's stride (128 bytes), 4 KiB of guard before it, 56 KiB after"
+        );
+        let Some(tex) = p_texture(g) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("  no memory for the target");
+            let _ = g.pool.free(tex.at, P_BYTES);
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, P_SIDE as u16, P_SIDE as u16) else {
+            log!("  no renderer");
+            let _ = g.pool.free(area, P_AREA);
+            let _ = g.pool.free(tex.at, P_BYTES);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        let side = P_SIDE as i32;
+        let draw = Draw::rect(
+            0,
+            0,
+            side,
+            side,
+            Paint::Texture {
+                tex,
+                uv: [(0, 0), (UV_ONE, 0), (UV_ONE, UV_ONE), (0, UV_ONE)],
+                tint: WHITE,
+            },
+        );
+        g.set(&mut r, 0, Some(draw));
+        let t = Target {
+            picture: Picture::packed(
+                area + P_BEFORE,
+                P_SIDE as u16,
+                P_SIDE as u16,
+                PixelFormat::Argb8888,
+            ),
+            x: 0,
+            y: 0,
+        };
+        let (tries, n) = p_tries();
+        let (mut hung, mut decoded, mut silent) = (0, 0, 0);
+        let fill = [P_FILL; 64];
+        for (k, &code) in tries[..n].iter().enumerate() {
+            let (mut l2, mut l3) = (heapless_name(), heapless_name());
+            let _ = write!(l2, "TRY {} OF {n}", k + 1);
+            let _ = write!(l3, "CODE 0X{code:X}");
+            clock_card(
+                g,
+                ["RUN P TARGETS", l2.as_str(), l3.as_str()],
+                0xFF20_4020,
+                0,
+            );
+            log!("  P3 try {} 0x650 0x{code:08x}", k + 1);
+            for off in (0..P_AREA).step_by(4 * fill.len()) {
+                g.mem.store((area + off) as usize, &fill);
+            }
+            g.mem.sync();
+            let hangs = g.hangs;
+            let ok = p_frame(g, &mut r, t, code);
+            let back = g.e.regs.read32(MBX + 0x650);
+            if g.hangs != hangs {
+                hung += 1;
+                log!("    HUNG (the core was reset); 0x650 reads 0x{back:x}");
+                continue;
+            }
+            if !ok {
+                log!("    not rendered; 0x650 reads 0x{back:x}");
+                continue;
+            }
+            // What changed: before the target, in its 4 KiB, after it.
+            let (mut before, mut inside, mut after) = (0u32, 0u32, 0u32);
+            let (mut first, mut last) = (None, 0u32);
+            for off in (0..P_AREA).step_by(4) {
+                let w = g.mem.load((area + off) as usize).unwrap_or(0);
+                if w != P_FILL {
+                    if off < P_BEFORE {
+                        before += 1;
+                    } else if off < P_BEFORE + P_BYTES {
+                        inside += 1;
+                    } else {
+                        after += 1;
+                    }
+                    first.get_or_insert(off);
+                    last = off;
+                }
+            }
+            silent += u32::from(first.is_none());
+            let rel = |o: u32| o as i32 - P_BEFORE as i32;
+            log!(
+                "    done; 0x650 reads 0x{back:x}; words changed: {before} before, {inside} in the target's 4 KiB, {after} after; first at {}, last at {} (bytes from the target)",
+                first.map_or(0, rel),
+                rel(last)
+            );
+            // Each layout in each order: how many pixels name their place.
+            let mut best = [(0u32, 0usize, 0usize); 3];
+            for (li, l) in P_LAYOUTS.iter().enumerate() {
+                for order in 0..P_ORDERS.len() {
+                    let score = p_score(&g.mem, area + P_BEFORE, l, order);
+                    if score > best[2].0 {
+                        best[2] = (score, li, order);
+                        best.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                    }
+                }
+            }
+            for &(score, li, order) in best.iter().filter(|b| b.0 > 0) {
+                log!(
+                    "    {} {}: {score}/{} pixels in place",
+                    P_LAYOUTS[li].name,
+                    P_ORDERS[order],
+                    P_SIDE * P_SIDE
+                );
+            }
+            decoded += u32::from(best[0].0 >= P_SIDE * P_SIDE * 9 / 10);
+            // The raw words: the target's first 8, and the first 4 of the
+            // next three 128-byte lines.
+            let word = |k: u32| {
+                g.mem
+                    .load((area + P_BEFORE + 4 * k) as usize)
+                    .unwrap_or(0xDEAD_BEEF)
+            };
+            log!(
+                "    words: {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x} {:08x}",
+                word(0),
+                word(1),
+                word(2),
+                word(3),
+                word(4),
+                word(5),
+                word(6),
+                word(7)
+            );
+            for line in 1..4 {
+                let k = line * P_SIDE;
+                log!(
+                    "    line {line}: {:08x} {:08x} {:08x} {:08x}",
+                    word(k),
+                    word(k + 1),
+                    word(k + 2),
+                    word(k + 3)
+                );
+            }
+        }
+        // The renderer's own code back for anything after.
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        log!(
+            "P3: {n} tries, {decoded} decoded (9 in 10 pixels in place at least), {hung} hung, {silent} wrote nothing"
+        );
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(area, P_AREA);
+        let _ = g.pool.free(tex.at, P_BYTES);
+        clock_card(g, ["RUN P TARGETS", "DONE", ""], 0xFF20_4020, 3);
     }
 
     // ---- Run C: the video plane (the owner watches) --------------------------
@@ -3733,6 +4199,8 @@ mod image {
             "{MARKER}: run {}, MBXCLK 0x{clk0:x}",
             if PROBES {
                 "B (texture-word probes)"
+            } else if TARGETS {
+                "P (the 3D core's target formats: 0x650 codes 0-15 and bits 4-31, each read back and decoded)"
             } else if PLANES {
                 "C (the video plane: repoint, YUV pan under glass, RGB pan under a tint)"
             } else if VFMT {
@@ -3799,6 +4267,8 @@ mod image {
         }
         if PROBES {
             probes(&mut g);
+        } else if TARGETS {
+            target_formats(&mut g);
         } else if PLANES {
             planes(&mut g);
         } else if VFMT {

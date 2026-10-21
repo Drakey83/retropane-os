@@ -3072,7 +3072,8 @@ type GpubenchRun<'a> = (&'a str, &'a PathBuf, &'a [&'a str], bool, (u32, u32, u3
 /// loader, then run C (the video plane's repoint and pans,
 /// `RP_GPUBENCH_PLANES`) and run D (its undocumented format codes,
 /// `RP_GPUBENCH_VFMT`), run E (faster uploads, `RP_GPUBENCH_UPLOAD`) and
-/// run F (text as 4 bpp strips, `RP_GPUBENCH_TEXT`),
+/// run F (text as 4 bpp strips, `RP_GPUBENCH_TEXT`), run P (the 3D
+/// core's target formats, `RP_GPUBENCH_TARGETS`) and the clock runs,
 /// with key presses for their watch steps. The
 /// models' times say nothing about the device's (the fork's 3D
 /// core doesn't model the clock or the fill costs: emulator.md), so this
@@ -3107,6 +3108,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
     let run_n = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_START", "1"))?;
     let run_q = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SLOW", "1"))?;
+    let run_p = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3131,7 +3133,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 18] = [
+    let runs: [GpubenchRun; 19] = [
         (
             "run A",
             &run_a,
@@ -3370,6 +3372,27 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
+            (0, 0, 0),
+        ),
+        // Run P (the 3D core's target formats): every code tried and
+        // decoded. The fork writes 32-bit pixels for every code but 1 and
+        // 3 (the others aren't measured yet: emulator.md), so all 52 read
+        // back in place and none hangs; the device's answer is the run's.
+        (
+            "run P",
+            &run_p,
+            &[
+                "P3: render targets",
+                "  P3 try 2 0x650 0x00000001",
+                "    565 rows (the picture's stride): 1024/1024 pixels in place",
+                "    1555 rows (the picture's stride): 1024/1024 pixels in place",
+                "    8888 rows (the picture's stride): 1024/1024 pixels in place",
+                "  P3 try 52 0x650 0x80000006",
+                "P3: 52 tries, 52 decoded (9 in 10 pixels in place at least), 0 hung, 0 wrote nothing",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
             (0, 0, 0),
         ),
     ];

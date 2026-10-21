@@ -142,9 +142,9 @@ commands:
   emu-cs3bus the 2700G bus-timing experiment (rp-cs3bus: every step and
             the soak run, MSC1 put back): run it before `load rp-cs3bus`
   emu-gpubench  the GPU measuring run for the 3D compositor proposal
-            (rp-gpubench run A, and run B built with RP_GPUBENCH_PROBES: every
-            stage runs, memory given back, both return): run it before
-            `load rp-gpubench`
+            (rp-gpubench run A and every RP_GPUBENCH_* run, run P's target
+            formats included: every stage runs, memory given back, each
+            returns): run it before `load rp-gpubench`
   emu-mved  the video decoder's first test (rp-mved: runs, times out
             safely, returns; the decoder isn't modelled): before `load rp-mved`
   emu-noise the RNG noise-source measurement (rp-noise, ADR-0029: every
