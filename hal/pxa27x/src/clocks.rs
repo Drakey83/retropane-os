@@ -545,7 +545,9 @@ mod target {
     /// own refresh interval and SDRAM dividers (the point's are derived;
     /// whoever ran before may have chosen others).
     pub fn restore(raw: Raw) -> bool {
-        let p = Point::decode(raw.cccr, raw.cccr, raw.clkcfg);
+        // The multipliers in use (CCSR), not the ones last asked for: the
+        // two differ only between a CCCR write and its frequency change.
+        let p = raw.point();
         if !change(p) {
             return false;
         }
@@ -659,6 +661,24 @@ mod tests {
     const WM_CLKCFG: u32 = 0xB;
     const WM_MDREFR: u32 = 0x201E_E030;
     const WM_MDCNFG: u32 = 0x0ACB_2BCC;
+
+    /// A CCCR written but not yet applied (L and 2N differ from CCSR's):
+    /// the point is the one running, from CCSR, with CCCR's A bit (CCSR
+    /// doesn't carry it). `restore` puts back `Raw::point`.
+    #[test]
+    fn the_point_is_the_running_one_when_cccr_and_ccsr_disagree() {
+        // Asked for L=16 2N=6 (CCCR), running L=8 2N=2 (CCSR).
+        let raw = Raw {
+            cccr: CCCR_A | 6 << 7 | 16,
+            ccsr: 3 << 28 | 2 << 7 | 8,
+            clkcfg: WM_CLKCFG,
+            ..Raw::default()
+        };
+        let p = raw.point();
+        assert_eq!((p.l, p.n2, p.a), (8, 2, true));
+        assert_eq!(p, Point::decode(raw.cccr, raw.ccsr, raw.clkcfg));
+        assert_ne!(p, Point::decode(raw.cccr, raw.cccr, raw.clkcfg));
+    }
 
     #[test]
     fn decodes_windows_mobiles_state() {
