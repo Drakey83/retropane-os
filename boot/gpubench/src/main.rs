@@ -213,6 +213,12 @@ mod image {
     /// price): one full-screen render timed at each of its settings.
     /// Unattended.
     const RESOLVE: bool = option_env!("RP_GPUBENCH_RESOLVE").is_some();
+    /// Run P2X: P2W's white specks (in memory after the render, in the
+    /// black bar of the 24- and 32-bit pictures): the picture rendered 5
+    /// times per format over a marker fill, the bars checked and every
+    /// pixel compared between renders (the same places: logic; others:
+    /// a glitch). Unattended.
+    const SPECKS: bool = option_env!("RP_GPUBENCH_SPECKS").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -2937,6 +2943,131 @@ mod image {
         clock_card(g, ["RUN T3", "DONE", ""], 0xFF10_6020, 3);
     }
 
+    /// P2X's marker: the picture is filled with it before each render, so
+    /// a pixel the render never wrote shows it.
+    const P2X_FILL: u32 = 0xFF12_3456;
+
+    /// The colour P2W's bar at `x` (y below 320) should hold, as `code`'s
+    /// layout stores it (red, green, blue only).
+    fn p2x_bar(code: u32, x: u32) -> u32 {
+        const BARS: [u32; 8] = [
+            0xFFFFFF, 0xFFFF00, 0x00FFFF, 0x00FF00, 0xFF00FF, 0xFF0000, 0x0000FF, 0x000000,
+        ];
+        let c = BARS[(x / 60) as usize % 8];
+        if code & 7 == 1 {
+            ((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F)
+        } else {
+            c
+        }
+    }
+
+    /// P2X, one render into `pic` with `code`: the bars (y below 320)
+    /// against their colours, and if `other` is given, every pixel against
+    /// the same picture rendered before at `other`. Logs counts and the
+    /// first six of each kind.
+    #[allow(clippy::too_many_arguments)]
+    fn p2x_check(
+        g: &mut Rig,
+        r: &mut Renderer,
+        at: u32,
+        stride: u32,
+        bytes: u32,
+        code: u32,
+        other: Option<u32>,
+        k: u32,
+    ) {
+        g.fill(at, (0, 0, 480, 640), P2X_FILL);
+        let t = Target {
+            picture: Picture {
+                at,
+                stride,
+                w: 480,
+                h: 640,
+                format: if stride == 960 {
+                    PixelFormat::Rgb565
+                } else {
+                    PixelFormat::Argb8888
+                },
+            },
+            x: 0,
+            y: 0,
+        };
+        let ok = p_frame(g, r, t, code, None);
+        let mask = if bytes == 2 { 0xFFFF } else { 0x00FF_FFFF };
+        let fill = if bytes == 2 {
+            P2X_FILL & 0xFFFF
+        } else {
+            P2X_FILL & mask
+        };
+        let (mut white, mut unwritten, mut wrong, mut differ) = (0u32, 0u32, 0u32, 0u32);
+        let mut list = heapless_name();
+        let mut listed = 0;
+        for y in 0..640u32 {
+            for x in 0..480u32 {
+                let off = y * stride + x * bytes;
+                let v = p_value(&g.mem, at, off, bytes) & mask;
+                let mut bad = false;
+                if y < 320 && v != p2x_bar(code, x) {
+                    bad = true;
+                    if v == mask {
+                        white += 1;
+                    } else if v == fill || (bytes == 2 && v == (P2X_FILL >> 16) & 0xFFFF) {
+                        unwritten += 1;
+                    } else {
+                        wrong += 1;
+                    }
+                }
+                if let Some(o) = other
+                    && p_value(&g.mem, o, off, bytes) & mask != v
+                {
+                    differ += 1;
+                    bad = true;
+                }
+                if bad && listed < 6 {
+                    let _ = write!(list, " ({x},{y}) 0x{v:x}");
+                    listed += 1;
+                }
+            }
+        }
+        log!(
+            "  P2X code {code} render {k} ({ok}): bars: {white} white, {unwritten} never written, {wrong} other wrong; {} against render 1{}",
+            if other.is_some() { differ } else { 0 },
+            if listed > 0 { ";" } else { "" }
+        );
+        if listed > 0 {
+            log!("   {}", list.as_str());
+        }
+    }
+
+    /// Run P2X (see [`SPECKS`]).
+    #[inline(never)]
+    fn specks(g: &mut Rig) {
+        log!(
+            "P2X: P2W's picture rendered 5 times in each of 32-bit (code 6), 24-bit (code 4) and RGB565 (code 1): render 1 into the background picture, renders 2-5 into the second screen; each over a marker fill (0xff123456); the bars checked against their colours and every pixel against render 1"
+        );
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        p2w_scene(g, &mut r);
+        let (a, b) = (map::BACKGROUND.at, map::SCREENS[1].at);
+        for (code, stride, bytes) in [(6u32, 1920u32, 4u32), (4, 1920, 3), (1, 960, 2)] {
+            p_card(g, "RUN P2X SPECKS", code as usize, 6, code);
+            p2x_check(g, &mut r, a, stride, bytes, code, None, 1);
+            for k in 2..=5 {
+                p2x_check(g, &mut r, b, stride, bytes, code, Some(a), k);
+            }
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        for k in 0..12 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!("P2X: done");
+        clock_card(g, ["RUN P2X", "DONE", ""], 0xFF10_6020, 3);
+    }
+
     // ---- Run C: the video plane (the owner watches) --------------------------
     //
     // ADR-0022 point 3, the translucent-layer-over-a-pan rule: does a
@@ -5148,6 +5279,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if SPECKS {
+                "P2X (P2W's white specks: the picture rendered 5 times a format, checked and compared)"
             } else if RESOLVE {
                 "T3 (the write-out downsample's cost: a full-screen render at each 0x644)"
             } else if FETCH {
@@ -5225,6 +5358,8 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if SPECKS {
+            specks(&mut g);
         } else if RESOLVE {
             resolve(&mut g);
         } else if FETCH {

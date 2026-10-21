@@ -3115,6 +3115,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_w = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FINGERPRINT", "1"))?;
     let run_t = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FETCH", "1"))?;
     let run_t3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESOLVE", "1"))?;
+    let run_p2x = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SPECKS", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3139,7 +3140,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 24] = [
+    let runs: [GpubenchRun; 25] = [
         (
             "run A",
             &run_a,
@@ -3486,6 +3487,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  T3 0x644 = 0: ",
                 "  T3 0x644 = 3: ",
                 "T3: plain ",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run P2X (the specks): every render checked; the fork renders
+        // the 32-bit and RGB565 ones right and every render alike (its
+        // 24-bit is written as 32-bit: emulator.md, so only its line).
+        (
+            "run P2X",
+            &run_p2x,
+            &[
+                "  P2X code 6 render 1 (true): bars: 0 white, 0 never written, 0 other wrong; 0 against render 1",
+                "  P2X code 6 render 5 (true): bars: 0 white, 0 never written, 0 other wrong; 0 against render 1",
+                "  P2X code 4 render 5 ",
+                "  P2X code 1 render 5 (true): bars: 0 white, 0 never written, 0 other wrong; 0 against render 1",
+                "P2X: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
