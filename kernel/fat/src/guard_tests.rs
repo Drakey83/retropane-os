@@ -296,3 +296,18 @@ fn a_boot_files_chain_end_cannot_be_moved() {
         );
     }
 }
+
+/// A write the USB host aims at the last block numbers: a run past
+/// u32::MAX is refused, not wrapped onto the card's first sectors.
+#[test]
+fn a_write_wrapping_past_the_last_block_is_refused() {
+    let (v, _) = card(&[], 3000);
+    // Past the card, then the MBR as it is: wrapped, the second sector
+    // would land on block 0 with its partition table unchanged (allowed).
+    let mut run = vec![0u8; SECTOR];
+    run.extend_from_slice(&sector(&v, 0));
+    let g = v.dev.guard.as_ref().unwrap();
+    assert!(g.allows(0, &run[SECTOR..]), "the MBR unchanged is allowed");
+    assert!(!g.allows(u32::MAX, &run));
+    assert!(!g.allows(u32::MAX - 1, &[0u8; 3 * SECTOR]));
+}

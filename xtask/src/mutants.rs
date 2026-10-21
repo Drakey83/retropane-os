@@ -1226,6 +1226,48 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-kernel-pe", "mutated_images_never_panic"]),
     },
     Mutant {
+        name: "fat: a FAT bigger than FAT32 needs taken",
+        file: "kernel/fat/src/lib.rs",
+        from: "|| fat_sectors > MAX_FAT_SECTORS",
+        to: "|| false",
+        check: Check::Host(&["-p", "rp-fat", "hostile_multi_terabyte_geometry_is_refused"]),
+    },
+    Mutant {
+        name: "fat: more clusters than a FAT32 entry names taken",
+        file: "kernel/fat/src/lib.rs",
+        from: "|| clusters > MAX_CLUSTERS",
+        to: "|| false",
+        check: Check::Host(&["-p", "rp-fat", "hostile_multi_terabyte_geometry_is_refused"]),
+    },
+    Mutant {
+        name: "fat: a directory walked past FAT32's limit",
+        file: "kernel/fat/src/lib.rs",
+        from: "                // too): damaged.
+                Some(c) if visited < self.dir_clusters_max() => cluster = c,",
+        to: "                // too): damaged.
+                Some(c) if visited <= self.clusters => cluster = c,",
+        check: Check::Host(&["-p", "rp-fat", "a_directory_past_fat32s_limit_is_corrupt"]),
+    },
+    Mutant {
+        name: "fat: a full-size directory grown past the limit",
+        file: "kernel/fat/src/lib.rs",
+        from: "None if visited >= self.dir_clusters_max() => return Err(Error::NoRoom),",
+        to: "None if false => return Err(Error::NoRoom),",
+        check: Check::Host(&["-p", "rp-fat", "a_directory_past_fat32s_limit_is_corrupt"]),
+    },
+    Mutant {
+        name: "fat guard: a host write wrapped past the last block",
+        file: "kernel/fat/src/guard.rs",
+        from: "&& lba
+                    .checked_add(i)",
+        to: "&& Some(lba.wrapping_add(i))",
+        check: Check::Host(&[
+            "-p",
+            "rp-fat",
+            "a_write_wrapping_past_the_last_block_is_refused",
+        ]),
+    },
+    Mutant {
         name: "pe: an image for another CPU taken (x86)",
         file: "kernel/pe/src/lib.rs",
         from: "if u16_at(headers, opt)? != 0x10B || !matches!(machine, MACHINE_ARM | MACHINE_THUMB) {",

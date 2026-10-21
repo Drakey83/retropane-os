@@ -169,9 +169,14 @@ impl Guard {
     /// Whether the PC may write `data` (whole sectors) from `lba` on.
     #[must_use]
     pub fn allows(&self, lba: u32, data: &[u8]) -> bool {
-        data.chunks(SECTOR)
-            .zip(lba..)
-            .all(|(s, at)| s.len() == SECTOR && self.allows_sector(at, s))
+        // `lba` comes from the USB host: a run past the last block number
+        // is refused, never wrapped.
+        data.chunks(SECTOR).zip(0u32..).all(|(s, i)| {
+            s.len() == SECTOR
+                && lba
+                    .checked_add(i)
+                    .is_some_and(|at| self.allows_sector(at, s))
+        })
     }
 
     fn allows_sector(&self, lba: u32, s: &[u8]) -> bool {
@@ -187,6 +192,7 @@ impl Guard {
         // A FAT sector: the protected chains' entries must stay as they are.
         let fat_end = self.fat_start + self.fats * self.fat_sectors;
         if (self.fat_start..fat_end).contains(&lba) {
+            // Under 2^28: mount refuses FATs over `MAX_FAT_SECTORS`.
             let first = (lba - self.fat_start) % self.fat_sectors * FAT_PER_SECTOR;
             return (0..FAT_PER_SECTOR).all(|i| {
                 let cluster = first + i;

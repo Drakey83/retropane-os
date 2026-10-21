@@ -29,6 +29,18 @@ pub const SECTOR: usize = 512;
 const ENTRIES: usize = SECTOR / 32;
 /// FAT entries per sector.
 const FAT_PER_SECTOR: u32 = (SECTOR / 4) as u32;
+/// Most data clusters a FAT32 volume can have: entries are 28 bits, and
+/// the top values mean bad (`0x0FFF_FFF7`) and end of chain.
+const MAX_CLUSTERS: u32 = 0x0FFF_FFF5;
+/// Most FAT sectors worth reading: enough for [`MAX_CLUSTERS`] (2^21). A
+/// card claiming a bigger FAT is refused at mount, so a FAT sector number
+/// times [`FAT_PER_SECTOR`] is always under 2^28: no overflow anywhere a
+/// FAT position becomes a cluster number (`check`, `Guard`).
+const MAX_FAT_SECTORS: u32 = (MAX_CLUSTERS + 2).div_ceil(FAT_PER_SECTOR);
+/// The largest directory FAT32 allows: 65,536 entries of 32 bytes (the
+/// specification's limit). Directory walks stop there, so a hostile card's
+/// endless (non-looping) directory chain costs at most 2 MiB of reads.
+const DIR_MAX_BYTES: usize = 65_536 * 32;
 /// End-of-chain marker written; anything from 0x0FFF_FFF8 reads as one.
 const EOC: u32 = 0x0FFF_FFFF;
 const EOC_MIN: u32 = 0x0FFF_FFF8;
@@ -453,6 +465,7 @@ impl<D: BlockDevice> Volume<D> {
             || reserved == 0
             || fats == 0
             || fat_sectors == 0
+            || fat_sectors > MAX_FAT_SECTORS
             || le16(&buf, 17) != 0 // FAT32 has no fixed root directory
             || root_cluster < 2
             || buf[510..512] != [0x55, 0xAA]
@@ -481,6 +494,7 @@ impl<D: BlockDevice> Volume<D> {
         // The FAT must have an entry for every cluster.
         let fat_entries = u64::from(fat_sectors) * u64::from(FAT_PER_SECTOR);
         if clusters == 0
+            || clusters > MAX_CLUSTERS
             || u64::from(clusters) + 2 > fat_entries
             || !(2..2 + clusters).contains(&root_cluster)
         {
@@ -550,6 +564,11 @@ impl<D: BlockDevice> Volume<D> {
 
     fn valid_cluster(&self, c: u32) -> bool {
         (2..2 + self.clusters).contains(&c)
+    }
+
+    /// Most clusters a directory may span ([`DIR_MAX_BYTES`]).
+    fn dir_clusters_max(&self) -> u32 {
+        (DIR_MAX_BYTES / self.cluster_bytes()).max(1) as u32
     }
 
     // --- FAT ---------------------------------------------------------------
@@ -812,7 +831,9 @@ impl<D: BlockDevice> Volume<D> {
             }
             visited += 1;
             match self.next_cluster(cluster)? {
-                Some(c) if visited <= self.clusters => cluster = c,
+                // Past the largest directory FAT32 allows (a loop ends here
+                // too): damaged.
+                Some(c) if visited < self.dir_clusters_max() => cluster = c,
                 Some(_) => return Err(Error::Corrupt),
                 None => return Ok(false),
             }
@@ -1409,8 +1430,10 @@ impl<D: BlockDevice> Volume<D> {
             }
             visited += 1;
             match self.next_cluster(cluster)? {
-                Some(c) if visited <= self.clusters => cluster = c,
+                Some(c) if visited < self.dir_clusters_max() => cluster = c,
                 Some(_) => return Err(Error::Corrupt),
+                // Full to FAT32's limit: no room to grow.
+                None if visited >= self.dir_clusters_max() => return Err(Error::NoRoom),
                 None => {
                     // Grow: a zeroed cluster linked after the last one; the
                     // run continues into it.

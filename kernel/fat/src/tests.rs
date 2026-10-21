@@ -793,6 +793,103 @@ fn out_of_range_clusters_and_absurd_geometry_are_refused() {
     }
 }
 
+/// A card claiming terabytes: a FAT bigger than any FAT32 volume needs
+/// (2^25 sectors: a sector number times 128 overflows), or more clusters
+/// than 28-bit entries can name, is refused at mount (2026-10-21 baseline
+/// audit, defect 6). The largest legal FAT still mounts, and checking it
+/// fails on the device's end, not by overflowing.
+#[test]
+fn hostile_multi_terabyte_geometry_is_refused() {
+    let img = small_image(&[], &[]);
+    let bs = PARTITION_START as usize * SECTOR;
+    let reserved = u32::from(u16::from_le_bytes([img[bs + 14], img[bs + 15]]));
+    let geometry = |fat_sectors: u32, spc: u8, total: u32| {
+        let mut bad = img.clone();
+        bad[bs + 13] = spc;
+        bad[bs + 16] = 1; // one FAT
+        bad[bs + 19..bs + 21].copy_from_slice(&0u16.to_le_bytes());
+        bad[bs + 32..bs + 36].copy_from_slice(&total.to_le_bytes());
+        bad[bs + 36..bs + 40].copy_from_slice(&fat_sectors.to_le_bytes());
+        Volume::mount(MemDisk::new(bad), PARTITION_START)
+    };
+    let most = u32::MAX - PARTITION_START;
+    // A FAT whose sector numbers times 128 overflow (2^25 sectors), and
+    // one sector past the largest FAT32 needs; 64-sector clusters keep the
+    // cluster count legal, so only the FAT's size is wrong.
+    for fat_sectors in [1 << 25, MAX_FAT_SECTORS + 1] {
+        assert_eq!(
+            geometry(fat_sectors, 64, most).err(),
+            Some(Error::NotFat32),
+            "{fat_sectors} FAT sectors"
+        );
+    }
+    // The largest FAT, and one cluster more than 28-bit entries can name
+    // (the FAT itself would have room for it).
+    let fat = MAX_FAT_SECTORS;
+    let total = |clusters: u32| reserved + fat + clusters;
+    assert_eq!(
+        geometry(fat, 1, total(MAX_CLUSTERS + 1)).err(),
+        Some(Error::NotFat32)
+    );
+    // At the limits: legal. Checking it fails on the device's end (the
+    // test disk is small), not by overflowing.
+    let mut v = geometry(fat, 1, total(MAX_CLUSTERS)).unwrap();
+    assert_eq!(v.clusters(), MAX_CLUSTERS);
+    let mut seen = vec![0u8; (MAX_CLUSTERS as usize + 2).div_ceil(8)];
+    let mut scratch = vec![0u8; 4096];
+    assert!(
+        v.check(&mut seen, &mut scratch).is_err(),
+        "the disk ends first"
+    );
+}
+
+/// A directory chain that doesn't loop but runs past FAT32's 2 MiB limit
+/// is damaged: a walk stops there instead of reading the whole volume.
+#[test]
+fn a_directory_past_fat32s_limit_is_corrupt() {
+    let img = format::build(&Image {
+        total_sectors: 2048 + 8192,
+        sectors_per_cluster: 1,
+        files: &[],
+        blocked_clusters: &[],
+        ballast: 0,
+    });
+    let mut v = Volume::mount(MemDisk::new(img), PARTITION_START).unwrap();
+    let max = (DIR_MAX_BYTES / SECTOR) as u32;
+    assert!(v.clusters() > max + 2);
+    let mut filler = [0u8; SECTOR];
+    for i in 0..ENTRIES {
+        filler[i * 32..i * 32 + 11].copy_from_slice(b"FILLER  BIN");
+        filler[i * 32 + 11] = 0x20;
+    }
+    // The root, then max more clusters, all full of entries, chained.
+    let root = v.root_cluster;
+    let chain: Vec<u32> = core::iter::once(root)
+        .chain((2..).filter(|&c| c != root).take(max as usize))
+        .collect();
+    for w in chain.windows(2) {
+        v.fat_set(w[0], w[1]).unwrap();
+    }
+    v.fat_set(*chain.last().unwrap(), FAT_MASK).unwrap();
+    v.fat_flush().unwrap();
+    for &c in &chain {
+        let lba = v.cluster_lba(c);
+        v.dev.write_blocks(lba, &filler).unwrap();
+    }
+    let start = ops(&v.dev);
+    assert_eq!(v.find("nothere.bin"), Err(Error::Corrupt));
+    assert!(
+        ops(&v.dev) - start <= max as usize + 64,
+        "stopped at the limit"
+    );
+    // Exactly at the limit: readable, but it can't grow.
+    v.fat_set(chain[max as usize - 1], FAT_MASK).unwrap();
+    v.fat_flush().unwrap();
+    assert_eq!(v.find("nothere.bin"), Err(Error::NotFound));
+    let mut scratch = vec![0u8; 512];
+    assert_eq!(v.create("new.bin", b"y", &mut scratch), Err(Error::NoRoom));
+}
+
 #[test]
 fn any_volume_mounts_either_kind_and_puts_and_reads_back() {
     let fat = tiny_image(&[Entry {
