@@ -145,6 +145,14 @@ mod image {
     /// order: clocks, the local memory, the system block, the display. Run L
     /// found no clock or power rung that brings the dark display back.
     const REBUILD: bool = option_env!("RP_GPUBENCH_REBUILD").is_some();
+    /// Run N: the start-up watched. G5 found the display dark from its very
+    /// start, before any clock changed (`DSIG` 0, no underrun; run Z
+    /// brought it back). The display's flags and output signature read
+    /// after every start-up stage, then G5's opening up to its first clock
+    /// change (its memory set-up, the reference check at Windows Mobile's
+    /// clock), with cards the owner reports: one drawn by the CPU, the
+    /// others by the 2D engine as G5's are.
+    const START: bool = option_env!("RP_GPUBENCH_START").is_some();
     /// Run Y: the rescue measured. Run G4 after a Z rebuild (`runG4c`) ran
     /// every 2D fill and 3D render right, but its first pass ran slower
     /// than the same steps before any rebuild (the 3D render at 99.67 MHz,
@@ -3635,9 +3643,12 @@ mod image {
     fn main() -> ! {
         rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
+        if START {
+            start_watch(&mut regs, "N0 the 2700G handed out");
+        }
         // A log an earlier run kept in the internal SRAM (it hung and the
         // device was reset: docs/hw/memory-map.md), reported; then every run
         // keeps its own there until it returns (run Z's log was lost to a
@@ -3657,6 +3668,9 @@ mod image {
         if opened {
             rp_hal_x51v::devices::kept_start();
             log!("{MARKER}: the log kept in SRAM from here");
+        }
+        if START {
+            start_watch(&mut regs, "N1 the SRAM log opened");
         }
         if SNAPSHOT {
             snapshot(regs, vram);
@@ -3678,8 +3692,14 @@ mod image {
         }
         let mut display = Display::new(regs);
         let _ = display.adopt(vram.len());
-        let regs = display.into_inner();
+        let mut regs = display.into_inner();
+        if START {
+            start_watch(&mut regs, "N2 the display adopted");
+        }
         let mut e = Engine::new(regs, map::FENCE.at as usize, rt::ticks, 3_250);
+        if START {
+            start_watch(&mut e.regs, "N3 the 2D engine taken");
+        }
         let clk0 = e.regs.read32(MBXCLK);
         let _ = store32_volatile(vram, map::FENCE.at as usize, 0);
         cpu::drain_write_buffer();
@@ -3703,6 +3723,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if START {
+                "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
             } else if CLOCK {
                 "G5 (the clocks: lock traces, divide 1 and 2 to 133.25 MHz with CL2, the display's underrun watched, a 60 s soak, memory-controller writes checked, the texture checked and repaired, time limits, controls after each step, the log kept in SRAM)"
             } else {
@@ -3730,11 +3752,23 @@ mod image {
             keypad,
             pressed: false,
         };
+        if START {
+            start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");
+        }
         g.fill(SCREEN.at, (0, 0, 480, 640), BLACK);
+        if START {
+            start_watch(
+                &mut g.e.regs,
+                "N5 the screen buffer filled black (not shown yet)",
+            );
+        }
         // Every plane register as found (the video plane, the cursor, the
         // background colour, the graphics plane), put back at the end.
         let planes0 = Snapshot::take(&mut g.e.regs);
         let saved = show_screen(&mut g.e.regs);
+        if START {
+            start_watch(&mut g.e.regs, "N6 the screen buffer shown (black)");
+        }
         if PROBES {
             probes(&mut g);
         } else if PLANES {
@@ -3751,6 +3785,9 @@ mod image {
             freeze(&mut g);
         } else if RESCUE {
             rescue(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if START {
+            start_opening(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if CLOCK || LOAD {
             clocks(&mut g);
@@ -4474,6 +4511,70 @@ mod image {
             let (f, s0, s1) = underrun_state(regs);
             log!("Z6: after the card: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         }
+    }
+
+    // ---- Run N: the start-up watched (2026-10-20) ---------------------------
+
+    /// The display as it is now, logged under `stage`: the flags, the output
+    /// signature now and 20 ms on (a frame is 17.7 ms: a display that sends
+    /// a picture that isn't all black has a nonzero signature that holds
+    /// still while the picture does), the graphics plane's registers and
+    /// the sync generator.
+    fn start_watch(regs: &mut Mmio, stage: &str) {
+        let (f, s0, s1) = underrun_state(regs);
+        log!(
+            "{stage}: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}; GSCTRL 0x{:x} GSCADR 0x{:x} GSADR 0x{:x} DSCTRL 0x{:x}; MBXCLK 0x{:x}",
+            regs.read32(dreg::GSCTRL),
+            regs.read32(dreg::GSCADR),
+            regs.read32(dreg::GSADR),
+            regs.read32(dreg::DSCTRL),
+            regs.read32(MBXCLK),
+        );
+    }
+
+    /// Run N's second half: cards and G5's opening (its memory set-up and
+    /// the reference check at Windows Mobile's clock), the display read
+    /// after each; nothing past it (no clock is changed).
+    #[inline(never)]
+    fn start_opening(g: &mut Rig) {
+        // A card drawn by the CPU into the plane on screen: if this one is
+        // dark, the display isn't sending, whatever draws it.
+        if let Some(p) = Plane::decode(
+            g.e.regs.read32(dreg::GSCTRL),
+            g.e.regs.read32(dreg::GSCADR),
+            g.e.regs.read32(dreg::GSADR),
+            g.mem.0.len(),
+        ) {
+            card_text(g.mem.0, &p, "N CARD 1", 0xFF10_6020, 4);
+        }
+        start_watch(&mut g.e.regs, "N7 card 1 (the CPU's, green) shown 4 s");
+        clock_card(
+            g,
+            ["N CARD 2", "THE 2D ENGINE", "AS G5 DRAWS"],
+            0xFF20_2040,
+            4,
+        );
+        start_watch(&mut g.e.regs, "N8 card 2 (the 2D engine's, blue) shown 4 s");
+        let Some(mut c) = clock_rig(g) else {
+            log!("N: no memory for G5's set-up: stopped");
+            return;
+        };
+        start_watch(&mut g.e.regs, "N9 G5's memory set-up done");
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        start_watch(
+            &mut g.e.regs,
+            "N10 G5's reference check at Windows Mobile's clock done",
+        );
+        clock_card(
+            g,
+            ["N CARD 3", "AFTER THE CHECK", "TELL ME"],
+            0xFF60_2010,
+            4,
+        );
+        start_watch(&mut g.e.regs, "N11 card 3 (the 2D engine's, red) shown 4 s");
+        clock_rig_free(g, c);
+        log!("N: done; the owner reports which cards showed (1 green, 2 blue, 3 red)");
     }
 
     /// Run H (see [`FREEZE`]).

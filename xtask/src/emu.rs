@@ -3105,6 +3105,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LADDER", "1"))?;
     let run_z = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REBUILD", "1"))?;
     let run_y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESCUE", "1"))?;
+    let run_n = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_START", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3129,7 +3130,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 16] = [
+    let runs: [GpubenchRun; 17] = [
         (
             "run A",
             &run_a,
@@ -3340,6 +3341,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run Y",
             &run_y,
             &["Y: the rescue measured", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run N (the start-up watched): every stage read, the three cards.
+        (
+            "run N",
+            &run_n,
+            &[
+                "N0 the 2700G handed out: DINTRS",
+                "N6 the screen buffer shown (black)",
+                "N7 card 1",
+                "N8 card 2",
+                "N11 card 3",
+                "N: done",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
