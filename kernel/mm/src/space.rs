@@ -1168,12 +1168,14 @@ const AGED_CLASS: u32 = 0xFF;
 const _: () = assert!(crate::zpool::CLASSES < AGED_CLASS as usize);
 
 fn aged(frame: usize, writable: bool) -> u32 {
-    debug_assert!(frame < 1 << 14, "stored payloads have 30 bits");
-    (frame as u32) << 16 | AGED_CLASS << 8 | u32::from(writable)
+    use crate::zpool::{FRAME_SHIFT, MAX_FRAMES};
+    debug_assert!(frame < MAX_FRAMES, "stored payloads have 30 bits");
+    (frame as u32) << FRAME_SHIFT | AGED_CLASS << 8 | u32::from(writable)
 }
 
 fn decode_aged(raw: u32) -> Option<(usize, bool)> {
-    ((raw >> 8) & 0xFF == AGED_CLASS).then_some(((raw >> 16) as usize, raw & 1 != 0))
+    let frame = (raw >> crate::zpool::FRAME_SHIFT) as usize;
+    ((raw >> 8) & 0xFF == AGED_CLASS).then_some((frame, raw & 1 != 0))
 }
 
 /// Whether reclaim may take pages from `r` (everything but device and

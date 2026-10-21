@@ -1,4 +1,5 @@
-//! Physical frame allocator: a binary buddy allocator over up to 65535 frames.
+//! Physical frame allocator: a binary buddy allocator over up to
+//! [`MAX_FRAMES`](crate::zpool::MAX_FRAMES) frames (64 MiB).
 //!
 //! Hands out naturally aligned blocks of 2^order frames, 4 KiB to 4 MiB (order
 //! 0 to [`MAX_ORDER`]). The kernel needs contiguous blocks for page tables and
@@ -21,6 +22,8 @@
 //!
 //! Frames are indices relative to the pool's start; the caller turns them into
 //! physical addresses.
+
+use crate::zpool::MAX_FRAMES;
 
 /// Largest block order: 2^10 frames = 4 MiB.
 pub const MAX_ORDER: usize = 10;
@@ -76,7 +79,8 @@ impl Error {
     }
 }
 
-/// A buddy allocator over `N` frames (`N` < 65536).
+/// A buddy allocator over `N` frames (`N` <= [`MAX_FRAMES`]: a stored page
+/// table entry names a frame in 14 bits).
 pub struct Frames<const N: usize> {
     /// Free-list links, stored as index + 1 so that 0 means "none".
     next: [u16; N],
@@ -98,7 +102,11 @@ impl<const N: usize> Frames<N> {
     /// An allocator that owns no frames yet.
     #[must_use]
     pub const fn new() -> Self {
-        assert!(N < u16::MAX as usize, "frame indices must fit in u16");
+        // Frame numbers go into stored page table entries (compressed
+        // handles, aged pages) with 14 bits to spare: a bigger allocator
+        // would hand out frames those entries can't name. Checked at
+        // compile time for the kernel's static allocator.
+        assert!(N <= MAX_FRAMES, "frame numbers must fit a stored entry");
         Self {
             next: [0; N],
             prev: [0; N],
@@ -378,6 +386,12 @@ mod tests {
         assert_eq!(order_for(4 << 20), Some(MAX_ORDER));
         assert_eq!(order_for((4 << 20) + 1), None);
         assert_eq!(block_bytes(MAX_ORDER), 4 << 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "frame numbers must fit a stored entry")]
+    fn more_frames_than_a_stored_entry_names_are_refused() {
+        let _ = Frames::<{ MAX_FRAMES + 1 }>::new();
     }
 
     #[test]

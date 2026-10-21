@@ -181,12 +181,17 @@ pub const fn l2_large(phys: u32, attrs: Attrs) -> u32 {
     (phys & 0xFFFF_0000) | ap4(attrs.ap) | attrs.cache.cb() | 0b01
 }
 
+/// Bits of payload a stored descriptor carries ([`l2_stored`]): bits 1:0
+/// must stay 00 for the MMU, which leaves 30.
+pub const STORED_BITS: u32 = 30;
+
 /// A second-level fault descriptor carrying `payload` (non-zero, under
-/// 2^30): any access faults, and the payload says where the page went.
+/// 2^[`STORED_BITS`]): any access faults, and the payload says where the
+/// page went.
 #[must_use]
 pub const fn l2_stored(payload: u32) -> u32 {
     debug_assert!(
-        payload != 0 && payload < 1 << 30,
+        payload != 0 && payload < 1 << STORED_BITS,
         "stored payload out of range"
     );
     payload << 2

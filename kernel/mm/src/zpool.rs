@@ -26,6 +26,18 @@ pub const MAX_OBJECT: usize = 3072;
 pub const CLASSES: usize = (MAX_OBJECT + 2).div_ceil(GRANULE);
 
 const PAGE: usize = 4096;
+
+/// Bits a stored payload's low half gives class and slot (the compressed
+/// store's [`Handle`] and the memory manager's aged pages share the layout
+/// `frame << 16 | class << 8 | slot`).
+pub(crate) const FRAME_SHIFT: u32 = 16;
+/// Frames a stored payload can name: the payload has
+/// [`STORED_BITS`](crate::arm::STORED_BITS) bits and the frame sits above
+/// [`FRAME_SHIFT`], so 2^14 (64 MiB of 4 KiB frames). The frame allocator
+/// refuses to own more ([`Frames::new`](crate::frames::Frames::new)), so
+/// every frame number it hands out fits: no handle can wrap.
+pub const MAX_FRAMES: usize = 1 << (crate::arm::STORED_BITS - FRAME_SHIFT);
+
 /// Per-frame header: class (1), used count (1), next and prev frame + 1
 /// (2 + 2), reserved (2), slot bitmap (8).
 const HEADER: usize = 16;
@@ -69,11 +81,11 @@ pub struct Handle(u32);
 
 impl Handle {
     fn new(frame: usize, class: usize, slot: usize) -> Self {
-        debug_assert!(frame < 1 << 16 && class < 1 << 8 && slot < 1 << 8);
-        Self((frame as u32) << 16 | (class as u32) << 8 | slot as u32)
+        debug_assert!(frame < MAX_FRAMES && class < 1 << 8 && slot < 1 << 8);
+        Self((frame as u32) << FRAME_SHIFT | (class as u32) << 8 | slot as u32)
     }
     fn frame(self) -> usize {
-        (self.0 >> 16) as usize
+        (self.0 >> FRAME_SHIFT) as usize
     }
     fn class(self) -> usize {
         ((self.0 >> 8) & 0xFF) as usize
@@ -408,6 +420,31 @@ mod tests {
         let h = Handle::new(1234, 17, 5);
         assert_eq!(Handle::from_raw(h.raw()), h);
         assert_eq!((h.frame(), h.class(), h.slot()), (1234, 17, 5));
+    }
+
+    /// The highest frame the allocator can hand out, in the highest class
+    /// and slot, survives being stored in a page table entry and read back.
+    #[test]
+    fn the_last_frame_round_trips_through_a_stored_entry() {
+        use crate::arm::{L2, l2_decode, l2_stored};
+        let h = Handle::new(MAX_FRAMES - 1, CLASSES, 63);
+        let L2::Stored(raw) = l2_decode(l2_stored(h.raw())) else {
+            panic!("not a stored entry");
+        };
+        let back = Handle::from_raw(raw);
+        assert_eq!(back, h);
+        assert_eq!(
+            (back.frame(), back.class(), back.slot()),
+            (MAX_FRAMES - 1, CLASSES, 63)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "stored payload out of range")]
+    fn a_frame_past_the_limit_cannot_be_stored() {
+        // Debug builds catch it at the handle; this is the twin check at
+        // the descriptor, for the bits the handle would have lost.
+        let _ = crate::arm::l2_stored(((MAX_FRAMES as u32) << FRAME_SHIFT) | 1 << 8);
     }
 }
 
