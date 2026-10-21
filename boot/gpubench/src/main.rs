@@ -204,6 +204,11 @@ mod image {
     /// measured and every 2700G register dumped again to diff. Run in each
     /// state (now, after a soft reset, after a full power-off).
     const FINGERPRINT: bool = option_env!("RP_GPUBENCH_FINGERPRINT").is_some();
+    /// Run T: what the display's fetch costs (run W: the 32-bit scan-out
+    /// slows 3D ~10%), the speed at Windows Mobile's clock with the plane
+    /// at 32 bits, 16 bits, stopped and 32 again; then `0x644`'s
+    /// orientation bits mapped pixel by pixel. Unattended.
+    const FETCH: bool = option_env!("RP_GPUBENCH_FETCH").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -2646,6 +2651,129 @@ mod image {
         clock_card(g, ["RUN P2W", "DONE", ""], 0xFF20_2040, 3);
     }
 
+    // ---- Run T: the display's fetch against the engines, and 0x644 ---------
+
+    /// T2: one try of `0x644` = `v` (code 6, run P's placed texture into
+    /// its target), the whole mapping logged: for each row, which words
+    /// changed (bit k: pixel k) and the place eight of its pixels show.
+    fn t_orient(g: &mut Rig, r: &mut Renderer, area: u32, v: u32) {
+        log!("  T2 0x644 = {v}");
+        let _ = p_try_with(g, r, area, P_SQUARE, 6, Some((0x644, v)), false);
+        g.e.regs.write32(MBX + 0x644, 0);
+        let at = area + P_BEFORE;
+        for y in 0..P_SQUARE.h {
+            let mut changed = 0u32;
+            let mut line = heapless_name();
+            for x in 0..P_SQUARE.w {
+                let w = g
+                    .mem
+                    .load((at + y * P_SQUARE.stride + 4 * x) as usize)
+                    .unwrap_or(0);
+                if w != P_FILL {
+                    changed |= 1 << x;
+                }
+                if x % 4 == 0 {
+                    let _ = match p_8888(w) {
+                        Some((px, py)) => write!(line, " {px:2},{py:2}"),
+                        None if w == P_FILL => write!(line, "    --"),
+                        None => write!(line, "    ??"),
+                    };
+                }
+            }
+            log!("    row {y:2}: changed 0x{changed:08x};{}", line.as_str());
+        }
+    }
+
+    /// Run T (see [`FETCH`]).
+    #[inline(never)]
+    fn fetch(g: &mut Rig) {
+        log!(
+            "T1: the display's fetch: the speed at Windows Mobile's clock with the graphics plane at 32 bits, 16 bits (the same memory read as RGB565: half the bytes), stopped (GSCADR bit 31 clear), and 32 bits again; DINTRS after each"
+        );
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        if found.0 != ClockSpeed::WM.pll || found.1 != 0x2484_2481 {
+            log!("T1: not Windows Mobile's clock and bus timing: no speed measured");
+        } else if let Some(mut c) = clock_rig(g) {
+            let base = clock_check(g, &mut c, true, 2);
+            clock_log(WM_STEP, Some(0), &base);
+            let configs: [(&str, Option<(u32, u32)>); 4] = [
+                ("32-bit plane", Some((1920, PlaneFormat::Argb8888 as u32))),
+                ("16-bit plane", Some((960, PlaneFormat::Rgb565 as u32))),
+                ("plane stopped", None),
+                (
+                    "32-bit plane again",
+                    Some((1920, PlaneFormat::Argb8888 as u32)),
+                ),
+            ];
+            let mut seed = 4;
+            for (name, cfg) in configs {
+                match cfg {
+                    Some((stride, fmt)) => p2w_show(&mut g.e.regs, SCREEN.at, stride, fmt),
+                    None => {
+                        let v = g.e.regs.read32(dreg::GSCADR);
+                        g.e.regs.write32(dreg::GSCADR, v & !(1 << 31));
+                    }
+                }
+                rt::delay_us(50_000);
+                let mut r3d = [0u32; 3];
+                let mut read = [0u32; 3];
+                for k in 0..3 {
+                    let r = clock_check(g, &mut c, false, seed);
+                    seed += 2;
+                    clock_log(WM_STEP, Some(0), &r);
+                    r3d[k] = r.render_us;
+                    read[k] = r.read_us;
+                }
+                log!(
+                    "  T1 {name}: 3D {} / {} / {} us, read {} / {} / {} us; DINTRS 0x{:x}",
+                    r3d[0],
+                    r3d[1],
+                    r3d[2],
+                    read[0],
+                    read[1],
+                    read[2],
+                    g.e.regs.read32(dreg::DINTRS)
+                );
+            }
+            let _ = show_screen(&mut g.e.regs);
+            clock_rig_free(g, c);
+        } else {
+            log!("T1: no memory for the speed test");
+        }
+        log!(
+            "T2: 0x644 bits 0 and 1 (run P2 found each moves the output): 1, 2 and 3, code 6, run P's placed texture into its 32 x 32 target; per row the words changed and the place eight pixels show (x,y; -- untouched, ?? not a placed texel)"
+        );
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("  no memory for the target");
+            return;
+        };
+        if let Some(tex) = p_texture(g, 2, p_texel) {
+            t_orient_all(g, area, tex);
+            p_texture_free(g, tex);
+        } else {
+            log!("  no memory for the texture");
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        let _ = g.pool.free(area, P_AREA);
+        clock_card(g, ["RUN T", "DONE", ""], 0xFF10_6020, 3);
+    }
+
+    /// T2's three tries in their own frame (one renderer on the stack).
+    #[inline(never)]
+    fn t_orient_all(g: &mut Rig, area: u32, tex: Texture) {
+        let Some(mut r) = Renderer::new(&mut g.pool, P_SQUARE.w as u16, P_SQUARE.h as u16) else {
+            log!("  no renderer");
+            return;
+        };
+        p_setup(g, &mut r, P_SQUARE, tex);
+        for v in 1..=3 {
+            p_card(g, "RUN T 0X644", v as usize - 1, 3, v);
+            t_orient(g, &mut r, area, v);
+        }
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+    }
+
     // ---- Run C: the video plane (the owner watches) --------------------------
     //
     // ADR-0022 point 3, the translucent-layer-over-a-pan rule: does a
@@ -4857,6 +4985,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if FETCH {
+                "T (the display's fetch against the engines: the plane at 32 bits, 16 bits, stopped; then 0x644's orientation bits mapped)"
             } else if FINGERPRINT {
                 "W (the fingerprint: every PXA and 2700G register named, then the speed at Windows Mobile's clock)"
             } else if SLOW {
@@ -4930,6 +5060,8 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if FETCH {
+            fetch(&mut g);
         } else if FINGERPRINT {
             fingerprint(&mut g);
             rp_hal_x51v::devices::kept_stop();

@@ -3113,6 +3113,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_p2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS2", "1"))?;
     let run_p2w = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TARGETS_WATCH", "1"))?;
     let run_w = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FINGERPRINT", "1"))?;
+    let run_t = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FETCH", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3137,7 +3138,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 22] = [
+    let runs: [GpubenchRun; 23] = [
         (
             "run A",
             &run_a,
@@ -3453,6 +3454,24 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
+            (0, 0, 0),
+        ),
+        // Run T (the display's fetch, 0x644's mapping): both parts run (the
+        // release fork measures nothing at its own clock), every row of
+        // the three mappings logged.
+        (
+            "run T",
+            &run_t,
+            &[
+                "T1: the display's fetch",
+                "T2: 0x644 bits 0 and 1",
+                "  T2 0x644 = 1",
+                "  T2 0x644 = 3",
+                "    row 31: changed 0x",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
             (0, 0, 0),
         ),
     ];
