@@ -132,6 +132,56 @@ pub struct Seen {
     pub stopped: bool,
 }
 
+/// An address register of the channel, for [`snapshot`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Addr {
+    /// `DDADR`.
+    Ddadr,
+    /// `DSADR`.
+    Dsadr,
+    /// `DTADR`.
+    Dtadr,
+}
+
+/// Reads of a running channel [`snapshot`] makes at most before giving up
+/// on an agreeing set (each costs a piece's time to break: never in
+/// practice).
+pub const SNAPSHOT_TRIES: u32 = 8;
+
+/// The address registers for one poll, agreeing with each other. They
+/// are separate reads: a running channel can load its next descriptor
+/// between them, leaving `DDADR` naming one piece and `DSADR` inside the
+/// next (quality audit C17: `emu-audio-s2`'s one failed ring end read
+/// `DDADR` `0xA801EED0`, the link after piece 28, with `DSADR` 96 bytes
+/// into piece 29). So `DDADR` is read again after the others, and all of
+/// them again until it hasn't moved. `stopped` is `DCSR`'s, read before:
+/// a stopped channel's registers are final and read once. After
+/// [`SNAPSHOT_TRIES`] the last reading is returned as it is (the caller
+/// then sees registers that make no sense, and says so).
+pub fn snapshot(stopped: bool, mut read: impl FnMut(Addr) -> u32) -> Seen {
+    let mut ddadr = read(Addr::Ddadr);
+    let mut tries = 1;
+    loop {
+        let dsadr = read(Addr::Dsadr);
+        let dtadr = read(Addr::Dtadr);
+        let seen = Seen {
+            ddadr,
+            dsadr,
+            dtadr,
+            stopped,
+        };
+        if stopped || tries == SNAPSHOT_TRIES {
+            return seen;
+        }
+        let again = read(Addr::Ddadr);
+        if again == ddadr {
+            return seen;
+        }
+        ddadr = again;
+        tries += 1;
+    }
+}
+
 /// What the caller does after a poll.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
@@ -294,6 +344,80 @@ impl Stream {
 mod tests {
     extern crate std;
     use super::*;
+
+    /// `snapshot` over a scripted run of register reads.
+    fn scripted(stopped: bool, reads: &[(Addr, u32)]) -> (Seen, usize) {
+        let mut k = 0;
+        let seen = snapshot(stopped, |a| {
+            let (want, v) = reads[k];
+            assert_eq!(a, want, "read {k}");
+            k += 1;
+            v
+        });
+        (seen, k)
+    }
+
+    #[test]
+    fn a_snapshot_of_a_running_channel_reads_ddadr_again() {
+        use Addr::{Ddadr, Dsadr, Dtadr};
+        let (seen, n) = scripted(
+            false,
+            &[(Ddadr, 0x10), (Dsadr, 0x500), (Dtadr, 7), (Ddadr, 0x10)],
+        );
+        assert_eq!(n, 4);
+        assert_eq!((seen.ddadr, seen.dsadr, seen.dtadr), (0x10, 0x500, 7));
+    }
+
+    /// C17's reading: the next descriptor loaded between `DDADR` and
+    /// `DSADR`. The torn pair is never returned.
+    #[test]
+    fn a_descriptor_loaded_between_the_reads_is_read_again() {
+        use Addr::{Ddadr, Dsadr, Dtadr};
+        let (seen, n) = scripted(
+            false,
+            &[
+                (Ddadr, 0xA801_EED0),
+                (Dsadr, 0xA880_9FE0),
+                (Dtadr, 1),
+                (Ddadr, 0xA801_EEE0),
+                (Dsadr, 0xA880_9FE4),
+                (Dtadr, 1),
+                (Ddadr, 0xA801_EEE0),
+            ],
+        );
+        assert_eq!(n, 7);
+        assert_eq!((seen.ddadr, seen.dsadr), (0xA801_EEE0, 0xA880_9FE4));
+        assert!(!seen.stopped);
+    }
+
+    #[test]
+    fn a_stopped_channel_is_read_once() {
+        use Addr::{Ddadr, Dsadr, Dtadr};
+        let (seen, n) = scripted(true, &[(Ddadr, 0x11), (Dsadr, 0x600), (Dtadr, 3)]);
+        assert_eq!(n, 3);
+        assert!(seen.stopped);
+        assert_eq!((seen.ddadr, seen.dsadr), (0x11, 0x600));
+    }
+
+    /// A `DDADR` that never settles: the last reading, after
+    /// `SNAPSHOT_TRIES` passes, no more reads.
+    #[test]
+    fn a_snapshot_gives_up_after_its_tries() {
+        let mut reads = 0u32;
+        let mut d = 0u32;
+        let seen = snapshot(false, |a| {
+            reads += 1;
+            if a == Addr::Ddadr {
+                d += 0x10;
+                d
+            } else {
+                0x700
+            }
+        });
+        // Each pass: DSADR, DTADR; between passes DDADR; the first DDADR.
+        assert_eq!(reads, 1 + 2 * SNAPSHOT_TRIES + (SNAPSHOT_TRIES - 1));
+        assert_eq!(seen.ddadr, 0x10 * SNAPSHOT_TRIES);
+    }
     use std::vec;
     use std::vec::Vec;
 

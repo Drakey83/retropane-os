@@ -25,6 +25,16 @@
 //! at the end (file, then the empty folder); nothing else on the card is
 //! written, replaced or deleted. The loader resets the card when this
 //! returns.
+//!
+//! **The guard run** (`RP_SDTIME_GUARD`, quality audit C32) instead checks
+//! block numbers off the end of the card: the HAL's card-log writer (G1)
+//! and the driver's `read`, `read_many`, `write`, `write_many` and the
+//! block-device interface (G3, G4) refuse them before any command (the
+//! read-command count unchanged, each refusal in microseconds), a run
+//! crossing the end is refused whole, and the last block reads and stays as
+//! it was. It writes nothing: every write it tries is off the card, and
+//! each carries the last block's own bytes, so even one that got through
+//! would leave the card as it was. No folder, no file.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -38,10 +48,12 @@ mod image {
 
     use rp_drv_cpld::Cpld;
     use rp_drv_pxa_mmc::PxaMmc;
-    use rp_drv_sdcard::{BLOCK, Command, Response, SdCard, SdHost, mbr_partitions};
+    use rp_drv_sdcard::{BLOCK, Command, Error, Response, SdCard, SdHost, mbr_partitions};
     use rp_fat::Volume;
+    use rp_hal_api::{BlockDevice, BlockError};
     use rp_hal_pxa27x::{Mmio, dma::Dma, rt};
     use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::{cardsink, cardwrite};
 
     use super::MARKER;
 
@@ -90,8 +102,15 @@ mod image {
 
     fn main() -> ! {
         rt::init_mmu();
-        log!("{MARKER} 1: SD speed, report only (docs/research/storage-speed.md)");
-        run();
+        if GUARD {
+            log!(
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32)"
+            );
+            guard();
+        } else {
+            log!("{MARKER} 1: SD speed, report only (docs/research/storage-speed.md)");
+            run();
+        }
         log!("{MARKER}: done");
         rp_image::finish()
     }
@@ -140,6 +159,191 @@ mod image {
         writes(&mut card, lba, scratch);
         fat_layer(&mut card, start, scratch);
         clean_up(&mut card, start);
+    }
+
+    /// The guard run instead (`RP_SDTIME_GUARD`, see the crate's docs).
+    const GUARD: bool = option_env!("RP_SDTIME_GUARD").is_some();
+
+    /// The guard run's tally.
+    struct Checks {
+        checks: u32,
+        bad: u32,
+    }
+
+    impl Checks {
+        fn expect(&mut self, what: &str, ok: bool) {
+            self.checks += 1;
+            if !ok {
+                self.bad += 1;
+            }
+            log!("  {} {what}", if ok { "ok " } else { "BAD" });
+        }
+    }
+
+    /// Microseconds from 3.25 MHz ticks.
+    fn us(ticks: u32) -> u32 {
+        ticks / 13 * 4
+    }
+
+    /// A refusal is the driver's own check, no command: well under a
+    /// command's time (a block read takes milliseconds on the X51v).
+    const REFUSE_US: u32 = 200;
+
+    /// The guard run (quality audit C32): block numbers off the end of the
+    /// card refused before any command, the last block still read, and no
+    /// write reaching the card.
+    fn guard() {
+        let mut c = Checks { checks: 0, bad: 0 };
+        let Some(mut cpld) = devices::take_cpld().map(|(b, t)| Cpld::adopt(b, t).0) else {
+            log!("no CPLD");
+            return;
+        };
+        cpld.set_backlight_enable(true);
+        cpld.set_sd_power(true);
+        rt::delay_us(10_000);
+        let (Some(mut mmc), Some(dma)) = (rt::take_mmc(), rt::take_dma(rp_hal_pxa27x::dma_map::SD))
+        else {
+            log!("no MMC or DMA");
+            return;
+        };
+        // G1, the HAL's card-log writer, with the card the loader handed
+        // over: its guard comes before any register is touched.
+        let sector = [0u8; BLOCK];
+        let handed = cardsink::current().map(|s| cardwrite::Sd {
+            rca: s.sd.rca as u16,
+            high_capacity: s.sd.flags & 1 != 0,
+            wide: s.sd.flags & 2 != 0,
+            blocks: s.sd.blocks,
+        });
+        match handed {
+            Some(sd) if sd.blocks > 0 => {
+                log!(
+                    "G1 the card-log writer: the loader handed over {} blocks",
+                    sd.blocks
+                );
+                for lba in [sd.blocks, sd.blocks.saturating_add(1), u32::MAX] {
+                    let t0 = rt::ticks();
+                    let wrote = cardwrite::sd_write(&mut mmc, sd, lba, &sector);
+                    let t = us(rt::ticks().wrapping_sub(t0));
+                    c.expect(
+                        format_line(format_args!("block {lba} refused in {t} us")).as_str(),
+                        !wrote && t < REFUSE_US,
+                    );
+                }
+            }
+            _ => log!(
+                "G1 skipped: no card log on the SD card this run (the loader handed over no card)"
+            ),
+        }
+        let mut card = match SdCard::try_init(PxaMmc::with_dma(mmc, dma)) {
+            Ok(card) => card,
+            Err((e, _)) => {
+                log!("G0 card init failed: {}", e.name());
+                return;
+            }
+        };
+        let n = card.blocks();
+        log!(
+            "G0 card: {n} blocks, high capacity {}, 4-bit {}",
+            card.is_high_capacity(),
+            card.is_wide()
+        );
+        if n < 2 {
+            log!("G0 no capacity: nothing to check against");
+            return;
+        }
+        if let Some(sd) = handed {
+            c.expect("the loader's capacity is the driver's", sd.blocks == n);
+        }
+        // G2, the last block: read twice (the boundary from inside).
+        let mut last = [0u8; BLOCK];
+        let mut again = [0u8; BLOCK];
+        c.expect("the last block reads", card.read(n - 1, &mut last).is_ok());
+        c.expect(
+            "and again, the same",
+            card.read(n - 1, &mut again).is_ok() && last == again,
+        );
+        // G3, reads off the end: refused, no command (the read count
+        // unchanged), fast. The SDSC wrap point (2^23 blocks: its byte
+        // address wraps to 0) only where it lies off this card.
+        let wrap = 1u32 << 23;
+        let mut lbas = [n, n.saturating_add(1), u32::MAX, wrap];
+        let k = if wrap >= n { 4 } else { 3 };
+        let mut two = [0u8; 2 * BLOCK];
+        for &lba in &lbas[..k] {
+            let r0 = card.reads();
+            let t0 = rt::ticks();
+            let one = card.read(lba, &mut again);
+            let many = card.read_many(lba, &mut two);
+            let t = us(rt::ticks().wrapping_sub(t0));
+            c.expect(
+                format_line(format_args!(
+                    "read of block {lba}: {one:?}, {many:?} in {t} us, {} commands",
+                    card.reads() - r0
+                ))
+                .as_str(),
+                one == Err(Error::OutOfRange)
+                    && many == Err(Error::OutOfRange)
+                    && card.reads() == r0
+                    && t < 2 * REFUSE_US,
+            );
+        }
+        // A run crossing the end: none of it read, not even its first
+        // block (which is on the card).
+        let r0 = card.reads();
+        let crossing = card.read_many(n - 1, &mut two);
+        c.expect(
+            format_line(format_args!(
+                "2 blocks from the last: {crossing:?}, {} commands",
+                card.reads() - r0
+            ))
+            .as_str(),
+            crossing == Err(Error::OutOfRange) && card.reads() == r0,
+        );
+        let blocks = card.read_blocks(n, &mut two);
+        c.expect(
+            format_line(format_args!("the block-device interface: {blocks:?}")).as_str(),
+            blocks == Err(BlockError::OutOfRange),
+        );
+        // G4, writes off the end. Each writes the last block's own bytes,
+        // so even a write that got through would leave the card as it was
+        // (and the owner's SDHC card rejects addresses past its end itself).
+        two[..BLOCK].copy_from_slice(&last);
+        two[BLOCK..].copy_from_slice(&last);
+        lbas[3] = n - 1;
+        for (k, &lba) in lbas.iter().enumerate() {
+            let t0 = rt::ticks();
+            let (what, r) = if k < 3 {
+                ("1 block", card.write(lba, &last))
+            } else {
+                ("2 blocks", card.write_many(lba, &two))
+            };
+            let t = us(rt::ticks().wrapping_sub(t0));
+            c.expect(
+                format_line(format_args!("write of {what} at {lba}: {r:?} in {t} us")).as_str(),
+                r == Err(Error::OutOfRange) && t < REFUSE_US,
+            );
+        }
+        let w = card.write_blocks(n, &two[..BLOCK]);
+        c.expect(
+            format_line(format_args!("the block-device interface, writing: {w:?}")).as_str(),
+            w == Err(BlockError::OutOfRange),
+        );
+        c.expect(
+            "the last block as it was",
+            card.read(n - 1, &mut again).is_ok() && last == again,
+        );
+        // G5, the driver still works after the refusals.
+        c.expect("block 0 reads", card.read(0, &mut again).is_ok());
+        let (checks, bad) = (c.checks, c.bad);
+        log!("{MARKER}: the guard run: {checks} checks, {bad} BAD");
+    }
+
+    /// A check's description, formatted (the log's lines are short).
+    fn format_line(args: core::fmt::Arguments) -> Line {
+        let mut l = Line::new();
+        let _ = l.write_fmt(args);
+        l
     }
 
     /// Removes the test file and the image's folder, nothing else.

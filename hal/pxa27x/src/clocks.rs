@@ -551,6 +551,11 @@ mod target {
         if !change(p) {
             return false;
         }
+        // CCCR names the point running afterwards, as a relock leaves it:
+        // without one, a request saved in CCCR mid-change would stay armed
+        // for the next F write or wake from sleep (quality audit C42, the
+        // owner's option b). `p` is legal: `change` took it.
+        ask(p);
         let keep = super::MDREFR_DRI | super::MDREFR_DB2;
         let now = rd(MDREFR);
         // SAFETY: the memory clock is `raw`'s again, so its refresh interval
@@ -580,6 +585,24 @@ mod target {
             Some(r) => restore(r),
             None => false,
         }
+    }
+
+    /// Writes `CCCR` with `p`'s multipliers (its other bits kept) and
+    /// nothing else: no frequency change, so the core keeps running at
+    /// `CCSR`'s multipliers until the next `CLKCFG` F write (or, Intel's
+    /// manual says, a wake from sleep). `CCCR` and `CCSR` then disagree, as
+    /// they do between the two writes of a change: `rp-clocks` run F checks
+    /// the fault path's put-back in that state (quality audit C31). Returns
+    /// false, writing nothing, for an illegal point.
+    pub fn ask(p: Point) -> bool {
+        if !p.legal() {
+            return false;
+        }
+        let v = p.cccr(rd(CCCR));
+        // SAFETY: CCCR only takes effect at the next F write; `p` is legal,
+        // so whoever applies it gets a point the rules allow.
+        unsafe { (va(CCCR) as *mut u32).write_volatile(v) };
+        true
     }
 
     /// Writes `CLKCFG` (turbo / half-turbo switch, no F unless given) from

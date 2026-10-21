@@ -271,6 +271,14 @@ is shown as dithered RGB565, kept as a regression test (C28's proper
 fix). P2Y's five clean renders already show it; the long count checks for
 rare errors. If it finds any, layers go to RGB565 too and B stands.
 
+The check is built (2026-10-21): `rp-gpubench` run P2L
+(`RP_GPUBENCH_LONG_COUNT`), 1000 renders of P2W's picture at 32 bits
+with the screen scanned out as P2W's picture dithered to RGB565, each
+checked as P2X checks and compared with the first render, between two
+controls of 5 renders with the screen at 32 bits (where P2Y found errors:
+if the controls find none, the count can't tell anything). Its emulator
+check is in `emu-gpubench`; the device run is waiting.
+
 Still to design (in the renderer's next step): which engine writes the
 final dithered picture (the 3D core has the dither, bit 3 of `0x650`; the
 2D engine's isn't measured) and the double-buffer sizes at 16 bits.

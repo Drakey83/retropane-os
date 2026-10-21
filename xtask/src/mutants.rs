@@ -1740,6 +1740,36 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Host(&["-p", "rp-hal-pxa27x", "invalid_shapes_are_refused"]),
     },
+    Mutant {
+        name: "dma snapshot: a DDADR that moved during the reads taken as it was (quality audit C17)",
+        file: "hal/pxa27x/src/dmachain.rs",
+        from: "        if again == ddadr {",
+        to: "        if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_descriptor_loaded_between_the_reads_is_read_again",
+        ]),
+    },
+    Mutant {
+        name: "dma snapshot: a running channel's DDADR not read again (quality audit C17)",
+        file: "hal/pxa27x/src/dmachain.rs",
+        from: "        if stopped || tries == SNAPSHOT_TRIES {",
+        to: "        if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_descriptor_loaded_between_the_reads_is_read_again",
+        ]),
+    },
+    Mutant {
+        name: "clocks: restore leaves a CCCR request armed when no relock is needed (quality audit C42)",
+        file: "hal/pxa27x/src/clocks.rs",
+        from: "        ask(p);
+",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_clocks),
+    },
     // The audio ring's end (ADR-0032 A6, dmaring).
     Mutant {
         name: "ring: old STOP cleared before the new one is set (ADR-0032 A6)",

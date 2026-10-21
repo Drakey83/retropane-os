@@ -28,6 +28,15 @@
 //! - The starting clocks put back exactly (and on any fault before the
 //!   crash report), checked, then the starting voltage code (after the
 //!   clock, as any slow-down; a fault leaves the higher code: safe).
+//!
+//! **Run F** (`RP_CLOCKS_FAULT`, quality audit C31) changes no clock: it
+//! writes `CCCR` asking for the same point with turbo at 1x (2N 2, a lower
+//! core clock and the same memory clock, in case anything applies it),
+//! checks the core still runs at `CCSR`'s point, saves the clocks in that
+//! state, then reads an unmapped address. The crash path's put-back
+//! (`clocks::restore_saved`) must keep the point running (C31's bug chose
+//! `CCCR`'s) and leave `CCCR` naming it (C42), checked before the crash
+//! report and the loader.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -59,6 +68,18 @@ mod image {
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
     }
+
+    /// Run F instead (see the crate's docs).
+    const FAULT: bool = option_env!("RP_CLOCKS_FAULT").is_some();
+
+    /// Run F: the clocks as found (`CCCR`, `CCSR`, `CLKCFG`) and the core
+    /// counted, for the put-back's checks; checks and BADs before the
+    /// fault.
+    static F_FOUND: rt::Global<[u32; 4]> = rt::Global::new([0; 4]);
+    static F_CHECKS: rt::Global<[u32; 2]> = rt::Global::new([0; 2]);
+
+    /// Read by run F to fault (nothing is mapped there).
+    const UNMAPPED: usize = 0x8000_0000;
 
     /// Bytes of SDRAM written before the first switch and checked after each.
     const KEEP: usize = 3 * 1024 * 1024;
@@ -239,6 +260,9 @@ mod image {
 
     fn main() -> ! {
         rt::init_mmu();
+        if FAULT {
+            fault_path()
+        }
         let start = clocks::save();
         // A crash puts the clocks back first (rp-image's crash order).
         rp_image::on_crash(put_back);
@@ -434,6 +458,105 @@ mod image {
     /// The clocks as found, if saved.
     fn put_back() {
         let _ = clocks::restore_saved();
+    }
+
+    /// Run F (see the crate's docs): never returns; the crash path ends it.
+    fn fault_path() -> ! {
+        rp_image::on_crash(fault_put_back);
+        log!(
+            "{MARKER}: run F, the fault path's put-back with CCCR asking for another point than the one running (quality audit C31), version 3"
+        );
+        if let Some(bus) = rt::take_ffuart() {
+            let mut u = PxaUart::new(bus);
+            u.init(115_200);
+            let _ = writeln!(u, "{MARKER}: run F");
+        }
+        let mut g = Rig { checks: 0, bad: 0 };
+        let found = clocks::read();
+        log_raw("F1 as found", found);
+        let fp = found.point();
+        let khz0 = clocks::measure_core_khz(20);
+        log!("  core counted {khz0} kHz (decoded {})", fp.core_khz());
+        F_FOUND.with(|f| *f = [found.cccr, found.ccsr, found.clkcfg, khz0]);
+        if Point::decode(found.cccr, found.cccr, found.clkcfg) != fp {
+            rp_image::fail("CCCR and CCSR disagree as found: run F needs them agreeing");
+        }
+        // The same point with turbo at 1x: a lower core clock, the same
+        // memory clock and bus, so nothing is at risk if anything applies it.
+        let asked = Point { n2: 2, ..fp };
+        if fp.n2 == 2 || !asked.legal() {
+            rp_image::fail("no lower turbo multiplier to ask for");
+        }
+        g.expect("CCCR written (no frequency change)", clocks::ask(asked));
+        let now = clocks::read();
+        log_raw("F2 CCCR asks for 2N 2", now);
+        log!(
+            "  the point CCCR names: core {} kHz (what restore chose before C31's fix)",
+            Point::decode(now.cccr, now.cccr, now.clkcfg).core_khz()
+        );
+        g.expect("CCSR unchanged", now.ccsr == found.ccsr);
+        g.expect(
+            "CCCR now names the asked point",
+            Point::decode(now.cccr, now.cccr, now.clkcfg) == asked,
+        );
+        g.expect("the running point unchanged", now.point() == fp);
+        let khz = clocks::measure_core_khz(20);
+        log!("  core counted {khz} kHz");
+        g.expect(
+            "the core runs as found (2%): a CCCR write alone changes nothing",
+            khz.abs_diff(khz0) <= khz0 / 50,
+        );
+        let saved = clocks::save();
+        log!(
+            "F3 saved with CCCR 0x{:08x} and CCSR 0x{:08x}: restore will put back core {} kHz",
+            saved.cccr,
+            saved.ccsr,
+            saved.point().core_khz()
+        );
+        g.expect("the saved point is the one running", saved.point() == fp);
+        F_CHECKS.with(|c| *c = [g.checks, g.bad]);
+        log!(
+            "F4 a data abort (a read of 0x{UNMAPPED:08x}): the crash path puts the clocks back first"
+        );
+        let _ = black_box(rt::fault_probe(black_box(UNMAPPED)));
+        crash(format_args!("the read of 0x{UNMAPPED:08x} didn't fault"))
+    }
+
+    /// Run F's put-back, first in the crash path: the saved clocks put
+    /// back, then checked.
+    fn fault_put_back() {
+        let ok = clocks::restore_saved();
+        let [cccr, ccsr, clkcfg, khz0] = F_FOUND.with(|f| *f);
+        let fp = Point::decode(cccr, ccsr, clkcfg);
+        let [checks, bad] = F_CHECKS.with(|c| *c);
+        let mut g = Rig { checks, bad };
+        let after = clocks::read();
+        log_raw("F5 put back by the crash path", after);
+        let khz = clocks::measure_core_khz(20);
+        log!("  core counted {khz} kHz");
+        g.expect("restore_saved accepted", ok);
+        g.expect("the point running is the one found", after.point() == fp);
+        g.expect("CCSR as found", after.ccsr == ccsr);
+        g.expect(
+            "the core runs as found (2%)",
+            khz.abs_diff(khz0) <= khz0 / 50,
+        );
+        g.expect(
+            "CCCR names the point running (C42: no request left armed)",
+            Point::decode(after.cccr, after.cccr, after.clkcfg) == fp,
+        );
+        let end = clocks::read();
+        log_raw("F6 end", end);
+        g.expect("CCCR as found", end.cccr == cccr);
+        g.expect("CCSR as found", end.ccsr == ccsr);
+        let (checks, bad) = (g.checks, g.bad);
+        log!(
+            "{MARKER}: run F: {checks} checks, {bad} BAD (the crash report follows: it is the run's end)"
+        );
+        let _ = writeln!(
+            PxaUart::new(rt::emergency_uart()),
+            "{MARKER}: run F: {checks} checks, {bad} BAD"
+        );
     }
 }
 

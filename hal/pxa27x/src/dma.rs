@@ -22,7 +22,7 @@ use rp_hal_api::{DmaEngine, DmaRing, Port, RingEnd, Width, WindowDma};
 
 use crate::cpu;
 use crate::dma_map;
-use crate::dmachain::{Next, Seen, Shape, Stream};
+use crate::dmachain::{self, Addr, Next, Seen, Shape, Stream};
 use crate::dmaring::{self, Ring};
 
 const BASE: usize = 0x4000_0000;
@@ -199,12 +199,21 @@ impl Dma {
     /// The registers, `DCSR` first (once it says stopped, the others read
     /// after it are final).
     fn seen(&self) -> Seen {
-        Seen {
-            stopped: read(dcsr(self.ch)) & DCSR_STOPINTR != 0,
-            ddadr: read(ddadr(self.ch)),
-            dsadr: read(dsadr(self.ch)),
-            dtadr: read(dtadr(self.ch)),
-        }
+        let stopped = read(dcsr(self.ch)) & DCSR_STOPINTR != 0;
+        self.snapshot(stopped)
+    }
+
+    /// The address registers, agreeing with each other
+    /// ([`dmachain::snapshot`]; `stopped` is `DCSR`'s, read first).
+    fn snapshot(&self, stopped: bool) -> Seen {
+        let ch = self.ch;
+        dmachain::snapshot(stopped, |a| {
+            read(match a {
+                Addr::Ddadr => ddadr(ch),
+                Addr::Dsadr => dsadr(ch),
+                Addr::Dtadr => dtadr(ch),
+            })
+        })
     }
 
     /// Starts streaming `shape`: the first descriptors written, the chain
@@ -415,12 +424,7 @@ impl DmaEngine for Dma {
         }
         // DCSR first: when it says stopped, the address registers read
         // after it are final.
-        let seen = Seen {
-            stopped: s & DCSR_STOPINTR != 0,
-            ddadr: read(ddadr(self.ch)),
-            dsadr: read(dsadr(self.ch)),
-            dtadr: read(dtadr(self.ch)),
-        };
+        let seen = self.snapshot(s & DCSR_STOPINTR != 0);
         let mut stream = self.stream?;
         let chain = self.chain();
         let base = chain.as_ptr() as u32;

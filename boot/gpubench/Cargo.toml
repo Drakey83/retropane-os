@@ -16,6 +16,8 @@ rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-hal-mem = { path = "../../hal/mem" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
+rp-draw = { path = "../../drivers/draw" }
+rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }

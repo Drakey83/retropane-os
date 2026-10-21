@@ -3016,16 +3016,73 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
     // A fork that models the clocks (the cycle counter at the core clock,
     // CCSR latched at F, WM's voltage pins: branch pxa-clocks) must pass
     // every check, with every point visited.
-    if log.contains("ok  cycle counter agrees") {
+    let modelled = log.contains("ok  cycle counter agrees");
+    if modelled {
         if !log.contains(" checks, 0 BAD") || log.contains("skipped") {
             return Err(format!(
                 "clocks: the modelled clocks must pass every check:{log}"
             ));
         }
         eprintln!("    clocks OK: every point visited, every check passed on the modelled clocks");
-        return Ok(());
+    } else {
+        eprintln!("    clocks: returned cleanly; run log:{log}");
     }
-    eprintln!("    clocks: returned cleanly; run log:{log}");
+    clocks_fault_path(root, &loader, modelled)
+}
+
+/// `rp-clocks` run F (quality audit C31): `CCCR` asking for another point,
+/// the clocks saved so, then a data abort; the crash path's put-back must
+/// keep the point running and log its checks before the crash report.
+fn clocks_fault_path(root: &Path, loader: &Path, modelled: bool) -> Result<(), String> {
+    let bin = variant_image(root, "rp-clocks", ("RP_CLOCKS_FAULT", "1"))?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-CLOCKS: run F")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(120),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("clocks run F: never came back to the loader")?;
+    // The order the crash path promises: the put-back's lines, then the
+    // fault's.
+    let put_back = log.find("F5 put back by the crash path");
+    let fault = log.find("FAULT DataAbort");
+    match (put_back, fault) {
+        (Some(p), Some(f)) if p < f => {}
+        _ => {
+            return Err(format!(
+                "clocks run F: wanted the put-back's lines, then the data abort's report:{log}"
+            ));
+        }
+    }
+    for want in [
+        "F2 CCCR asks for 2N 2",
+        "F3 saved with CCCR",
+        "F6 end",
+        "run F: ",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("clocks run F: the run log has no `{want}`:{log}"));
+        }
+    }
+    if modelled && !log.contains("run F: 13 checks, 0 BAD") {
+        return Err(format!(
+            "clocks run F: the modelled clocks must pass every check:{log}"
+        ));
+    }
+    eprintln!("    clocks run F OK: the fault path put the running point back and CCCR as found");
     Ok(())
 }
 
@@ -3197,6 +3254,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_t3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_RESOLVE", "1"))?;
     let run_p2x = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SPECKS", "1"))?;
     let run_p2y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SPECKS2", "1"))?;
+    let run_p2l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LONG_COUNT", "1"))?;
+    let run_ff = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FIFO_FULL", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3221,7 +3280,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 26] = [
+    let runs: [GpubenchRun; 28] = [
         (
             "run A",
             &run_a,
@@ -3608,6 +3667,46 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
+            (0, 0, 0),
+        ),
+        (
+            // The model draws every render right, so the controls find
+            // nothing here either: the check is that every render runs,
+            // is checked and counted, and the run comes back.
+            "run P2L",
+            &run_p2l,
+            &[
+                "  P2L first render (true), the screen at 32 bits: bars: 0 white, 0 never written, 0 other wrong",
+                "  P2L control before (the screen at 32 bits): 5 renders (0 unfinished)",
+                "  the screen: P2W's picture dithered to RGB565 (true), scanned out at 16 bits",
+                "  P2L so far, the screen at 16 bits: 500 renders (0 unfinished)",
+                "  P2L the screen at 16 bits: 1000 renders (0 unfinished)",
+                "  P2L control after (the screen at 32 bits): 5 renders (0 unfinished)",
+                "P2L: 0 of 1000 renders under the 16-bit screen had a wrong pixel (0 pixels); the controls at 32 bits: 0 of 5 before, 0 of 5 after",
+                "P2L: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        (
+            // FF1 needs only every fill taken (whether the model's FIFO
+            // ever reads full is the device's question); FF2's drop is
+            // the renderer's, on any engine.
+            "run FF",
+            &run_ff,
+            &[
+                "  FF1: 300 fills queued in ",
+                "0 refused (FIFO full 100 ms)",
+                "  ok  B dropped: counted once, apart from stalls",
+                "  ok  the dropped frame isn't shown (A still on screen)",
+                "  ok  B after the drop is B (within 2 a channel, the host test's bound)",
+                "FF: FF2 11 checks, 0 BAD",
+                "FF: done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
             (0, 0, 0),
         ),
     ];
@@ -5458,6 +5557,35 @@ pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
     }
     eprintln!(
         "    cardlog sdtime OK: the SD test moved the log to the CF card; the halves join into the run log"
+    );
+
+    // rp-sdtime's guard run (quality audit C32): block numbers off the
+    // card refused by the card-log writer and the driver, nothing written.
+    let guard = variant_image(root, "rp-sdtime", ("RP_SDTIME_GUARD", "1"))?;
+    let guard = std::fs::read(&guard).map_err(|e| format!("{}: {e}", guard.display()))?;
+    let out = run("sdtime", &guard, None, "RPL END")?;
+    let card = check("sdtime", 2, &out, "returned")?;
+    for want in [
+        "G1 the card-log writer: the loader handed over ",
+        "ok  the loader's capacity is the driver's",
+        "ok  the last block as it was",
+        "RETROPANE-SDTIME: the guard run: ",
+    ] {
+        if !card.contains(want) {
+            return Err(format!(
+                "cardlog sdtime guard: no `{want}`:
+{card}"
+            ));
+        }
+    }
+    if card.contains("  BAD ") || !card.contains(" checks, 0 BAD") {
+        return Err(format!(
+            "cardlog sdtime guard: a check failed:
+{card}"
+        ));
+    }
+    eprintln!(
+        "    cardlog sdtime guard OK: every block off the card refused before a command, the last block as it was"
     );
 
     let out = run("crash", &image("rp-crash")?, None, "RPL END")?;

@@ -92,6 +92,7 @@ pub const MARKER: &str = "RETROPANE-GPUBENCH";
 mod image {
     use core::fmt::Write;
 
+    use rp_draw::{Cmd, Frame, Rect as DrawRect, Renderer as _};
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::clock::{self, MBXCLK, Speed as ClockSpeed};
     use rp_drv_mbx_display::font::{self, WIDTH};
@@ -108,6 +109,7 @@ mod image {
     use rp_hal_pxa27x::diag;
     use rp_hal_pxa27x::{Mmio, cpu, rt};
     use rp_hal_x51v::devices::KeptRunLog;
+    use rp_mbx_render::{Layout, Mbx2dRenderer};
     use rp_mbx3d_render::{
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
         UV_ONE, address, factor, format, untwiddle,
@@ -225,6 +227,21 @@ mod image {
     /// (the CPU's reads), then 32-bit renders with the screen at 32 bits,
     /// 16 bits and stopped (the display's fetch). Unattended.
     const SPECKS2: bool = option_env!("RP_GPUBENCH_SPECKS2").is_some();
+    /// Run P2L: ADR-0023's verification (the owner's vote B, 2026-10-21;
+    /// quality audit C28): P2W's picture rendered at 32 bits
+    /// [`P2L_RENDERS`] times while the screen is scanned out as dithered
+    /// RGB565, each checked as in P2X and against the first, between two
+    /// controls of [`P2L_CONTROLS`] renders with the screen at 32 bits (P2Y
+    /// found ~40-57 wrong pixels a render there: the count is only worth
+    /// something if the controls find them). Unattended, ~10 minutes.
+    const LONG_COUNT: bool = option_env!("RP_GPUBENCH_LONG_COUNT").is_some();
+    /// Run FF (quality audit C37): the 2D FIFO full. FF1 fills it for real
+    /// (300 full-screen fills queued at once: the level reads full, a busy
+    /// engine isn't refused); FF2 runs the 2D renderer on the engine with
+    /// the FIFO's level read as full for 150 ms while a frame is queued:
+    /// the frame is dropped, counted apart from hangs, not shown, and the
+    /// next one is whole. Unattended, under a minute.
+    const FIFO_FULL: bool = option_env!("RP_GPUBENCH_FIFO_FULL").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -1826,6 +1843,11 @@ mod image {
     /// The `bytes` bytes at `off` of the target at `at`, little-endian,
     /// read from 2700G memory (a copy would cost the 16 KiB stack).
     fn p_value(mem: &Vram, at: u32, off: u32, bytes: u32) -> u32 {
+        // A whole aligned word is one load (the same value the byte fold
+        // gives, at a quarter of the reads: run P2L reads 600 MB).
+        if bytes == 4 && off.is_multiple_of(4) {
+            return mem.load((at + off) as usize).unwrap_or(0);
+        }
         (0..bytes).fold(0, |v, k| {
             let o = off + k;
             let w = mem.load((at + (o & !3)) as usize).unwrap_or(0);
@@ -2967,12 +2989,26 @@ mod image {
         }
     }
 
-    /// P2X, one render into `pic` with `code`: the bars (y below 320)
+    /// One P2X check: its render, and what was found.
+    struct P2xCount {
+        /// The render finished.
+        ok: bool,
+        /// Bar pixels white, never written (the marker), other wrong.
+        white: u32,
+        unwritten: u32,
+        wrong: u32,
+        /// Pixels differing from the earlier render.
+        differ: u32,
+        /// Pixels with either fault (a pixel can have both).
+        bad: u32,
+        /// The first six of them, `(x,y) value`.
+        list: Name,
+    }
+
+    /// P2X, one render into `at` with `code`: the bars (y below 320)
     /// against their colours, and if `other` is given, every pixel against
-    /// the same picture rendered before at `other`. Logs counts and the
-    /// first six of each kind.
-    #[allow(clippy::too_many_arguments)]
-    fn p2x_check(
+    /// the same picture rendered before at `other`.
+    fn p2x_count(
         g: &mut Rig,
         r: &mut Renderer,
         at: u32,
@@ -2980,8 +3016,7 @@ mod image {
         bytes: u32,
         code: u32,
         other: Option<u32>,
-        k: u32,
-    ) {
+    ) -> P2xCount {
         g.fill(at, (0, 0, 480, 640), P2X_FILL);
         let t = Target {
             picture: Picture {
@@ -3005,9 +3040,15 @@ mod image {
         } else {
             P2X_FILL & mask
         };
-        let (mut white, mut unwritten, mut wrong, mut differ) = (0u32, 0u32, 0u32, 0u32);
-        let mut list = heapless_name();
-        let mut listed = 0;
+        let mut c = P2xCount {
+            ok,
+            white: 0,
+            unwritten: 0,
+            wrong: 0,
+            differ: 0,
+            bad: 0,
+            list: heapless_name(),
+        };
         for y in 0..640u32 {
             for x in 0..480u32 {
                 let off = y * stride + x * bytes;
@@ -3016,32 +3057,56 @@ mod image {
                 if y < 320 && v != p2x_bar(code, x) {
                     bad = true;
                     if v == mask {
-                        white += 1;
+                        c.white += 1;
                     } else if v == fill || (bytes == 2 && v == (P2X_FILL >> 16) & 0xFFFF) {
-                        unwritten += 1;
+                        c.unwritten += 1;
                     } else {
-                        wrong += 1;
+                        c.wrong += 1;
                     }
                 }
                 if let Some(o) = other
                     && p_value(&g.mem, o, off, bytes) & mask != v
                 {
-                    differ += 1;
+                    c.differ += 1;
                     bad = true;
                 }
-                if bad && listed < 6 {
-                    let _ = write!(list, " ({x},{y}) 0x{v:x}");
-                    listed += 1;
+                if bad {
+                    if c.bad < 6 {
+                        let _ = write!(c.list, " ({x},{y}) 0x{v:x}");
+                    }
+                    c.bad += 1;
                 }
             }
         }
+        c
+    }
+
+    /// [`p2x_count`], logged (render `k`): counts and the first six of
+    /// each kind.
+    #[allow(clippy::too_many_arguments)]
+    fn p2x_check(
+        g: &mut Rig,
+        r: &mut Renderer,
+        at: u32,
+        stride: u32,
+        bytes: u32,
+        code: u32,
+        other: Option<u32>,
+        k: u32,
+    ) {
+        let c = p2x_count(g, r, at, stride, bytes, code, other);
+        let listed = c.bad > 0;
         log!(
-            "  P2X code {code} render {k} ({ok}): bars: {white} white, {unwritten} never written, {wrong} other wrong; {} against render 1{}",
-            if other.is_some() { differ } else { 0 },
-            if listed > 0 { ";" } else { "" }
+            "  P2X code {code} render {k} ({}): bars: {} white, {} never written, {} other wrong; {} against render 1{}",
+            c.ok,
+            c.white,
+            c.unwritten,
+            c.wrong,
+            if other.is_some() { c.differ } else { 0 },
+            if listed { ";" } else { "" }
         );
-        if listed > 0 {
-            log!("   {}", list.as_str());
+        if listed {
+            log!("   {}", c.list.as_str());
         }
     }
 
@@ -3147,6 +3212,526 @@ mod image {
         let _ = r.release(&mut g.pool);
         log!("P2Y: done");
         clock_card(g, ["RUN P2Y", "DONE", ""], 0xFF10_6020, 3);
+    }
+
+    /// Run P2L's renders with the screen as dithered RGB565.
+    const P2L_RENDERS: u32 = 1000;
+    /// Run P2L's control renders (the screen at 32 bits), before and after.
+    const P2L_CONTROLS: u32 = 5;
+
+    /// Run P2L's tally of one phase.
+    #[derive(Default)]
+    struct P2lTally {
+        renders: u32,
+        unfinished: u32,
+        /// Renders with any wrong or differing pixel.
+        bad_renders: u32,
+        white: u32,
+        unwritten: u32,
+        wrong: u32,
+        differ: u32,
+        bad: u32,
+    }
+
+    impl P2lTally {
+        fn add(&mut self, c: &P2xCount) {
+            self.renders += 1;
+            self.unfinished += u32::from(!c.ok);
+            self.bad_renders += u32::from(c.bad > 0);
+            self.white += c.white;
+            self.unwritten += c.unwritten;
+            self.wrong += c.wrong;
+            self.differ += c.differ;
+            self.bad += c.bad;
+        }
+
+        fn log(&self, name: &str, us: u32) {
+            log!(
+                "  P2L {name}: {} renders ({} unfinished) in {} ms: {} with a wrong pixel; {} pixels wrong or differing (bars: {} white, {} never written, {} other wrong; {} against the first render)",
+                self.renders,
+                self.unfinished,
+                us / 1000,
+                self.bad_renders,
+                self.bad,
+                self.white,
+                self.unwritten,
+                self.wrong,
+                self.differ
+            );
+        }
+    }
+
+    /// Run P2L's line on the RGB565 screen (its bottom band): `s` in 4x
+    /// letters over black, each pixel pair one word.
+    fn p2l_label(g: &mut Rig, s: &str) {
+        // Rows 560-639 of the RGB565 screen are rows 280-319 of the 32-bit
+        // picture the 2D fill sees (960 bytes a row against 1920).
+        g.fill(SCREEN.at, (0, 280, 480, 40), 0);
+        let white = 0xFFFF_FFFFu32;
+        for (k, ch) in s.chars().enumerate() {
+            let x0 = 16 + k as u32 * (WIDTH as u32 + 1) * 4;
+            for (gy, &bits) in font::glyph(ch).iter().enumerate() {
+                for gx in 0..WIDTH as u32 {
+                    if bits & (1 << (WIDTH as u32 - 1 - gx)) == 0 {
+                        continue;
+                    }
+                    for dy in 0..4 {
+                        let y = 580 + gy as u32 * 4 + dy;
+                        let at = SCREEN.at + y * 960 + 2 * (x0 + gx * 4);
+                        g.mem.store(at as usize, &[white, white]);
+                    }
+                }
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// P2L's control: [`P2L_CONTROLS`] renders compared with the first,
+    /// the screen at 32 bits.
+    fn p2l_control(g: &mut Rig, r: &mut Renderer, a: u32, b: u32, name: &str) -> P2lTally {
+        let _ = show_screen(&mut g.e.regs);
+        rt::delay_us(50_000);
+        let mut t = P2lTally::default();
+        let t0 = rt::ticks();
+        for k in 0..P2L_CONTROLS {
+            let c = p2x_count(g, r, b, 1920, 4, 6, Some(a));
+            if c.bad > 0 {
+                log!(
+                    "   {name} render {}: {} pixels:{}",
+                    k + 1,
+                    c.bad,
+                    c.list.as_str()
+                );
+            }
+            t.add(&c);
+        }
+        t.log(name, us_since(t0));
+        t
+    }
+
+    /// Run P2L (see [`LONG_COUNT`]).
+    #[inline(never)]
+    fn long_count(g: &mut Rig) {
+        log!(
+            "P2L: ADR-0023's long count. P2W's picture rendered at 32 bits (code 6) into the background picture once (the first render), then into the second screen, each checked as in P2X and compared with the first: {P2L_CONTROLS} with the screen at 32 bits (a control: P2Y found errors there), {P2L_RENDERS} with the screen as dithered RGB565 (P2W's picture, 0x650 9, 960-byte rows), {P2L_CONTROLS} at 32 bits again"
+        );
+        clock_card(
+            g,
+            ["RUN P2L", "1000 RENDERS", "ABOUT 10 MIN"],
+            0xFF10_6020,
+            3,
+        );
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        p2w_scene(g, &mut r);
+        let (a, b) = (map::BACKGROUND.at, map::SCREENS[1].at);
+        let first = p2x_count(g, &mut r, a, 1920, 4, 6, None);
+        log!(
+            "  P2L first render ({}), the screen at 32 bits: bars: {} white, {} never written, {} other wrong{}",
+            first.ok,
+            first.white,
+            first.unwritten,
+            first.wrong,
+            first.list.as_str()
+        );
+        let before = p2l_control(g, &mut r, a, b, "control before (the screen at 32 bits)");
+        // The screen: P2W's picture as dithered RGB565, the run's line under
+        // it.
+        let s = Target {
+            picture: Picture {
+                at: SCREEN.at,
+                stride: 960,
+                w: 480,
+                h: 640,
+                format: PixelFormat::Rgb565,
+            },
+            x: 0,
+            y: 0,
+        };
+        let shown = p_frame(g, &mut r, s, 9, None);
+        p2l_label(g, "P2L COUNTING");
+        p2w_show(&mut g.e.regs, SCREEN.at, 960, PlaneFormat::Rgb565 as u32);
+        log!("  the screen: P2W's picture dithered to RGB565 ({shown}), scanned out at 16 bits");
+        rt::delay_us(50_000);
+        let mut main = P2lTally::default();
+        let t0 = rt::ticks();
+        for k in 1..=P2L_RENDERS {
+            let c = p2x_count(g, &mut r, b, 1920, 4, 6, Some(a));
+            if c.bad > 0 || !c.ok {
+                log!(
+                    "   16-bit screen render {k} ({}): {} pixels:{}",
+                    c.ok,
+                    c.bad,
+                    c.list.as_str()
+                );
+            }
+            main.add(&c);
+            if k % 100 == 0 {
+                main.log("so far, the screen at 16 bits", us_since(t0));
+            }
+            if k % 25 == 0 {
+                let mut l = heapless_name();
+                let _ = write!(l, "{k} OF {P2L_RENDERS} BAD {}", main.bad_renders);
+                p2l_label(g, l.as_str());
+            }
+        }
+        main.log("the screen at 16 bits", us_since(t0));
+        let after = p2l_control(g, &mut r, a, b, "control after (the screen at 32 bits)");
+        log!(
+            "P2L: {} of {} renders under the 16-bit screen had a wrong pixel ({} pixels); the controls at 32 bits: {} of {} before, {} of {} after",
+            main.bad_renders,
+            main.renders,
+            main.bad,
+            before.bad_renders,
+            before.renders,
+            after.bad_renders,
+            after.renders
+        );
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        for k in 0..12 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!("P2L: done");
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "BAD {} OF {}", main.bad_renders, main.renders);
+        clock_card(g, ["RUN P2L DONE", l2.as_str(), ""], 0xFF10_6020, 5);
+    }
+
+    // ---- Run FF: a full 2D FIFO (quality audit C37) --------------------------
+
+    /// The register window with the 2D FIFO's level read as full until a
+    /// tick: run FF2's stand-in for an engine that stops taking commands
+    /// (no known way makes the real one stop short of its clock, `MBXCLK`
+    /// 0, whose effect on reads of the MBX block is unmeasured).
+    struct FullFifo<'a> {
+        regs: &'a mut Mmio,
+        /// Status reads answer full until this `rt::ticks` value.
+        until: Option<u32>,
+        /// Status reads answered full.
+        faked: u32,
+    }
+
+    impl RegisterBus for FullFifo<'_> {
+        fn read32(&mut self, offset: usize) -> u32 {
+            let v = self.regs.read32(offset);
+            if offset == MBX + reg::STATUS
+                && let Some(t) = self.until
+            {
+                if (rt::ticks().wrapping_sub(t) as i32) < 0 {
+                    self.faked += 1;
+                    // 511 words used (bits 16-23 and 30): no room.
+                    return v | 0x00FF_0000 | 1 << 30;
+                }
+                self.until = None;
+            }
+            v
+        }
+
+        fn write32(&mut self, offset: usize, value: u32) {
+            self.regs.write32(offset, value);
+        }
+    }
+
+    /// The rig's 2700G memory lent to the 2D renderer.
+    struct VramRef<'a>(&'a mut Vram);
+
+    impl LocalMem for VramRef<'_> {
+        fn store(&mut self, at: usize, words: &[u32]) {
+            self.0.store(at, words);
+        }
+
+        fn load(&self, at: usize) -> Option<u32> {
+            self.0.load(at)
+        }
+
+        fn sync(&mut self) {
+            self.0.sync();
+        }
+    }
+
+    type Ff2d<'a> = Mbx2dRenderer<FullFifo<'a>, VramRef<'a>>;
+
+    /// Run FF2's frame (7 KiB: not on the stack).
+    static FF_FRAME: rt::Slot<Frame> = rt::Slot::new();
+
+    /// Run FF2's picture: the host test's shapes, moved by `shift`.
+    fn ff_scene(f: &mut Frame, shift: u16) {
+        f.clear();
+        f.push(Cmd::Fill {
+            r: DrawRect::new(0, 0, 480, 40),
+            color: 0xFF20_3040,
+        });
+        f.push(Cmd::Fill {
+            r: DrawRect::new(10 + shift, 60, 200, 120),
+            color: 0x8040_8080,
+        });
+        f.push(Cmd::HGradient {
+            r: DrawRect::new(20, 200, 300, 50),
+            left: 0x10FF_FFFF,
+            right: 0xC000_0040,
+        });
+        f.push(Cmd::HGradient {
+            r: DrawRect::new(20, 260, 300, 10),
+            left: 0xFF00_0000,
+            right: 0xFFFF_FFFF,
+        });
+        f.push(Cmd::Outline {
+            r: DrawRect::new(5 + shift, 55, 210, 130),
+            color: 0x60FF_FFFF,
+        });
+        f.push(Cmd::Fill {
+            r: DrawRect::new(60, 320 + 2 * shift, 360, 200),
+            color: 0xC0A0_4010,
+        });
+        f.damage(DrawRect::new(0, 0, 480, 640));
+    }
+
+    /// Run FF2's wallpaper: every channel moving.
+    fn ff_wall(x: u32, y: u32) -> u32 {
+        0xFF00_0000 | ((x * 255 / 479) << 16) | ((y * 255 / 639) << 8) | ((x + y) & 0xFF)
+    }
+
+    /// Polls `r` until its last frame is on the screen (1 s at most).
+    fn ff_settle(r: &mut Ff2d<'_>) -> bool {
+        let t0 = rt::ticks();
+        while !r.poll() {
+            if us_since(t0) > 1_000_000 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The picture on screen: where (`GSCADR`'s) and its words' hash.
+    fn ff_shown(r: &mut Ff2d<'_>) -> (u32, u32) {
+        let (e, m) = r.parts();
+        let at = (e.regs.read32(dreg::GSCADR) & 0x7F_FFFF) * 16;
+        let mut h = 0x811C_9DC5u32;
+        for k in 0..480 * 640 {
+            h = (h ^ m.load((at + 4 * k) as usize).unwrap_or(0)).wrapping_mul(0x0100_0193);
+        }
+        (at, h)
+    }
+
+    /// Run FF1: the FIFO filled for real.
+    #[inline(never)]
+    fn ff1(g: &mut Rig) {
+        const FILLS: u32 = 300;
+        log!(
+            "FF1: the FIFO filled for real: {FILLS} full-screen fills queued as fast as the CPU can (7 words each; the FIFO holds {} words), the level read before each, the waits for room timed",
+            cmd::FIFO_WORDS
+        );
+        clock_card(g, ["RUN FF", "STEP 1 OF 2", "FIFO FILLING"], 0xFF20_2040, 2);
+        let (mut min_free, mut waited, mut longest, mut refused) = (u32::MAX, 0u32, 0u32, 0u32);
+        let t_all = rt::ticks();
+        for k in 0..FILLS {
+            let c = if k % 2 == 0 { 0xFF40_2020 } else { 0xFF20_2040 };
+            let w = cmd::fill(
+                Format::BPP32,
+                SCREEN.at as usize,
+                SCREEN.stride as usize,
+                (0, 0, 480, 640),
+                c,
+            );
+            min_free = min_free.min(cmd::free_bytes(g.e.status()));
+            let t0 = rt::ticks();
+            let r = g.e.submit(&w);
+            let us = us_since(t0);
+            if us > 100 {
+                waited += 1;
+            }
+            longest = longest.max(us);
+            if let Err(e) = r {
+                log!("  FF1 fill {k}: refused ({e})");
+                refused += 1;
+                break;
+            }
+            if k % 32 == 0 {
+                rt::check_in();
+            }
+        }
+        let queued_us = us_since(t_all);
+        let done = g.e.finish(g.mem.0, 10_000_000);
+        log!(
+            "  FF1: {FILLS} fills queued in {} ms, the last done {} ms later ({}); least room seen {} bytes of {}; {waited} fills waited for room, the longest {longest} us; {refused} refused (FIFO full 100 ms)",
+            queued_us / 1000,
+            done.map_or(0, |us| us / 1000),
+            if done.is_ok() {
+                "the fence landed"
+            } else {
+                "the fence never landed"
+            },
+            min_free,
+            4 * cmd::FIFO_WORDS
+        );
+        log!(
+            "  FF1: the FIFO read as full {}: a busy engine {} (each command waited less than 100 ms)",
+            if min_free < 28 {
+                "(less room than one fill)"
+            } else {
+                "never"
+            },
+            if refused == 0 && longest < 100_000 {
+                "isn't taken for a hung one"
+            } else {
+                "was refused"
+            }
+        );
+    }
+
+    /// Run FF2: the 2D renderer on the real engine, the FIFO read as full.
+    #[inline(never)]
+    fn ff2(g: &mut Rig) {
+        log!(
+            "FF2: the 2D renderer (ADR-0023) on the engine, its FIFO read as full for 150 ms from the start of frame B: B must be dropped (fifo_full 1, no stall), not shown, and B drawn next whole and as B drawn after A without a drop"
+        );
+        clock_card(
+            g,
+            ["RUN FF", "STEP 2 OF 2", "DROPPED FRAME"],
+            0xFF20_2040,
+            2,
+        );
+        let Some(f) = FF_FRAME.put_with(Frame::new) else {
+            log!("  FF2: started twice");
+            return;
+        };
+        // One window offset for the two streams: each starts after a reset.
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+        let (mut checks, mut bad) = (0u32, 0u32);
+        let mut expect = |what: &str, ok: bool| {
+            checks += 1;
+            bad += u32::from(!ok);
+            log!("  {} {what}", if ok { "ok " } else { "BAD" });
+        };
+        let faked = {
+            let mut r: Ff2d<'_> = Mbx2dRenderer::new(
+                FullFifo {
+                    regs: &mut g.e.regs,
+                    until: None,
+                    faked: 0,
+                },
+                VramRef(&mut g.mem),
+                Layout::X51V,
+                rt::ticks,
+                3_250,
+            );
+            let mut row = [0u32; 480];
+            for y in 0..640u32 {
+                for (x, p) in row.iter_mut().enumerate() {
+                    *p = ff_wall(x as u32, y);
+                }
+                r.wallpaper_row(y as u16, &row);
+            }
+            r.show(rt::delay_us);
+            // A.
+            ff_scene(f, 0);
+            let _ = r.draw(f);
+            expect("frame A on screen", ff_settle(&mut r));
+            let a = ff_shown(&mut r);
+            expect(
+                "A: nothing dropped, no stall",
+                r.fifo_full == 0 && r.stalls == 0,
+            );
+            // B, the FIFO read as full for 150 ms (a command waits 100).
+            ff_scene(f, 40);
+            r.parts().0.regs.until = Some(rt::ticks().wrapping_add(150 * 3_250));
+            let t0 = rt::ticks();
+            let _ = r.draw(f);
+            let settled = ff_settle(&mut r);
+            let us = us_since(t0);
+            let faked = r.parts().0.regs.faked;
+            log!(
+                "  FF2 frame B: {us} us to settle, {faked} status reads answered full; fifo_full {} (this frame {}), stalls {}",
+                r.fifo_full,
+                r.last.fifo_full,
+                r.stalls
+            );
+            expect("B's fence landed (no reset)", settled);
+            expect(
+                "B dropped: counted once, apart from stalls",
+                r.fifo_full == 1 && r.last.fifo_full == 1 && r.stalls == 0,
+            );
+            expect(
+                "the dropped frame isn't shown (A still on screen)",
+                ff_shown(&mut r) == a,
+            );
+            // B again: whole.
+            let _ = r.draw(f);
+            expect("B drawn again is on screen", ff_settle(&mut r));
+            let b1 = ff_shown(&mut r);
+            expect(
+                "B again: nothing dropped this time, no stall",
+                r.fifo_full == 1 && r.last.fifo_full == 0 && r.stalls == 0,
+            );
+            expect("B differs from A", b1.1 != a.1);
+            // Its pixels kept in the pool (the 3D pool, unused here).
+            let keep = map::POOL.at;
+            {
+                let (_, m) = r.parts();
+                for k in 0..480 * 640u32 {
+                    let v = m.load((b1.0 + 4 * k) as usize).unwrap_or(0);
+                    m.store((keep + 4 * k) as usize, &[v]);
+                }
+                m.sync();
+            }
+            // The control: A, then B, no drop.
+            ff_scene(f, 0);
+            let _ = r.draw(f);
+            let ok_a = ff_settle(&mut r);
+            ff_scene(f, 40);
+            let _ = r.draw(f);
+            let ok_b = ff_settle(&mut r);
+            expect("the control's A and B on screen", ok_a && ok_b);
+            let b2 = ff_shown(&mut r);
+            let (mut differ, mut worst) = (0u32, 0u32);
+            {
+                let (_, m) = r.parts();
+                for k in 0..480 * 640u32 {
+                    let x = m.load((b2.0 + 4 * k) as usize).unwrap_or(0);
+                    let y = m.load((keep + 4 * k) as usize).unwrap_or(0);
+                    if (x ^ y) & 0x00FF_FFFF != 0 {
+                        differ += 1;
+                        for s in [0, 8, 16] {
+                            worst = worst.max(((x >> s) & 0xFF).abs_diff((y >> s) & 0xFF));
+                        }
+                    }
+                }
+            }
+            log!(
+                "  FF2 B after the drop against B drawn after A: {differ} pixels differ, by {worst} at most a channel"
+            );
+            expect(
+                "B after the drop is B (within 2 a channel, the host test's bound)",
+                worst <= 2,
+            );
+            expect(
+                "the control dropped nothing",
+                r.fifo_full == 1 && r.stalls == 0,
+            );
+            faked
+        };
+        // The rig's stream again, after a reset.
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+        let _ = show_screen(&mut g.e.regs);
+        log!("FF: FF2 {checks} checks, {bad} BAD ({faked} status reads faked)");
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "{bad} BAD OF {checks}");
+        clock_card(g, ["RUN FF DONE", l2.as_str(), ""], 0xFF10_6020, 5);
+    }
+
+    /// Run FF (see [`FIFO_FULL`]).
+    fn fifo_full(g: &mut Rig) {
+        ff1(g);
+        ff2(g);
+        log!("FF: done");
     }
 
     // ---- Run C: the video plane (the owner watches) --------------------------
@@ -5360,6 +5945,10 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if FIFO_FULL {
+                "FF (the 2D FIFO full: filled for real, then the 2D renderer with the level read as full)"
+            } else if LONG_COUNT {
+                "P2L (ADR-0023's long count: 32-bit renders under a dithered RGB565 screen, between 32-bit controls)"
             } else if SPECKS2 {
                 "P2Y (what P2X's errors need: the CPU's reads, the display's fetch at 32 bits, 16 bits and stopped)"
             } else if SPECKS {
@@ -5441,6 +6030,10 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if FIFO_FULL {
+            fifo_full(&mut g);
+        } else if LONG_COUNT {
+            long_count(&mut g);
         } else if SPECKS2 {
             specks2(&mut g);
         } else if SPECKS {
