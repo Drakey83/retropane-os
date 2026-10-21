@@ -465,6 +465,18 @@ fn mutated_images_never_panic() {
         x ^= x << 17;
         x
     };
+    // Values random bytes almost never make, written over whole words:
+    // where sums and products overflow.
+    const EDGES: [u32; 8] = [
+        u32::MAX,
+        u32::MAX - 1,
+        u32::MAX - PAGE + 1,
+        0x8000_0000,
+        0x7FFF_FFFF,
+        MAX_IMAGE,
+        MAX_IMAGE + 1,
+        0,
+    ];
     let mut page = [0u8; PAGE as usize];
     for i in 0..5000 {
         let mut file = base.clone();
@@ -475,25 +487,100 @@ fn mutated_images_never_panic() {
         };
         for _ in 0..1 + rnd() % 8 {
             let at = region.start + (rnd() as usize % region.len());
-            file[at] = rnd() as u8;
+            if i % 3 == 0 && at + 4 <= file.len() {
+                let v = EDGES[rnd() as usize % EDGES.len()];
+                file[at & !3..(at & !3) + 4].copy_from_slice(&v.to_le_bytes());
+            } else {
+                file[at] = rnd() as u8;
+            }
         }
         let Ok(img) = Image::parse(&file) else {
             continue;
         };
-        for p in 0..img.pages().min(64) {
+        for p in (0..img.pages().min(64)).chain([img.pages(), u32::MAX]) {
             let _ = img.fill_page(p, &mut page, reader(&file));
             let _ = img.page_protection(p);
         }
         let _ = for_each_import(&img, reader(&file), |_, _, _| {});
         if let Ok(Some(e)) = Exports::read(&img, reader(&file)) {
             let _ = e.by_ordinal(&img, 1, reader(&file));
+            let _ = e.by_ordinal(&img, u32::MAX, reader(&file));
             let _ = e.by_name(&img, b"x", 0, reader(&file));
+            let mut name = [0u8; MAX_NAME];
+            for k in [0, 1, u32::MAX] {
+                let _ = e.name_at(&img, k, &mut name, reader(&file));
+            }
         }
         // Relocation blocks straight from random bytes, too.
         let raw: Vec<u8> = (0..(rnd() % 64)).map(|_| rnd() as u8).collect();
         if let Ok(r) = Relocations::new(&raw) {
             r.apply(0, &mut page, [0; 4], [0; 4], 0x1234_0000);
+            r.apply(u32::MAX, &mut page, [0; 4], [0; 4], 0x1234_0000);
         }
+    }
+}
+
+/// The overflows the random mutations almost never reach, each on purpose
+/// (2026-10-21 baseline audit, defect 5): an error or nothing, never a
+/// panic (tests run with overflow checks on).
+#[test]
+fn hostile_sizes_and_rvas_are_errors_not_panics() {
+    let (file, _) = sample();
+    let opt = 0x80 + 24;
+    let with = |at: usize, v: u32| {
+        let mut f = file.clone();
+        f[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        f
+    };
+    // SizeOfImage whose page round-up overflows, or past a process slot.
+    for size in [u32::MAX, u32::MAX - PAGE + 2, MAX_IMAGE + 1] {
+        assert_eq!(Image::parse(&with(opt + 56, size)), Err(Error::BadLayout));
+    }
+    // The largest image accepted still parses.
+    let big = Image::parse(&with(opt + 56, MAX_IMAGE)).unwrap();
+    assert_eq!(big.pages(), MAX_IMAGE / PAGE);
+    // Public page functions past the image.
+    let img = Image::parse(&file).unwrap();
+    assert_eq!(img.page_protection(u32::MAX), None);
+    assert_eq!(img.page_protection(img.pages()), None);
+    let mut page = [0u8; PAGE as usize];
+    assert!(img.fill_page(u32::MAX, &mut page, reader(&file)).is_err());
+    let rel = {
+        let mut b = [0u8; 16];
+        let n = build::reloc_block(&mut b, 0, &[0x10]).unwrap();
+        b[..n].to_vec()
+    };
+    Relocations::new(&rel)
+        .unwrap()
+        .apply(u32::MAX, &mut page, [0; 4], [0; 4], 1);
+    // An import directory whose tables point at u32::MAX. The IAT slot
+    // (`iat + k * 4`) is never read, so it overflows unless checked; the
+    // lookup table and a name's hint are read first, and the read refuses
+    // a range past u32::MAX.
+    let dir_at = opt + 96 + dir::IMPORT * 8;
+    let mut f = with(dir_at, 0x3000); // in .data
+    f[dir_at + 4..dir_at + 8].copy_from_slice(&40u32.to_le_bytes());
+    let img = Image::parse(&f).unwrap();
+    let data = img.sections().nth(1).unwrap().raw_offset as usize;
+    for (lookup, iat, thunk) in [
+        (u32::MAX - 1, 0, 0),
+        (0x3100, u32::MAX - 3, 0x8000_0001),
+        (0x3100, 0x3100, u32::MAX - 1),
+    ] {
+        let mut g = f.clone();
+        let w = |g: &mut Vec<u8>, at: usize, v: u32| {
+            g[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        w(&mut g, data, lookup);
+        w(&mut g, data + 12, 0x3200); // the DLL's name: ""
+        w(&mut g, data + 0x200, 0);
+        w(&mut g, data + 16, iat);
+        w(&mut g, data + 20, 0); // the next descriptor: the end
+        w(&mut g, data + 0x100, thunk);
+        w(&mut g, data + 0x104, 1);
+        let img = Image::parse(&g).unwrap();
+        // Every outcome is an error or a clean walk; none panics.
+        let _ = for_each_import(&img, reader(&g), |_, _, _| {});
     }
 }
 

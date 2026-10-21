@@ -1085,9 +1085,145 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "pe: sections out of order or overlapping taken",
         file: "kernel/pe/src/lib.rs",
-        from: "if s.rva < prev_end || end > self.image_size.next_multiple_of(PAGE) {",
-        to: "if end > self.image_size.next_multiple_of(PAGE) {",
+        from: "if s.rva < prev_end || end > view_end {",
+        to: "if end > view_end {",
         check: Check::Host(&["-p", "rp-kernel-pe", "rejects_malformed_images"]),
+    },
+    Mutant {
+        name: "mm: a frame allocator larger than a stored entry can name taken",
+        file: "kernel/mm/src/frames.rs",
+        from: "assert!(N <= MAX_FRAMES, \"frame numbers must fit a stored entry\");",
+        to: "assert!(N < u16::MAX as usize, \"frame numbers must fit a stored entry\");",
+        check: Check::Host(&[
+            "-p",
+            "rp-kernel-mm",
+            "more_frames_than_a_stored_entry_names_are_refused",
+        ]),
+    },
+    Mutant {
+        name: "mm: a mapping narrower than its region never widened",
+        file: "kernel/mm/src/space.rs",
+        from: "self.tables.protect(self.mem, self.mmu, page, PAGE, ap);",
+        to: "let _ = ap;",
+        check: Check::Host(&["-p", "rp-kernel-mm", "protect_upgrades_take_the_next_write"]),
+    },
+    Mutant {
+        name: "mm: reclaim judges a private page's owner by its permissions",
+        file: "kernel/mm/src/space.rs",
+        from: "Backing::File { shared, .. } => !shared && !self.cache.holds(phys),",
+        to: "Backing::File { shared, .. } => !shared && false,",
+        check: Check::Host(&["-p", "rp-kernel-mm", "a_private_copy_survives_a_downgrade"]),
+    },
+    Mutant {
+        name: "mm: unmap releases a process's private copy to the cache",
+        file: "kernel/mm/src/space.rs",
+        from: "            if cache.holds(phys) {
+                cache.release(phys);",
+        to: "            if true {
+                cache.release(phys);",
+        check: Check::Host(&["-p", "rp-kernel-mm", "a_private_copy_survives_a_downgrade"]),
+    },
+    Mutant {
+        name: "clocks: the running point decoded from CCCR twice",
+        file: "hal/pxa27x/src/clocks.rs",
+        from: "Point::decode(self.cccr, self.ccsr, self.clkcfg)",
+        to: "Point::decode(self.cccr, self.cccr, self.clkcfg)",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "the_point_is_the_running_one_when_cccr_and_ccsr_disagree",
+        ]),
+    },
+    Mutant {
+        name: "sdcard: blocks past the card's end taken",
+        file: "drivers/sdcard/src/lib.rs",
+        from: ".is_some_and(|end| end <= self.blocks);",
+        to: ".is_some_and(|end| end <= u32::MAX);",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "blocks_past_the_end_are_refused_without_a_command",
+        ]),
+    },
+    Mutant {
+        name: "sdcard: a single-block write past the end taken",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "        self.on_card(lba, 1)?;
+        let addr = self.address(lba);",
+        to: "        let addr = self.address(lba);",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "blocks_past_the_end_are_refused_without_a_command",
+        ]),
+    },
+    Mutant {
+        name: "sdcard: a multi-block write past the end taken",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "        assert_eq!(buf.len() % BLOCK, 0, \"not a whole number of blocks\");
+        self.on_card(lba, buf.len() / BLOCK)?;
+        if buf.len() > BLOCK && self.host.can_write_multiple() {",
+        to: "        assert_eq!(buf.len() % BLOCK, 0, \"not a whole number of blocks\");
+        if buf.len() > BLOCK && self.host.can_write_multiple() {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "blocks_past_the_end_are_refused_without_a_command",
+        ]),
+    },
+    Mutant {
+        name: "card log: an SD write past the card's end taken",
+        file: "hal/x51v/src/cardwrite.rs",
+        from: "if lba >= card.blocks {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "sd_refusals_and_timeouts_are_false_never_a_hang",
+        ]),
+    },
+    Mutant {
+        name: "pe: an image larger than a process slot taken",
+        file: "kernel/pe/src/lib.rs",
+        from: "|| self.image_size > MAX_IMAGE",
+        to: "|| false",
+        check: Check::Host(&[
+            "-p",
+            "rp-kernel-pe",
+            "hostile_sizes_and_rvas_are_errors_not_panics",
+        ]),
+    },
+    Mutant {
+        name: "pe: page protection asked past the image",
+        file: "kernel/pe/src/lib.rs",
+        from: "            return None; // past the image: unmapped",
+        to: "            // past the image: unmapped",
+        check: Check::Host(&[
+            "-p",
+            "rp-kernel-pe",
+            "hostile_sizes_and_rvas_are_errors_not_panics",
+        ]),
+    },
+    Mutant {
+        name: "pe: an import table RVA summed unchecked",
+        file: "kernel/pe/src/lib.rs",
+        from: "    base.checked_add(off)
+        .ok_or(FillError::Image(Error::BadLayout))",
+        to: "    Ok(base + off)",
+        check: Check::Host(&[
+            "-p",
+            "rp-kernel-pe",
+            "hostile_sizes_and_rvas_are_errors_not_panics",
+        ]),
+    },
+    Mutant {
+        name: "pe: an export name index past the table taken",
+        file: "kernel/pe/src/lib.rs",
+        from: "        if i >= self.names {
+            return Err(FillError::Image(Error::BadLayout));",
+        to: "        if false {
+            return Err(FillError::Image(Error::BadLayout));",
+        check: Check::Host(&["-p", "rp-kernel-pe", "mutated_images_never_panic"]),
     },
     Mutant {
         name: "pe: an image for another CPU taken (x86)",

@@ -22,6 +22,13 @@
 /// Page size of the image view.
 pub const PAGE: u32 = 4096;
 
+/// Largest image (`SizeOfImage`) accepted: a process slot, 32 MiB, the most
+/// any Windows CE 5 process could map. Every RVA and size validated against
+/// it stays far from `u32::MAX`, so arithmetic on them can't overflow;
+/// values read from inside the image (import and export tables) are
+/// checked where they're used.
+pub const MAX_IMAGE: u32 = 32 << 20;
+
 /// `IMAGE_FILE_MACHINE_ARM`.
 pub const MACHINE_ARM: u16 = 0x01C0;
 /// `IMAGE_FILE_MACHINE_THUMB` (ARM with Thumb interworking: WM's ARMV4I).
@@ -234,14 +241,16 @@ impl Image {
     }
 
     fn validate(&self) -> Result<(), Error> {
-        if self.image_size == 0 || self.header_size > self.image_size {
+        if self.image_size == 0 || self.image_size > MAX_IMAGE || self.header_size > self.image_size
+        {
             return Err(Error::BadLayout);
         }
+        let view_end = self.view_end();
         let mut prev_end = self.header_size;
         for s in self.sections() {
             let end = s.rva.checked_add(s.mem_size()).ok_or(Error::BadLayout)?;
             // Sections must ascend without overlapping and fit the image.
-            if s.rva < prev_end || end > self.image_size.next_multiple_of(PAGE) {
+            if s.rva < prev_end || end > view_end {
                 return Err(Error::BadLayout);
             }
             s.raw_offset
@@ -252,12 +261,18 @@ impl Image {
         for d in &self.dirs {
             if d.size != 0 {
                 let end = d.rva.checked_add(d.size).ok_or(Error::BadLayout)?;
-                if end > self.image_size.next_multiple_of(PAGE) {
+                if end > view_end {
                     return Err(Error::BadLayout);
                 }
             }
         }
         Ok(())
+    }
+
+    /// The end of the image view: the image's size in whole pages (at most
+    /// [`MAX_IMAGE`], which `parse` checks).
+    fn view_end(&self) -> u32 {
+        self.pages() * PAGE
     }
 
     /// The sections, in address order.
@@ -358,6 +373,9 @@ impl Image {
     /// covers (it stays unmapped: a guard).
     #[must_use]
     pub fn page_protection(&self, page: u32) -> Option<Protection> {
+        if page >= self.pages() {
+            return None; // past the image: unmapped
+        }
         let lo = page * PAGE;
         let hi = lo + PAGE;
         let mut p: Option<Protection> = (lo < self.header_size).then_some(Protection::default());
@@ -481,7 +499,10 @@ impl<'a> Relocations<'a> {
         if delta == 0 {
             return;
         }
-        let rva = page * PAGE;
+        // No page this far out has relocations (blocks are found by RVA).
+        let Some(rva) = page.checked_mul(PAGE) else {
+            return;
+        };
         if let Some(entries) = self.block_for(rva) {
             for e in entries.as_chunks::<2>().0 {
                 let e = u16::from_le_bytes([e[0], e[1]]);
@@ -564,6 +585,8 @@ pub fn for_each_import<E>(
         return Ok(());
     }
     for i in 0..64u32 {
+        // `d` was validated (inside the image); the RVAs read from it below
+        // are anything, so every sum on them is checked.
         let at = d.rva + i * 20;
         let lookup = view_u32(img, at, &mut read)?;
         let name_rva = view_u32(img, at + 12, &mut read)?;
@@ -576,7 +599,7 @@ pub fn for_each_import<E>(
         let table = if lookup != 0 { lookup } else { iat };
         for k in 0..4096u32 {
             let mut b = [0u8; 4];
-            img.read_view(table + k * 4, &mut b, &mut read)?;
+            img.read_view(rva_at(table, k * 4)?, &mut b, &mut read)?;
             let thunk = u32::from_le_bytes(b);
             if thunk == 0 {
                 break;
@@ -584,14 +607,14 @@ pub fn for_each_import<E>(
             if k == 4095 {
                 return Err(FillError::Image(Error::BadLayout));
             }
-            let slot = iat + k * 4;
+            let slot = rva_at(iat, k * 4)?;
             if thunk & 0x8000_0000 != 0 {
                 f(&dll[..dll_len], Import::Ordinal(thunk as u16), slot);
             } else {
                 let mut h = [0u8; 2];
                 img.read_view(thunk, &mut h, &mut read)?;
                 let mut name = [0u8; MAX_NAME];
-                let n = read_name(img, thunk + 2, &mut name, &mut read)?;
+                let n = read_name(img, rva_at(thunk, 2)?, &mut name, &mut read)?;
                 f(
                     &dll[..dll_len],
                     Import::Name {
@@ -604,6 +627,13 @@ pub fn for_each_import<E>(
         }
     }
     Err(FillError::Image(Error::BadLayout))
+}
+
+/// `base + off` for an RVA read from inside the image: past `u32::MAX` is a
+/// malformed image, not a wrap.
+fn rva_at<E>(base: u32, off: u32) -> Result<u32, FillError<E>> {
+    base.checked_add(off)
+        .ok_or(FillError::Image(Error::BadLayout))
 }
 
 fn view_u32<E>(
@@ -675,7 +705,7 @@ impl Exports {
             names_rva: at(32, &mut read)?,
             ordinals_rva: at(36, &mut read)?,
         };
-        let limit = img.image_size.next_multiple_of(PAGE);
+        let limit = img.view_end();
         let fits = |rva: u32, n: u32, w: u32| {
             u64::from(rva) + u64::from(n) * u64::from(w) <= u64::from(limit)
         };
@@ -773,11 +803,16 @@ impl Exports {
         out: &mut [u8; MAX_NAME],
         mut read: impl FnMut(u32, &mut [u8]) -> Result<(), E>,
     ) -> Result<(usize, u32), FillError<E>> {
+        if i >= self.names {
+            return Err(FillError::Image(Error::BadLayout));
+        }
         let rva = view_u32(img, self.names_rva + i * 4, &mut read)?;
         let n = read_name(img, rva, out, &mut read)?;
         let mut o = [0u8; 2];
         img.read_view(self.ordinals_rva + i * 2, &mut o, &mut read)?;
-        Ok((n, self.base + u32::from(u16::from_le_bytes(o))))
+        // The ordinal base is read from the image: anything.
+        let ordinal = rva_at(self.base, u32::from(u16::from_le_bytes(o)))?;
+        Ok((n, ordinal))
     }
 }
 
