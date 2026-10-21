@@ -1,0 +1,17 @@
+[package]
+name = "rp-image"
+description = "What every bare-metal image shares (quality audit C38): its entry, one crash path for faults, panics and failed setup (serial line, crash box on screen, run-log line, crash flag, back to the loader), and its end (stack report, back to the loader)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true

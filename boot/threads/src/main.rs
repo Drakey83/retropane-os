@@ -35,7 +35,7 @@ mod image {
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid, kdata};
     use rp_kernel_trace::{Kind, Persistent};
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const ROUNDS: u32 = 1000;
     const SLEEPS: u32 = 5;
@@ -163,7 +163,6 @@ mod image {
         let mut port = PxaUart::new(rt::emergency_uart());
         port.init(115_200);
         let mut uart = Tee(port);
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = uart.write_str("\nRetroPane 26 threads test\n");
         TRACE.with(|t| {
@@ -174,7 +173,9 @@ mod image {
 
         // Thread stacks: 4 KiB each from the RAM pool; its last MiB is the
         // FCSE test's frame.
-        let Some(pool) = take_ram_pool() else { halt() };
+        let Some(pool) = take_ram_pool() else {
+            rp_image::fail("no RAM pool")
+        };
         let (pool, fcse_mib) = pool.split_at_mut(pool.len() - (1 << 20) / 4);
         let mut stacks = pool.chunks_exact_mut(1024);
 
@@ -212,7 +213,7 @@ mod image {
         });
         if started.is_err() {
             let _ = uart.write_str("THREADS setup FAIL\n");
-            halt();
+            rp_image::fail("scheduler setup");
         }
         let done = DEMO.with(|d| d.done);
         wait(done); // one of: ping-pong finished, sleeper finished
@@ -400,8 +401,7 @@ mod image {
         }
         trace(Kind::Mark, 2, u32::from(ok));
         // Back to the resident loader, if it started this run.
-        rp_hal_x51v::devices::return_to_loader();
-        halt()
+        rp_image::finish()
     }
 
     /// FCSE above the kernel (docs/research/process-limit.md): RetroPane's
@@ -874,34 +874,6 @@ mod image {
             let _ = writeln!(uart, " FAIL (got {got})");
         }
         pass
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    /// Faults and panics: on serial, and the shared crash path (back to the
-    /// loader with the report, if it started this run).
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\n{msg}");
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash(format_args!("PANIC at {}:{}", l.file(), l.line())),
-            None => crash(format_args!("PANIC")),
-        }
     }
 }
 

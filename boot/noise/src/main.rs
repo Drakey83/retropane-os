@@ -286,7 +286,9 @@ mod image {
     use super::stats::{self, Summary};
     use super::{MARKER, RESTART_ROW, RESTART_ROWS, SAMPLES, SPACED_SAMPLES, SPACING};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     type Sd = SdCard<PxaMmc<Mmio, Dma>>;
 
@@ -360,7 +362,6 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let Some(scratch) = devices::take_scratch() else {
             crash(format_args!("no scratch memory"))
@@ -639,10 +640,7 @@ mod image {
             let _ = writeln!(uart, "{MARKER}");
         }
         let _ = writeln!(RunLog, "{MARKER}");
-        devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     /// Fills `out` with the core cycles between every `k`th 32 kHz tick of
@@ -818,25 +816,6 @@ mod image {
             "  restart rows: {} of {RESTART_ROWS}",
             have / RESTART_ROW
         );
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "{msg}");
-        devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

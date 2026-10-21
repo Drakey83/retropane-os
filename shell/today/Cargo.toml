@@ -23,6 +23,7 @@ rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
 rp-graphics = { path = "../../services/graphics" }
 rp-mbx3d-render = { path = "../../drivers/mbx3d-render" }
 rp-vram-map = { path = "../../drivers/vram-map" }

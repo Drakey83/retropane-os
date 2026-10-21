@@ -32,7 +32,9 @@ mod image {
 
     use rp_today::{Depth, H, Latency, W, WallScratch, clock};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     /// Microseconds from OSCR0 (3.25 MHz), kept running across its wrap:
     /// the graphics service's clock.
@@ -135,9 +137,8 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no display"))
         };
         let mut d = Display::new(regs);
@@ -499,10 +500,7 @@ mod image {
                     );
                 }
                 before.restore(&mut gfx.two_d().parts().0.regs);
-                rp_hal_x51v::devices::return_to_loader();
-                loop {
-                    core::hint::spin_loop();
-                }
+                rp_image::finish()
             }
 
             // A frame the engine finished goes on the screen; the latency
@@ -616,23 +614,6 @@ mod image {
                 rt::wait_any_signal();
             }
         }
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

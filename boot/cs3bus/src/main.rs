@@ -142,7 +142,9 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
     use rp_vram_map::{POOL, SCREEN_BYTES};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     /// `BGCOLOR`: a plain read/write 2700G register, hidden behind the
     /// full-screen graphics plane.
@@ -219,9 +221,10 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
+        // A crash puts MSC1 back first (rp-image's crash order).
+        rp_image::on_crash(restore);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
         let _ = store32_volatile(vram, FENCE_AT, 0);
@@ -468,32 +471,7 @@ mod image {
     }
 
     fn finish() -> ! {
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        restore();
-        crash(format_args!(
-            "FAULT {} at {addr:#010x} (MSC1 put back)",
-            kind.name()
-        ))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        restore();
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
+        rp_image::finish()
     }
 }
 

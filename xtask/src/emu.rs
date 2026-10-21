@@ -38,6 +38,16 @@ const HELLO_MARKER: &str = "RETROPANE-HELLO-OK";
 /// Where `cargo xtask qemu` builds inside WSL.
 const WSL_QEMU_DEFAULT: &str = "$HOME/retropane-qemu/build/qemu-system-arm";
 
+/// Whether a run log shows a crash: any of `rp-image`'s crash lines (a
+/// fault, a panic, a failed setup step) or the loader's mark for a run
+/// that came back crashed (quality audit C38: one test for every check, so
+/// a new kind of crash line can't slip past some of them).
+fn crashed(log: &str) -> bool {
+    ["FAULT", "PANIC", "SETUP-FAIL", "[the image crashed"]
+        .iter()
+        .any(|m| log.contains(m))
+}
+
 /// The WSL emulator binary: `RETROPANE_WSL_QEMU` (a fork branch built in
 /// its own directory, without replacing the shared build other sessions
 /// use), else `cargo xtask qemu`'s.
@@ -1737,6 +1747,76 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     eprintln!(
         "    crash path OK: the image's crash box showed on the plane on screen (offset 0, as WM          leaves it); the panic came back to the loader, reached the PC and the card, and is on          the screen"
     );
+    crash_kinds(root, &loader)
+}
+
+/// Each fault kind through rp-image's crash path (quality audit C38):
+/// `rp-crash` built to fault by a data abort, a prefetch abort and an
+/// undefined instruction. Each must come back to the loader marked as a
+/// crash (never "did not return", the watchdog's report of a hang, nor a
+/// clean return), with its fault line in the run log and on the card.
+fn crash_kinds(root: &Path, loader: &Path) -> Result<(), String> {
+    for (switch, line) in [
+        ("RP_CRASH_DATA", "FAULT DataAbort at "),
+        ("RP_CRASH_PREFETCH", "FAULT PrefetchAbort at "),
+        ("RP_CRASH_UNDEFINED", "FAULT Undefined at "),
+    ] {
+        let image = variant_image(root, "rp-crash", (switch, "1"))?;
+        let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+        let frame = rp_loadproto::frame(&payload);
+        let card = rp_fat::format::build(&rp_fat::format::Image {
+            total_sectors: 32 * 1024,
+            sectors_per_cluster: 8,
+            files: &[],
+            blocked_clusters: &[],
+            ballast: 0,
+        });
+        let sd = scratch(
+            root,
+            &format!("sd-crash-{}.img", switch.to_ascii_lowercase()),
+        )?;
+        std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
+        let output = boot(
+            root,
+            &Boot {
+                image: loader,
+                marker: LOADER_MARKER,
+                screenshot: None,
+                sd_image: Some(&sd),
+                steps: &[],
+                extra: &[],
+                // The fault line, on the serial port first.
+                input: Some((&frame, line)),
+                during: None,
+                then: Some("RPL END"),
+                timeout: BOOT_TIMEOUT,
+            },
+        )?;
+        let log = output
+            .rsplit_once("RPL LOG")
+            .map(|(_, l)| l)
+            .ok_or_else(|| format!("crash {switch}: no run log after the image faulted"))?;
+        if !log.contains(line) || !log.contains("[the image crashed") {
+            return Err(format!(
+                "crash {switch}: the run log doesn't report the fault as a crash:{log}"
+            ));
+        }
+        if log.contains("did not return") {
+            return Err(format!(
+                "crash {switch}: went through a watchdog reset instead of back to the loader"
+            ));
+        }
+        let saved = card_file(&sd, "crashlog.txt")?;
+        if !String::from_utf8_lossy(&saved).contains(line) {
+            return Err(format!(
+                "crash {switch}: crashlog.txt on the card doesn't hold the fault"
+            ));
+        }
+        eprintln!(
+            "    crash path OK: `{}` came back to the loader as a crash",
+            line.trim_end()
+        );
+    }
     Ok(())
 }
 
@@ -1987,7 +2067,7 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
             "picture: the run log doesn't have the marker:{log}"
         ));
     }
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("picture: didn't return cleanly:{log}"));
     }
     eprintln!(
@@ -2112,7 +2192,7 @@ pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
             return Err(format!("blend: the run log has no `{want}`:{log}"));
         }
     }
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("blend: didn't return cleanly:{log}"));
     }
     eprintln!(
@@ -2234,7 +2314,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
     if !log.contains("RETROPANE-MBX-2D: PASS") {
         return Err(format!("mbx: the image's own checks failed:{log}"));
     }
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("mbx: didn't return cleanly:{log}"));
     }
     for l in log.lines().filter(|l| {
@@ -2459,7 +2539,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("noise: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("noise: didn't return cleanly:{log}"));
     }
     for want in [
@@ -2566,7 +2646,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
             return Err(format!("noise quick: the run log has no `{want}`:{log}"));
         }
     }
-    if log.contains("B one-clock") || log.contains("FAULT") || log.contains("PANIC") {
+    if log.contains("B one-clock") || crashed(log) {
         return Err(format!(
             "noise quick: did more than the restart row, or crashed:{log}"
         ));
@@ -2620,7 +2700,7 @@ pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("unplug: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("unplug: didn't return cleanly:{log}"));
     }
     for want in [
@@ -2674,7 +2754,7 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("glesfeat: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat: didn't return cleanly:{log}"));
     }
     for want in [
@@ -2755,7 +2835,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("mbx3d: never came back to the loader after the button press")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("mbx3d: didn't return cleanly:{log}"));
     }
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
@@ -2925,7 +3005,7 @@ pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("clocks: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("clocks: didn't return cleanly:{log}"));
     }
     for want in ["C1 as found", "C2 624 MHz", "end: CCCR", " checks, "] {
@@ -3037,7 +3117,7 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("cs3bus: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || !log.contains("RETROPANE-CS3BUS-DONE") {
+    if crashed(log) || !log.contains("RETROPANE-CS3BUS-DONE") {
         return Err(format!("cs3bus: didn't finish cleanly:{log}"));
     }
     if log.contains("MSC1 not as expected: nothing changed") {
@@ -3617,7 +3697,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             .rsplit_once("RPL LOG")
             .map(|(_, l)| l)
             .ok_or_else(|| format!("gpubench {name}: never came back to the loader"))?;
-        if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+        if crashed(log) || log.contains("did not return") {
             return Err(format!("gpubench {name}: didn't return cleanly:{log}"));
         }
         gpubench_card_log(&sd, name, number, log)?;
@@ -3824,7 +3904,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("mbx3d-api: never came back to the loader after the button press")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("mbx3d-api: didn't return cleanly:{log}"));
     }
     let modelled = device_has(root, "intel-2700g", "mbx-3d");
@@ -3910,7 +3990,7 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("mved: never came back to the loader after the button press")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("mved: didn't return cleanly:{log}"));
     }
     for want in [
@@ -3975,7 +4055,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("mbx-blend: never came back to the loader after the button press")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("mbx-blend: didn't return cleanly:{log}"));
     }
     for want in [
@@ -4454,7 +4534,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("today: never came back to the loader")?;
-    if log.contains("FAULT") || log.contains("PANIC") || log.contains("did not return") {
+    if crashed(log) || log.contains("did not return") {
         return Err(format!("today: didn't return cleanly:{log}"));
     }
     let line = log
@@ -5524,7 +5604,7 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
         .ok_or("storfast: no run log")?;
-    if log.contains("FAULT") || log.contains("PANIC") || !log.contains("RETROPANE-STORFAST: done") {
+    if crashed(log) || !log.contains("RETROPANE-STORFAST: done") {
         return Err(format!("storfast: didn't finish cleanly:{log}"));
     }
     let dma_window = emulator_accepts_global(root, "pxa2xx-pcmcia.word-cycles=on");

@@ -108,6 +108,54 @@ pub fn check_conflict_markers(path: &str, text: &str) -> Option<String> {
     ))
 }
 
+/// Where a crash path may be written (quality audit C38): `rp-image`, which
+/// every image's crashes go through; the loader, which receives them; and
+/// the HAL, which defines the hooks (and user programs' own, `hal/user`).
+pub const CRASH_PATH_HOMES: &[&str] = &["boot/image/", "boot/loader/", "hal/"];
+
+/// What only those homes may write: a hand-rolled fault handler, panic
+/// handler or fault-handler install, the crash flag's return, or the
+/// runtime's bare entry (which starts an image without the crash path).
+pub const CRASH_PATH_MARKS: &[&str] = &[
+    "fn on_fault(",
+    "#[panic_handler]",
+    "set_fault_handler(",
+    "crash_return(",
+    "rp_hal_pxa27x::entry!(",
+];
+
+/// Checks one Rust source for a crash path of its own (quality audit C38:
+/// 36 hand-rolled copies, 8 of which reported a crash as a hang or a clean
+/// finish). Comments are skipped; xtask (which names the marks) and the
+/// homes are allowed.
+#[must_use]
+pub fn check_crash_path(path: &str, text: &str) -> Vec<String> {
+    if !path.ends_with(".rs")
+        || path.starts_with("xtask/")
+        || CRASH_PATH_HOMES.iter().any(|h| path.starts_with(h))
+    {
+        return Vec::new();
+    }
+    let mut found = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        if let Some(m) = CRASH_PATH_MARKS.iter().find(|m| line.contains(*m)) {
+            found.push(format!(
+                "{path}:{}: `{m}`: images crash through rp-image (rp_image::entry!, crash, fail, on_crash), never a path of their own (quality audit C38)",
+                i + 1
+            ));
+        } else if line.contains("take_mbx") && !line.contains("rp_image::take_mbx") {
+            found.push(format!(
+                "{path}:{}: `take_mbx`: images take the display through rp_image::take_mbx, which turns the crash box on (quality audit C38)",
+                i + 1
+            ));
+        }
+    }
+    found
+}
+
 /// The marker of a value copied from Windows Mobile, Dell or another
 /// original (docs/quality-audit.md D1): `// inherited: <audit item>,
 /// <source>`.
@@ -196,6 +244,48 @@ const B: u32 = 2;
         // Setext headings, arrows and quoted text are fine.
         let fine = format!("Title\n=======\n> quote\n>>> not a marker\n{open}no space\n");
         assert_eq!(check_conflict_markers("README.md", &fine), None);
+    }
+
+    #[test]
+    fn a_crash_path_of_its_own_is_refused_outside_the_homes() {
+        for m in CRASH_PATH_MARKS {
+            let text = format!("mod image {{\n    {m}x)\n}}\n");
+            let found = check_crash_path("boot/new/src/main.rs", &text);
+            assert_eq!(found.len(), 1, "{m}");
+            assert!(
+                found[0].starts_with("boot/new/src/main.rs:2: "),
+                "{}",
+                found[0]
+            );
+            // The same line is fine in the homes, xtask and other files.
+            for ok in [
+                "boot/image/src/image.rs",
+                "boot/loader/src/main.rs",
+                "hal/pxa27x/src/rt.rs",
+                "xtask/src/policy.rs",
+                "docs/quality-audit.md",
+            ] {
+                assert!(check_crash_path(ok, &text).is_empty(), "{ok}: {m}");
+            }
+        }
+        // Comments that name them are fine; the shared entry is too.
+        let fine = "// no fn on_fault( here\n    /// #[panic_handler] lives in rp-image\nrp_image::entry!(main);\n";
+        assert!(check_crash_path("services/x/src/main.rs", fine).is_empty());
+        // The display only through rp-image (its crash box), in any spelling.
+        for bad in [
+            "let d = devices::take_mbx();",
+            "let d = rp_hal_x51v::devices::take_mbx();",
+            "use rp_hal_x51v::devices::{self, take_mbx};",
+        ] {
+            assert_eq!(
+                check_crash_path("boot/new/src/main.rs", bad).len(),
+                1,
+                "{bad}"
+            );
+        }
+        assert!(
+            check_crash_path("boot/new/src/main.rs", "let d = rp_image::take_mbx();").is_empty()
+        );
     }
 
     #[test]

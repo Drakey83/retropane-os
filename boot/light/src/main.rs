@@ -31,7 +31,7 @@ mod image {
 
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, crash, reg};
+    use rp_drv_mbx_display::{Display, reg};
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::diag;
@@ -39,7 +39,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::beacon;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     // Step colours (RGB565).
     const RED: u16 = 0xF800;
@@ -70,32 +70,17 @@ mod image {
         }
     }
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    /// Stripes, then the message on serial and (if the 2700G was taken) as
-    /// text at the top of a full-screen plane.
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
+    /// On a crash, first (rp-image's crash order): stripes, magenta
+    /// alternating with the last step's colour, so a fault before the
+    /// display is up still shows where it happened.
+    fn stripes() {
         let last = STEP.with(|s| *s);
         beacon(MAGENTA, last);
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\n{msg}");
-        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        // Started by the resident loader: the message goes to the PC too.
-        if rp_hal_x51v::devices::loader_present() {
-            rt::delay_us(3_000_000); // time to read the screen
-        }
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        halt()
     }
 
     fn main() -> ! {
+        // Only notes the step (no hardware touched): the probe's order holds.
+        rp_image::on_crash(stripes);
         step(RED);
 
         // The probe's order exactly: state first, before anything changes it.
@@ -104,18 +89,19 @@ mod image {
         diag::snapshot(&mut soc);
         step(YELLOW);
 
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
         let _ = writeln!(uart, "\nRetroPane 26 first light");
         step(GREEN);
 
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         step(CYAN);
 
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
-            halt()
+        let Some((mut regs, vram)) = rp_image::take_mbx() else {
+            rp_image::fail("no display")
         };
         let (gsctrl, gscadr, gsadr) = (
             regs.read32(reg::GSCTRL),
@@ -180,9 +166,8 @@ mod image {
         // back so it can send the run log to the PC.
         if rp_hal_x51v::devices::loader_present() {
             rt::delay_us(2_000_000);
-            rp_hal_x51v::devices::return_to_loader();
         }
-        halt()
+        rp_image::finish()
     }
 
     /// Writes to the UART and the screen.
@@ -193,20 +178,6 @@ mod image {
             let _ = self.1.write_str(s);
             rp_hal_x51v::devices::log_write(s.as_bytes());
             self.0.write_str(s)
-        }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash(format_args!("PANIC")),
         }
     }
 }

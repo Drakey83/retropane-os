@@ -21,7 +21,7 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, crash, reg};
+    use rp_drv_mbx_display::{Display, reg};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_uart::PxaUart;
     use rp_drv_pxa_udc::Udc;
@@ -31,7 +31,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::beacon;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// D+ pull-up and cable detect (docs/hw/udc.md).
     const USB_PULLUP: u8 = 2;
@@ -43,36 +43,21 @@ mod image {
     const COLORS: (u16, u16) = (0xFFFF, 0x0000);
     const STATUS_COLORS: (u16, u16) = (0x0000, 0xFFE0);
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\n{msg}");
-        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 576), (480, 64), 2, (0xFFFF, 0xA800));
-            let _ = write!(c, "{msg}");
-        }
-        halt()
-    }
-
     fn main() -> ! {
         // Start-up colours (as in rp-light): a hang leaves the last one on
         // screen. Red: started; green: MMU on; blue: 2700G answered.
         beacon(0xF800, 0xF800);
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         beacon(0x07E0, 0x07E0);
 
         // The screen Windows Mobile left (as in rp-light), else our own.
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
-            halt()
+        let Some((mut regs, vram)) = rp_image::take_mbx() else {
+            rp_image::fail("no display")
         };
         // The first register read: a hang here leaves the green colour up.
         let _ = regs.read32(reg::GSCTRL);
@@ -83,7 +68,7 @@ mod image {
         let mut log = Console::new(rest, plane.stride, (0, 0), (480, 640 - STATUS_H), 2, COLORS);
 
         let Some(gpio_bus) = rt::take_gpio() else {
-            halt()
+            rp_image::fail("no GPIO")
         };
         let mut gpio = Gpio::new(gpio_bus);
         gpio.make_input(USB_DETECT);
@@ -93,7 +78,7 @@ mod image {
         rt::delay_us(200_000);
 
         let Some(udc_bus) = rt::take_udc() else {
-            halt()
+            rp_image::fail("no UDC")
         };
         let mut udc = Udc::new(udc_bus);
         // Port control as Windows Mobile left it: if WM used the PXA's
@@ -108,7 +93,7 @@ mod image {
             Err(e) => {
                 let _ = writeln!(log, "UDC error {e:?}");
                 let _ = writeln!(uart, "UDC error");
-                halt()
+                rp_image::fail("UDC enable")
             }
         }
         // Connect: GPIO2 high (confirmed on the device, docs/hw/udc.md).
@@ -176,20 +161,6 @@ mod image {
 
     fn yes(b: bool) -> &'static str {
         if b { "yes" } else { "no" }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash(format_args!("PANIC")),
-        }
     }
 }
 

@@ -9,6 +9,7 @@ publish.workspace = true
 
 # Only the device build uses these; on the host this is an empty program.
 [target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }

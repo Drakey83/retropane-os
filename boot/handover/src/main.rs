@@ -26,28 +26,13 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_cpld::{Cpld, handover, reg};
+    use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, crash};
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices;
 
-    rp_hal_pxa27x::entry!(main);
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
+    rp_image::entry!(main);
 
     /// Microseconds from OS timer ticks.
     fn us(ticks: u32) -> u32 {
@@ -55,10 +40,9 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((regs, vram)) = devices::take_mbx() else {
-            halt()
+        let Some((regs, vram)) = rp_image::take_mbx() else {
+            rp_image::fail("no display")
         };
         let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
@@ -88,7 +72,7 @@ mod image {
         // 2. The shadow table, raw, then adopted.
         let Some((bus, table)) = devices::take_cpld() else {
             let _ = writeln!(out, "CPLD unavailable");
-            finish()
+            rp_image::fail("CPLD unavailable")
         };
         let _ = write!(out, "table @{:08X}:", handover::TABLE_PA);
         for w in table.iter() {
@@ -124,9 +108,8 @@ mod image {
         let _ = writeln!(devices::RunLog, "{}", super::MARKER);
         if devices::loader_present() {
             rt::delay_us(3_000_000);
-            devices::return_to_loader();
         }
-        halt()
+        rp_image::finish()
     }
 
     /// Writes to the screen and the run log.
@@ -137,20 +120,6 @@ mod image {
             let _ = self.0.write_str(s);
             devices::log_write(s.as_bytes());
             Ok(())
-        }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
         }
     }
 }

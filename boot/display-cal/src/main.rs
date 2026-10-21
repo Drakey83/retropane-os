@@ -39,16 +39,16 @@ mod image {
     };
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
     use rp_drv_mbx_display::scanout::GAMMA_ENTRIES;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, crash, font};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, font};
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_keypad::{Button, Keypad, Pressed};
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices::RunLog;
     use rp_vram_map::SCREENS;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const GFXGAM0: usize = 0x2250;
     const GSCTRL: usize = 0x2000;
@@ -64,21 +64,6 @@ mod image {
     /// The steps: one per dial, then all together.
     const STEPS: usize = DIALS + 1;
     const STRIDE: usize = W as usize * 4;
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
 
     /// Writes one pixel (XRGB8888) of the 32 bpp screen.
     fn put(fb: &mut [u8], x: u32, y: u32, (r, g, b): (u8, u8, u8)) {
@@ -211,10 +196,9 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let (Some((regs, vram)), Some(mut pwm)) = (devices::take_mbx(), rt::take_pwm0()) else {
-            halt()
+        let (Some((regs, vram)), Some(mut pwm)) = (rp_image::take_mbx(), rt::take_pwm0()) else {
+            rp_image::fail("no display or backlight PWM")
         };
         let mut display = Display::new(regs);
         let _ = display.adopt(MBX_VRAM_SIZE as usize);
@@ -260,7 +244,7 @@ mod image {
         }
 
         let Some(kp) = rt::take_keypad() else {
-            crash_out(format_args!("no keypad"))
+            rp_image::fail("no keypad")
         };
         let mut keypad = Keypad::new(kp);
         keypad.enable();
@@ -368,24 +352,7 @@ mod image {
         // The planes as found (GSCTRL's gamma bit with them).
         before.restore(display.regs());
         let _ = writeln!(RunLog, "{}", super::MARKER);
-        if devices::loader_present() {
-            devices::return_to_loader();
-        }
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
-        }
+        rp_image::finish()
     }
 }
 

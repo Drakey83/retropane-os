@@ -26,7 +26,7 @@ mod image {
     use rp_drv_sdcard::SdCard;
     use rp_hal_pxa27x::{Mmio, diag, rt};
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// Prints results on the serial port.
     struct Serial(PxaUart<Mmio>);
@@ -42,11 +42,12 @@ mod image {
     }
 
     fn main() -> ! {
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
         // Benchmark the configuration RetroPane really runs: MMU and caches on.
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = writeln!(uart, "\nRetroPane benchmarks (OS timer {} Hz)", rt::TICK_HZ);
         let mut out = Serial(uart);
@@ -75,7 +76,7 @@ mod image {
         }
         suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
         suite::crypto(&mut r, sd_buf);
-        if let Some((_regs, vram)) = rp_hal_x51v::devices::take_mbx() {
+        if let Some((_regs, vram)) = rp_image::take_mbx() {
             let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
             let end = plane.offset + plane.stride * usize::from(plane.height);
             suite::gfx(
@@ -112,7 +113,7 @@ mod image {
         // this read must end in a reported data abort, not silence.
         let _ = black_box(rt::fault_probe(black_box(0x8000_0000)));
         let _ = writeln!(out.0, "FAULT-PROBE no fault (unexpected)");
-        halt()
+        rp_image::fail("the fault probe didn't fault")
     }
 
     /// A 1 MiB read, past the 128 KiB the DMA chain once held (it fell
@@ -145,23 +146,6 @@ mod image {
                 "1 MiB by DMA: not one transfer, or differs from the FIFO"
             },
         );
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "FAULT {} at {addr:#010x}", kind.name());
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(_: &core::panic::PanicInfo) -> ! {
-        halt()
     }
 }
 

@@ -28,16 +28,16 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, ack_events, crash, event, font};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, ack_events, event, font};
     use rp_drv_pxa_keypad::{Button, Keypad, Pressed};
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices::RunLog;
     use rp_refresh::{FAST_DISPPLL, WM_DISPPLL, measured_centi_hz, pll_khz};
     use rp_vram_map::SCREENS;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const DISPPLL: usize = 0x03C;
     const PLLSTAT: usize = 0x040;
@@ -52,21 +52,6 @@ mod image {
     const BAR_W: usize = 24;
     const STEP: usize = 6;
     const IDLE_S: u32 = 180;
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
 
     fn put(fb: &mut [u8], x: usize, y: usize, (r, g, b): (u8, u8, u8)) {
         let o = y * STRIDE + x * 4;
@@ -188,10 +173,9 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let (Some((regs, vram)), Some(kp)) = (devices::take_mbx(), rt::take_keypad()) else {
-            halt()
+        let (Some((regs, vram)), Some(kp)) = (rp_image::take_mbx(), rt::take_keypad()) else {
+            rp_image::fail("no display or keypad")
         };
         let mut display = Display::new(regs);
         // Before the takeover: `adopt` moves Windows Mobile's clock to 60 Hz.
@@ -339,24 +323,7 @@ mod image {
             display.regs().read32(DISPPLL)
         );
         let _ = writeln!(RunLog, "{}", super::MARKER);
-        if devices::loader_present() {
-            devices::return_to_loader();
-        }
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
-        }
+        rp_image::finish()
     }
 }
 

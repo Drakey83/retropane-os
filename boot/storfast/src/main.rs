@@ -54,7 +54,7 @@ mod image {
     /// The CPLD, with the shadow table every program shares.
     type BoardCpld = Cpld<Mmio, handover::Table<'static>>;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
@@ -159,10 +159,9 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         log!("{MARKER} 1: storage speed-ups, device check (docs/research/storage-speed.md)");
-        let screen = devices::take_mbx().map(|(regs, vram)| {
+        let screen = rp_image::take_mbx().map(|(regs, vram)| {
             let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
             let end = plane.offset + plane.stride * usize::from(plane.height);
             Console::new(
@@ -179,10 +178,7 @@ mod image {
         run(&mut screen);
         screen.say(format_args!("Storage test done."));
         log!("{MARKER}: done");
-        devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     fn run(screen: &mut Screen<'_>) {
@@ -914,23 +910,6 @@ mod image {
             }
         }
         log!("S9 test files and folder removed");
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

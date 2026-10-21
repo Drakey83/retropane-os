@@ -16,6 +16,7 @@ rp-lz4 = { path = "../../kernel/lz4" }
 rp-lz4 = { path = "../../kernel/lz4" }
 
 [target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }

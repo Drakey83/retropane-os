@@ -78,6 +78,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -96,6 +97,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -124,6 +126,7 @@ dependencies = [
  "rp-drv-sdcard",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -149,6 +152,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -172,6 +176,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -184,6 +189,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -196,6 +202,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-vram-map",
 ]
 
@@ -207,6 +214,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -222,6 +230,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-vram-map",
 ]
 
@@ -234,6 +243,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-vram-map",
 ]
 
@@ -412,6 +422,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -427,6 +438,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-mbx3d-render",
  "rp-vram-map",
 ]
@@ -495,6 +507,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -504,6 +517,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -521,7 +535,18 @@ dependencies = [
  "rp-drv-tsc2046",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-touch-cal",
+]
+
+[[package]]
+name = "rp-image"
+version = "0.0.0"
+dependencies = [
+ "rp-drv-mbx-display",
+ "rp-drv-pxa-uart",
+ "rp-hal-pxa27x",
+ "rp-hal-x51v",
 ]
 
 [[package]]
@@ -533,6 +558,7 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-hal-user",
  "rp-hal-x51v",
+ "rp-image",
  "rp-kernel-ipc",
  "rp-kernel-mm",
  "rp-kernel-pe",
@@ -585,6 +611,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -627,6 +654,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-lz4",
  "rp-vram-map",
 ]
@@ -647,6 +675,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -661,6 +690,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -688,6 +718,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -702,6 +733,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-mbx3d-render",
  "rp-vram-map",
 ]
@@ -731,6 +763,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -741,6 +774,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -759,6 +793,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -770,6 +805,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -790,6 +826,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -799,6 +836,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-kernel-sched",
 ]
 
@@ -814,6 +852,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -826,6 +865,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-vram-map",
 ]
 
@@ -839,6 +879,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-vram-map",
 ]
 
@@ -853,6 +894,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -878,6 +920,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -887,6 +930,7 @@ dependencies = [
  "rp-drv-pxa-uart",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-kernel-sched",
  "rp-kernel-trace",
 ]
@@ -909,6 +953,7 @@ dependencies = [
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
  "rp-mbx-render",
  "rp-mbx3d-render",
  "rp-shell",
@@ -929,6 +974,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -945,6 +991,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]
@@ -958,6 +1005,7 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
+ "rp-image",
 ]
 
 [[package]]

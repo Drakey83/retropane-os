@@ -18,17 +18,17 @@ mod image {
     use core::fmt::Write;
 
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, crash};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane};
     use rp_drv_pxa_keypad::{Button, Keypad};
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices::RunLog;
     use rp_screen_measure::Schedule;
     use rp_screen_measure::program::{PROGRAM_BYTES, StepLight, placeholder};
     use rp_vram_map::SCREENS;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const GFXGAM0: usize = 0x2250;
     const GSCTRL: usize = 0x2000;
@@ -48,23 +48,7 @@ mod image {
     /// the built-in schedule.
     static PROGRAM: [u8; PROGRAM_BYTES] = placeholder();
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
-
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         // The schedule counts from here: the loader's reply to the PC came
         // just before the jump.
@@ -72,9 +56,9 @@ mod image {
         // a 32-bit tick difference (that froze run 1 of the profile at 22 min).
         let mut clock = rt::Elapsed::start();
         let (Some((regs, vram)), Some(mut pwm), Some(kp)) =
-            (devices::take_mbx(), rt::take_pwm0(), rt::take_keypad())
+            (rp_image::take_mbx(), rt::take_pwm0(), rt::take_keypad())
         else {
-            halt()
+            rp_image::fail("no display, backlight PWM or keypad")
         };
         let mut display = Display::new(regs);
         let _ = display.adopt(MBX_VRAM_SIZE as usize);
@@ -202,24 +186,7 @@ mod image {
         before.restore(display.regs());
         display.regs().write32(GSCTRL, gsctrl);
         let _ = writeln!(RunLog, "{}", super::MARKER);
-        if devices::loader_present() {
-            devices::return_to_loader();
-        }
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
-        }
+        rp_image::finish()
     }
 }
 

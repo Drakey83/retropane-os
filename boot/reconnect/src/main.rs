@@ -35,9 +35,9 @@ mod image {
     use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const USB_PULLUP: u8 = 2;
     /// UP2OCR: D+ pull-down enable.
@@ -127,23 +127,16 @@ mod image {
         }
     }
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x}", kind.name());
-        let _ = writeln!(RunLog, "FAULT {} at {addr:#010x}", kind.name());
-        devices::return_to_loader();
-        halt()
-    }
-
     fn main() -> ! {
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
 
-        let Some((regs, vram)) = devices::take_mbx() else {
-            halt()
+        let Some((regs, vram)) = rp_image::take_mbx() else {
+            rp_image::fail("no display")
         };
         let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
@@ -162,7 +155,7 @@ mod image {
             (rt::take_gpio(), rt::take_udc(), devices::take_cpld())
         else {
             let _ = writeln!(out, "devices unavailable");
-            halt()
+            rp_image::fail("GPIO, UDC or CPLD unavailable")
         };
         let mut rig = Rig {
             gpio: Gpio::new(gpio_bus),
@@ -175,7 +168,7 @@ mod image {
         rig.cpld.set(CPLD_USB_REG, CPLD_BOOT_BITS | CPLD_USB_BIT);
         if rig.udc.enable().is_err() {
             let _ = writeln!(out, "UDC enable failed");
-            halt()
+            rp_image::fail("UDC enable")
         }
         let _ = writeln!(out, "UDC on, UP2OCR {:08X}", rig.up2());
 
@@ -198,8 +191,7 @@ mod image {
         }
         let _ = writeln!(out, "{}", super::MARKER);
         rt::delay_us(3_000_000);
-        devices::return_to_loader();
-        halt()
+        rp_image::finish()
     }
 
     /// Polls the UDC for `ticks`, then returns its counters. Feeds the
@@ -226,19 +218,6 @@ mod image {
             devices::log_write(s.as_bytes());
             self.0.write_str(s)
         }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(_: &core::panic::PanicInfo) -> ! {
-        let _ = writeln!(RunLog, "PANIC");
-        devices::return_to_loader();
-        halt()
     }
 }
 

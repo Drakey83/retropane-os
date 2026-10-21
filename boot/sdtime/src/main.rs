@@ -45,7 +45,7 @@ mod image {
 
     use super::MARKER;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
@@ -89,15 +89,11 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         log!("{MARKER} 1: SD speed, report only (docs/research/storage-speed.md)");
         run();
         log!("{MARKER}: done");
-        devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     fn run() {
@@ -703,23 +699,6 @@ mod image {
             self.len += n;
             Ok(())
         }
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

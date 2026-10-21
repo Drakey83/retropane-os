@@ -24,15 +24,16 @@ mod image {
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     static PICTURE: &[u8; 480 * 640 * 2] =
         include_bytes!(concat!(env!("OUT_DIR"), "/picture.rgb565"));
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no display"))
         };
         // Keep the plane already scanning out (no flicker) or set one up.
@@ -51,29 +52,7 @@ mod image {
             rt::delay_us(100_000);
             rt::keep_alive();
         }
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "{msg}");
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
+        rp_image::finish()
     }
 }
 

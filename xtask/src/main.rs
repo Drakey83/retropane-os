@@ -822,6 +822,8 @@ fn lint() -> Result {
         // Binary or unreadable files are skipped: markers are text.
         if let Ok(text) = std::fs::read_to_string(workspace_root().join(path)) {
             violations.extend(policy::check_conflict_markers(path, &text));
+            // One crash path for every image (quality audit C38).
+            violations.extend(policy::check_crash_path(path, &text));
             // Copied values (quality-audit D1), in Rust sources outside xtask
             // (whose policy code names the tag itself).
             if path.ends_with(".rs") && !path.starts_with("xtask/") {

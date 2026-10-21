@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 
 [target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-bench-suite = { path = "../suite" }

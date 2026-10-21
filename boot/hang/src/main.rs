@@ -17,7 +17,7 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     fn main() -> ! {
         if let Some(bus) = rt::take_ffuart() {
@@ -30,7 +30,6 @@ mod image {
             "{}: running forever on purpose",
             super::MARKER
         );
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         // Interrupts on, then off again, and spin: the hardest case (what
         // rp-bench did on the device), which only the FIQ-routed run limit
@@ -40,25 +39,6 @@ mod image {
         loop {
             core::hint::spin_loop();
         }
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "{msg}");
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

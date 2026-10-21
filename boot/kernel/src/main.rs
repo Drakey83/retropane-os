@@ -96,7 +96,7 @@ mod image {
     use rp_kernel_sched::{Eid, LOWEST, Scheduler, Tid};
     use rp_kernel_trace::{Kind, Persistent};
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const POOL_FRAMES: usize = RAM_POOL_SIZE / 4096;
     const BASE: u32 = RAM_POOL_BASE as u32;
@@ -694,18 +694,17 @@ mod image {
         })
     }
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let why = STATE.with(|s| s.error).unwrap_or("not a page fault");
-        // Words via write_str, numbers via u32 formatting: no `&str` Display
-        // (and its padding code) in the image (ADR-0005 rule 8).
-        let _ = uart.write_str("\nFAULT ");
-        let _ = uart.write_str(kind.name());
-        let _ = writeln!(uart, " at {addr:#010x}");
-        let _ = uart.write_str(why);
-        let _ = uart.write_str("\n");
-        loop {
-            core::hint::spin_loop();
+    /// The kernel's line on every crash (rp-image's crash path): why the
+    /// last page fault it handled was refused, if one was. Words via
+    /// `write_str`: no `&str` Display (and its padding code) in the image
+    /// (ADR-0005 rule 8).
+    fn crash_note(w: &mut dyn Write) -> core::fmt::Result {
+        match STATE.with(|s| s.error) {
+            Some(why) => {
+                w.write_str("page fault refused: ")?;
+                w.write_str(why)
+            }
+            None => w.write_str("no page fault refused"),
         }
     }
 
@@ -723,14 +722,16 @@ mod image {
         // switch, so it carries the new virtual address.
         let mut early = PxaUart::new(rt::emergency_uart());
         early.init(115_200);
-        rt::set_fault_handler(on_fault);
+        rp_image::crash_note(crash_note);
         rt::init_mmu();
         let _ = writeln!(early, "\nRetroPane 26 kernel: VM bring-up");
         TRACE.with(|t| *t = take_trace_area().and_then(Persistent::resume));
         let mut ok = true;
 
         // 1-2. Frames, then the kernel's own page tables.
-        let Some(pool) = take_ram_pool() else { halt() };
+        let Some(pool) = take_ram_pool() else {
+            rp_image::fail("no RAM pool")
+        };
         let pool: &'static mut [u32] = pool;
         // The top frames are kernel stacks for threads, never handed out.
         let (pool, kstacks) = pool.split_at_mut(pool.len() - KSTACKS * 1024);
@@ -784,14 +785,16 @@ mod image {
             Err(e) => {
                 let _ = early.write_str("VM tables FAIL ");
                 let _ = early.write_str(e);
-                halt()
+                rp_image::fail("VM tables")
             }
         };
         let l1 = STATE.with(|s| s.l1);
         cpu::set_dacr(arm::dacr(1 << KERNEL_DOMAIN));
         cpu::switch_table(l1);
         devmap::use_kernel_map();
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         let _ = writeln!(
             uart,
@@ -880,7 +883,7 @@ mod image {
         if let Err(e) = mapped {
             let _ = uart.write_str("VM process FAIL ");
             let _ = uart.write_str(e);
-            halt()
+            rp_image::fail("VM process")
         }
         // Give slot 5 its ARM domain and run it: PID and DACR, nothing else.
         let act5 = STATE.with(|s| {
@@ -1265,7 +1268,7 @@ mod image {
             let _ = uart.write_str("IPC setup FAIL: ");
             let _ = uart.write_str(mapped.err().unwrap_or("handles or threads"));
             let _ = uart.write_str("\n");
-            halt()
+            rp_image::fail("IPC setup")
         };
         RUN.with(|r| {
             r.done = done;
@@ -1925,7 +1928,7 @@ mod image {
             own_thread_fault(f, me, slot);
             return;
         }
-        on_fault(kind, addr)
+        rp_image::fault(kind, addr)
     }
 
     /// A supervised host's own thread faulted (in no call): the host
@@ -2340,19 +2343,6 @@ mod image {
     fn halt() -> ! {
         loop {
             rt::idle();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        if let Some(l) = info.location() {
-            let _ = uart.write_str("\nPANIC at ");
-            let _ = uart.write_str(l.file());
-            let _ = writeln!(uart, ":{}", l.line());
-        }
-        loop {
-            core::hint::spin_loop();
         }
     }
 }

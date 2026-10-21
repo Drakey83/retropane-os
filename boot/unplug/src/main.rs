@@ -47,9 +47,9 @@ mod image {
     use rp_hal_pxa27x::Mmio;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     const TICK_1S: u32 = 3_250_000;
 
@@ -180,23 +180,16 @@ mod image {
         }
     }
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\nFAULT {} at {addr:#010x}", kind.name());
-        let _ = writeln!(RunLog, "FAULT {} at {addr:#010x}", kind.name());
-        devices::return_to_loader();
-        halt()
-    }
-
     fn main() -> ! {
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
 
-        let Some((regs, vram)) = devices::take_mbx() else {
-            halt()
+        let Some((regs, vram)) = rp_image::take_mbx() else {
+            rp_image::fail("no display")
         };
         let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
@@ -213,8 +206,7 @@ mod image {
 
         let (Some(udc_bus), Some(uhc)) = (rt::take_udc(), rt::take_uhc()) else {
             let _ = writeln!(out, "devices unavailable");
-            devices::return_to_loader();
-            halt()
+            rp_image::fail("UDC or USB host unavailable")
         };
         let hcca = Hcca([0; 64]);
         let mut rig = Rig {
@@ -224,8 +216,7 @@ mod image {
         };
         if rig.udc.enable().is_err() {
             let _ = writeln!(out, "UDC enable failed");
-            devices::return_to_loader();
-            halt()
+            rp_image::fail("UDC enable")
         }
         let _ = writeln!(out, "UDC on, UP2OCR {:08X}", rig.udc.read_reg(UP2OCR));
 
@@ -258,8 +249,7 @@ mod image {
         let _ = writeln!(out, "{}", super::MARKER);
         core::hint::black_box(&hcca);
         rt::delay_us(3_000_000);
-        devices::return_to_loader();
-        halt()
+        rp_image::finish()
     }
 
     /// Polls the UDC until the PC has configured the device and sent no
@@ -309,19 +299,6 @@ mod image {
             let _ = self.1.write_str(s);
             self.0.write_str(s)
         }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(_: &core::panic::PanicInfo) -> ! {
-        let _ = writeln!(RunLog, "PANIC");
-        devices::return_to_loader();
-        halt()
     }
 }
 

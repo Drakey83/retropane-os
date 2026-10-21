@@ -41,13 +41,13 @@ mod image {
 
     use rp_drv_mbx_display::console::Console;
     use rp_drv_mbx_display::scanout::scale_gamma;
-    use rp_drv_mbx_display::{Display, crash, fill_rect_rgb565};
+    use rp_drv_mbx_display::{Display, fill_rect_rgb565};
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::rt;
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// PWM registers (rp-drv-pxa-pwm's `reg`).
     const CR: usize = 0x0;
@@ -59,21 +59,6 @@ mod image {
     const GAMMA_WORDS: usize = 17;
     const GSCTRL: usize = 0x2000;
     const GSCTRL_GAMMA: u32 = 1 << 26;
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
 
     /// Whether `t` looks like 8-bit grey ramps (`0x00LLLLLL`, never
     /// falling): the only form this test dares to scale.
@@ -172,10 +157,9 @@ mod image {
     ];
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let (Some((regs, vram)), Some(mut pwm)) = (devices::take_mbx(), rt::take_pwm0()) else {
-            halt()
+        let (Some((regs, vram)), Some(mut pwm)) = (rp_image::take_mbx(), rt::take_pwm0()) else {
+            rp_image::fail("no display or backlight PWM")
         };
         let mut display = Display::new(regs);
         let (plane, _) = display.adopt(MBX_VRAM_SIZE as usize);
@@ -271,23 +255,8 @@ mod image {
         let _ = writeln!(log, "{}", super::MARKER);
         if devices::loader_present() {
             rt::delay_us(1_000_000);
-            devices::return_to_loader();
         }
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
-        }
+        rp_image::finish()
     }
 }
 

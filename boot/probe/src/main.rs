@@ -53,7 +53,7 @@ mod image {
     use rp_bench_suite as suite;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::Console;
-    use rp_drv_mbx_display::{Display, SAVED_REGS, crash};
+    use rp_drv_mbx_display::{Display, SAVED_REGS};
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::{Button, Keypad, Pressed};
     use rp_drv_pxa_mmc::PxaMmc;
@@ -66,7 +66,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::beacon;
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// Light grey on black: highest contrast for a photo.
     const COLORS: (u16, u16) = (0xFFFF, 0x0000);
@@ -126,35 +126,6 @@ mod image {
         }
     }
 
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        // Bring-up: the word in memory at the fault, and the CPSR there.
-        let word = rt::try_read(addr as usize).unwrap_or(0xDEAD_DEAD);
-        crash(format_args!(
-            "FAULT {} at {addr:#010x} word {word:08X} spsr {:08X}",
-            kind.name(),
-            rt::fault_spsr()
-        ))
-    }
-
-    /// Faults and panics: the message on serial and in a red box on screen.
-    /// One copy of this code for both (ADR-0005 rule 8).
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\n{msg}");
-        if let Some((regs, vram)) = rp_hal_x51v::devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 576), (480, 64), SCALE, (0xFFFF, 0xA800));
-            let _ = write!(c, "{msg}");
-        }
-        // Started by the resident loader: the message reaches the PC too.
-        if rp_hal_x51v::devices::loader_present() {
-            rt::delay_us(3_000_000); // time to read the screen
-        }
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        halt()
-    }
-
     fn main() -> ! {
         // 1. Capture the hardware exactly as Windows Mobile (and HaRET) left
         // it, before RetroPane changes anything.
@@ -164,20 +135,21 @@ mod image {
         diag::snapshot(&mut soc);
         step(1); // yellow
 
-        let Some(bus) = rt::take_ffuart() else { halt() };
+        let Some(bus) = rt::take_ffuart() else {
+            rp_image::fail("no UART")
+        };
         let mut uart = PxaUart::new(bus);
         uart.init(115_200);
         step(2); // green
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         step(3); // cyan
 
         // 2. The 2700G: read its state, then find a framebuffer to draw in.
         let mut gpu = [0u32; SAVED_REGS.len()];
         let mut display_note = "no 2700G";
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((mut regs, vram)) = rp_image::take_mbx() else {
             let _ = writeln!(uart, "probe: no 2700G");
-            halt()
+            rp_image::fail("no 2700G")
         };
         for (v, (_, off)) in gpu.iter_mut().zip(SAVED_REGS) {
             *v = regs.read32(*off);
@@ -198,7 +170,7 @@ mod image {
 
         // Scratch RAM: the report's storage at the end, benchmarks before it.
         let Some(scratch) = rp_hal_x51v::devices::take_scratch() else {
-            halt()
+            rp_image::fail("no scratch RAM")
         };
         let (bench_ram, report_ram) = scratch.split_at_mut(scratch.len() - report::STORAGE);
         step(5); // white
@@ -516,7 +488,7 @@ mod image {
         let (Some(kp), Some(gpio), Some(ssp)) =
             (rt::take_keypad(), rt::take_gpio(), rt::take_ssp1())
         else {
-            halt()
+            rp_image::fail("no keypad, GPIO or SSP1")
         };
         let mut keypad = Keypad::new(kp);
         keypad.enable();
@@ -650,20 +622,6 @@ mod image {
     fn step(i: usize) {
         const COLOURS: [u16; 7] = [0xF800, 0xFFE0, 0x07E0, 0x07FF, 0x001F, 0xFFFF, 0x7BEF];
         beacon(COLOURS[i], COLOURS[i]);
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash(format_args!("PANIC")),
-        }
     }
 }
 

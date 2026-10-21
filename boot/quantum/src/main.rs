@@ -42,7 +42,7 @@ mod image {
     use rp_hal_x51v::devices::take_ram_pool;
     use rp_kernel_sched::{Eid, Error, LOWEST, Scheduler, Tid};
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// One millisecond in OS-timer ticks (3.25 MHz).
     const MS: u32 = 3_250;
@@ -169,11 +169,12 @@ mod image {
         let mut port = PxaUart::new(rt::emergency_uart());
         port.init(115_200);
         let mut uart = Tee(port);
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let _ = uart.write_str("\nRetroPane 26 quantum test\n");
 
-        let Some(pool) = take_ram_pool() else { halt() };
+        let Some(pool) = take_ram_pool() else {
+            rp_image::fail("no RAM pool")
+        };
         let (ctrl, pool) = pool.split_at_mut(1024);
         let ctrl = ctrl.as_mut_ptr() as usize as u32;
         let mut chunks = pool.chunks_exact_mut(CHUNK_WORDS);
@@ -204,14 +205,16 @@ mod image {
         });
         if started.is_err() {
             let _ = uart.write_str("QUANTUM setup FAIL\n");
-            halt();
+            rp_image::fail("scheduler setup");
         }
         rt::set_signal_hook(on_signal);
         user::set_syscall_handler(on_syscall);
         rt::set_preempt_hook(reschedule);
 
         // Calibrate: passes per frame of work, on a warm buffer.
-        let Some(cal) = chunks.next() else { halt() };
+        let Some(cal) = chunks.next() else {
+            rp_image::fail("no calibration buffer")
+        };
         let buf = cal.as_mut_ptr() as usize as u32;
         work_pass(buf);
         let t0 = rt::ticks();
@@ -290,8 +293,7 @@ mod image {
             let _ = uart.write_str(super::MARKER);
             let _ = uart.write_str("\n");
         }
-        rp_hal_x51v::devices::return_to_loader();
-        halt()
+        rp_image::finish()
     }
 
     /// A short label for a policy (`q100-w307`).
@@ -623,32 +625,6 @@ mod image {
         let _ = SCHED.with(|s| s.exit(me));
         reschedule();
         unreachable!("an exited thread never runs again")
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        let mut uart = PxaUart::new(rt::emergency_uart());
-        let _ = writeln!(uart, "\n{msg}");
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash(format_args!("PANIC at {}:{}", l.file(), l.line())),
-            None => crash(format_args!("PANIC")),
-        }
     }
 }
 

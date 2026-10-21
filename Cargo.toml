@@ -75,6 +75,7 @@ members = [
     "boot/loader",
     "boot/bench",
     "boot/suite",
+    "boot/image",
     "boot/probe",
     "boot/kernel",
     "boot/threads",

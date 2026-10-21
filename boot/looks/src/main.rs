@@ -35,7 +35,7 @@ mod image {
 
     use rp_drv_mbx_display::layers::{Layer, Snapshot};
     use rp_drv_mbx_display::scanout::GAMMA_ENTRIES;
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, crash, font};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, font};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
     use rp_drv_pxa_keypad::{Button, Keypad};
@@ -45,14 +45,16 @@ mod image {
     use rp_hal_api::RegisterBus;
     use rp_hal_pxa27x::{Mmio, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
-    use rp_hal_x51v::devices::{self, RunLog};
+    use rp_hal_x51v::devices::RunLog;
     use rp_looks::{
         BUILT_IN, CAPTION_H, H, Light, PHOTOS, Page, START, STEPS, W, YUV_BYTES, dial_table,
         page_pixel, shown, straight, strength, unpack,
     };
     use rp_vram_map::{CACHE, SCREENS};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     const GFXGAM0: usize = 0x2250;
     const GSCTRL: usize = 0x2000;
@@ -79,21 +81,6 @@ mod image {
     const NAME: usize = 24;
 
     type Card = SdCard<PxaMmc<Mmio>>;
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash_out(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash_out(msg: core::fmt::Arguments) -> ! {
-        if let Some((regs, vram)) = devices::emergency_mbx() {
-            let mut c =
-                crash::emergency_console(regs, vram, (0, 0), (480, 64), 2, (0xFFFF, 0x0000));
-            let _ = write!(c, "{msg}");
-        }
-        devices::crash_to_loader(msg);
-        halt()
-    }
 
     /// Writes one pixel (XRGB8888).
     fn put(fb: &mut [u8], x: u32, y: u32, (r, g, b): (u8, u8, u8)) {
@@ -375,15 +362,14 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let mut clock = rt::Elapsed::start();
         let (Some((regs, vram)), Some(mut pwm), Some(mut gpio)) = (
-            devices::take_mbx(),
+            rp_image::take_mbx(),
             rt::take_pwm0(),
             rt::take_gpio().map(Gpio::new),
         ) else {
-            halt()
+            rp_image::fail("no display, backlight PWM or GPIO")
         };
         let mut display = Display::new(regs);
         let _ = display.adopt(MBX_VRAM_SIZE as usize);
@@ -423,7 +409,7 @@ mod image {
             photos.count = BUILT_IN.len();
             for (photo, out) in PHOTOS.iter().zip([&mut *slot0, &mut *slot1]) {
                 if let Err(e) = unpack(photo, out) {
-                    crash_out(format_args!("a built-in photo is damaged: {e:?}"))
+                    crash(format_args!("a built-in photo is damaged: {e:?}"))
                 }
             }
         }
@@ -484,7 +470,7 @@ mod image {
         let _ = writeln!(RunLog, "page drawn in {} ms", clock.ms() - t0);
 
         let Some(kp) = rt::take_keypad() else {
-            crash_out(format_args!("no keypad"))
+            crash(format_args!("no keypad"))
         };
         let mut keypad = Keypad::new(kp);
         keypad.enable();
@@ -635,24 +621,7 @@ mod image {
         before.restore(display.regs());
         display.regs().write32(GSCTRL, gsctrl);
         let _ = writeln!(RunLog, "{}", super::MARKER);
-        if devices::loader_present() {
-            devices::return_to_loader();
-        }
-        halt()
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        match info.location() {
-            Some(l) => crash_out(format_args!("PANIC {}:{}", l.file(), l.line())),
-            None => crash_out(format_args!("PANIC")),
-        }
+        rp_image::finish()
     }
 }
 

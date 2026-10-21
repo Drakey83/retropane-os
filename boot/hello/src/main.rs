@@ -22,7 +22,7 @@ mod image {
     use core::cell::RefCell;
     use rp_drv_cpld::{Cpld, Delay};
     use rp_drv_mbx_display::console::{self, Console};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, crash, pattern};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, X51V_VGA, pattern};
 
     use rp_drv_pxa_gpio::{Gpio, GpioPin};
     use rp_drv_pxa_keypad::keys::{Keys, Kind, Timing};
@@ -36,42 +36,11 @@ mod image {
     use rp_hal_pxa27x::soc::irq;
     use rp_touch_cal::{Calibration, Filter, Pen, Sample};
 
-    rp_hal_pxa27x::entry!(main);
+    rp_image::entry!(main);
 
     /// Sampling rate while a button or the pen is held. Otherwise the tick is
     /// off and the CPU sleeps until an interrupt.
     const TICK_HZ: u32 = 200;
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        let mut out = crash_out();
-        let _ = writeln!(out, "\nFAULT {} at {addr:#010x}", kind.name());
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Crash output: the UART plus, if the display is up, a red box at the
-    /// bottom of the screen (the real X51v has no serial port).
-    fn crash_out() -> Out<PxaUart<rp_hal_pxa27x::Mmio>> {
-        let con = rp_hal_x51v::devices::emergency_mbx().map(|(regs, vram)| {
-            let (x, y, w, h) = console::BOOT_LOG;
-            crash::emergency_console(
-                regs,
-                vram,
-                (x, y + h - 64),
-                (w, 64),
-                console::BOOT_LOG_SCALE,
-                CRASH_COLORS,
-            )
-        });
-        Out {
-            uart: PxaUart::new(rt::emergency_uart()),
-            con,
-        }
-    }
-
-    /// Crash box colors (RGB565): white on red.
-    const CRASH_COLORS: (u16, u16) = (0xFFFF, 0xA800);
 
     /// Touch screen chip select and pen interrupt (docs/hw/touch.md).
     const TS_CS: u8 = 24;
@@ -104,7 +73,6 @@ mod image {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
             let mut out = Out { uart, con: None };
-            rt::set_fault_handler(on_fault);
             rt::init_mmu();
             let _ = writeln!(out, "\nRetroPane 26 on the Axim X51v");
             let _ = writeln!(out, "CPU ID: {:#010x}", rt::cpu_id());
@@ -119,7 +87,7 @@ mod image {
             };
             if !vga {
                 let _ = writeln!(out, "QVGA panel: not supported yet");
-            } else if let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() {
+            } else if let Some((regs, vram)) = rp_image::take_mbx() {
                 let plane = Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565);
                 pattern::fill_rgb565(
                     &mut vram[plane.offset..],
@@ -229,7 +197,7 @@ mod image {
                     rt::take_gpio_irq(TS_PENIRQ, rt::Edge::Falling),
                 ) else {
                     let _ = writeln!(out, "no IRQs");
-                    halt()
+                    rp_image::fail("no keypad or pen IRQ")
                 };
                 let mut key_events = Keys::new(Timing::DEFAULT);
                 // Samples to what the person meant (as rp-today).
@@ -323,33 +291,7 @@ mod image {
                 }
             }
         }
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    fn halt() -> ! {
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut uart = crash_out();
-        // Location only: formatting the full message would pull in much more
-        // of core::fmt (ADR-0005 rule 8).
-        match info.location() {
-            Some(l) => {
-                let _ = writeln!(uart, "\nPANIC at {}:{}", l.file(), l.line());
-            }
-            None => {
-                let _ = writeln!(uart, "\nPANIC");
-            }
-        }
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::fail("no UART")
     }
 }
 

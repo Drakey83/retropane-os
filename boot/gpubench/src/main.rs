@@ -116,7 +116,9 @@ mod image {
 
     use super::MARKER;
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
@@ -5254,9 +5256,9 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
+        rp_image::on_crash(put_back);
         rt::init_mmu();
-        let Some((mut regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((mut regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
         if START {
@@ -5493,10 +5495,7 @@ mod image {
         planes0.restore(&mut g.e.regs);
         g.e.reset(rt::delay_us);
         g.e.regs.write32(MBXCLK, clk0);
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     // ---- Run S: a read-only snapshot of the 2700G (2026-10-20) -------------
@@ -5668,10 +5667,7 @@ mod image {
         }
         log!("  the picture at offset 0, mid-screen:{}", words.as_str());
         log!("{MARKER}: done (run S)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     // ---- Run U: the underrun reproduced and cleared (2026-10-20) ----------
@@ -5769,10 +5765,7 @@ mod image {
             log!("X: no plane decoded: no card");
         }
         log!("{MARKER}: done (run X)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     /// Waits up to `ms` for `reg & mask == want`; whether it got there.
@@ -6026,10 +6019,7 @@ mod image {
         // The cold state (what a flash boot finds) is left for a later run,
         // once a rebuild is proven: reading it froze the first try.
         log!("{MARKER}: done (run Z)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     /// Run Z's reset and rebuild (Z1-Z6), the card drawn on the plane
@@ -6830,10 +6820,7 @@ mod image {
             None => log!("L: no rung brought the display back"),
         }
         log!("{MARKER}: done (run L)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     /// Run U (see [`UNDERRUN`]).
@@ -6932,10 +6919,7 @@ mod image {
         log!("U: at the end: DINTRS 0x{f:x}, DSIG 0x{s0:x} then 0x{s1:x}");
         card_text(vram, &plane, "U: DONE", 0xFF20_2080, 3);
         log!("{MARKER}: done (run U)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     // ---- Run R: the dark display (2026-10-20, after run G4) ---------------
@@ -7073,10 +7057,7 @@ mod image {
         revive_dump(&mut regs, "after R4");
         revive_card(vram, &plane, 4, 0xFF60_1080);
         log!("{MARKER}: done (run R)");
-        back_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        back_to_loader()
     }
 
     /// Points the graphics plane at the screen picture (opaque); returns
@@ -7104,32 +7085,19 @@ mod image {
         saved
     }
 
-    /// Every clean return: the SRAM copy cleared, back to the loader (which
-    /// closes the card log: its closing line marks a run that came back).
-    fn back_to_loader() {
-        rp_hal_x51v::devices::kept_stop();
-        rp_hal_x51v::devices::return_to_loader();
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        // Run G: Windows Mobile's clock and bus timing back first.
+    /// On a crash, first (rp-image's crash order): run G's Windows Mobile
+    /// clock and bus timing back.
+    fn put_back() {
         if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
         }
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
     }
 
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
+    /// Every clean return: the SRAM copy cleared, back to the loader (which
+    /// closes the card log: its closing line marks a run that came back).
+    fn back_to_loader() -> ! {
+        rp_hal_x51v::devices::kept_stop();
+        rp_image::finish()
     }
 }
 

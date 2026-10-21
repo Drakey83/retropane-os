@@ -574,7 +574,12 @@ pub fn return_to_loader() {
         } else {
             ""
         };
-        let _ = writeln!(RunLog, "stack: deepest {used} of {size} bytes{warn}");
+        // The words by write_str, the numbers by integer formatting: no
+        // `&str` Display (and its padding code) in every image (ADR-0005
+        // rule 8). Ignored results: RunLog's writes can't fail.
+        let _ = write!(RunLog, "stack: deepest {used} of {size} bytes");
+        let _ = RunLog.write_str(warn);
+        let _ = RunLog.write_char('\n');
     }
     if loader_present() {
         // SAFETY: the run log's flags word (valid: checked just above).
@@ -583,15 +588,15 @@ pub fn return_to_loader() {
     }
 }
 
-/// A crash (fault or panic) in an image the loader started: the message
-/// into the run log, the run marked as crashed, and straight back to the
-/// loader, which sends the report to the PC and keeps it on the card. No
-/// watchdog reset, so no trip through Dell's factory-restore prompt.
-/// Returns only when no loader started this run (the caller then halts).
+/// A crash (fault, panic or failed setup) in an image the loader started,
+/// its lines already in the run log: the run marked as crashed and straight
+/// back to the loader, which sends the report to the PC and keeps it on the
+/// card. No watchdog reset, so no trip through Dell's factory-restore
+/// prompt. Returns only when no loader started this run (the caller then
+/// stops). Images reach it through `rp-image`'s crash path (quality audit
+/// C38), never directly.
 #[inline(never)]
-pub fn crash_to_loader(msg: core::fmt::Arguments) {
-    use core::fmt::Write;
-    let _ = writeln!(RunLog, "{msg}");
+pub fn crash_return() {
     if loader_present() {
         // SAFETY: the run log's flags word (valid: checked just above).
         unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 4) };

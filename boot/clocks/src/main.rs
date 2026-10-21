@@ -52,7 +52,9 @@ mod image {
 
     use super::MARKER;
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
@@ -236,9 +238,10 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
         let start = clocks::save();
+        // A crash puts the clocks back first (rp-image's crash order).
+        rp_image::on_crash(put_back);
         let sp = start.point();
         log!("{MARKER}: RetroPane takes the PXA270's clocks (ADR-0031), version 3");
         // The banner and the verdict also go to the serial port (the
@@ -279,7 +282,7 @@ mod image {
             crash(format_args!("no scratch"))
         };
         let mut sram = diag::take_sram();
-        let Some((regs, v)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, v)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
         let (plane, kept): (Plane, bool) = Display::new(regs).adopt(v.len());
@@ -425,34 +428,12 @@ mod image {
         if let Some(u) = uart.as_mut() {
             let _ = writeln!(u, "{MARKER}: {checks} checks, {bad} BAD");
         }
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     /// The clocks as found, if saved.
     fn put_back() {
         let _ = clocks::restore_saved();
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        put_back();
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        put_back();
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

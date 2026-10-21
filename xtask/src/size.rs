@@ -61,7 +61,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 26 -> 29 KiB on 2026-10-15 (test image): the CPLD's
         // shadow adopted from the shared table (Windows Mobile's at hand-
         // over, checked; item 77); 26.9 KiB measured, +~8%.
-        max_load: 29 * 1024,
+        // Ratcheted 29 -> 38 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 34.4 KiB measured, +~10%.
+        max_load: 38 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -86,7 +89,10 @@ pub const BUDGETS: &[Budget] = &[
     // measured with the slow "over" path kept out of line, +~12%.
     Budget {
         image: "rp-bench",
-        max_load: 54 * 1024,
+        // Ratcheted 54 -> 75 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 67.8 KiB measured, +~10%.
+        max_load: 75 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -139,7 +145,13 @@ pub const BUDGETS: &[Budget] = &[
         // image embedded (2 KB), device and interrupt grants, restarts of a
         // host's own threads, pages loaded straight from the embedded file
         // (~5.3 KB), and the test's checks (~2.3 KB). 88,260 B measured.
-        max_load: 95 * 1024,
+        // Raised 95 -> 112 KiB on 2026-10-21 under the standing rule
+        // (a planned step adds under 8 KB: +6.6 KB): quality audit C38, every
+        // crash through rp-image: the crash's line on the card (the card
+        // log's writer, ~4 KB), the crash path and the fault's word and SPSR;
+        // the kernel never takes the display, so no crash box. Measured
+        // 100.9 KiB + ~10%.
+        max_load: 112 * 1024,
         // Raised 100 -> 112 KiB with the load budget (approved by the owner):
         // the 12 KiB compression buffers live here, not on a kernel stack
         // (on the 4 KiB abort stack they overflowed into the frame
@@ -200,7 +212,10 @@ pub const BUDGETS: &[Budget] = &[
     // scheduler tables, 128 thread contexts).
     Budget {
         image: "rp-quantum",
-        max_load: 34 * 1024,
+        // Ratcheted 34 -> 39 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 34.7 KiB measured, +~10%.
+        max_load: 39 * 1024,
         // Ratcheted 27 -> 31 KiB on 2026-10-15 (test image rule): 255
         // threads' tables; 27.3 KiB measured, +~10%.
         max_zero: 31 * 1024,
@@ -224,7 +239,10 @@ pub const BUDGETS: &[Budget] = &[
     // item 1) on top of the DMA channel map; 70.0 KiB measured, +~10%.
     Budget {
         image: "rp-probe",
-        max_load: 77 * 1024,
+        // Ratcheted 77 -> 85 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 77.1 KiB measured, +~10%.
+        max_load: 85 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -237,7 +255,10 @@ pub const BUDGETS: &[Budget] = &[
     // 74); 22.2 KiB measured, +~10%.
     Budget {
         image: "rp-usb",
-        max_load: 25 * 1024,
+        // Ratcheted 25 -> 34 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 30.2 KiB measured, +~10%.
+        max_load: 34 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::NeverReturns,
     },
@@ -369,7 +390,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 39.5 KiB measured, + ~10%.
     Budget {
         image: "rp-blend",
-        max_load: 40 * 1024,
+        // Ratcheted 40 -> 47 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 42.6 KiB measured, +~10%.
+        max_load: 47 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -422,7 +446,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 57.3 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx",
-        max_load: 59 * 1024,
+        // Ratcheted 59 -> 68 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 61.7 KiB measured, +~10%.
+        max_load: 68 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -436,7 +463,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 55.0 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx-blend",
-        max_load: 57 * 1024,
+        // Ratcheted 57 -> 65 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 58.6 KiB measured, +~10%.
+        max_load: 65 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -474,7 +504,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 46.0 KiB measured, + ~10%.
     Budget {
         image: "rp-mbx3d",
-        max_load: 51 * 1024,
+        // Ratcheted 51 -> 58 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 52.1 KiB measured, +~10%.
+        max_load: 58 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -562,7 +595,10 @@ pub const BUDGETS: &[Budget] = &[
     // card swap and the lock switch. Provisional until measured.
     Budget {
         image: "rp-storfast",
-        max_load: 96 * 1024,
+        // Ratcheted 96 -> 108 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 98.1 KiB measured, +~10%.
+        max_load: 108 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -590,7 +626,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 40.2 KiB measured, + ~10%.
     Budget {
         image: "rp-clocks",
-        max_load: 41 * 1024,
+        // Ratcheted 41 -> 51 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 46.3 KiB measured, +~10%.
+        max_load: 51 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -667,7 +706,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 22.7 KiB measured, + ~10%.
     Budget {
         image: "rp-cfdetect",
-        max_load: 26 * 1024,
+        // Ratcheted 26 -> 29 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 26.3 KiB measured, +~10%.
+        max_load: 29 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -686,7 +728,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 36.7 KiB measured, + ~10%.
     Budget {
         image: "rp-tone",
-        max_load: 41 * 1024,
+        // Ratcheted 41 -> 46 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 41.1 KiB measured, +~10%.
+        max_load: 46 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -700,7 +745,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 43.3 KiB measured, + ~10%.
     Budget {
         image: "rp-audio-s1",
-        max_load: 48 * 1024,
+        // Ratcheted 48 -> 54 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 48.4 KiB measured, +~10%.
+        max_load: 54 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -712,7 +760,10 @@ pub const BUDGETS: &[Budget] = &[
     // 81.4 KiB measured.
     Budget {
         image: "rp-audio-s2",
-        max_load: 90 * 1024,
+        // Ratcheted 90 -> 100 KiB on 2026-10-21 (test image): quality
+        // audit C38, every crash through rp-image (the card-log line, the
+        // crash box, the fault's word and SPSR). 90.8 KiB measured, +~10%.
+        max_load: 100 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

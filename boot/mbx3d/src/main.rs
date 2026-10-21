@@ -236,7 +236,9 @@ mod image {
 
     use super::{MARKER, tile_size, with_3d};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
@@ -1008,10 +1010,19 @@ mod image {
         (across, down)
     }
 
+    /// On a crash, first (rp-image's crash order): Windows Mobile's bus
+    /// timing and clocks back (S29), through the crash-path handle on the
+    /// 2700G.
+    fn put_back() {
+        if let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            restore(&mut regs);
+        }
+    }
+
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
+        rp_image::on_crash(put_back);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
@@ -1176,10 +1187,7 @@ mod image {
         }
         e.reset(rt::delay_us);
         e.regs.write32(MBXCLK, clk0);
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     /// Points the graphics plane at the 32 bpp target (opaque); returns the
@@ -1234,28 +1242,6 @@ mod image {
             rt::delay_us(20_000);
         }
         log!("no button: returning");
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    /// Faults and panics put Windows Mobile's bus timing and clocks back
-    /// first (S29), through the crash-path handle on the 2700G.
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        if let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
-            restore(&mut regs);
-        }
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 

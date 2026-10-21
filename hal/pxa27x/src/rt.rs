@@ -1735,6 +1735,28 @@ pub fn fault_probe(addr: usize) -> u32 {
     unsafe { (addr as *const u32).read_volatile() }
 }
 
+/// Jumps to `addr` to exercise the fault path's prefetch abort: an
+/// unmapped address can't be fetched, so the runtime reports it through
+/// the fault handler, which doesn't return. Only for self-tests
+/// (`rp-crash`), with an address nothing is mapped at.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn prefetch_probe(addr: usize) -> ! {
+    // SAFETY: the branch target is unmapped (the caller's promise), so the
+    // fetch aborts into the fault handler, which never returns; nothing
+    // runs at `addr`.
+    unsafe { core::arch::asm!("bx {a}", a = in(reg) addr, options(noreturn)) }
+}
+
+/// Runs a permanently undefined instruction (`UDF #0`, 0xE7F000F0) to
+/// exercise the fault path's undefined-instruction report, which doesn't
+/// return. Only for self-tests (`rp-crash`).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn undefined_probe() -> ! {
+    // SAFETY: the instruction traps to the undefined vector, whose handler
+    // reports through the fault handler and never returns.
+    unsafe { core::arch::asm!(".inst 0xe7f000f0", options(noreturn)) }
+}
+
 /// Masks IRQs at the CPU.
 #[inline]
 #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]

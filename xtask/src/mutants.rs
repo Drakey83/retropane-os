@@ -715,6 +715,42 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Emu(crate::emu::boot_loader_audio_s1),
     },
     Mutant {
+        name: "crash path: the crash flag never set (a crash reads as a clean return, C38)",
+        file: "hal/x51v/src/devices.rs",
+        from: "log_word(2).write_volatile(log_word(2).read_volatile() | 4)",
+        to: "log_word(2).write_volatile(log_word(2).read_volatile() | 0)",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "crash path: images start without it (a fault spins into the watchdog, C38)",
+        file: "boot/image/src/lib.rs",
+        from: "            $crate::install();\n",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "crash path: a crash inside the report reports again (loops, C38)",
+        file: "boot/image/src/lib.rs",
+        from: "            screen: false,\n            report: false,",
+        to: "            screen: false,\n            report: true,",
+        check: Check::Host(&[
+            "-p",
+            "rp-image",
+            "a_crash_inside_the_crash_path_still_reports",
+        ]),
+    },
+    Mutant {
+        name: "lint: a hand-rolled crash path accepted (C38)",
+        file: "xtask/src/policy.rs",
+        from: "CRASH_PATH_MARKS.iter().find(|m| line.contains(*m))",
+        to: "CRASH_PATH_MARKS.iter().find(|m| line.contains(*m) && line.is_empty())",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "a_crash_path_of_its_own_is_refused_outside_the_homes",
+        ]),
+    },
+    Mutant {
         name: "lint: an inherited: tag without its source accepted (D1)",
         file: "xtask/src/policy.rs",
         from: "if !item.trim().is_empty() && !source.trim().is_empty() =>",

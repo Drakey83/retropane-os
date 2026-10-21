@@ -121,7 +121,9 @@ mod image {
 
     use super::{MARKER, Outcome, conversion, idle};
 
-    rp_hal_pxa27x::entry!(main);
+    use rp_image::crash;
+
+    rp_image::entry!(main);
 
     macro_rules! log {
         ($($t:tt)*) => {{ let _ = writeln!(RunLog, $($t)*); }};
@@ -436,9 +438,8 @@ mod image {
     }
 
     fn main() -> ! {
-        rt::set_fault_handler(on_fault);
         rt::init_mmu();
-        let Some((regs, vram)) = rp_hal_x51v::devices::take_mbx() else {
+        let Some((regs, vram)) = rp_image::take_mbx() else {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
@@ -566,10 +567,7 @@ mod image {
         }
         e.regs.write32(M24CLK, clk0);
         log!("put back: the unit reset, M24CLK 0x{clk0:x}");
-        rp_hal_x51v::devices::return_to_loader();
-        loop {
-            core::hint::spin_loop();
-        }
+        rp_image::finish()
     }
 
     /// Points the graphics plane at the 32 bpp target (opaque); returns the
@@ -624,23 +622,6 @@ mod image {
             rt::delay_us(20_000);
         }
         log!("no button in 5 minutes: returning");
-    }
-
-    fn on_fault(kind: rt::Fault, addr: u32) -> ! {
-        crash(format_args!("FAULT {} at {addr:#010x}", kind.name()))
-    }
-
-    #[inline(never)]
-    fn crash(msg: core::fmt::Arguments) -> ! {
-        rp_hal_x51v::devices::crash_to_loader(msg);
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    #[panic_handler]
-    fn panic(info: &core::panic::PanicInfo) -> ! {
-        crash(format_args!("PANIC {}", info.message()))
     }
 }
 
