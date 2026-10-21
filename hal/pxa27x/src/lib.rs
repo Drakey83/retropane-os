@@ -66,15 +66,26 @@ impl Mmio {
     }
 
     fn reg(&self, offset: usize) -> *mut u32 {
-        // A plain message: formatting the offset would pull formatting code
-        // into every register access site (ADR-0005 rule 8). Still loud.
-        assert!(
-            offset.is_multiple_of(4) && offset + 4 <= self.len,
-            "register offset out of range or unaligned"
-        );
+        if !(offset.is_multiple_of(4) && offset + 4 <= self.len) {
+            bad_offset();
+        }
         // `offset / 4` is in bounds per the assertion above.
         self.base.as_ptr().wrapping_add(offset / 4)
     }
+}
+
+/// A register access outside its window or misaligned: a panic at the
+/// access site (`track_caller` names the file and line). Cold, never
+/// inlined and with a plain message: every access site keeps only a compare
+/// and a branch, and no formatting code reaches an image through it (an
+/// inlined formatted assert grew rp-pxa-mmc's FIFO read loop and cost
+/// rp-bench's `sd_read_block` 15%, 2026-10-21, quality audit C38;
+/// ADR-0005 rule 8).
+#[cold]
+#[inline(never)]
+#[track_caller]
+fn bad_offset() -> ! {
+    panic!("register offset out of range or unaligned")
 }
 
 impl RegisterBus for Mmio {
@@ -94,10 +105,9 @@ impl RegisterBus for Mmio {
 
 impl Mmio {
     fn reg16(&self, offset: usize) -> *mut u16 {
-        assert!(
-            offset.is_multiple_of(2) && offset + 2 <= self.len,
-            "16-bit register offset out of range or unaligned"
-        );
+        if !(offset.is_multiple_of(2) && offset + 2 <= self.len) {
+            bad_offset();
+        }
         self.base.as_ptr().cast::<u16>().wrapping_add(offset / 2)
     }
 }
@@ -119,10 +129,9 @@ impl RegisterBus16 for Mmio {
 
 impl RegisterBus8 for Mmio {
     fn read8(&mut self, offset: usize) -> u8 {
-        assert!(
-            offset < self.len,
-            "8-bit register offset {offset:#x} out of range"
-        );
+        if offset >= self.len {
+            bad_offset();
+        }
         let reg = self.base.as_ptr().cast::<u8>().wrapping_add(offset);
         // SAFETY: inside the window, which the caller of `Mmio::new`
         // guaranteed is valid for volatile access.
@@ -130,10 +139,9 @@ impl RegisterBus8 for Mmio {
     }
 
     fn write8(&mut self, offset: usize, value: u8) {
-        assert!(
-            offset < self.len,
-            "8-bit register offset {offset:#x} out of range"
-        );
+        if offset >= self.len {
+            bad_offset();
+        }
         let reg = self.base.as_ptr().cast::<u8>().wrapping_add(offset);
         // SAFETY: as in `read8`.
         unsafe { reg.write_volatile(value) }

@@ -160,14 +160,18 @@ pub fn sd_write<B: RegisterBus + RegisterBus8>(
 
 /// The block into the transmit FIFO, 32 bytes a request. Out of line and
 /// over a slice: with the sector's length known the loop unrolls into
-/// kilobytes of stores in every program.
+/// kilobytes of stores in every program. The chunk goes through
+/// `black_box` for the same reason: with a chunk's 32 bytes known, the
+/// inner loop unrolled too (+4.3 KB in every image, 2026-10-21, once the
+/// register accessors' panic left the loop: quality audit C38); the FIFO
+/// sets the pace, so a loop costs nothing.
 #[inline(never)]
 fn sd_fifo<B: RegisterBus + RegisterBus8>(regs: &mut B, data: &[u8]) -> bool {
     for chunk in data.chunks(mmc::FIFO_BYTES) {
         if wait(regs, mmc::I_REG, mmc::I_TXFIFO_REQ, WRITE_SPIN_LIMIT).is_none() {
             return false;
         }
-        for &b in chunk {
+        for &b in core::hint::black_box(chunk) {
             regs.write8(mmc::TXFIFO, b);
         }
     }
