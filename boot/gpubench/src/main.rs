@@ -3286,6 +3286,18 @@ mod image {
         g.mem.sync();
     }
 
+    /// Per-render lines P2L logs a phase at most (the run log sent over USB
+    /// filled at render 400 in run 1; the card log keeps every line, but a
+    /// line per render says nothing a count doesn't).
+    const P2L_LISTED: u32 = 20;
+
+    /// A 32-bit picture's words hashed (FNV-1a): whether anything wrote it.
+    fn p2l_hash(g: &Rig, at: u32) -> u32 {
+        (0..480 * 640u32).fold(0x811C_9DC5, |h, k| {
+            (h ^ g.mem.load((at + 4 * k) as usize).unwrap_or(0)).wrapping_mul(0x0100_0193)
+        })
+    }
+
     /// P2L's control: [`P2L_CONTROLS`] renders compared with the first,
     /// the screen at 32 bits.
     fn p2l_control(g: &mut Rig, r: &mut Renderer, a: u32, b: u32, name: &str) -> P2lTally {
@@ -3313,7 +3325,7 @@ mod image {
     #[inline(never)]
     fn long_count(g: &mut Rig) {
         log!(
-            "P2L: ADR-0023's long count. P2W's picture rendered at 32 bits (code 6) into the background picture once (the first render), then into the second screen, each checked as in P2X and compared with the first: {P2L_CONTROLS} with the screen at 32 bits (a control: P2Y found errors there), {P2L_RENDERS} with the screen as dithered RGB565 (P2W's picture, 0x650 9, 960-byte rows), {P2L_CONTROLS} at 32 bits again"
+            "P2L: ADR-0023's long count. P2W's picture rendered at 32 bits (code 6) into the background picture once (the first render), then into the second screen, each checked as in P2X and compared with the first: {P2L_CONTROLS} with the screen at 32 bits (a control: P2Y found errors there), {P2L_RENDERS} with the screen as dithered RGB565 (P2W's picture, 0x650 9, 960-byte rows) against the first made again under it, {P2L_CONTROLS} at 32 bits again; version 2"
         );
         clock_card(
             g,
@@ -3351,16 +3363,48 @@ mod image {
             x: 0,
             y: 0,
         };
+        // Run 1 (2026-10-21) found the first render black by the 16-bit
+        // phase: each step below hashes it, so the log names the one that
+        // writes it.
+        let h0 = p2l_hash(g, a);
+        log!("  the first render's hash after the control: 0x{h0:08x}");
         let shown = p_frame(g, &mut r, s, 9, None);
+        log!(
+            "  after the RGB565 screen render ({shown}): the first render's hash 0x{:08x}, the screen's 0x{:08x}",
+            p2l_hash(g, a),
+            p2l_hash(g, SCREEN.at)
+        );
         p2l_label(g, "P2L COUNTING");
+        log!(
+            "  after the screen's line: the first render's hash 0x{:08x}",
+            p2l_hash(g, a)
+        );
         p2w_show(&mut g.e.regs, SCREEN.at, 960, PlaneFormat::Rgb565 as u32);
         log!("  the screen: P2W's picture dithered to RGB565 ({shown}), scanned out at 16 bits");
         rt::delay_us(50_000);
+        log!(
+            "  after the plane switch: the first render's hash 0x{:08x}",
+            p2l_hash(g, a)
+        );
+        // The reference again, under the 16-bit screen; hashed, and checked
+        // every 100 renders.
+        let again = p2x_count(g, &mut r, a, 1920, 4, 6, None);
+        let ref_hash = p2l_hash(g, a);
+        log!(
+            "  P2L reference made again ({}), the screen at 16 bits: bars: {} white, {} never written, {} other wrong{}; hash 0x{ref_hash:08x}",
+            again.ok,
+            again.white,
+            again.unwritten,
+            again.wrong,
+            again.list.as_str()
+        );
         let mut main = P2lTally::default();
+        let (mut listed, mut changed) = (0u32, 0u32);
         let t0 = rt::ticks();
         for k in 1..=P2L_RENDERS {
             let c = p2x_count(g, &mut r, b, 1920, 4, 6, Some(a));
-            if c.bad > 0 || !c.ok {
+            if (c.bad > 0 || !c.ok) && listed < P2L_LISTED {
+                listed += 1;
                 log!(
                     "   16-bit screen render {k} ({}): {} pixels:{}",
                     c.ok,
@@ -3371,6 +3415,11 @@ mod image {
             main.add(&c);
             if k % 100 == 0 {
                 main.log("so far, the screen at 16 bits", us_since(t0));
+                let h = p2l_hash(g, a);
+                if h != ref_hash {
+                    changed += 1;
+                    log!("   the reference changed by render {k}: hash 0x{h:08x}");
+                }
             }
             if k % 25 == 0 {
                 let mut l = heapless_name();
@@ -3378,6 +3427,16 @@ mod image {
                 p2l_label(g, l.as_str());
             }
         }
+        if main.bad_renders > listed {
+            log!(
+                "   ({} more renders with a wrong pixel not listed)",
+                main.bad_renders - listed
+            );
+        }
+        log!(
+            "  the reference: changed at {changed} of {} checks",
+            P2L_RENDERS / 100
+        );
         main.log("the screen at 16 bits", us_since(t0));
         let after = p2l_control(g, &mut r, a, b, "control after (the screen at 32 bits)");
         log!(

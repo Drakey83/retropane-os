@@ -93,3 +93,16 @@ The other fields are the same in every entry: LCCR3 0x04F00001. MDCNFG 0x0ACB2BC
 - Normal-suspend wake-enable values (computed at runtime).
 - The VA for 0x8A536000 and the board-ID register 0xBB80001E were not resolved through OEMAddressTable.
 - `drivers-a08/PowerStateManager.dll` is HTC "Raphael" code (qtv_mp4_decoder / headset / A2DP hooks) and `battdrvr.dll` is an HTC-style SSP battery driver. Neither touches clock or voltage hardware: neither imports VirtualCopy/MmMapIoSpace, and battdrvr only uses KernelIoControl and GetIdleTime.
+
+## 5. Measured on the X51v (`rp-clocks` run F, 2026-10-21)
+
+`local/rp-clocks-runF1.txt`: found `CCCR` `0x02000310` (L 16, 2N 6),
+`CCSR` `0x30000310`, `CLKCFG` `0xB`, the core counted 623,999 kHz.
+
+- **Confirmed: a `CCCR` write alone changes nothing.** `CCCR` asking 2N 2
+  (`0x02000110`): `CCSR` unchanged, the core counted 623,975 kHz.
+- **Confirmed: the fault path's put-back keeps the running point** (C31)
+  and, with C42's option b, leaves `CCCR` naming it (`0x02000310`).
+- `CLKCFG` read `0xB` as Windows Mobile left it: bit 1 (F) reads back as
+  last written. Written without F by a put-back, it reads `0x9`; the point
+  (turbo, fast bus) is the same.

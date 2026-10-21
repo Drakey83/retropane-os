@@ -272,6 +272,24 @@ it. Only with DMA reads on (otherwise reading ahead would only add
 waiting). Expected: the drive at the slower of card and USB instead of
 their sum; to measure on the device.
 
+## Off the end of the card (measured, real X51v, 2026-10-21)
+
+`rp-sdtime`'s guard run (quality audit C32; `local/rp-sdtime-guard-run1.txt`),
+the owner's 32 GB SDHC card (61,067,264 blocks, the loader's and the
+driver's count agreeing):
+
+- **Confirmed:** every read and write past the end refused by the driver
+  (`read`, `read_many`, `write`, `write_many`, the block-device interface)
+  and by the HAL's card-log writer in under a microsecond, no command sent
+  (the read count unchanged); a run crossing the end refused whole.
+- **New, not understood:** the last block read once, then the second read
+  of it failed, and every read after (the last block again, block 0). The
+  run didn't log the errors. A guess to test: the card reads ahead past
+  its end and reports `OUT_OF_RANGE` in the next command's status, which
+  the driver takes as that read's failure; each failing read here was
+  again of the last block. The guard run's version 2 logs each result and
+  the card's status (CMD13) through a sequence after a last-block read.
+
 ## Emulator
 
 QEMU's `pxa2xx_mmci` model with an `sd-card` on `-drive if=sd`. Its response FIFO

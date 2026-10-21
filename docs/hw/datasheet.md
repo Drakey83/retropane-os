@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-19 (texture shapes from Dell's GLES library; Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, 2026-10-18). Facts come from measurements on the owner's X51v (a
+*As of 2026-10-21 (the baseline audit's device runs: the 2D FIFO's level, the long count, the SD card's end, a CCCR write alone; texture shapes from Dell's GLES library; Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, 2026-10-18). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -158,6 +158,15 @@ watching.
   (`DINTRS` bit 4), G5's start-up one was not. `DSIG` (the output
   signature) reads 0 for an all-black picture (run N): it tells a stopped
   display only with non-black pixels on screen. Details: 2700g.md.
+- **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
+  the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
+  fill takes ~6.3 ms at WM's clock, so a busy engine makes room well
+  inside the driver's 100 ms.
+- **32-bit renders under a 16-bit screen (run P2L, 2026-10-21):** 0 wrong
+  bar pixels in 1,000 renders (153.6 million), against ~47 a render with
+  the screen at 32 bits (ADR-0023's vote B). Open: the first render, kept
+  in the background picture, read all black after the 16-bit screen was
+  set up (2700g.md).
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),
@@ -212,7 +221,10 @@ watching.
 - PXA27x MMC controller, 4-bit, DMA; detect GPIO12 (low = in), write
   protect GPIO27 (high = locked), power CPLD `0x16` bit 0.
 - A multi-block write's CMD12 needs the stop-transmission bit; the card
-  stays busy after it (poll CMD13). Page: [sd.md](sd.md).
+  stays busy after it (poll CMD13).
+- Blocks past the end are refused by the driver before any command
+  (confirmed 2026-10-21). Open: after the last block is read, the next
+  reads failed (sd.md). Page: [sd.md](sd.md).
 
 ### CompactFlash slot
 - PC Card socket 1; power CPLD `0x16` bit 1 then `0x10` bit 12; RESET CPLD
@@ -241,6 +253,8 @@ watching.
 ### Clocks, voltage, reset
 - Seven operating points (91, 104, 208, 312, 416, 520, 624 MHz) with core voltages
   1050-1574 mV set through GPIO3/4/38; memory clocks from `MDREFR`.
+- A `CCCR` write alone changes no clock (confirmed 2026-10-21, `rp-clocks`
+  run F); `CLKCFG` bit 1 (F) reads back as last written.
 - Reset: Windows Mobile's software reboot drives GPIO99 high (after
   `PCFR` and GPIO15); a hardware watchdog reset lands on Dell's
   factory-restore prompt (press Mail for No). Pages: [clocks.md](clocks.md),

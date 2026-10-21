@@ -115,7 +115,16 @@ reads `DDADR` again after the others, and reads all of them again until
 it hasn't moved. It has host tests, C17's own reading among them, and 2
 mutants. It isn't proven on the device or by repeat emulator runs yet.
 
-## The device runs, built and waiting
+## The device runs: results (X51v, 2026-10-21)
+
+| Run | Result | Log (`local/`) |
+|---|---|---|
+| guard, C32 | **Passed for C32:** every block off the card refused in under a microsecond with no command sent, by the driver's four calls, the block-device interface and the card-log writer; a run crossing the end refused whole; nothing written. **Found:** after the last block was read, the next reads failed (C46); version 2 logs why | `rp-sdtime-guard-run1.txt` |
+| F, C31 and C42 | **Passed, 13 checks, 0 BAD:** a `CCCR` write alone changed nothing; after a deliberate data abort the crash path kept 624 MHz running (not the 208 MHz C31's bug would have chosen) and left `CCCR` naming it. The first device proof of C38's crash path. **Found:** an abort's crash line always said SPSR 0 (C44, fixed) | `rp-clocks-runF1.txt` |
+| FF, C37 | **Passed, 11 checks, 0 BAD,** after the zeroed-RAM budget was raised 2 KiB (the emulator checks hadn't size-checked the variant: C45, fixed): the FIFO's level reads full on the device and a busy engine is never refused; with the level faked full, the frame is dropped, not shown, not a hang, and the next one is identical to a normal draw | `rp-gpubench-runFF1.txt` |
+| P2L, ADR-0023 | **Half measured:** 0 wrong bar pixels in 1,000 renders under the 16-bit screen, ~47 a render in the 32-bit controls. **The comparison half failed as a measurement:** the first render read all black by the 16-bit phase, a device-only effect; version 2 hashes it after every step and makes it again under the 16-bit screen | `rp-gpubench-runP2L1-card.txt` |
+
+## The device runs as built
 
 Each one is a variant of an existing test image, and each keeps its log on
 the card. All four pass their emulator checks.

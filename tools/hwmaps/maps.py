@@ -53,7 +53,7 @@ for i, (k, (fill, name)) in enumerate(CAT.items()):
     s.append(f'<text x="{lx+22}" y="{yy+1}" font-size="12">{name}</text>')
 s.append(f'<text x="{x0}" y="{ly+66}" font-size="11" fill="#444">VID = core-voltage select (GPIO3/4/38). GPIO83 high = headphones in (codec powered). GPIO12/13 low = card in. GPIO99 high = board reset.</text>')
 s.append('</svg>')
-open(os.path.join(out, 'gpio-map.svg'), 'w', encoding='utf-8').write('\n'.join(s) + '\n')
+open(os.path.join(out, 'gpio-map.svg'), 'w', encoding='utf-8', newline='\n').write('\n'.join(s) + '\n')
 
 # CPLD: (offset, bit) -> (confidence, label)
 C = {
@@ -110,5 +110,5 @@ for i, (k, name) in enumerate([('confirmed', 'confirmed (measured)'), ('likely',
 s.append(f'<text x="20" y="{ly+30}" font-size="11" fill="#444">[read] = the offset reads a status input instead of the latch. LCD type: 0 = 3.7" Sharp VGA (the owner\'s), 1/3 = 3.5" Sharp QVGA, 2 = 3.7" Samsung VGA.</text>')
 s.append(f'<text x="20" y="{ly+48}" font-size="11" fill="#444">Owners, sequences and evidence per bit: docs/hw/cpld.md.</text>')
 s.append('</svg>')
-open(os.path.join(out, 'cpld-map.svg'), 'w', encoding='utf-8').write('\n'.join(s) + '\n')
+open(os.path.join(out, 'cpld-map.svg'), 'w', encoding='utf-8', newline='\n').write('\n'.join(s) + '\n')
 print('ok')

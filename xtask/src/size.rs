@@ -335,9 +335,12 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 17.5 KiB measured, + ~10%.
+    // Ratcheted 20 -> 23 KiB on 2026-10-21 (test image): its data-abort
+    // variant (RP_CRASH_DATA) is 20,668 B with C38's crash path, caught by
+    // the variant size check (quality audit C45); + ~10%.
     Budget {
         image: "rp-crash",
-        max_load: 20 * 1024,
+        max_load: 23 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
@@ -1089,6 +1092,30 @@ pub fn check(release_dir: &Path, images: &[&str]) -> Result<(), String> {
             over.join(", "),
             if over.len() == 1 { "s" } else { "" },
             if over.len() == 1 { "its" } else { "their" }
+        ));
+    }
+    Ok(())
+}
+
+/// Checks one build of `image` (a test image's variant, built in its own
+/// folder by the emulator checks) against the image's budget, as
+/// `cargo xtask load` would on the device day (quality audit C45: run FF
+/// passed the emulator 312 B over and was refused at the Axim).
+pub fn check_variant(elf_path: &Path, image: &str) -> Result<(), String> {
+    let b = BUDGETS.iter().find(|b| b.image == image).ok_or_else(|| {
+        format!("{image} has no size budget in xtask/src/size.rs (ADR-0005 rule 7)")
+    })?;
+    let elf = std::fs::read(elf_path).map_err(|e| format!("{}: {e}", elf_path.display()))?;
+    let s = measure(&elf)?;
+    if s.load > b.max_load || s.zero > b.max_zero {
+        return Err(format!(
+            "{} ({}) exceeds its size budget (ADR-0005): {} B loaded (budget {}), {} B zeroed RAM (budget {})",
+            image,
+            elf_path.display(),
+            s.load,
+            b.max_load,
+            s.zero,
+            b.max_zero
         ));
     }
     Ok(())

@@ -1770,6 +1770,14 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Emu(crate::emu::boot_loader_clocks),
     },
+    Mutant {
+        name: "crash path: an abort's SPSR not kept for the report (quality audit C44)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "    str     r2, [r3]                    @ the undefined entry kept them)
+",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
     // The audio ring's end (ADR-0032 A6, dmaring).
     Mutant {
         name: "ring: old STOP cleared before the new one is set (ADR-0032 A6)",

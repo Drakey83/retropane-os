@@ -1806,6 +1806,20 @@ fn crash_kinds(root: &Path, loader: &Path) -> Result<(), String> {
                 "crash {switch}: went through a watchdog reset instead of back to the loader"
             ));
         }
+        // The SPSR names the mode the fault came from (quality audit C44:
+        // the abort entries reported 0, on the X51v): an image runs in SVC
+        // or SYS mode.
+        let spsr = log
+            .split(line)
+            .nth(1)
+            .and_then(|rest| rest.split(" spsr 0x").nth(1))
+            .and_then(|v| u32::from_str_radix(v.get(..8)?, 16).ok())
+            .ok_or_else(|| format!("crash {switch}: no SPSR in the fault line:{log}"))?;
+        if !matches!(spsr & 0x1F, 0x13 | 0x1F) {
+            return Err(format!(
+                "crash {switch}: the fault line's SPSR 0x{spsr:08x} names no mode an image runs in"
+            ));
+        }
         let saved = card_file(&sd, "crashlog.txt")?;
         if !String::from_utf8_lossy(&saved).contains(line) {
             return Err(format!(
@@ -3681,6 +3695,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  the screen: P2W's picture dithered to RGB565 (true), scanned out at 16 bits",
                 "  P2L so far, the screen at 16 bits: 500 renders (0 unfinished)",
                 "  P2L the screen at 16 bits: 1000 renders (0 unfinished)",
+                "  the reference: changed at 0 of 10 checks",
                 "  P2L control after (the screen at 32 bits): 5 renders (0 unfinished)",
                 "P2L: 0 of 1000 renders under the 16-bit screen had a wrong pixel (0 pixels); the controls at 32 bits: 0 of 5 before, 0 of 5 after",
                 "P2L: done",
@@ -6241,14 +6256,13 @@ fn variant_image_with(
         "--target-dir",
         &dir,
     ]))?;
+    let elf = root
+        .join(&dir)
+        .join("armv5te-x51v-none-eabi/release")
+        .join(image);
+    crate::size::check_variant(&elf, image)?;
     let out = emu_dir(root)?.join(format!("{image}-{name}.bin"));
-    crate::sdkit::raw_binary(
-        &root
-            .join(&dir)
-            .join("armv5te-x51v-none-eabi/release")
-            .join(image),
-        &out,
-    )?;
+    crate::sdkit::raw_binary(&elf, &out)?;
     Ok(out)
 }
 

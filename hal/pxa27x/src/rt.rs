@@ -198,7 +198,10 @@ rp_dabt_entry:
     cmp     r0, #0
     strne   r0, [sp, #20]
     ldmfdne sp!, {{r0-r3, r12, pc}}^
-    mov     r0, r12                     @ unresolved: report and stop
+    mrs     r2, spsr                    @ unresolved: the faulting mode and
+    ldr     r3, =rp_fault_spsr          @ flags for the report (C44: only
+    str     r2, [r3]                    @ the undefined entry kept them)
+    mov     r0, r12                     @ report and stop
     ldr     r1, [sp, #20]               @ the faulting pc
     b       rp_fault
     .ltorg

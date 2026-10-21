@@ -32,7 +32,9 @@
 //! block-device interface (G3, G4) refuse them before any command (the
 //! read-command count unchanged, each refusal in microseconds), a run
 //! crossing the end is refused whole, and the last block reads and stays as
-//! it was. It writes nothing: every write it tries is off the card, and
+//! it was. G6 logs what each read after a read of the last block
+//! returns, with the card's status between (run 1 found every read
+//! failing after one). It writes nothing: every write it tries is off the card, and
 //! each carries the last block's own bytes, so even one that got through
 //! would leave the card as it was. No folder, no file.
 
@@ -104,7 +106,7 @@ mod image {
         rt::init_mmu();
         if GUARD {
             log!(
-                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32)"
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 2"
             );
             guard();
         } else {
@@ -258,10 +260,15 @@ mod image {
         // G2, the last block: read twice (the boundary from inside).
         let mut last = [0u8; BLOCK];
         let mut again = [0u8; BLOCK];
-        c.expect("the last block reads", card.read(n - 1, &mut last).is_ok());
+        let r1 = card.read(n - 1, &mut last);
         c.expect(
-            "and again, the same",
-            card.read(n - 1, &mut again).is_ok() && last == again,
+            format_line(format_args!("the last block reads: {r1:?}")).as_str(),
+            r1.is_ok(),
+        );
+        let r2 = card.read(n - 1, &mut again);
+        c.expect(
+            format_line(format_args!("and again, the same: {r2:?}")).as_str(),
+            r2.is_ok() && last == again,
         );
         // G3, reads off the end: refused, no command (the read count
         // unchanged), fast. The SDSC wrap point (2^23 blocks: its byte
@@ -329,12 +336,51 @@ mod image {
             format_line(format_args!("the block-device interface, writing: {w:?}")).as_str(),
             w == Err(BlockError::OutOfRange),
         );
+        let r = card.read(n - 1, &mut again);
         c.expect(
-            "the last block as it was",
-            card.read(n - 1, &mut again).is_ok() && last == again,
+            format_line(format_args!("the last block as it was: {r:?}")).as_str(),
+            r.is_ok() && last == again,
         );
         // G5, the driver still works after the refusals.
-        c.expect("block 0 reads", card.read(0, &mut again).is_ok());
+        let r = card.read(0, &mut again);
+        c.expect(
+            format_line(format_args!("block 0 reads: {r:?}")).as_str(),
+            r.is_ok(),
+        );
+        // G6, run 1's finding (2026-10-21: after the last block's second
+        // read every read failed, block 0's too): what each read after a
+        // read of the last block returns, and the card's status (CMD13)
+        // between them. Logged, not judged.
+        log!("G6 the reads after the last block (each result, then CMD13's status word):");
+        let rca = u32::from(card.rca()) << 16;
+        for (step, lba) in [
+            (1, Some(1)),
+            (2, Some(2)),
+            (3, Some(n - 1)),
+            (4, None),
+            (5, Some(3)),
+            (6, Some(4)),
+            (7, Some(n - 1)),
+            (8, Some(5)),
+            (9, None),
+            (10, Some(6)),
+        ] {
+            match lba {
+                Some(lba) => {
+                    let r = card.read(lba, &mut again);
+                    log!("  G6 {step}: block {lba}: {r:?}");
+                }
+                None => {
+                    let st = card.host_mut().command(Command::new(13, rca, Response::R1));
+                    log!(
+                        "  G6 {step}: CMD13 {:?}",
+                        st.map(|w| format_line(format_args!("0x{:08x}", w[0])))
+                            .as_ref()
+                            .map(Line::as_str)
+                    );
+                }
+            }
+        }
         let (checks, bad) = (c.checks, c.bad);
         log!("{MARKER}: the guard run: {checks} checks, {bad} BAD");
     }
