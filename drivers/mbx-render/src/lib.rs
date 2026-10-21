@@ -218,6 +218,9 @@ pub struct FrameStats {
     pub cache_hits: u32,
     /// Rectangles drawn and then kept in the cache.
     pub cache_stores: u32,
+    /// Commands the 2D FIFO wouldn't take (full for 100 ms): the rest of
+    /// the frame was dropped and it isn't shown ([`Mbx2dRenderer::fifo_full`]).
+    pub fifo_full: u32,
 }
 
 /// The 4 x 4 ordered (Bayer) pattern, 0..16.
@@ -266,8 +269,19 @@ pub struct Mbx2dRenderer<R, M> {
     /// The rectangles the last frame drew afresh (not copied forward).
     drawn: [Rect; MAX_DIRTY],
     drawn_n: usize,
-    /// Frames the engine didn't finish (each reset it and redraws whole).
+    /// Frames the engine didn't finish (each reset it and redraws whole):
+    /// a hang.
     pub stalls: u32,
+    /// Frames dropped because the 2D FIFO stayed full for 100 ms while
+    /// they were queued: counted apart from [`Self::stalls`], so a slow
+    /// engine isn't read as a hung one. Such a frame isn't shown; the next
+    /// two are drawn whole. Only if its fence never lands either is it
+    /// also a stall.
+    pub fifo_full: u32,
+    /// The frame being queued lost a command (the FIFO stayed full).
+    dropping: bool,
+    /// The frame queued lost a command: not shown when its fence lands.
+    pending_dropped: bool,
     /// Dither each redrawn rectangle (on; tests against the CPU renderer
     /// turn it off).
     pub dither: bool,
@@ -333,6 +347,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             drawn: [Rect::new(0, 0, 0, 0); MAX_DIRTY],
             drawn_n: 0,
             stalls: 0,
+            fifo_full: 0,
+            dropping: false,
+            pending_dropped: false,
             dither: true,
             last: FrameStats::default(),
             delay_us: |_| {},
@@ -500,9 +517,22 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     }
 
     fn submit(&mut self, w: &[u32]) {
+        if self.dropping {
+            return; // the frame is lost already: no more 100 ms waits
+        }
         self.last.words += w.len() as u32;
-        // A FIFO that stays full is caught by the frame's fence.
-        let _ = self.e.submit(w);
+        if self.e.submit(w).is_err() {
+            self.drop_frame();
+        }
+    }
+
+    /// The FIFO stayed full: the frame being queued lost a command. Nothing
+    /// more of it is queued, and it won't be shown (`draw` then forgets
+    /// what it may have left half-made).
+    fn drop_frame(&mut self) {
+        self.dropping = true;
+        self.fifo_full += 1;
+        self.last.fifo_full += 1;
     }
 
     /// Engine coordinates of `r` (end exclusive).
@@ -656,6 +686,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
 
     /// Waits for everything queued (to reuse rows or cache space).
     fn wait(&mut self) -> bool {
+        if self.dropping {
+            return true; // nothing more of this frame is queued
+        }
         self.last.waits += 1;
         let mem = &self.mem;
         let ok = self.e.finish_with(200_000, |at| mem.load(at)).is_ok();
@@ -974,6 +1007,7 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         // into; usually long done by the time anything changes.
         let t0 = (self.now)();
         self.last = FrameStats::default();
+        self.dropping = false;
         // A held frame nobody flipped: show it now.
         self.flip();
         while !self.poll() {
@@ -1126,11 +1160,26 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         self.last.rects = n as u32;
         self.last.forward = nf as u32;
         // The fence, and back to the caller: `poll` flips.
+        // Queued even for a dropped frame: when it lands, the engine has
+        // caught up (no reset needed); if it never does, `draw`'s wait
+        // counts a stall and resets.
         let n = self.e.next_fence();
         let fence = cmd::fence(self.l.fence, n);
-        self.submit(&fence);
+        self.last.words += fence.len() as u32;
+        if self.e.submit(&fence).is_err() && !self.dropping {
+            self.drop_frame();
+        }
+        if self.dropping {
+            // Its partial work may be in the background or a cached area
+            // (marked made as the frame went on), and in the picture: all
+            // made again, the next two frames drawn whole.
+            self.bg_hash = None;
+            self.cached_n = 0;
+            self.fresh = 2;
+        }
         self.pending = Some((back, n, (self.now)()));
-        self.pending_whole = self.stalls == stalls0;
+        self.pending_whole = self.stalls == stalls0 && !self.dropping;
+        self.pending_dropped = self.dropping;
         self.last.queue_us = self.us_since(t0);
         drawn
     }
@@ -1148,6 +1197,12 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         }
         self.pending = None;
         self.last.engine_us = self.us_since(queued);
+        if self.pending_dropped {
+            // Missing commands: never shown. The picture on screen stays,
+            // and the next two frames are drawn whole (`drop_frame`).
+            self.pending_dropped = false;
+            return true;
+        }
         self.fresh = self.fresh.saturating_sub(1);
         self.front_whole = self.pending_whole;
         if self.hold {

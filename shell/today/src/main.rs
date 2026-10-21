@@ -471,12 +471,15 @@ mod image {
 
             if back {
                 let (n, median, worst) = latency.summary();
+                let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);
                 let _ = writeln!(
                     RunLog,
                     "touch to flush: {n} answered, median {median} us, worst {worst} us \
                      (promise: 50 ms); {frames} frames, worst draw {draw_us_worst} us; pen line down without pressure {phantom} times; \
-                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {}; button taps missed between scans {}",
-                    gfx.two_d().stalls,
+                     touches found by the interrupt {found_by_irq}, by the idle check {found_by_poll}; engine stalls {} (hangs, each a reset), \
+                     frames dropped on a full FIFO {}; button taps missed between scans {}",
+                    stalls,
+                    fifo_full,
                     key_events.missed()
                 );
                 let _ = writeln!(
@@ -561,11 +564,11 @@ mod image {
                 if frames == 1 {
                     let _ = writeln!(RunLog, "{} first frame {us} us", rp_today::MARKER);
                     // The emulator check waits for this on the serial port.
+                    let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);
                     let _ = writeln!(
                         PxaUart::new(rt::emergency_uart()),
-                        "{} (engine stalls {})",
+                        "{} (engine stalls {stalls}, FIFO full {fifo_full})",
                         rp_today::MARKER,
-                        gfx.two_d().stalls
                     );
                 }
                 if let Some(at) = pending.take() {

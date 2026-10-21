@@ -207,6 +207,36 @@ fn every_command_matches_the_reference() {
     assert_eq!(r.stalls, 0);
 }
 
+/// A slow engine (the FIFO full for longer than the 100 ms a command may
+/// wait): the frame is dropped, counted apart from stalls, never shown, and
+/// the next frame is drawn whole and right, with no reset.
+#[test]
+fn a_full_fifo_drops_the_frame_without_calling_it_a_hang() {
+    let (mut r, mem) = gpu();
+    let mut cpu = Reference::new();
+    let mut f = Frame::new();
+    scene(&mut f, 0);
+    f.damage(Rect::new(0, 0, W, H));
+    r.draw(&f);
+    assert!(r.poll());
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+    let before = shown(&mut r, &mem);
+    // The fake clock moves 1 ms a reading: ~100 readings time a command
+    // out; 150 leave the FIFO room again by the frame's fence.
+    scene(&mut f, 40);
+    f.damage(Rect::new(0, 0, W, H));
+    r.parts().0.regs.full_reads = 150;
+    r.draw(&f);
+    assert_eq!((r.fifo_full, r.last.fifo_full, r.stalls), (1, 1, 0));
+    assert!(r.poll(), "the fence landed");
+    assert_eq!(shown(&mut r, &mem), before, "the dropped frame isn't shown");
+    // The next frame: whole, right.
+    r.draw(&f);
+    assert!(r.poll());
+    assert_eq!((r.fifo_full, r.last.fifo_full, r.stalls), (1, 0, 0));
+    same(&shown(&mut r, &mem), &cpu.draw(&f), 2).unwrap();
+}
+
 #[test]
 fn small_changes_redraw_both_pictures_right() {
     // Buffer age 2: each picture is two frames old when drawn into.

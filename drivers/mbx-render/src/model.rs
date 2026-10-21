@@ -74,6 +74,8 @@ pub struct Bus {
     xy0: u32,
     /// Commands run (fills, copies, blends; fences included).
     pub ops: u32,
+    /// Status reads still to report the FIFO full (a slow engine).
+    pub full_reads: u32,
 }
 
 impl Bus {
@@ -92,6 +94,7 @@ impl Bus {
             colour: 0,
             xy0: 0,
             ops: 0,
+            full_reads: 0,
         }
     }
 
@@ -248,6 +251,10 @@ pub fn blend(word: u32, s: u32, d: u32) -> u32 {
 impl RegisterBus for Bus {
     fn read32(&mut self, offset: usize) -> u32 {
         if offset == MBX + reg::STATUS {
+            if self.full_reads > 0 {
+                self.full_reads -= 1;
+                return 0x00FF_0000 | 1 << 30; // 511 words used: no room
+            }
             return 0;
         }
         if offset == rp_drv_mbx_display::reg::DINTRS {

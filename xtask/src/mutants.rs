@@ -1279,6 +1279,42 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mbx-render: a frame missing commands shown",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "if self.pending_dropped {",
+        to: "if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_full_fifo_drops_the_frame_without_calling_it_a_hang",
+        ]),
+    },
+    Mutant {
+        name: "mbx-render: a dropped frame's half-made background kept",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "            // made again, the next two frames drawn whole.
+            self.bg_hash = None;",
+        to: "            // made again, the next two frames drawn whole.",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_full_fifo_drops_the_frame_without_calling_it_a_hang",
+        ]),
+    },
+    Mutant {
+        name: "mbx-render: a full FIFO not counted apart from hangs",
+        file: "drivers/mbx-render/src/lib.rs",
+        from: "        self.fifo_full += 1;
+",
+        to: "
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx-render",
+            "a_full_fifo_drops_the_frame_without_calling_it_a_hang",
+        ]),
+    },
+    Mutant {
         name: "pe: an image for another CPU taken (x86)",
         file: "kernel/pe/src/lib.rs",
         from: "if u16_at(headers, opt)? != 0x10B || !matches!(machine, MACHINE_ARM | MACHINE_THUMB) {",
