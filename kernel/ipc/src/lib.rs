@@ -13,6 +13,13 @@
 //! Restarting a server bumps its port's **generation**, so handles taken
 //! before the restart fail cleanly instead of reaching the new instance.
 //!
+//! **Lifecycles.** State here is kept per process slot (ports, handle
+//! tables: [`Ipc::exit`] when the process ends) and per thread number (call
+//! depth: [`Ipc::thread_exit`] when the thread ends). The scheduler reuses
+//! thread numbers, so the kernel must pair every `Scheduler::exit` with
+//! `Ipc::thread_exit` for the same thread, or the next thread given that
+//! number starts inside calls it never made.
+//!
 //! Security (docs/security.md): a handle is an index into the caller's own
 //! table, so a process can't name another's handles; forged or stale
 //! numbers fail; rights can't grow; nesting is bounded. A handle table
@@ -485,6 +492,15 @@ impl Ipc {
     /// fault is its own process's).
     pub fn fault(&mut self, tid: u8) -> bool {
         self.ret(tid).is_ok()
+    }
+
+    /// Thread `tid` ended (the scheduler will hand its number out again):
+    /// forget the calls it was in. Returns how many there were (0 for a
+    /// thread that ended outside any call, the normal case).
+    pub fn thread_exit(&mut self, tid: u8) -> usize {
+        self.depth
+            .get_mut(usize::from(tid))
+            .map_or(0, |d| usize::from(core::mem::take(d)))
     }
 
     /// Calls `tid` is in.

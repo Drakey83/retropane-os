@@ -1268,6 +1268,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "ipc: a thread's call depth kept past its exit",
+        file: "kernel/ipc/src/lib.rs",
+        from: ".map_or(0, |d| usize::from(core::mem::take(d)))",
+        to: ".map_or(0, |d| usize::from(*d))",
+        check: Check::Host(&[
+            "-p",
+            "rp-kernel-ipc",
+            "a_thread_number_reused_starts_outside_any_call",
+        ]),
+    },
+    Mutant {
         name: "pe: an image for another CPU taken (x86)",
         file: "kernel/pe/src/lib.rs",
         from: "if u16_at(headers, opt)? != 0x10B || !matches!(machine, MACHINE_ARM | MACHINE_THUMB) {",

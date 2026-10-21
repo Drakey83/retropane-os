@@ -180,6 +180,23 @@ fn nesting_is_bounded_and_unwinds() {
     }
 }
 
+/// A thread that ends inside calls (killed in a server, say) leaves no
+/// depth behind for the next thread given its number.
+#[test]
+fn a_thread_number_reused_starts_outside_any_call() {
+    let (mut ipc, _, h) = setup();
+    ipc.call(5, APP, h).unwrap();
+    ipc.call(5, APP, h).unwrap();
+    assert_eq!(ipc.ipc.thread_exit(5), 2, "two calls forgotten");
+    assert_eq!(ipc.depth(5), 0);
+    // The next thread numbered 5: no phantom return, a full nesting budget.
+    assert_eq!(ipc.ret(5), Err(Error::NotInCall));
+    assert_eq!(ipc.call(5, APP, h).unwrap().depth, 1);
+    // Ending outside any call, or a number out of range: nothing to do.
+    assert_eq!(ipc.ipc.thread_exit(6), 0);
+    assert_eq!(ipc.ipc.thread_exit(u8::MAX), 0);
+}
+
 #[test]
 fn a_faulting_server_unwinds_to_its_caller() {
     let (mut ipc, _, h) = setup();

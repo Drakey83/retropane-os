@@ -1388,17 +1388,14 @@ mod image {
                 None
             }
         });
-        let _ = SCHED.with(|s| {
+        exit_thread(me, |s| {
             if let Some(stack) = stack
                 && let Ok(t) = s.create(DISPLAY_SLOT as u8, 150)
             {
                 RUN.with(|r| r.slots[t.index()] = DISPLAY_SLOT as u8);
                 thread::prepare(t.index(), stack, user_thread, ROLE_TEST_FAULT as usize);
             }
-            s.exit(me)
-        });
-        reschedule();
-        unreachable!("an exited thread never runs again")
+        })
     }
 
     /// A client: enters the client program in its process, for good.
@@ -1611,9 +1608,7 @@ mod image {
             }
             r.exited += 1;
         });
-        let _ = SCHED.with(|s| s.exit(me));
-        reschedule();
-        unreachable!("an exited thread never runs again")
+        exit_thread(me, |_| {})
     }
 
     /// Restarts the supervised server in `slot` (no thread is inside): its
@@ -1725,6 +1720,20 @@ mod image {
             }
             reschedule();
         }
+    }
+
+    /// The one way a thread ends: the IPC side forgets the calls it was in
+    /// (`Ipc::thread_exit`), `last` runs on the scheduler (a wake, a
+    /// successor), the scheduler removes it, and the next thread runs. The
+    /// scheduler reuses thread numbers, so the two exits always pair here.
+    fn exit_thread(me: Tid, last: impl FnOnce(&mut Scheduler)) -> ! {
+        let _ = IPC.with(|i| i.ipc.thread_exit(me.0));
+        let _ = SCHED.with(|s| {
+            last(s);
+            s.exit(me)
+        });
+        reschedule();
+        unreachable!("an exited thread never runs again")
     }
 
     /// A scheduling point: runs the most urgent ready thread, in the slot
@@ -1938,12 +1947,9 @@ mod image {
         }
         RUN.with(|r| r.slots[me.index()] = 0);
         let done = RUN.with(|r| r.done);
-        let _ = SCHED.with(|s| {
+        exit_thread(me, |s| {
             let _ = s.set_event(done);
-            s.exit(me)
-        });
-        reschedule();
-        unreachable!("an exited thread never runs again")
+        })
     }
 
     /// Packages the test programs as a PE file in `file`: `.text` (the
@@ -2104,12 +2110,9 @@ mod image {
             r.finished += 1;
             r.done
         });
-        let _ = SCHED.with(|s| {
+        exit_thread(me, |s| {
             let _ = s.set_event(done);
-            s.exit(me)
-        });
-        reschedule();
-        unreachable!("an exited thread never runs again")
+        })
     }
 
     /// Checks every client's report, the server's own word, and that
