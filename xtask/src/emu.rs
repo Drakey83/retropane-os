@@ -3845,6 +3845,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_ft,
             &[
                 "  FT alone: 3D Some(",
+                "0 words of 153600 differ from the first",
+                "FT together: 0 words of 153600 differ from the render alone",
+                "differing pixels 0 in the textured quad, 0 in the Gouraud background only",
                 "the render as alone: true; the copies as alone: true",
                 "FT: both right together",
                 "RETROPANE-GPUBENCH: done",

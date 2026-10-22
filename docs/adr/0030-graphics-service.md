@@ -62,6 +62,14 @@ waits for a 3D render in flight. After any 3D reset the 2D engine's stream
 restarts. Later, once a device test shows it's safe, the two engines can
 run at the same time on different areas (they are separate hardware).
 
+*Device result, 2026-10-21 (`rp-gpubench` run FT, the performance gate's
+P8; a measurement, not a decision):* with the two at once on different
+areas the 3D render got ~220 wrong pixels in 307,200 (450+ against 2D
+fills) while saving 9% of the time; alone it repeats exactly. So as set
+up now the turns stay. Open: the mechanism, and whether a memory
+controller setting or separate memory areas make overlap safe
+(`docs/hw/2700g.md`).
+
 ### G3. Clients get handles, not addresses (recommended)
 
 A client's textures and surfaces are blocks from the pool, under a quota

@@ -223,6 +223,9 @@ mod image {
     /// hashed), then together; both results must hash as alone. Unattended;
     /// a hang is the run's finding (engines reset, logged).
     const TOGETHER: bool = option_env!("RP_GPUBENCH_TOGETHER").is_some();
+    /// Run FT with the 2D engine filling instead of copying (writes only,
+    /// no reads): `RP_GPUBENCH_TOGETHER_FILLS` beside `RP_GPUBENCH_TOGETHER`.
+    const TOGETHER_FILLS: bool = option_env!("RP_GPUBENCH_TOGETHER_FILLS").is_some();
     /// Run P2X: P2W's white specks (in memory after the render, in the
     /// black bar of the 24- and 32-bit pictures): the picture rendered 5
     /// times per format over a marker fill, the bars checked and every
@@ -2883,19 +2886,85 @@ mod image {
         })
     }
 
+    /// Words of 2700G memory that differ between `a` and `b` (`words` long),
+    /// and the first four: (pixel index of the word's first pixel, a, b).
+    fn ft_diff(g: &Rig, a: u32, b: u32, words: u32) -> (u32, [(u32, u32, u32); 4]) {
+        let mut first = [(0, 0, 0); 4];
+        let mut n = 0u32;
+        for k in 0..words {
+            let (x, y) = (
+                g.mem.load((a + 4 * k) as usize).unwrap_or(0),
+                g.mem.load((b + 4 * k) as usize).unwrap_or(0),
+            );
+            if x != y {
+                if (n as usize) < first.len() {
+                    first[n as usize] = (2 * k, x, y);
+                }
+                n += 1;
+            }
+        }
+        (n, first)
+    }
+
+    /// Version 3's shape of the differences between two RGB565 pictures
+    /// (`words` words at `a` and `b`, 480 pixels a row): differing pixels
+    /// (not words) in the quad (40..440, 40..600) and outside it, in eight
+    /// bands of 80 rows, and how many differ by at most one step in every
+    /// channel (R, G, B in their own steps) against by more.
+    fn ft_shape(g: &Rig, a: u32, b: u32, words: u32) -> (u32, u32, [u32; 8], u32, u32) {
+        let (mut inq, mut out, mut near, mut far) = (0u32, 0u32, 0u32, 0u32);
+        let mut bands = [0u32; 8];
+        for k in 0..words {
+            let (x, y) = (
+                g.mem.load((a + 4 * k) as usize).unwrap_or(0),
+                g.mem.load((b + 4 * k) as usize).unwrap_or(0),
+            );
+            if x == y {
+                continue;
+            }
+            for h in 0..2 {
+                let (p, q) = ((x >> (16 * h)) & 0xFFFF, (y >> (16 * h)) & 0xFFFF);
+                if p == q {
+                    continue;
+                }
+                let i = 2 * k + h;
+                let (px, py) = (i % 480, i / 480);
+                if (40..440).contains(&px) && (40..600).contains(&py) {
+                    inq += 1;
+                } else {
+                    out += 1;
+                }
+                bands[(py / 80) as usize] += 1;
+                let most = [(11, 0x1F), (5, 0x3F), (0, 0x1F)]
+                    .into_iter()
+                    .map(|(sh, m)| ((p >> sh) & m).abs_diff((q >> sh) & m))
+                    .max()
+                    .unwrap_or(0);
+                if most <= 1 {
+                    near += 1;
+                } else {
+                    far += 1;
+                }
+            }
+        }
+        (inq, out, bands, near, far)
+    }
+
     /// Run FT (see [`TOGETHER`]).
     #[inline(never)]
     fn together(g: &mut Rig) {
         const PIC: u32 = 480 * 640 * 2;
         log!(
-            "FT: the 2D engine and the 3D core at once: a full-screen RGB565 render (a Gouraud background and a textured quad, 2400 tiles) and ten full-screen 16-bit 2D copies; each alone, then together"
+            "FT: the 2D engine and the 3D core at once: a full-screen RGB565 render (a Gouraud background and a textured quad, 2400 tiles) and ten full-screen 16-bit 2D {} (each alone, then together)",
+            if TOGETHER_FILLS { "fills" } else { "copies" }
         );
         clock_card(g, ["RUN FT", "2D AND 3D", "AT ONCE"], 0xFF20_2040, 2);
         let Some(tex) = p_texture(g, 2, p_texel) else {
             log!("  no memory for the texture");
             return;
         };
-        let (Some(src), Some(dst), Some(pic)) = (
+        let (Some(src), Some(dst), Some(pic), Some(refp)) = (
+            g.pool.alloc(PIC, 0x1000),
             g.pool.alloc(PIC, 0x1000),
             g.pool.alloc(PIC, 0x1000),
             g.pool.alloc(PIC, 0x1000),
@@ -2947,7 +3016,23 @@ mod image {
         }
         let _ = g.e.finish(g.mem.0, 2_000_000);
         let copies = |g: &mut Rig| -> bool {
-            for _ in 0..10 {
+            for k in 0..10u32 {
+                if TOGETHER_FILLS {
+                    let w = rp_image::need(
+                        cmd::fill(
+                            Format::RGB565,
+                            dst as usize,
+                            960,
+                            (0, 0, 480, 640),
+                            0x1234 + k,
+                        ),
+                        "a 2D rectangle",
+                    );
+                    if g.e.submit(&w).is_err() {
+                        return false;
+                    }
+                    continue;
+                }
                 let (w, n) = rp_image::need(
                     cmd::copy(
                         Format::RGB565,
@@ -3014,6 +3099,32 @@ mod image {
             None
         };
         let h3 = ft_hash(g, pic, PIC / 4);
+        // Version 2: the render kept (a 2D copy), then rendered alone again
+        // and compared word for word: is the render repeatable alone?
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                Format::RGB565,
+                (refp as usize, 960),
+                (pic as usize, 960),
+                (0, 0),
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D rectangle",
+        );
+        let _ = g.e.submit(&w[..n]);
+        let _ = g.e.finish(g.mem.0, 2_000_000);
+        let t1 = g.clock.now_us();
+        let again = if render(g, &mut r) {
+            wait_3d(g, &mut r, t1)
+        } else {
+            None
+        };
+        let (d, first) = ft_diff(g, pic, refp, PIC / 4);
+        log!(
+            "  FT a second render alone: done {again:?} us; {d} words of {} differ from the first; the first (pixel, again, first): {first:08x?}",
+            PIC / 4
+        );
         let t0 = g.clock.now_us();
         let ok2 = copies(g) && g.e.finish(g.mem.0, 2_000_000).is_ok();
         let alone_2d = ok2.then(|| g.clock.now_us().wrapping_sub(t0));
@@ -3040,6 +3151,15 @@ mod image {
         };
         let ok2 = queued && g.e.finish(g.mem.0, 2_000_000).is_ok();
         let both = g.clock.now_us().wrapping_sub(t0);
+        let (d, first) = ft_diff(g, pic, refp, PIC / 4);
+        log!(
+            "  FT together: {d} words of {} differ from the render alone; the first (pixel, together, alone): {first:08x?}",
+            PIC / 4
+        );
+        let (inq, out, bands, near, far) = ft_shape(g, pic, refp, PIC / 4);
+        log!(
+            "  FT together: differing pixels {inq} in the textured quad, {out} in the Gouraud background only; by 80-row band {bands:?}; {near} off by one step at most in each channel, {far} by more"
+        );
         let (s3, s2) = (
             ft_hash(g, pic, PIC / 4) == h3,
             ft_hash(g, dst, PIC / 4) == h2,
@@ -3061,7 +3181,7 @@ mod image {
         }
         let _ = r.release(&mut g.pool);
         p_texture_free(g, tex);
-        for at in [src, dst, pic] {
+        for at in [src, dst, pic, refp] {
             let _ = g.pool.free(at, PIC);
         }
         clock_card(g, ["RUN FT", "DONE", ""], 0xFF10_6020, 3);

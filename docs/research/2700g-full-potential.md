@@ -167,7 +167,7 @@ named in its evidence.
 | P5 | open | the second texture unit, fog, TSP bit 14 not tried |
 | P6 | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
 | P7 | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
-| P8 | open | 2D and 3D at once not tried |
+| P8 | partial | run FT (X51v): together 9% faster (85.4 against 93.8 ms) but the 3D render gets ~220 wrong pixels (450+ against 2D fills; the render alone repeats exactly), so ADR-0030 G2's turns hold; left: the mechanism, and whether a memory-controller setting or separate memory areas make it safe |
 | P9 | open | the video plane's scaler and placement not tried |
 | P10 | open | the cursor plane and colour keys not tried |
 | P11 | open | MVED1 never run past its safe stages |

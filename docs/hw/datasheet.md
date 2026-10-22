@@ -148,6 +148,12 @@ watching.
   full-screen copy 5.0 ms (0.63 ms), a 32-bit half-screen copy 5.1 ms, a
   32-bit full-screen stride-0 copy 10.0 ms, the renderer's 4-blit dither
   add over a full 32-bit screen 18.9 ms.
+- **2D and 3D at once corrupt the 3D render** (`rp-gpubench` run FT,
+  X51v, 2026-10-21): with full-screen 2D copies running, a full-screen
+  RGB565 render gets ~220 wrong pixels in 307,200 (450+ with 2D fills),
+  spread evenly, half far off; alone it repeats exactly. Together saves
+  9% of the time. The engines take turns (ADR-0030 G2); the cause is
+  open (`2700g.md` "baseline audit").
 - **CPU, measured** (`rp-probe`, X51v at 624 MHz, 2026-10-22): the D-cache
   is 32 KiB (a line walk misses from 40 KiB, ~233 ns a missed line);
   `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; the internal
