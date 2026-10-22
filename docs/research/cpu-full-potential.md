@@ -144,7 +144,7 @@ named in its evidence.
 
 | Line | Status | Evidence, or what's left |
 |---|---|---|
-| V1 | partial | rp-probe (X51v, 2026-10-22): the D-cache's 32 KiB confirmed (a line walk misses from 40 KiB, ~233 ns a miss); the CPU ID read; the I-cache, the mini data cache and iWMMXt not measured |
+| V1 | partial | rp-probe (X51v, 2026-10-22): the D-cache's 32 KiB confirmed (a line walk misses from 40 KiB, ~233 ns a miss); the CPU ID read; iWMMXt present and working (`wCID` `0x69051020`, access on as Windows Mobile leaves it; the emulator reports `0x69051051`); the I-cache and the mini data cache not measured |
 | V2 | done | rp-probe (X51v, 2026-10-22, `local/rp-probe-gate-run7.txt`): all 256 KiB of the SRAM written and read back with 0x55555555, 0xAAAAAAAA, each word's address and its complement, every word right (no aliasing: the size is the manual's); its speed: 286 MB/s copy, 475 MB/s fill, 111 ns a random hop |
 | V3 | open | WM's seven speeds not set and measured by us |
 | V4 | open | the voltage patterns not ranked |
@@ -160,7 +160,7 @@ named in its evidence.
 | C3 | partial | rp-probe (X51v, 2026-10-22): SRAM copies 3x SDRAM, hops 4.4x faster, page tables there make TLB spills 5.2x cheaper; what lives there best (tables, hot buffers, upload staging: T2) to decide |
 | C4 | partial | RetroPane's random hop 491 ns (perf.md); page sizes, table placement, TLB lock-down not tried |
 | C5 | partial | `pld` helps `memcpy` (perf.md); the mini cache and line locking not tried |
-| C6 | open | iWMMXt never exercised |
+| C6 | partial | rp-probe (X51v, 2026-10-22, `local/rp-probe-wmmx.txt`): iWMMXt routines (`rp_hal_pxa27x::iwmmxt::{copy, mix, avg}`) checked equal to plain code; **a saturating 16-bit mix 6.7x faster in the cache (12.8 against 85.4 us for 8 KiB), 2.1x from memory; a rounded 50% pixel average 2.8x in the cache (12.8 against 36.2 us, against the plain SWAR), 1.5x from memory; 64-bit copies no faster than `memcpy` (2.409 against 2.410 ms for 256 KiB: the bus)**. Left: the mixer's real loop (32-bit accumulators, gain multiply, resampling: WMADD/WMUL forms, measured in place), colour conversion and the T5 converters (WSHUF/WUNPCK/WPACK), the virtual bass filter (WMAC) |
 | C7 | partial | rp-probe (X51v, 2026-10-22): `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; **the prefetch swept (none to 256 B): 128 B ahead now in `memcpy`, -12% on every large copy (109 MB/s)**; the destination line allocate (CP15 c7, c2, 5) **declined: it crashed the probe twice** (wild jumps; cause not found, likely the scratch region's cache mapping); left: iWMMXt 64-bit moves, DMA for large copies (C11) |
 | C8 | partial | the cycle counter used; the event counters not wired into the benches |
 | C9 | partial | rp-probe built four ways on the X51v (2026-10-22, perf.md): `target-cpu=xscale` byte-identical (no effect); Thumb 26% smaller and 25-120% slower (declined for hot code; a size option for cold code); **frame pointers optional: 2-7% faster compute, 1.5 KB smaller, nothing slower once the SD driver's polling was fixed**: ADR-0001 amendment proposed (B, may-omit), the owner's vote; LTO and inlining A/B not run |
@@ -174,7 +174,7 @@ named in its evidence.
 | T5 | open | the GPU-format converters not timed together |
 | T6 | done | the OS path's reads of 2700G memory audited (2026-10-21): mipmap levels no longer read back (made from SDRAM, a test fails on any read); the fence polling measured harmless to the engine (B8c, X51v: 61.8 ms polled nonstop vs 62.2 every 1 ms); what's left is single-word register reads |
 | T7 | open | clocks per moment against battery not measured (harness) |
-| T8 | open | as the GPU page's P8 |
+| T8 | partial | as the GPU page's P8 (run FT: together 9% faster but the 3D render corrupts; the turns hold) |
 
 ## The checklist rule
 

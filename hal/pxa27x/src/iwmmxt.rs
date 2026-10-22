@@ -336,3 +336,164 @@ extern "C" fn rp_iwmmxt_trap(pc: u32) -> bool {
     }
     true
 }
+
+// ------------------------------------------------- speed routines (gate C6)
+//
+// The performance gate's C6: the media unit's 64-bit moves and SIMD
+// arithmetic against plain ARM code, on pixel and audio loops. Each routine
+// needs 8-byte aligned buffers and a length a multiple of 32 bytes (the
+// safe wrappers check). Data instructions are written as words (the
+// assembler has no iWMMXt mnemonics); their encodings are Intel's, as the
+// emulator decodes them (QEMU `disas_iwmmxt_insn`): WADDHSS wRd, wRn, wRm
+// = `0xEE7n_d18m`, WAVG2BR = `0xEE9n_d00m`. Loads and stores are WLDRD /
+// WSTRD = `ldcl` / `stcl` on coprocessor 1.
+
+core::arch::global_asm!(
+    r#"
+    .section .text.rp_wmmx, "ax"
+    .arm
+    @ rp_wmmx_copy(dst, src, bytes): 32 bytes a loop, the source fetched
+    @ 128 bytes ahead (as memcpy).
+    .global rp_wmmx_copy
+rp_wmmx_copy:
+1:  pld     [r1, #128]
+    ldcl    p1, c0, [r1], #8
+    ldcl    p1, c1, [r1], #8
+    ldcl    p1, c2, [r1], #8
+    ldcl    p1, c3, [r1], #8
+    stcl    p1, c0, [r0], #8
+    stcl    p1, c1, [r0], #8
+    stcl    p1, c2, [r0], #8
+    stcl    p1, c3, [r0], #8
+    subs    r2, r2, #32
+    bgt     1b
+    bx      lr
+
+    @ rp_wmmx_mix(dst, src, bytes): dst = dst + src as signed 16-bit
+    @ samples, saturating (WADDHSS), 16 samples a loop.
+    .global rp_wmmx_mix
+rp_wmmx_mix:
+1:  pld     [r1, #128]
+    pld     [r0, #128]
+    ldcl    p1, c0, [r0, #0]
+    ldcl    p1, c1, [r0, #8]
+    ldcl    p1, c2, [r0, #16]
+    ldcl    p1, c3, [r0, #24]
+    ldcl    p1, c4, [r1], #8
+    ldcl    p1, c5, [r1], #8
+    ldcl    p1, c6, [r1], #8
+    ldcl    p1, c7, [r1], #8
+    .inst   0xEE700184
+    .inst   0xEE711185
+    .inst   0xEE722186
+    .inst   0xEE733187
+    stcl    p1, c0, [r0], #8
+    stcl    p1, c1, [r0], #8
+    stcl    p1, c2, [r0], #8
+    stcl    p1, c3, [r0], #8
+    subs    r2, r2, #32
+    bgt     1b
+    bx      lr
+
+    @ rp_wmmx_avg(dst, a, b, bytes): dst = (a + b + 1) / 2 per byte
+    @ (WAVG2BR: a 50% cross-fade of 32-bit pixels), 8 pixels a loop.
+    .global rp_wmmx_avg
+rp_wmmx_avg:
+1:  pld     [r1, #128]
+    pld     [r2, #128]
+    ldcl    p1, c0, [r1], #8
+    ldcl    p1, c1, [r1], #8
+    ldcl    p1, c2, [r1], #8
+    ldcl    p1, c3, [r1], #8
+    ldcl    p1, c4, [r2], #8
+    ldcl    p1, c5, [r2], #8
+    ldcl    p1, c6, [r2], #8
+    ldcl    p1, c7, [r2], #8
+    .inst   0xEE900004
+    .inst   0xEE911005
+    .inst   0xEE922006
+    .inst   0xEE933007
+    stcl    p1, c0, [r0], #8
+    stcl    p1, c1, [r0], #8
+    stcl    p1, c2, [r0], #8
+    stcl    p1, c3, [r0], #8
+    subs    r3, r3, #32
+    bgt     1b
+    bx      lr
+    "#
+);
+
+unsafe extern "C" {
+    fn rp_wmmx_copy(dst: *mut u8, src: *const u8, bytes: usize);
+    fn rp_wmmx_mix(dst: *mut i16, src: *const i16, bytes: usize);
+    fn rp_wmmx_avg(dst: *mut u32, a: *const u32, b: *const u32, bytes: usize);
+}
+
+/// The media unit on (or off) for an image that runs no threads (the
+/// probe); returns the access bits as they were, to put back.
+pub fn single_access(on: bool) -> bool {
+    let was = cpar() & 3 == 3;
+    set_access(on);
+    was
+}
+
+/// The unit's ID register `wCID` (TMRC; the unit must be on).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+#[must_use]
+pub fn id() -> u32 {
+    let v: u32;
+    // SAFETY: TMRC wCID only reads a register.
+    unsafe {
+        core::arch::asm!("mrc p1, 0, {v}, c0, c0, 0", v = out(reg) v, options(nomem, nostack))
+    };
+    v
+}
+
+/// Whether `bytes` at `at` suit the routines (8-aligned, a nonzero
+/// multiple of 32).
+fn fits(at: usize, bytes: usize) -> bool {
+    at % 8 == 0 && bytes % 32 == 0 && bytes != 0
+}
+
+/// `dst` = `src` by 64-bit moves; false (nothing copied) unless both are
+/// 8-aligned, the same length, a multiple of 32 bytes. The unit must be on.
+pub fn copy(dst: &mut [u8], src: &[u8]) -> bool {
+    if dst.len() != src.len()
+        || !fits(dst.as_ptr() as usize, dst.len())
+        || !fits(src.as_ptr() as usize, src.len())
+    {
+        return false;
+    }
+    // SAFETY: both slices valid for `len` bytes, aligned as checked.
+    unsafe { rp_wmmx_copy(dst.as_mut_ptr(), src.as_ptr(), dst.len()) };
+    true
+}
+
+/// `dst[i]` = `dst[i]` + `src[i]`, saturating; as [`copy`]'s rules.
+pub fn mix(dst: &mut [i16], src: &[i16]) -> bool {
+    let n = 2 * dst.len();
+    if dst.len() != src.len() || !fits(dst.as_ptr() as usize, n) || !fits(src.as_ptr() as usize, n)
+    {
+        return false;
+    }
+    // SAFETY: as in `copy`.
+    unsafe { rp_wmmx_mix(dst.as_mut_ptr(), src.as_ptr(), n) };
+    true
+}
+
+/// `dst` = the rounded byte-wise average of `a` and `b`; as [`copy`]'s
+/// rules.
+pub fn avg(dst: &mut [u32], a: &[u32], b: &[u32]) -> bool {
+    let n = 4 * dst.len();
+    if dst.len() != a.len()
+        || dst.len() != b.len()
+        || !fits(dst.as_ptr() as usize, n)
+        || !fits(a.as_ptr() as usize, n)
+        || !fits(b.as_ptr() as usize, n)
+    {
+        return false;
+    }
+    // SAFETY: as in `copy`.
+    unsafe { rp_wmmx_avg(dst.as_mut_ptr(), a.as_ptr(), b.as_ptr(), n) };
+    true
+}

@@ -71,6 +71,23 @@ pub fn words_as_bytes(words: &[u32]) -> &[u8] {
     unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), words.len() * 4) }
 }
 
+/// Views words as signed 16-bit samples (two a word, little-endian), for
+/// audio mixing over word-typed RAM. Always sound, as [`words_as_bytes`]:
+/// i16's alignment (2) is below u32's and every bit pattern is valid.
+pub fn words_as_samples(words: &[u32]) -> &[i16] {
+    // SAFETY: a valid `&[u32]` covering exactly `2 * len` i16s, aligned
+    // for them; the result borrows `words` for its whole lifetime.
+    unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<i16>(), words.len() * 2) }
+}
+
+/// [`words_as_samples`], mutable. Always sound, as [`words_as_bytes_mut`].
+pub fn words_as_samples_mut(words: &mut [u32]) -> &mut [i16] {
+    let len = words.len() * 2;
+    // SAFETY: as `words_as_samples`, reborrowed mutably for the result's
+    // whole lifetime.
+    unsafe { core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<i16>(), len) }
+}
+
 /// Views bytes as words, if they start 4-byte aligned (`None` otherwise);
 /// up to 3 trailing bytes are left out. For using a byte region (scratch
 /// RAM) as a 32-bit drawing layer.

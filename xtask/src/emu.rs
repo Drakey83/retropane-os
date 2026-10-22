@@ -9217,7 +9217,17 @@ const PROBE_EXPECT: &[&str] = &[
     "-bit",
     "chase_sram_256k",
     "tlb_spill_60_l1sram",
+    "check wmmx_copy OK",
+    "check wmmx_avg OK",
 ];
+
+/// Probe checks the emulator is known to fail, each with why (they pass on
+/// the X51v): any other failed check fails `emu-probe` (a failed check was
+/// never looked at before 2026-10-22).
+const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[(
+    "wmmx_mix",
+    "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
+)];
 
 /// Boots the probe image (the real-device report), then checks every page
 /// line's checksum, that the report is complete, and that it's on screen.
@@ -9347,6 +9357,19 @@ pub fn check_probe_report(output: &str) -> Result<usize, String> {
     }
     if output.contains("OVERFLOW") {
         return Err("probe report overflowed a page".into());
+    }
+    for l in output.lines() {
+        let Some((_, text)) = l.split_once('|') else {
+            continue;
+        };
+        let mut words = text.split_whitespace();
+        if words.next() != Some("check") {
+            continue;
+        }
+        let (name, verdict) = (words.next().unwrap_or(""), words.next());
+        if verdict == Some("FAIL") && !PROBE_EMULATOR_LIMITS.iter().any(|(n, _)| *n == name) {
+            return Err(format!("probe check `{name}` failed: {}", text.trim()));
+        }
     }
     Ok(pages.iter().sum())
 }
@@ -10403,6 +10426,22 @@ mod tests",
         assert_eq!(check_probe_report(&out), Ok(4 + PROBE_EXPECT.len()));
         let bad = out.replacen("1 SYSTEM", "1 SYST3M", 1);
         assert!(check_probe_report(&bad).unwrap_err().contains("checksum"));
+        // A failed check fails the report, unless it's a listed emulator
+        // limit.
+        let failed = out.clone()
+            + &line(4, "check mem FAIL short")
+            + "
+";
+        assert!(
+            check_probe_report(&failed)
+                .unwrap_err()
+                .contains("`mem` failed")
+        );
+        let known = out
+            + &line(4, "check wmmx_mix FAIL differs from")
+            + "
+";
+        assert_eq!(check_probe_report(&known), Ok(5 + PROBE_EXPECT.len()));
     }
 
     #[test]

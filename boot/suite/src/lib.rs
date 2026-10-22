@@ -614,6 +614,122 @@ mod target {
         r.check("copy_pld", right, "");
     }
 
+    /// The media unit, iWMMXt (the performance gate's CPU line C6): its ID
+    /// register, then each routine against plain ARM code on the same data,
+    /// timed and checked equal: 64-bit copies from memory (256 KiB) against
+    /// `memcpy`, a saturating 16-bit audio mix and a rounded 50% pixel
+    /// average, each in the cache (8 KiB) and from memory (128 KiB). `buf`
+    /// needs 512 KiB, 8-byte aligned. Access is put back as found.
+    /// Returns the unit's `wCID` and whether access was on before.
+    pub fn wmmx(r: &mut Runner, buf: &mut [u8]) -> Option<(u32, bool)> {
+        use rp_hal_mem::{
+            words_as_bytes, words_as_bytes_mut, words_as_samples as as_i16,
+            words_as_samples_mut as as_i16_mut,
+        };
+        use rp_hal_pxa27x::iwmmxt;
+        let Some(buf) = rp_hal_mem::bytes_as_words_mut(buf) else {
+            r.check("wmmx", false, "not word-aligned");
+            return None;
+        };
+        if buf.len() < 128 * 1024 || buf.as_ptr() as usize % 8 != 0 {
+            r.check("wmmx", false, "buffer too small or not 8-aligned");
+            return None;
+        }
+        let was = iwmmxt::single_access(true);
+        let id = iwmmxt::id();
+        let (mut c_ok, mut m_ok, mut a_ok) = (true, true, true);
+
+        // Copies: 256 KiB each way.
+        {
+            let (a, rest) = buf.split_at_mut(64 * 1024);
+            let b = &mut rest[..64 * 1024];
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i as u32).wrapping_mul(0x9E37_79B9);
+            }
+            let (a8, b8) = (words_as_bytes(a), words_as_bytes_mut(b));
+            r.run("wmmx_copy_256k", 4, &mut || {
+                let _ = iwmmxt::copy(b8, a8);
+            });
+            r.run("wmmx_memcpy_256k", 4, &mut || b8.copy_from_slice(a8));
+            b8.fill(0);
+            c_ok &= iwmmxt::copy(b8, a8) && b8 == a8;
+        }
+
+        // Mix and average, in the cache then from memory.
+        for (cached, words) in [(true, 2 * 1024usize), (false, 32 * 1024)] {
+            let (d, rest) = buf.split_at_mut(words);
+            let (a, rest) = rest.split_at_mut(words);
+            let b = &mut rest[..words];
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i as u32).wrapping_mul(0x9E37_79B9) ^ 0x8000_7FFF;
+            }
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = (i as u32).wrapping_mul(0x85EB_CA6B).rotate_left(7);
+            }
+            let (a, b) = (&*a, &*b);
+            let (mix_w, mix_p, avg_w, avg_p) = if cached {
+                ("wmmx_mix_8k", "plain_mix_8k", "wmmx_avg_8k", "plain_avg_8k")
+            } else {
+                (
+                    "wmmx_mix_128k",
+                    "plain_mix_128k",
+                    "wmmx_avg_128k",
+                    "plain_avg_128k",
+                )
+            };
+            let reps = if cached { 64 } else { 4 };
+            // Saturating mix: the destination is the running mix, so each
+            // pass starts from `a` again (the copy timed apart as noise in
+            // both).
+            r.run(mix_w, reps, &mut || {
+                let _ = iwmmxt::mix(as_i16_mut(d), as_i16(b));
+            });
+            r.run(mix_p, reps, &mut || plain_mix(as_i16_mut(d), as_i16(b)));
+            d.copy_from_slice(a);
+            m_ok &= iwmmxt::mix(as_i16_mut(d), as_i16(b));
+            let got: u32 = fnv(d);
+            d.copy_from_slice(a);
+            plain_mix(as_i16_mut(d), as_i16(b));
+            m_ok &= fnv(d) == got;
+
+            r.run(avg_w, reps, &mut || {
+                let _ = iwmmxt::avg(d, a, b);
+            });
+            r.run(avg_p, reps, &mut || plain_avg(d, a, b));
+            a_ok &= iwmmxt::avg(d, a, b);
+            let got = fnv(d);
+            plain_avg(d, a, b);
+            a_ok &= fnv(d) == got;
+        }
+        iwmmxt::single_access(was);
+        r.check("wmmx_copy", c_ok, "differs from the source");
+        r.check("wmmx_mix", m_ok, "differs from the plain mix");
+        r.check("wmmx_avg", a_ok, "differs from the plain average");
+        Some((id, was))
+    }
+
+    /// Plain ARM: `d[i] = d[i] + s[i]` saturating, two samples a word.
+    #[inline(never)]
+    fn plain_mix(d: &mut [i16], s: &[i16]) {
+        for (x, y) in d.iter_mut().zip(s) {
+            *x = x.saturating_add(*y);
+        }
+    }
+
+    /// Plain ARM: the rounded byte-wise average, four bytes a word (the
+    /// usual `(a | b) - ((a ^ b) & 0xFE..) / 2`).
+    #[inline(never)]
+    fn plain_avg(d: &mut [u32], a: &[u32], b: &[u32]) {
+        for ((x, p), q) in d.iter_mut().zip(a).zip(b) {
+            *x = (p | q) - (((p ^ q) & 0xFEFE_FEFE) >> 1);
+        }
+    }
+
+    fn fnv(w: &[u32]) -> u32 {
+        w.iter()
+            .fold(0x811C_9DC5, |h, &v| (h ^ v).wrapping_mul(0x0100_0193))
+    }
+
     /// The DMA controller as a copy engine (the performance gate's CPU line
     /// C11): 128 KiB SDRAM to SDRAM by DMA (32-byte bursts, words) against
     /// `memcpy`, each checked; and how far the CPU gets counting while the

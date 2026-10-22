@@ -154,6 +154,11 @@ watching.
   spread evenly, half far off; alone it repeats exactly. Together saves
   9% of the time. The engines take turns (ADR-0030 G2); the cause is
   open (`2700g.md` "baseline audit").
+- **iWMMXt** (`rp-probe`, X51v, 2026-10-22): `wCID` `0x69051020`, access
+  (CPAR bits 0-1) on as Windows Mobile leaves it; saturating adds
+  saturate. Against plain ARM code: a 16-bit saturating mix 6.7x faster
+  in the cache, 2.1x from memory; a rounded byte average 2.8x / 1.5x;
+  64-bit copies no faster than `memcpy` (the bus).
 - **CPU, measured** (`rp-probe`, X51v at 624 MHz, 2026-10-22): the D-cache
   is 32 KiB (a line walk misses from 40 KiB, ~233 ns a missed line);
   `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; the internal

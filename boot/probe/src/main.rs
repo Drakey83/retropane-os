@@ -344,6 +344,14 @@ mod image {
             suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
             suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
             suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
+            // C6: the media unit (iWMMXt) against plain code.
+            if let Some((id, was)) = suite::wmmx(&mut r, &mut bench_ram[..512 * 1024]) {
+                let _ = writeln!(
+                    log,
+                    "iWMMXt: wCID 0x{id:08x}, access was {}",
+                    if was { "on" } else { "off" }
+                );
+            }
             // C11: DMA as a copy engine, on the CompactFlash channel (the
             // probe reads no CF card).
             if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {
