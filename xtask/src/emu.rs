@@ -3256,6 +3256,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_p2y = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_SPECKS2", "1"))?;
     let run_p2l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LONG_COUNT", "1"))?;
     let run_ff = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FIFO_FULL", "1"))?;
+    let run_fs = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REAL_STALL", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3280,7 +3281,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 28] = [
+    let runs: [GpubenchRun; 29] = [
         (
             "run A",
             &run_a,
@@ -3705,6 +3706,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  ok  B after the drop is B (within 2 a channel, the host test's bound)",
                 "FF: FF2 11 checks, 0 BAD",
                 "FF: done",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        (
+            // C43's real stall: what the engine does with its clock off is
+            // the device's question (the fork may not stop it, and its FIFO
+            // never fills: FS3 then doesn't judge the drop); every step must
+            // run, put the clock back and pass what it does judge.
+            "run FS",
+            &run_fs,
+            &[
+                "FS1: 20 full-screen fills",
+                "  ok  FS1: the queued work finished once the clock was back",
+                "  FS2: it returned 0x",
+                "  ok  FS3: the engine caught up (the fence landed)",
+                "  ok  FS3: B after the stall is B drawn after A (the screens' hashes)",
+                " checks, 0 BAD; MBXCLK at the end ",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -5707,6 +5727,29 @@ pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
             ));
         }
     }
+    // Version 6 (C46's follow-up): every wait the driver counted has its
+    // own `end wait` line, so an unseen one is named by its step.
+    let counted = card
+        .split("the driver collected after ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .ok_or_else(|| {
+            format!(
+                "cardlog sdtime guard: no count of the driver's waits:
+{card}"
+            )
+        })?;
+    let logged = card
+        .lines()
+        .filter(|l| l.starts_with("  end wait "))
+        .count();
+    if counted == 0 || logged != counted {
+        return Err(format!(
+            "cardlog sdtime guard: {logged} `end wait` lines for the driver's {counted} waits:
+{card}"
+        ));
+    }
     if card.contains("  BAD ") || !card.contains(" checks, 0 BAD") {
         return Err(format!(
             "cardlog sdtime guard: a check failed:
@@ -5714,7 +5757,7 @@ pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!(
-        "    cardlog sdtime guard OK: every block off the card refused before a command, the last block as it was"
+        "    cardlog sdtime guard OK: every block off the card refused before a command, the last block as it was, each end-of-card wait logged"
     );
 
     let out = run("crash", &image("rp-crash")?, None, "RPL END")?;

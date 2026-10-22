@@ -106,7 +106,7 @@ mod image {
         rt::init_mmu();
         if GUARD {
             log!(
-                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 5"
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 6"
             );
             guard();
         } else {
@@ -270,6 +270,11 @@ mod image {
             format_line(format_args!("and again, the same: {r2:?}")).as_str(),
             r2.is_ok() && last == again,
         );
+        // Every end-of-card wait the driver makes from here is logged, with
+        // the step that made it (C46's follow-up: 5 of 31 ended unseen in
+        // version 5, where unknown).
+        let mut waits = 0u32;
+        end_waits(&card, &mut waits, "G2");
         // G3, reads off the end: refused, no command (the read count
         // unchanged), fast. The SDSC wrap point (2^23 blocks: its byte
         // address wraps to 0) only where it lies off this card.
@@ -341,6 +346,7 @@ mod image {
             format_line(format_args!("the last block as it was: {r:?}")).as_str(),
             r.is_ok() && last == again,
         );
+        end_waits(&card, &mut waits, "G4's last read");
         // G5, the driver still works after the refusals.
         let r = card.read(0, &mut again);
         c.expect(
@@ -374,6 +380,7 @@ mod image {
                     let r = card.read(lba, &mut again);
                     failed += u32::from(r.is_err());
                     log!("  G6 {step}: block {lba}: {r:?}");
+                    end_waits(&card, &mut waits, "G6");
                 }
                 None => {
                     let st = card.host_mut().command(Command::new(13, rca, Response::R1));
@@ -395,7 +402,7 @@ mod image {
             .as_str(),
             failed == 0,
         );
-        g7(&mut card, n);
+        g7(&mut card, n, &mut waits);
         let (checks, bad) = (c.checks, c.bad);
         log!("{MARKER}: the guard run: {checks} checks, {bad} BAD");
     }
@@ -417,7 +424,7 @@ mod image {
     /// G7b: after the read, one idle wait, then one CMD13 (time against
     /// commands: does it show after a wait alone?), then one more. Measured,
     /// not judged.
-    fn g7(card: &mut Card, n: u32) {
+    fn g7(card: &mut Card, n: u32, waits: &mut u32) {
         const OOR: u32 = 1 << 31;
         let mut one = [0u8; BLOCK];
         log!(
@@ -461,6 +468,7 @@ mod image {
                     k + 1
                 ),
             }
+            end_waits(card, waits, "G7a");
         }
         log!(
             "G7a: OUT_OF_RANGE in {seen} of 20, first seen {} us to {last_us} us after the read (at most {polls_max} polls)",
@@ -478,12 +486,30 @@ mod image {
             let a = status(card);
             let b = status(card);
             log!("  G7b wait {wait} us: read {r:?}; CMD13 {a:x?}, then {b:x?}");
+            end_waits(card, waits, "G7b");
         }
         log!(
-            "  G7 the driver collected after {} last-block reads in all; its OUT_OF_RANGE never came after {} (version 5's driver waits for it: G7 then finds none)",
+            "  G7 the driver collected after {} last-block reads in all; its OUT_OF_RANGE never came after {} (the driver waits for it: G7 then finds none; each wait is logged as `end wait`, version 6)",
             card.end_settles(),
             card.end_unseen()
         );
+    }
+
+    /// Logs how each of the driver's end-of-card waits since `from` ended
+    /// (`SdCard::end_wait`), naming the step that made them: C46's
+    /// follow-up, where the waits that end with no OUT_OF_RANGE come from.
+    fn end_waits(card: &Card, from: &mut u32, step: &str) {
+        while *from < card.end_settles() {
+            let k = *from + 1;
+            match card.end_wait(*from) {
+                Some(Some(p)) => log!("  end wait {k} ({step}): OUT_OF_RANGE at CMD13 {p}"),
+                Some(None) => {
+                    log!("  end wait {k} ({step}): UNSEEN (no OUT_OF_RANGE in the driver's bound)")
+                }
+                None => log!("  end wait {k} ({step}): no longer remembered"),
+            }
+            *from += 1;
+        }
     }
 
     /// A check's description, formatted (the log's lines are short).

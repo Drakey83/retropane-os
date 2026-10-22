@@ -1,5 +1,16 @@
 # The 2700G's full potential: the map and the program (2026-10-20)
 
+> **GATE (the owner, 2026-10-21): nothing moves forward until this is done.**
+> No new phase, feature or design work until every clever software trick has
+> been tried to get the most out of the 2700G's 3D core, its 2D engine, the
+> PXA270, and all of them together: every line of
+> [2700g-full-potential.md](2700g-full-potential.md) and
+> [cpu-full-potential.md](cpu-full-potential.md) ticked with device
+> evidence (used, or declined with the reason). Meanwhile only finishing and
+> proving work already built, fixes and the quality audit, and the
+> measurements these pages need. Each summary gives the count of lines
+> ticked and open.
+
 **The owner's brief (2026-10-20):** understand everything about the Intel
 2700G (2D engine, MBX Lite 3D core, display controller, MVED1 video
 decoder, its memory and clocks) and use every trick to get the most out of
@@ -113,6 +124,7 @@ with the run that settles it, and stays unticked until then.
 | **P18** | Every status and interrupt bit of every unit | No polling anywhere |
 | **P19** | A full read of Dell's GPU code (`ddi_2700g`, `libGLES_CL`, `pvrvadd`) for every register and feature it touches that RetroPane hasn't used | Nothing the chip does goes unnoticed (facts only, never copied) |
 | **P20** | The display's fetch against the engines (found 2026-10-21, run W: the 32-bit scan-out costs 3D ~10% and CPU reads ~20% at Windows Mobile's clock): the same render with the plane at 32 bits, 16 bits and off, measured; and `0x644`'s orientation field mapped | A 16-bit screen's real saving; rotation for free if `0x644` is one | **Ran 2026-10-21 (run T): 16-bit screen 3D -6%, reads -15% (stopped: -9.5%, -16%); `0x644` = 2:1 averaging downsample on write-out (anti-aliasing resolve, free 2:1 downscale), not rotation; run T3: the resolve is free (a full-screen render 15.95 ms plain, 14.46 ms resolved): 2 x 2 anti-aliasing costs 4x the tiles only** |
+| **P21** | Found 2026-10-21 (`rp-mbx-blend` B7): with 16-bit screens the 2D dither add (four blits, stride x 4, a stride-0 pattern row, blend word 0) is the dearest step, 18.9 ms over a full 32-bit screen, twice the 32-to-16 conversion (9.6 ms). Alternatives to measure: one blit from a full 4-row pattern block repeated by the clip (or a screen-sized pattern picture: one blend pass), the add folded into the background (dithering what never changes once), the 3D core resolving the work picture where it can, and header bit 21 (writes nothing: a mask or pattern mode?) | Cheaper redraws of large areas (a full redraw ~28.5 ms of engine today) | open |
 
 The CPU's own map, and the CPU, 2D engine and 3D core working together,
 are in [cpu-full-potential.md](cpu-full-potential.md).

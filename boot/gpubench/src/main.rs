@@ -242,6 +242,15 @@ mod image {
     /// the frame is dropped, counted apart from hangs, not shown, and the
     /// next one is whole. Unattended, under a minute.
     const FIFO_FULL: bool = option_env!("RP_GPUBENCH_FIFO_FULL").is_some();
+    /// Run FS (quality audit C43, **the owner watching**): a real 2D
+    /// stall, the engine's clock stopped (`MBXCLK` enable 0, the divider
+    /// kept) with commands queued. FS1: 200 ms off, nothing read from the
+    /// MBX, then back: does the queued work finish? FS2: **one** read of
+    /// the 2D status with the clock off (unmeasured: it may freeze the bus,
+    /// a watchdog reset to Dell's screen; logged before). FS3, only if FS2
+    /// came back: run FF2's renderer path for real, the FIFO filled, the
+    /// clock off while a frame is queued. Each step on screen in big text.
+    const REAL_STALL: bool = option_env!("RP_GPUBENCH_REAL_STALL").is_some();
     /// Run P: the 3D core's target formats (`0x650`), every code read back
     /// and decoded.
     const TARGETS: bool = option_env!("RP_GPUBENCH_TARGETS").is_some();
@@ -3584,11 +3593,11 @@ mod image {
         true
     }
 
-    /// The picture on screen: where (`GSCADR`'s) and its words' hash.
     /// Words in one of the renderer's screens (RGB565 since ADR-0023's L1:
     /// two pixels a word).
     const FF_SCREEN_WORDS: u32 = (rp_mbx_render::SCREEN_BYTES / 4) as u32;
 
+    /// The picture on screen: where (`GSCADR`'s) and its words' hash.
     fn ff_shown(r: &mut Ff2d<'_>) -> (u32, u32) {
         let (e, m) = r.parts();
         let at = (e.regs.read32(dreg::GSCADR) & 0x7F_FFFF) * 16;
@@ -3823,6 +3832,221 @@ mod image {
         ff1(g);
         ff2(g);
         log!("FF: done");
+    }
+
+    // ---- Run FS: a real 2D stall (quality audit C43) --------------------------
+
+    /// `MBXCLK` with the MBX clocks' enable 0 (bits 1-0), the divider kept.
+    const fn fs_off(found: u32) -> u32 {
+        found & !3
+    }
+
+    /// Run FS (see [`REAL_STALL`]).
+    #[inline(never)]
+    fn real_stall(g: &mut Rig) {
+        let found = g.e.regs.read32(MBXCLK);
+        let off = fs_off(found);
+        log!(
+            "FS (quality audit C43): a real 2D stall. MBXCLK as found 0x{found:x}; off = 0x{off:x} (enable 0, the divider kept)"
+        );
+        let (mut checks, mut bad) = (0u32, 0u32);
+        let mut expect = |what: &str, ok: bool| {
+            checks += 1;
+            bad += u32::from(!ok);
+            log!("  {} {what}", if ok { "ok " } else { "BAD" });
+        };
+
+        // FS1: the clock off with work queued, nothing read from the MBX.
+        clock_card(g, ["RUN FS", "STEP 1 OF 3", "2D CLOCK OFF"], 0xFF20_2040, 3);
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+        for k in 0..20u32 {
+            let c = if k % 2 == 0 { 0xFF40_2020 } else { 0xFF20_2040 };
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::BPP32,
+                    SCREEN.at as usize,
+                    SCREEN.stride as usize,
+                    (0, 0, 480, 640),
+                    c,
+                ),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+        }
+        let n = g.e.next_fence();
+        let _ = g.e.submit(&cmd::fence(map::FENCE.at as usize, n));
+        log!(
+            "FS1: 20 full-screen fills (~6 ms each) and a fence queued; the 2D clock off now for 200 ms, nothing read from the MBX"
+        );
+        g.e.regs.write32(MBXCLK, off);
+        rt::delay_us(200_000);
+        let during = load32_volatile(g.mem.0, map::FENCE.at as usize);
+        g.e.regs.write32(MBXCLK, found);
+        let t0 = rt::ticks();
+        let back = loop {
+            if load32_volatile(g.mem.0, map::FENCE.at as usize) == Some(n) {
+                break Some(us_since(t0));
+            }
+            if us_since(t0) > 2_000_000 {
+                break None;
+            }
+        };
+        log!(
+            "  FS1: after 200 ms off the fence {} (word {during:x?}); the clock back on: the fence landed after {back:?} us (None: not in 2 s)",
+            if during == Some(n) {
+                "had landed: the engine didn't stop"
+            } else {
+                "hadn't landed"
+            }
+        );
+        expect(
+            "FS1: the queued work finished once the clock was back",
+            back.is_some(),
+        );
+        rt::check_in();
+
+        // FS2: one read with the clock off.
+        clock_card(
+            g,
+            ["RUN FS", "STEP 2 OF 3", "ONE READ, CLOCK OFF"],
+            0xFF60_2010,
+            3,
+        );
+        log!(
+            "FS2: one read of the 2D status (MBX 0x12c) with the 2D clock off; if this is the last line, it froze the bus (watchdog reset to Dell's screen)"
+        );
+        g.e.regs.write32(MBXCLK, off);
+        let v = g.e.regs.read32(MBX + reg::STATUS);
+        g.e.regs.write32(MBXCLK, found);
+        log!("  FS2: it returned 0x{v:08x}; the clock back on");
+        let st = g.e.status();
+        log!("  FS2: with the clock on the status reads 0x{st:08x}");
+        rt::check_in();
+
+        // FS3: the renderer's path with a real stall.
+        clock_card(
+            g,
+            ["RUN FS", "STEP 3 OF 3", "RENDERER, REAL STALL"],
+            0xFF20_2040,
+            3,
+        );
+        let Some(f) = FF_FRAME.put_with(Frame::new) else {
+            log!("  FS3: started twice");
+            return;
+        };
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+        log!(
+            "FS3: the 2D renderer on the engine; frame A; the FIFO filled with fills (room for fewer than 2 left), the clock off, frame B queued (must be dropped: fifo_full 1, no stall), 300 ms, the clock on; B not shown; B drawn again whole and as B drawn after A"
+        );
+        {
+            let mut r: Ff2d<'_> = Mbx2dRenderer::new(
+                FullFifo {
+                    regs: &mut g.e.regs,
+                    until: None,
+                    faked: 0,
+                },
+                VramRef(&mut g.mem),
+                Layout::X51V,
+                rt::ticks,
+                3_250,
+            );
+            let mut row = [0u32; 480];
+            for y in 0..640u32 {
+                for (x, p) in row.iter_mut().enumerate() {
+                    *p = ff_wall(x as u32, y);
+                }
+                r.wallpaper_row(y as u16, &row);
+            }
+            r.show(rt::delay_us);
+            ff_scene(f, 0);
+            let _ = r.draw(f);
+            expect("FS3: frame A on screen", ff_settle(&mut r));
+            let a = ff_shown(&mut r);
+            // Fill the FIFO with 16-bit fills into memory nobody shows
+            // (the frozen map's pool: unused by the renderer).
+            let scratch = map::POOL.at as usize;
+            let mut queued = 0u32;
+            let mut room = u32::MAX;
+            while queued < 400 {
+                room = cmd::free_bytes(r.parts().0.status());
+                if room < 2 * 28 {
+                    break;
+                }
+                let w = rp_image::need(
+                    cmd::fill(Format::RGB565, scratch, 960, (0, 0, 480, 640), queued),
+                    "a 2D rectangle",
+                );
+                if r.parts().0.submit(&w).is_err() {
+                    break;
+                }
+                queued += 1;
+            }
+            let full = room < 2 * 28;
+            r.parts().0.regs.regs.write32(MBXCLK, off);
+            log!(
+                "  FS3: {queued} fills queued, {room} bytes of room; the clock off{}",
+                if full {
+                    ""
+                } else {
+                    " (the FIFO never filled: the stall can't be made here, B is not judged)"
+                }
+            );
+            ff_scene(f, 40);
+            let t0 = rt::ticks();
+            let _ = r.draw(f);
+            let queued_us = us_since(t0);
+            rt::delay_us(300_000);
+            r.parts().0.regs.regs.write32(MBXCLK, found);
+            let settled = ff_settle(&mut r);
+            log!(
+                "  FS3 frame B: queued in {queued_us} us with the clock off; fifo_full {} (this frame {}), stalls {}; the clock on: settled {settled}",
+                r.fifo_full,
+                r.last.fifo_full,
+                r.stalls
+            );
+            if full {
+                expect(
+                    "FS3: B dropped: counted once, apart from stalls",
+                    r.fifo_full == 1 && r.last.fifo_full == 1 && r.stalls == 0,
+                );
+                expect(
+                    "FS3: the dropped frame isn't shown (A still on screen)",
+                    ff_shown(&mut r) == a,
+                );
+            }
+            expect("FS3: the engine caught up (the fence landed)", settled);
+            let _ = r.draw(f);
+            expect("FS3: B drawn again is on screen", ff_settle(&mut r));
+            let b1 = ff_shown(&mut r);
+            expect("FS3: B again: no stall", r.stalls == 0);
+            // The control: A, then B, no stall.
+            ff_scene(f, 0);
+            let _ = r.draw(f);
+            let ok_a = ff_settle(&mut r);
+            ff_scene(f, 40);
+            let _ = r.draw(f);
+            let ok_b = ff_settle(&mut r);
+            let b2 = ff_shown(&mut r);
+            expect(
+                "FS3: B after the stall is B drawn after A (the screens' hashes)",
+                ok_a && ok_b && b1.1 == b2.1,
+            );
+        }
+        g.e.reset(rt::delay_us);
+        let _ = store32_volatile(g.mem.0, map::FENCE.at as usize, 0);
+        cpu::drain_write_buffer();
+        let _ = show_screen(&mut g.e.regs);
+        log!(
+            "FS: {checks} checks, {bad} BAD; MBXCLK at the end 0x{:x}",
+            g.e.regs.read32(MBXCLK)
+        );
+        let mut l2 = heapless_name();
+        let _ = write!(l2, "{bad} BAD OF {checks}");
+        clock_card(g, ["RUN FS DONE", l2.as_str(), ""], 0xFF10_6020, 5);
     }
 
     // ---- Run C: the video plane (the owner watches) --------------------------
@@ -6069,6 +6293,8 @@ mod image {
                 "Y (the rescue measured: Windows Mobile's clock checked before run Z's rebuild, after it, after each of three memory restarts and with SYSCFG put back)"
             } else if LOAD {
                 "V (which work at which clock makes the display's fetch run short)"
+            } else if REAL_STALL {
+                "FS (a real 2D stall: the engine's clock off with work queued; one read with it off; the renderer's path; the owner watching)"
             } else if FIFO_FULL {
                 "FF (the 2D FIFO full: filled for real, then the 2D renderer with the level read as full)"
             } else if LONG_COUNT {
@@ -6154,6 +6380,8 @@ mod image {
         } else if RESCUE {
             rescue(&mut g);
             rp_hal_x51v::devices::kept_stop();
+        } else if REAL_STALL {
+            real_stall(&mut g);
         } else if FIFO_FULL {
             fifo_full(&mut g);
         } else if LONG_COUNT {
@@ -7807,6 +8035,15 @@ mod image {
     fn put_back() {
         if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
+        }
+        // Run FS: a crash with the MBX clock off would leave the loader's
+        // 2D engine stopped: the 2D clock back on (enable 1, Windows
+        // Mobile's), the divider kept.
+        if REAL_STALL && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            let v = regs.read32(MBXCLK);
+            if v & 3 == 0 {
+                regs.write32(MBXCLK, v | 1);
+            }
         }
     }
 

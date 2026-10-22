@@ -9,11 +9,52 @@
 Phase:   0     1     2     3     4     5     6     7     8     9
 Build:  [fnd][emu][krn][drv][ce ][ui ][net][gfx][web][pwr/flash]
 RE:     [rom dump · tracer · CPLD · 2700G 2D/3D/video · ACX100 · power IC ───────────────]
+GATE:   ▲ now: the performance gate (below) blocks every phase until it is done
 ```
 
 ---
 
+## Now: the performance gate (owner, 2026-10-21) — blocks everything else
+
+**Nothing moves forward until this is done.** No new phase, feature or
+design work until every clever software trick has been tried to get the
+most out of the 2700G's 3D core, its 2D engine, the PXA270, and all of
+them together (custom drivers, modern techniques, tenacity): every line
+of [2700g-full-potential.md](research/2700g-full-potential.md) and
+[cpu-full-potential.md](research/cpu-full-potential.md) ticked with
+device evidence (used, or declined with the measured reason), so the
+owner can say every stone was turned. Allowed meanwhile: finishing and
+proving work already built, fixes and the quality audit, and the
+measurements these pages need. The owner gave the brief on 2026-10-20 and
+had to repeat it on 2026-10-21 because it wasn't kept in front of the
+work: **this section is read at the start of every session (CLAUDE.md).**
+
+**Lines: 63** (2700G: V1-V14, P1-P21; CPU and together: V1-V9, C1-C11,
+T1-T8). **Ticked with evidence: not yet counted line by line** (step 2
+below gives the exact count; a few have it already, e.g. 2700G V11, P3,
+P20). Every summary reports ticked / open.
+
+In order:
+
+- [ ] 1. **Finish everything already started, then the gate's own work (owner, 2026-10-21):**
+  - [ ] the 16-bit screen (ADR-0023 Q1 A, Q2 L1): built and committed (8219182), pushed on the owner's yes
+  - [ ] the device batch (one session, numbered steps first): loader reinstall on the card; `rp-today` on the 16-bit screen (its proof); the guard run version 6 (C46: each end-of-card wait logged); run FS (C43: a real 2D stall, the owner watching, last); results recorded
+  - [ ] C39: what each image changes on the board and whether a crash puts it back, measured; then the put-backs (quality audit)
+  - [ ] C40: build scripts that miss a picture arriving in `local/` (quality audit)
+  - [ ] C41: the emulator checks refuse a build that isn't the pinned release (quality audit)
+- [ ] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; the count goes here
+- [ ] 3. The 2700G's clocks (P1, P2, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote
+- [ ] 4. P21: the 2D dither add (18.9 ms a full screen) against its alternatives
+- [ ] 5. The CPU, by payoff: T2 (SRAM staging), C4 (memory lookups), C8 (the performance counters), C6/C7 (iWMMXt, copies), C1 (operating points), C2 (the overclock study)
+- [ ] 6. The rest of the 2700G map in its order: F6, P9 + P10, P6 + P7, P8, P4 + P5, P11, P12, then P13-P19 and the V lines
+- [ ] 7. Together: T1 (a pipeline, not turns), T3-T8
+- [ ] 8. Every line ticked: the owner checks both pages; the gate is lifted only by the owner
+
+---
+
 ## Now: know the silicon first (owner, 2026-10-13)
+
+
 The OS is designed around what the PXA270 and the 2700G do best, not
 built for the CPU and retrofitted. Before the UI (Phase 5) and the CE
 Personality's drawing (Phase 4) are designed:

@@ -184,6 +184,10 @@ const OUT_OF_RANGE: u32 = 1 << 31;
 /// (guard run version 4, 2026-10-21, 20 of 20). Counted, as the driver's
 /// other waits are (it has no clock).
 const END_POLLS: u32 = 80;
+/// [`SdCard::end_wait`]'s memory: the last waits' outcomes (C46's
+/// follow-up: which waits end with no `OUT_OF_RANGE`). 32 bytes, the
+/// guard run's 31 waits.
+const END_RING: usize = 32;
 /// Card status: ready for data (not busy programming).
 const STATUS_READY_FOR_DATA: u32 = 1 << 8;
 /// Card status: the current state, `prg` = programming.
@@ -251,6 +255,9 @@ pub struct SdCard<H> {
     end_settles: u32,
     /// Of those, the ones whose OUT_OF_RANGE never came (see `end_unseen`).
     end_unseen: u32,
+    /// The last [`END_RING`] waits: the CMD13 (1-based) that showed
+    /// `OUT_OF_RANGE`, or 0 if none did; wait `k` at `k % END_RING`.
+    end_ring: [u8; END_RING],
     /// Ranges (first block, count) read block by block from now on.
     weak: [(u32, u32); WEAK_RANGES],
     weak_len: u8,
@@ -281,6 +288,7 @@ impl<H: SdHost> SdCard<H> {
                 slow_reads: 0,
                 end_settles: 0,
                 end_unseen: 0,
+                end_ring: [0; END_RING],
                 weak: [(0, 0); WEAK_RANGES],
                 weak_len: 0,
                 weak_next: 0,
@@ -312,6 +320,7 @@ impl<H: SdHost> SdCard<H> {
             slow_reads: 0,
             end_settles: 0,
             end_unseen: 0,
+            end_ring: [0; END_RING],
             weak: [(0, 0); WEAK_RANGES],
             weak_len: 0,
             weak_next: 0,
@@ -504,11 +513,15 @@ impl<H: SdHost> SdCard<H> {
     #[inline(never)]
     fn settle_end(&mut self) -> Result<(), Error> {
         let arg = u32::from(self.rca) << 16;
+        let slot = self.end_settles as usize % END_RING;
         self.end_settles = self.end_settles.wrapping_add(1);
-        for _ in 0..END_POLLS {
+        // Unseen until a CMD13 shows it (also if a command fails).
+        self.end_ring[slot] = 0;
+        for poll in 1..=END_POLLS {
             let status = self.host.command(Command::new(13, arg, Response::R1))?[0];
             check(status & !OUT_OF_RANGE)?;
             if status & OUT_OF_RANGE != 0 {
+                self.end_ring[slot] = poll as u8;
                 return Ok(());
             }
         }
@@ -523,6 +536,20 @@ impl<H: SdHost> SdCard<H> {
     #[must_use]
     pub fn end_unseen(&self) -> u32 {
         self.end_unseen
+    }
+
+    /// How wait `k` (0-based, of [`Self::end_settles`]) ended: `Some(Some(n))`
+    /// if the `n`th CMD13 showed `OUT_OF_RANGE`, `Some(None)` if none of
+    /// [`END_POLLS`] did (or a command failed), `None` if `k` hasn't
+    /// happened or is older than the last 32 (C46's follow-up: which waits
+    /// end unseen, logged by the guard run).
+    #[must_use]
+    pub fn end_wait(&self, k: u32) -> Option<Option<u32>> {
+        if k >= self.end_settles || self.end_settles - k > END_RING as u32 {
+            return None;
+        }
+        let n = self.end_ring[k as usize % END_RING];
+        Some((n != 0).then_some(u32::from(n)))
     }
 
     /// Reads that ended on the last block and had the card's status
@@ -1379,6 +1406,21 @@ mod tests {
             }
             assert_eq!(card.end_settles(), 4, "capable {capable}");
             assert_eq!(card.end_unseen(), 0, "capable {capable}");
+            // Each wait remembered: after a single-block read the card
+            // raises it at the second command, so the second CMD13 shows
+            // it; a multi-block read may already have sent one more (its
+            // stop), so there it shows within two.
+            for k in [0, 2] {
+                assert_eq!(card.end_wait(k), Some(Some(2)), "wait {k}");
+            }
+            for k in [1, 3] {
+                assert!(
+                    matches!(card.end_wait(k), Some(Some(1 | 2))),
+                    "wait {k}: {:?}",
+                    card.end_wait(k)
+                );
+            }
+            assert_eq!(card.end_wait(4), None, "not yet");
             // Reads elsewhere send nothing more.
             let before = card.host.log.len();
             card.read(2, &mut one).unwrap();
@@ -1398,6 +1440,32 @@ mod tests {
         let cmd13s = card.host.log[before..].iter().filter(|c| c.0 == 13).count();
         assert_eq!(cmd13s, END_POLLS as usize);
         assert_eq!((card.end_settles(), card.end_unseen()), (1, 1));
+        assert_eq!(card.end_wait(0), Some(None), "remembered as unseen");
+    }
+
+    /// The waits' memory keeps the last 32: older ones answer `None`, and
+    /// a slot reused for a seen wait doesn't keep an unseen one's answer.
+    #[test]
+    fn the_end_waits_ring_keeps_the_last_32() {
+        let mut fake = FakeCard::new(true, false);
+        fake.end_out_of_range = true;
+        fake.end_delay = 1;
+        let mut card = SdCard::init(fake).unwrap();
+        let n = card.blocks();
+        let mut one = [0u8; BLOCK];
+        for _ in 0..40 {
+            card.read(n - 1, &mut one).unwrap();
+        }
+        assert_eq!(card.end_settles(), 40);
+        assert_eq!(card.end_wait(7), None, "older than 32");
+        assert_eq!(card.end_wait(8), Some(Some(1)));
+        assert_eq!(card.end_wait(39), Some(Some(1)));
+        assert_eq!(card.end_wait(40), None);
+        // Now unseen ones over the same slots.
+        card.host.end_out_of_range = false;
+        card.read(n - 1, &mut one).unwrap();
+        assert_eq!(card.end_wait(40), Some(None));
+        assert_eq!(card.end_wait(39), Some(Some(1)));
     }
 
     /// The status collected after the last block is still checked: an

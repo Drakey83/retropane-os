@@ -1,5 +1,16 @@
 # The CPU's full potential, and the CPU, 2D engine and 3D core together (2026-10-20)
 
+> **GATE (the owner, 2026-10-21): nothing moves forward until this is done.**
+> No new phase, feature or design work until every clever software trick has
+> been tried to get the most out of the 2700G's 3D core, its 2D engine, the
+> PXA270, and all of them together: every line of
+> [2700g-full-potential.md](2700g-full-potential.md) and
+> [cpu-full-potential.md](cpu-full-potential.md) ticked with device
+> evidence (used, or declined with the reason). Meanwhile only finishing and
+> proving work already built, fixes and the quality audit, and the
+> measurements these pages need. Each summary gives the count of lines
+> ticked and open.
+
 **The owner's brief (2026-10-20):** the PXA270 gets the same treatment as
 the 2700G ([2700g-full-potential.md](2700g-full-potential.md)): fully
 tested and understood, for the best performance it can give, **in spite
