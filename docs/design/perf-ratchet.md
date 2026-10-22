@@ -226,6 +226,24 @@ modes alike) and three at 0.1-0.2% (`b9e` 16-bit copy, `ft_alone` 2D,
 `gfx_flush_vga`) that were over before any of this. The floors are the
 owner's to set.
 
+**The last 2% of text compress, chased (the owner's option b, 2026-10-22).**
+`rp-probe` counts the table's clear apart from the loop (`lz4c_*`,
+`lz4w_*`; per 16 pages). Against the old build (frame pointers, loop
+inline: 1,495,060 cycles), today's is 38,000 cycles slower: about 12,000
+are the 8 KiB table's clear missing the cache (a clear of lines not in
+the cache: 9,728 misses, 11,558 buffer-stall cycles, ~4,400 cycles a
+clear; in the old build the clear mostly hit, by where the table sat on
+the stack: same mapping, same clear routine), and about 26,600 are data
+stalls in the loop (16,000 from the split's register allocation, 10,800
+the mode's). Two reworkings of the loop measured worse and were dropped:
+hashing a step ahead (LLVM moves the use back beside the multiply) and
+carrying the word from one position to the next (one load instead of
+four, but +35,000 instructions: text 157.2 us against 153.4); both
+matched byte for byte (`same_output_as_the_plain_loop` stays as the
+guard). The kernel's own path is `compress_with` on a table it keeps
+(`kernel/mm/src/space.rs`), not this row's fresh stack table: options are
+in the session's report to the owner.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

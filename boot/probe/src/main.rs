@@ -94,7 +94,7 @@ mod image {
         checks: [(&'static str, bool, [u8; 12]); 24],
         nc: usize,
         /// Event counts (the performance monitor's, C8).
-        counts: [(&'static str, u32); 24],
+        counts: [(&'static str, u32); 32],
         ncount: usize,
         /// Results and checks that didn't fit their tables.
         dropped: u32,
@@ -207,7 +207,7 @@ mod image {
             n: 0,
             checks: [("", false, [b' '; 12]); 24],
             nc: 0,
-            counts: [("", 0); 24],
+            counts: [("", 0); 32],
             ncount: 0,
             dropped: 0,
         };

@@ -294,3 +294,109 @@ fn the_hash_multiplier_takes_the_short_multiply() {
         "LZ4's constant, shifted into 27 bits"
     );
 }
+
+/// The compressor's loop in its plain form, kept as the reference any
+/// reworking of the loop must match byte for byte.
+fn reference_compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
+    const K: u32 = HASH_K;
+    let table = &mut [0u16; TABLE_LEN];
+    if src.len() > 0x1_0000 {
+        return Err(Error::Overflow);
+    }
+    let mut o = 0;
+    let mut anchor = 0;
+    if src.len() >= MF_LIMIT {
+        let limit = src.len() - MF_LIMIT;
+        let mut i = 1;
+        let mut misses = 0usize;
+        table[hash::<K>(read32(src, 0))] = 0;
+        while i <= limit {
+            let v = read32(src, i);
+            let h = hash::<K>(v);
+            let cand = usize::from(table[h]);
+            table[h] = i as u16;
+            if cand < i && i - cand <= 0xFFFF && read32(src, cand) == v {
+                // Extend the match, stopping LAST_LITERALS from the end.
+                let max = src.len() - LAST_LITERALS;
+                // Zipped slices: no per-byte bounds checks in the loop.
+                let len = MIN_MATCH
+                    + src[cand + MIN_MATCH..]
+                        .iter()
+                        .zip(&src[i + MIN_MATCH..max])
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                put_sequence(dst, &mut o, &src[anchor..i], Some(((i - cand) as u16, len)))?;
+                misses = 0;
+                i += len;
+                anchor = i;
+                // Index a position inside the match so repeats are found.
+                if i <= limit {
+                    table[hash::<K>(read32(src, i - 2))] = (i - 2) as u16;
+                }
+            } else {
+                misses += 1;
+                i += 1 + (misses >> SKIP_SHIFT);
+            }
+        }
+    }
+    put_sequence(dst, &mut o, &src[anchor..], None)?;
+    Ok(o)
+}
+
+#[test]
+fn same_output_as_the_plain_loop() {
+    // Every kind of input the loop branches on: runs, text, repeats at
+    // every distance, noise that skips ahead (the miss count's step grows
+    // past 1 after 64 misses), and noise with matches after long misses,
+    // at every size near the end rules' limits.
+    let mut x = 0x1234_5678u32;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x
+    };
+    let mut inputs: Vec<Vec<u8>> = Vec::new();
+    for n in [
+        0, 1, 4, 11, 12, 13, 14, 15, 16, 17, 20, 64, 255, 4096, 65536,
+    ] {
+        inputs.push(vec![0; n]);
+        inputs.push((0..n).map(|i| (i / 3) as u8).collect());
+        inputs.push((0..n).map(|_| rnd() as u8).collect());
+    }
+    let text: Vec<u8> = b"The quick brown fox jumps over the lazy dog. "
+        .iter()
+        .cycle()
+        .take(4096)
+        .copied()
+        .collect();
+    inputs.push(text);
+    for period in [1usize, 2, 3, 4, 5, 7, 8, 13, 64, 300, 4000] {
+        let unit: Vec<u8> = (0..period).map(|_| rnd() as u8).collect();
+        inputs.push(unit.iter().cycle().take(8192).copied().collect());
+    }
+    for gap in [100usize, 1000, 5000] {
+        let mut v: Vec<u8> = (0..20000).map(|_| rnd() as u8).collect();
+        let mut at = gap;
+        while at + 64 < v.len() {
+            let from = at - gap / 2;
+            for k in 0..64 {
+                v[at + k] = v[from + k];
+            }
+            at += gap;
+        }
+        inputs.push(v);
+    }
+    for _ in 0..300 {
+        let n = (rnd() % 3000) as usize;
+        let alphabet = 1 + rnd() % 16;
+        inputs.push((0..n).map(|_| (rnd() % alphabet) as u8).collect());
+    }
+    for data in &inputs {
+        let mut a = vec![0u8; max_compressed(data.len())];
+        let mut b = vec![0u8; max_compressed(data.len())];
+        let na = compress(data, &mut a).unwrap();
+        let nb = reference_compress(data, &mut b).unwrap();
+        assert_eq!(&a[..na], &b[..nb], "{} bytes", data.len());
+    }
+}

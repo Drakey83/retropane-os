@@ -1288,6 +1288,39 @@ mod target {
         r.count("lz4t_branch_miss", b.events[0]);
         r.count("lz4t_dcache_miss", b.events[1]);
         r.count("lz4t_buffer_stall", b.events[2]);
+        // The same split three ways (the last 2% of text compress): the
+        // table's clear alone, then `compress_with` on a table of ours
+        // (its clear and the loop); D-cache misses, buffer-stall cycles,
+        // data stalls and cycles each.
+        let mut table = [0u16; rp_lz4::TABLE_LEN];
+        let mut span = |r: &mut Runner, name: [&'static str; 4], f: &mut dyn FnMut()| {
+            f();
+            let s = pmu::start([
+                Event::DcacheMiss,
+                Event::BufferStallCycles,
+                Event::DataStall,
+            ]);
+            for _ in 0..16 {
+                f();
+            }
+            let c = pmu::read(s);
+            r.count(name[0], c.events[0]);
+            r.count(name[1], c.events[1]);
+            r.count(name[2], c.events[2]);
+            r.count(name[3], c.cycles);
+        };
+        span(
+            r,
+            ["lz4c_dmiss", "lz4c_bstall", "lz4c_dstall", "lz4c_cycles"],
+            &mut || black_box(&mut table).fill(0),
+        );
+        span(
+            r,
+            ["lz4w_dmiss", "lz4w_bstall", "lz4w_dstall", "lz4w_cycles"],
+            &mut || {
+                black_box(rp_lz4::compress_with(&mut table, black_box(page), packed).ok());
+            },
+        );
     }
 
     fn heap_page(page: &mut [u8]) {

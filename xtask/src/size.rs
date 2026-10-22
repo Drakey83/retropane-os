@@ -248,7 +248,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 96 -> 100 KiB on 2026-10-22 (test image): the card log
         // no longer waits on a busy card (quality audit C59: sends, polls,
         // catches up at check-ins); 96.4 KiB measured.
-        max_load: 100 * 1024,
+        // Ratcheted 100 -> 112 KiB on 2026-10-22 (test image): the multiply
+        // by multiplier size rows and LZ4's event counts (ADR-0001 "Why,
+        // and what was fixed"); 102.3 KiB measured, +~10%.
+        max_load: 112 * 1024,
         // Zeroed RAM ratcheted 20 -> 40 KiB on 2026-10-22 (test image): a
         // 32 KiB stack (the device's runs used 16,076-16,268 of 16 KiB and
         // one crashed); 35.7 KiB measured, +~12%.
