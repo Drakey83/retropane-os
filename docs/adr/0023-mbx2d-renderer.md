@@ -10,6 +10,9 @@
 - **Amended 2026-10-21 by the project owner: the scanned-out screen is
   RGB565 with the 2700G's ordered dither** (see "The screen goes 16-bit"
   below). Layers and textures may stay 32-bit.
+- **Amendment proposed 2026-10-21, vote waiting:** how the 16-bit screen
+  is built (which engine writes it; the pictures' layout). See "Building
+  the 16-bit screen" below.
 - **Date:** 2026-10-14
 
 ## In plain words
@@ -291,6 +294,120 @@ given an inverted rectangle, quality audit C47.)
 Still to design (in the renderer's next step): which engine writes the
 final dithered picture (the 3D core has the dither, bit 3 of `0x650`; the
 2D engine's isn't measured) and the double-buffer sizes at 16 bits.
+
+## Building the 16-bit screen (proposed 2026-10-21, vote waiting)
+
+The vote above says what the screen is (dithered RGB565). Two things
+are left before the renderer changes: **which engine writes the final,
+dithered pixels**, and **where the pictures live** in the 2700G's memory.
+
+### What we know and don't (the facts the options rest on)
+
+- **The 3D core dithers** (`0x650` bit 3, run P2, measured): a 4 x 4
+  ordered matrix into any 16-bit target, exact and identical render to
+  render (P2X). It writes straight into the screen picture already
+  (ADR-0026 D5; the graphics service's 3D area, ADR-0030 G1).
+- **The 3D core can't read a 2D-drawn picture**: it reads textures
+  twiddled only; no row-order texture mode is known (Dell's driver has
+  none, `docs/hw/2700g.md`). So it can't "finish" a picture the 2D
+  engine composed, short of the CPU twiddling 1.2 MiB a frame.
+- **The 2D engine converts formats on a copy** (32 bits to RGB565,
+  measured working since 2026-10-13) but **whether it truncates or
+  rounds** each channel isn't measured. Blends are "rounded to the
+  destination's bits" (measured with coverage, 2026-10-14). **No 2D
+  dither bit is known**; four header bits (19, 21, 22, 27) and most of
+  the blend word's bits (`[31:28]`, `[19:0]`) have never been tried on a
+  16-bit destination.
+- **Today's renderer already dithers on the 2D engine**: it composes at
+  32 bits and, last, adds a 4 x 4 threshold pattern (blend word 0: add,
+  saturating) so the panel's truncation dithers. With a 16-bit screen
+  the conversion copy takes the panel's place, if it truncates.
+
+### Question 1: which engine writes the final screen
+
+- **A (recommended): the 2D engine, through a 32-bit work picture.** For
+  each changed rectangle, exactly today's steps into an off-screen 32-bit
+  work picture (background copy, commands, the dither pattern added),
+  then **one copy converts it into the 16-bit screen**. The previous
+  frame's rectangles come forward from the screen on display, now as
+  16-bit copies (about a third of a 32-bit copy's time). 3D areas render
+  straight into the 16-bit screen with the core's own dither (bit 3).
+  The 2D pattern is changed to **the 3D core's measured matrix**, so a 3D
+  area's edge meets the 2D screen with the same dither, no seam.
+  - Pros: every blend stays at 32 bits, exact against `CpuRenderer`
+    (the host model and the emulator keep checking it pixel for pixel);
+    the code change is small (a destination switch and one copy); smooth
+    gradients as P2W showed.
+  - Cons: one more engine pass per changed rectangle (reads 4 bytes,
+    writes 2 a pixel; a full screen is estimated at ~10 ms, to measure).
+    It needs the conversion to truncate; if it rounds, the pattern is
+    shifted half a step (exact either way, but the measurement decides
+    which).
+- **B: the 2D engine blends straight into the 16-bit screen.** No work
+  picture, no extra pass. Every blend rounds to 5 or 6 bits with no
+  dither, so glass gradients and text edges over glass band: what you
+  rejected on 2026-10-12 and 2026-10-14. Only worth it if the
+  measurement finds a hidden 2D dither bit (then it would be A's look
+  with one pass less, and comes back to you as its own vote).
+- **C: the 3D core draws the whole shell** (ADR-0022 decision 4's later
+  path): text, images and glass as textured quads into the 16-bit screen
+  with its measured dither, one engine. Cons: a new renderer (glyphs as
+  quads: today's scene holds 64), gradients by the core's interpolation
+  are no longer exact against the CPU reference, and every changed tile
+  is redrawn whole. Not now; it stays open per command (the renderer
+  already picks per command).
+
+### Question 2: where the pictures live (2700G memory, `rp-vram-map`)
+
+Today (32-bit): two screens 1.2 MiB each, wallpaper 1.2 MiB, background
+1.2 MiB, area cache 1.2 MiB, rows/images/glyphs/dither ~0.9 MiB; the pool
+for textures, 3D and video gets 6.75 MiB.
+
+- **L1 (recommended): two 16-bit screens, one full 32-bit work picture,
+  wallpaper and area cache at 16 bits.** Screens 2 x 600 KiB; the work
+  picture 1.2 MiB (only the engine reads it, never scanned out); the
+  wallpaper RGB565 (600 KiB: you saw no difference in the side-by-side,
+  2026-10-17, and it's read only when the background is rebuilt); the
+  area cache holds finished screen pixels, so RGB565 (600 KiB; an area
+  comes back at its own place, so its dither stays aligned). Background
+  stays 32-bit (the glass is blended into it). **Pool grows by 1.2 MiB to
+  ~7.9 MiB.** Nothing given up: every precision-bearing picture stays 32
+  bits.
+- **L2: as L1, the work picture a 64-row strip (120 KiB).** Pool grows by
+  ~2.3 MiB. Con: a rectangle taller than the strip is done in bands, each
+  band sending its commands again (more CPU time queueing, more words
+  over the bus at ~120 ns each). A trade-off, so not recommended now; it's
+  the next step if the pool runs short (a 3D game and video at once,
+  ADR-0027's watch item).
+- **L3: as L1, three 16-bit screens.** Draw never waits for a flip
+  pending (+600 KiB, back pictures three frames old: more forward
+  copies). Today's waits aren't measured as a problem; not recommended
+  without a measurement showing they are.
+
+### The measurement before building (short, unattended, no board bits)
+
+`rp-mbx-blend` stage **B7** (seconds, nothing the owner needs to watch;
+only 2D engine commands into its own scratch memory, no CPLD or power
+bits):
+
+1. **Conversion:** a 32-bit row of every level 0-255 per channel copied
+   to RGB565: truncated, rounded, or something else, per channel.
+2. **A blend onto RGB565** (B's arithmetic, for the record): how the
+   result is rounded.
+3. **A 2D dither bit?** A 64 x 64 grey ramp converted 32 to 16 bits with
+   each untried header bit (19, 21, 22, 27) and each untried blend-word
+   bit alone: a position-dependent pattern means a dither. Each try is
+   logged before it's queued, has a fence timeout, and a stuck engine is
+   reset and the stage goes on (as B1-B6).
+4. **Timings:** full-screen and 480 x 80 conversion copies, the pattern
+   add at 32 bits, a 16-bit forward copy.
+
+Its emulator check joins the `mbx-blend` check; the fork's conversion is then made to match what the device
+does (or listed as not modellable in `docs/hw/emulator.md`).
+
+**Votes waiting:** Q1 (A / B / C) and Q2 (L1 / L2 / L3). Recommended:
+**A and L1**, with B7 run first (it can change B's case, and sets A's
+pattern shift).
 
 ## Open questions
 
