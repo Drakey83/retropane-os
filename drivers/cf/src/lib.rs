@@ -84,6 +84,19 @@ const CONFIG_LIMIT: u32 = 0x1000;
 
 /// Status polls for a command to start or a sector to be ready.
 const SPIN_LIMIT: u32 = 2_000_000;
+
+/// Spins between the DMA wait's polls of the controller (the gate's C11).
+/// On SD, polling the DMA back to back slowed the transfer it waited for:
+/// a 200-spin pause made SD DMA reads 28% faster (`rp_drv_pxa_mmc`'s
+/// `POLL_SPIN`, X51v 2026-10-22). Whether CF's window reads do the same is
+/// not measured: 0 (back to back, as before) until `rp-storfast`'s C2 is
+/// run with `RP_CF_POLL_SPIN` at build time (0 against 200), then the
+/// measured value. The limit counts passes, so a pause stretches the
+/// backstop in time only.
+const POLL_SPIN: u32 = match option_env!("RP_CF_POLL_SPIN") {
+    Some(s) => rp_hal_api::parse_u32(s),
+    None => 0,
+};
 /// Polls after a write, while the card programs its flash.
 const WRITE_SPIN_LIMIT: u32 = 20_000_000;
 /// Milliseconds a card may take to become ready after reset (the CF
@@ -596,6 +609,11 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
         if path == ReadPath::Dma {
             if self.dma.arm_from_window(self.window_phys, SECTOR, out) {
                 for _ in 0..SPIN_LIMIT {
+                    // Empty at the default (0: back to back, unmeasured).
+                    #[allow(clippy::reversed_empty_ranges)]
+                    for k in 0..POLL_SPIN {
+                        core::hint::black_box(k);
+                    }
                     match self.dma.done() {
                         Some(true) => return Ok(ReadPath::Dma),
                         // A bus error mid-sector leaves the card's data

@@ -446,24 +446,9 @@ impl<B: RegisterBus + RegisterBus8, D: DmaEngine> SdHost for PxaMmc<B, D> {
 /// only (the card's own timeouts end a stalled transfer). `RP_MMC_POLL_SPIN`
 /// at build time overrides it, for the next sweep.
 const POLL_SPIN: u32 = match option_env!("RP_MMC_POLL_SPIN") {
-    Some(s) => parse_u32(s),
+    Some(s) => rp_hal_api::parse_u32(s),
     None => 200,
 };
-
-/// A decimal `u32` at compile time (0 for anything else).
-const fn parse_u32(s: &str) -> u32 {
-    let b = s.as_bytes();
-    let mut i = 0;
-    let mut v = 0u32;
-    while i < b.len() {
-        if !b[i].is_ascii_digit() {
-            return 0;
-        }
-        v = v * 10 + (b[i] - b'0') as u32;
-        i += 1;
-    }
-    v
-}
 
 impl<B: RegisterBus + RegisterBus8, D: DmaEngine> PxaMmc<B, D> {
     /// Waits for the armed DMA transfer, watching the controller's `errors`

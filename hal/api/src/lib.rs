@@ -354,6 +354,23 @@ impl Field {
     }
 }
 
+/// A decimal `u32` at compile time (0 for anything else): build-time
+/// knobs read with `option_env!` (a poll pause swept on the device).
+#[must_use]
+pub const fn parse_u32(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut v = 0u32;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            return 0;
+        }
+        v = v * 10 + (b[i] - b'0') as u32;
+        i += 1;
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
