@@ -1795,6 +1795,15 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     if !String::from_utf8_lossy(&saved).contains("PANIC deliberate test panic") {
         return Err("crash: crashlog.txt on the card doesn't hold the report".into());
     }
+    // The chain's end can't rest on what the starter left in r11 (the
+    // emulator's loader happens to leave 0; the X51v's may not): `_start`
+    // must clear it right before `rp_main`, read from the image.
+    if !crate::symbols::start_clears_fp(&release.join("rp-crash"))? {
+        return Err(
+            "crash: rp-crash's _start doesn't clear r11 right before rp_main (frame-pointer build)"
+                .into(),
+        );
+    }
     check_chain(
         root,
         &release.join("rp-crash"),
@@ -2537,7 +2546,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
             return Err(format!("mbx: the GPU-drawn picture is wrong at {wrong:?}"));
         }
         // A button press returns it to the loader.
-        mon.command("sendkey ret")?;
+        mon.query("sendkey ret 200")?;
         Ok(())
     };
     let output = boot(
@@ -3062,7 +3071,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-        mon.command("sendkey ret")?;
+        mon.query("sendkey ret 200")?;
         Ok(())
     };
     let output = boot(
@@ -4103,7 +4112,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                         gpubench_expect(img, "code 7 ramp's right", 476, 400, (1, 1, 1))
                     })?;
                 }
-                mon.command("sendkey ret")?;
+                mon.query("sendkey ret 200")?;
             }
             Ok(())
         };
@@ -4323,7 +4332,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-        mon.command("sendkey ret")?;
+        mon.query("sendkey ret 200")?;
         Ok(())
     };
     let output = boot(
@@ -4409,7 +4418,7 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-        mon.command("sendkey ret")?;
+        mon.query("sendkey ret 200")?;
         Ok(())
     };
     let output = boot(
@@ -4479,7 +4488,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
-        mon.command("sendkey ret")?;
+        mon.query("sendkey ret 200")?;
         Ok(())
     };
     let output = boot(

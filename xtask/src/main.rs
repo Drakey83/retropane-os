@@ -51,9 +51,12 @@ const FRAME_POINTER_FLAGS: &str = "-C force-frame-pointers=yes --cfg rp_frame_po
 /// its own inside `dir` (the flags rebuild everything, `core` included, so
 /// it never shares a folder with a may-omit build). Returns the target
 /// folder to build into. Every image build goes through it (`cross`, the
-/// emulator's variants, `perf`, `codegen-variant`).
+/// emulator's variants, `perf`, `codegen-variant`). `RP_MAY_OMIT=1` builds
+/// a listed image may-omit anyway: the X51v check of a may-omit crash
+/// report (`RP_MAY_OMIT=1 cargo xtask codegen-variant rp-crash may-omit`).
 pub(crate) fn frame_pointer_build(cmd: &mut Command, image: &str, dir: &str) -> String {
-    if FRAME_POINTER_IMAGES.contains(&image) {
+    let may_omit = std::env::var_os("RP_MAY_OMIT").is_some_and(|v| v == "1");
+    if FRAME_POINTER_IMAGES.contains(&image) && !may_omit {
         cmd.env("RUSTFLAGS", FRAME_POINTER_FLAGS);
         format!("{dir}/frame-pointers")
     } else {
@@ -1213,6 +1216,11 @@ fn cross() -> Result {
         }
         let mut env = Command::new("");
         let dir = frame_pointer_build(&mut env, image, "target");
+        if dir == "target" {
+            // `RP_MAY_OMIT=1`: built may-omit above, where it stays (a copy
+            // onto itself could empty it).
+            continue;
+        }
         cargo_with(
             &mut env,
             &[

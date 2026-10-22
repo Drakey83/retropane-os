@@ -71,6 +71,39 @@ fn source_line(objdump: &str) -> Option<&str> {
         })
 }
 
+/// Whether `_start`'s disassembly (`llvm-objdump -d
+/// --disassemble-symbols=_start`) clears r11 in the instruction right
+/// before its call of `rp_main`: a frame-pointer image's chain ends there
+/// whatever its starter left in r11 (backtrace.rs).
+fn clears_fp_before_main(dump: &str) -> bool {
+    let insns: Vec<&str> = dump
+        .lines()
+        .filter_map(|l| l.split_once(":	").or_else(|| l.split_once(": ")))
+        .map(|(_, i)| i.trim())
+        .filter(|i| !i.is_empty())
+        .collect();
+    insns.windows(2).any(|w| {
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        words(w[0]) == "mov r11, #0" && w[1].starts_with("bl") && w[1].contains("<rp_main>")
+    })
+}
+
+/// [`clears_fp_before_main`] on the image `elf`.
+pub fn start_clears_fp(elf: &Path) -> Result<bool, String> {
+    let out = Command::new(llvm_tool("llvm-objdump"))
+        .args(["-d", "--no-show-raw-insn", "--disassemble-symbols=_start"])
+        .arg(elf)
+        .output()
+        .map_err(|e| format!("llvm-objdump: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "llvm-objdump: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(clears_fp_before_main(&String::from_utf8_lossy(&out.stdout)))
+}
+
 /// A number as a crash report writes it (`0x` and hex) or plain hex.
 fn parse_addr(s: &str) -> Option<u32> {
     let h = s
@@ -219,6 +252,26 @@ a8008aa8:      \tsub\tsp, sp, #24
             Some("C:\\rust\\library\\core\\src\\panicking.rs:60")
         );
         assert_eq!(source_line("; fn():\na8008aa8: nop\n"), None);
+    }
+
+    #[test]
+    fn start_must_clear_r11_right_before_rp_main() {
+        let fp = "a80080a0:      	blo	0xa8008098 <_start+0x98> @ imm = #-0x10
+a80080a4:      	mov	r11, #0
+a80080a8:      	bl	0xa8008a88 <rp_main>    @ imm = #0x9d8
+";
+        assert!(clears_fp_before_main(fp));
+        // A may-omit build: no clear.
+        let plain = "a80080a0:      	blo	0xa8008098 <_start+0x98>
+a80080a4:      	bl	0xa8008a88 <rp_main>
+";
+        assert!(!clears_fp_before_main(plain));
+        // Cleared, but not right before the call.
+        let early = "a80080a0:      	mov	r11, #0
+a80080a4:      	mov	r0, #0
+a80080a8:      	bl	0xa8008a88 <rp_main>
+";
+        assert!(!clears_fp_before_main(early));
     }
 
     #[test]

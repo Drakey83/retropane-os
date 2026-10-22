@@ -125,7 +125,12 @@ no `llvm-symbolizer`, the tool this plan named. `emu-crash` follows all six
 of `rp-crash`'s crashes (the panic, the data and prefetch aborts, the
 undefined instruction, a system call with no handler, the run limit) to
 `_start`; `emu-run-limit` requires the no-chain line from the may-omit
-`rp-hang`. Building it found quality audit C61 (the run limit's and the
+`rp-hang`. The chain's clean end is checked from the image, not the run
+(`_start`'s `mov r11, #0` right before `bl rp_main`: the emulator's loader
+happens to hand over r11 = 0, so a run alone can't tell). `RP_MAY_OMIT=1`
+builds a listed image may-omit anyway (the X51v check of the no-chain
+line: `RP_MAY_OMIT=1 cargo xtask codegen-variant rp-crash may-omit`).
+Building it found quality audit C61 (the run limit's and the
 SWI's reports carried no SPSR). Waiting: the deliberate crash on the X51v,
 both builds.
 

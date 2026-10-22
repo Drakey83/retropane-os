@@ -66,13 +66,12 @@ impl Monitor {
         Ok(Self { stream })
     }
 
-    /// Sends one monitor command.
+    /// Sends one monitor command and waits until QEMU has run it (its next
+    /// prompt): a command sent and its connection dropped at once can be
+    /// lost (quality audit C62: the release's Windows build never pressed
+    /// the key that returns `rp-mbx` to the loader).
     pub fn command(&mut self, cmd: &str) -> Result<(), String> {
-        writeln!(self.stream, "{cmd}").map_err(|e| e.to_string())?;
-        // Drain the echo and prompt so the socket buffer never fills.
-        let mut sink = [0u8; 1024];
-        let _ = self.stream.read(&mut sink);
-        Ok(())
+        self.query(cmd).map(drop)
     }
 
     /// Sends a command and returns what QEMU printed before its next prompt.
