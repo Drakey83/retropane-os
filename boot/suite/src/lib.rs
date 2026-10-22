@@ -609,6 +609,48 @@ mod target {
         r.check("copy_pld", right, "");
     }
 
+    /// The internal SRAM's every word (the performance gate's CPU line V2:
+    /// its size and soundness on this unit, not the manual's word): each
+    /// word written and read back with 0x55555555, 0xAAAAAAAA, its own
+    /// address and its complement, in turn over the whole buffer (so a
+    /// word that aliases another, past the real end, shows). `sram` is the
+    /// whole SRAM.
+    pub fn sram_patterns(r: &mut Runner, sram: &mut [u8]) {
+        let Some(words) = rp_hal_mem::bytes_as_words_mut(sram) else {
+            r.check("sram_patterns", false, "not aligned");
+            return;
+        };
+        let n = words.len();
+        let mut bad = 0usize;
+        for pass in 0..4u32 {
+            let want = |i: usize| match pass {
+                0 => 0x5555_5555,
+                1 => 0xAAAA_AAAA,
+                2 => i as u32,
+                _ => !(i as u32),
+            };
+            for (i, w) in words.iter_mut().enumerate() {
+                *w = want(i);
+            }
+            bad += words
+                .iter()
+                .enumerate()
+                .filter(|&(i, &w)| black_box(w) != want(i))
+                .count();
+        }
+        r.check(
+            "sram_patterns",
+            bad == 0 && n == 64 * 1024,
+            if bad != 0 {
+                "a word wrong"
+            } else if n != 64 * 1024 {
+                "not 256 KiB"
+            } else {
+                ""
+            },
+        );
+    }
+
     /// The internal SRAM against SDRAM (the performance gate's CPU lines V2
     /// and C3): 64 KiB copied within the SRAM, from SDRAM into it, and
     /// filled. `sram` needs 128 KiB, `sdram` 64 KiB.

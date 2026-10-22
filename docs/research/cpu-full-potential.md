@@ -145,7 +145,7 @@ named in its evidence.
 | Line | Status | Evidence, or what's left |
 |---|---|---|
 | V1 | partial | rp-probe (X51v, 2026-10-22): the D-cache's 32 KiB confirmed (a line walk misses from 40 KiB, ~233 ns a miss); the CPU ID read; the I-cache, the mini data cache and iWMMXt not measured |
-| V2 | partial | rp-probe (X51v, 2026-10-22): 256 KiB of SRAM chased and read back right, its speed measured (286 MB/s copy, 111 ns a hop); every byte's pattern test not run |
+| V2 | done | rp-probe (X51v, 2026-10-22, `local/rp-probe-gate-run7.txt`): all 256 KiB of the SRAM written and read back with 0x55555555, 0xAAAAAAAA, each word's address and its complement, every word right (no aliasing: the size is the manual's); its speed: 286 MB/s copy, 475 MB/s fill, 111 ns a random hop |
 | V3 | open | WM's seven speeds not set and measured by us |
 | V4 | open | the voltage patterns not ranked |
 | V5 | open | C2's stepped test not run |

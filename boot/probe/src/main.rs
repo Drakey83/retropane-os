@@ -341,6 +341,7 @@ mod image {
             suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
             suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
             if let Some(sram) = diag::take_sram() {
+                suite::sram_patterns(&mut r, sram);
                 suite::chase(&mut r, "chase_sram_256k", sram);
                 // V2 and C3: before the page table moves into the SRAM.
                 suite::sram_bandwidth(&mut r, sram, &mut bench_ram[..64 * 1024]);
