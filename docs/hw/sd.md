@@ -313,6 +313,12 @@ driver's count agreeing):
   is raised by a time (under 76 us; a CMD13 takes ~13 us at full clock),
   and it stays until a command collects it. The driver now sends CMD13
   until it shows, 80 at most (~1 ms).
+- **Version 5 (`local/rp-sdtime-guard-run5.txt`): the fix confirmed, 19
+  checks, 0 BAD.** Every read after a last-block read succeeded; G7's
+  CMD13s found no OUT_OF_RANGE left. Open note: in 5 of the 31 last-block
+  reads the driver's wait ended without the bit (`end_unseen`) and no read
+  failed after: either the card didn't raise it then, or it came later and
+  one of G7's clean-up CMD13s took it. Which reads: not logged.
 
 ## Emulator
 

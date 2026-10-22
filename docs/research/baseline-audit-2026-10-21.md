@@ -95,7 +95,7 @@ The owner's second reviewer read these and conceded all eight
   Run F checks it, and an emulator mutant drops the write.
 - **C44** (fixed): an abort's crash line always said SPSR 0 (found by run F).
 - **C45** (fixed): emulator checks didn't size-check variants (found by run FF).
-- **C46** (fixed again, your option a, waiting for guard version 5): reads failed after a read of the card's last block. Guard version 4 measured the card raising the flag 76 us after the read (20 of 20); the driver now polls CMD13 until it shows, ~1 ms at most.
+- **C46** (fixed, your option a, **confirmed by guard version 5: 19 checks, 0 BAD**; open note: 5 of 31 waits ended without the flag, nothing failed after): reads failed after a read of the card's last block. Guard version 4 measured the card raising the flag 76 us after the read (20 of 20); the driver now polls CMD13 until it shows, ~1 ms at most.
 - **C47** (fixed): 2D commands took any rectangle; on the device an inverted one writes past its picture.
 - **C43** (open; your call: the faked reading first, the real stall
   decided after it): the FIFO-full device run (C37)
@@ -129,6 +129,7 @@ mutants. It isn't proven on the device or by repeat emulator runs yet.
 | guard version 2, C46 | **Diagnosed:** a read of the last block makes the card report `OUT_OF_RANGE` (`0x80000900`) in the next command's status; a CMD13 clears it. Fixed with your option (a); version 3 checks it | `rp-sdtime-guard-run2.txt` |
 | P2L version 2 | **Cause found:** my test's own 2D fill, `(0, 280, 480, 40)` given as a size to a command that takes corners, wrote far past the screen on the device (the emulator drew nothing) and blackened the reference. C47: every 2D command now refuses such a rectangle. Renders 1-25 exact; 1 wrong bar pixel in 1,000, not attributable (the stray fill), version 3 lists them | `rp-gpubench-runP2L2.txt` |
 | P2L version 3, ADR-0023 | **Passed:** 0 wrong or differing pixels in 1,000 32-bit renders under the 16-bit screen (307.2 million), 237 and 213 wrong bar pixels in the 32-bit controls. Vote B verified | `rp-gpubench-runP2L3.txt` |
+| guard versions 4 and 5, C46 | **Measured, then passed:** the flag 76 us after the read, 20 of 20 (version 4); with the driver waiting for it, 19 checks, 0 BAD (version 5) | `rp-sdtime-guard-run4.txt`, `-run5.txt` |
 | guard version 3, C46 | **The fix failed:** the driver's CMD13 straight after a last-block read comes before the card raises the flag; a CMD13 milliseconds later catches it. C46 open again: measure the delay first | `rp-sdtime-guard-run3.txt` |
 | P2L, ADR-0023 | **Half measured:** 0 wrong bar pixels in 1,000 renders under the 16-bit screen, ~47 a render in the 32-bit controls. **The comparison half failed as a measurement:** the first render read all black by the 16-bit phase, a device-only effect; version 2 hashes it after every step and makes it again under the 16-bit screen | `rp-gpubench-runP2L1-card.txt` |
 
