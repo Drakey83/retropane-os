@@ -166,6 +166,13 @@ watching.
 - **2D commands by DMA** (`rp-gpubench` run FD, X51v, 2026-10-22): DMA
   into the command window (`0x0FFF5000`) works; 352 words cost the CPU 2
   us to arm against 43-60 us to write; batches must fit the FIFO's room.
+- **The 2D engine's clock off** (`rp-gpubench` run FS, X51v, 2026-10-22,
+  `local/cardlog/gpubench-0044.txt`): `MBXCLK` enable 0 (divider kept)
+  with 20 fills and a fence queued pauses the work; the clock back on, it
+  finishes (the fence after 124 ms) and draws right. **One read of the
+  MBX's status (`0x12c`) with the 2D clock off froze the CPU's bus**: the
+  watchdog reset the device (Dell's restore screen). Rule: no MBX register
+  access while its clock is off (audit C43).
 - **MBX status `0x12c`** (`rp-gpubench` run FI, X51v, 2026-10-22): raw
   (the enables `0x130` don't change it); 2D sets no completion bit (bits
   16-23 hold the FIFO's fill while it works): 2D waits are polled; a

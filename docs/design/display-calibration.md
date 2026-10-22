@@ -570,6 +570,13 @@ Mobile's backlight (274 of 432)**, applied before the dither. The
 brightness slider moves the light as before; the curve stays at any
 brightness. Original stays a choice in Settings > Display.
 
+**Decided (owner, 2026-10-22): the default picture is the S-curve at
+strength 1.75 *and* saturation 1.2x** (run 5's pick, Sat 30), both applied
+before the dither: the curve in the renderer's dither step, the saturation
+in the content as a picture loads (the gamma table can't mix colours). Not
+built yet: `rp-today` still shows the Original look (checked on the X51v,
+2026-10-22).
+
 **Decided (owner, 2026-10-17): Settings > Display gets a contrast slider
 next to the brightness slider**, so every owner can fit the picture to their
 own (aged) screen: the same choices the owner judged by, **strength 1.00
@@ -584,7 +591,7 @@ times better than it was". Design notes for when Settings is built:
   stays at any brightness.
 - A change shows at once on the real screen; the 13 curves are a 221-byte
   table made at build time (`rp-looks`' `build.rs` is the reference).
-- Games keep their own per-game curve (apps-and-packs �6a) on top.
+- Games keep their own per-game curve (apps-and-packs §6a) on top.
 
 ## Measured with a colorimeter (2026-10-17)
 
@@ -678,7 +685,8 @@ system default; games get the Dark games curve by default (the per-game
 curve of apps-and-packs §6a); Settings > Display offers the looks (Original,
 Everyday, Dark games, Accurate) for each owner to choose.
 
-**Decided (owner, 2026-10-17): a choice of three picture looks, Original,
+**Decided (owner, 2026-10-17, 17:53; replaced that evening by the strength
+1.75 default above, and by 2026-10-22's default): a choice of three picture looks, Original,
 Everyday and Dark games**, offered at the first start (a one-tap pick, each
 shown on the real screen) and in Settings > Display any time after. Original
 is the default. The measured (Accurate) tables stay in the calibration tool

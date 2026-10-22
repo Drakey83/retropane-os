@@ -123,6 +123,26 @@ Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
 
+**Future 3D game packs (owner, 2026-10-22).** True 3D games (polygon
+worlds, not 2.5D) not yet in the table above that fit the X51v, each a
+game pack that needs the owner's own game files, like every port. Planned
+for later, after the ports above; each one's code licence is read in full
+before it becomes a plan (from memory below, not yet checked), since the
+pack ships the engine code even when the data is the user's.
+
+| Game | Engine source | Fit on the X51v (624 MHz, 64 MiB, the 2700G) | Effort, and what to check |
+|---|---|---|---|
+| Hexen II | Raven's source release (GPL, to confirm) | Good: Quake 1's engine | Small once Quake is ported (the same renderer and file formats) |
+| Half-Life | No source from Valve; Xash3D (FWGS), a reimplementation of its engine | Plausible: built for 1998 PCs; Xash3D runs on old ARM phones | Moderate. Check: Xash3D's licence, and the game logic (Valve's HLSDK, a non-commercial licence) shipped as a separate pack |
+| Descent, Descent II | Parallax's source release (a non-commercial licence, to read) | Excellent: full 3D on 1995 hardware | Small to moderate. Check: the licence allows a free pack |
+| Turok: Dinosaur Hunter | **Turok EX** (Samuel Villarreal, github.com/svkaiser/TurokEX, 2012-14, unfinished beta): 181 of its 197 engine files carry GPL-2.0-or-later headers (checked 2026-10-22; the other 16 are imgui, tinyxml2, an unzip library, a convex-hull routine and tools, each to check or replace). Not the leaked original code (never looked at or used: CLEANROOM.md) | Fits (the N64 game ran in 4 MiB; Turok EX targets 2012 PCs: memory and speed to fit) | **Moderate (revised 2026-10-22 from "very hard, clean-room")**: the engine, game logic (AngelScript) and a converter for the 1997 PC version's files (KPFGen) exist; left: its OpenGL renderer onto RetroPane's 2700G driver, SDL2/OpenAL onto our input and audio, fitting 64 MiB, and finishing what it never did. **First: an evaluation** (what plays, what's missing) before any estimate. Needs the owner's 1997 PC copy (the Nightdive remaster's formats differ) |
+
+Considered and left out (2026-10-22): Return to Castle Wolfenstein,
+Enemy Territory, Jedi Outcast and Jedi Academy, and Doom 3 (too heavy for
+64 MiB and the 2700G), and the 2.5D games (Wolfenstein 3D, Hexen, Strife,
+Rise of the Triad, the Build games, Marathon), which the owner didn't ask
+for here. Quake 3 stays the stretch goal it is (about 64 MiB and a real GPU).
+
 ## 6b. The Emulation pack (owner, 2026-10-18)
 
 **Owner:** an **emulation program pack** as a download pack on the card
