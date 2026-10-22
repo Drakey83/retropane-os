@@ -154,6 +154,11 @@ watching.
   spread evenly, half far off; alone it repeats exactly. Together saves
   9% of the time. The engines take turns (ADR-0030 G2); the cause is
   open (`2700g.md` "baseline audit").
+- **MBX status `0x12c`** (`rp-gpubench` run FI, X51v, 2026-10-22): raw
+  (the enables `0x130` don't change it); 2D sets no completion bit (bits
+  16-23 hold the FIFO's fill while it works): 2D waits are polled; a
+  render's end sets bits 2 and 3 (bit 3's meaning unknown), bit 6 =
+  parameter memory ready; `0x134` all ones clears them.
 - **DMA memory-to-memory** (`rp-probe`, X51v, 2026-10-22): 128 KiB in
   2.90 / 4.78 / 8.50 ms with 32 / 16 / 8-byte bursts (~0.5 us fixed a
   burst; 45 MB/s at best against `memcpy`'s 108); the DCMD width field

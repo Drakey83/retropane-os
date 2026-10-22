@@ -171,7 +171,7 @@ named in its evidence.
 | T2 | partial | run E's E1e (X51v, 2026-10-22): a 1 MiB texture staged in SRAM (two 32 KiB buffers) and overlapped with DMA: **32.2 ms (32 MB/s, the 2700G bus's limit)**, the CPU free 7.4 ms of it, against 34.8 ms with the CPU writing straight in and 41.0 staged in SDRAM; to use it, the OS needs an SRAM plan (page tables, upload staging, the kept log: who owns the 256 KiB), the owner's decision |
 | T3 | open | commands fed by DMA not tried |
 | T4 | open | the routing table per kind of work not measured (harness) |
-| T5 | open | the GPU-format converters not timed together |
+| T5 | partial | the 32-bit twiddle reorder by table: 11.9 ms a MiB (88 MB/s, ~81% of `memcpy` from memory; run E E1a), and overlapped with uploads through the SRAM the upload reaches the bus's 32 MB/s (E1e), so the reorder isn't the limit; PVRTC is compressed on the PC (`upload_pvrtc`), no device converter; left: the 16-bit reorder timed, an iWMMXt reorder only if a converter ever limits an upload |
 | T6 | done | the OS path's reads of 2700G memory audited (2026-10-21): mipmap levels no longer read back (made from SDRAM, a test fails on any read); the fence polling measured harmless to the engine (B8c, X51v: 61.8 ms polled nonstop vs 62.2 every 1 ms); what's left is single-word register reads |
 | T7 | open | clocks per moment against battery not measured (harness) |
 | T8 | partial | as the GPU page's P8 (run FT: together 9% faster but the 3D render corrupts; the turns hold) |

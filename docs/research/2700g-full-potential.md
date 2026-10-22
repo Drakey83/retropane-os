@@ -154,7 +154,7 @@ named in its evidence.
 | V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
 | V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; left: mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), the brush palette (`0xD0000000`) |
 | V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
-| V17 | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; its meaning and the other bits open (P18) |
+| V17 | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; run FI: bit 3 sets with bit 2 at a render's end, 2D raises no bit; bit 10's meaning open |
 | V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
 | V11 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
 | V12 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
@@ -177,7 +177,7 @@ named in its evidence.
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
 | P16 | open | needs a battery reading: the TSC2046's VBAT isn't wired (entropy.md); Windows Mobile's gauge (`GetSystemPowerStatusEx2`, used by `rp-wmpower`, +-50 mA) comes from `battdrvr.dll`, which only calls `KernelIoControl` with Dell's own HAL codes `0x0101010D` (function 67) and `0x0101011B` (function 70) (2026-10-22, static); their handler in the kernel image wasn't found by constant (not as literals, nor the SSP/I2C bases): a bounded RE step next, or the WM gauge as a stand-in |
 | P17 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
-| P18 | open | every status and interrupt bit not swept |
+| P18 | partial | run FI (X51v, 2026-10-22): `0x12c` around 2D and 3D jobs with enables 0 / all: **no 2D completion bit** (bits 16-23 the FIFO's fill while busy, nothing latched), so 2D waits stay polled; a render's end sets bits 2 and 3 (3 new, meaning open); the enables don't change the raw status. Left: the TA's bit 4 and other units (the display's `DINTRS`, the system block's interrupt registers, MVED1), and whether the FIFO level can interrupt at a low-water mark |
 | P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
 | P20 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
 | P21 | partial | B8 (X51v): one blit from a full-screen pattern = the four row blits, same picture, same 18.9 ms (declined: the cost is the blend pass); left: fewer passes (the dither folded into the background where it never changes, the 3D core) |

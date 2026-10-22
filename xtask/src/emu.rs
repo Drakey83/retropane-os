@@ -3365,6 +3365,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_ff = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FIFO_FULL", "1"))?;
     let run_fs = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REAL_STALL", "1"))?;
     let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
+    let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3389,7 +3390,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 30] = [
+    let runs: [GpubenchRun; 31] = [
         (
             "run A",
             &run_a,
@@ -3850,6 +3851,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "differing pixels 0 in the textured quad, 0 in the Gouraud background only",
                 "the render as alone: true; the copies as alone: true",
                 "FT: both right together",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        (
+            // The gate's P18: the MBX status bits around 2D and 3D jobs,
+            // the enables put back.
+            "run FI",
+            &run_fi,
+            &[
+                "  FI as found: status 0x",
+                "  FI enables 0 (0x00000000): idle 0x",
+                "  FI enables all (0xffffffff): idle 0x",
+                "3D started true",
+                "FI: enables put back",
                 "RETROPANE-GPUBENCH: done",
             ],
             true,

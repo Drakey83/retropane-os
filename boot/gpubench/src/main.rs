@@ -223,6 +223,13 @@ mod image {
     /// hashed), then together; both results must hash as alone. Unattended;
     /// a hang is the run's finding (engines reset, logged).
     const TOGETHER: bool = option_env!("RP_GPUBENCH_TOGETHER").is_some();
+    /// Run FI (the performance gate's P18 / V17): the MBX core's status
+    /// word (`0x12c`), its enables (`0x130`) and clear (`0x134`) around a 2D
+    /// fill and a 3D render, idle, busy, done and after a clear, with the
+    /// enables as found, 0 and every bit; which bits a 2D job raises (a 2D
+    /// completion bit would let 2D waits sleep, as 3D's do). Unattended;
+    /// the enables and status put back as found.
+    const IRQ_BITS: bool = option_env!("RP_GPUBENCH_IRQ_BITS").is_some();
     /// Run FT with the 2D engine filling instead of copying (writes only,
     /// no reads): `RP_GPUBENCH_TOGETHER_FILLS` beside `RP_GPUBENCH_TOGETHER`.
     const TOGETHER_FILLS: bool = option_env!("RP_GPUBENCH_TOGETHER_FILLS").is_some();
@@ -2948,6 +2955,121 @@ mod image {
             }
         }
         (inq, out, bands, near, far)
+    }
+
+    /// Run FI (see [`IRQ_BITS`]).
+    #[inline(never)]
+    fn irq_bits(g: &mut Rig) {
+        const PIC: u32 = 480 * 640 * 2;
+        log!(
+            "FI: the MBX status word 0x12c around a 2D fill and a 3D render; enables 0x130, clear 0x134"
+        );
+        clock_card(g, ["RUN FI", "STATUS BITS", ""], 0xFF20_2040, 2);
+        let st = |g: &mut Rig| g.e.regs.read32(MBX + reg::STATUS);
+        let (s0, en0) = (st(g), g.e.regs.read32(MBX + reg::ENABLE));
+        log!("  FI as found: status 0x{s0:08x}, enables 0x{en0:08x}");
+        let Some(pic) = g.pool.alloc(PIC, 0x1000) else {
+            log!("  no memory for the picture");
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            let _ = g.pool.free(pic, PIC);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        let t = Target {
+            picture: Picture::packed(pic, 480, 640, PixelFormat::Rgb565),
+            x: 0,
+            y: 0,
+        };
+        for (name, en) in [("as found", en0), ("0", 0u32), ("all", 0xFFFF_FFFF)] {
+            g.e.regs.write32(MBX + reg::ENABLE, en);
+            g.e.regs.write32(MBX + reg::CLEAR, 0xFFFF_FFFF);
+            let idle = st(g);
+            // 2D: twenty full-screen fills (about 120 ms of work).
+            for k in 0..20u32 {
+                let w = rp_image::need(
+                    cmd::fill(
+                        Format::RGB565,
+                        pic as usize,
+                        960,
+                        (0, 0, 480, 640),
+                        0x1111 * k,
+                    ),
+                    "a 2D rectangle",
+                );
+                let _ = g.e.submit(&w);
+            }
+            let busy2 = st(g);
+            let done = g.e.finish(g.mem.0, 2_000_000).is_ok();
+            let after2 = st(g);
+            g.e.regs.write32(MBX + reg::CLEAR, 0xFFFF_FFFF);
+            let cleared2 = st(g);
+            // 3D: one full-screen render.
+            r.invalidate_all();
+            let t0 = g.clock.now_us();
+            let started = r
+                .render(
+                    &mut CodeBus {
+                        bus: &mut g.e.regs,
+                        code: 1,
+                        extra: None,
+                    },
+                    &mut g.mem,
+                    &mut g.clock,
+                    t,
+                )
+                .is_ok();
+            let busy3 = st(g);
+            let mut after3 = busy3;
+            while started && g.clock.now_us().wrapping_sub(t0) < 1_000_000 {
+                after3 = st(g);
+                if after3 & RENDER_DONE != 0 {
+                    break;
+                }
+            }
+            loop {
+                match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                    Poll::Wait(_) => {}
+                    Poll::Done(_) => break,
+                    p => {
+                        g.sync_resets(&mut r);
+                        log!("    3D: {p:?}");
+                        break;
+                    }
+                }
+            }
+            let polled3 = st(g);
+            g.e.regs.write32(MBX + reg::CLEAR, 0xFFFF_FFFF);
+            let cleared3 = st(g);
+            log!(
+                "  FI enables {name} (0x{en:08x}): idle 0x{idle:08x}; 2D busy 0x{busy2:08x}, done ({done}) 0x{after2:08x}, cleared 0x{cleared2:08x}; 3D started {started}: busy 0x{busy3:08x}, done 0x{after3:08x}, after the renderer's poll 0x{polled3:08x}, cleared 0x{cleared3:08x}"
+            );
+            rt::check_in();
+        }
+        g.e.regs.write32(MBX + reg::ENABLE, en0);
+        g.e.regs.write32(MBX + reg::CLEAR, 0xFFFF_FFFF);
+        log!(
+            "FI: enables put back 0x{:08x} (as found 0x{en0:08x}), status 0x{:08x}",
+            g.e.regs.read32(MBX + reg::ENABLE),
+            st(g)
+        );
+        g.set(&mut r, 0, None);
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(pic, PIC);
+        clock_card(g, ["RUN FI", "DONE", ""], 0xFF10_6020, 3);
     }
 
     /// Run FT (see [`TOGETHER`]).
@@ -6669,6 +6791,8 @@ mod image {
                 "P2Y (what P2X's errors need: the CPU's reads, the display's fetch at 32 bits, 16 bits and stopped)"
             } else if SPECKS {
                 "P2X (P2W's white specks: the picture rendered 5 times a format, checked and compared)"
+            } else if IRQ_BITS {
+                "FI (the MBX status and interrupt bits around 2D and 3D jobs)"
             } else if TOGETHER {
                 "FT (the 2D engine and the 3D core at once: a render and 2D copies, alone then together)"
             } else if RESOLVE {
@@ -6758,6 +6882,8 @@ mod image {
             specks2(&mut g);
         } else if SPECKS {
             specks(&mut g);
+        } else if IRQ_BITS {
+            irq_bits(&mut g);
         } else if TOGETHER {
             together(&mut g);
         } else if RESOLVE {
