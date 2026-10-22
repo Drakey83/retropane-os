@@ -42,13 +42,14 @@ In order:
   - [ ] C39: what each image changes on the board and whether a crash puts it back, measured; then the put-backs (quality audit)
   - [ ] C40: build scripts that miss a picture arriving in `local/` (quality audit)
   - [ ] C41: the emulator checks refuse a build that isn't the pinned release (quality audit)
-- [ ] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; the count goes here
+- [ ] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; **`cargo xtask gate`** counts them (and, from step 2b, the benchmark results) and `cargo xtask ci` prints it every run, so the count comes from a check, not from memory
+- [ ] 2b. **The performance ratchet (owner's vote, 2026-10-21):** a device benchmark suite of what people feel (tap to screen, frame times scrolling and in the menu, 3D frames a second, boot time, copy and upload speeds, battery at idle and under load), each result kept as its floor, as code size already is: a change that makes one slower fails until fixed or approved by the owner. Every new feature from then on comes with its own benchmark and budget, and its ADR names the checklist's tricks it uses
 - [ ] 3. The 2700G's clocks (P1, P2, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote
 - [ ] 4. P21: the 2D dither add (18.9 ms a full screen) against its alternatives
 - [ ] 5. The CPU, by payoff: T2 (SRAM staging), C4 (memory lookups), C8 (the performance counters), C6/C7 (iWMMXt, copies), C1 (operating points), C2 (the overclock study)
 - [ ] 6. The rest of the 2700G map in its order: F6, P9 + P10, P6 + P7, P8, P4 + P5, P11, P12, then P13-P19 and the V lines
-- [ ] 7. Together: T1 (a pipeline, not turns), T3-T8
-- [ ] 8. Every line ticked: the owner checks both pages; the gate is lifted only by the owner
+- [ ] 7. Together: T1 (a pipeline, not turns), T3-T8. T1, T4 and T7 are measured on **a minimal compositor test harness built inside the gate, as a benchmark only** (owner's vote, 2026-10-21: option a), not the real compositor
+- [ ] 8. Every line ticked **and the ratchet running** (owner's vote, 2026-10-21): the owner checks both pages; the gate is lifted only by the owner. From then on performance is held by the ratchet, every day, not by a one-time gate
 
 ---
 
