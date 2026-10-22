@@ -170,6 +170,40 @@ change moved the three that moved most, by running `rp-probe` built at
 the floors' commit and at each suspect under today's loader (about 4
 minutes a run, no reset, nobody at the device).
 
+**The owner chose (b) (2026-10-22). Found:** `rp-probe` built at each
+commit (the workspace build, as `perf` loads it), run twice on the X51v
+under today's loader (`scratchpad` script, the rows parsed as `perf`
+does); each commit's two runs agree, and the floors' commit gives the
+floors back to the unit:
+
+| Row (ns an iteration) | Floors (8efe37c) | 1708939 may-omit | 7fb0434 C6 | afb230c C8 | Today |
+|---|---|---|---|---|---|
+| `lz4_compress_page` | 201,691 | 214,191 / 214,038 | 214,076 | 213,884 | 213,903 |
+| `lz4_compress_text` | 150,383 | 156,537 | 156,537 | 156,518 | 156,537 |
+| `dma_copy_128k_b8_word` | 8,501,690 | 8,904,620 | 8,904,620 | 8,904,620 | 8,904,540 |
+| `gfx_photo_row_480` | 32,476 | 30,183 | 30,183 | 30,183 | 30,168 |
+| `lz4_decompress_page` | 149,682 | 146,513 | 146,504 | 146,504 | 146,513 |
+| `frames_fill_drain_1024` | 430,399 | 420,583 | 420,583 | 417,322 | 420,583 |
+| `cache_walk_40k` | 295,888 | 295,125 | 293,095 | 298,485 | 298,769 |
+| `cpu_unit_alone` | 19,274 | 19,276 | 19,274 | 16,064 | 16,060 |
+
+- **The three that moved most moved together at 1708939, the switch to
+  frame pointers "may-omit" (ADR-0001 option B):** LZ4 compress +6.1% and
+  +4.1%, the byte-wide DMA copy +4.7% slower, against the photo row -7.1%,
+  LZ4 decompress -2.1% and the frame allocator -2.3% faster. ADR-0001's
+  measurement ("nothing slower") missed them: quality audit A7.
+- **`cpu_unit` (-16.7%) and `cache_walk_40k` (+1.8% from the commit
+  before) moved at afb230c (C8)**, whose only change near them is code
+  inserted before their section: neither loop changed, and both time
+  with the OS timer, not the counters C8 programs. So both are sensitive
+  to where their loop lands (the second run's ~1 KiB shift didn't move
+  them; C8's did): their floors carry noise their tolerance doesn't show.
+- Nothing else between the floors and today moves these rows (C6, C56,
+  C59 and the walker: within the runs' agreement).
+
+The floors are the owner's to set, with ADR-0001's options in its
+"Measured again" note.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

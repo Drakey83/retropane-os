@@ -88,6 +88,19 @@ today: no backtrace was ever built, the crash line reports the fault
 directly." Both `targets/*.json` say `"frame-pointer": "may-omit"`; a
 debug build that wants a backtrace turns them back on with one flag.
 
+**Measured again (2026-10-22, the perf ratchet's floors; numbers in
+docs/design/perf-ratchet.md):** the claim above, "nothing slower", is
+wrong. `rp-probe` built just before and at the switch (1708939), two
+runs each on the X51v: LZ4 compress 4.1-6.1% slower and the byte-wide
+DMA copy 4.7% slower with may-omit, against the photo row 7.1%, LZ4
+decompress 2.1% and the frame allocator 2.3% faster (quality audit A7).
+The decision stands until the owner's next vote. **Options:** keep B
+(take the new floors); go back to A (frame pointers everywhere: the
+slower rows back, the faster ones and 1.5 KB lost); or keep B and find
+why those two loops lose (the code each build makes for LZ4's compress
+loop and the DMA copy's poll, compared), which could keep both gains (a
+backlog optimization, device runs without a reset).
+
 **The crash-screen backtrace is mode-dependent (owner, 2026-10-22).** B
 stands. Frame pointers are opt-in per image, a list in xtask (like the
 Thumb list), starting with `rp-crash` only: such an image is built in its
