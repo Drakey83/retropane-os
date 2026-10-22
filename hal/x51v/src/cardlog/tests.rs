@@ -497,23 +497,12 @@ fn the_cf_card_is_checked_where_the_log_moved_to_it() {
 fn a_sector_is_waited_for_only_before_the_cards_next_command() {
     let mut run = Run::new();
     let mut s = Run::state([true, true]);
-    run.log(
-        &mut s,
-        b"first line
-",
-    );
+    run.log(&mut s, b"first line\n");
     // Sent, not waited for: the line costs the transfer alone.
     assert_eq!(run.prog.settles, [0, 0]);
     assert_ne!(s.noted & PENDING, 0);
     for i in 0..40 {
-        run.log(
-            &mut s,
-            format!(
-                "line {i}
-"
-            )
-            .as_bytes(),
-        );
+        run.log(&mut s, format!("line {i}\n").as_bytes());
     }
     assert_eq!(
         run.prog.overlapped, 0,
@@ -536,21 +525,21 @@ fn a_sector_that_fails_to_program_is_written_again_on_the_other_card() {
     for i in 0..30 {
         run.log(
             &mut s,
-            format!(
-                "line {i} before the card fails
-"
-            )
-            .as_bytes(),
+            format!("line {i} before the card fails\n").as_bytes(),
         );
     }
+    // A line that fills its sector exactly: the next write would start a
+    // new sector, so only the rewind puts the failed one on the CF card
+    // (a partly filled sector is written again anyway).
+    let fill = SECTOR - run.stream.len() % SECTOR;
+    let mut line = vec![b'x'; fill - 1];
+    line.push(b'\n');
+    run.log(&mut s, &line);
     let pending = s.synced;
+    assert_eq!(pending as usize % SECTOR, 0);
     run.prog.fail[SD] = true;
     run.refuse[SD] = true;
-    run.log(
-        &mut s,
-        b"the line after
-",
-    );
+    run.log(&mut s, b"the line after\n");
     assert_ne!(s.off & 0x100, 0, "the SD card given up on");
     assert_eq!(s.failed, 1);
     assert!(
@@ -575,18 +564,10 @@ fn a_writer_that_waits_leaves_nothing_for_the_next_to_wait_for() {
     let mut run = Run::new();
     run.prog.waits = true;
     let mut s = Run::state([true, true]);
-    run.log(
-        &mut s,
-        b"the loader's line
-",
-    );
+    run.log(&mut s, b"the loader's line\n");
     assert_eq!(s.noted & (PENDING | PENDING << CF), 0);
     run.prog.waits = false;
-    run.log(
-        &mut s,
-        b"the program's line
-",
-    );
+    run.log(&mut s, b"the program's line\n");
     assert_eq!(run.prog.settles, [0, 0]);
     assert_ne!(s.noted & PENDING, 0);
 }
