@@ -352,6 +352,7 @@ mod image {
                     if was { "on" } else { "off" }
                 );
             }
+            suite::wmmx_dot(&mut r);
             // C11: DMA as a copy engine, on the CompactFlash channel (the
             // probe reads no CF card).
             if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {

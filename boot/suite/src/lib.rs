@@ -708,6 +708,113 @@ mod target {
         Some((id, was))
     }
 
+    /// The resampler's filter (C6's mixer step): one channel's 48 kHz output
+    /// sample, 11 taps a wing, three ways on the same data, a block of 32
+    /// frames by two channels each time: the mixer's loop as it is (an
+    /// `i32` window, the left wing reversed against its own coefficients),
+    /// one plain contiguous dot product (the left coefficients stored
+    /// reversed, 16-bit window, padded to 24), and iWMMXt's [`dot`]
+    /// (`WMADDS`). Checked equal at every window offset (all four
+    /// alignments).
+    ///
+    /// [`dot`]: rp_hal_pxa27x::iwmmxt::dot
+    pub fn wmmx_dot(r: &mut Runner) {
+        use rp_hal_pxa27x::iwmmxt;
+        const TAPS: usize = 11;
+        const PAD: usize = 24;
+        const WIN: usize = 128;
+        #[repr(align(8))]
+        struct Win([i16; WIN + 8]);
+        #[repr(align(8))]
+        struct Coef([i16; PAD]);
+        let mut w16 = Win([0; WIN + 8]);
+        let mut w32 = [0i32; WIN];
+        let mut seed = 0x1234_5678u32;
+        for k in 0..WIN {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            w16.0[k] = (seed >> 16) as i16;
+            w32[k] = i32::from(w16.0[k]);
+        }
+        let (mut cl, mut cr) = ([0i16; 22], [0i16; 22]);
+        for k in 0..TAPS {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            cl[k] = ((seed >> 20) as i16) - 2048;
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            cr[k] = ((seed >> 20) as i16) - 2048;
+        }
+        let mut c = Coef([0; PAD]);
+        for k in 0..TAPS {
+            c.0[k] = cl[TAPS - 1 - k];
+            c.0[TAPS + k] = cr[k];
+        }
+        // The mixer's shape.
+        let shaped = |base: usize| -> i32 {
+            let lw = &w32[base + 1 - TAPS..=base];
+            let rw = &w32[base + 1..=base + TAPS];
+            let mut sum = 0i32;
+            for ((x, y), (cx, cy)) in lw.iter().rev().zip(rw).zip(cl.iter().zip(&cr)) {
+                sum = sum
+                    .wrapping_add(x.wrapping_mul(i32::from(*cx)))
+                    .wrapping_add(y.wrapping_mul(i32::from(*cy)));
+            }
+            sum
+        };
+        let flat = |base: usize| -> i32 {
+            let at = base + 1 - TAPS;
+            w16.0[at..at + PAD]
+                .iter()
+                .zip(&c.0)
+                .fold(0i32, |s, (x, k)| {
+                    s.wrapping_add(i32::from(*x) * i32::from(*k))
+                })
+        };
+        let was = iwmmxt::single_access(true);
+        let mut same = true;
+        for base in TAPS - 1..WIN - PAD {
+            let want = shaped(base);
+            same &= flat(base) == want && iwmmxt::dot(&w16.0, base + 1 - TAPS, &c.0) == Some(want);
+        }
+        // A block: 32 frames by two channels, frames stepping through the
+        // window (as at 48 kHz: about 1.09 source samples a frame).
+        let bases = |f: usize| TAPS - 1 + (f * 109) / 100;
+        r.run("dot48_mixer_shape_block", 200, &mut || {
+            let mut s = 0i32;
+            for f in 0..64 {
+                s = s.wrapping_add(shaped(bases(f / 2)));
+            }
+            black_box(s);
+        });
+        r.run("dot48_plain_flat_block", 200, &mut || {
+            let mut s = 0i32;
+            for f in 0..64 {
+                s = s.wrapping_add(flat(bases(f / 2)));
+            }
+            black_box(s);
+        });
+        r.run("dot48_wmmx_block", 200, &mut || {
+            let mut s = 0i32;
+            for f in 0..64 {
+                s = s.wrapping_add(iwmmxt::dot(&w16.0, bases(f / 2) + 1 - TAPS, &c.0).unwrap_or(0));
+            }
+            black_box(s);
+        });
+        // WALIGNR at every offset against the bytes it should take (offset 0
+        // is the low word whole: the emulator's shift by 64 got it wrong).
+        let (lo, hi) = (0x0706_0504_0302_0100u64, 0x0F0E_0D0C_0B0A_0908u64);
+        let mut aligned = true;
+        for n in 0..8u32 {
+            let want = if n == 0 {
+                lo
+            } else {
+                lo >> (8 * n) | hi << (64 - 8 * n)
+            };
+            aligned &= iwmmxt::align(lo, hi, n) == want;
+        }
+        iwmmxt::single_access(was);
+        r.check("wmmx_dot", same, "a filter sum differs between the three");
+        r.check("wmmx_align", aligned, "WALIGNR took the wrong bytes");
+    }
+
     /// Plain ARM: `d[i] = d[i] + s[i]` saturating, two samples a word.
     #[inline(never)]
     fn plain_mix(d: &mut [i16], s: &[i16]) {

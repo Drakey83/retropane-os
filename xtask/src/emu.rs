@@ -9219,15 +9219,24 @@ const PROBE_EXPECT: &[&str] = &[
     "tlb_spill_60_l1sram",
     "check wmmx_copy OK",
     "check wmmx_avg OK",
+    "check wmmx_dot OK",
 ];
 
 /// Probe checks the emulator is known to fail, each with why (they pass on
 /// the X51v): any other failed check fails `emu-probe` (a failed check was
 /// never looked at before 2026-10-22).
-const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[(
-    "wmmx_mix",
-    "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
-)];
+/// When a release carries fork branch `iwmmxt-sat`, both go and their
+/// `check ... OK` lines join `PROBE_EXPECT`.
+const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[
+    (
+        "wmmx_mix",
+        "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
+    ),
+    (
+        "wmmx_align",
+        "rp-v0.29.0's WALIGNR at offset 0 shifts by 64 (undefined in C); fixed on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
+    ),
+];
 
 /// Boots the probe image (the real-device report), then checks every page
 /// line's checksum, that the report is complete, and that it's on screen.
