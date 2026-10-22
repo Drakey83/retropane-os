@@ -244,6 +244,15 @@ guard). The kernel's own path is `compress_with` on a table it keeps
 (`kernel/mm/src/space.rs`), not this row's fresh stack table: options are
 in the session's report to the owner.
 
+**Closed (owner, 2026-10-22): B, then A.** `compress_with` keeps its
+table (no per-page clear); the rows compress on a kept static table, as
+the kernel does. The suite (`local/perf/run-1792708713.txt`): 16 faster
+(LZ4 compress text -4.0%, page -9.3%, noise -22.3%; decompress page
+-10.4%; the 8-byte DMA copy -3.0%, 16-byte -4.9%), 6 over by 0.0-0.9%
+(`b7d`/`b9e` 16-bit copies, `ft_alone` 2D copies, `cache_walk_40k`,
+`chase_sdram_256k`, `gfx_flush_vga`), approved by the owner as new floors;
+all 22 written to docs/perf-floors.md.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

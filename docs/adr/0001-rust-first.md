@@ -141,6 +141,20 @@ of 4 KiB or more, and on the loop being inlined back (quality audit C65).
 **So all three losses had causes, each now fixed: the hash's multiply
 wait, the copy rows' polling, and the 8 KiB frame.**
 
+**Closed (owner, 2026-10-22).** The last of it, chased (option C): the
+mode's remaining ~0.7% is the hash's multiply result used one instruction
+sooner in the miss loop (one stall a position); the alternatives (a
+pre-mixed 15-bit hash, a multiply-free one, the source reordered) measured
+no better, and LLVM won't reorder it: an honest place to stop. Then
+**option B: `rp_lz4::compress_with` no longer clears its table** (a
+leftover entry is a checked hint; output valid, history-dependent; the
+kernel's `pack` path), and the probe's compress rows compress as the
+kernel does. Against the floors: compress text -4.0%, page -9.3%, noise
+-22.3%. Six rows still over by 0.0-0.9% (copies and walks moved by code
+layout) were **approved as new floors (option A)**; the 16 faster ones
+ratcheted (docs/perf-floors.md, run 1792708713). Line allocate stays out
+until its hang is understood (docs/hw/cpu.md).
+
 **The crash-screen backtrace is mode-dependent (owner, 2026-10-22).** B
 stands. Frame pointers are opt-in per image, a list in xtask (like the
 Thumb list), starting with `rp-crash` only: such an image is built in its
