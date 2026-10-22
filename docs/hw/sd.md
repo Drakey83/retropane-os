@@ -343,3 +343,14 @@ end flag set, so a driver written for the real controller saw a false
 "done" and a card still waiting for data; the fork's model (rp-v0.8.0)
 issues it once the transfer is finished, as the hardware does. The model
 needs no CMD13 ready wait, so that finding is device-only.
+
+## Polling slows the DMA (2026-10-22, `rp-probe`, X51v)
+
+The driver's DMA wait read the DMA status and the controller's `STAT`
+back to back. Pausing 200 spins between the polls made multi-block reads
+by DMA 26-28% faster (256 blocks 22.31 -> 15.95 ms, 64 blocks 6.06 ->
+4.49 ms; 50 spins gave half the gain, 1,000 no more). A DMA memory copy
+polled the same way gains 0.7% only, so it's the controller's own status
+reads during its transfer that hold it up. `pxa-mmc` pauses 200 spins;
+the poll limits (passes) are backstops, stretched in time only.
+
