@@ -6,6 +6,7 @@
 mod calib;
 mod devlock;
 mod emu;
+mod gate;
 mod measure;
 mod mutants;
 mod policy;
@@ -235,19 +236,19 @@ fn main() -> ExitCode {
     let cmd = args().nth(1).unwrap_or_default();
     let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
-        "ci" => ["fmt", "clippy", "lint", "test", "cross"]
+        "ci" => ["fmt", "clippy", "lint", "gate", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
-        "fmt" | "clippy" | "lint" | "test" | "cross" | "coverage" | "emu" | "emu-picture"
-        | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat"
-        | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-mved" | "emu-clocks"
-        | "emu-noise" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel" | "emu-quantum"
-        | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
-        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
-        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
-        | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
-        | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
-        | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
+        "fmt" | "clippy" | "lint" | "gate" | "test" | "cross" | "coverage" | "emu"
+        | "emu-picture" | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d"
+        | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-mved"
+        | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel"
+        | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb"
+        | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast" | "emu-loader"
+        | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal" | "emu-looks"
+        | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2"
+        | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure"
+        | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -521,6 +522,7 @@ fn run_step(step: &str) -> Result {
             "warnings",
         ]),
         "lint" => lint(),
+        "gate" => gate::run(&workspace_root()),
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),

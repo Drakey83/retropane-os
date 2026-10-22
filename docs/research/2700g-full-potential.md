@@ -129,6 +129,52 @@ with the run that settles it, and stays unticked until then.
 The CPU's own map, and the CPU, 2D engine and 3D core working together,
 are in [cpu-full-potential.md](cpu-full-potential.md).
 
+## The ledger (counted by `cargo xtask gate`)
+
+Every line of this page, one row: **done** (used, or declined with the
+measured reason), **partial** (some device evidence, more to do) or
+**open**. Only done counts as ticked. A row changes only with a run
+named in its evidence.
+
+| Line | Status | Evidence, or what's left |
+|---|---|---|
+| V1 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
+| V2 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
+| V3 | open | P7 not run |
+| V4 | open | P6/P13 not run (B7 tried four header bits for a dither: none rotate-like) |
+| V5 | open | P9 not run |
+| V6 | open | P10 not run |
+| V7 | open | P10 not run |
+| V8 | open | P11 not run |
+| V9 | open | P5 not run |
+| V10 | open | the sweep of every Dell/mbxfb number into this table not done |
+| V11 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
+| V12 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
+| V13 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; soaks warm and cold, the self-test open |
+| V14 | partial | run G4: CL3 breaks 3D every time, CL2 right to 133.25 MHz (short checks); soaks open |
+| P1 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; soaks open |
+| P2 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
+| P3 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
+| P4 | open | the TA path against CPU-built lists not measured |
+| P5 | open | the second texture unit, fog, TSP bit 14 not tried |
+| P6 | open | the 2D scaler not tried |
+| P7 | open | palettes and mono expansion not tried |
+| P8 | open | 2D and 3D at once not tried |
+| P9 | open | the video plane's scaler and placement not tried |
+| P10 | open | the cursor plane and colour keys not tried |
+| P11 | open | MVED1 never run past its safe stages |
+| P12 | open | DMA burst settings and DMA into the 2D window not tried |
+| P13 | open | the 2D engine's whole command set not swept (B7: header bit 21 writes nothing, meaning open) |
+| P14 | open | the 3D core's limits not measured |
+| P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
+| P16 | open | power and heat per engine and clock not measured |
+| P17 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
+| P18 | open | every status and interrupt bit not swept |
+| P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
+| P20 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
+| P21 | open | the dither add's alternatives not measured |
+| F6 | open | written (text's lean commands), not run on the device |
+
 ## The checklist rule
 
 The map is the checklist. Every unit and feature has a line here, and

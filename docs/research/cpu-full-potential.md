@@ -132,6 +132,44 @@ copies), **C1** (operating points), **C2** (the overclock study, static
 then stepped), **T1/T3/T7** (the pipeline, with the compositor), then the
 rest. Each result can reorder what follows; this page is kept current.
 
+## The ledger (counted by `cargo xtask gate`)
+
+Every line of this page, one row: **done** (used, or declined with the
+measured reason), **partial** (some device evidence, more to do) or
+**open**. Only done counts as ticked. A row changes only with a run
+named in its evidence.
+
+| Line | Status | Evidence, or what's left |
+|---|---|---|
+| V1 | open | the CPU ID read (`0x69054117`); the caches' real ends, the mini cache and iWMMXt not measured |
+| V2 | open | the SRAM's size and speed not measured |
+| V3 | open | WM's seven speeds not set and measured by us |
+| V4 | open | the voltage patterns not ranked |
+| V5 | open | C2's stepped test not run |
+| V6 | open | the memory clock not measured from timing |
+| V7 | open | WM's ~280 ns hop and its cause not measured |
+| V8 | open | C11's DMA sweep not run |
+| V9 | open | the sweep of every quoted CPU number into Part 0 not done |
+| C1 | partial | 624 MHz measured under the loader (rp-noise run 1); the operating points and switch costs not swept |
+| C2 | open | the overclock study not started |
+| C3 | partial | a TLB miss 5.2x cheaper with the table in SRAM (perf.md); the SRAM's speed and best uses not measured |
+| C4 | partial | RetroPane's random hop 491 ns (perf.md); page sizes, table placement, TLB lock-down not tried |
+| C5 | partial | `pld` helps `memcpy` (perf.md); the mini cache and line locking not tried |
+| C6 | open | iWMMXt never exercised |
+| C7 | partial | `memcpy_64k` ~95 MB/s (perf.md); the sweep of methods and sizes not run |
+| C8 | partial | the cycle counter used; the event counters not wired into the benches |
+| C9 | open | ARM/Thumb, inlining, layout, LTO A/B builds not run |
+| C10 | partial | interrupts, the run limit and idle work; wake latency per sleep depth not measured |
+| C11 | partial | DMA used for SD, audio, CF, UDC and 2700G uploads; memory-to-memory speed by burst not swept |
+| T1 | open | the pipeline needs the compositor harness (owner's vote: built inside the gate) |
+| T2 | open | SRAM staging for uploads not tried |
+| T3 | open | commands fed by DMA not tried |
+| T4 | open | the routing table per kind of work not measured (harness) |
+| T5 | open | the GPU-format converters not timed together |
+| T6 | open | the audit of reads from the 2700G not done |
+| T7 | open | clocks per moment against battery not measured (harness) |
+| T8 | open | as the GPU page's P8 |
+
 ## The checklist rule
 
 As for the GPU: every line here is ticked only with evidence (measured,

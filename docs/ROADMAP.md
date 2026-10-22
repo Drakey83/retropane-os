@@ -29,10 +29,11 @@ measurements these pages need. The owner gave the brief on 2026-10-20 and
 had to repeat it on 2026-10-21 because it wasn't kept in front of the
 work: **this section is read at the start of every session (CLAUDE.md).**
 
-**Lines: 63** (2700G: V1-V14, P1-P21; CPU and together: V1-V9, C1-C11,
-T1-T8). **Ticked with evidence: not yet counted line by line** (step 2
-below gives the exact count; a few have it already, e.g. 2700G V11, P3,
-P20). Every summary reports ticked / open.
+**Count (`cargo xtask gate`, 2026-10-21): 3 of 64 lines done, 17
+partial, 44 open** (2700G: 36 lines, 3 / 9 / 24; CPU and together: 28
+lines, 0 / 8 / 20). Each page's ledger holds every line's status and its
+evidence; `cargo xtask ci` prints the count every run, and every summary
+quotes it.
 
 In order:
 
@@ -42,7 +43,7 @@ In order:
   - [ ] C39: what each image changes on the board and whether a crash puts it back, measured; then the put-backs (quality audit)
   - [ ] C40: build scripts that miss a picture arriving in `local/` (quality audit)
   - [ ] C41: the emulator checks refuse a build that isn't the pinned release (quality audit)
-- [ ] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; **`cargo xtask gate`** counts them (and, from step 2b, the benchmark results) and `cargo xtask ci` prints it every run, so the count comes from a check, not from memory
+- [x] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; **`cargo xtask gate`** counts them (and, from step 2b, the benchmark results) and `cargo xtask ci` prints it every run, so the count comes from a check, not from memory
 - [ ] 2b. **The performance ratchet (owner's vote, 2026-10-21):** a device benchmark suite of what people feel (tap to screen, frame times scrolling and in the menu, 3D frames a second, boot time, copy and upload speeds, battery at idle and under load), each result kept as its floor, as code size already is: a change that makes one slower fails until fixed or approved by the owner. Every new feature from then on comes with its own benchmark and budget, and its ADR names the checklist's tricks it uses
 - [ ] 3. The 2700G's clocks (P1, P2, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote
 - [ ] 4. P21: the 2D dither add (18.9 ms a full screen) against its alternatives

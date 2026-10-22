@@ -5,8 +5,9 @@
    blocks every phase: nothing new until every line of
    [docs/research/2700g-full-potential.md](docs/research/2700g-full-potential.md)
    and [docs/research/cpu-full-potential.md](docs/research/cpu-full-potential.md)
-   is ticked with device evidence. Work its steps in order; report lines
-   ticked / open in every summary.
+   is ticked with device evidence. Work its steps in order; report the
+   count from `cargo xtask gate` (never from memory) in every summary, and
+   change a ledger row only with the run that shows it.
 2. Before answering "have we done X?", look in the docs that plan X (the
    roadmap, the two full-potential pages, `docs/quality-audit.md`, the
    ADRs) instead of answering from memory.
