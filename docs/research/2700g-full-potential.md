@@ -46,7 +46,7 @@ with the run that settles it, and stays unticked until then.
 | **V9** | The second texture unit's words, fog bit 24, TSP bit 14 (static reading) | P5 |
 | **V11** | `PLLSTAT` bit 2 means the core PLL has locked at its new frequency (Linux `mbxfb`; run G1 read it set at once even across a frequency change) | **Settled (run G3):** it drops after the write and relocks in ~16 us; read at once it still shows the old lock |
 | **V12** | Writes to the memory controller take effect when written (our assumption; Linux waits 1 ms after each) | Run G3: some didn't (`LMTYPE`, `LMREFRESH` read back unchanged); `set_speed` now reads back and rewrites; run G4 counts them |
-| **V13** | The cores run at most 75 MHz (Dell's driver's cap) | Run G3: right at 99.67 MHz with divide 1, twice; **G4: right in 4 more checks, 2D 1.89x, 3D 1.81x**; soaks, warm and cold to come |
+| **V13** | The cores run at most 75 MHz (Dell's driver's cap) | Run G3: right at 99.67 MHz with divide 1, twice; **G4: right in 4 more checks, 2D 1.89x, 3D 1.81x**; **GS: a 20-min stressed warm soak 0 BAD at 99.67 and 133.25 MHz**; the cold soak to come |
 | **V14** | CL3 above 100 MHz (Dell's rule) | **Run G4: CL3 breaks the 3D core every time at 108-133 MHz; CL2 right to 133.25 MHz** (short checks) |
 | **V10** | Every other number in docs/hw/2700g.md and the datasheet marked static, Dell or `mbxfb` | Swept into this table, one line each, with its probe |
 | **V15** | The 2D engine's command words read from Dell's code (`docs/hw/2700g.md` "The MBX 2D engine", (A) rows): clip rectangle (header bit 18), 8 and 24 bpp fill formats, the scale word, mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), source and brush palettes (`0xC0000000`, `0xD0000000`) | Each used on the device and checked pixel for pixel (P6, P7, P13); fills, copies, blends, keys, stride 0, negative strides, the fence, the reset and the FIFO level are proven already |
@@ -143,7 +143,7 @@ named in its evidence.
 | Line | Kind | Status | Evidence, or what's left |
 |---|---|---|---|
 | V1 | arch 5 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
-| V2 | arch 5 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
+| V2 | arch 5 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); **run GS (2026-10-22): 133.25 MHz CL2 0 BAD in a 20-min stressed warm soak**; cold soak and other units open |
 | V3 | opt | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
 | V4 | arch 5 | done | B11 (X51v, 2026-10-22, `local/rp-mbx-blend-B11.txt`): **the 2D engine rotates**: header bits 25-26 = 1 / 2 / 3 lay a copy down 90° clockwise / 180° / 270° clockwise (the rectangle given in the source's shape, the output in the turned box; Dell's table had 1 and 3 the other way round), every pixel checked; the claim "no 2D rotate" was wrong |
 | V5 | arch 5 | open | P9 not run |
@@ -157,11 +157,11 @@ named in its evidence.
 | V17 | opt | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; run FI: bit 3 sets with bit 2 at a render's end, 2D raises no bit; bit 10's meaning open |
 | V18 | opt | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
 | V11 | arch 5 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
-| V12 | arch 5 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
-| V13 | arch 5 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; soaks warm and cold, the self-test open |
-| V14 | arch 5 | partial | run G4: CL3 breaks 3D every time, CL2 right to 133.25 MHz (short checks); soaks open |
-| P1 | arch 5 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; soaks open |
-| P2 | arch 5 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
+| V12 | arch 5 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; **run GS (2026-10-22): once read back they held in all 1,320 rounds over 40 min**; a count over many changes open |
+| V13 | arch 5 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; **run GS (2026-10-22): warm soak 0 BAD at 99.67 and 133.25 MHz, divide 1, 20 min each (3D 1.56x / 1.98x with the 16-bit screen on)**; the cold soak and the self-test open |
+| V14 | arch 5 | partial | run G4: CL3 breaks 3D every time, CL2 right to 133.25 MHz (short checks); **run GS (2026-10-22): CL2 at 133.25 MHz 0 BAD in a 20-min warm soak**; the cold soak open |
+| P1 | arch 5 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; **run GS (2026-10-22): the warm soak 0 BAD**; the cold soak open |
+| P2 | arch 5 | partial | runs G1-G4 (steps to 133 MHz with CL2); **run GS (2026-10-22): stressed warm soak 0 BAD at 99.67 and 133.25 MHz CL2 (bus read 31.7 / 30.2 ms a 256 KiB)**; the cold soak open |
 | P3 | arch 5 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
 | P4 | arch 5 | partial | `rp-mbx3d` versions 12-17 (X51v): the tile accelerator takes objects at `0x0FFF4000` and draws flat and textured, says done by status bit 4 in ~2 ms; its speed against the CPU-built lists (100 / 1,000 / 5,000 quads) not measured |
 | P5 | opt | partial | `rp-glesfeat` M (X51v, 2026-10-22): through the TA, **TSP bit 16 = a second coordinate set** (mask bit 3 alone ignored); the TA writes a 32-word two-unit object (list layout 12); **the 3D stage hangs on it** with three unit-1 combine words, and the TA path stays hung after a core reset (C53). Left: what the 3D stage needs for unit 1 (static: the 3D table for a two-unit scene), the direct form with layout 12, fog (TSP bits 24/23, `0x63C`), TSP bit 14 (no effect seen on the alpha test) |

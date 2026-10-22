@@ -228,7 +228,13 @@ watching.
   rebuild (run Z) without a soft reset; G4's dark display was an underrun
   (`DINTRS` bit 4), G5's start-up one was not. `DSIG` (the output
   signature) reads 0 for an all-black picture (run N): it tells a stopped
-  display only with non-black pixels on screen. Details: 2700g.md.
+  display only with non-black pixels on screen. **Warm soak (run GS,
+  2026-10-22, 20 min each, stressed, one X51v): 0 BAD at 99.67 MHz and at
+  133.25 MHz CL2, the cores at divide 1** (1,320 rounds, 3D pixel-exact,
+  no drift, registers held, no underrun, the display sending throughout);
+  with a 16-bit screen scanning out 3D 22.85 / 17.95 ms and 2D fill 4.23 /
+  3.09 ms against 35.58 / 6.35 ms at Windows Mobile's setting (1.56x /
+  1.98x 3D). Cold soak open. Details: 2700g.md.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
   fill takes ~6.3 ms at WM's clock, so a busy engine makes room well
