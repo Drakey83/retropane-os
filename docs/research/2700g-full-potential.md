@@ -144,7 +144,7 @@ named in its evidence.
 |---|---|---|
 | V1 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
 | V2 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
-| V3 | open | P7 not run |
+| V3 | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
 | V4 | open | P6/P13 not run (B7 tried four header bits for a dither: none rotate-like) |
 | V5 | open | P9 not run |
 | V6 | open | P10 not run |
@@ -152,7 +152,7 @@ named in its evidence.
 | V8 | open | P11 not run |
 | V9 | open | P5 not run |
 | V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
-| V15 | partial | fills, copies, blends, keys, stride 0, negative strides, fence, reset, FIFO level proven on the X51v; the clip rectangle, 8/24 bpp fills, the scale word, mono masks and palettes not used yet |
+| V15 | partial | B9 (X51v): the clip rectangle (right/bottom exclusive), the scale word, the source palette proven; fills, copies, blends, keys, strides, fence, reset, FIFO proven before; left: 8/24 bpp fills, mono masks, the brush palette |
 | V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
 | V17 | partial | bits 2 (render done), 4 (TA done), 6 (parameter memory ready) seen on the device; bit 10 and the rest not |
 | V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
@@ -165,8 +165,8 @@ named in its evidence.
 | P3 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
 | P4 | open | the TA path against CPU-built lists not measured |
 | P5 | open | the second texture unit, fog, TSP bit 14 not tried |
-| P6 | open | the 2D scaler not tried |
-| P7 | open | palettes and mono expansion not tried |
+| P6 | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
+| P7 | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
 | P8 | open | 2D and 3D at once not tried |
 | P9 | open | the video plane's scaler and placement not tried |
 | P10 | open | the cursor plane and colour keys not tried |
@@ -180,7 +180,7 @@ named in its evidence.
 | P18 | open | every status and interrupt bit not swept |
 | P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
 | P20 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
-| P21 | open | the dither add's alternatives not measured |
+| P21 | partial | B8 (X51v): one blit from a full-screen pattern = the four row blits, same picture, same 18.9 ms (declined: the cost is the blend pass); left: fewer passes (the dither folded into the background where it never changes, the 3D core) |
 | F6 | open | written (text's lean commands), not run on the device |
 
 ## The checklist rule

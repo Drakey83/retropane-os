@@ -148,6 +148,14 @@ watching.
   full-screen copy 5.0 ms (0.63 ms), a 32-bit half-screen copy 5.1 ms, a
   32-bit full-screen stride-0 copy 10.0 ms, the renderer's 4-blit dither
   add over a full 32-bit screen 18.9 ms.
+- **MBX 2D engine, more** (`rp-mbx-blend` B8, B9, X51v, 2026-10-22): the
+  dither add's cost is its blend pass (one full-pattern blit = four row
+  blits, 18.9 ms); the CPU polling the fence doesn't slow the engine; the
+  clip rectangle's right and bottom are exclusive; **the scale word scales
+  (nearest pixel, `s` = 32 x source / destination), at half a copy's
+  speed**; **8 bpp sources through a 256-entry palette** (`0xC0000000`,
+  its address; required), 63 ms a full screen; 1 bpp sources through
+  palette entries 0/1, high bit first.
 - **MBX 3D core**: tile-based (8 x 16 px tiles at 32 bpp, 60 x 40 on the
   screen); each object carries an alpha-test word (bits 31-29 compare,
   28-21 reference), a TSP word (Gouraud bit 22, depth mode and write,
