@@ -10,6 +10,8 @@
 
 use std::path::Path;
 
+include!("../../tools/build/local_input.rs");
+
 const YUV_BYTES: usize = 480 * 640 * 3 / 2;
 const BLOCK: usize = 0x1_0000;
 
@@ -19,7 +21,7 @@ fn main() {
     let out = std::env::var("OUT_DIR").expect("set by cargo");
     for name in ["pier", "milkyway"] {
         let source = Path::new(&dir).join(format!("../../local/wallpapers/{name}/{name}.yuv"));
-        println!("cargo:rerun-if-changed={}", source.display());
+        watch_local(&source);
         let yuv = match std::fs::read(&source) {
             Ok(p) if p.len() == YUV_BYTES => p,
             Ok(p) => panic!("{}: {} bytes, want {YUV_BYTES}", source.display(), p.len()),

@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+include!("../../tools/build/local_input.rs");
+
 const W: usize = 480;
 const H: usize = 640;
 const BYTES: usize = W * H * 3 / 2;
@@ -28,10 +30,7 @@ fn main() {
         "RP_TODAY_WALLPAPER: a folder name under local/wallpapers"
     );
     let source = Path::new(&dir).join(format!("../../local/wallpapers/{name}/{name}.yuv"));
-    println!("cargo:rerun-if-changed={}", source.display());
-    if let Some(folder) = source.parent().filter(|f| f.is_dir()) {
-        println!("cargo:rerun-if-changed={}", folder.display());
-    }
+    watch_local(&source);
     let wall = match std::fs::read(&source) {
         Ok(p) if p.len() == BYTES => p,
         Ok(p) => panic!("{}: {} bytes, want {BYTES}", source.display(), p.len()),
@@ -54,7 +53,7 @@ fn main() {
     // never committed) or, when absent, empty pictures: the screen then
     // draws outlines where they go.
     let icons = Path::new(&dir).join("../../local/icons/icons.rs");
-    println!("cargo:rerun-if-changed={}", icons.display());
+    watch_local(&icons);
     let data = std::fs::read_to_string(&icons).unwrap_or_else(|_| {
         let empty = "Image { w: 0, h: 0, px: &[] }";
         format!(

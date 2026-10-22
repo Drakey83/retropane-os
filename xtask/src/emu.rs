@@ -9986,6 +9986,38 @@ mod tests",
         assert!(check_stack("stack: deepest lots of room").is_err());
     }
 
+    /// Quality audit C40: the folder watched for a `local/` file is the
+    /// nearest that exists, so a file (or folder, or link) arriving with
+    /// an old time still changes something cargo watches.
+    #[test]
+    fn a_local_file_is_watched_through_the_nearest_existing_folder() {
+        mod local_input {
+            include!("../../tools/build/local_input.rs");
+            pub fn nearest(p: &std::path::Path) -> Option<std::path::PathBuf> {
+                nearest_existing_dir(p)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("rp-c40-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("local/concept/picture.rgb565");
+        // No local/: the root itself.
+        assert_eq!(local_input::nearest(&file), Some(root.clone()));
+        std::fs::create_dir_all(root.join("local")).unwrap();
+        assert_eq!(local_input::nearest(&file), Some(root.join("local")));
+        std::fs::create_dir_all(root.join("local/concept")).unwrap();
+        assert_eq!(
+            local_input::nearest(&file),
+            Some(root.join("local/concept"))
+        );
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(
+            local_input::nearest(&file),
+            Some(root.join("local/concept"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn a_wsl_build_is_found_by_its_source_folder() {
         use super::wsl_source_dir;

@@ -6,18 +6,15 @@
 
 use std::path::Path;
 
+include!("../../tools/build/local_input.rs");
+
 const BYTES: usize = 480 * 640 * 2;
 
 fn main() {
     println!("cargo:rerun-if-changed=../link.x");
     let dir = std::env::var("CARGO_MANIFEST_DIR").expect("set by cargo");
     let source = Path::new(&dir).join("../../local/concept/picture.rgb565");
-    // The folder too: a picture added or removed with an old timestamp
-    // changes the folder, not anything cargo saw before.
-    println!("cargo:rerun-if-changed={}", source.display());
-    if let Some(folder) = source.parent().filter(|f| f.is_dir()) {
-        println!("cargo:rerun-if-changed={}", folder.display());
-    }
+    watch_local(&source);
     let picture = match std::fs::read(&source) {
         Ok(p) if p.len() == BYTES => p,
         Ok(p) => panic!("{}: {} bytes, want {BYTES}", source.display(), p.len()),
