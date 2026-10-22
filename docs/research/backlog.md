@@ -19,7 +19,6 @@ counts runs on the X51v (U = unattended, W = the owner watching).
 | Rank | Line | What's left | Payoff (estimate) | Device cost | Next step |
 |---|---|---|---|---|---|
 | 1 | CPU C6 | **Mixer done on the X51v 2026-10-22: -8 to -12% on every filtered rate (48 kHz 819 to 721 cycles a frame).** Left: the other hot paths | The filter's dot product 1.46x (probe `dot48`, 16.5 against 11.3 us a block): the mixer at 48 kHz below its 669 cycles a frame (4.7% of the CPU), roughly a fifth off; also 22.05/11.025 kHz | 1 U run a path | Colour conversion (the wallpaper's YUV to RGB), T5's converters, the virtual bass filter, each with its probe row |
-| 2 | CPU C9 | **Measured 2026-10-22: opt-level 3 gains at most 2.1% (most rows 0), one row 6.4% slower, +14 KB: proposed declined.** Left if not declined: the hot libraries' images at 3 | 2% at best | 0 | The owner's call on declining |
 | 3 | CPU C8 | **Counters proven on the X51v 2026-10-22** (the known answers exact; copies 81% stalled on write buffers). Left: counts around the other benches, and counts into the ratchet (steadier than times) | Every later line measured by its cause | 1 U probe run | `pmu` around lz4, the chase and the gfx rows; `cargo xtask perf` learns `count` rows |
 | 5 | CPU T2 (rest) | The SRAM staging wired into the OS's upload path | Uploads 34.8 to 32.2 ms a MiB (the bus's 32 MB/s) with the CPU free 7.4 ms of it (run E1e) | 1 U run (gpubench E) | The staging buffers' addresses in `docs/hw/memory-map.md`; the upload path borrows them |
 | 6 | CPU C3 (rest) | The shared SRAM layout built (table, staging, kept log, stacks and run queues) | Holds the measured wins (TLB spills 5.2x cheaper with the table there) as more moves in | Emulator first, 1 U run | The layout in `memory-map.md`, one owner per range, a check that nothing overlaps |
@@ -39,4 +38,4 @@ counts runs on the X51v (U = unattended, W = the owner watching).
 | 20 | 2700G P5 | The second texture unit: a mask times a picture in one pass | Effects in one pass instead of two; needs the TA path, which hangs (C53) and whose use is P4's (architectural) answer | Several runs, each hang needs a restart | After P4 and C53 |
 | 21 | 2700G V9 | The second unit's words, fog bit 24, TSP bit 14 | as rank 20 | as rank 20 | as rank 20 |
 
-Ticked: CPU C11 (2026-10-22: the polling audit measured, CF no gain). Declined from the backlog: CPU C12 (the owner, 2026-10-22: battery only, no battery reading exists, as P16).
+Declined: CPU C9 (the owner, 2026-10-22: opt-level 3 measured not worth 14 KB for at most 2%). Ticked: CPU C11 (2026-10-22: the polling audit measured, CF no gain). Declined from the backlog: CPU C12 (the owner, 2026-10-22: battery only, no battery reading exists, as P16).
