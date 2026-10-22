@@ -175,7 +175,7 @@ named in its evidence.
 | P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); left: lines, the brush palette and pattern brushes, mono masks, rotation bits 25-26 |
 | P14 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
-| P16 | open | power and heat per engine and clock not measured |
+| P16 | open | needs a battery reading: the TSC2046's VBAT isn't wired (entropy.md); Windows Mobile's gauge (`GetSystemPowerStatusEx2`, used by `rp-wmpower`, +-50 mA) comes from `battdrvr.dll`, which only calls `KernelIoControl` with Dell's own HAL codes `0x0101010D` (function 67) and `0x0101011B` (function 70) (2026-10-22, static); their handler in the kernel image wasn't found by constant (not as literals, nor the SSP/I2C bases): a bounded RE step next, or the WM gauge as a stand-in |
 | P17 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
 | P18 | open | every status and interrupt bit not swept |
 | P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |

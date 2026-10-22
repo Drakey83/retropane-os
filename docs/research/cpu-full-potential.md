@@ -149,8 +149,8 @@ named in its evidence.
 | V3 | open | WM's seven speeds not set and measured by us |
 | V4 | open | the voltage patterns not ranked |
 | V5 | open | C2's stepped test not run |
-| V6 | open | the memory clock not measured from timing |
-| V7 | open | WM's ~280 ns hop and its cause not measured |
+| V6 | partial | rp-probe (X51v, 2026-10-22): `memset` of 64 KiB (past the cache) writes 377 MB/s, more than any memory clock below 104 MHz allows (52 MHz: 208 MB/s at most on the 32-bit bus), so the 104 MHz SDRAM clock is confirmed from timing; the refresh period (~7.5 us) not measured |
+| V7 | partial | rp-probe (X51v): our random hop over 256 KiB is 491 ns with no TLB misses at all (the bring-up map's 1 MiB sections: the chase stays in one); so the gap to Windows Mobile's "~280 ns" isn't TLB walks under our mapping, and that figure has no source (an estimate in memory-timing.md); what's left: the hop with 4 KiB pages (the kernel's map) and a sourced WM number |
 | V8 | open | C11's DMA sweep not run |
 | V9 | done | 2026-10-21: clocks.md, ADR-0031, memory-timing.md and the datasheet swept: the clock limits are V3/V5, the voltage patterns V4; the rest became V10, V11 and C12 |
 | V10 | partial | the CL rule declined with the RAM's timing (the owner's rule: Dell's stays); partition 3's emptiness not probed |
