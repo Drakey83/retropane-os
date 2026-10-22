@@ -186,9 +186,59 @@ fn wsl_build_exists() -> bool {
             .is_ok_and(|s| s.success())
 }
 
+/// The fork's source folder for a WSL build's binary (`<src>/build/
+/// qemu-system-arm`), or `None` if it isn't laid out so.
+fn wsl_source_dir(bin: &str) -> Option<&str> {
+    bin.strip_suffix("/build/qemu-system-arm")
+        .filter(|d| !d.is_empty())
+}
+
+/// Set to run the checks on a local build that isn't [`QEMU_RELEASE`]
+/// (developing the fork itself): its results then say nothing about the
+/// release (quality audit C41).
+const ANY_EMU_ENV: &str = "RETROPANE_QEMU_ANY";
+
+/// Quality audit C41: a WSL build is used only if its source is exactly
+/// [`QEMU_RELEASE`] (`git describe --tags --dirty`, so a build a commit
+/// past the tag, or with local changes, is refused too). Checked once a
+/// run.
+fn check_wsl_release() -> Result<(), String> {
+    static CHECKED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    CHECKED
+        .get_or_init(|| {
+            let bin = wsl_qemu();
+            let Some(dir) = wsl_source_dir(&bin) else {
+                return Err(format!(
+                    "the WSL emulator {bin} isn't at <source>/build/qemu-system-arm: its release can't be read (quality audit C41); set {ANY_EMU_ENV}=1 to run on it anyway"
+                ));
+            };
+            let out = wsl_bash(&format!("git -C {dir} describe --tags --dirty"))
+                .output()
+                .map_err(|e| format!("wsl: {e}"))?;
+            let described = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if described == QEMU_RELEASE {
+                eprintln!("    emulator: local WSL build {bin}, {described}");
+                return Ok(());
+            }
+            let msg = format!(
+                "the WSL emulator {bin} is {described:?}, not {QEMU_RELEASE}, the release these checks are written for (quality audit C41): point RETROPANE_WSL_QEMU at a build of exactly {QEMU_RELEASE}, or RETROPANE_QEMU=release to download it"
+            );
+            if std::env::var_os(ANY_EMU_ENV).is_some() {
+                eprintln!("    WARNING: {msg}; running anyway ({ANY_EMU_ENV})");
+                Ok(())
+            } else {
+                Err(format!("{msg}; or {ANY_EMU_ENV}=1 to run anyway (fork work)"))
+            }
+        })
+        .clone()
+}
+
 fn emulator(root: &Path) -> Result<Emulator, String> {
     match std::env::var("RETROPANE_QEMU") {
-        Ok(v) if v.eq_ignore_ascii_case("wsl") => return Ok(Emulator::Wsl),
+        Ok(v) if v.eq_ignore_ascii_case("wsl") => {
+            check_wsl_release()?;
+            return Ok(Emulator::Wsl);
+        }
         // The published release for this platform (the release check: the
         // build contributors download, not the local one).
         Ok(v) if v.eq_ignore_ascii_case("release") => {
@@ -198,6 +248,7 @@ fn emulator(root: &Path) -> Result<Emulator, String> {
         Err(_) => {}
     }
     if wsl_build_exists() {
+        check_wsl_release()?;
         return Ok(Emulator::Wsl);
     }
     download_release(root).map(Emulator::Native)
@@ -4903,6 +4954,16 @@ fn msc_args(n: u16) -> [String; 4] {
 }
 
 /// Whether the emulator's `device` model has the property `prop`.
+/// An emulator that can't be used (refused as the wrong release, quality
+/// audit C41; missing; not downloaded) ends the run. The feature probes
+/// (`device_has` and its siblings) once answered "not modelled" here, so a
+/// refused emulator made checks print "skipped" and pass (found
+/// 2026-10-21 with C41's refusal).
+fn no_emulator(e: &str) -> ! {
+    eprintln!("error: {e}");
+    std::process::exit(1)
+}
+
 fn device_has(root: &Path, device: &str, prop: &str) -> bool {
     let out = match emulator(root) {
         Ok(Emulator::Native(exe)) => Command::new(exe)
@@ -4911,7 +4972,7 @@ fn device_has(root: &Path, device: &str, prop: &str) -> bool {
         Ok(Emulator::Wsl) => {
             wsl_bash(&format!("{} -M x51v -device {device},help", wsl_qemu())).output()
         }
-        Err(_) => return false,
+        Err(e) => no_emulator(&e),
     };
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("{prop}=")))
 }
@@ -4954,7 +5015,7 @@ fn emulator_accepts_global(root: &Path, setting: &str) -> bool {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn(),
-        Err(_) => return false,
+        Err(e) => no_emulator(&e),
     };
     let Ok(mut child) = child else {
         return false;
@@ -4992,7 +5053,7 @@ fn has_usb_model(root: &Path) -> bool {
         Ok(Emulator::Wsl) => {
             wsl_bash(&format!("{} -M x51v -device pxa27x-udc,help", wsl_qemu())).output()
         }
-        Err(_) => return false,
+        Err(e) => no_emulator(&e),
     };
     out.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("chardev"))
 }
@@ -9923,6 +9984,17 @@ mod tests",
                 .is_err()
         );
         assert!(check_stack("stack: deepest lots of room").is_err());
+    }
+
+    #[test]
+    fn a_wsl_build_is_found_by_its_source_folder() {
+        use super::wsl_source_dir;
+        assert_eq!(
+            wsl_source_dir("$HOME/retropane-qemu-029/build/qemu-system-arm"),
+            Some("$HOME/retropane-qemu-029")
+        );
+        assert_eq!(wsl_source_dir("/usr/bin/qemu-system-arm"), None);
+        assert_eq!(wsl_source_dir("/build/qemu-system-arm"), None);
     }
 
     #[test]
