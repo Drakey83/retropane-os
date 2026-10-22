@@ -2257,6 +2257,17 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-hal-pxa27x", "a_long_chain_is_cut_at_the_limit"]),
     },
     Mutant {
+        name: "lz4: a kept table's candidate taken without checking it lies before the position",
+        file: "kernel/lz4/src/lib.rs",
+        from: "if cand < i && i - cand <= 0xFFFF && read32(src, cand) == v {",
+        to: "if i.wrapping_sub(cand) <= 0xFFFF && read32(src, cand) == v {",
+        check: Check::Host(&[
+            "-p",
+            "rp-lz4",
+            "a_kept_table_gives_valid_blocks_whatever_it_holds",
+        ]),
+    },
+    Mutant {
         name: "lz4: the hash back on the 32-bit multiplier (the XScale's long multiply)",
         file: "kernel/lz4/src/lib.rs",
         from: "    None => 0x04F1_BBCD,",

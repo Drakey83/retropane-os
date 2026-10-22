@@ -93,7 +93,10 @@ pub const BUDGETS: &[Budget] = &[
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 67.8 KiB measured, +~10%.
         max_load: 75 * 1024,
-        max_zero: 20 * 1024,
+        // Zeroed RAM ratcheted to 32 KiB on 2026-10-22 (test image): LZ4's
+        // table kept in static memory as the kernel keeps it (8 KiB, ADR-0001
+        // "Why, and what was fixed"); 27.7 KiB measured, +~15%.
+        max_zero: 32 * 1024,
         device: OnDevice::NeverReturns,
     },
     // The kernel: frame-allocator bookkeeping for 48 MiB (60 KiB), page-table
@@ -255,7 +258,9 @@ pub const BUDGETS: &[Budget] = &[
         // Zeroed RAM ratcheted 20 -> 40 KiB on 2026-10-22 (test image): a
         // 32 KiB stack (the device's runs used 16,076-16,268 of 16 KiB and
         // one crashed); 35.7 KiB measured, +~12%.
-        max_zero: 40 * 1024,
+        // Ratcheted 40 -> 48 KiB on 2026-10-22 (test image): LZ4's table kept
+        // in static memory as the kernel keeps it (8 KiB); 43.7 KiB measured.
+        max_zero: 48 * 1024,
         device: OnDevice::Returns,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.

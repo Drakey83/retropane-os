@@ -400,3 +400,91 @@ fn same_output_as_the_plain_loop() {
         assert_eq!(&a[..na], &b[..nb], "{} bytes", data.len());
     }
 }
+
+#[test]
+fn a_kept_table_gives_valid_blocks_whatever_it_holds() {
+    // The kernel's way (`compress_with`, one table for every page, never
+    // cleared): a table left by other pages, and one full of values no
+    // compression wrote (every position, past the block's end too), still
+    // give blocks that decompress exactly and keep the end rules.
+    let mut x = 0x2468_ace1u32;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x
+    };
+    let mut pages: Vec<Vec<u8>> = Vec::new();
+    for n in [0usize, 5, 12, 13, 64, 4096] {
+        pages.push((0..n).map(|_| (rnd() % 7) as u8).collect());
+        pages.push((0..n).map(|_| rnd() as u8).collect());
+        pages.push(
+            b"Settings Today Calendar "
+                .iter()
+                .cycle()
+                .take(n)
+                .copied()
+                .collect(),
+        );
+    }
+    let mut table = [0u16; TABLE_LEN];
+    for round in 0..4 {
+        if round == 2 {
+            for e in table.iter_mut() {
+                *e = rnd() as u16;
+            }
+        }
+        for data in &pages {
+            let mut c = vec![0u8; max_compressed(data.len())];
+            let n = compress_with(&mut table, data, &mut c).unwrap();
+            let mut d = vec![0u8; data.len()];
+            assert_eq!(decompress(&c[..n], &mut d), Ok(data.len()));
+            assert_eq!(&d, data);
+            check_end_rules(&c[..n], data.len());
+        }
+    }
+}
+
+#[test]
+fn a_kept_table_compresses_about_as_well() {
+    // A leftover entry costs a compare when it misses, and can stand where
+    // a cleared table would have left a slot this block fills later, so the
+    // two don't find exactly the same matches: within 1% of the cleared
+    // table's total over pages like the kernel's.
+    let mut x = 0x1357_9bdfu32;
+    let mut rnd = move || {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        x
+    };
+    let words = [
+        &b"the "[..],
+        b"Settings ",
+        b"Today ",
+        b"Calendar ",
+        b"and ",
+        b"Wi-Fi ",
+    ];
+    let pages: Vec<Vec<u8>> = (0..64)
+        .map(|_| {
+            let mut p = Vec::new();
+            while p.len() < 4096 {
+                p.extend_from_slice(words[(rnd() % 6) as usize]);
+            }
+            p.truncate(4096);
+            p
+        })
+        .collect();
+    let mut kept = [0u16; TABLE_LEN];
+    let (mut a, mut b) = (0usize, 0usize);
+    for p in &pages {
+        let mut c = vec![0u8; max_compressed(4096)];
+        a += compress(p, &mut c).unwrap();
+        b += compress_with(&mut kept, p, &mut c).unwrap();
+    }
+    assert!(
+        b * 100 <= a * 101,
+        "kept table {b} bytes against cleared {a}"
+    );
+}

@@ -333,22 +333,31 @@ pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
 /// Entries in the compressor's hash table.
 pub const TABLE_LEN: usize = 1 << HASH_BITS;
 
-/// [`compress`] with a caller-provided hash table (8 KiB): kernel stacks are
-/// small, so the kernel keeps one table in static memory instead of putting
-/// it on the stack.
+/// [`compress`] with a caller-provided hash table (8 KiB) that is **not
+/// cleared**: the kernel keeps one table for every page it compresses
+/// (kernel stacks are small, and clearing 8 KiB a page cost ~4,600 cycles on
+/// the X51v whenever the table wasn't in the D-cache, docs/hw/cpu.md).
+///
+/// The table may hold anything: positions from earlier calls, or values
+/// never written by this crate. Each entry is only a hint: a candidate is
+/// taken only if it lies before the current position (so inside `src`) and
+/// its four bytes equal the current four, so a stale entry either finds a
+/// real match or is passed over. The output is always a valid block that
+/// [`decompress`] restores exactly, but it depends on what the table held:
+/// the same `src` can compress to different (equally valid) bytes after
+/// different earlier calls. [`compress`] (a fresh, zeroed table each call)
+/// is the deterministic one.
 pub fn compress_with(
     table: &mut [u16; TABLE_LEN],
     src: &[u8],
     dst: &mut [u8],
 ) -> Result<usize, Error> {
-    table.fill(0);
     compress_k::<HASH_K>(table, src, dst)
 }
 
 /// [`compress_with`] with the hash's multiplier `K` (the tests compare
-/// multipliers' compression on the same data), on a `table` the caller has
-/// zeroed (once: a second clear of 8 KiB, the loop's own after the
-/// caller's, filled the write buffer: 25,681 stall cycles per 16 pages).
+/// multipliers' compression on the same data). `table` holds anything (see
+/// [`compress_with`]): every candidate it gives is checked before use.
 ///
 /// Never inlined: a caller's 8 KiB table on the stack ([`compress`]) must
 /// stay out of this loop's frame. An ARM load reaches 4,095 bytes from its
@@ -370,8 +379,9 @@ fn compress_k<const K: u32>(
     let mut anchor = 0; // start of pending literals
     if src.len() >= MF_LIMIT {
         let limit = src.len() - MF_LIMIT;
-        // Position 0 is never a match source (the table's zero entries
-        // would point at it), so start one in.
+        // Position 0 is never a match source (a zeroed table's entries
+        // would point at it), so start one in; a candidate is taken only
+        // before `i`, with its four bytes equal (the table is only hints).
         let mut i = 1;
         // Skip acceleration: after every 2^SKIP_SHIFT misses in a row, step
         // one byte further, so incompressible data (already-compressed

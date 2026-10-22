@@ -1219,11 +1219,18 @@ mod target {
         }
     }
 
+    /// The compressor's table as the kernel keeps it (`kernel/mm`'s
+    /// `pack`: one table in kernel memory for every page, never cleared,
+    /// `rp_lz4::compress_with`), so the compress rows time what ships.
+    static LZ4_TABLE: rt::Global<[u16; rp_lz4::TABLE_LEN]> =
+        rt::Global::new([0; rp_lz4::TABLE_LEN]);
+
     /// LZ4 on 4 KiB pages (ADR-0005: compressed RAM and storage), three
     /// kinds: a heap-shaped stress page (pointers and small integers: ~1000
     /// minimum-length matches), text (UI strings and resources: long
     /// matches), and noise (already-compressed data: nothing to find). The
-    /// round trip is checked on the CPU for each. `scratch` needs 16 KiB.
+    /// round trip is checked on the CPU for each. Compressed as the kernel
+    /// does, on [`LZ4_TABLE`]. `scratch` needs 16 KiB.
     pub fn lz4(r: &mut Runner, scratch: &mut [u8]) {
         let (page, rest) = scratch.split_at_mut(4096);
         let (packed, rest) = rest.split_at_mut(rp_lz4::max_compressed(4096));
@@ -1245,12 +1252,18 @@ mod target {
         ];
         for (check, comp, decomp, fill) in kinds {
             fill(page);
-            let n = rp_lz4::compress(page, packed).unwrap_or(0);
+            let n = LZ4_TABLE
+                .with(|t| rp_lz4::compress_with(t, page, packed))
+                .unwrap_or(0);
             let ok =
                 n > 0 && rp_lz4::decompress(&packed[..n], back) == Ok(4096) && back == &page[..];
             r.check(check, ok, if ok { "" } else { "round trip" });
             r.run(comp, 16, &mut || {
-                black_box(rp_lz4::compress(black_box(&page[..]), packed).ok());
+                black_box(
+                    LZ4_TABLE
+                        .with(|t| rp_lz4::compress_with(t, black_box(&page[..]), packed))
+                        .ok(),
+                );
             });
             r.run(decomp, 64, &mut || {
                 black_box(rp_lz4::decompress(black_box(&packed[..n]), back).ok());
@@ -1267,11 +1280,19 @@ mod target {
     /// and the cycles ([Intel] event numbers, C8's checks).
     fn lz4_text_events(r: &mut Runner, page: &[u8], packed: &mut [u8]) {
         use rp_hal_pxa27x::pmu::{self, Event};
+        // As the rows: the kernel's kept table.
+        let once = |packed: &mut [u8]| {
+            black_box(
+                LZ4_TABLE
+                    .with(|t| rp_lz4::compress_with(t, black_box(page), packed))
+                    .ok(),
+            );
+        };
         let mut twice = |events: [Event; 3]| {
-            black_box(rp_lz4::compress(black_box(page), packed).ok());
+            once(packed);
             let s = pmu::start(events);
             for _ in 0..16 {
-                black_box(rp_lz4::compress(black_box(page), packed).ok());
+                once(packed);
             }
             pmu::read(s)
         };
