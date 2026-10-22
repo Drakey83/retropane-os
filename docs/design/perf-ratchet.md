@@ -77,6 +77,13 @@ replays recorded pen samples through the same filter and drawing path
 (no taps, but the touch controller's own timing is skipped). Proposed:
 replay for the ratchet (repeatable), real taps at milestones.
 
+**Decision (owner, 2026-10-22): the hybrid.** Replay for the ratchet, real
+taps at milestones: a ratchet lives on repeatability, and person-taps would
+make the floors noisy; the touch controller's timing that replay skips is a
+constant offset, and the ratchet measures changes. To build: recorded pen
+samples replayed through the same filter and drawing path in `rp-today`,
+its numbers into the floors.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

@@ -66,6 +66,21 @@ after on real hardware.
    doesn't split the 64 KiB blocks that rule 2 depends on. The share of free
    memory held in order-4 and larger blocks becomes a tracked metric.
 
+## Amendment: the SRAM layout (owner, 2026-10-22)
+
+The performance gate's T2 (run E's E1e, X51v: a 1 MiB texture staged in
+SRAM through two 32 KiB buffers, overlapped with DMA, 32.2 ms against 34.8
+written straight in) asked who owns the 256 KiB. **The owner's decision: a
+shared layout, not a single owner.** Page tables, stacks and run queues keep
+their reservation (rules 1-4 above, with their measured wins); upload
+staging borrows two 32 KiB buffers only while a transfer is in flight;
+the kept log (`rp_hal_x51v::kept`, 16 KiB at +64 KiB and +192 KiB) stays.
+There is no real conflict: the L1 table is 16 KiB, staging 64 KiB and the
+kept log 32 KiB, leaving about 144 KiB for stacks, run queues and the zero
+buffer (the owner counted 150+ KiB without the kept log). The addresses are
+fixed when the upload path is built, in `docs/hw/memory-map.md` with the
+rest.
+
 ## The four lenses
 
 | Lens | Effect |

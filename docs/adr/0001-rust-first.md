@@ -4,9 +4,9 @@
   the Phase 0 foundations, commit 34e8cd2)
 - **Date:** 2026-10-10
 - **Last verified:** 2026-10-13 (against commit 3158b26)
-- **Amendment proposed 2026-10-22 (the performance gate's C9), vote
-  waiting:** frame pointers from "always" to "may-omit". See "Frame
-  pointers, measured" below.
+- **Amended 2026-10-22 (the performance gate's C9; the owner's vote B):**
+  frame pointers from "always" to "may-omit" in both target specs. See
+  "Frame pointers, measured" below.
 
 ## Context
 
@@ -63,7 +63,7 @@ tests on a PC for everything above the hardware.
 Nightly churn is possible, so we pin and bump deliberately. Contributors need
 `rustup` (it installs the pinned toolchain automatically).
 
-## Frame pointers, measured (2026-10-22, proposed amendment, vote waiting)
+## Frame pointers, measured (2026-10-22, amendment accepted: B)
 
 The target keeps frame pointers in every function "for crash-screen
 backtraces". Nothing walks them: no backtrace was ever built (the crash
@@ -81,5 +81,10 @@ line reports the fault's address, word and SPSR). Measured on the X51v
 when one is built); **B (recommended), "may-omit"**: 2-7% on compute and
 smaller code everywhere; a backtrace, when wanted, comes from a debug
 build with frame pointers on (one flag) or unwind tables, not every
-build paying for it. **Vote waiting.**
+build paying for it.
+
+**Decision (owner, 2026-10-22): B, may-omit.** "Nothing walks them
+today: no backtrace was ever built, the crash line reports the fault
+directly." Both `targets/*.json` say `"frame-pointer": "may-omit"`; a
+debug build that wants a backtrace turns them back on with one flag.
 

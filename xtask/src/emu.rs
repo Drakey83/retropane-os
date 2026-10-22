@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 const WAV_VOICE: &str = ",out.buffer-length=250000";
 
 /// Emulator release this checkout is tested against. Bump deliberately.
-pub const QEMU_RELEASE: &str = "rp-v0.29.0";
+pub const QEMU_RELEASE: &str = "rp-v0.30.0";
 const RELEASE_URL: &str = "https://github.com/Drakey83/retropane-qemu/releases/download";
 
 /// How long an image gets to print its success marker.
@@ -4006,6 +4006,16 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         for w in always.iter().chain(checked) {
             if !log.contains(w) {
                 return Err(format!("gpubench {name}: the run log has no `{w}`:{log}"));
+            }
+        }
+        // Run FI: the 3D render's done status carries bits 2 and 3 on the
+        // X51v (0x0c or 0x4c); bit 3 is modelled since rp-v0.30.0.
+        if name == "run FI" {
+            let done = fi_render_done(log);
+            if done.len() != 3 || done.iter().any(|d| d & 0xC != 0xC) {
+                return Err(format!(
+                    "gpubench run FI: render done words {done:x?}, want bits 2 and 3 in all three:{log}"
+                ));
             }
         }
         // Run G steps the clocks only from Windows Mobile's; a fork whose
@@ -9381,23 +9391,26 @@ const PROBE_EXPECT: &[&str] = &[
     "check wmmx_avg OK",
     "check wmmx_dot OK",
     "check dma_shapes OK",
+    // rp-v0.30.0: iWMMXt adds saturate, WALIGNR at offset 0 returns wRn.
+    "check wmmx_mix OK",
+    "check wmmx_align OK",
 ];
 
 /// Probe checks the emulator is known to fail, each with why (they pass on
 /// the X51v): any other failed check fails `emu-probe` (a failed check was
 /// never looked at before 2026-10-22).
-/// When a release carries fork branch `iwmmxt-sat`, both go and their
-/// `check ... OK` lines join `PROBE_EXPECT`.
-const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[
-    (
-        "wmmx_mix",
-        "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch rp-next, not yet released (docs/hw/emulator.md)",
-    ),
-    (
-        "wmmx_align",
-        "rp-v0.29.0's WALIGNR at offset 0 shifts by 64 (undefined in C); fixed on fork branch rp-next, not yet released (docs/hw/emulator.md)",
-    ),
-];
+/// Run FI's 3D render-done status words, one per enables setting
+/// (`3D started true: busy 0x..., done 0x...,`).
+fn fi_render_done(log: &str) -> Vec<u32> {
+    log.lines()
+        .filter_map(|l| l.split_once("3D started true: ")?.1.split_once("done 0x"))
+        .filter_map(|(_, rest)| u32::from_str_radix(rest.get(..8)?, 16).ok())
+        .collect()
+}
+
+/// None since rp-v0.30.0 (its iWMMXt saturation and WALIGNR fixes moved
+/// `wmmx_mix` and `wmmx_align` into `PROBE_EXPECT`).
+const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[];
 
 /// Boots the probe image (the real-device report), then checks every page
 /// line's checksum, that the report is complete, and that it's on screen.
@@ -9503,6 +9516,12 @@ const PROBE_PAGES_MAX: usize = 9;
 /// from 1 to the highest named non-empty, at least 4. Returns the number
 /// of lines.
 pub fn check_probe_report(output: &str) -> Result<usize, String> {
+    check_probe_report_with(output, PROBE_EMULATOR_LIMITS)
+}
+
+/// [`check_probe_report`] with the emulator's known limits given (a
+/// failed check named in `limits` is let through).
+fn check_probe_report_with(output: &str, limits: &[(&str, &str)]) -> Result<usize, String> {
     let mut pages = [0usize; PROBE_PAGES_MAX];
     for l in output.lines() {
         if !l.starts_with('P') || !l.contains('|') {
@@ -9537,7 +9556,7 @@ pub fn check_probe_report(output: &str) -> Result<usize, String> {
             continue;
         }
         let (name, verdict) = (words.next().unwrap_or(""), words.next());
-        if verdict == Some("FAIL") && !PROBE_EMULATOR_LIMITS.iter().any(|(n, _)| *n == name) {
+        if verdict == Some("FAIL") && !limits.iter().any(|(n, _)| *n == name) {
             return Err(format!("probe check `{name}` failed: {}", text.trim()));
         }
     }
@@ -10500,6 +10519,16 @@ mod tests",
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Run FI's check reads the X51v's own lines (local/rp-gpubench-runFI.txt).
+    #[test]
+    fn run_fi_reads_the_render_done_words() {
+        let device = "  FI enables as found (0x00000000): idle 0x00000000; 2D busy 0x00820000, done (true) 0x00000000, cleared 0x00000000; 3D started true: busy 0x00000000, done 0x0000000c, after the renderer's poll 0x00000048, cleared 0x00000000
+  FI enables 0 (0x00000000): idle 0x00000000; 2D busy 0x00820000, done (true) 0x00000000, cleared 0x00000000; 3D started true: busy 0x00000000, done 0x0000004c, after the renderer's poll 0x00000048, cleared 0x00000000
+  FI enables 3D false";
+        assert_eq!(super::fi_render_done(device), vec![0x0c, 0x4c]);
+        assert!(super::fi_render_done("3D started true: busy 0x0, done 0xzz").is_empty());
+    }
+
     #[test]
     fn a_wsl_build_is_found_by_its_source_folder() {
         use super::wsl_source_dir;
@@ -10649,7 +10678,12 @@ mod tests",
             + &line(4, "check wmmx_mix FAIL differs from")
             + "
 ";
-        assert_eq!(check_probe_report(&known), Ok(5 + PROBE_EXPECT.len()));
+        // rp-v0.30.0 models it: no longer a limit.
+        assert!(check_probe_report(&known).is_err());
+        assert_eq!(
+            check_probe_report_with(&known, &[("wmmx_mix", "a known limit")]),
+            Ok(5 + PROBE_EXPECT.len())
+        );
     }
 
     #[test]

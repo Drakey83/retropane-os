@@ -913,9 +913,10 @@ mod target {
             ("dma_copy_128k_b8_word", 8, Some(Width::Word)),
             ("dma_copy_128k_b16_word", 16, Some(Width::Word)),
             // Width 0 (32, 16, 8) timed the same as word on the X51v
-            // (2026-10-22, local/rp-probe-dma-shapes.txt); left out until
-            // an emulator release carries fork branch rp-next (rp-v0.29.0
-            // runs away on width 0: docs/hw/emulator.md).
+            // (2026-10-22, local/rp-probe-dma-shapes.txt): one kept, as
+            // Linux sets it, now that the emulator copies it too
+            // (rp-v0.30.0; rp-v0.29.0 ran away: docs/hw/emulator.md).
+            ("dma_copy_128k_b32_w0", 32, None),
         ] {
             b.fill(0);
             let right = dma.arm_copy_shaped(a, b, burst, w) && finish(dma) && a == b;
