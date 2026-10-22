@@ -305,7 +305,8 @@ watching.
   [sd.md](sd.md).
 - A single-block write's programming (the card in `prg` after the data)
   took up to 61.5 ms on the owner's card (the card log's slowest of 333
-  writes, 2026-10-22). The card log now waits for it only before the
+  writes, 2026-10-22), and 90.3 ms in a later run of 852 (`rp-today`, the
+  same day). The card log now waits for it only before the
   card's next command (quality audit C59). How it splits into transfer
   and programming isn't measured yet. Page: [sd.md](sd.md).
 

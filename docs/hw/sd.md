@@ -169,7 +169,8 @@ anything the run log doesn't. About 4.3 KiB of each image.
 
 - **A line costs the sector's transfer, not the card's programming**
   (quality audit C59, 2026-10-22: the touch loop slowed from a sample
-  every 7 ms to 18 ms with every sample logged, the slowest write 61.5 ms).
+  every 7 ms to 11 ms with every sample logged, the slowest write 61.5 ms,
+  90.3 ms in a later run).
   A program's writes return once the block is on the card (data done);
   the card's programming (the controller's programming done, then CMD13
   until it leaves `prg`) is waited for before the card's next command:

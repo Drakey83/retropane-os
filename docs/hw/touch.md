@@ -219,10 +219,15 @@ down the loop ran every **18 ms** (median), against 7 ms in every run
 since the short samples (933+ gaps each in three runs). The run differs
 from those in the card log (on since 2026-10-20), which writes a sector
 at every logged line's end and waits for the card to program it, and the
-recorder logs a line every sample (C59). Likely the cause, not proven: the
-touch replay (`RP_TODAY_REPLAY`, docs/design/perf-ratchet.md) measures
-the loop's period on the device with the recorder off, and with it on
-(`RP_TODAY_REPLAY_RECORD`).
+recorder logs a line every sample (C59). (The 18 ms came from the
+session record's last 14 gaps; the whole run's card log,
+`local/cardlog/today-0001.txt`, says **11 ms** median over 223 gaps, p10
+10, p90 18.) **Confirmed on the X51v (2026-10-22, the touch replay,
+`RP_TODAY_REPLAY`):** with the recorder off the loop runs every **6.95
+ms** (median), landing to verdict 8.9 ms, touch to flush 13.3 ms (worst
+44.3); with it on (`RP_TODAY_REPLAY_RECORD`, the card log's option (a)
+already in) 10.6 ms, 17.9 ms and 30.4 ms. The 16-bit screen didn't slow
+touch; logging every sample did.
 
 ## TSC2046 protocol (D)
 

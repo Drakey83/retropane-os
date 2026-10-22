@@ -577,7 +577,9 @@ in the content as a picture loads (the gamma table can't mix colours). Not
 Built 2026-10-22 (`rp_draw::look`): the wallpaper as it loads, the icons
 at build time, the shell's theme colours as constants (a translucent
 tint's look, not its blend's); `RP_PICTURE_ORIGINAL` builds the Original
-picture. The owner judges the combination on the X51v.
+picture. **Proven on the X51v (2026-10-22, `rp-today`, the owner
+looking at the two together for the first time): "it looks great".** The
+default stays.
 
 **Decided (owner, 2026-10-17): Settings > Display gets a contrast slider
 next to the brightness slider**, so every owner can fit the picture to their

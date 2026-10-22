@@ -12,7 +12,7 @@ checklist line is done **and** this is running.
 
 | Group | Number | Where it comes from today | State |
 |---|---|---|---|
-| Touch | tap to screen, landing to verdict, frame, queue to flip, the pen-down loop's period (median, worst) | `rp-today` built with `RP_TODAY_REPLAY`: recorded taps replayed (see "Taps" below), its `TR` line | built 2026-10-22, emulator-checked; floors wait for its first device runs |
+| Touch | tap to screen, landing to verdict, frame, queue to flip, the pen-down loop's period (median, worst) | `rp-today` built with `RP_TODAY_REPLAY`: recorded taps replayed (see "Taps" below), its `TR` line | built and run on the X51v 2026-10-22 (numbers below); floors wait for the owner's next noise run |
 | Frames | the shell's frame times (menu open, scroll) | `rp-today`'s per-frame costs (`FrameStats`) | exists, same |
 | 3D | frames a second for a set scene | `rp-gpubench` renders (ms a full screen) | exists (run A/T timings) |
 | 2D | fill, copy, convert, dither add a full screen | `rp-mbx-blend` B7/B8 | exists |
@@ -114,9 +114,30 @@ suite's sixth step; `emu-today` checks it):
   counted for the median). The run returns to the loader by itself.
 
 On the emulator (its times, not the device's): 28 presses, 52 answers,
-520 periods. The first device runs set the floors, and the same run
-answers C58: the replay's period on the device, with and without the
-recorder.
+520 periods.
+
+**On the X51v (2026-10-22, the new loader, the card log's option (a)):**
+
+| Run | Pen-down period, median (worst) | Landing to verdict | Touch to flush, median (worst) |
+|---|---|---|---|
+| The replay (recorder off), twice (alone and in `cargo xtask perf`) | 6.95 ms (12.6) | 8.9 ms (15.9) | 13.3 ms (44.3) |
+| The replay with the recorder (`RP_TODAY_REPLAY_RECORD`) | 10.6 ms (46.2) | 17.9 ms (28.5) | 30.4 ms (55.1) |
+
+The two runs without the recorder agreed to the microsecond on most
+numbers. A side effect of the replay: its conversions hold the pen line
+low, so the run's "pen line down without pressure" count means nothing
+in it. The floors come from the owner's next `cargo xtask perf noise`
+(the first `cargo xtask perf` with the step: 15 new numbers, not held).
+
+**The same run, the whole suite (2026-10-22, `local/perf/run-1792689365.txt`,
+the first after the card log's option (a) moved every image's code by
+~632 bytes):** 114 numbers, 16 faster, 7 slower beyond their noise:
+three by 0.0-0.3% (`b7d` 16-bit copy, `b9e` 16-bit copy, `ft_alone` 2D),
+`probe.dma_copy_128k_b8_word` +4.7%, `probe.lz4_compress_page` +6.1%,
+`lz4_compress_text` +4.1%; the largest faster `probe.cpu_unit_alone` and
+`cpu_unit_during_dma` -16.7%. Swings both ways in CPU loops whose code
+didn't change look like code placement, not the change: to be checked
+before the owner decides (no floor updated).
 
 ## Not yet
 
