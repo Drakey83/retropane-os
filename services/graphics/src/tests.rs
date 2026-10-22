@@ -57,7 +57,9 @@ fn now() -> u32 {
     NOW.fetch_add(1, Ordering::Relaxed)
 }
 
-const GREY: u32 = 0xFF20_2020;
+/// Exact in RGB565 (the screens' format since ADR-0023's 16-bit vote), as
+/// every colour these tests check is.
+const GREY: u32 = 0xFF21_2021;
 const BLUE: u32 = 0xFF00_00FF;
 const WHITE: u32 = 0xFFFF_FFFF;
 
@@ -94,10 +96,16 @@ fn rig() -> Rig {
 }
 
 impl Rig {
+    /// A pixel of `pic` as 8-bit xRGB (an RGB565 one widened as the
+    /// engines read it).
     fn px(&self, pic: Picture, x: u32, y: u32) -> u32 {
-        let a = (pic.at + y * pic.stride + 4 * x) as usize;
+        let a = (pic.at + y * pic.stride + pic.format.bytes() * x) as usize;
         let m = self.mem.borrow();
-        u32::from_le_bytes(m[a..a + 4].try_into().unwrap())
+        if pic.format.bytes() == 2 {
+            m2::widen(u16::from_le_bytes([m[a], m[a + 1]]))
+        } else {
+            u32::from_le_bytes(m[a..a + 4].try_into().unwrap())
+        }
     }
 
     /// The picture on screen.
@@ -233,6 +241,10 @@ fn the_scene_owns_its_area_and_nothing_half_drawn_reaches_the_screen() {
         r.frame(&scene_2d(false, Some(Rect::new(0, 0, 480, 32)))),
         Step::Shown
     );
+    // The scene renders into the 16-bit screen with the core's dither
+    // (`0x650` 9), at the screen's stride (`0x660`: bytes / 4).
+    let three = &r.g.two_d().parts().0.regs.three;
+    assert_eq!((three.reg(0x650), three.reg(0x660)), (9, 480 * 2 / 4));
     let check = |r: &mut Rig, quad_at: u32| {
         assert_eq!(r.on_screen(5, 5), WHITE & 0xFF_FFFF, "2D's bar");
         assert_eq!(

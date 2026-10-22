@@ -64,7 +64,27 @@ against the window manager's share.
 
 **Since 2026-10-14 (ADR-0023, option B):** `rp-today` draws with the 2D
 engine and has no SDRAM layer; the 1.2 MiB is back. The 2700G's own
-16 MiB, as `rp_mbx_render::Layout::X51V` lays it out:
+16 MiB, as `rp_mbx_render::Layout::X51V` lays it out **since 2026-10-21
+(ADR-0023 Q2 L1: 16-bit screens)**:
+
+| 2700G local memory | Offset | Size |
+|---|---|---|
+| Loader's / Windows Mobile's plane (left alone) | below 1 MiB | ~600 KiB |
+| Screen 0 (RGB565, 480 x 640) | 0x200000 | 600 KiB |
+| Screen 1 | 0x296000 | 600 KiB |
+| Work picture (32-bit; each changed rectangle composed, dithered, converted) | 0x32C000 | 1.17 MiB |
+| Wallpaper (RGB565, Floyd-Steinberg once on the CPU) | 0x458000 | 600 KiB |
+| Row ring | 0x4EE000 | 160 KiB |
+| Image cache | 0x516000 | 256 KiB |
+| Glyph atlases | 0x556000 | 512 KiB |
+| Background (32-bit: wallpaper plus the glass, drawn once) | 0x5D6000 | 1.17 MiB |
+| Dither pattern (4 rows, the 3D core's matrix) | 0x702000 | 7.5 KiB |
+| Area cache (RGB565 screen pixels) | 0x704000 | 600 KiB |
+| Free for program surfaces (the pool) | 0x7A0000 up | ~8.4 MiB |
+| Fence word | 0xFFF000 | 4 bytes |
+
+Before (32-bit screens, 2026-10-14 to 2026-10-21; kept as
+`rp_vram_map::bench32` for the test images):
 
 | 2700G local memory | Offset | Size |
 |---|---|---|

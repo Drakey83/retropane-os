@@ -435,6 +435,35 @@ provisionally before B7 with a re-vote only if B7 found a dither bit; it
 found none, so A stands ("A keeps everything exact against the CPU
 reference").
 
+**Built (2026-10-21):**
+
+- `rp-vram-map`: the L1 map (screens, wallpaper and area cache RGB565, a
+  32-bit work picture, the pool ~8.4 MiB from `0x7A0000`); the 32-bit map
+  kept as `bench32` for the test images, whose addresses don't move
+  (a test pins them). ADR-0027 amended.
+- `Mbx2dRenderer`: each changed rectangle is composed in the work
+  picture (background copy, commands, the pattern added), then one copy
+  converts it into the back screen; forward copies and the area cache
+  are 16-bit; the wallpaper is kept as RGB565 (`wallpaper_row` keeps each
+  channel's top bits; `rp-today` hands it Floyd-Steinberg rows, the look
+  approved on 2026-10-17); the plane is RGB565 at 960-byte rows. **The
+  pattern is the 3D core's matrix**: a host test checks, for every level
+  at every place, that the add then the truncation gives exactly what
+  the 3D core writes, and another that the whole screen is the work
+  picture dithered that way.
+- The engine model (`rp-mbx-render`'s `model`) converts as measured
+  (truncating to 16 bits, widening by repeating the top bits).
+- `rp-mbx3d-render`: `Picture::screen` is the 16-bit screen with the
+  core's dither (`0x650` 9); the graphics service's 3D area renders so
+  (a test checks the code and stride). The test images' 32-bit pictures
+  are `Picture::bench32`.
+- Checks: the renderer against `CpuRenderer` truncated (the composition
+  within 2 a channel, then the screen's step), Today against the CPU
+  renderer frame after frame through the menu, and `emu-today` pixel-exact
+  in the emulator.
+- **Not yet proven on the X51v.** `rp-today` and `rp-gpubench` run FF2
+  changed with the renderer; their next device runs prove it.
+
 ## Open questions
 
 1. ~~Owner: A or B?~~ B (2026-10-14).

@@ -2,9 +2,12 @@
 //! fills, copies (any signed stride, 0 included) and blends with the blend
 //! word `0x09100000`, using the arithmetic fitted to the X51v's results
 //! (the fork's model, rp-v0.13.0: alpha weighed `a + (a >> 7)` of 256,
-//! `(s × A + d × (256 − A)) >> 8`). Anything else panics, so a test sees
-//! the renderer ask for something the model (and the device runs so far)
-//! doesn't cover.
+//! `(s × A + d × (256 − A)) >> 8`). Copies between 32 bpp and RGB565 as
+//! measured: a 16-bit source widened by repeating each channel's top bits
+//! (2026-10-17), a 16-bit destination given each channel's top bits,
+//! truncated (`rp-mbx-blend` B7, 2026-10-21). Anything else panics, so a
+//! test sees the renderer ask for something the model (and the device runs
+//! so far) doesn't cover.
 
 extern crate std;
 
@@ -174,7 +177,12 @@ impl Bus {
             if v & 0x4000 != 0 { v - 0x8000 } else { v }
         };
         let fmt = |s: u32| (s >> 15) & 0x1F;
-        assert_eq!(fmt(self.dest.0), 0xC, "model: 32 bpp destinations only");
+        let (dfmt, sfmt) = (fmt(self.dest.0), fmt(self.src.0));
+        assert!(
+            dfmt == BPP32 || dfmt == RGB565,
+            "model: 32 bpp and RGB565 destinations only"
+        );
+        let dpx = if dfmt == BPP32 { 4 } else { 2 };
         let (x0, y0) = (
             i64::from((self.xy0 >> 16) & 0x1FFF),
             i64::from(self.xy0 & 0x1FFF),
@@ -184,9 +192,14 @@ impl Bus {
         let rop = self.op & 0xFFFF;
         let blended = self.op & (1 << 17) != 0;
         let mut m = self.mem.borrow_mut();
-        let rd = |m: &Vec<u8>, at: i64| -> u32 {
+        // A pixel as 8-bit xRGB, whatever the surface's format.
+        let rd = |m: &Vec<u8>, at: i64, f: u32| -> u32 {
             let at = usize::try_from(at).expect("model: address below 0");
-            u32::from_le_bytes(m[at..at + 4].try_into().expect("4 bytes"))
+            if f == RGB565 {
+                widen(u16::from_le_bytes([m[at], m[at + 1]]))
+            } else {
+                u32::from_le_bytes(m[at..at + 4].try_into().expect("4 bytes"))
+            }
         };
         let (sx, sy) = (
             i64::from((self.origin >> 14) & 0x1FFF),
@@ -194,17 +207,24 @@ impl Bus {
         );
         for y in y0..y1 {
             for x in x0..x1 {
-                let d_at = da + y * ds + x * 4;
+                let d_at = da + y * ds + x * dpx;
                 let v = match (rop, blended) {
-                    (0xF0F0, false) => self.colour,
+                    (0xF0F0, false) => {
+                        assert_eq!(dfmt, BPP32, "model: 32 bpp fills only");
+                        self.colour
+                    }
                     (0xCCCC, b) => {
-                        assert_eq!(fmt(self.src.0), 0xC, "model: 32 bpp sources only");
+                        assert!(
+                            sfmt == BPP32 || sfmt == RGB565,
+                            "model: 32 bpp and RGB565 sources only"
+                        );
+                        let spx = if sfmt == BPP32 { 4 } else { 2 };
                         let s_at = i64::from(self.src.1)
                             + (sy + y - y0) * stride(self.src.0)
-                            + (sx + x - x0) * 4;
-                        let s = rd(&m, s_at);
+                            + (sx + x - x0) * spx;
+                        let s = rd(&m, s_at, sfmt);
                         if b {
-                            blend(self.blend, s, rd(&m, d_at))
+                            blend(self.blend, s, rd(&m, d_at, dfmt))
                         } else {
                             s
                         }
@@ -212,10 +232,34 @@ impl Bus {
                     _ => panic!("model: operation 0x{:08x}", self.op),
                 };
                 let at = usize::try_from(d_at).expect("model: address below 0");
-                m[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                if dfmt == RGB565 {
+                    m[at..at + 2].copy_from_slice(&narrow(v).to_le_bytes());
+                } else {
+                    m[at..at + 4].copy_from_slice(&v.to_le_bytes());
+                }
             }
         }
     }
+}
+
+/// The surface format fields (bits 19-15 of a surface word).
+const BPP32: u32 = 0xC;
+const RGB565: u32 = 0xA;
+
+/// An RGB565 pixel as the engine reads it: each channel widened to 8 bits
+/// by repeating its top bits (measured 2026-10-17, 64 of 64 pixels).
+#[must_use]
+pub fn widen(p: u16) -> u32 {
+    let p = u32::from(p);
+    let (r, g, b) = (p >> 11, (p >> 5) & 0x3F, p & 0x1F);
+    0xFF00_0000 | (r << 3 | r >> 2) << 16 | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2)
+}
+
+/// An 8-bit xRGB pixel written to RGB565: each channel's top bits
+/// (truncated: `rp-mbx-blend` B7a, 256 of 256 levels a channel).
+#[must_use]
+pub fn narrow(v: u32) -> u16 {
+    ((v >> 8) & 0xF800 | (v >> 5) & 0x07E0 | (v >> 3) & 0x001F) as u16
 }
 
 /// The engine's "over" (blend word `0x09100000`) on 8-bit channels.

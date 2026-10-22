@@ -5,6 +5,10 @@
   parameter memory at `0x100000`, the 6.75 MiB pool at `0x940000`; the
   review checked the map against `rp-vram-map`: no overlaps, ends at
   exactly 16 MiB). The regions ADR-0023 uses are unchanged.
+- **Amended 2026-10-21 by ADR-0023's Q2 (L1, the owner's vote):**
+  16-bit screens, wallpaper and area cache, a 32-bit work picture; the
+  pool grows to ~8.4 MiB at `0x7A0000`. The 32-bit map is kept unchanged
+  as `rp_vram_map::bench32` for the test images measured with it.
 - **Date:** 2026-10-15
 
 ## In plain words
@@ -20,7 +24,30 @@ Now there is one map, in one crate. A test fails if two regions overlap,
 run off the end, or break the alignment the chip needs. What isn't fixed
 is a pool, handed out at run time.
 
-## The map
+## The map (since 2026-10-21: ADR-0023 L1)
+
+| From | Size | What | Status |
+|---|---|---|---|
+| 0 | 1008 KiB | the loader's and Windows Mobile's display planes | kept while the loader may show them |
+| `0x0FC000` | 16 KiB | 3D parameter memory manager's block | **proposed** |
+| `0x100000` | 1 MiB | 3D parameter memory (objects, lists) | **proposed** |
+| `0x200000` | 600 KiB x 2 | ADR-0023's two screens, RGB565 | accepted (ADR-0023 Q2 L1) |
+| `0x32C000` | 1.17 MiB | work picture (32-bit: each changed rectangle composed, then converted) | accepted (L1) |
+| `0x458000` | 600 KiB | wallpaper, RGB565 | accepted (L1) |
+| `0x4EE000` | 160 KiB | row ring | accepted |
+| `0x516000` | 256 KiB | image cache | accepted |
+| `0x556000` | 512 KiB | glyph atlases | accepted |
+| `0x5D6000` | 1.17 MiB | background (wallpaper + glass, 32-bit) | accepted |
+| `0x702000` | 7.5 KiB | dither rows | accepted |
+| `0x704000` | 600 KiB | area cache, RGB565 | accepted (L1) |
+| `0x7A0000` | ~8.4 MiB | **pool**: textures, the 3D per-tile buffer and region arrays, depth, video frames | **proposed** |
+| `0xFFF000` | 4 KiB | 2D engine fence | accepted |
+
+The test images keep the map below (`rp_vram_map::bench32`), at the
+addresses their device runs were measured at; an image uses one map or
+the other, never both for drawing (they overlap).
+
+### The map with 32-bit screens (2026-10-15 to 2026-10-21; `bench32`)
 
 | From | Size | What | Status |
 |---|---|---|---|
@@ -87,8 +114,8 @@ client's commands can be checked against its own blocks (ADR-0026 D6).
 - The 3D renderer (ADR-0026) gets its per-tile buffer, region arrays,
   textures and depth from the pool.
 - **Watch item (owner's review, 2026-10-15): the pool will be contended.**
-  6.75 MiB must hold textures, the 3D per-tile buffer and region arrays,
-  depth and video frames together. Double-buffered 480 x 640 32 bpp frames
+  6.75 MiB (~8.4 MiB since L1) must hold textures, the 3D per-tile
+  buffer and region arrays, depth and video frames together. Double-buffered 480 x 640 32 bpp frames
   alone are ~2.3 MiB; a 3D game and video playback at once will press on
   it. The graphics service arbitrates at run time (per-client quotas, a
   refused allocation reported to the client, never silent eviction of

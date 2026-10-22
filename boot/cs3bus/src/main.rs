@@ -140,7 +140,7 @@ mod image {
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::{cpu, diag, rt};
     use rp_hal_x51v::devices::RunLog;
-    use rp_vram_map::{POOL, SCREEN_BYTES};
+    use rp_vram_map::bench32::{POOL, SCREEN_BYTES};
 
     use rp_image::crash;
 
@@ -161,7 +161,7 @@ mod image {
     const FILL_STRIDE: usize = 480 * 4;
     const FILL_ROWS: usize = 64;
     /// The 2D engine's fence word (the memory map's).
-    const FENCE_AT: usize = rp_vram_map::FENCE.at as usize;
+    const FENCE_AT: usize = rp_vram_map::bench32::FENCE.at as usize;
     /// How long the soak runs.
     const SOAK_US: u32 = 60_000_000;
     const _: () = assert!(FILL_AT + FILL_STRIDE * FILL_ROWS <= POOL.end() as usize);

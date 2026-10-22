@@ -116,11 +116,13 @@ pub enum Action {
     BackToLoader,
     /// The align screen finished: map touches with this from now on.
     Calibrated(Calibration),
-    /// The test image's wallpaper comparison: show the wallpaper at 16 bits
-    /// (dithered) or at full depth from now on, then redraw everything.
+    /// The test image's wallpaper comparison: show the wallpaper dithered
+    /// to 16 bits or plainly truncated to them from now on, then redraw
+    /// everything (the screens and the wallpaper are RGB565 since ADR-0023's
+    /// L1, 2026-10-21; before it the other side was full depth).
     WallpaperDepth {
-        /// 16 bits (RGB565) rather than full depth.
-        sixteen: bool,
+        /// Dithered (the wallpaper as the OS keeps it) rather than plain.
+        dithered: bool,
     },
 }
 
@@ -223,13 +225,15 @@ const BACK_TO_LOADER: &str = "Back to loader";
 const ALIGN_SCREEN: &str = "Align screen";
 /// The test image's wallpaper comparison (the owner's side-by-side check
 /// of a 16-bit wallpaper, 2026-10-17): the wallpaper with nothing over it,
-/// where a tap switches between 32 and 16 bits and Home goes back to the
-/// Today screen at the depth chosen. One entry: 13 rows is all the menu
+/// where a tap switches between dithered and plain 16 bits (32 and 16 bits
+/// before ADR-0023's L1; quality audit C48) and Home goes back to the
+/// Today screen with the one chosen. One entry: 13 rows is all the menu
 /// has between the title bar and the softkeys.
 const WALLPAPER_COMPARE: &str = "Wallpaper compare";
-/// The notice naming the depth after a switch (it goes after NOTICE_MS).
-const SHOWING_32: &str = "32-bit wallpaper";
-const SHOWING_16: &str = "16-bit wallpaper";
+/// The notice naming the wallpaper after a switch (it goes after
+/// NOTICE_MS).
+const SHOWING_DITHERED: &str = "16-bit dithered";
+const SHOWING_PLAIN: &str = "16-bit plain";
 /// The notice's backing in the wallpaper-only view (readable on any picture).
 const NOTICE_BACK: Argb = 0xB000_0000;
 /// The test image's extra Start menu entries, after the OS's.
@@ -279,8 +283,9 @@ pub struct Shell {
     damaged: usize,
     /// The align screen, while it runs (over everything).
     align: Option<align::Align>,
-    /// The test image's comparison: the wallpaper at 16 bits.
-    wall16: bool,
+    /// The test image's comparison: the wallpaper plainly truncated (not
+    /// dithered).
+    wall_plain: bool,
     /// The test image's comparison: the wallpaper alone, nothing over it.
     bare: bool,
 }
@@ -302,7 +307,7 @@ impl Shell {
             damage: [Rect::default(); MAX_DAMAGE],
             damaged: 0,
             align: None,
-            wall16: false,
+            wall_plain: false,
             bare: false,
         };
         s.dirty(Rect::new(0, 0, W, H));
@@ -392,19 +397,23 @@ impl Shell {
         self.bare
     }
 
-    /// The notice naming the comparison's wallpaper depth.
+    /// The notice naming the comparison's wallpaper.
     fn show_depth(&mut self) {
-        self.show_notice(if self.wall16 { SHOWING_16 } else { SHOWING_32 });
+        self.show_notice(if self.wall_plain {
+            SHOWING_PLAIN
+        } else {
+            SHOWING_DITHERED
+        });
     }
 
-    /// Switches the comparison's wallpaper depth: everything is redrawn
-    /// over the new wallpaper, and a notice names the depth.
+    /// Switches the comparison's wallpaper (dithered or plain): everything
+    /// is redrawn over the new wallpaper, and a notice names it.
     fn switch_depth(&mut self) -> Action {
-        self.wall16 = !self.wall16;
+        self.wall_plain = !self.wall_plain;
         self.show_depth();
         self.dirty(Rect::new(0, 0, W, H));
         Action::WallpaperDepth {
-            sixteen: self.wall16,
+            dithered: !self.wall_plain,
         }
     }
 

@@ -579,29 +579,32 @@ fn the_wallpaper_comparison_switches_depth_and_shows_the_wallpaper_alone() {
     tap(&mut s, START);
     assert_eq!(tap(&mut s, entry), Action::Redraw);
     assert!(s.wallpaper_only());
-    assert_eq!(s.notice(), Some(SHOWING_32));
+    assert_eq!(s.notice(), Some(SHOWING_DITHERED));
     let f = drawn(&mut s);
     assert!(f.dirty().contains(&Rect::new(0, 0, W, H)));
     assert!(f.cmds().count() > 0, "the depth's notice");
     s.tick(NOTICE_MS + 1);
     assert_eq!(drawn(&mut s).cmds().count(), 0);
     // A tap anywhere switches the depth, and back; nothing else acts.
-    assert_eq!(tap(&mut s, START), Action::WallpaperDepth { sixteen: true });
-    assert_eq!(s.notice(), Some(SHOWING_16));
+    assert_eq!(
+        tap(&mut s, START),
+        Action::WallpaperDepth { dithered: false }
+    );
+    assert_eq!(s.notice(), Some(SHOWING_PLAIN));
     assert!(drawn(&mut s).dirty().contains(&Rect::new(0, 0, W, H)));
     assert_eq!(
         tap(&mut s, SOFT_RIGHT),
-        Action::WallpaperDepth { sixteen: false }
+        Action::WallpaperDepth { dithered: true }
     );
     assert_eq!(
         tap(&mut s, SOFT_RIGHT),
-        Action::WallpaperDepth { sixteen: true }
+        Action::WallpaperDepth { dithered: false }
     );
     assert!(s.wallpaper_only());
     assert_eq!(s.input(Input::Key(Key::Down)), Action::Nothing);
     // Home goes back to the Today screen, at the depth chosen (named).
     assert_eq!(s.input(Input::Key(Key::Home)), Action::Redraw);
     assert!(!s.wallpaper_only());
-    assert_eq!(s.notice(), Some(SHOWING_16));
+    assert_eq!(s.notice(), Some(SHOWING_PLAIN));
     assert!(drawn(&mut s).cmds().count() > 20);
 }

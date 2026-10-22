@@ -399,6 +399,9 @@ pub enum PixelFormat {
     Rgb565,
     /// 16-bit ARGB1555 (`0x650` 3; opaque pixels with the alpha bit set).
     Argb1555,
+    /// 16-bit RGB565 with the core's 4 x 4 ordered dither (`0x650` 9:
+    /// `rp-gpubench` run P2, X51v 2026-10-21): ADR-0023's screens.
+    Rgb565Dithered,
 }
 
 impl PixelFormat {
@@ -409,6 +412,7 @@ impl PixelFormat {
             Self::Argb8888 => 6,
             Self::Rgb565 => 1,
             Self::Argb1555 => 3,
+            Self::Rgb565Dithered => 9,
         }
     }
 
@@ -423,11 +427,26 @@ impl PixelFormat {
 }
 
 impl Picture {
-    /// ADR-0023's screen picture `n` (0 or 1), from the memory map.
+    /// ADR-0023's screen picture `n` (0 or 1), from the memory map:
+    /// RGB565, rendered with the core's dither (the owner's 2026-10-21
+    /// vote: 32-bit renders are exact only under a 16-bit screen).
     #[must_use]
     pub const fn screen(n: usize) -> Self {
         Self {
             at: rp_vram_map::SCREENS[n & 1].at,
+            stride: 480 * 2,
+            w: 480,
+            h: 640,
+            format: PixelFormat::Rgb565Dithered,
+        }
+    }
+
+    /// The test images' 32-bit picture `n` (0 or 1), at the frozen map's
+    /// screens (`rp_vram_map::bench32`): what their device runs measured.
+    #[must_use]
+    pub const fn bench32(n: usize) -> Self {
+        Self {
+            at: rp_vram_map::bench32::SCREENS[n & 1].at,
             stride: 480 * 4,
             w: 480,
             h: 640,

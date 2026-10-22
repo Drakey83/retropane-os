@@ -4395,20 +4395,33 @@ fn today_screens(wall: &[u8], steps: &[rp_shell::Input]) -> Vec<Vec<u8>> {
         let base = ((scadr & 0x7F_FFFF) * 16) as usize;
         let m = mem.borrow();
         let out = m[base..base + SCREEN_BYTES]
-            .as_chunks::<4>()
+            .as_chunks::<2>()
             .0
             .iter()
-            .flat_map(|p| [p[2], p[1], p[0]])
+            .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
             .collect();
         screens.push(out);
     }
     screens
 }
 
+/// A screen pixel (RGB565) as the emulator's screendump shows it: each
+/// channel shifted up, its low bits 0 (the fork's scan-out, docs/hw/2700g.md
+/// "Plane composition": "RGB565 shifted up without bit replication").
+fn shown_565(p: u16) -> [u8; 3] {
+    let p = u32::from(p);
+    [
+        ((p >> 11) << 3) as u8,
+        (((p >> 5) & 0x3F) << 2) as u8,
+        ((p & 0x1F) << 3) as u8,
+    ]
+}
+
 /// The wallpaper comparison's screens (the test image's "Wallpaper
-/// compare", the owner's 16-bit check): the wallpaper alone at full depth,
-/// then at 16 bits, each once its notice has gone, through the same shell
-/// and renderer code as the image.
+/// compare", the owner's 16-bit check; since ADR-0023's L1 dithered
+/// against plain 16 bits, quality audit C48): the wallpaper alone as the
+/// OS keeps it (dithered), then plain, each once its notice has gone,
+/// through the same shell and renderer code as the image.
 fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
     use rp_draw::{Frame, Renderer};
     use rp_mbx_render::model::{self, Bus, Mem};
@@ -4435,10 +4448,10 @@ fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
         let base = ((scadr & 0x7F_FFFF) * 16) as usize;
         let m = mem.borrow();
         m[base..base + SCREEN_BYTES]
-            .as_chunks::<4>()
+            .as_chunks::<2>()
             .0
             .iter()
-            .flat_map(|p| [p[2], p[1], p[0]])
+            .flat_map(|p| shown_565(u16::from_le_bytes(*p)))
             .collect()
     };
     let tap = |shell: &mut Shell, r: rp_draw::Rect| {
@@ -4456,15 +4469,15 @@ fn compare_screens(wall: &[u8]) -> [Vec<u8>; 2] {
     );
     step(&mut shell, &mut gpu);
     shell.tick(10_000);
-    let full = step(&mut shell, &mut gpu);
+    let dithered = step(&mut shell, &mut gpu);
     let act = tap(&mut shell, rp_draw::Rect::new(200, 300, 80, 40));
-    assert_eq!(act, Action::WallpaperDepth { sixteen: true });
-    rp_today::load_wallpaper(&mut gpu, wall, rp_today::Depth::Rgb565, &mut scratch);
+    assert_eq!(act, Action::WallpaperDepth { dithered: false });
+    rp_today::load_wallpaper(&mut gpu, wall, rp_today::Depth::Full, &mut scratch);
     gpu.wallpaper_changed();
     step(&mut shell, &mut gpu);
     shell.tick(20_000);
-    let low = step(&mut shell, &mut gpu);
-    [full, low]
+    let plain = step(&mut shell, &mut gpu);
+    [dithered, plain]
 }
 
 /// Pixels that differ outside the clock's areas (their text depends on
@@ -4672,10 +4685,9 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
         press(&mut qmp, "start-aligned", sx, sy, None)?;
         until("menu-aligned", &want[2])?;
         // The wallpaper comparison (the owner's 16-bit check, the third
-        // entry from the end): the wallpaper alone, pixel-exact at full
-        // depth and at 16 bits once each notice has gone; a tap flips the
-        // depth, Home goes back. Ends at full depth, so the menu below
-        // matches as before.
+        // entry from the end): the wallpaper alone, pixel-exact dithered
+        // and plain once each notice has gone; a tap flips it, Home goes
+        // back. Ends dithered, so the menu below matches as before.
         let compare = rp_shell::Shell::menu_entry(entries - 3);
         press(
             &mut qmp,
@@ -4684,11 +4696,11 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
             compare.y + compare.h / 2,
             None,
         )?;
-        until("bare-32", &bare[0])?;
-        press(&mut qmp, "flip-16", 240, 320, Some(TAP_GUEST_MS))?;
-        until("bare-16", &bare[1])?;
-        press(&mut qmp, "flip-32", 240, 320, Some(TAP_GUEST_MS))?;
-        until("bare-32-again", &bare[0])?;
+        until("bare-dithered", &bare[0])?;
+        press(&mut qmp, "flip-plain", 240, 320, Some(TAP_GUEST_MS))?;
+        until("bare-plain", &bare[1])?;
+        press(&mut qmp, "flip-dithered", 240, 320, Some(TAP_GUEST_MS))?;
+        until("bare-dithered-again", &bare[0])?;
         // Home, held in the image's own time (a `sendkey` hold is wall
         // clock, and under load the image never sampled it).
         qmp.key("f4", true)?;
@@ -4771,7 +4783,7 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     let stack =
         check_stack(log)?.ok_or_else(|| format!("today: no stack line in the run log:{log}"))?;
     eprintln!(
-        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact at 32 and 16 bits, Back to loader returned; {}; stack {} of {} bytes",
+        "    today OK: Today screen pixel-exact (clocks masked) and still up after 40 s idle, Start opened the menu pixel-exact, the align screen calibrated ({}) and the menu opened pixel-exact again, the wallpaper alone pixel-exact dithered and plain (16 bits), Back to loader returned; {}; stack {} of {} bytes",
         calibrated.trim(),
         line.trim(),
         stack.0,

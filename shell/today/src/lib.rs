@@ -84,19 +84,24 @@ pub fn show_gpu<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     delay_us: fn(u32),
     scratch: &mut WallScratch,
 ) {
-    load_wallpaper(r, wallpaper, Depth::Full, scratch);
+    load_wallpaper(r, wallpaper, Depth::Rgb565, scratch);
     r.show(delay_us);
 }
 
-/// The wallpaper's colour depth, for the owner's side-by-side check of a
-/// 16-bit wallpaper (docs/design/ui.md, 2026-10-17).
+/// How the wallpaper's rows are made. The renderer keeps the wallpaper as
+/// RGB565 (ADR-0023 Q2 L1, 2026-10-21), taking each channel's top bits, so
+/// [`Depth::Rgb565`] is the wallpaper; [`Depth::Full`] hands it 8 bits a
+/// channel, which it truncates: plain 16 bits, no dither (kept for the
+/// side-by-side compare, whose other side was 32-bit before L1; kept by
+/// the owner as dithered against plain, quality audit C48).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Depth {
     /// 8 bits a channel, as converted from the picture.
     Full,
-    /// RGB565, dithered once on the CPU (Floyd-Steinberg), shown as the
-    /// engine would show a 16-bit wallpaper if it widens 5 and 6 bits by
-    /// repeating their top bits (the run's probe measures what it does).
+    /// RGB565, dithered once on the CPU (Floyd-Steinberg), each channel
+    /// widened back by repeating its top bits (as the engine reads a
+    /// 16-bit wallpaper, measured 2026-10-17): the look the owner approved
+    /// side by side on 2026-10-17.
     Rgb565,
 }
 
@@ -144,6 +149,17 @@ pub fn load_wallpaper<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
     depth: Depth,
     s: &mut WallScratch,
 ) {
+    wallpaper_rows(wallpaper, depth, s, |y, row| r.wallpaper_row(y, row));
+}
+
+/// `wallpaper` (planar 4:2:0) as XRGB8888 rows at `depth`, each handed to
+/// `f` with its line number.
+pub fn wallpaper_rows(
+    wallpaper: &[u8],
+    depth: Depth,
+    s: &mut WallScratch,
+    mut f: impl FnMut(u16, &[u32]),
+) {
     use rp_drv_mbx_display::scanout::yuv_to_rgb;
     let (luma, chroma) = wallpaper.split_at((W * H).min(wallpaper.len()));
     let (u, v) = chroma.split_at((W * H / 4).min(chroma.len()));
@@ -178,7 +194,7 @@ pub fn load_wallpaper<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
             s.row[x] =
                 0xFF00_0000 | u32::from(px[0]) << 16 | u32::from(px[1]) << 8 | u32::from(px[2]);
         }
-        r.wallpaper_row(y as u16, &s.row);
+        f(y as u16, &s.row);
     }
 }
 
@@ -351,7 +367,7 @@ mod tests {
     #[test]
     fn the_16_bit_wallpaper_is_rgb565_and_keeps_the_average() {
         use rp_mbx_render::model::{self, Bus, Mem};
-        use rp_mbx_render::{Layout, Mbx2dRenderer, STRIDE};
+        use rp_mbx_render::{Layout, Mbx2dRenderer, STRIDE16, to565};
 
         // A slow diagonal gradient in every channel (luma, then U and V).
         let mut wall = vec![0u8; W * H * 3 / 2];
@@ -364,26 +380,36 @@ mod tests {
             *b = (110 + (i % (W / 2)) * 40 / (W / 2)) as u8;
         }
         let read = |depth| {
-            let mem = model::memory();
-            let mut r = Mbx2dRenderer::new(
-                Bus::new(mem.clone()),
-                Mem(mem.clone()),
-                Layout::X51V,
-                || 0,
-                1,
-            );
-            load_wallpaper(&mut r, &wall, depth, &mut WallScratch::new());
-            let at = Layout::X51V.wallpaper;
-            let m = mem.borrow();
-            (0..W * H)
-                .map(|i| {
-                    let a = at + (i / W) * STRIDE + (i % W) * 4;
-                    u32::from_le_bytes(m[a..a + 4].try_into().unwrap())
-                })
-                .collect::<Vec<u32>>()
+            let mut px = Vec::with_capacity(W * H);
+            wallpaper_rows(&wall, depth, &mut WallScratch::new(), |_, row| {
+                px.extend_from_slice(row);
+            });
+            px
         };
         let full = read(Depth::Full);
         let low = read(Depth::Rgb565);
+        // The renderer keeps the 16-bit rows exactly (RGB565, the top bits).
+        let mem = model::memory();
+        let mut r = Mbx2dRenderer::new(
+            Bus::new(mem.clone()),
+            Mem(mem.clone()),
+            Layout::X51V,
+            || 0,
+            1,
+        );
+        load_wallpaper(&mut r, &wall, Depth::Rgb565, &mut WallScratch::new());
+        let at = Layout::X51V.wallpaper;
+        let m = mem.borrow();
+        for (i, &p) in low.iter().enumerate() {
+            let a = at + (i / W) * STRIDE16 + (i % W) * 2;
+            let kept = u16::from_le_bytes([m[a], m[a + 1]]);
+            assert_eq!(kept, to565(p), "pixel {i}");
+            assert_eq!(
+                model::widen(kept),
+                p | 0xFF00_0000,
+                "pixel {i} widened back"
+            );
+        }
         for &p in &low {
             let r5 = (p >> 19) & 31;
             let g6 = (p >> 10) & 63;
@@ -437,11 +463,11 @@ mod tests {
     #[test]
     fn gpu_today_matches_the_cpu_renderer() {
         use rp_draw::{Frame, Renderer};
-        use rp_drv_mbx_display::scanout::{mix, yuv_to_rgb};
+        use rp_drv_mbx_display::scanout::mix;
         use rp_gfx::layer::{Layer, PlaneFormat};
         use rp_gfx::render::CpuRenderer;
         use rp_mbx_render::model::{self, Bus, Mem};
-        use rp_mbx_render::{Layout, Mbx2dRenderer, SCREEN_BYTES, STRIDE};
+        use rp_mbx_render::{Layout, Mbx2dRenderer, PICTURE_BYTES, STRIDE, STRIDE16};
         use rp_shell::{Input, Shell};
 
         // A wallpaper with every channel moving: luma, then U and V.
@@ -449,9 +475,14 @@ mod tests {
         for (i, b) in wall.iter_mut().enumerate() {
             *b = (16 + (i * 7 + i / W * 3) % 220) as u8;
         }
+        // The wallpaper as the renderer keeps it (16 bits, dithered once).
+        let mut wall16 = Vec::with_capacity(W * H);
+        wallpaper_rows(&wall, Depth::Rgb565, &mut WallScratch::new(), |_, row| {
+            wall16.extend_from_slice(row);
+        });
         let rgb = |x: usize, y: usize| {
-            let c = W * H + (y / 2) * (W / 2) + x / 2;
-            yuv_to_rgb(wall[y * W + x], wall[c], wall[c + W * H / 4])
+            let p = wall16[y * W + x];
+            ((p >> 16) as u8, (p >> 8) as u8, p as u8)
         };
         let mem = model::memory();
         let mut gpu = Mbx2dRenderer::new(
@@ -463,8 +494,8 @@ mod tests {
         );
         show_gpu(&mut gpu, &wall, |_| {}, &mut WallScratch::new());
         gpu.dither = false;
-        let mut work = vec![0u8; SCREEN_BYTES];
-        let mut plane = vec![0u8; SCREEN_BYTES];
+        let mut work = vec![0u8; PICTURE_BYTES];
+        let mut plane = vec![0u8; PICTURE_BYTES];
         let mut shell = Shell::new(shell_fonts(), icons(), true);
         // The emulator's run showed this; frames differ by their text.
         shell.set_time(rp_shell::Time {
@@ -511,24 +542,35 @@ mod tests {
                 for x in 0..W {
                     let at = (y * W + x) * 4;
                     let l = u32::from_le_bytes(plane[at..at + 4].try_into().unwrap());
-                    let g = u32::from_le_bytes(m[base + at..base + at + 4].try_into().unwrap());
+                    let s = base + y * STRIDE16 + x * 2;
+                    let g = model::widen(u16::from_le_bytes([m[s], m[s + 1]]));
                     let (wr, wg, wb) = rgb(x, y);
                     let a = (l >> 24) as u8;
-                    for (sh, w) in [(16, wr), (8, wg), (0, wb)] {
+                    for (sh, w, bits) in [(16, wr, 5), (8, wg, 6), (0, wb, 5)] {
+                        // The screen is the composition truncated: how far
+                        // the reference lies outside the truncated step.
                         let want = mix((l >> sh) as u8, w, a);
-                        let got = (g >> sh) as u8;
-                        let d = got.abs_diff(want);
+                        let lost = 8 - bits;
+                        let lo = ((g >> sh) as u8 >> lost) << lost;
+                        let hi = lo | ((1u8 << lost) - 1);
+                        let d = if want < lo {
+                            lo - want
+                        } else {
+                            want.saturating_sub(hi)
+                        };
                         worst = worst.max(d);
                         over2 += usize::from(d > 2);
                     }
                 }
             }
-            // Measured: 3 at worst, in about a dozen of 921,600 channel
-            // values a frame, where glass is stacked on glass (each engine
-            // blend truncates; the CPU composes the layer once). With the
-            // weather icons baked in (local builds; CI builds without them),
-            // 114 or 152 a frame, still 3 at worst: their see-through edges
-            // over the glass are one more truncating blend (2026-10-17).
+            // Measured at 32 bits: 3 at worst, in about a dozen of 921,600
+            // channel values a frame, where glass is stacked on glass (each
+            // engine blend truncates; the CPU composes the layer once).
+            // With the weather icons baked in (local builds; CI builds
+            // without them), 114 or 152 a frame, still 3 at worst: their
+            // see-through edges over the glass are one more truncating blend
+            // (2026-10-17). Now the screen is RGB565: the reference must lie
+            // in (or within 3 of) the step the screen shows.
             assert!(
                 worst <= 3 && over2 < 256,
                 "step {k}: worst {worst}, {over2} channels off by more than 2"

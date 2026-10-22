@@ -446,17 +446,24 @@ mod image {
                 Action::Redraw => {
                     pending.get_or_insert(since);
                 }
-                Action::WallpaperDepth { sixteen } => {
+                Action::WallpaperDepth { dithered } => {
                     // The frame in flight may be reading the wallpaper.
                     while matches!(gfx.poll(&mut gclock), Step::Wait(_)) {}
                     let t0 = rt::ticks();
-                    let depth = if sixteen { Depth::Rgb565 } else { Depth::Full };
+                    let depth = if dithered { Depth::Rgb565 } else { Depth::Full };
                     rp_today::load_wallpaper(gfx.two_d(), WALLPAPER, depth, wall);
                     gfx.two_d().wallpaper_changed();
                     let _ = writeln!(
                         RunLog,
                         "compare: {WALL_NAME} at {}, {}: converted in {} us",
-                        if sixteen { "16-bit" } else { "32-bit" },
+                        // Since ADR-0023's L1 the wallpaper is kept as
+                        // RGB565: the other side is plain 16 bits (quality
+                        // audit C48), no longer 32.
+                        if dithered {
+                            "16-bit dithered"
+                        } else {
+                            "16-bit plain (truncated)"
+                        },
                         if shell.wallpaper_only() {
                             "wallpaper only"
                         } else {

@@ -1,9 +1,14 @@
 //! The MBX 2D renderer (ADR-0023, option B): draws `rp-draw` frames on the
-//! 2700G's 2D engine into one opaque XRGB8888 picture, double-buffered.
+//! 2700G's 2D engine into one opaque picture, double-buffered. Since the
+//! owner's 2026-10-21 votes (Q1 A, Q2 L1) the screens are dithered RGB565:
+//! each changed rectangle is composed at 32 bits in a **work picture**,
+//! the dither pattern added, then **one copy converts it into the screen**
+//! (the engine truncates each channel on the way: `rp-mbx-blend` B7).
 //!
 //! For each changed rectangle the engine copies the wallpaper in (kept in
-//! 2700G memory as XRGB8888), then draws every command that meets it, over
-//! it. Every blend is then onto an opaque pixel, which the engine does
+//! 2700G memory as RGB565, widened by the engine on the copy), then draws
+//! every command that meets it, over it. Every blend is then onto an
+//! opaque 32-bit pixel, which the engine does
 //! exactly (header bit 17, blend word `0x09100000`: source × A +
 //! destination × (1 − A), measured 2026-10-14). The CPU only describes:
 //!
@@ -37,12 +42,15 @@
 //!   nothing) go into a **background picture**, wallpaper included, kept
 //!   in 2700G memory and rebuilt only when they change (a hash of them).
 //!   Each changed rectangle then starts with one plain copy of it.
-//! - **Dithered.** The panel shows 16 or 18 bits (measured: 256-level
-//!   ramps band), so each redrawn rectangle ends with a 4 x 4 ordered
-//!   dither: the engine adds a threshold pattern (blend word 0: source +
-//!   destination, saturating, measured) and the panel's truncation does the
-//!   rest. Four blits per rectangle, one per line phase (destination stride
-//!   x 4, the pattern row read with stride 0).
+//! - **Dithered.** The screen is RGB565, so each redrawn rectangle ends
+//!   with a 4 x 4 ordered dither: the engine adds a threshold pattern to
+//!   the work picture (blend word 0: source + destination, saturating,
+//!   measured) and the conversion's truncation does the rest. The pattern
+//!   is the 3D core's own matrix ([`DITHER_3D`]), so a 3D area meets the 2D
+//!   screen without a seam. Four blits per rectangle, one per line phase
+//!   (destination stride x 4, the pattern row read with stride 0).
+//! - **16-bit where it's final.** The previous frame's rectangles come
+//!   forward as 16-bit copies, and the area cache holds screen pixels.
 //!
 //! The renderer touches 2700G memory only through [`LocalMem`] and the
 //! engine only through its register window, so the same code runs on the
@@ -62,11 +70,16 @@ use rp_hal_api::RegisterBus;
 pub const W: u16 = 480;
 /// Screen height.
 pub const H: u16 = 640;
-/// Bytes per line of a 32 bpp picture.
+/// Bytes per line of a 32 bpp picture (the work picture, the background).
 pub const STRIDE: usize = W as usize * 4;
 /// Bytes in one 32 bpp picture.
-pub const SCREEN_BYTES: usize = STRIDE * H as usize;
+pub const PICTURE_BYTES: usize = STRIDE * H as usize;
+/// Bytes per line of a screen (RGB565; also the wallpaper and the cache).
+pub const STRIDE16: usize = W as usize * 2;
+/// Bytes in one screen.
+pub const SCREEN_BYTES: usize = STRIDE16 * H as usize;
 const _: () = assert!(SCREEN_BYTES == rp_vram_map::SCREEN_BYTES as usize);
+const _: () = assert!(PICTURE_BYTES == rp_vram_map::PICTURE32_BYTES as usize);
 const _: () = assert!(ROWS * 2560 <= rp_vram_map::ROWS.size as usize);
 
 /// Rows in the ring for stride-0 blits (reset at each frame's fence).
@@ -91,9 +104,12 @@ const CACHE_MIN_PX: u32 = 16 * 1024;
 /// Where everything lives in 2700G local memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Layout {
-    /// The two pictures.
+    /// The two screens (RGB565).
     pub screens: [usize; 2],
-    /// The wallpaper, XRGB8888, a picture's size.
+    /// The work picture (32 bpp): each changed rectangle is composed here,
+    /// then converted into a screen.
+    pub work: usize,
+    /// The wallpaper, RGB565.
     pub wallpaper: usize,
     /// The row ring (`ROWS` × 2.5 KiB).
     pub rows: usize,
@@ -101,26 +117,27 @@ pub struct Layout {
     pub images: (usize, usize),
     /// The glyph atlases and their size.
     pub glyphs: (usize, usize),
-    /// The background: wallpaper and hoisted glass, a picture's size.
+    /// The background: wallpaper and hoisted glass, 32 bpp.
     pub background: usize,
     /// The dither pattern's four rows (`W` pixels each, `STRIDE` apart).
     pub dither: usize,
     /// The fence word.
     pub fence: usize,
     /// Finished areas kept for reuse (an opened menu: one copy instead
-    /// of drawing it again), and its size.
+    /// of drawing it again), RGB565, and its size.
     pub cache: (usize, usize),
 }
 
 impl Layout {
     /// The X51v's: from 2 MiB up (the loader's and Windows Mobile's planes
-    /// sit below 1 MiB), about 5.6 MiB in all (ADR-0023 decision 4).
+    /// sit below 1 MiB), about 5.6 MiB in all (ADR-0023 decision 4, Q2 L1).
     /// Taken from the 2700G memory map (`rp-vram-map`, ADR-0027), which
     /// checks the regions for overlaps.
     pub const X51V: Self = {
         use rp_vram_map as m;
         Self {
             screens: [m::SCREENS[0].at as usize, m::SCREENS[1].at as usize],
+            work: m::WORK.at as usize,
             wallpaper: m::WALLPAPER.at as usize,
             rows: m::ROWS.at as usize,
             images: (m::IMAGES.at as usize, m::IMAGES.size as usize),
@@ -210,6 +227,8 @@ pub struct FrameStats {
     pub px_text: u32,
     /// See [`Self::px_copy`]: dither pixels.
     pub px_dither: u32,
+    /// Pixels converted from the work picture into the screen.
+    pub px_convert: u32,
     /// Blits queued.
     pub blits: u32,
     /// Rectangles copied forward from the picture on screen.
@@ -223,15 +242,46 @@ pub struct FrameStats {
     pub fifo_full: u32,
 }
 
-/// The 4 x 4 ordered (Bayer) pattern, 0..16.
-const BAYER: [[u32; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+/// The 3D core's dither matrix (`0x650` bit 3, `rp-gpubench` run P2 on
+/// the X51v), its top left at the picture's first pixel: a channel goes
+/// one step up where the fraction it loses reaches `t` sixteenths of a
+/// step (16: never).
+pub const DITHER_3D: [[u32; 4]; 4] = [
+    [11, 3, 9, 1],
+    [7, 15, 5, 13],
+    [10, 2, 12, 4],
+    [6, 14, 8, 16],
+];
 
-/// The dither added at `(x, y)`: below one step of a 5-bit channel (8) for
-/// red and blue, of a 6-bit one (4) for green; the panel truncates.
+/// The dither added at `(x, y)` before the conversion to RGB565 truncates:
+/// per channel `step - ceil(t * step / 16)` (step 8 for red and blue, 4
+/// for green), so a channel goes one step up exactly where the 3D core's
+/// dither raises it (the fraction lost `f` reaches `t * step / 16`); the
+/// add saturates at 255, and the top stays the top, as on the core.
 #[must_use]
 pub const fn dither_at(x: usize, y: usize) -> u32 {
-    let t = BAYER[y % 4][x % 4];
-    (t >> 1) << 16 | (t >> 2) << 8 | (t >> 1)
+    let t = DITHER_3D[y % 4][x % 4];
+    let rb = 8 - (t * 8).div_ceil(16);
+    let g = 4 - (t * 4).div_ceil(16);
+    rb << 16 | g << 8 | rb
+}
+
+/// A 32 bpp surface laid out as the screen (the work picture, the
+/// background), for a blit.
+const fn wide(at: usize) -> (Format, usize, i32) {
+    (Format::BPP32, at, STRIDE as i32)
+}
+
+/// An RGB565 surface laid out as the screen (a screen, the wallpaper).
+const fn narrow(at: usize) -> (Format, usize, i32) {
+    (Format::RGB565, at, STRIDE16 as i32)
+}
+
+/// An XRGB8888 pixel as RGB565, each channel's top bits (what the engine
+/// writes: `rp-mbx-blend` B7a).
+#[must_use]
+pub const fn to565(p: u32) -> u16 {
+    ((p >> 8) & 0xF800 | (p >> 5) & 0x07E0 | (p >> 3) & 0x001F) as u16
 }
 
 /// FNV-1a over a word.
@@ -377,11 +427,23 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
-    /// Stores line `y` of the wallpaper (XRGB8888, `W` pixels).
+    /// Stores line `y` of the wallpaper (`W` XRGB8888 pixels) as RGB565,
+    /// each channel's top bits: pass a row already quantised to 16 bits
+    /// (`rp-today`'s Floyd-Steinberg, the look the owner approved on
+    /// 2026-10-17), or its gradients band.
     pub fn wallpaper_row(&mut self, y: u16, px: &[u32]) {
-        let n = px.len().min(usize::from(W));
-        self.mem
-            .store(self.l.wallpaper + usize::from(y) * STRIDE, &px[..n]);
+        let n = px.len().min(usize::from(W)) & !1;
+        let mut buf = [0u32; CHUNK];
+        for (k, pair) in px[..n].chunks(2 * CHUNK).enumerate() {
+            let words = pair.len() / 2;
+            for (i, w) in buf[..words].iter_mut().enumerate() {
+                *w = u32::from(to565(pair[2 * i])) | u32::from(to565(pair[2 * i + 1])) << 16;
+            }
+            self.mem.store(
+                self.l.wallpaper + usize::from(y) * STRIDE16 + 4 * CHUNK * k,
+                &buf[..words],
+            );
+        }
     }
 
     /// A finished frame held for [`Self::flip`] ([`Self::hold`]): the
@@ -468,9 +530,9 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         (&mut self.e, &mut self.mem)
     }
 
-    /// Resets the engine and shows picture 0 as an opaque 32 bpp
-    /// graphics plane (format, size, stride and start). The video plane
-    /// and cursor are the caller's (`Display::adopt` switches them off).
+    /// Resets the engine and shows screen 0 as an opaque RGB565 graphics
+    /// plane (format, size, stride and start). The video plane and cursor
+    /// are the caller's (`Display::adopt` switches them off).
     pub fn show(&mut self, delay_us: fn(u32)) {
         self.delay_us = delay_us;
         self.e.reset(delay_us);
@@ -490,11 +552,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
         self.mem.sync();
         let regs = rp_drv_mbx_display::Plane {
-            format: rp_drv_mbx_display::PixelFormat::Argb8888,
+            format: rp_drv_mbx_display::PixelFormat::Rgb565,
             width: W,
             height: H,
             offset: self.l.screens[0],
-            stride: STRIDE,
+            stride: STRIDE16,
         }
         .registers();
         let gamma = self.e.regs.read32(rp_drv_mbx_display::reg::GSCTRL) & (1 << 26);
@@ -552,19 +614,39 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         (t * 1000 / u64::from(self.ticks_per_ms.max(1))) as u32
     }
 
-    /// Copies the wallpaper under `r` into picture `dst`.
+    /// Copies the wallpaper (RGB565) under `r` into the 32 bpp picture
+    /// `dst` (the engine widens it).
     fn wallpaper(&mut self, dst: usize, r: Rect) {
         let src = self.l.wallpaper;
-        self.copy(dst, src, r);
+        self.copy_as(wide(dst), narrow(src), r);
     }
 
     /// Copies `r` of the 32 bpp picture at `src` into the one at `dst`.
     fn copy(&mut self, dst: usize, src: usize, r: Rect) {
+        self.copy_as(wide(dst), wide(src), r);
+    }
+
+    /// Copies `r` from one surface to another, both laid out as the screen
+    /// (the engine converts between their formats).
+    fn copy_as(&mut self, dst: (Format, usize, i32), src: (Format, usize, i32), r: Rect) {
         self.last.px_copy += u32::from(r.w) * u32::from(r.h);
         self.last.blits += 1;
+        if let Some((w, n)) = cmd::blit(dst, src, (r.x, r.y), Self::coords(r), ROP_SRCCOPY, 0, 0) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
+    }
+
+    /// Converts `r` of the work picture into screen `dst` (each channel
+    /// truncated to 5, 6, 5 bits: `rp-mbx-blend` B7a).
+    fn convert(&mut self, dst: usize, r: Rect) {
+        self.last.px_convert += u32::from(r.w) * u32::from(r.h);
+        self.last.blits += 1;
+        let work = self.l.work;
         if let Some((w, n)) = cmd::blit(
-            (Format::BPP32, dst, STRIDE as i32),
-            (Format::BPP32, src, STRIDE as i32),
+            narrow(dst),
+            wide(work),
             (r.x, r.y),
             Self::coords(r),
             ROP_SRCCOPY,
@@ -868,20 +950,21 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         h
     }
 
-    /// A cached area's line: its width, in whole 16-byte units (the
-    /// engine's line pitch is kept aligned, as every surface's is so far).
+    /// A cached area's line (RGB565): its width, in whole 16-byte units
+    /// (the engine's line pitch is kept aligned, as every surface's is so
+    /// far).
     const fn cache_stride(clip: Rect) -> usize {
-        (clip.w as usize * 4).next_multiple_of(16)
+        (clip.w as usize * 2).next_multiple_of(16)
     }
 
     /// Copies the cached area at `at` (`clip`'s size, packed) into `clip`
-    /// of picture `dst`.
+    /// of screen `dst`.
     fn copy_in(&mut self, dst: usize, clip: Rect, at: usize) {
         self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
         self.last.blits += 1;
         if let Some((w, n)) = cmd::blit(
-            (Format::BPP32, dst, STRIDE as i32),
-            (Format::BPP32, at, Self::cache_stride(clip) as i32),
+            narrow(dst),
+            (Format::RGB565, at, Self::cache_stride(clip) as i32),
             (0, 0),
             Self::coords(clip),
             ROP_SRCCOPY,
@@ -894,7 +977,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         }
     }
 
-    /// Keeps `clip` of picture `dst`, just drawn, under `key`: the second
+    /// Keeps `clip` of screen `dst`, just drawn, under `key`: the second
     /// time the key is seen (a one-off isn't worth the copy). The engine
     /// works in order, so the copy reads the finished area, and a cached
     /// area overwritten later was read before.
@@ -920,8 +1003,8 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
         self.last.blits += 1;
         if let Some((w, n)) = cmd::blit(
-            (Format::BPP32, at, Self::cache_stride(clip) as i32),
-            (Format::BPP32, dst, STRIDE as i32),
+            (Format::RGB565, at, Self::cache_stride(clip) as i32),
+            narrow(dst),
             (clip.x, clip.y),
             (0, 0, clip.w, clip.h),
             ROP_SRCCOPY,
@@ -1148,9 +1231,10 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
         let back = 1 - self.front;
         let dst = self.l.screens[back];
         let shown = self.l.screens[self.front];
+        let work = self.l.work;
         // First: drawing over these afterwards is still right.
         for &r in &forward[..nf] {
-            self.copy(dst, shown, r);
+            self.copy_as(narrow(dst), narrow(shown), r);
             drawn.pixels += u64::from(r.w) * u64::from(r.h);
         }
         for &clip in &rects[..n] {
@@ -1168,18 +1252,21 @@ impl<R: RegisterBus, M: LocalMem> Renderer for Mbx2dRenderer<R, M> {
                 self.last.cache_hits += 1;
                 continue;
             }
+            // Composed at 32 bits in the work picture, dithered there, then
+            // converted into the screen (ADR-0023 Q1 A).
             let bg = self.l.background;
-            self.copy(dst, bg, clip);
+            self.copy(work, bg, clip);
             for (i, c) in frame.cmds().take(cmds).enumerate() {
                 if self.hoist[i] || self.bounds[i].intersect(&clip).is_empty() {
                     continue;
                 }
-                self.command(frame, c, clip, dst);
+                self.command(frame, c, clip, work);
                 drawn.cmds += 1;
             }
             if self.dither {
-                self.dither_rect(dst, clip);
+                self.dither_rect(work, clip);
             }
+            self.convert(dst, clip);
             if let Some(key) = key {
                 self.keep(dst, clip, key);
             }

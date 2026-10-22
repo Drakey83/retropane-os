@@ -1,7 +1,9 @@
 //! `Mbx2dRenderer` on the engine model against the reference: the CPU
 //! renderer's ARGB8888 layer mixed over the same wallpaper as the display
-//! mixes planes (`scanout::mix`). Equal within 2 per channel: the CPU
-//! rounds a ÷255, the engine weighs alpha out of 256 (measured).
+//! mixes planes (`scanout::mix`). The composition (at 32 bits) is equal
+//! within 2 per channel: the CPU rounds a ÷255, the engine weighs alpha
+//! out of 256 (measured); the screen is that truncated to RGB565, so each
+//! channel lies between the reference's ±2 truncated.
 
 extern crate std;
 
@@ -21,10 +23,13 @@ fn now() -> u32 {
     NOW.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The wallpaper: a pattern with every channel moving.
+/// The wallpaper: a pattern with every channel moving, already quantised
+/// to RGB565 (as `rp-today` hands it over), so the 16-bit wallpaper holds
+/// it exactly.
 fn wall(x: u16, y: u16) -> u32 {
     let (x, y) = (u32::from(x), u32::from(y));
-    0xFF00_0000 | ((x * 255 / 479) << 16) | ((y * 255 / 639) << 8) | ((x + y) & 0xFF)
+    let raw = 0xFF00_0000 | ((x * 255 / 479) << 16) | ((y * 255 / 639) << 8) | ((x + y) & 0xFF);
+    model::widen(to565(raw))
 }
 
 /// The renderer on the model, the wallpaper stored, shown.
@@ -49,12 +54,24 @@ fn gpu() -> (Mbx2dRenderer<Bus, Mem>, model::Shared) {
     (r, mem)
 }
 
-/// The picture the plane shows.
+/// The picture the plane shows (RGB565, widened as the engine reads it).
 fn shown(r: &mut Mbx2dRenderer<Bus, Mem>, mem: &model::Shared) -> Vec<u32> {
     let scadr = r.parts().0.regs.reg(rp_drv_mbx_display::reg::GSCADR);
     let base = ((scadr & 0x7F_FFFF) * 16) as usize;
     let m = mem.borrow();
     m[base..base + SCREEN_BYTES]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| model::widen(u16::from_le_bytes(*b)) & 0x00FF_FFFF)
+        .collect()
+}
+
+/// The work picture (32 bpp), as the last rectangle composed it.
+fn work(mem: &model::Shared) -> Vec<u32> {
+    let base = Layout::X51V.work;
+    let m = mem.borrow();
+    m[base..base + PICTURE_BYTES]
         .as_chunks::<4>()
         .0
         .iter()
@@ -71,8 +88,8 @@ struct Reference {
 impl Reference {
     fn new() -> Self {
         Self {
-            work: std::vec![0; SCREEN_BYTES],
-            plane: std::vec![0; SCREEN_BYTES],
+            work: std::vec![0; PICTURE_BYTES],
+            plane: std::vec![0; PICTURE_BYTES],
         }
     }
 
@@ -97,13 +114,19 @@ impl Reference {
     }
 }
 
-/// Every pixel within `tol` per channel; reports the first that isn't.
+/// Every pixel of the 16-bit screen `got` (widened) a truncation of the
+/// 32-bit reference within `tol` per channel: between `want - tol` and
+/// `want + tol`, each truncated to the channel's bits. Reports the first
+/// that isn't.
 fn same(got: &[u32], want: &[u32], tol: u32) -> Result<(), std::string::String> {
     for (i, (g, w)) in got.iter().zip(want).enumerate() {
-        if [0, 8, 16]
-            .iter()
-            .any(|&sh| ((g >> sh) & 0xFF).abs_diff((w >> sh) & 0xFF) > tol)
-        {
+        if [(0, 5), (8, 6), (16, 5)].iter().any(|&(sh, bits)| {
+            let lost = 8 - bits;
+            let (g, w) = ((g >> sh) & 0xFF, (w >> sh) & 0xFF);
+            let lo = w.saturating_sub(tol) >> lost;
+            let hi = (w + tol).min(255) >> lost;
+            !(lo..=hi).contains(&(g >> lost))
+        }) {
             return Err(std::format!(
                 "({}, {}): engine {g:06x}, reference {w:06x}",
                 i % 480,
@@ -310,28 +333,68 @@ fn place_clips_like_the_cpu_renderer() {
     assert_eq!(place(4, 4, 40, 40, clip), None);
 }
 
+/// The 3D core's rule (`rp-mbx3d-render`'s model of run P2): channel `v`
+/// to `bits`, one step up where the fraction lost reaches `t` sixteenths
+/// of a step, never past the top.
+fn core_dither(v: u32, bits: u32, t: u32) -> u32 {
+    let lost = 8 - bits;
+    let (q, frac) = (v >> lost, v & ((1 << lost) - 1));
+    if frac * 16 >= t << lost && q < (1 << bits) - 1 {
+        q + 1
+    } else {
+        q
+    }
+}
+
 #[test]
-fn dither_adds_the_pattern_below_one_step() {
+fn the_pattern_then_truncation_is_the_3d_cores_dither() {
+    // Every level at every place, each channel: adding `dither_at`
+    // (saturating) then truncating gives what the 3D core writes.
+    for (y, row) in DITHER_3D.iter().enumerate() {
+        for (x, &t) in row.iter().enumerate() {
+            let a = dither_at(x, y);
+            for (sh, bits) in [(16, 5), (8, 6), (0, 5)] {
+                let add = (a >> sh) & 0xFF;
+                assert!(add < 1 << (8 - bits), "below one step");
+                for v in 0..256 {
+                    assert_eq!(
+                        (v + add).min(255) >> (8 - bits),
+                        core_dither(v, bits, t),
+                        "v {v}, place ({x}, {y}), {bits} bits"
+                    );
+                }
+            }
+        }
+    }
+    // The pattern repeats every 4 pixels both ways.
+    assert_eq!(dither_at(5, 6), dither_at(1, 2));
+}
+
+#[test]
+fn the_screen_is_the_work_picture_dithered_as_the_3d_core_would() {
     let (mut r, mem) = gpu();
-    let mut cpu = Reference::new();
     let mut f = Frame::new();
     scene(&mut f, 0);
     f.damage(Rect::new(0, 0, W, H));
     r.draw(&f);
     assert!(r.poll());
-    let plain = shown(&mut r, &mem);
+    // Whole-screen frames: the work picture holds the whole composition.
+    let composed = work(&mem);
     r.dither = true;
     r.draw(&f);
     assert!(r.poll());
-    let dithered = shown(&mut r, &mem);
-    let _ = cpu.draw(&f);
-    for (i, (p, d)) in plain.iter().zip(&dithered).enumerate() {
-        let want = dither_at(i % 480, i / 480);
-        for sh in [0, 8, 16] {
-            let (p, d, t) = ((p >> sh) & 0xFF, (d >> sh) & 0xFF, (want >> sh) & 0xFF);
-            assert_eq!(d, (p + t).min(255), "pixel {i}, shift {sh}");
+    let screen = shown(&mut r, &mem);
+    let mut raised = 0;
+    for (i, (c, s)) in composed.iter().zip(&screen).enumerate() {
+        let (x, y) = (i % 480, i / 480);
+        for (sh, bits) in [(16, 5), (8, 6), (0, 5)] {
+            let want = core_dither((c >> sh) & 0xFF, bits, DITHER_3D[y % 4][x % 4]);
+            let got = ((s >> sh) & 0xFF) >> (8 - bits);
+            assert_eq!(got, want, "pixel ({x}, {y}), {bits} bits at {sh}");
+            raised += u32::from(got != ((c >> sh) & 0xFF) >> (8 - bits));
         }
     }
+    assert!(raised > 10_000, "the dither changed something: {raised}");
 }
 
 #[test]
@@ -379,7 +442,7 @@ fn a_new_wallpaper_redraws_everything_and_no_cached_area_shows_the_old_one() {
         .collect();
     assert!(bare.len() > 10_000);
     // A new wallpaper: one colour.
-    let row = [0xFF10_2030u32; W as usize];
+    let row = [0xFF10_2031u32; W as usize];
     for y in 0..H {
         r.wallpaper_row(y, &row);
     }
@@ -393,7 +456,7 @@ fn a_new_wallpaper_redraws_everything_and_no_cached_area_shows_the_old_one() {
             assert!(r.last.background, "the background is made again");
         }
         let now = shown(&mut r, &mem);
-        let stale = bare.iter().filter(|&&i| now[i] != 0x10_2030).count();
+        let stale = bare.iter().filter(|&&i| now[i] != 0x10_2031).count();
         assert_eq!(
             stale, 0,
             "frame {k}: pixels still showing the old wallpaper"

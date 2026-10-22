@@ -35,7 +35,7 @@ mod image {
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::RunLog;
     use rp_refresh::{FAST_DISPPLL, WM_DISPPLL, measured_centi_hz, pll_khz};
-    use rp_vram_map::SCREENS;
+    use rp_vram_map::bench32::SCREENS;
 
     rp_image::entry!(main);
 

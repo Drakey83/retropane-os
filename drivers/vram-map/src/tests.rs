@@ -103,3 +103,33 @@ fn many_small_blocks_fill_and_empty_the_pool() {
     assert_eq!(p.free_bytes(), 0x10000);
     assert_eq!(p.largest(), 0x10000);
 }
+
+#[test]
+fn l1_frees_at_least_1_2_mib_and_keeps_the_32_bit_pictures() {
+    // ADR-0023 Q2 L1: 16-bit screens, wallpaper and area cache; the work
+    // picture and the background stay 32-bit.
+    assert_eq!(SCREENS[0].size, 480 * 640 * 2);
+    assert_eq!(WALLPAPER.size, SCREEN_BYTES);
+    assert_eq!(CACHE.size, SCREEN_BYTES);
+    assert_eq!(WORK.size, 480 * 640 * 4);
+    assert_eq!(BACKGROUND.size, PICTURE32_BYTES);
+    const { assert!(POOL.size >= bench32::POOL.size + 1_200 * 1024) };
+    // The parameter memory and its block didn't move.
+    assert_eq!((PARAMS, PM_TABLE), (bench32::PARAMS, bench32::PM_TABLE));
+}
+
+#[test]
+fn the_test_images_map_is_frozen() {
+    // The addresses the device runs were measured at (rp-gpubench's
+    // pictures, rp-looks' screens, the bus probe's pool): never moved.
+    assert_eq!(check(&bench32::MAP), Ok(()));
+    let at: [u32; 14] = bench32::MAP.map(|g| g.at);
+    assert_eq!(
+        at,
+        [
+            0, 0xF_C000, 0x10_0000, 0x20_0000, 0x34_0000, 0x48_0000, 0x5C_0000, 0x60_0000,
+            0x64_0000, 0x6C_0000, 0x80_0000, 0x81_0000, 0x94_0000, 0xFF_F000
+        ]
+    );
+    assert_eq!(bench32::SCREEN_BYTES, 480 * 640 * 4);
+}

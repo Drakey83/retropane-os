@@ -310,7 +310,7 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let (plane, kept): (Plane, bool) = Display::new(regs).adopt(v.len());
-        let (low, high) = v.split_at_mut(rp_vram_map::POOL.at as usize);
+        let (low, high) = v.split_at_mut(rp_vram_map::bench32::POOL.at as usize);
         let (pool, rest) = high.split_at_mut(FRESH);
         let crumb_at = rest.len() - 16;
         let screen_end = plane.offset + plane.stride * usize::from(plane.height);
@@ -328,7 +328,7 @@ mod image {
             } else {
                 "no stripes"
             },
-            rp_vram_map::POOL.at as usize + FRESH + crumb_at
+            rp_vram_map::bench32::POOL.at as usize + FRESH + crumb_at
         );
         crumbs.mark(0, start.cccr);
         let mut vram = Some(pool);

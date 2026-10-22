@@ -50,7 +50,7 @@ mod image {
         BUILT_IN, CAPTION_H, H, Light, PHOTOS, Page, START, STEPS, W, YUV_BYTES, dial_table,
         page_pixel, shown, straight, strength, unpack,
     };
-    use rp_vram_map::{CACHE, SCREENS};
+    use rp_vram_map::bench32::{CACHE, SCREENS};
 
     use rp_image::crash;
 

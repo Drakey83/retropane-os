@@ -114,7 +114,7 @@ mod image {
         Clock, Draw, LocalMem, Paint, Picture, PixelFormat, Poll, Renderer, Target, Texture,
         UV_ONE, address, factor, format, untwiddle,
     };
-    use rp_vram_map::{self as map, Pool};
+    use rp_vram_map::{Pool, bench32 as map};
 
     use super::MARKER;
 
@@ -278,7 +278,7 @@ mod image {
     const BLACK: u32 = 0xFF00_0000;
     const BLUE: u32 = 0xFF10_20A0;
     const YELLOW: u32 = 0xFFFF_E000;
-    const SCREEN: Picture = Picture::screen(0);
+    const SCREEN: Picture = Picture::bench32(0);
     /// A 16-bit target where the background picture would go (not shown).
     const PIC16: Picture = Picture::packed(map::BACKGROUND.at, 480, 640, PixelFormat::Rgb565);
     const TILES: u32 = 2400;
@@ -1327,7 +1327,7 @@ mod image {
     /// The top 80 lines of both screen pictures: the watch test's words.
     fn prompt(g: &mut Rig, l1: &str, l2: &str) {
         for n in 0..2 {
-            let at = Picture::screen(n).at;
+            let at = Picture::bench32(n).at;
             g.fill(at, (0, 0, 480, 80), BLACK);
             g.text(at, 8, 10, l1, WHITE, 3);
             g.text(at, 8, 46, l2, YELLOW, 3);
@@ -1339,7 +1339,7 @@ mod image {
         log!(
             "W1: a flip at line 320 and back at line 560, every frame: a band shows if a flip takes effect at once"
         );
-        let (a, b) = (Picture::screen(0).at, Picture::screen(1).at);
+        let (a, b) = (Picture::bench32(0).at, Picture::bench32(1).at);
         g.fill(a, (0, 80, 480, 640), BLUE);
         g.fill(b, (0, 80, 480, 640), YELLOW);
         prompt(g, "W1: A YELLOW BAND?", "THEN PRESS A BUTTON");
@@ -1379,13 +1379,13 @@ mod image {
         };
         let _ = r.set_background(Some(GREY));
         let tgt = |n: usize| Target {
-            picture: Picture::screen(n),
+            picture: Picture::bench32(n),
             x: 0,
             y: 80,
         };
         let mut shown = 0usize;
         g.e.regs
-            .write32(dreg::GSCADR, gscadr(Picture::screen(0).at));
+            .write32(dreg::GSCADR, gscadr(Picture::bench32(0).at));
         g.arm_button();
         let t0 = rt::ticks();
         let mut render = Times::default();
@@ -1417,7 +1417,7 @@ mod image {
                 break;
             }
             g.e.regs
-                .write32(dreg::GSCADR, gscadr(Picture::screen(back).at));
+                .write32(dreg::GSCADR, gscadr(Picture::bench32(back).at));
             let l = g.line();
             (lmin, lmax) = (lmin.min(l), lmax.max(l));
             let gap = us_since(last_flip);
@@ -1434,7 +1434,7 @@ mod image {
             render.median()
         );
         g.e.regs
-            .write32(dreg::GSCADR, gscadr(Picture::screen(0).at));
+            .write32(dreg::GSCADR, gscadr(Picture::bench32(0).at));
         g.set(&mut r, 0, None);
         g.set(&mut r, 1, None);
         let _ = r.release(&mut g.pool);
@@ -2892,7 +2892,7 @@ mod image {
             Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
         );
         let t = Target {
-            picture: Picture::screen(0),
+            picture: Picture::bench32(0),
             x: 0,
             y: 0,
         };
@@ -3585,11 +3585,15 @@ mod image {
     }
 
     /// The picture on screen: where (`GSCADR`'s) and its words' hash.
+    /// Words in one of the renderer's screens (RGB565 since ADR-0023's L1:
+    /// two pixels a word).
+    const FF_SCREEN_WORDS: u32 = (rp_mbx_render::SCREEN_BYTES / 4) as u32;
+
     fn ff_shown(r: &mut Ff2d<'_>) -> (u32, u32) {
         let (e, m) = r.parts();
         let at = (e.regs.read32(dreg::GSCADR) & 0x7F_FFFF) * 16;
         let mut h = 0x811C_9DC5u32;
-        for k in 0..480 * 640 {
+        for k in 0..FF_SCREEN_WORDS {
             h = (h ^ m.load((at + 4 * k) as usize).unwrap_or(0)).wrapping_mul(0x0100_0193);
         }
         (at, h)
@@ -3755,7 +3759,7 @@ mod image {
             let keep = map::POOL.at;
             {
                 let (_, m) = r.parts();
-                for k in 0..480 * 640u32 {
+                for k in 0..FF_SCREEN_WORDS {
                     let v = m.load((b1.0 + 4 * k) as usize).unwrap_or(0);
                     m.store((keep + 4 * k) as usize, &[v]);
                 }
@@ -3773,13 +3777,19 @@ mod image {
             let (mut differ, mut worst) = (0u32, 0u32);
             {
                 let (_, m) = r.parts();
-                for k in 0..480 * 640u32 {
+                for k in 0..FF_SCREEN_WORDS {
                     let x = m.load((b2.0 + 4 * k) as usize).unwrap_or(0);
                     let y = m.load((keep + 4 * k) as usize).unwrap_or(0);
-                    if (x ^ y) & 0x00FF_FFFF != 0 {
-                        differ += 1;
-                        for s in [0, 8, 16] {
-                            worst = worst.max(((x >> s) & 0xFF).abs_diff((y >> s) & 0xFF));
+                    // Two RGB565 pixels a word; channels compared widened
+                    // to 8 bits (the bound stays the host test's).
+                    for half in [0, 16] {
+                        let (x, y) = ((x >> half) & 0xFFFF, (y >> half) & 0xFFFF);
+                        if x != y {
+                            differ += 1;
+                            for (s, bits) in [(11, 5), (5, 6), (0, 5)] {
+                                let ch = |v: u32| ((v >> s) & ((1 << bits) - 1)) << (8 - bits);
+                                worst = worst.max(ch(x).abs_diff(ch(y)));
+                            }
                         }
                     }
                 }

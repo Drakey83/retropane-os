@@ -22,8 +22,13 @@
 /// The size of 2700G local memory.
 pub const SIZE: u32 = 0x0100_0000;
 
-/// One picture of the screen, XRGB8888 (480 x 640 x 4).
-pub const SCREEN_BYTES: u32 = 480 * 4 * 640;
+/// One screen picture, RGB565 (480 x 640 x 2): ADR-0023's screens are
+/// 16-bit since the owner's 2026-10-21 vote.
+pub const SCREEN_BYTES: u32 = 480 * 2 * 640;
+
+/// One 32-bit picture (480 x 640 x 4): the work picture and the
+/// background, where every blend happens at 8 bits a channel.
+pub const PICTURE32_BYTES: u32 = 480 * 4 * 640;
 
 /// A fixed region.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,39 +70,103 @@ pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0
 /// manager's pages misbehaved above 8 MiB, `rp-mbx3d` version 14).
 /// **Proposed.**
 pub const PARAMS: Region = r("3D parameter memory", 0x0010_0000, 0x0010_0000, 0x1000);
-/// ADR-0023's two screen pictures.
+/// ADR-0023's two screen pictures, RGB565 (option L1, 2026-10-21).
 pub const SCREENS: [Region; 2] = [
     r("screen 0", 0x0020_0000, SCREEN_BYTES, 0x1000),
-    r("screen 1", 0x0034_0000, SCREEN_BYTES, 0x1000),
+    r("screen 1", 0x0029_6000, SCREEN_BYTES, 0x1000),
 ];
-/// The wallpaper, XRGB8888.
-pub const WALLPAPER: Region = r("wallpaper", 0x0048_0000, SCREEN_BYTES, 0x1000);
+/// The 2D renderer's work picture, 32-bit: each changed rectangle is
+/// composed here, then converted into a screen (ADR-0023 Q1 A).
+pub const WORK: Region = r("work picture", 0x0032_C000, PICTURE32_BYTES, 0x1000);
+/// The wallpaper, RGB565 (quantised once on the CPU; the engine widens it
+/// by repeating the top bits, measured 2026-10-17).
+pub const WALLPAPER: Region = r("wallpaper", 0x0045_8000, SCREEN_BYTES, 0x1000);
 /// The 2D renderer's row ring (64 rows of 2.5 KiB).
-pub const ROWS: Region = r("row ring", 0x005C_0000, 64 * 2560, 4);
+pub const ROWS: Region = r("row ring", 0x004E_E000, 64 * 2560, 4);
 /// The 2D renderer's image cache.
-pub const IMAGES: Region = r("image cache", 0x0060_0000, 256 * 1024, 4);
+pub const IMAGES: Region = r("image cache", 0x0051_6000, 256 * 1024, 4);
 /// The glyph atlases.
-pub const GLYPHS: Region = r("glyph atlases", 0x0064_0000, 512 * 1024, 4);
-/// The background: wallpaper and hoisted glass.
-pub const BACKGROUND: Region = r("background", 0x006C_0000, SCREEN_BYTES, 0x1000);
-/// The dither pattern's four rows (screen stride apart).
-pub const DITHER: Region = r("dither rows", 0x0080_0000, 4 * 480 * 4, 4);
-/// Finished areas kept for reuse.
-pub const CACHE: Region = r("area cache", 0x0081_0000, SCREEN_BYTES, 0x1000);
+pub const GLYPHS: Region = r("glyph atlases", 0x0055_6000, 512 * 1024, 4);
+/// The background: wallpaper and hoisted glass, 32-bit.
+pub const BACKGROUND: Region = r("background", 0x005D_6000, PICTURE32_BYTES, 0x1000);
+/// The dither pattern's four rows (32-bit, the work picture's stride
+/// apart).
+pub const DITHER: Region = r("dither rows", 0x0070_2000, 4 * 480 * 4, 4);
+/// Finished areas kept for reuse: screen pixels, RGB565.
+pub const CACHE: Region = r("area cache", 0x0070_4000, SCREEN_BYTES, 0x1000);
 /// The 2D engine's fence word (its page).
 pub const FENCE: Region = r("2D fence", 0x00FF_F000, 0x1000, 4);
 
 /// Every fixed region, in address order.
-pub const MAP: [Region; 14] = [
-    PLANES, PM_TABLE, PARAMS, SCREENS[0], SCREENS[1], WALLPAPER, ROWS, IMAGES, GLYPHS, BACKGROUND,
-    DITHER, CACHE, POOL, FENCE,
+pub const MAP: [Region; 15] = [
+    PLANES, PM_TABLE, PARAMS, SCREENS[0], SCREENS[1], WORK, WALLPAPER, ROWS, IMAGES, GLYPHS,
+    BACKGROUND, DITHER, CACHE, POOL, FENCE,
 ];
 
 /// The space handed out at run time (textures, the 3D core's per-tile
 /// buffer and region arrays, depth, video frames): from the area cache's
 /// end (rounded up to 128 KiB, the 3D per-tile buffer's alignment) to the
-/// fence, 6.75 MiB.
-pub const POOL: Region = r("pool", 0x0094_0000, 0x00FF_F000 - 0x0094_0000, 0x2_0000);
+/// fence, ~8.4 MiB (6.75 MiB with 32-bit screens).
+pub const POOL: Region = r("pool", 0x007A_0000, 0x00FF_F000 - 0x007A_0000, 0x2_0000);
+
+/// The map as it was with 32-bit screens (ADR-0023 before its
+/// 2026-10-21 amendment), kept unchanged for the test images measured
+/// with it (`rp-gpubench`, `rp-mbx3d-api`, `rp-looks`, the display and
+/// bus probes): their device runs stay comparable, byte for byte. The OS
+/// (the renderers, the graphics service, the shell) uses the crate's own
+/// map. Never both in one image's drawing: the two overlap.
+pub mod bench32 {
+    use super::{Region, r};
+
+    /// One picture of the screen, XRGB8888 (480 x 640 x 4).
+    pub const SCREEN_BYTES: u32 = 480 * 4 * 640;
+
+    /// The loader's and Windows Mobile's display planes (below 1 MiB; the
+    /// loader's at `0x60000`). Kept while the loader may still show them.
+    pub const PLANES: Region = r("loader and WM planes", 0, 0x000F_C000, 4);
+    /// 3D parameter memory manager's 16 KiB block (16 KiB aligned).
+    /// **Proposed** (ADR-0026/0027): placement rules only partly known.
+    pub const PM_TABLE: Region = r("3D memory manager block", 0x000F_C000, 0x4000, 0x4000);
+    /// 3D parameter memory: objects and lists (4 KiB aligned, kept low: the
+    /// manager's pages misbehaved above 8 MiB, `rp-mbx3d` version 14).
+    /// **Proposed.**
+    pub const PARAMS: Region = r("3D parameter memory", 0x0010_0000, 0x0010_0000, 0x1000);
+    /// ADR-0023's two 32-bit screen pictures (before the 16-bit amendment).
+    pub const SCREENS: [Region; 2] = [
+        r("screen 0", 0x0020_0000, SCREEN_BYTES, 0x1000),
+        r("screen 1", 0x0034_0000, SCREEN_BYTES, 0x1000),
+    ];
+    /// The wallpaper, XRGB8888.
+    pub const WALLPAPER: Region = r("wallpaper", 0x0048_0000, SCREEN_BYTES, 0x1000);
+    /// The 2D renderer's row ring (64 rows of 2.5 KiB).
+    pub const ROWS: Region = r("row ring", 0x005C_0000, 64 * 2560, 4);
+    /// The 2D renderer's image cache.
+    pub const IMAGES: Region = r("image cache", 0x0060_0000, 256 * 1024, 4);
+    /// The glyph atlases.
+    pub const GLYPHS: Region = r("glyph atlases", 0x0064_0000, 512 * 1024, 4);
+    /// The background: wallpaper and hoisted glass.
+    pub const BACKGROUND: Region = r("background", 0x006C_0000, SCREEN_BYTES, 0x1000);
+    /// The dither pattern's four rows (screen stride apart).
+    pub const DITHER: Region = r("dither rows", 0x0080_0000, 4 * 480 * 4, 4);
+    /// Finished areas kept for reuse.
+    pub const CACHE: Region = r("area cache", 0x0081_0000, SCREEN_BYTES, 0x1000);
+    /// The 2D engine's fence word (its page).
+    pub const FENCE: Region = r("2D fence", 0x00FF_F000, 0x1000, 4);
+
+    /// Every fixed region, in address order.
+    pub const MAP: [Region; 14] = [
+        PLANES, PM_TABLE, PARAMS, SCREENS[0], SCREENS[1], WALLPAPER, ROWS, IMAGES, GLYPHS,
+        BACKGROUND, DITHER, CACHE, POOL, FENCE,
+    ];
+
+    /// The space handed out at run time (textures, the 3D core's per-tile
+    /// buffer and region arrays, depth, video frames): from the area cache's
+    /// end (rounded up to 128 KiB, the 3D per-tile buffer's alignment) to the
+    /// fence, 6.75 MiB.
+    pub const POOL: Region = r("pool", 0x0094_0000, 0x00FF_F000 - 0x0094_0000, 0x2_0000);
+
+    const _: () = assert!(super::check(&MAP).is_ok());
+}
 
 /// Why a map is wrong.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

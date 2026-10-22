@@ -58,7 +58,7 @@ mod image {
         self as r3d, AlphaTest, Clock, ClockPolicy, Depth, Draw, Error, FrameStats, LocalMem,
         Paint, Picture, Poll, Renderer, Target, UV_ONE, address, depth, factor, format,
     };
-    use rp_vram_map::{self as map, Pool};
+    use rp_vram_map::{Pool, bench32 as map};
 
     use super::MARKER;
 
@@ -76,7 +76,7 @@ mod image {
     const BLUE: u32 = 0xFF00_00FF;
     const WHITE: u32 = 0xFFFF_FFFF;
     const BLACK: u32 = 0xFF00_0000;
-    const SCREEN: Picture = Picture::screen(0);
+    const SCREEN: Picture = Picture::bench32(0);
     const FULL: Target = Target {
         picture: SCREEN,
         x: 0,

@@ -26,7 +26,7 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
     use rp_screen_measure::Schedule;
     use rp_screen_measure::program::{PROGRAM_BYTES, StepLight, placeholder};
-    use rp_vram_map::SCREENS;
+    use rp_vram_map::bench32::SCREENS;
 
     rp_image::entry!(main);
 

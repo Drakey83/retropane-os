@@ -16,7 +16,7 @@ use super::*;
 const GREY: u32 = 0xFF20_2020;
 const RED: u32 = 0xFFFF_0000;
 const BLUE: u32 = 0xFF00_00FF;
-const SCREEN: Picture = Picture::screen(0);
+const SCREEN: Picture = Picture::bench32(0);
 const FULL: Target = Target {
     picture: SCREEN,
     x: 0,
@@ -244,7 +244,7 @@ fn targets_that_dont_fit_are_refused() {
 #[test]
 fn double_buffered_pictures_each_get_the_changes_they_missed() {
     let mut g = rig(480, 640);
-    let pic = [Picture::screen(0), Picture::screen(1)];
+    let pic = [Picture::bench32(0), Picture::bench32(1)];
     let into = |n: usize| Target {
         picture: pic[n],
         x: 0,
