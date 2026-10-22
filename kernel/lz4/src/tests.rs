@@ -283,13 +283,11 @@ fn the_hash_multiplier_takes_the_short_multiply() {
     // The XScale takes a cycle longer for a multiplier above 27 bits and
     // LLVM doesn't hide it (docs/hw/cpu.md): compress was 7.8% slower with
     // LZ4's 32-bit constant. Odd, so no input bit is dropped.
-    const {
-        assert!(
-            HASH_K < 1 << 27,
-            "the hash multiplier takes the long multiply"
-        )
-    };
-    const { assert!(HASH_K % 2 == 1) };
+    // Read at run time, so a wrong constant fails this test rather than the
+    // build (the mutant runner needs a failing test).
+    let k = core::hint::black_box(HASH_K);
+    assert!(k < 1 << 27, "{k:#x} takes the long multiply");
+    assert_eq!(k % 2, 1);
     assert_eq!(
         HASH_K,
         0x9E37_79B1 >> 5,
