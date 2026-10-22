@@ -165,6 +165,17 @@ budget (`xtask/src/size.rs`). See ADR-0005 and the four lenses (🔁 iterate,
 
 ## Real hardware
 
+**The performance gate's CPU measurements (2026-10-22 night, `rp-probe`
+on the owner's X51v at 624 MHz, `local/rp-probe-gate-run1.txt`):**
+
+| Measure | Result |
+|---|---|
+| D-cache walk, one read a 32-byte line | ~27 ns a line for 4-28 KiB, 56 ns at 32 KiB, **~233 ns a line at 40 KiB and up**: the 32 KiB D-cache confirmed; a missed line ~233 ns |
+| `memcpy` by size | 64 B 254 ns, 256 B 705 ns, 1-16 KiB **~375 MB/s** (in the cache), 64 KiB-1 MiB **~96 MB/s** (memory-bound) |
+| Internal SRAM | copy within 64 KiB **286 MB/s** (3x SDRAM's 95), SDRAM to SRAM 141 MB/s, fill 475 MB/s (SDRAM 377); random hop **111 ns** (SDRAM 491) |
+| TLB, 60 sections | 20.0 us with the table in SDRAM, **3.9 us in SRAM** (5.2x) |
+
+
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)
 
 | File | Bytes | Write | Read back | Clusters |

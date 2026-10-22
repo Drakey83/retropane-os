@@ -144,8 +144,8 @@ named in its evidence.
 
 | Line | Status | Evidence, or what's left |
 |---|---|---|
-| V1 | open | the CPU ID read (`0x69054117`); the caches' real ends, the mini cache and iWMMXt not measured |
-| V2 | open | the SRAM's size and speed not measured |
+| V1 | partial | rp-probe (X51v, 2026-10-22): the D-cache's 32 KiB confirmed (a line walk misses from 40 KiB, ~233 ns a miss); the CPU ID read; the I-cache, the mini data cache and iWMMXt not measured |
+| V2 | partial | rp-probe (X51v, 2026-10-22): 256 KiB of SRAM chased and read back right, its speed measured (286 MB/s copy, 111 ns a hop); every byte's pattern test not run |
 | V3 | open | WM's seven speeds not set and measured by us |
 | V4 | open | the voltage patterns not ranked |
 | V5 | open | C2's stepped test not run |
@@ -157,11 +157,11 @@ named in its evidence.
 | V11 | open | the power manager's bit names not checked |
 | C1 | partial | 624 MHz measured under the loader (rp-noise run 1); the operating points and switch costs not swept |
 | C2 | open | the overclock study not started |
-| C3 | partial | a TLB miss 5.2x cheaper with the table in SRAM (perf.md); the SRAM's speed and best uses not measured |
+| C3 | partial | rp-probe (X51v, 2026-10-22): SRAM copies 3x SDRAM, hops 4.4x faster, page tables there make TLB spills 5.2x cheaper; what lives there best (tables, hot buffers, upload staging: T2) to decide |
 | C4 | partial | RetroPane's random hop 491 ns (perf.md); page sizes, table placement, TLB lock-down not tried |
 | C5 | partial | `pld` helps `memcpy` (perf.md); the mini cache and line locking not tried |
 | C6 | open | iWMMXt never exercised |
-| C7 | partial | `memcpy_64k` ~95 MB/s (perf.md); the sweep of methods and sizes not run |
+| C7 | partial | rp-probe (X51v, 2026-10-22): `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory, by size from 64 B to 1 MiB; the methods (pld distance, ldm/stm widths, iWMMXt, DMA) not swept |
 | C8 | partial | the cycle counter used; the event counters not wired into the benches |
 | C9 | open | ARM/Thumb, inlining, layout, LTO A/B builds not run |
 | C10 | partial | interrupts, the run limit and idle work; wake latency per sleep depth not measured |
