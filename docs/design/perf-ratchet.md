@@ -121,7 +121,8 @@ On the emulator (its times, not the device's): 28 presses, 52 answers,
 | Run | Pen-down period, median (worst) | Landing to verdict | Touch to flush, median (worst) |
 |---|---|---|---|
 | The replay (recorder off), twice (alone and in `cargo xtask perf`) | 6.95 ms (12.6) | 8.9 ms (15.9) | 13.3 ms (44.3) |
-| The replay with the recorder (`RP_TODAY_REPLAY_RECORD`) | 10.6 ms (46.2) | 17.9 ms (28.5) | 30.4 ms (55.1) |
+| The replay with the recorder (`RP_TODAY_REPLAY_RECORD`), C59's option (a) | 10.6 ms (46.2) | 17.9 ms (28.5) | 30.4 ms (55.1) |
+| The same, after C59's follow-up (a busy card left alone) | 7.2 ms (13.0) | 9.5 ms (16.7) | 11.3 ms (44.6) |
 
 The two runs without the recorder agreed to the microsecond on most
 numbers. A side effect of the replay: its conversions hold the pen line
@@ -138,6 +139,16 @@ three by 0.0-0.3% (`b7d` 16-bit copy, `b9e` 16-bit copy, `ft_alone` 2D),
 `cpu_unit_during_dma` -16.7%. Swings both ways in CPU loops whose code
 didn't change look like code placement, not the change: to be checked
 before the owner decides (no floor updated).
+
+**A second run after C59's follow-up moved every image's code again
+(`local/perf/run-1792692073.txt`):** 105 of 110 numbers within 0.5% of
+the first run (`probe.cache_walk_32k` +11%, the noisiest), the same ones
+slower than the floors (now 8 with `probe.cache_walk_40k` +0.9%,
+`probe.gfx_flush_vga` +0.0%). So moving the code by ~1 KiB doesn't move
+them: what both runs share and the floors' runs didn't is the new loader
+(installed this session) and C59's first change. Next: one run under
+the old loader (the backup) to tell the two apart, then the owner
+decides the floors.
 
 ## Not yet
 
