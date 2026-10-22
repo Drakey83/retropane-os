@@ -548,6 +548,10 @@ impl dmaring::Engine for RingChannel<'_> {
     }
 }
 
+/// Register reads a ring's start waits at most for the first piece's load
+/// (a descriptor fetch: far fewer; not measured on the X51v).
+const FIRST_LOAD_POLLS: u32 = 10_000;
+
 impl DmaRing for Dma {
     fn start(&mut self, port: Port, ring: &[u8]) -> bool {
         let addr = ring.as_ptr() as u32;
@@ -565,7 +569,20 @@ impl DmaRing for Dma {
         }
         cpu::clean_range(addr, len);
         self.ring = self.program_ring(port, addr, len);
-        self.ring.is_some()
+        let Some(ring) = self.ring else {
+            return false;
+        };
+        // Quality audit C56: until the first piece is loaded, `DSADR` is
+        // the previous transfer's (inside this ring when it was stopped and
+        // started again) and `position` would report it. The load takes a
+        // descriptor fetch; bounded, and a ring that never loads is refused.
+        for _ in 0..FIRST_LOAD_POLLS {
+            if ring.first_loaded(self.seen()) {
+                return true;
+            }
+        }
+        self.stop();
+        false
     }
 
     fn position(&mut self) -> Option<usize> {

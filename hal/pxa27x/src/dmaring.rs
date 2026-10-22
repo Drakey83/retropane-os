@@ -184,6 +184,18 @@ impl Ring {
         self.end.is_some() && seen.stopped
     }
 
+    /// Right after the chain is started at slot 0 (`DDADR` written with
+    /// `base`): whether the controller has loaded the first piece. Until
+    /// then `DSADR` is the previous transfer's, and after a stop and start
+    /// of the same ring it lies inside the ring and reads as a position
+    /// (quality audit C56). Loading piece 0 puts its link (slot 1) in
+    /// `DDADR`. Only meaningful in the first piece: in the last piece
+    /// `DDADR` names slot 0 again.
+    #[must_use]
+    pub fn first_loaded(&self, s: Seen) -> bool {
+        s.stopped || self.slot_of(s.ddadr) != Some(0)
+    }
+
     /// The slot `DDADR` names, if it is one of this ring's.
     fn slot_of(&self, ddadr: u32) -> Option<u32> {
         let off = (ddadr & !(SLOT - 1)).wrapping_sub(self.base);
@@ -697,5 +709,40 @@ mod tests {
         let mut r = Ring::start(BUF, LEN, DEVICE, 0, &mut chain, CHAIN).unwrap();
         assert_eq!(r.end_at(9 * 1_408, &mut Wild, 10), RingEnd::Failed);
         assert_eq!(r.end_at(LEN, &mut Wild, 10), RingEnd::Failed);
+    }
+
+    /// C56: a ring started again over a stale `DSADR` inside it reads a
+    /// position until the first piece loads; `first_loaded` says when.
+    #[test]
+    fn the_first_load_is_seen_over_a_stale_position_inside_the_ring() {
+        let (mut m, ring) = Model::new(7, 0);
+        // A previous run of this ring stopped 5 pieces and 64 bytes in.
+        m.dsadr = BUF + 5 * ring.piece() + 64;
+        let before = Seen {
+            stopped: false,
+            ddadr: m.ddadr,
+            dsadr: m.dsadr,
+            dtadr: DEVICE,
+        };
+        assert!(!ring.first_loaded(before));
+        assert_eq!(
+            ring.offset(before.dsadr),
+            Some(5 * ring.piece() + 64),
+            "the hazard"
+        );
+        assert!(m.step(), "the load");
+        let after = Seen {
+            stopped: false,
+            ddadr: m.ddadr,
+            dsadr: m.dsadr,
+            dtadr: DEVICE,
+        };
+        assert!(ring.first_loaded(after));
+        assert_eq!(ring.offset(after.dsadr), Some(0));
+        let stopped = Seen {
+            stopped: true,
+            ..before
+        };
+        assert!(ring.first_loaded(stopped));
     }
 }
