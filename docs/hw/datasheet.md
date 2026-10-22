@@ -226,8 +226,9 @@ watching.
   stays busy after it (poll CMD13).
 - Blocks past the end are refused by the driver before any command
   (confirmed 2026-10-21). Reading the last block makes the card report
-  `OUT_OF_RANGE` in the status of a command some time later (confirmed
-  2026-10-21; a CMD13 straight after the read is too early to collect it). Page: [sd.md](sd.md).
+  `OUT_OF_RANGE` under 76 us after the read, kept until a command collects
+  it (confirmed 2026-10-21, 20 of 20; a CMD13 straight after the read is
+  too early). The driver polls CMD13 for it, ~1 ms at most. Page: [sd.md](sd.md).
 
 ### CompactFlash slot
 - PC Card socket 1; power CPLD `0x16` bit 1 then `0x10` bit 12; RESET CPLD

@@ -106,7 +106,7 @@ mod image {
         rt::init_mmu();
         if GUARD {
             log!(
-                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 4"
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 5"
             );
             guard();
         } else {
@@ -480,8 +480,9 @@ mod image {
             log!("  G7b wait {wait} us: read {r:?}; CMD13 {a:x?}, then {b:x?}");
         }
         log!(
-            "  G7 the driver collected after {} last-block reads in all",
-            card.end_settles()
+            "  G7 the driver collected after {} last-block reads in all; its OUT_OF_RANGE never came after {} (version 5's driver waits for it: G7 then finds none)",
+            card.end_settles(),
+            card.end_unseen()
         );
     }
 

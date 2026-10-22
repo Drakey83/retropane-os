@@ -178,6 +178,12 @@ const CMD8_ARG: u32 = 0x1AA; // 2.7-3.6 V, check pattern 0xAA
 const STATUS_ERRORS: u32 = 0xFD39_0008;
 /// Card status bit 31: an argument or a transfer past the card's end.
 const OUT_OF_RANGE: u32 = 1 << 31;
+/// CMD13s [`SdCard::after_reading_to`] sends at most waiting for the
+/// `OUT_OF_RANGE` a read of the last block raises: ~1 ms at the X51v's
+/// ~13 us a CMD13, 13 times the 76 us the owner's card took every time
+/// (guard run version 4, 2026-10-21, 20 of 20). Counted, as the driver's
+/// other waits are (it has no clock).
+const END_POLLS: u32 = 80;
 /// Card status: ready for data (not busy programming).
 const STATUS_READY_FOR_DATA: u32 = 1 << 8;
 /// Card status: the current state, `prg` = programming.
@@ -243,6 +249,8 @@ pub struct SdCard<H> {
     slow_reads: u32,
     /// Reads ending on the last block whose status was collected after.
     end_settles: u32,
+    /// Of those, the ones whose OUT_OF_RANGE never came (see `end_unseen`).
+    end_unseen: u32,
     /// Ranges (first block, count) read block by block from now on.
     weak: [(u32, u32); WEAK_RANGES],
     weak_len: u8,
@@ -272,6 +280,7 @@ impl<H: SdHost> SdCard<H> {
                 read_fallbacks: 0,
                 slow_reads: 0,
                 end_settles: 0,
+                end_unseen: 0,
                 weak: [(0, 0); WEAK_RANGES],
                 weak_len: 0,
                 weak_next: 0,
@@ -302,6 +311,7 @@ impl<H: SdHost> SdCard<H> {
             read_fallbacks: 0,
             slow_reads: 0,
             end_settles: 0,
+            end_unseen: 0,
             weak: [(0, 0); WEAK_RANGES],
             weak_len: 0,
             weak_next: 0,
@@ -469,13 +479,16 @@ impl<H: SdHost> SdCard<H> {
     }
 
     /// After a read of blocks `lba..lba + count`: if it ended on the card's
-    /// last block, CMD13 collects the `OUT_OF_RANGE` the card raised doing
-    /// it, which it reports in the *next* command's status (the owner's
-    /// 32 GB card on the X51v, 2026-10-21: every read after one of the last
-    /// block failed with `0x80000900`, until a CMD13 or another command took
-    /// it; quality audit C46, the owner's option a). That bit alone is
-    /// expected there; anything else CMD13 reports is an error. Other reads
-    /// send nothing more.
+    /// last block, the `OUT_OF_RANGE` the card raises after it is waited
+    /// for and collected (quality audit C46, the owner's option a). The
+    /// owner's 32 GB card on the X51v raises it under 76 us after the read
+    /// (guard run version 4, 20 of 20; a CMD13 straight after, version 3's
+    /// fix, came too early) and reports it in the next command's status,
+    /// whatever that is: every read after one of the last block failed
+    /// with `0x80000900`. CMD13 is sent until the bit shows (then it is
+    /// gone), [`END_POLLS`] at most; that bit alone is expected there,
+    /// anything else CMD13 reports is an error. Other reads send nothing
+    /// more.
     #[inline(always)]
     fn after_reading_to(&mut self, lba: u32, count: u32) -> Result<(), Error> {
         if lba.saturating_add(count) != self.blocks {
@@ -491,9 +504,25 @@ impl<H: SdHost> SdCard<H> {
     #[inline(never)]
     fn settle_end(&mut self) -> Result<(), Error> {
         let arg = u32::from(self.rca) << 16;
-        let status = self.host.command(Command::new(13, arg, Response::R1))?[0];
         self.end_settles = self.end_settles.wrapping_add(1);
-        check(status & !OUT_OF_RANGE)
+        for _ in 0..END_POLLS {
+            let status = self.host.command(Command::new(13, arg, Response::R1))?[0];
+            check(status & !OUT_OF_RANGE)?;
+            if status & OUT_OF_RANGE != 0 {
+                return Ok(());
+            }
+        }
+        // A card that doesn't raise it (or not within the bound).
+        self.end_unseen = self.end_unseen.wrapping_add(1);
+        Ok(())
+    }
+
+    /// Reads ending on the last block after which no `OUT_OF_RANGE` came
+    /// within [`END_POLLS`] CMD13s (a card that doesn't raise it; if one
+    /// raises it later, the next command fails as before C46).
+    #[must_use]
+    pub fn end_unseen(&self) -> u32 {
+        self.end_unseen
     }
 
     /// Reads that ended on the last block and had the card's status
@@ -907,6 +936,11 @@ mod tests {
         end_out_of_range: bool,
         /// OUT_OF_RANGE to report in the next response.
         oor_pending: bool,
+        /// Commands after a last-block read before the card raises it (the
+        /// X51v's card: it came at the second CMD13, ~76 us).
+        end_delay: u32,
+        /// Commands still to go before it is raised.
+        oor_in: Option<u32>,
         /// Status bits every CMD13 adds.
         cmd13_extra: u32,
     }
@@ -939,12 +973,36 @@ mod tests {
                 no_acmd23: false,
                 end_out_of_range: false,
                 oor_pending: false,
+                end_delay: 0,
+                oor_in: None,
                 cmd13_extra: 0,
             }
         }
 
         fn data_status(&self) -> u32 {
             if self.fail_status { 0x8000_0900 } else { 0x900 }
+        }
+
+        /// OUT_OF_RANGE raised after `n` more commands (at once for 0).
+        fn raise_after(&mut self, n: u32) {
+            if n == 0 {
+                self.oor_pending = true;
+            } else {
+                self.oor_in = Some(n);
+            }
+        }
+
+        /// A command arrives: a delayed OUT_OF_RANGE counts down, and is
+        /// raised (reported from the next response on) when it reaches 0.
+        fn tick(&mut self) {
+            if let Some(n) = self.oor_in {
+                if n <= 1 {
+                    self.oor_in = None;
+                    self.oor_pending = true;
+                } else {
+                    self.oor_in = Some(n - 1);
+                }
+            }
         }
 
         /// The card's capacity in blocks, as its CSD gives it.
@@ -962,7 +1020,7 @@ mod tests {
                 0
             };
             if self.end_out_of_range && range.end == self.capacity() {
-                self.oor_pending = true;
+                self.raise_after(self.end_delay);
             }
             earlier
         }
@@ -974,6 +1032,7 @@ mod tests {
         }
         fn command(&mut self, c: Command) -> Result<[u32; 4], HostError> {
             self.log.push((c.index, c.arg));
+            self.tick();
             if c.index == 9 {
                 // CSD v2 with C_SIZE 0 (1024 blocks) for SDHC; v1 with
                 // READ_BL_LEN 9, C_SIZE 1, C_SIZE_MULT 0 (8 blocks) for SDSC.
@@ -1302,6 +1361,9 @@ mod tests {
             let mut fake = FakeCard::new(true, false);
             fake.capable = capable;
             fake.end_out_of_range = true;
+            // As the X51v's card: raised by the second command after the
+            // read (version 3's single CMD13 straight after missed it).
+            fake.end_delay = 2;
             let mut card = SdCard::init(fake).unwrap();
             let n = card.blocks();
             assert_eq!(n, 8);
@@ -1316,11 +1378,26 @@ mod tests {
                 card.read(1, &mut one).unwrap();
             }
             assert_eq!(card.end_settles(), 4, "capable {capable}");
+            assert_eq!(card.end_unseen(), 0, "capable {capable}");
             // Reads elsewhere send nothing more.
             let before = card.host.log.len();
             card.read(2, &mut one).unwrap();
             assert_eq!(card.host.log.len(), before + 1);
         }
+    }
+
+    /// A card that never raises it: the wait ends at its bound, counted,
+    /// and the reads go on.
+    #[test]
+    fn a_card_without_the_late_out_of_range_waits_its_bound_only() {
+        let mut card = SdCard::init(FakeCard::new(true, false)).unwrap();
+        let before = card.host.log.len();
+        let mut one = [0u8; BLOCK];
+        card.read(7, &mut one).unwrap();
+        card.read(0, &mut one).unwrap();
+        let cmd13s = card.host.log[before..].iter().filter(|c| c.0 == 13).count();
+        assert_eq!(cmd13s, END_POLLS as usize);
+        assert_eq!((card.end_settles(), card.end_unseen()), (1, 1));
     }
 
     /// The status collected after the last block is still checked: an

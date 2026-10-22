@@ -95,7 +95,7 @@ The owner's second reviewer read these and conceded all eight
   Run F checks it, and an emulator mutant drops the write.
 - **C44** (fixed): an abort's crash line always said SPSR 0 (found by run F).
 - **C45** (fixed): emulator checks didn't size-check variants (found by run FF).
-- **C46** (open, your option a): reads fail after a read of the card's last block; the CMD13 fix was too early on the device, the delay is to measure.
+- **C46** (fixed again, your option a, waiting for guard version 5): reads failed after a read of the card's last block. Guard version 4 measured the card raising the flag 76 us after the read (20 of 20); the driver now polls CMD13 until it shows, ~1 ms at most.
 - **C47** (fixed): 2D commands took any rectangle; on the device an inverted one writes past its picture.
 - **C43** (open; your call: the faked reading first, the real stall
   decided after it): the FIFO-full device run (C37)

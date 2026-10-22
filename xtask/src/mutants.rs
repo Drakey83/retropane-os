@@ -1792,15 +1792,23 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "SD card: the status collected after the last block not checked (quality audit C46)",
         file: "drivers/sdcard/src/lib.rs",
-        from: "        check(status & !OUT_OF_RANGE)
-",
-        to: "        let _ = status;
-        Ok(())
-",
+        from: "            check(status & !OUT_OF_RANGE)?;",
+        to: "            let _ = status;",
         check: Check::Host(&[
             "-p",
             "rp-drv-sdcard",
             "another_error_after_the_last_block_still_fails",
+        ]),
+    },
+    Mutant {
+        name: "SD card: one CMD13 straight after a last-block read, too early for the X51v's card (quality audit C46, guard run version 3)",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "        for _ in 0..END_POLLS {",
+        to: "        for _ in 0..1 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "a_read_ending_on_the_last_block_leaves_no_error_for_the_next",
         ]),
     },
     // The audio ring's end (ADR-0032 A6, dmaring).

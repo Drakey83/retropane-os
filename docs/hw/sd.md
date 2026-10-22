@@ -305,6 +305,14 @@ driver's count agreeing):
   The guard run version 4 (G7) measures it: 20 last-block reads each
   followed by CMD13 every ~50 us for up to 50 ms, then single CMD13s after
   idle waits of 0.1-10 ms.
+- **Version 4 (`local/rp-sdtime-guard-run4.txt`): measured, confirmed.**
+  After each of 20 last-block reads (the driver's own CMD13 straight after
+  it, clean), the bit showed at G7's second CMD13, **76 us after the read,
+  20 of 20**; the CMD13 after it was clean. After idle waits of 0.1, 0.5,
+  1, 2, 5 and 10 ms one CMD13 found it every time, the next clean. So it
+  is raised by a time (under 76 us; a CMD13 takes ~13 us at full clock),
+  and it stays until a command collects it. The driver now sends CMD13
+  until it shows, 80 at most (~1 ms).
 
 ## Emulator
 
