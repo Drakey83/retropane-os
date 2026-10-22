@@ -32,6 +32,10 @@ struct Prog {
     overlapped: u32,
     /// The writer waits in its writes, as the loader's drivers do.
     waits: bool,
+    /// Polls that find a card still programming after each write.
+    busy_polls: u32,
+    /// Polls left before the card's current programming ends.
+    busy_left: [u32; 2],
 }
 
 impl Run {
@@ -106,6 +110,7 @@ impl Io for Run {
             return false;
         }
         self.prog.unsettled[unit] = true;
+        self.prog.busy_left[unit] = self.prog.busy_polls;
         let at = lba as usize * SECTOR;
         self.cards[unit][at..at + SECTOR].copy_from_slice(sector);
         true
@@ -113,11 +118,15 @@ impl Io for Run {
     fn defers(&self) -> bool {
         !self.prog.waits
     }
-    fn settle(&mut self, unit: usize) -> bool {
+    fn poll(&mut self, unit: usize) -> Option<bool> {
+        if self.prog.busy_left[unit] > 0 {
+            self.prog.busy_left[unit] -= 1;
+            return None;
+        }
         self.clock += 1000;
         self.prog.settles[unit] += 1;
         self.prog.unsettled[unit] = false;
-        !self.prog.fail[unit]
+        Some(!self.prog.fail[unit])
     }
     fn ticks(&self) -> u32 {
         self.clock
@@ -570,4 +579,54 @@ fn a_writer_that_waits_leaves_nothing_for_the_next_to_wait_for() {
     run.log(&mut s, b"the program's line\n");
     assert_eq!(run.prog.settles, [0, 0]);
     assert_ne!(s.noted & PENDING, 0);
+}
+
+#[test]
+fn lines_logged_while_the_card_programs_go_on_with_the_next_write() {
+    let mut run = Run::new();
+    run.prog.busy_polls = 1;
+    let mut s = Run::state([true, true]);
+    run.log(&mut s, b"line one\n");
+    let writes = s.writes;
+    // The card still programs line one's sector: line two waits in RAM,
+    // nothing waits for the card.
+    run.log(&mut s, b"line two\n");
+    assert_eq!(s.writes, writes);
+    assert_ne!(run.joined(&s), run.stream);
+    // Free by line three: one write carries both.
+    run.log(&mut s, b"line three\n");
+    assert_eq!(s.writes, writes + 1);
+    assert_eq!(run.joined(&s), run.stream);
+    assert_eq!(
+        run.prog.overlapped, 0,
+        "a write sent while the card programmed"
+    );
+    // A burst of lines: about one write for every two, none overlapped.
+    for i in 0..100 {
+        run.log(&mut s, format!("burst {i}\n").as_bytes());
+    }
+    assert!(s.writes <= writes + 52, "{} writes", s.writes - writes);
+    assert_eq!(run.prog.overlapped, 0);
+    // A settle point waits; a sync then puts the rest on (the check-in's
+    // catch-up, or the loader at the run's end).
+    settle(&mut s, &mut run);
+    sync(&mut s, &mut run, &mut [0; SECTOR]);
+    settle(&mut s, &mut run);
+    assert_eq!(run.joined(&s), run.stream);
+}
+
+#[test]
+fn a_card_that_never_finishes_programming_is_given_up_on() {
+    let mut run = Run::new();
+    let mut s = Run::state([true, true]);
+    run.log(
+        &mut s, b"a line
+",
+    );
+    run.prog.busy_left[SD] = u32::MAX;
+    settle(&mut s, &mut run);
+    assert_eq!(s.noted & PENDING, 0);
+    assert_ne!(s.off & 0x100, 0, "the SD card given up on");
+    assert_eq!(s.failed, 1);
+    assert_eq!(s.synced, 0, "its sector goes again on the CF card");
 }

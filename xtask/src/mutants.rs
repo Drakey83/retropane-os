@@ -2115,14 +2115,14 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "card log: a sector sent while the card still programs the last (C59: no settle before the next write)",
+        name: "card log: a line written while the card still programs (C59: the busy card not left alone)",
         file: "hal/x51v/src/cardlog.rs",
-        from: "        // The card's next command waits for its last sector.\n        settle(state, io);",
-        to: "",
+        from: "        if !poll(state, io) {\n            break;\n        }",
+        to: "        let _ = poll(state, io);",
         check: Check::Host(&[
             "-p",
             "rp-hal-x51v",
-            "a_sector_is_waited_for_only_before_the_cards_next_command",
+            "lines_logged_while_the_card_programs_go_on_with_the_next_write",
         ]),
     },
     Mutant {
@@ -2139,8 +2139,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "card log: a sector that failed to program counted as on the card (C59: no rewind)",
         file: "hal/x51v/src/cardlog.rs",
-        from: "            state.synced = k * SECTOR as u32;",
-        to: "            let _ = k;",
+        from: "        state.synced = k * SECTOR as u32;",
+        to: "        let _ = k;",
         check: Check::Host(&[
             "-p",
             "rp-hal-x51v",

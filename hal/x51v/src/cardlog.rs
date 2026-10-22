@@ -190,13 +190,14 @@ pub trait Io {
     /// Whether the program has left `unit` alone (the loader: always).
     fn free(&mut self, unit: usize) -> bool;
     /// Writes one sector to `unit`; whether the card took it. It may
-    /// return before the card has programmed it: [`Io::settle`] waits.
+    /// return before the card has programmed it ([`Io::poll`]).
     fn write(&mut self, unit: usize, lba: u32, sector: &[u8; SECTOR]) -> bool;
-    /// Waits for `unit` to finish programming the last sector written;
-    /// whether it did without an error. Writers that wait in
-    /// [`Io::write`] have nothing to wait for.
-    fn settle(&mut self, _unit: usize) -> bool {
-        true
+    /// Whether `unit` has finished programming the last sector written,
+    /// without waiting: `None` while it still programs, else whether it
+    /// finished without an error. Writers that wait in [`Io::write`] have
+    /// nothing to wait for.
+    fn poll(&mut self, _unit: usize) -> Option<bool> {
+        Some(true)
     }
     /// Whether [`Io::write`] returns before the card has programmed the
     /// sector (a program's writes); a writer that waits (the loader's
@@ -241,20 +242,50 @@ fn why(state: &State, unit: usize) -> &'static [u8] {
 // One copy for every caller (ADR-0005 rule 8: size).
 #[inline(never)]
 pub fn settle(state: &mut State, io: &mut dyn Io) {
+    let t0 = io.ticks();
+    let mut tries = SETTLE_POLLS;
+    while !poll(state, io) {
+        tries -= 1;
+        if tries == 0 {
+            // A card that never finishes: given up on, as a failure.
+            for unit in [SD, CF] {
+                if state.noted & (PENDING << unit) != 0 {
+                    finished(state, unit, false);
+                }
+            }
+            break;
+        }
+    }
+    state.worst = state.worst.max(io.ticks().wrapping_sub(t0));
+}
+
+/// Polls [`settle`] makes before it gives a card up (each a status read:
+/// seconds on the X51v, longer than any programming seen, 90 ms).
+pub const SETTLE_POLLS: u32 = 20_000_000;
+
+/// [`settle`] without waiting: whether no unit is still programming (a
+/// unit that finished is settled as there).
+fn poll(state: &mut State, io: &mut dyn Io) -> bool {
     for unit in [SD, CF] {
-        if state.noted & (PENDING << unit) == 0 {
-            continue;
+        if state.noted & (PENDING << unit) != 0 {
+            match io.poll(unit) {
+                None => return false,
+                Some(ok) => finished(state, unit, ok),
+            }
         }
-        state.noted &= !(PENDING << unit);
-        let t0 = io.ticks();
-        let ok = io.settle(unit);
-        state.worst = state.worst.max(io.ticks().wrapping_sub(t0));
-        if !ok {
-            state.failed = state.failed.wrapping_add(1);
-            state.off |= 0x100 << unit;
-            let k = state.synced.saturating_sub(1) / SECTOR as u32;
-            state.synced = k * SECTOR as u32;
-        }
+    }
+    true
+}
+
+/// `unit`'s last sector programmed (`ok`) or not: no longer pending; a
+/// failure gives the unit up and rewinds the stream to that sector.
+fn finished(state: &mut State, unit: usize, ok: bool) {
+    state.noted &= !(PENDING << unit);
+    if !ok {
+        state.failed = state.failed.wrapping_add(1);
+        state.off |= 0x100 << unit;
+        let k = state.synced.saturating_sub(1) / SECTOR as u32;
+        state.synced = k * SECTOR as u32;
     }
 }
 
@@ -308,8 +339,14 @@ pub fn sync(state: &mut State, io: &mut dyn Io, sector: &mut [u8; SECTOR]) {
             io.note(b"]\n");
             continue;
         }
-        // The card's next command waits for its last sector.
-        settle(state, io);
+        // A card still programming its last sector isn't waited for: what
+        // is logged meanwhile stays in the stream and goes with the next
+        // write (the next line's, `rt::check_in`'s, or a settle point's),
+        // one sector for all of it (quality audit C59: with a wait, a line
+        // every 7 ms kept the touch loop at 10.6 ms on the X51v).
+        if !poll(state, io) {
+            break;
+        }
         if state.off & (0x100 << unit) != 0 {
             continue;
         }

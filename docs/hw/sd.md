@@ -171,11 +171,13 @@ anything the run log doesn't. About 4.3 KiB of each image.
   (quality audit C59, 2026-10-22: the touch loop slowed from a sample
   every 7 ms to 11 ms with every sample logged, the slowest write 61.5 ms,
   90.3 ms in a later run).
-  A program's writes return once the block is on the card (data done);
-  the card's programming (the controller's programming done, then CMD13
-  until it leaves `prg`) is waited for before the card's next command:
-  the next line's write, `rt::take_mmc` / `devices::take_cf` (a program
-  driving the card itself), and the return to the loader. A sector whose
+  A program's writes return once the block is on the card (data done).
+  A line that ends while the card still programs isn't written then
+  (the controller's programming-done bit read, the card asked with CMD13
+  only after it: a command could clear the bit): it goes with the next
+  write, one sector for everything held, or at the next `rt::check_in`.
+  `rt::take_mmc` / `devices::take_cf` (a program driving the card itself)
+  and the return to the loader wait for the programming. A sector whose
   programming fails is found then: the card is given up on as for a
   refused write and that sector goes onto the other card. Lines back to
   back still wait for each other. The loader's own writes (its drivers)

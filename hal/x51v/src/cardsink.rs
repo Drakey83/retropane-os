@@ -10,7 +10,7 @@
 use rp_hal_pxa27x::rt;
 
 use crate::cardlog::{CF, Io, SD, SECTOR, State, due, sync};
-use crate::cardwrite::{Sd, cf_send, cf_settle, sd_send, sd_settle};
+use crate::cardwrite::{Sd, cf_poll, cf_send, sd_poll, sd_send};
 use crate::devices::{self, LOADER_BASE, LOADER_SIZE};
 
 /// The card log's state and its sector buffer: one page right after the
@@ -150,8 +150,25 @@ pub(crate) fn after_write(text: &[u8]) {
     }
     let Some(s) = current() else { return };
     if due(s, text, len()) {
-        // A program taking the SD controller waits for the card first.
+        // A program taking the SD controller waits for the card first;
+        // what a busy card held back goes on at the next check-in.
         rt::on_mmc_take(settle);
+        rt::on_check_in(catch_up);
+        sync(s, &mut Program::of(s), sector());
+    }
+}
+
+/// At a check-in (`rt::check_in`, which programs call as they make
+/// progress): lines a busy card held back go on now if it's free, so
+/// they stay in RAM alone for at most a check-in's interval.
+// One copy for every caller (ADR-0005 rule 8: size).
+#[inline(never)]
+pub fn catch_up() {
+    if in_loader() {
+        return;
+    }
+    let Some(s) = current() else { return };
+    if (s.synced as usize) < len() {
         sync(s, &mut Program::of(s), sector());
     }
 }
@@ -295,11 +312,11 @@ impl Io for Program {
     fn defers(&self) -> bool {
         true
     }
-    fn settle(&mut self, unit: usize) -> bool {
+    fn poll(&mut self, unit: usize) -> Option<bool> {
         match unit {
-            SD => rt::mmc_if_untaken().is_some_and(|mut regs| sd_settle(&mut regs, self.sd)),
-            CF => devices::cf_if_untaken().is_some_and(|mut common| cf_settle(&mut common)),
-            _ => false,
+            SD => rt::mmc_if_untaken().map_or(Some(false), |mut regs| sd_poll(&mut regs, self.sd)),
+            CF => devices::cf_if_untaken().map_or(Some(false), |mut common| cf_poll(&mut common)),
+            _ => Some(false),
         }
     }
     fn ticks(&self) -> u32 {

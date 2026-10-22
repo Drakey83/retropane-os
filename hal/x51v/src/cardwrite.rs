@@ -162,6 +162,15 @@ pub fn sd_send<B: RegisterBus + RegisterBus8>(
     wait(regs, mmc::STAT, mmc::STAT_DATA_DONE, WRITE_SPIN_LIMIT).is_some()
 }
 
+/// [`sd_settle`] without waiting for the programming: `None` while the
+/// controller hasn't seen it end; then the card's own word as there. No
+/// command reaches the card before the programming ended (a command can
+/// clear the controller's status, and the settle that follows would wait
+/// for a bit that won't come).
+pub fn sd_poll<B: RegisterBus>(regs: &mut B, card: Sd) -> Option<bool> {
+    (regs.read32(mmc::STAT) & mmc::STAT_PRG_DONE != 0).then(|| sd_settle(regs, card))
+}
+
 /// Waits for the block [`sd_send`] sent to be programmed: the
 /// controller's programming done, then the card's own word (CMD13);
 /// whether it is ready again. Nothing but this may reach the card
@@ -293,6 +302,12 @@ pub fn cf_send<C: RegisterBus8 + RegisterBus16>(
     }
     cf_port(common, sector);
     true
+}
+
+/// [`cf_settle`] without waiting: `None` while the card is busy.
+pub fn cf_poll<C: RegisterBus8>(common: &mut C) -> Option<bool> {
+    let s = common.read8(ata::STATUS_COMMAND);
+    (s & ata::ST_BSY == 0).then_some(s & (ata::ST_ERR | ata::ST_DF) == 0)
 }
 
 /// Waits for the sector [`cf_send`] sent to be written: whether the card

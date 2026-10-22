@@ -606,6 +606,18 @@ static mut UHC_TAKEN: bool = false;
 /// CKEN bit for the USB host controller.
 pub const CKEN_UHC: u32 = 10;
 
+/// Run at every [`check_in`] ([`on_check_in`]).
+static mut CHECK_IN_HOOK: Option<fn()> = None;
+
+/// Sets what [`check_in`] runs each time: the card log's catch-up of
+/// lines a busy card held back (`rp_hal_x51v::cardsink::catch_up`,
+/// quality audit C59), which this layer can't name.
+pub fn on_check_in(f: fn()) {
+    // SAFETY: single core, main thread only (the card log's writer and
+    // `check_in`'s callers).
+    unsafe { core::ptr::addr_of_mut!(CHECK_IN_HOOK).write(Some(f)) };
+}
+
 /// Run once before the MMC/SD controller is handed out ([`on_mmc_take`]).
 static mut MMC_TAKE_HOOK: Option<fn()> = None;
 
@@ -942,6 +954,10 @@ pub fn check_in_every_ms() -> u32 {
 /// images check in (2026-10-13: images feeding the watchdog only as long as
 /// the run limit let it win the race, and an idle image reset the device).
 pub fn check_in() {
+    // SAFETY: as in `on_check_in`.
+    if let Some(f) = unsafe { core::ptr::addr_of!(CHECK_IN_HOOK).read() } {
+        f();
+    }
     keep_alive();
     let mut wd = watchdog();
     if wd.armed() {
