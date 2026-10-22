@@ -135,6 +135,13 @@ tested; old Windows Mobile programs keep their own windows in either.
 **The names are Modern and Classic** (owner, 2026-10-19): plain words, and
 never "SPB" or "Windows Mobile" (their owners' names).
 
+## The lock screen (owner, 2026-10-22)
+
+**The lock screen can be turned off in the settings.** When on, it is
+mostly a still picture (the living sky behind it, if chosen, is the one
+moving part); the screen waking from the power button fades in to it.
+Its frames are listed in [workload-brief.md](workload-brief.md).
+
 ## Constraints every concept respects
 
 480 x 640 at 3.7 inches; resistive single-touch stylus plus D-pad and the WM
