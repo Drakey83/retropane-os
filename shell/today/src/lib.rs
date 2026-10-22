@@ -105,12 +105,6 @@ pub enum Depth {
     Rgb565,
 }
 
-/// The wallpaper in RetroPane's default picture (`rp_gfx::look`: the
-/// S-curve at 1.75 and saturation 1.2x, the owner's decision 2026-10-22);
-/// `RP_TODAY_ORIGINAL` at build time shows Windows Mobile's picture
-/// instead (the Original look, for a side-by-side check).
-pub const LOOK: bool = option_env!("RP_TODAY_ORIGINAL").is_none();
-
 /// Room for [`load_wallpaper`]'s work: a row, and the error the 16-bit
 /// dither carries to the next row (~8 KiB: the image keeps it in `.bss`).
 pub struct WallScratch {
@@ -181,8 +175,8 @@ pub fn wallpaper_rows(
                 v.get(c).copied().unwrap_or(128),
             );
             // The default picture (the owner, 2026-10-22), before the dither.
-            let (r8, g8, b8) = if LOOK {
-                rp_gfx::look::apply(r8, g8, b8)
+            let (r8, g8, b8) = if rp_draw::look::ON {
+                rp_draw::look::apply(r8, g8, b8)
             } else {
                 (r8, g8, b8)
             };

@@ -62,6 +62,16 @@ pub static SMALL: [Image; 5] = [{empty}, {empty}, {empty}, {empty}, {empty}];
 "
         )
     });
+    // The owner's default picture (`rp_draw::look`, 2026-10-22) on every
+    // icon pixel (non-premultiplied ARGB: the colour changes, alpha not),
+    // the same function the wallpaper goes through as it loads;
+    // `RP_PICTURE_ORIGINAL` leaves them as made.
+    println!("cargo:rerun-if-env-changed=RP_PICTURE_ORIGINAL");
+    let data = if std::env::var("RP_PICTURE_ORIGINAL").is_ok() {
+        data
+    } else {
+        looked(&data)
+    };
     std::fs::write(Path::new(&out).join("icons.rs"), data).expect("OUT_DIR writable");
 
     // Rebuilt each time, so the clock starts near the real time.
@@ -137,4 +147,31 @@ fn sky() -> Vec<u8> {
         v.extend(std::iter::repeat_n((118 + t * 30 / 255) as u8, W / 2));
     }
     [y, u, v].concat()
+}
+
+/// `text` with every `0xAARRGGBB` pixel (the generator's only hex: ten
+/// characters) through `rp_draw::look::apply`, alpha kept.
+fn looked(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find("0x") {
+        out.push_str(&rest[..i]);
+        let hex = rest
+            .get(i + 2..i + 10)
+            .filter(|h| h.bytes().all(|b| b.is_ascii_hexdigit()));
+        match hex.and_then(|h| u32::from_str_radix(h, 16).ok()) {
+            Some(px) => {
+                let [a, r, g, b] = px.to_be_bytes();
+                let (r, g, b) = rp_draw::look::apply(r, g, b);
+                out.push_str(&format!("0x{:08x}", u32::from_be_bytes([a, r, g, b])));
+                rest = &rest[i + 10..];
+            }
+            None => {
+                out.push_str("0x");
+                rest = &rest[i + 2..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }

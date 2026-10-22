@@ -27,6 +27,8 @@
 /// An ARGB8888 colour, `0xAARRGGBB`, straight alpha (0 clear, 255 solid).
 pub type Argb = u32;
 
+pub mod look;
+
 /// A rectangle: `x..x + w` by `y..y + h`. Empty when `w` or `h` is 0.
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct Rect {

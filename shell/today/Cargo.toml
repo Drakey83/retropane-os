@@ -19,6 +19,9 @@ rp-touch-cal = { path = "../../drivers/touch-cal" }
 rp-mbx-render = { path = "../../drivers/mbx-render" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
 
+[build-dependencies]
+rp-draw = { path = "../../drivers/draw" }
+
 [dev-dependencies]
 rp-mbx-render = { path = "../../drivers/mbx-render", features = ["model"] }
 

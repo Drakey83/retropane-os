@@ -574,9 +574,10 @@ brightness. Original stays a choice in Settings > Display.
 strength 1.75 *and* saturation 1.2x** (run 5's pick, Sat 30), both applied
 before the dither: the curve in the renderer's dither step, the saturation
 in the content as a picture loads (the gamma table can't mix colours). Not
-Built 2026-10-22 for the wallpaper (`rp_gfx::look`, applied as it loads);
-the icons and theme colours next; the owner judges the combination on
-the X51v.
+Built 2026-10-22 (`rp_draw::look`): the wallpaper as it loads, the icons
+at build time, the shell's theme colours as constants (a translucent
+tint's look, not its blend's); `RP_PICTURE_ORIGINAL` builds the Original
+picture. The owner judges the combination on the X51v.
 
 **Decided (owner, 2026-10-17): Settings > Display gets a contrast slider
 next to the brightness slider**, so every owner can fit the picture to their

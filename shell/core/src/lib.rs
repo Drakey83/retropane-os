@@ -235,7 +235,7 @@ const WALLPAPER_COMPARE: &str = "Wallpaper compare";
 const SHOWING_DITHERED: &str = "16-bit dithered";
 const SHOWING_PLAIN: &str = "16-bit plain";
 /// The notice's backing in the wallpaper-only view (readable on any picture).
-const NOTICE_BACK: Argb = 0xB000_0000;
+const NOTICE_BACK: Argb = rp_draw::look::theme(0xB000_0000);
 /// The test image's extra Start menu entries, after the OS's.
 const DEV_MENU: [&str; 3] = [WALLPAPER_COMPARE, ALIGN_SCREEN, BACK_TO_LOADER];
 const MENU_X: u16 = 0;
@@ -245,21 +245,21 @@ const MENU_ROW: u16 = 40;
 
 // ---- Colours (the smoked glass, docs/design/ui.md) -------------
 
-const GLASS_LEFT: Argb = 0xB810_1418;
-const GLASS_RIGHT: Argb = 0x8C4C_545C;
-const GLASS_EDGE: Argb = 0x50FF_FFFF;
-const BAR_LEFT: Argb = 0xD800_0000;
-const BAR_RIGHT: Argb = 0xB020_2428;
-const MENU_LEFT: Argb = 0xE008_0A0C;
-const MENU_RIGHT: Argb = 0xD02C_3238;
-const TEXT: Argb = 0xFFF0_F2F4;
-const DIM: Argb = 0xFFA8_B0B8;
-const FOCUS: Argb = 0xFF7F_D0FF;
-const PRESSED: Argb = 0x40FF_FFFF;
+const GLASS_LEFT: Argb = rp_draw::look::theme(0xB810_1418);
+const GLASS_RIGHT: Argb = rp_draw::look::theme(0x8C4C_545C);
+const GLASS_EDGE: Argb = rp_draw::look::theme(0x50FF_FFFF);
+const BAR_LEFT: Argb = rp_draw::look::theme(0xD800_0000);
+const BAR_RIGHT: Argb = rp_draw::look::theme(0xB020_2428);
+const MENU_LEFT: Argb = rp_draw::look::theme(0xE008_0A0C);
+const MENU_RIGHT: Argb = rp_draw::look::theme(0xD02C_3238);
+const TEXT: Argb = rp_draw::look::theme(0xFFF0_F2F4);
+const DIM: Argb = rp_draw::look::theme(0xFFA8_B0B8);
+const FOCUS: Argb = rp_draw::look::theme(0xFF7F_D0FF);
+const PRESSED: Argb = rp_draw::look::theme(0x40FF_FFFF);
 /// The align screen's background (opaque: the wallpaper would distract).
-const ALIGN_BACK: Argb = 0xFF0C_1014;
+const ALIGN_BACK: Argb = rp_draw::look::theme(0xFF0C_1014);
 /// A target held long enough.
-const HELD: Argb = 0xFF5C_E07A;
+const HELD: Argb = rp_draw::look::theme(0xFF5C_E07A);
 
 /// How long a notice stays (milliseconds).
 const NOTICE_MS: u32 = 2000;

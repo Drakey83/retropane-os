@@ -42,11 +42,43 @@ pub const CURVE: [u8; 256] = [
 /// 77 R + 150 G + 29 B over 256, as display-cal's dial), then the curve
 /// on each channel.
 #[must_use]
-pub fn apply(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
+pub const fn apply(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    let (r, g, b) = (r as i32, g as i32, b as i32);
     let y = (77 * r + 150 * g + 29 * b) >> 8;
-    let s = |v: i32| (y + (v - y) * SAT_NUM / SAT_DEN).clamp(0, 255) as usize;
-    (CURVE[s(r)], CURVE[s(g)], CURVE[s(b)])
+    (CURVE[sat(y, r)], CURVE[sat(y, g)], CURVE[sat(y, b)])
+}
+
+/// One channel `v` moved from its grey `y` by the saturation, clamped.
+const fn sat(y: i32, v: i32) -> usize {
+    let s = y + (v - y) * SAT_NUM / SAT_DEN;
+    if s < 0 {
+        0
+    } else if s > 255 {
+        255
+    } else {
+        s as usize
+    }
+}
+
+/// An ARGB colour (not premultiplied) in the default picture, alpha kept:
+/// for colours fixed at build time (a theme's), `const`. For a
+/// translucent colour this is the look of the colour, not of the blend it
+/// makes (the module notes).
+#[must_use]
+pub const fn argb(c: u32) -> u32 {
+    let (r, g, b) = apply((c >> 16) as u8, (c >> 8) as u8, c as u8);
+    c & 0xFF00_0000 | (r as u32) << 16 | (g as u32) << 8 | b as u32
+}
+
+/// Whether the default picture is on: `RP_PICTURE_ORIGINAL` at build time
+/// shows Windows Mobile's picture instead (the Original look, for a
+/// side-by-side check).
+pub const ON: bool = option_env!("RP_PICTURE_ORIGINAL").is_none();
+
+/// [`argb`] when the default picture is [`ON`], else `c` as given.
+#[must_use]
+pub const fn theme(c: u32) -> u32 {
+    if ON { argb(c) } else { c }
 }
 
 #[cfg(test)]
@@ -81,5 +113,16 @@ mod tests {
         // Saturation clamps, never wraps.
         assert_eq!(apply(255, 0, 0).0, 255);
         assert_eq!(apply(0, 255, 255).0, 0);
+    }
+
+    #[test]
+    fn argb_keeps_alpha_and_matches_apply() {
+        let (r, g, b) = apply(0x4C, 0x54, 0x5C);
+        assert_eq!(
+            argb(0x8C4C_545C),
+            0x8C00_0000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b)
+        );
+        assert_eq!(argb(0xFFFF_FFFF), 0xFFFF_FFFF);
+        assert_eq!(argb(0x5000_0000), 0x5000_0000);
     }
 }
