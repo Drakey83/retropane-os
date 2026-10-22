@@ -167,6 +167,21 @@ program's DMA channels stay its own). Each sector is built **from the run log it
 what a long run logs past the run log's 64 KiB): the card can't say
 anything the run log doesn't. About 4.3 KiB of each image.
 
+- **A line costs the sector's transfer, not the card's programming**
+  (quality audit C59, 2026-10-22: the touch loop slowed from a sample
+  every 7 ms to 18 ms with every sample logged, the slowest write 61.5 ms).
+  A program's writes return once the block is on the card (data done);
+  the card's programming (the controller's programming done, then CMD13
+  until it leaves `prg`) is waited for before the card's next command:
+  the next line's write, `rt::take_mmc` / `devices::take_cf` (a program
+  driving the card itself), and the return to the loader. A sector whose
+  programming fails is found then: the card is given up on as for a
+  refused write and that sector goes onto the other card. Lines back to
+  back still wait for each other. The loader's own writes (its drivers)
+  wait as before. After a reset the card has had seconds (Dell's boot or
+  the loader's restart) to finish. *Built, emulator-checked; not yet
+  measured on the X51v (the touch replay with the recorder on measures
+  it).*
 - **A program that takes the SD controller** (`rt::take_mmc`: rp-sdtime,
   rp-noise, rp-looks...) has it to itself: the log moves to the CF card
   from its next line, with a line saying so (`[card log: the SD card was

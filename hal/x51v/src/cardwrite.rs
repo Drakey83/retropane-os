@@ -16,6 +16,14 @@
 //! - **CF (memory mode, docs/hw/cf.md):** WRITE SECTORS (count 1, LBA),
 //!   256 words through the data port, then the card's busy and status.
 //!
+//! Each in two halves (quality audit C59, the owner's choice (a),
+//! 2026-10-22): `*_send` returns once the sector is on the card, `*_settle`
+//! waits for the card to program it. The card log sends a line's sector
+//! and settles it before the card's next command, so a line costs the
+//! transfer, not the card's programming (up to 61 ms on the owner's SD
+//! card); `sd_write` and `cf_write` are both halves at once, the drivers'
+//! order.
+//!
 //! Every wait has a limit, and a refusal or a timeout is `false`, never a
 //! panic: a card log write must never stop a program.
 
@@ -123,6 +131,18 @@ pub fn sd_write<B: RegisterBus + RegisterBus8>(
     lba: u32,
     sector: &[u8; SECTOR],
 ) -> bool {
+    sd_send(regs, card, lba, sector) && sd_settle(regs, card)
+}
+
+/// Sends `sector` to block `lba`: whether the card took the block (its
+/// programming not waited for: [`sd_settle`] before the card's next
+/// command).
+pub fn sd_send<B: RegisterBus + RegisterBus8>(
+    regs: &mut B,
+    card: Sd,
+    lba: u32,
+    sector: &[u8; SECTOR],
+) -> bool {
     if lba >= card.blocks {
         return false;
     }
@@ -139,9 +159,15 @@ pub fn sd_write<B: RegisterBus + RegisterBus8>(
     if !sd_fifo(regs, sector) {
         return false;
     }
-    if wait(regs, mmc::STAT, mmc::STAT_DATA_DONE, WRITE_SPIN_LIMIT).is_none()
-        || wait(regs, mmc::STAT, mmc::STAT_PRG_DONE, WRITE_SPIN_LIMIT).is_none()
-    {
+    wait(regs, mmc::STAT, mmc::STAT_DATA_DONE, WRITE_SPIN_LIMIT).is_some()
+}
+
+/// Waits for the block [`sd_send`] sent to be programmed: the
+/// controller's programming done, then the card's own word (CMD13);
+/// whether it is ready again. Nothing but this may reach the card
+/// between the two.
+pub fn sd_settle<B: RegisterBus>(regs: &mut B, card: Sd) -> bool {
+    if wait(regs, mmc::STAT, mmc::STAT_PRG_DONE, WRITE_SPIN_LIMIT).is_none() {
         return false;
     }
     // Programmed by the controller's account; the card's own (CMD13), as
@@ -225,6 +251,17 @@ pub fn cf_write<C: RegisterBus8 + RegisterBus16>(
     lba: u32,
     sector: &[u8; SECTOR],
 ) -> bool {
+    cf_send(common, sectors, lba, sector) && cf_settle(common)
+}
+
+/// Sends `sector` to sector `lba` through the data port: whether the card
+/// asked for it (its writing not waited for: [`cf_settle`]).
+pub fn cf_send<C: RegisterBus8 + RegisterBus16>(
+    common: &mut C,
+    sectors: u32,
+    lba: u32,
+    sector: &[u8; SECTOR],
+) -> bool {
     if lba >= sectors {
         return false;
     }
@@ -255,6 +292,12 @@ pub fn cf_write<C: RegisterBus8 + RegisterBus16>(
         return false;
     }
     cf_port(common, sector);
+    true
+}
+
+/// Waits for the sector [`cf_send`] sent to be written: whether the card
+/// finished without an error.
+pub fn cf_settle<C: RegisterBus8>(common: &mut C) -> bool {
     idle(common, ata::WRITE_SPIN_LIMIT).is_some_and(|s| s & (ata::ST_ERR | ata::ST_DF) == 0)
 }
 

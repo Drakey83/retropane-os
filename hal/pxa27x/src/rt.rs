@@ -606,8 +606,29 @@ static mut UHC_TAKEN: bool = false;
 /// CKEN bit for the USB host controller.
 pub const CKEN_UHC: u32 = 10;
 
-/// Hands out the MMC/SD controller once, with its clock enabled.
+/// Run once before the MMC/SD controller is handed out ([`on_mmc_take`]).
+static mut MMC_TAKE_HOOK: Option<fn()> = None;
+
+/// Sets what [`take_mmc`] runs before it hands the controller out: the
+/// card log's wait for a sector the card is still programming
+/// (`rp_hal_x51v::cardsink::settle`, quality audit C59), which this layer
+/// can't name.
+pub fn on_mmc_take(f: fn()) {
+    // SAFETY: single core, main thread only (the card log's writer).
+    unsafe { core::ptr::addr_of_mut!(MMC_TAKE_HOOK).write(Some(f)) };
+}
+
+/// Hands out the MMC/SD controller once, with its clock enabled, after
+/// [`on_mmc_take`]'s wait.
 pub fn take_mmc() -> Option<Mmio> {
+    // SAFETY: a plain read of the flag; single core.
+    if unsafe { core::ptr::addr_of!(MMC_TAKEN).read() } {
+        return None;
+    }
+    // SAFETY: as in `on_mmc_take`.
+    if let Some(f) = unsafe { core::ptr::addr_of_mut!(MMC_TAKE_HOOK).replace(None) } {
+        f();
+    }
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.
     let taken = unsafe { core::ptr::addr_of_mut!(MMC_TAKEN).replace(true) };
     if taken {

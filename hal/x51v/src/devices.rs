@@ -185,6 +185,10 @@ pub fn cf_common_phys() -> Option<u32> {
 /// is in the slot is GPIO13's to say (low = in); touch the windows only
 /// then.
 pub fn take_cf() -> Option<(Mmio, Mmio)> {
+    // A sector the card log sent is programmed first (quality audit C59).
+    if cf_if_untaken().is_some() {
+        crate::cardsink::settle();
+    }
     // SAFETY: single core, IRQs masked by `_start` and not re-enabled yet.
     let taken = unsafe { core::ptr::addr_of_mut!(CF_TAKEN).replace(true) };
     if taken {
@@ -603,6 +607,8 @@ pub fn return_to_loader() {
         let _ = RunLog.write_str(warn);
         let _ = RunLog.write_char('\n');
     }
+    // The loader's drivers find the cards ready (quality audit C59).
+    crate::cardsink::settle();
     if loader_present() {
         // SAFETY: the run log's flags word (valid: checked just above).
         unsafe { log_word(2).write_volatile(log_word(2).read_volatile() | 2) };

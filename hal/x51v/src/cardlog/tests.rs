@@ -13,7 +13,25 @@ struct Run {
     taken: [bool; 2],
     /// Writes each card refuses from now on.
     refuse: [bool; 2],
+    /// The cards' programming, waited for apart from the write.
+    prog: Prog,
     clock: u32,
+}
+
+/// The cards' programming in a [`Run`].
+#[derive(Default)]
+struct Prog {
+    /// Each card's programming fails (found when it is waited for).
+    fail: [bool; 2],
+    /// Waits for programming, per card.
+    settles: [u32; 2],
+    /// A card sent a sector and not waited for since.
+    unsettled: [bool; 2],
+    /// Writes sent while the card still programmed the one before (must
+    /// stay 0).
+    overlapped: u32,
+    /// The writer waits in its writes, as the loader's drivers do.
+    waits: bool,
 }
 
 impl Run {
@@ -23,6 +41,7 @@ impl Run {
             cards: [vec![0; 4096 * SECTOR], vec![0; 4096 * SECTOR]],
             taken: [false; 2],
             refuse: [false; 2],
+            prog: Prog::default(),
             clock: 0,
         }
     }
@@ -80,12 +99,25 @@ impl Io for Run {
     }
     fn write(&mut self, unit: usize, lba: u32, sector: &[u8; SECTOR]) -> bool {
         self.clock += 100;
+        if self.prog.unsettled[unit] {
+            self.prog.overlapped += 1;
+        }
         if self.refuse[unit] {
             return false;
         }
+        self.prog.unsettled[unit] = true;
         let at = lba as usize * SECTOR;
         self.cards[unit][at..at + SECTOR].copy_from_slice(sector);
         true
+    }
+    fn defers(&self) -> bool {
+        !self.prog.waits
+    }
+    fn settle(&mut self, unit: usize) -> bool {
+        self.clock += 1000;
+        self.prog.settles[unit] += 1;
+        self.prog.unsettled[unit] = false;
+        !self.prog.fail[unit]
     }
     fn ticks(&self) -> u32 {
         self.clock
@@ -340,6 +372,7 @@ fn after_a_reset_the_same_cards_are_kept_and_caught_up() {
         cards: run.cards.clone(),
         taken: [false; 2],
         refuse: [false; 2],
+        prog: Prog::default(),
         clock: 0,
     };
     assert_eq!(keep_after_reset(&mut s, &cards, &mut reader(&cards)), 0);
@@ -372,6 +405,7 @@ fn after_a_reset_a_swapped_card_is_never_written() {
         cards: run.cards.clone(),
         taken: [false; 2],
         refuse: [false; 2],
+        prog: Prog::default(),
         clock: 0,
     };
     assert_eq!(
@@ -412,6 +446,7 @@ fn after_a_reset_a_cleared_or_shorter_sector_is_not_taken_for_the_run() {
             cards: run.cards.clone(),
             taken: [false; 2],
             refuse: [false; 2],
+            prog: Prog::default(),
             clock: 0,
         };
         assert_eq!(
@@ -451,8 +486,107 @@ fn the_cf_card_is_checked_where_the_log_moved_to_it() {
         cards: run.cards.clone(),
         taken: [false; 2],
         refuse: [false; 2],
+        prog: Prog::default(),
         clock: 0,
     };
     assert_eq!(keep_after_reset(&mut s, &cards, &mut reader(&cards)), 0);
     assert_eq!(s.on as usize, CF + 1);
+}
+
+#[test]
+fn a_sector_is_waited_for_only_before_the_cards_next_command() {
+    let mut run = Run::new();
+    let mut s = Run::state([true, true]);
+    run.log(
+        &mut s,
+        b"first line
+",
+    );
+    // Sent, not waited for: the line costs the transfer alone.
+    assert_eq!(run.prog.settles, [0, 0]);
+    assert_ne!(s.noted & PENDING, 0);
+    for i in 0..40 {
+        run.log(
+            &mut s,
+            format!(
+                "line {i}
+"
+            )
+            .as_bytes(),
+        );
+    }
+    assert_eq!(
+        run.prog.overlapped, 0,
+        "a write sent while the card programmed"
+    );
+    assert_eq!(run.prog.settles[SD], 40);
+    // The end of the run (or a program taking the card) waits for it.
+    settle(&mut s, &mut run);
+    assert_eq!(s.noted & (PENDING | PENDING << CF), 0);
+    assert_eq!(run.prog.settles[SD], 41);
+    settle(&mut s, &mut run);
+    assert_eq!(run.prog.settles[SD], 41, "nothing pending, nothing waited");
+    assert_eq!(run.joined(&s), run.stream);
+}
+
+#[test]
+fn a_sector_that_fails_to_program_is_written_again_on_the_other_card() {
+    let mut run = Run::new();
+    let mut s = Run::state([true, true]);
+    for i in 0..30 {
+        run.log(
+            &mut s,
+            format!(
+                "line {i} before the card fails
+"
+            )
+            .as_bytes(),
+        );
+    }
+    let pending = s.synced;
+    run.prog.fail[SD] = true;
+    run.refuse[SD] = true;
+    run.log(
+        &mut s,
+        b"the line after
+",
+    );
+    assert_ne!(s.off & 0x100, 0, "the SD card given up on");
+    assert_eq!(s.failed, 1);
+    assert!(
+        text(&run).contains("[card log: the SD card refused a write; continuing on the CF card]")
+    );
+    // The sector whose programming failed starts the CF card's part, and
+    // everything after it is there.
+    let k = (pending - 1) as usize / SECTOR;
+    assert_eq!(s.first[CF] as usize, k);
+    let at = k * SECTOR;
+    assert_eq!(
+        &run.file(&s, CF).unwrap()[at..run.stream.len()],
+        &run.stream[at..]
+    );
+}
+
+#[test]
+fn a_writer_that_waits_leaves_nothing_for_the_next_to_wait_for() {
+    // The loader writes the log's start with its own drivers (they wait
+    // after every write); the program's first write must not wait for a
+    // programming it never started (emu-cardlog: a 6 s timeout, 2026-10-22).
+    let mut run = Run::new();
+    run.prog.waits = true;
+    let mut s = Run::state([true, true]);
+    run.log(
+        &mut s,
+        b"the loader's line
+",
+    );
+    assert_eq!(s.noted & (PENDING | PENDING << CF), 0);
+    run.prog.waits = false;
+    run.log(
+        &mut s,
+        b"the program's line
+",
+    );
+    assert_eq!(run.prog.settles, [0, 0]);
+    assert_ne!(s.noted & PENDING, 0);
 }

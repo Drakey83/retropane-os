@@ -2115,6 +2115,39 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "card log: a sector sent while the card still programs the last (C59: no settle before the next write)",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "        // The card's next command waits for its last sector.\n        settle(state, io);",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "a_sector_is_waited_for_only_before_the_cards_next_command",
+        ]),
+    },
+    Mutant {
+        name: "card log: the loader's waited-for writes left pending (the program waits 6 s for nothing)",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "            if io.defers() {",
+        to: "            if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "a_writer_that_waits_leaves_nothing_for_the_next_to_wait_for",
+        ]),
+    },
+    Mutant {
+        name: "card log: a sector that failed to program counted as on the card (C59: no rewind)",
+        file: "hal/x51v/src/cardlog.rs",
+        from: "            state.synced = k * SECTOR as u32;",
+        to: "            let _ = k;",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "a_sector_that_fails_to_program_is_written_again_on_the_other_card",
+        ]),
+    },
+    Mutant {
         name: "card log: a card the program took is written anyway (two drivers on one controller)",
         file: "hal/x51v/src/cardlog.rs",
         from: "state.off & (0x101 << unit) == 0 && !io.free(unit) {",

@@ -7,7 +7,7 @@ device's interface and quirks. It is a summary: each section links the
 page that holds the evidence, and those pages stay the source of truth
 (update them, then this).
 
-*As of 2026-10-21 (the baseline audit's device runs: the 2D FIFO's level, the long count, the SD card's end, a CCCR write alone; texture shapes from Dell's GLES library; Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, 2026-10-18). Facts come from measurements on the owner's X51v (a
+*As of 2026-10-22 (the SD card's write programming time, from the card log; the baseline audit's device runs: the 2D FIFO's level, the long count, the SD card's end, a CCCR write alone; texture shapes from Dell's GLES library; Bluetooth and USB host from Dell's ROM, the audio service's jack findings, and the Bluetooth radio's power sequence, 2026-10-18). Facts come from measurements on the owner's X51v (a
 replacement X50v front bezel), Windows Mobile's own drivers read for facts
 only (docs/CLEANROOM.md), Intel's manuals, and AxDroid's board code.*
 
@@ -303,6 +303,11 @@ watching.
   such read raises it (guard run version 6: 30 of 31 within 5 CMD13s; the
   one after refused writes didn't, and the next reads were fine). Page:
   [sd.md](sd.md).
+- A single-block write's programming (the card in `prg` after the data)
+  took up to 61.5 ms on the owner's card (the card log's slowest of 333
+  writes, 2026-10-22). The card log now waits for it only before the
+  card's next command (quality audit C59). How it splits into transfer
+  and programming isn't measured yet. Page: [sd.md](sd.md).
 
 ### CompactFlash slot
 - PC Card socket 1; power CPLD `0x16` bit 1 then `0x10` bit 12; RESET CPLD

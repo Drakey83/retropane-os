@@ -10,7 +10,7 @@
 use rp_hal_pxa27x::rt;
 
 use crate::cardlog::{CF, Io, SD, SECTOR, State, due, sync};
-use crate::cardwrite::{Sd, cf_write, sd_write};
+use crate::cardwrite::{Sd, cf_send, cf_settle, sd_send, sd_settle};
 use crate::devices::{self, LOADER_BASE, LOADER_SIZE};
 
 /// The card log's state and its sector buffer: one page right after the
@@ -150,16 +150,26 @@ pub(crate) fn after_write(text: &[u8]) {
     }
     let Some(s) = current() else { return };
     if due(s, text, len()) {
-        let mut io = Program {
-            sd: Sd {
-                rca: s.sd.rca as u16,
-                high_capacity: s.sd.flags & 1 != 0,
-                wide: s.sd.flags & 2 != 0,
-                blocks: s.sd.blocks,
-            },
-            cf_sectors: s.cf_sectors,
-        };
-        sync(s, &mut io, sector());
+        // A program taking the SD controller waits for the card first.
+        rt::on_mmc_take(settle);
+        sync(s, &mut Program::of(s), sector());
+    }
+}
+
+/// Waits for a sector the card log sent and the card is still
+/// programming (quality audit C59): before a program drives a card
+/// itself (`rt::take_mmc`, `devices::take_cf`) and before it returns to
+/// the loader. The loader, whose own drivers wait after every write, has
+/// nothing to do.
+// One copy for every caller (ADR-0005 rule 8: size).
+#[inline(never)]
+pub fn settle() {
+    if in_loader() {
+        return;
+    }
+    let Some(s) = current() else { return };
+    if s.busy == 0 {
+        crate::cardlog::settle(s, &mut Program::of(s));
     }
 }
 
@@ -234,6 +244,21 @@ struct Program {
     cf_sectors: u32,
 }
 
+impl Program {
+    /// The cards as `s` says the loader identified them.
+    fn of(s: &State) -> Self {
+        Self {
+            sd: Sd {
+                rca: s.sd.rca as u16,
+                high_capacity: s.sd.flags & 1 != 0,
+                wide: s.sd.flags & 2 != 0,
+                blocks: s.sd.blocks,
+            },
+            cf_sectors: s.cf_sectors,
+        }
+    }
+}
+
 impl Io for Program {
     fn logged(&self) -> usize {
         len()
@@ -256,14 +281,24 @@ impl Io for Program {
                 let Some(mut regs) = rt::mmc_if_untaken() else {
                     return false;
                 };
-                sd_write(&mut regs, self.sd, lba, sector)
+                sd_send(&mut regs, self.sd, lba, sector)
             }
             CF => {
                 let Some(mut common) = devices::cf_if_untaken() else {
                     return false;
                 };
-                cf_write(&mut common, self.cf_sectors, lba, sector)
+                cf_send(&mut common, self.cf_sectors, lba, sector)
             }
+            _ => false,
+        }
+    }
+    fn defers(&self) -> bool {
+        true
+    }
+    fn settle(&mut self, unit: usize) -> bool {
+        match unit {
+            SD => rt::mmc_if_untaken().is_some_and(|mut regs| sd_settle(&mut regs, self.sd)),
+            CF => devices::cf_if_untaken().is_some_and(|mut common| cf_settle(&mut common)),
             _ => false,
         }
     }

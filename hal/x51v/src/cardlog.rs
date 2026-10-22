@@ -46,6 +46,14 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"RPCL");
 pub const SD: usize = 0;
 /// The CompactFlash card.
 pub const CF: usize = 1;
+/// [`State::noted`]'s bit for a unit whose last sector was sent and not
+/// yet waited for (quality audit C59, the owner's choice (a), 2026-10-22):
+/// a line costs the sector's transfer, not the card's programming, which
+/// is waited for before the card's next command ([`settle`]). In a word
+/// both the installed loader and a newer program agree on (the loader
+/// starts it at 0).
+pub const PENDING: u32 = 0x100;
+
 /// Each unit's name in the notes.
 const UNIT_NAMES: [&[u8]; 2] = [b"SD card", b"CF card"];
 
@@ -106,7 +114,9 @@ pub struct State {
     /// A sync is under way (an interrupt that logs meanwhile leaves its
     /// text in the run log; the sync in progress takes it).
     pub busy: u32,
-    /// Bit 0: a pause was noted; bit 1: the file was found full.
+    /// Bit 0: a pause was noted; bit 1: the file was found full; bit
+    /// `8 + u`: unit `u`'s last sector sent, its programming not yet
+    /// waited for ([`PENDING`]).
     pub noted: u32,
     /// Bit per unit: a sector was written to its file.
     pub used: u32,
@@ -179,8 +189,22 @@ pub trait Io {
     fn note(&mut self, text: &[u8]);
     /// Whether the program has left `unit` alone (the loader: always).
     fn free(&mut self, unit: usize) -> bool;
-    /// Writes one sector to `unit`; whether the card took it.
+    /// Writes one sector to `unit`; whether the card took it. It may
+    /// return before the card has programmed it: [`Io::settle`] waits.
     fn write(&mut self, unit: usize, lba: u32, sector: &[u8; SECTOR]) -> bool;
+    /// Waits for `unit` to finish programming the last sector written;
+    /// whether it did without an error. Writers that wait in
+    /// [`Io::write`] have nothing to wait for.
+    fn settle(&mut self, _unit: usize) -> bool {
+        true
+    }
+    /// Whether [`Io::write`] returns before the card has programmed the
+    /// sector (a program's writes); a writer that waits (the loader's
+    /// drivers) leaves nothing pending, and nothing for the next writer to
+    /// wait for that it couldn't see.
+    fn defers(&self) -> bool {
+        false
+    }
     /// The OS timer (3.25 MHz ticks).
     fn ticks(&self) -> u32;
 }
@@ -207,6 +231,30 @@ fn why(state: &State, unit: usize) -> &'static [u8] {
         b" refused a write"
     } else {
         b" was taken by the program"
+    }
+}
+
+/// Waits for every unit with a sector still programming. A unit that
+/// fails it is given up on (as a refused write) and the stream rewinds to
+/// that sector's start, so the next sync puts it on the other card. A
+/// unit's last write is always the sector holding the last byte synced.
+// One copy for every caller (ADR-0005 rule 8: size).
+#[inline(never)]
+pub fn settle(state: &mut State, io: &mut dyn Io) {
+    for unit in [SD, CF] {
+        if state.noted & (PENDING << unit) == 0 {
+            continue;
+        }
+        state.noted &= !(PENDING << unit);
+        let t0 = io.ticks();
+        let ok = io.settle(unit);
+        state.worst = state.worst.max(io.ticks().wrapping_sub(t0));
+        if !ok {
+            state.failed = state.failed.wrapping_add(1);
+            state.off |= 0x100 << unit;
+            let k = state.synced.saturating_sub(1) / SECTOR as u32;
+            state.synced = k * SECTOR as u32;
+        }
     }
 }
 
@@ -260,6 +308,11 @@ pub fn sync(state: &mut State, io: &mut dyn Io, sector: &mut [u8; SECTOR]) {
             io.note(b"]\n");
             continue;
         }
+        // The card's next command waits for its last sector.
+        settle(state, io);
+        if state.off & (0x100 << unit) != 0 {
+            continue;
+        }
         let k = state.synced as usize / SECTOR;
         let from = k * SECTOR;
         let n = (len - from).min(SECTOR);
@@ -270,6 +323,9 @@ pub fn sync(state: &mut State, io: &mut dyn Io, sector: &mut [u8; SECTOR]) {
         state.worst = state.worst.max(io.ticks().wrapping_sub(t0));
         state.writes = state.writes.wrapping_add(1);
         if ok {
+            if io.defers() {
+                state.noted |= PENDING << unit;
+            }
             state.synced = (from + n) as u32;
             if state.used & 1 << unit == 0 {
                 state.used |= 1 << unit;
