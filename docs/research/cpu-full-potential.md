@@ -65,6 +65,8 @@ Each of these is a claim until our own run settles it.
 | **V7** | WM's ~280 ns memory hop, and the TLB walks as the cause (estimate) | Time the same chase with large mappings and with the tables in SRAM; read the TLB miss counter (C8) |
 | **V8** | 32 DMA channels, their bursts and priorities (Intel) | C11's sweep |
 | **V9** | Every number our own docs quote from Dell or Intel about the CPU, clocks, memory and power | Swept from clocks.md, ADR-0031, memory-timing.md and the datasheet into this table, one line each |
+| **V10** | The memory controller's decode (memory-timing.md, Intel's manual): the controller uses the larger CL of the two pairs; partition 3 (`0xAC000000`) enabled but empty | The CL rule only matters for timing changes, which stay Dell's (the owner's rule); partition 3: a read probe of `0xAC000000` (no write) |
+| **V11** | The power manager's bit names in `PCFR` and `PSLR` (clocks.md, from the manual, unchecked) | Each bit's effect seen on the device when power states are built (C10) |
 
 ## Part 1: the CPU (Intel PXA270, XScale, 624 MHz)
 
@@ -85,6 +87,7 @@ behave at the edges, and how well RetroPane's own code uses the core.
 | **C9. Code** | [us] Rust, release builds | ARM against Thumb density and speed, inlining, layout of hot code (cache), link-time optimisation, the compiler's XScale tuning | A/B builds of the same workload | Smaller and faster code |
 | **C10. Interrupts and sleep** | [us] interrupts and the run limit work; idle measured | Wake latency from each sleep depth; the cost of each interrupt path | Measured | Low latency and long battery together |
 | **C11. DMA** | [Intel] 32 channels; [us] SD, audio, CF, UDC and the 2700G uploads use them | Memory-to-memory speed by burst and width, descriptor chains as a general copy engine, priorities | A sweep | The CPU free while data moves |
+| **C12. Idle clocks** | [us] `MDREFR` as Windows Mobile leaves it: `K0RUN` set, SDCLK0/3 running for synchronous flash at CLK_MEM / 4 while `SXCNFG` enables none (memory-timing.md) | Whether stopping SDCLK0/3 (and other clocks nothing uses: `CKEN` units) saves battery, and that nothing needs them | Each stopped in turn, battery drain compared (with P16's reading) | Battery for nothing given up |
 
 ## Part 2: the CPU's overclock, plainly
 
@@ -149,7 +152,9 @@ named in its evidence.
 | V6 | open | the memory clock not measured from timing |
 | V7 | open | WM's ~280 ns hop and its cause not measured |
 | V8 | open | C11's DMA sweep not run |
-| V9 | open | the sweep of every quoted CPU number into Part 0 not done |
+| V9 | done | 2026-10-21: clocks.md, ADR-0031, memory-timing.md and the datasheet swept: the clock limits are V3/V5, the voltage patterns V4; the rest became V10, V11 and C12 |
+| V10 | partial | the CL rule declined with the RAM's timing (the owner's rule: Dell's stays); partition 3's emptiness not probed |
+| V11 | open | the power manager's bit names not checked |
 | C1 | partial | 624 MHz measured under the loader (rp-noise run 1); the operating points and switch costs not swept |
 | C2 | open | the overclock study not started |
 | C3 | partial | a TLB miss 5.2x cheaper with the table in SRAM (perf.md); the SRAM's speed and best uses not measured |
@@ -161,12 +166,13 @@ named in its evidence.
 | C9 | open | ARM/Thumb, inlining, layout, LTO A/B builds not run |
 | C10 | partial | interrupts, the run limit and idle work; wake latency per sleep depth not measured |
 | C11 | partial | DMA used for SD, audio, CF, UDC and 2700G uploads; memory-to-memory speed by burst not swept |
+| C12 | open | SDCLK0/3 run for synchronous flash nothing uses (`K0RUN`, `MDREFR` as WM leaves it); stopping them, and unused `CKEN` units, not tried |
 | T1 | open | the pipeline needs the compositor harness (owner's vote: built inside the gate) |
 | T2 | open | SRAM staging for uploads not tried |
 | T3 | open | commands fed by DMA not tried |
 | T4 | open | the routing table per kind of work not measured (harness) |
 | T5 | open | the GPU-format converters not timed together |
-| T6 | open | the audit of reads from the 2700G not done |
+| T6 | partial | audit 2026-10-21 of the OS path's CPU reads of 2700G memory: (1) `upload_mipmapped` reads each level back to make the next (a 256 x 256 texture: ~64 K word reads at 12 MB/s), fix: make the levels from a CPU-side copy; (2) the 2D renderer spins on the fence word while the engine works: whether that slows the engine is `rp-mbx-blend` B8c (built); register reads (FIFO level, status) are single words. Both to finish |
 | T7 | open | clocks per moment against battery not measured (harness) |
 | T8 | open | as the GPU page's P8 |
 

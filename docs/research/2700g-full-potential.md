@@ -49,6 +49,10 @@ with the run that settles it, and stays unticked until then.
 | **V13** | The cores run at most 75 MHz (Dell's driver's cap) | Run G3: right at 99.67 MHz with divide 1, twice; **G4: right in 4 more checks, 2D 1.89x, 3D 1.81x**; soaks, warm and cold to come |
 | **V14** | CL3 above 100 MHz (Dell's rule) | **Run G4: CL3 breaks the 3D core every time at 108-133 MHz; CL2 right to 133.25 MHz** (short checks) |
 | **V10** | Every other number in docs/hw/2700g.md and the datasheet marked static, Dell or `mbxfb` | Swept into this table, one line each, with its probe |
+| **V15** | The 2D engine's command words read from Dell's code (`docs/hw/2700g.md` "The MBX 2D engine", (A) rows): clip rectangle (header bit 18), 8 and 24 bpp fill formats, the scale word, mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), source and brush palettes (`0xC0000000`, `0xD0000000`) | Each used on the device and checked pixel for pixel (P6, P7, P13); fills, copies, blends, keys, stride 0, negative strides, the fence, the reset and the FIFO level are proven already |
+| **V16** | The display planes' formats and blend modes from Linux `mbxfb` ((B) rows): indexed graphics plane, inverse alpha, the packed YUV formats | Each shown on the device (with P9/P10); ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha are proven |
+| **V17** | `0x12c`'s status bits from Dell's interrupt handler: bit 10 (queued commands) and the bits not yet named | Each made to set on the device (P18); bits 2, 4 and 6 are proven |
+| **V18** | Windows Mobile's own plumbing read from Dell's driver: its virtual mapping, the services layer, escape codes, the power votes | Not needed: RetroPane's own drivers own the chip (no Windows Mobile layer); kept only as a source of facts |
 
 ## How the work is judged
 
@@ -147,7 +151,11 @@ named in its evidence.
 | V7 | open | P10 not run |
 | V8 | open | P11 not run |
 | V9 | open | P5 not run |
-| V10 | open | the sweep of every Dell/mbxfb number into this table not done |
+| V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
+| V15 | partial | fills, copies, blends, keys, stride 0, negative strides, fence, reset, FIFO level proven on the X51v; the clip rectangle, 8/24 bpp fills, the scale word, mono masks and palettes not used yet |
+| V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
+| V17 | partial | bits 2 (render done), 4 (TA done), 6 (parameter memory ready) seen on the device; bit 10 and the rest not |
+| V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
 | V11 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
 | V12 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
 | V13 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; soaks warm and cold, the self-test open |
