@@ -153,6 +153,9 @@ watching.
   `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; the internal
   SRAM copies at 286 MB/s, a random hop 111 ns (SDRAM 491); a page table
   in the SRAM makes a 60-section TLB spill 5.2x cheaper.
+  `memcpy` with its prefetch 128 bytes ahead copies 109 MB/s from memory
+  (96 at 64 bytes, 47 with none); DMA copies SDRAM to SDRAM at 45 MB/s,
+  the CPU keeping 86% of its speed meanwhile.
 - **MBX 2D engine, more** (`rp-mbx-blend` B8, B9, X51v, 2026-10-22): the
   dither add's cost is its blend pass (one full-pattern blit = four row
   blits, 18.9 ms); the CPU polling the fence doesn't slow the engine; the

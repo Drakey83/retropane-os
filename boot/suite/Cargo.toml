@@ -16,6 +16,7 @@ rp-lz4 = { path = "../../kernel/lz4" }
 rp-crypto = { path = "../../kernel/crypto" }
 rp-gfx = { path = "../../drivers/gfx" }
 rp-hal-mem = { path = "../../hal/mem" }
+rp-hal-api = { path = "../../hal/api" }
 
 [lints]
 workspace = true

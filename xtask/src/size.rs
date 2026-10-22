@@ -242,7 +242,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 77 -> 85 KiB on 2026-10-21 (test image): quality
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 77.1 KiB measured, +~10%.
-        max_load: 85 * 1024,
+        // Ratcheted 85 -> 96 KiB on 2026-10-22 (test image): the
+        // performance gate's CPU benchmarks (cache walk, copy and prefetch
+        // sweeps, SRAM patterns, DMA as a copy engine); 85.3 KiB measured.
+        max_load: 96 * 1024,
         // Zeroed RAM ratcheted 20 -> 40 KiB on 2026-10-22 (test image): a
         // 32 KiB stack (the device's runs used 16,076-16,268 of 16 KiB and
         // one crashed); 35.7 KiB measured, +~12%.

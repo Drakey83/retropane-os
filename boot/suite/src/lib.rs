@@ -69,6 +69,11 @@ mod target {
                 .result(name, rt::ticks().wrapping_sub(start), iters);
         }
 
+        /// Reports a result measured by the caller (ticks for `iters`).
+        pub fn result(&mut self, name: &'static str, ticks: u32, iters: u32) {
+            self.sink.result(name, ticks, iters);
+        }
+
         /// Reports a self-check.
         pub fn check(&mut self, name: &'static str, ok: bool, detail: &str) {
             self.sink.check(name, ok, detail);
@@ -607,6 +612,75 @@ mod target {
             right &= b == a;
         }
         r.check("copy_pld", right, "");
+    }
+
+    /// The DMA controller as a copy engine (the performance gate's CPU line
+    /// C11): 128 KiB SDRAM to SDRAM by DMA (32-byte bursts, words) against
+    /// `memcpy`, each checked; and how far the CPU gets counting while the
+    /// DMA copies, against the same count with nothing else running.
+    /// `buf` needs 256 KiB, cache-line aligned.
+    pub fn dma_copy(r: &mut Runner, dma: &mut rp_hal_pxa27x::dma::Dma, buf: &mut [u8]) {
+        use rp_hal_api::DmaEngine;
+        if buf.len() < 256 * 1024 {
+            r.check("dma_copy", false, "buffer too small");
+            return;
+        }
+        let (a, rest) = buf.split_at_mut(128 * 1024);
+        let b = &mut rest[..128 * 1024];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = (i * 7) as u8;
+        }
+        let mut refused = false;
+        r.run("dma_copy_128k", 4, &mut || {
+            if !dma.arm_copy(a, b) {
+                refused = true;
+                return;
+            }
+            while dma.done().is_none() {}
+        });
+        b.fill(0);
+        let ok = dma.arm_copy(a, b) && {
+            while dma.done().is_none() {}
+            a == b
+        };
+        r.check(
+            "dma_copy",
+            ok && !refused,
+            if refused { "refused" } else { "wrong" },
+        );
+        r.run("memcpy_128k", 4, &mut || {
+            b.copy_from_slice(black_box(&*a));
+            black_box(&b);
+        });
+        // The CPU's share: units of cached work (1,000 dependent adds)
+        // done while the DMA copies (its status read once a unit), then the
+        // same number of units with nothing else running; ns a unit each.
+        let unit = || {
+            let mut x = 0u32;
+            for i in 0..1000u32 {
+                x = black_box(x.wrapping_add(i));
+            }
+            black_box(x);
+        };
+        let mut units = 0u32;
+        let t0 = rt::ticks();
+        if dma.arm_copy(a, b) {
+            loop {
+                unit();
+                units += 1;
+                if dma.done().is_some() {
+                    break;
+                }
+            }
+        }
+        let during = rt::ticks().wrapping_sub(t0);
+        let t1 = rt::ticks();
+        for _ in 0..units {
+            unit();
+        }
+        let alone = rt::ticks().wrapping_sub(t1);
+        r.result("cpu_unit_during_dma", during, units.max(1));
+        r.result("cpu_unit_alone", alone, units.max(1));
     }
 
     /// The internal SRAM's every word (the performance gate's CPU line V2:

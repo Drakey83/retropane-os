@@ -75,7 +75,7 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// Results kept (the suite's, the performance gate's included); any
     /// past it are counted, never lost unseen.
-    const MAX_RESULTS: usize = 64;
+    const MAX_RESULTS: usize = 96;
     /// Result lines a page (from page 4 on; the rest of each page holds its
     /// title and, on the last, the checks).
     const RESULTS_A_PAGE: usize = 30;
@@ -110,9 +110,14 @@ mod image {
             if self.nc >= self.checks.len() {
                 self.dropped += 1;
             } else {
+                // The detail only for a failure: a passing check never
+                // shows one (2026-10-22: three new checks printed their
+                // failure text on a pass).
                 let mut d = [b' '; 12];
-                for (o, b) in d.iter_mut().zip(detail.bytes()) {
-                    *o = b;
+                if !ok {
+                    for (o, b) in d.iter_mut().zip(detail.bytes()) {
+                        *o = b;
+                    }
                 }
                 self.checks[self.nc] = (name, ok, d);
                 self.nc += 1;
@@ -339,6 +344,11 @@ mod image {
             suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
             suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
             suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
+            // C11: DMA as a copy engine, on the CompactFlash channel (the
+            // probe reads no CF card).
+            if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {
+                suite::dma_copy(&mut r, &mut dma, &mut bench_ram[..256 * 1024]);
+            }
             suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
             if let Some(sram) = diag::take_sram() {
                 suite::sram_patterns(&mut r, sram);

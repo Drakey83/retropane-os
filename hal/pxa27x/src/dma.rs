@@ -323,6 +323,45 @@ impl Dma {
         true
     }
 
+    /// Starts a memory-to-memory copy of `src` into `dst`, both SDRAM
+    /// (identity-mapped, as under the bring-up map), whole cache lines and
+    /// the same length: the controller as a general copy engine while the
+    /// CPU does other work (the performance gate's C11). Finish with
+    /// [`DmaEngine::done`]. `false` if refused (busy, the lengths differ,
+    /// not whole lines, empty).
+    pub fn arm_copy(&mut self, src: &[u8], dst: &mut [u8]) -> bool {
+        let (s, d) = (src.as_ptr() as u32, dst.as_mut_ptr() as u32);
+        let Ok(len) = u32::try_from(src.len()) else {
+            return false;
+        };
+        if self.armed.is_some()
+            || self.ring.is_some()
+            || src.len() != dst.len()
+            || (s | d | len) & (cpu::LINE - 1) != 0
+            || len == 0
+        {
+            return false;
+        }
+        // The controller reads memory, not the cache; and lines the CPU
+        // holds of the destination would overwrite what it writes.
+        cpu::clean_range(s, len);
+        cpu::clean_invalidate_range(d, len);
+        let shape = Shape {
+            src: s,
+            dst: d,
+            src_step: CHUNK,
+            dst_step: CHUNK,
+            chunk: CHUNK,
+            len,
+            cmd: DCMD_INCSRC | DCMD_INCTRG | DCMD_SIZE32 | width(Width::Word),
+        };
+        if !self.begin(shape, None) {
+            return false;
+        }
+        self.armed = Some((d, len, false));
+        true
+    }
+
     /// Starts a memory-to-memory copy into `dst` (SDRAM, whole cache lines)
     /// from device memory the CPU doesn't cache, read `window` bytes at a
     /// time from the same physical address `src`: for a device whose data
