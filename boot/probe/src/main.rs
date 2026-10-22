@@ -73,7 +73,11 @@ mod image {
     const SCALE: usize = 2;
     const TS_CS: u8 = 24;
     const TS_PENIRQ: u8 = 94;
-    const MAX_RESULTS: usize = 24;
+    /// Results kept (the suite's, the performance gate's included); any
+    /// past it are counted, never lost unseen.
+    const MAX_RESULTS: usize = 64;
+    /// Result lines on page 4 before they go on to page 5.
+    const PAGE4_RESULTS: usize = 30;
 
     struct TimerDelay;
     impl Delay for TimerDelay {
@@ -88,6 +92,8 @@ mod image {
         n: usize,
         checks: [(&'static str, bool, [u8; 12]); 8],
         nc: usize,
+        /// Results that didn't fit [`MAX_RESULTS`].
+        dropped: u32,
     }
 
     impl suite::Sink for Results {
@@ -95,6 +101,8 @@ mod image {
             if self.n < MAX_RESULTS {
                 self.bench[self.n] = (name, ticks, iters);
                 self.n += 1;
+            } else {
+                self.dropped += 1;
             }
         }
         fn check(&mut self, name: &'static str, ok: bool, detail: &str) {
@@ -180,6 +188,7 @@ mod image {
             n: 0,
             checks: [("", false, [b' '; 12]); 8],
             nc: 0,
+            dropped: 0,
         };
         let mut sd_lines = [[b' '; 37]; 5];
         // The card's file system: cluster size and the first root entries
@@ -323,9 +332,14 @@ mod image {
             suite::memory(&mut r, bench_ram);
             suite::lz4(&mut r, &mut bench_ram[256 * 1024..]);
             suite::chase(&mut r, "chase_sdram_256k", &mut bench_ram[..256 * 1024]);
+            // The performance gate's CPU lines V1, C5 and C7.
+            suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
+            suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
             suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
             if let Some(sram) = diag::take_sram() {
                 suite::chase(&mut r, "chase_sram_256k", sram);
+                // V2 and C3: before the page table moves into the SRAM.
+                suite::sram_bandwidth(&mut r, sram, &mut bench_ram[..64 * 1024]);
                 // ADR-0006 rule 1: the same TLB test with the page table in
                 // on-chip SRAM. If the numbers match, table walks are served
                 // from the cache anyway.
@@ -444,7 +458,11 @@ mod image {
 
         rep.on_page(3);
         rep.line(format_args!("4 BENCH ns/iteration"));
-        for (name, ticks, iters) in &results.bench[..results.n] {
+        for (k, (name, ticks, iters)) in results.bench[..results.n].iter().enumerate() {
+            if k == PAGE4_RESULTS {
+                rep.on_page(4);
+                rep.line(format_args!("5 BENCH ns/iteration (more)"));
+            }
             // 3.25 MHz ticks: 1 tick = 4000/13 ns. Exact in u32 (no 64-bit
             // division or formatting code in the image): split ticks per
             // iteration into whole and remainder before scaling.
@@ -457,6 +475,12 @@ mod image {
             let d = Ascii(detail);
             let v = if *ok { "OK" } else { "FAIL" };
             rep.line(format_args!("check {name} {v} {d}"));
+        }
+        if results.dropped > 0 {
+            rep.line(format_args!(
+                "DROPPED {} results (table full)",
+                results.dropped
+            ));
         }
         let lost = rep.overflow;
         if lost > 0 {

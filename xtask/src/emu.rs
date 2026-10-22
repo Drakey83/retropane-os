@@ -4343,7 +4343,9 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
             "    mbx-blend OK: every stage ran, state put back, back at the loader on a button press (this emulator release doesn't model the blend: not compared with the device)"
         );
     }
-    mbx_blend_b7(root)
+    mbx_blend_b7(root)?;
+    mbx_blend_b8(root)?;
+    mbx_blend_b9(root)
 }
 
 /// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
@@ -4365,6 +4367,106 @@ fn mbx_blend_b7_mismatches(log: &str, device: &str) -> Vec<String> {
         .filter(|want| !log.lines().any(|l| l.trim_end() == *want))
         .map(|want| format!("device `{want}`: not in the emulator's log"))
         .collect()
+}
+
+/// B9 alone (`RP_MBX_BLEND_B9`, the performance gate's V15, P6, P7, V3):
+/// every try must run to its line (a try the engine sticks on is reset and
+/// logged, never the end of the run), the state put back, and the image
+/// back by itself. The answers are the device's (the fork models the clip,
+/// not the scaler, palettes or 1 bpp sources).
+fn mbx_blend_b9(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B9", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B9: never came back to the loader")?;
+    if crashed(log) {
+        return Err(format!("mbx-blend B9: crashed:{log}"));
+    }
+    for want in [
+        "B9a clip (8, 8)-(24, 20), bit 18: ran true",
+        "B9b scale 1:1: ran ",
+        "B9b scale x1.5: ran ",
+        "B9c 8 bpp with the palette word: ran ",
+        "B9c 8 bpp without it: ran ",
+        "B9d 1 bpp 0x0F: ran ",
+        "B9 scale, key and blend put back: yes",
+        "RETROPANE-MBX-BLEND: PASS - B9 done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B9: the run log has no `{want}`:{log}"));
+        }
+    }
+    for l in log.lines().filter(|l| l.starts_with("B9")) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!("    mbx-blend B9 OK: every try ran to its line, state put back, back at the loader");
+    Ok(())
+}
+
+/// B8 alone (`RP_MBX_BLEND_B8`, the performance gate's P21): the dither
+/// add both ways must give the same picture, word for word, and each be
+/// timed; the image returns by itself. Timings aren't modelled.
+fn mbx_blend_b8(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B8", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B8: never came back to the loader")?;
+    if crashed(log) {
+        return Err(format!("mbx-blend B8: crashed:{log}"));
+    }
+    for want in [
+        "B8 the two ways' results: 0 of 307200 words differ",
+        "B8 dither add, full screen: four blits from pattern rows Some(",
+        "B8 dither add, 480 x 80: four blits from pattern rows Some(",
+        "B8c 10 full-screen fills, the fence polled every 0 us: landed after Some(",
+        "B8c 10 full-screen fills, the fence polled every 5000 us: landed after Some(",
+        "B8 blend state put back to 0: yes",
+        "RETROPANE-MBX-BLEND: PASS - B8 done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B8: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!(
+        "    mbx-blend B8 OK: both ways of adding the dither give the same picture, both timed (timings not modelled)"
+    );
+    Ok(())
 }
 
 /// B7 alone (`RP_MBX_BLEND_B7`, ADR-0023's 16-bit screen): every part
@@ -9121,7 +9223,7 @@ pub fn check_report_line(l: &str) -> Result<usize, String> {
         .and_then(|r| r.split_once('|'))
         .ok_or_else(|| format!("not a report line: `{l}`"))?;
     let page: usize = page.parse().map_err(|_| format!("bad page in `{l}`"))?;
-    if !(1..=4).contains(&page) || text.len() != 40 {
+    if !(1..=PROBE_PAGES_MAX).contains(&page) || text.len() != 40 {
         return Err(format!("malformed report line `{l}`"));
     }
     let (content, sum) = text.split_at(37);
@@ -9132,18 +9234,31 @@ pub fn check_report_line(l: &str) -> Result<usize, String> {
     Ok(page)
 }
 
-/// Verifies the `P<page>|<line>` copy of the report on serial. Returns the
-/// number of lines.
+/// The most report pages a probe line may name (the probe's `PAGES` is 5
+/// since the performance gate's benchmarks; the check takes as many as the
+/// report has, so the two can't drift into a silent mismatch).
+const PROBE_PAGES_MAX: usize = 9;
+
+/// Verifies the `P<page>|<line>` copy of the report on serial: every page
+/// from 1 to the highest named non-empty, at least 4. Returns the number
+/// of lines.
 pub fn check_probe_report(output: &str) -> Result<usize, String> {
-    let mut pages = [0usize; 4];
+    let mut pages = [0usize; PROBE_PAGES_MAX];
     for l in output.lines() {
         if !l.starts_with('P') || !l.contains('|') {
             continue;
         }
         pages[check_report_line(l)? - 1] += 1;
     }
-    if let Some(p) = pages.iter().position(|&n| n == 0) {
+    let last = pages.iter().rposition(|&n| n > 0).map_or(0, |p| p + 1);
+    if last < 4 {
+        return Err(format!("probe report has {last} pages, 4 at least"));
+    }
+    if let Some(p) = pages[..last].iter().position(|&n| n == 0) {
         return Err(format!("probe report page {} is empty", p + 1));
+    }
+    if output.contains("DROPPED") {
+        return Err("probe report dropped results (its table is full)".into());
     }
     for want in PROBE_EXPECT {
         if !output.contains(want) {

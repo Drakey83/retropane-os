@@ -479,6 +479,106 @@ mod target {
         }
     }
 
+    /// The data cache's real size (the performance gate's CPU lines V1 and
+    /// C5): the first byte of every 32-byte line of a buffer read, again
+    /// and again, for buffers of 4 KiB to 256 KiB. While the buffer fits the
+    /// D-cache every read hits; past it each misses. Per size the result is
+    /// one pass (`size / 32` reads), so ns a line = ns a pass / lines.
+    /// `buf` needs 256 KiB.
+    pub fn cache_walk(r: &mut Runner, buf: &mut [u8]) {
+        const SIZES: [(usize, &str); 10] = [
+            (4 << 10, "cache_walk_4k"),
+            (8 << 10, "cache_walk_8k"),
+            (16 << 10, "cache_walk_16k"),
+            (24 << 10, "cache_walk_24k"),
+            (28 << 10, "cache_walk_28k"),
+            (32 << 10, "cache_walk_32k"),
+            (40 << 10, "cache_walk_40k"),
+            (48 << 10, "cache_walk_48k"),
+            (64 << 10, "cache_walk_64k"),
+            (256 << 10, "cache_walk_256k"),
+        ];
+        for (i, b) in buf.iter_mut().take(256 << 10).enumerate() {
+            *b = i as u8;
+        }
+        for (size, name) in SIZES {
+            let Some(area) = buf.get(..size) else {
+                r.check(name, false, "buffer too small");
+                continue;
+            };
+            let iters = ((1 << 20) / size) as u32;
+            r.run(name, iters, &mut || {
+                let mut sum = 0u32;
+                for line in area.chunks_exact(32) {
+                    sum = sum.wrapping_add(u32::from(black_box(line)[0]));
+                }
+                black_box(sum);
+            });
+        }
+    }
+
+    /// `memcpy` by size (the performance gate's CPU line C7): 64 bytes to
+    /// 1 MiB, each repeated to move about 1 MiB a run (the call through
+    /// `dyn` is in each repeat: it shows at the small sizes). `buf` needs
+    /// 2 MiB.
+    pub fn copy_sweep(r: &mut Runner, buf: &mut [u8]) {
+        const SIZES: [(usize, &str); 8] = [
+            (64, "copy_64b"),
+            (256, "copy_256b"),
+            (1 << 10, "copy_1k"),
+            (4 << 10, "copy_4k"),
+            (16 << 10, "copy_16k"),
+            (64 << 10, "copy_64k"),
+            (256 << 10, "copy_256k"),
+            (1 << 20, "copy_1m"),
+        ];
+        if buf.len() < 2 << 20 {
+            r.check("copy_sweep", false, "buffer too small");
+            return;
+        }
+        let (a, rest) = buf.split_at_mut(1 << 20);
+        let b = &mut rest[..1 << 20];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+        for (size, name) in SIZES {
+            let iters = ((1 << 20) / size) as u32;
+            let (src, dst) = (&a[..size], &mut b[..size]);
+            r.run(name, iters, &mut || {
+                dst.copy_from_slice(black_box(src));
+                black_box(&dst);
+            });
+        }
+    }
+
+    /// The internal SRAM against SDRAM (the performance gate's CPU lines V2
+    /// and C3): 64 KiB copied within the SRAM, from SDRAM into it, and
+    /// filled. `sram` needs 128 KiB, `sdram` 64 KiB.
+    pub fn sram_bandwidth(r: &mut Runner, sram: &mut [u8], sdram: &mut [u8]) {
+        if sram.len() < 128 << 10 || sdram.len() < 64 << 10 {
+            r.check("sram_bandwidth", false, "buffer too small");
+            return;
+        }
+        let (a, rest) = sram.split_at_mut(64 << 10);
+        let b = &mut rest[..64 << 10];
+        let d = &mut sdram[..64 << 10];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = i as u8;
+        }
+        r.run("memcpy_sram_64k", 20, &mut || {
+            b.copy_from_slice(black_box(&*a));
+            black_box(&b);
+        });
+        r.run("memcpy_sdram_to_sram_64k", 20, &mut || {
+            b.copy_from_slice(black_box(&*d));
+            black_box(&b);
+        });
+        r.run("memset_sram_64k", 20, &mut || {
+            b.fill(black_box(0x5A));
+            black_box(&b);
+        });
+    }
+
     /// Memory latency by pointer chasing: each hop depends on the previous
     /// load and lands on a new cache line, so once the chain outgrows the
     /// 32 KiB D-cache this is the miss latency of `buf`'s memory. Run on the

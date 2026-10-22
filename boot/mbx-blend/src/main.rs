@@ -152,6 +152,15 @@ impl SetStats {
 /// 16-bit screen measurement, unattended, nothing shown, no button.
 pub const B7_ONLY: bool = option_env!("RP_MBX_BLEND_B7").is_some();
 
+/// Whether this build runs B8 alone (`RP_MBX_BLEND_B8`): the performance
+/// gate's P21, the 2D dither add's alternatives, unattended.
+pub const B8_ONLY: bool = option_env!("RP_MBX_BLEND_B8").is_some();
+
+/// Whether this build runs B9 alone (`RP_MBX_BLEND_B9`): the performance
+/// gate's V15, P6, P7 and V3: the clip rectangle, the scaler, an 8 bpp
+/// source through a palette and a 1 bpp source. Measured, not judged.
+pub const B9_ONLY: bool = option_env!("RP_MBX_BLEND_B9").is_some();
+
 /// How an 8-bit channel becomes `bits` bits: the rules B7 tells apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Narrow {
@@ -318,9 +327,9 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        ARGB_CODES, B7_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP, RampStats, SRC16, SRC32,
-        SetStats, channels, coverage_row, dither_tries, lerp565, near, ramp_level, rule_counts,
-        sweep,
+        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP, RampStats,
+        SRC16, SRC32, SetStats, channels, coverage_row, dither_tries, lerp565, near, ramp_level,
+        rule_counts, sweep,
     };
 
     use rp_image::crash;
@@ -374,7 +383,7 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
-        if B7_ONLY {
+        if B7_ONLY || B8_ONLY || B9_ONLY {
             b7_only(display.into_inner(), vram);
         }
         let (plane, _) = display.adopt(vram.len());
@@ -1215,9 +1224,19 @@ mod image {
     /// B7 alone (`RP_MBX_BLEND_B7`): no events, no B1-B6, nothing shown,
     /// no button; back to the loader.
     fn b7_only(regs: Mmio, vram: &mut [u8]) -> ! {
-        log!(
-            "{MARKER}: B7 only (ADR-0023's 16-bit screen: the 2D engine's 32 to 16-bit conversion)"
-        );
+        if B9_ONLY {
+            log!(
+                "{MARKER}: B9 only (the performance gate's V15, P6, P7, V3: clip, scaler, palette, 1 bpp)"
+            );
+        } else if B8_ONLY {
+            log!(
+                "{MARKER}: B8 only (the performance gate's P21: the 2D dither add's alternatives)"
+            );
+        } else {
+            log!(
+                "{MARKER}: B7 only (ADR-0023's 16-bit screen: the 2D engine's 32 to 16-bit conversion)"
+            );
+        }
         let mut e = Engine::new(regs, FENCE, rt::ticks, TICKS_PER_MS);
         log!(
             "B0 engine: ID 0x{:08x}",
@@ -1226,9 +1245,24 @@ mod image {
         e.reset(rt::delay_us);
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
-        let ok = b7(&mut e, vram);
+        let ok = if B9_ONLY {
+            b9(&mut e, vram)
+        } else if B8_ONLY {
+            b8(&mut e, vram)
+        } else {
+            b7(&mut e, vram)
+        };
         let verdict = if ok { "PASS" } else { "FAIL (see the log)" };
-        log!("{MARKER}: {verdict} - B7 done");
+        log!(
+            "{MARKER}: {verdict} - {} done",
+            if B9_ONLY {
+                "B9"
+            } else if B8_ONLY {
+                "B8"
+            } else {
+                "B7"
+            }
+        );
         if let Some(bus) = rt::take_ffuart() {
             let mut uart = PxaUart::new(bus);
             uart.init(115_200);
@@ -1616,6 +1650,452 @@ mod image {
         let back = go(e, vram, &base, "B7 blend back");
         log!(
             "B7 blend state put back to 0: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
+    }
+
+    // ------------------------------------------------------------------ B8
+
+    /// B8's pictures (32 bpp, full screen): two copies of one picture, the
+    /// full-screen pattern, its four rows, and a row to make the picture.
+    const B8_P1: usize = 0x0040_0000;
+    const B8_P2: usize = 0x0060_0000;
+    const B8_PAT_FULL: usize = 0x0080_0000;
+    const B8_PAT_ROWS: usize = 0x00CB_0000;
+    const B8_ROW: usize = 0x00CC_0000;
+
+    /// The renderer's dither add on `r` of the picture at `dst`: four
+    /// blits, one per line phase (destination stride x 4, the phase's
+    /// pattern row read with stride 0), blend word 0 (add, saturating).
+    fn b8_add_rows(r: (u16, u16, u16, u16), dst: usize, w: &mut [u32; 2 + 4 * 10]) -> usize {
+        w[..2].copy_from_slice(&cmd::blend(0));
+        let mut n = 2;
+        let (x0, y0, x1, y1) = r;
+        for k in 0..4u16 {
+            let first = y0 + (k + 4 - y0 % 4) % 4;
+            if first >= y1 {
+                continue;
+            }
+            let lines = (y1 - first).div_ceil(4);
+            let (b, m) = rp_image::need(
+                cmd::blit(
+                    (
+                        Format::BPP32,
+                        dst + usize::from(first) * STRIDE32,
+                        (4 * STRIDE32) as i32,
+                    ),
+                    (
+                        Format::BPP32,
+                        B8_PAT_ROWS + usize::from(first % 4) * STRIDE32,
+                        0,
+                    ),
+                    (x0, 0),
+                    (x0, 0, x1, lines),
+                    ROP_SRCCOPY,
+                    OP_BLEND,
+                    0,
+                ),
+                "a 2D rectangle",
+            );
+            w[n..n + m].copy_from_slice(&b[..m]);
+            n += m;
+        }
+        n
+    }
+
+    /// The alternative: one blit from a full-screen pattern picture, blend
+    /// word 0.
+    fn b8_add_full(r: (u16, u16, u16, u16), dst: usize, w: &mut [u32; 2 + 4 * 10]) -> usize {
+        w[..2].copy_from_slice(&cmd::blend(0));
+        let (b, m) = rp_image::need(
+            cmd::blit(
+                (Format::BPP32, dst, STRIDE32 as i32),
+                (Format::BPP32, B8_PAT_FULL, STRIDE32 as i32),
+                (r.0, r.1),
+                r,
+                ROP_SRCCOPY,
+                OP_BLEND,
+                0,
+            ),
+            "a 2D rectangle",
+        );
+        w[2..2 + m].copy_from_slice(&b[..m]);
+        2 + m
+    }
+
+    /// B8 (the performance gate's P21; measured, not judged): the 2D dither
+    /// add as `Mbx2dRenderer` does it (four blits, a stride-0 pattern row
+    /// each) against one blit from a full-screen pattern picture (1.2 MiB
+    /// of 2700G memory more): the same result word for word, and each
+    /// timed over the full screen and a 480 x 80 band.
+    fn b8(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B8 baseline");
+        // The pattern's four rows, by the CPU, as the renderer makes them.
+        for y in 0..4usize {
+            let row: [u32; 480] = core::array::from_fn(|x| rp_mbx_render::dither_at(x, y));
+            set(vram, B8_PAT_ROWS + y * STRIDE32, &row);
+        }
+        // A picture with every channel moving along the row.
+        let row: [u32; 480] = core::array::from_fn(|x| {
+            let v = (x as u32 * 255 / 479) & 0xFF;
+            0xFF00_0000 | v << 16 | (255 - v) << 8 | (v ^ 0x5A)
+        });
+        set(vram, B8_ROW, &row);
+        let full = (0, 0, 480, 640);
+        let copy = |dst: (Format, usize, i32), src: (Format, usize, i32), r| {
+            rp_image::need(
+                cmd::blit(dst, src, (0, 0), r, ROP_SRCCOPY, 0, 0),
+                "a 2D rectangle",
+            )
+        };
+        // The full-screen pattern from its rows (four copies), the picture
+        // into both copies (stride-0 copies of the row).
+        for k in 0..4usize {
+            let (w, n) = copy(
+                (
+                    Format::BPP32,
+                    B8_PAT_FULL + k * STRIDE32,
+                    (4 * STRIDE32) as i32,
+                ),
+                (Format::BPP32, B8_PAT_ROWS + k * STRIDE32, 0),
+                (0, 0, 480, 160),
+            );
+            ok &= go(e, vram, &w[..n], "B8 pattern picture");
+        }
+        for p in [B8_P1, B8_P2] {
+            let (w, n) = copy(
+                (Format::BPP32, p, STRIDE32 as i32),
+                (Format::BPP32, B8_ROW, 0),
+                full,
+            );
+            ok &= go(e, vram, &w[..n], "B8 picture");
+        }
+        // The same result? Once each, then compared word for word.
+        let mut w = [0u32; 2 + 4 * 10];
+        let n = b8_add_rows(full, B8_P1, &mut w);
+        ok &= go(e, vram, &w[..n], "B8 add (rows)");
+        let n = b8_add_full(full, B8_P2, &mut w);
+        ok &= go(e, vram, &w[..n], "B8 add (full pattern)");
+        let words = 480 * 640;
+        let differ = (0..words)
+            .filter(|k| {
+                load32_volatile(vram, B8_P1 + 4 * k) != load32_volatile(vram, B8_P2 + 4 * k)
+            })
+            .count();
+        log!("B8 the two ways' results: {differ} of {words} words differ");
+        ok &= differ == 0;
+        rt::check_in();
+        // Timings, 5 each.
+        for (what, r) in [("full screen", full), ("480 x 80", (0, 0, 480, 80))] {
+            let n = b8_add_rows(r, B8_P1, &mut w);
+            let rows = b7_time(e, vram, &w[..n], 5, "B8 rows");
+            let n = b8_add_full(r, B8_P2, &mut w);
+            let one = b7_time(e, vram, &w[..n], 5, "B8 full pattern");
+            log!(
+                "B8 dither add, {what}: four blits from pattern rows {rows:?} us, one blit from the full-screen pattern {one:?} us"
+            );
+            ok &= rows.is_some() && one.is_some();
+            rt::check_in();
+        }
+        // B8c, the performance gate's T6: does the CPU's polling of the
+        // fence word (a read of 2700G memory, the engine's own) slow the
+        // engine? Ten full-screen 32-bit fills, the fence polled without a
+        // pause, then with 1 ms and 5 ms between reads (the time each run
+        // took to land, at the polling's resolution).
+        for gap_us in [0u32, 1_000, 5_000] {
+            let fence = e.next_fence();
+            let t0 = rt::ticks();
+            for k in 0..10u32 {
+                let w = rp_image::need(
+                    cmd::fill(Format::BPP32, B8_P1, STRIDE32, full, 0xFF00_0000 | k),
+                    "a 2D rectangle",
+                );
+                let _ = e.submit(&w);
+            }
+            let _ = e.submit(&cmd::fence(FENCE, fence));
+            let mut reads = 0u32;
+            let landed = loop {
+                reads += 1;
+                if load32_volatile(vram, FENCE) == Some(fence) {
+                    break Some(us_since(t0));
+                }
+                if us_since(t0) > 2_000_000 {
+                    break None;
+                }
+                if gap_us > 0 {
+                    rt::delay_us(gap_us);
+                }
+            };
+            log!(
+                "B8c 10 full-screen fills, the fence polled every {gap_us} us: landed after {landed:?} us ({reads} reads)"
+            );
+            ok &= landed.is_some();
+            rt::check_in();
+        }
+        let back = go(e, vram, &base, "B8 blend back");
+        log!(
+            "B8 blend state put back to 0: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
+    }
+
+    // ------------------------------------------------------------------ B9
+
+    /// B9's destination: 64 x 64 RGB565 (128-byte lines) between guard
+    /// bands; its sources and the palette.
+    const B9_DST: usize = 0x00D0_0000 + B7_GUARD;
+    const B9_DST_STRIDE: usize = 128;
+    const B9_SRC32: usize = 0x00D2_0000;
+    const B9_SRC8: usize = 0x00D2_1000;
+    const B9_SRC1: usize = 0x00D2_2000;
+    const B9_PAL: usize = 0x00D2_3000;
+    const B9_MARK: u16 = 0xDEAD;
+
+    /// B9's destination filled with the marker, its guards set.
+    fn b9_clear(vram: &mut [u8]) {
+        fill_words(vram, B9_DST - B7_GUARD, B7_GUARD / 4, B7_GUARD_WORD);
+        fill_words(
+            vram,
+            B9_DST,
+            64 * B9_DST_STRIDE / 4,
+            u32::from(B9_MARK) * 0x0001_0001,
+        );
+        fill_words(
+            vram,
+            B9_DST + 64 * B9_DST_STRIDE,
+            B7_GUARD / 4,
+            B7_GUARD_WORD,
+        );
+    }
+
+    fn b9_px(vram: &[u8], x: usize, y: usize) -> u16 {
+        px16_at(vram, B9_DST + y * B9_DST_STRIDE + 2 * x)
+    }
+
+    /// Guard words around B9's destination that changed.
+    fn b9_guards(vram: &[u8]) -> usize {
+        [B9_DST - B7_GUARD, B9_DST + 64 * B9_DST_STRIDE]
+            .iter()
+            .map(|&at| {
+                (0..B7_GUARD / 4)
+                    .filter(|k| load32_volatile(vram, at + 4 * k) != Some(B7_GUARD_WORD))
+                    .count()
+            })
+            .sum()
+    }
+
+    /// The box of written (unmarked) pixels: (x0, x1, y0, y1) inclusive.
+    fn b9_written(vram: &[u8]) -> Option<(usize, usize, usize, usize)> {
+        let mut b: Option<(usize, usize, usize, usize)> = None;
+        for y in 0..64 {
+            for x in 0..64 {
+                if b9_px(vram, x, y) != B9_MARK {
+                    b = Some(b.map_or((x, x, y, y), |(a, c, d, e)| {
+                        (a.min(x), c.max(x), d.min(y), e.max(y))
+                    }));
+                }
+            }
+        }
+        b
+    }
+
+    /// Up to 16 numbers on one line.
+    struct Nums([u16; 16], usize);
+    impl core::fmt::Display for Nums {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            for v in &self.0[..self.1] {
+                write!(f, " {v}")?;
+            }
+            Ok(())
+        }
+    }
+
+    /// B9 (measured, not judged; each try stops at a timeout, a stuck
+    /// engine is reset and B9 goes on).
+    fn b9(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B9 baseline");
+
+        // B9a, V15: the clip rectangle (header bit 18), left 8, top 8,
+        // right 24, bottom 20, around a fill of the whole 64 x 64.
+        b9_clear(vram);
+        let [dw, da] = cmd::dest(Format::RGB565, B9_DST, B9_DST_STRIDE as i32);
+        let clip = [0x0000_0001, 24 << 16 | 8, 20 << 16 | 8];
+        let fill = [
+            dw,
+            da,
+            0x8000_0000 | cmd::ROP_PATCOPY | 1 << 18,
+            0x07E0,
+            cmd::xy(0, 0),
+            cmd::xy(64, 64),
+            cmd::FLUSH,
+        ];
+        let mut w = [0u32; 10];
+        w[..3].copy_from_slice(&clip);
+        w[3..].copy_from_slice(&fill);
+        log!("B9a try: clip (8, 8)-(24, 20) around a 64 x 64 fill, header bit 18");
+        let ran = go(e, vram, &w, "B9a clip");
+        log!(
+            "B9a clip (8, 8)-(24, 20), bit 18: ran {ran}; written x, x, y, y (inclusive) {:?}; guard words changed {}",
+            b9_written(vram),
+            b9_guards(vram)
+        );
+        ok &= ran;
+        rt::check_in();
+
+        // B9b, P6: the scale word. A 16 x 16 32-bit source, each pixel its
+        // own place (red 16 x, green 16 y), copied to RGB565 at four ratios.
+        for y in 0..16u32 {
+            let row: [u32; 16] =
+                core::array::from_fn(|x| 0xFF00_0000 | (x as u32 * 16) << 16 | (y * 16) << 8);
+            set(vram, B9_SRC32 + 64 * y as usize, &row);
+        }
+        for (name, s, out) in [
+            ("1:1", 0x20u32, 16u16),
+            ("x2", 0x10, 32),
+            ("x0.5", 0x40, 8),
+            ("x1.5", 0x15, 24),
+        ] {
+            b9_clear(vram);
+            let mut w = [0u32; 11];
+            w[0] = 0x6000_0000 | s << 18 | s << 4;
+            let (b, n) = rp_image::need(
+                cmd::blit(
+                    (Format::RGB565, B9_DST, B9_DST_STRIDE as i32),
+                    (Format::BPP32, B9_SRC32, 64),
+                    (0, 0),
+                    (0, 0, out, out),
+                    ROP_SRCCOPY,
+                    0,
+                    0,
+                ),
+                "a 2D rectangle",
+            );
+            w[1..1 + n].copy_from_slice(&b[..n]);
+            log!(
+                "B9b try: scale {name} (word 0x{:08x}), {out} x {out} out",
+                w[0]
+            );
+            let ran = go(e, vram, &w[..1 + n], "B9b scale");
+            // Which source column each of the first 16 output columns
+            // shows (row 0), which source row each of the first 16 output
+            // rows (column 0); 99: no single source pixel.
+            let decode = |p: u16| {
+                let [r, g, b] = channels(p);
+                (r % 2 == 0 && g % 4 == 0 && b == 0).then(|| ((r / 2) as u16, (g / 4) as u16))
+            };
+            let cols: [u16; 16] =
+                core::array::from_fn(|x| decode(b9_px(vram, x, 0)).map_or(99, |v| v.0));
+            let rows: [u16; 16] =
+                core::array::from_fn(|y| decode(b9_px(vram, 0, y)).map_or(99, |v| v.1));
+            let mixed = (0..usize::from(out))
+                .flat_map(|y| (0..usize::from(out)).map(move |x| (x, y)))
+                .filter(|&(x, y)| decode(b9_px(vram, x, y)).is_none())
+                .count();
+            log!(
+                "B9b scale {name}: ran {ran}; written {:?}; output columns from source x:{}; rows from source y:{}; pixels no single source gives {mixed}; guard words changed {}",
+                b9_written(vram),
+                Nums(cols, 16),
+                Nums(rows, 16),
+                b9_guards(vram)
+            );
+            ok &= go(e, vram, &[cmd::SCALE_1_TO_1], "B9b scale back");
+            rt::check_in();
+        }
+
+        // B9c, P7 / V3: an 8 bpp source (index x + 16 y) through a 256-entry
+        // 32-bit palette (`0xC0000000`, its address), then without it.
+        for i in 0..64usize {
+            let v = u32::from_le_bytes(core::array::from_fn(|k| (4 * i + k) as u8));
+            let _ = store32_volatile(vram, B9_SRC8 + 4 * i, v);
+        }
+        let pal: [u32; 256] = core::array::from_fn(|i| {
+            let i = i as u32;
+            0xFF00_0000 | i << 16 | (255 - i) << 8 | (i ^ 0xAA)
+        });
+        set(vram, B9_PAL, &pal);
+        for (name, with) in [("with the palette word", true), ("without it", false)] {
+            b9_clear(vram);
+            let mut w = [0u32; 12];
+            let mut n = 0;
+            if with {
+                w[..2].copy_from_slice(&[0xC000_0000, B9_PAL as u32]);
+                n = 2;
+            }
+            let (b, m) = rp_image::need(
+                cmd::blit(
+                    (Format::RGB565, B9_DST, B9_DST_STRIDE as i32),
+                    (Format::code(3), B9_SRC8, 16),
+                    (0, 0),
+                    (0, 0, 16, 16),
+                    ROP_SRCCOPY,
+                    0,
+                    0,
+                ),
+                "a 2D rectangle",
+            );
+            w[n..n + m].copy_from_slice(&b[..m]);
+            log!("B9c try: 8 bpp source {name}");
+            let ran = go(e, vram, &w[..n + m], "B9c 8 bpp");
+            let want = |i: usize| rp_mbx_render::to565(pal[i]);
+            let as_pal = (0..256)
+                .filter(|&i| b9_px(vram, i % 16, i / 16) == want(i))
+                .count();
+            let first: [u16; 16] = core::array::from_fn(|x| b9_px(vram, x, 0));
+            log!(
+                "B9c 8 bpp {name}: ran {ran}; {as_pal} of 256 pixels are their palette entry; row 0 (hex) {}; guard words changed {}",
+                Px(&first[..8]),
+                b9_guards(vram)
+            );
+            rt::check_in();
+        }
+
+        // B9d, V3: a 1 bpp source (0xAA bytes, then 0x0F), copied to
+        // RGB565 with red in the colour word.
+        for (k, b) in [0xAAu8, 0x0F].into_iter().enumerate() {
+            for row in 0..16usize {
+                let v = u32::from_le_bytes([b, b, b, b]);
+                let _ = store32_volatile(vram, B9_SRC1 + 4 * row + 64 * k, v);
+            }
+        }
+        cpu::drain_write_buffer();
+        for (k, name) in ["0xAA", "0x0F"].into_iter().enumerate() {
+            b9_clear(vram);
+            let (w, n) = rp_image::need(
+                cmd::blit(
+                    (Format::RGB565, B9_DST, B9_DST_STRIDE as i32),
+                    (Format::code(0), B9_SRC1 + 64 * k, 4),
+                    (0, 0),
+                    (0, 0, 16, 2),
+                    ROP_SRCCOPY,
+                    0,
+                    0xF800,
+                ),
+                "a 2D rectangle",
+            );
+            log!("B9d try: 1 bpp source of {name} bytes, colour word red");
+            let ran = go(e, vram, &w[..n], "B9d 1 bpp");
+            let row0: [u16; 16] = core::array::from_fn(|x| b9_px(vram, x, 0));
+            log!(
+                "B9d 1 bpp {name}: ran {ran}; row 0 (hex){}; guard words changed {}",
+                Px(&row0),
+                b9_guards(vram)
+            );
+            rt::check_in();
+        }
+
+        let back = go(e, vram, &base, "B9 state back");
+        log!(
+            "B9 scale, key and blend put back: {}",
             if back { "yes" } else { "NO" }
         );
         ok && back

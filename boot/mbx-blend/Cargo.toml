@@ -17,6 +17,7 @@ rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
+rp-mbx-render = { path = "../../drivers/mbx-render" }
 
 [dependencies]
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
