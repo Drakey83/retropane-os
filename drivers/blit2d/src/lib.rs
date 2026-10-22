@@ -381,6 +381,21 @@ impl<R: RegisterBus> Engine<R> {
         self.at = 0;
     }
 
+    /// Where the next command word goes: its offset in the command window
+    /// from [`PORT`] (bytes), for another writer (DMA, the gate's T3) to put
+    /// words there; [`Self::advanced`] then moves past them.
+    #[must_use]
+    pub const fn window_offset(&self) -> usize {
+        self.at
+    }
+
+    /// Another writer put `bytes` of command words into the window at
+    /// [`Self::window_offset`]: the next word goes after them (wrapping as
+    /// the window does).
+    pub fn advanced(&mut self, bytes: usize) {
+        self.at = (self.at + bytes) % PORT_SIZE;
+    }
+
     /// Queues `words`, waiting (up to 100 ms) for room in the FIFO.
     pub fn submit(&mut self, words: &[u32]) -> Result<(), Stuck> {
         let need = 4 * words.len() as u32;
@@ -621,6 +636,26 @@ mod tests {
                 (PORT, 3)
             ]
         );
+    }
+
+    #[test]
+    fn another_writers_words_move_the_offset_and_wrap() {
+        let mut e = Engine::new(MockBus::new(), FENCE, tick, 1_000);
+        assert_eq!(e.window_offset(), 0);
+        e.advanced(64);
+        assert_eq!(e.window_offset(), 64);
+        e.advanced(PORT_SIZE - 32);
+        assert_eq!(e.window_offset(), 32, "wraps as the window does");
+        // The engine's own next word goes after them.
+        e.submit(&[7]).unwrap();
+        let w: std::vec::Vec<_> = e
+            .regs
+            .writes()
+            .into_iter()
+            .filter(|&(o, _)| o >= PORT)
+            .collect();
+        assert_eq!(w, [(PORT + 32, 7)]);
+        assert_eq!(e.window_offset(), 36);
     }
 
     #[test]

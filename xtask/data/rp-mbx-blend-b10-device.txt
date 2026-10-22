@@ -1,0 +1,5 @@
+# rp-mbx-blend B10 on the owner's X51v (2026-10-22, local/rp-mbx-blend-B10-run1.txt): the lines an emulator with mbx-2d-rop and mbx-2d-pal must reproduce (B10c reads the FIFO's level while busy: the emulator runs each command at once; left out).
+B10a raster operations: 256 of 256 as GDI's ROP3 (pattern = colour word), 0 stuck; the first others (rop, word): []
+B10b 8 bpp fill of 0xa5, 8 pixels: ran true; the first 8 bytes and on (words): [a5a5a5a5, a5a5a5a5, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a]
+B10b 24 bpp fill of 0x123456, 8 pixels: ran true; the first 24 bytes and on (words): [56123456, 34561234, 12345612, 56123456, 34561234, 12345612, 5a5a5a5a, 5a5a5a5a]
+B10d a fill with header bit 21: ran true; the words [5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a, 5a5a5a5a]

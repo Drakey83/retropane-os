@@ -515,11 +515,16 @@ mod image {
 
         // Serial copy of every page (the emulator test checks the sums), and
         // the run log's: `cargo xtask load` checks them on the PC.
+        // A check-in a page: the run log's lines go to the card as they
+        // come (on the CF card, up to 139 ms a sector write), and the
+        // report and the hold below outgrew the run limit after the last
+        // benchmark's check-in (2026-10-22, quality audit C55).
         for p in 0..PAGES {
             for l in rep.page_lines(p) {
                 let _ = writeln!(uart, "P{}|{}", p + 1, Ascii(l));
                 let _ = writeln!(rp_hal_x51v::devices::RunLog, "P{}|{}", p + 1, Ascii(l));
             }
+            rt::check_in();
         }
         // The stack's deepest use on serial too, before the marker: started
         // without the loader (the emulator's check) the return that prints
@@ -534,6 +539,7 @@ mod image {
         // Started by the resident loader: the report is on its way to the PC,
         // so show page 1 briefly and go back.
         if rp_hal_x51v::devices::loader_present() {
+            rt::check_in();
             rt::delay_us(2_000_000);
             rp_hal_x51v::devices::return_to_loader();
         }

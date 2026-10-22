@@ -9,6 +9,7 @@ mod emu;
 mod gate;
 mod measure;
 mod mutants;
+mod perf;
 mod policy;
 mod profile;
 mod screen;
@@ -44,6 +45,11 @@ commands:
   test      host unit tests
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
+  gate      count the performance gate's checklist lines (docs/ROADMAP.md)
+  perf      the performance ratchet on the docked X51v: the device suite against
+            docs/perf-floors.md (`--update` ratchets faster floors down;
+            `perf noise N` sets every floor and tolerance from N runs;
+            `perf refloor N` from the newest N saved ones)
   emu       boot the bring-up, probe, kernel, threads, first-light and USB images
             in the emulator
             (downloads it if needed)
@@ -268,6 +274,24 @@ fn main() -> ExitCode {
         "usb" => {
             eprintln!("==> usb");
             usb::run()
+        }
+        "perf" => {
+            eprintln!("==> perf {flag}");
+            if flag == "noise" {
+                match args().nth(3).map(|n| n.parse::<usize>()) {
+                    Some(Ok(n)) => perf::noise(&workspace_root(), n),
+                    _ => Err("usage: cargo xtask perf noise <runs>".into()),
+                }
+            } else if flag == "refloor" {
+                match args().nth(3).map(|n| n.parse::<usize>()) {
+                    Some(Ok(n)) => perf::refloor(&workspace_root(), n),
+                    _ => Err("usage: cargo xtask perf refloor <saved noise runs>".into()),
+                }
+            } else if flag.is_empty() || flag == "--update" {
+                perf::check(&workspace_root(), flag == "--update")
+            } else {
+                Err("usage: cargo xtask perf [--update] | perf noise <runs>".into())
+            }
         }
         "load" => {
             eprintln!("==> load {flag}");

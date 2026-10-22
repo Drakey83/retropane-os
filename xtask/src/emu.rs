@@ -3368,6 +3368,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_fs = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REAL_STALL", "1"))?;
     let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
+    let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3392,7 +3393,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 31] = [
+    let runs: [GpubenchRun; 32] = [
         (
             "run A",
             &run_a,
@@ -3869,6 +3870,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  FI enables all (0xffffffff): idle 0x",
                 "3D started true",
                 "FI: enables put back",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        (
+            // The gate's T3: 2D commands into the command window by DMA.
+            "run FD",
+            &run_fd,
+            &[
+                "  FD 0 CPU: idle first true, sent true",
+                "  FD 2 DMA: idle first true",
+                "the picture as the CPU's: true",
+                "FD: both ways drew the same",
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
@@ -4410,14 +4425,30 @@ const MBX_BLEND_B7_UNMODELLED: &str = "B7c header bit 0x00200000:";
 /// line (B7a, B7b and B7c's results) must appear in the log exactly, but
 /// [`MBX_BLEND_B7_UNMODELLED`]'s.
 fn mbx_blend_b7_mismatches(log: &str, device: &str) -> Vec<String> {
+    device_mismatches(log, device, &[MBX_BLEND_B7_UNMODELLED])
+}
+
+/// Where an emulator run differs from the device's: each device line
+/// (not `#` comments) must appear in the log exactly, but those starting
+/// with one of `skip`.
+fn device_mismatches(log: &str, device: &str, skip: &[&str]) -> Vec<String> {
     device
         .lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
-        .filter(|l| !l.starts_with(MBX_BLEND_B7_UNMODELLED))
+        .filter(|l| !skip.iter().any(|s| l.starts_with(s)))
         .filter(|want| !log.lines().any(|l| l.trim_end() == *want))
         .map(|want| format!("device `{want}`: not in the emulator's log"))
         .collect()
 }
+
+/// rp-mbx-blend B9's and B10's runs on the owner's X51v: the lines an
+/// emulator with `mbx-2d-pal` (and `mbx-2d-rop`) must reproduce exactly.
+const MBX_BLEND_B9_DEVICE: &str = include_str!("../data/rp-mbx-blend-b9-device.txt");
+const MBX_BLEND_B10_DEVICE: &str = include_str!("../data/rp-mbx-blend-b10-device.txt");
+
+/// rp-mbx-blend B11's run on the owner's X51v (2026-10-22): the lines an
+/// emulator with `mbx-2d-rop` must reproduce exactly.
+const MBX_BLEND_B11_DEVICE: &str = include_str!("../data/rp-mbx-blend-b11-device.txt");
 
 /// B10 alone (`RP_MBX_BLEND_B10`, the performance gate's P13, V15, V17):
 /// all 256 raster operations run (none stuck), each part to its line, the
@@ -4460,6 +4491,26 @@ fn mbx_blend_b10(root: &Path) -> Result<(), String> {
         if !log.contains(want) {
             return Err(format!("mbx-blend B10: the run log has no `{want}`:{log}"));
         }
+    }
+    // With the fork's ROP model (mbx-2d-rop) and bit 21 (mbx-2d-pal):
+    // every line as the X51v's but B10c (the FIFO level while busy).
+    if device_has(root, "intel-2700g", "mbx-2d-rop")
+        && device_has(root, "intel-2700g", "mbx-2d-pal")
+    {
+        let wrong = device_mismatches(log, MBX_BLEND_B10_DEVICE, &[]);
+        if !wrong.is_empty() {
+            return Err(format!(
+                "mbx-blend B10: not as on the X51v:
+{}",
+                wrong.join(
+                    "
+"
+                )
+            ));
+        }
+        eprintln!(
+            "    mbx-blend B10 matches the X51v's run line for line (B10c's FIFO level left out)"
+        );
     }
     for l in log.lines().filter(|l| l.starts_with("B10")) {
         eprintln!("      {}", l.trim_end());
@@ -4505,6 +4556,21 @@ fn mbx_blend_b11(root: &Path) -> Result<(), String> {
         if !log.contains(want) {
             return Err(format!("mbx-blend B11: the run log has no `{want}`:{log}"));
         }
+    }
+    // With the fork's model (mbx-2d-rop): every line as the X51v drew it.
+    if device_has(root, "intel-2700g", "mbx-2d-rop") {
+        let wrong = device_mismatches(log, MBX_BLEND_B11_DEVICE, &[]);
+        if !wrong.is_empty() {
+            return Err(format!(
+                "mbx-blend B11: not as on the X51v:
+{}",
+                wrong.join(
+                    "
+"
+                )
+            ));
+        }
+        eprintln!("    mbx-blend B11 matches the X51v's run line for line");
     }
     for l in log.lines().filter(|l| l.starts_with("B11")) {
         eprintln!("      {}", l.trim_end());
@@ -4558,6 +4624,23 @@ fn mbx_blend_b9(root: &Path) -> Result<(), String> {
         if !log.contains(want) {
             return Err(format!("mbx-blend B9: the run log has no `{want}`:{log}"));
         }
+    }
+    // With the fork's palette and scaler (mbx-2d-pal): as the X51v drew.
+    if device_has(root, "intel-2700g", "mbx-2d-pal") {
+        let wrong = device_mismatches(log, MBX_BLEND_B9_DEVICE, &[]);
+        if !wrong.is_empty() {
+            return Err(format!(
+                "mbx-blend B9: not as on the X51v:
+{}",
+                wrong.join(
+                    "
+"
+                )
+            ));
+        }
+        eprintln!(
+            "    mbx-blend B9 matches the X51v's run line for line (B9c's stale palette and B9e's timings left out)"
+        );
     }
     for l in log.lines().filter(|l| l.starts_with("B9")) {
         eprintln!("      {}", l.trim_end());
@@ -4680,7 +4763,13 @@ fn mbx_blend_b7(root: &Path) -> Result<(), String> {
         );
         return Ok(());
     }
-    let bad = mbx_blend_b7_mismatches(log, MBX_BLEND_B7_DEVICE);
+    // Header bit 21 is modelled with mbx-2d-pal (fork branch rp-next).
+    let bit21 = device_has(root, "intel-2700g", "mbx-2d-pal");
+    let bad = if bit21 {
+        device_mismatches(log, MBX_BLEND_B7_DEVICE, &[])
+    } else {
+        mbx_blend_b7_mismatches(log, MBX_BLEND_B7_DEVICE)
+    };
     if !bad.is_empty() {
         return Err(format!(
             "mbx-blend B7: {} line(s) differ from the X51v's run:\n  {}",
@@ -4689,7 +4778,12 @@ fn mbx_blend_b7(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!(
-        "    mbx-blend B7 OK: every part ran ({tries} B7c tries), the conversion, blends and tries match the X51v's run (header bit 21 not modelled), back at the loader by itself"
+        "    mbx-blend B7 OK: every part ran ({tries} B7c tries), the conversion, blends and tries match the X51v's run ({}), back at the loader by itself",
+        if bit21 {
+            "header bit 21 too"
+        } else {
+            "header bit 21 not modelled"
+        }
     );
     Ok(())
 }

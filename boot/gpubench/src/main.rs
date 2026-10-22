@@ -230,6 +230,13 @@ mod image {
     /// completion bit would let 2D waits sleep, as 3D's do). Unattended;
     /// the enables and status put back as found.
     const IRQ_BITS: bool = option_env!("RP_GPUBENCH_IRQ_BITS").is_some();
+    /// Run FD (the performance gate's T3): 2D commands put into the command
+    /// window by DMA, against the CPU's writes: 50 small fills (352 words,
+    /// under the FIFO's 510 with the engine idle), each way three times,
+    /// the pictures compared, the CPU's busy time each way. Unattended.
+    const DMA_FEED: bool = option_env!("RP_GPUBENCH_DMA_FEED").is_some();
+    /// The 2700G's register window as DMA sees it (CS3 + 0x03FE0000).
+    const REGS_PHYS: u32 = 0x0FFE_0000;
     /// Run FT with the 2D engine filling instead of copying (writes only,
     /// no reads): `RP_GPUBENCH_TOGETHER_FILLS` beside `RP_GPUBENCH_TOGETHER`.
     const TOGETHER_FILLS: bool = option_env!("RP_GPUBENCH_TOGETHER_FILLS").is_some();
@@ -2955,6 +2962,120 @@ mod image {
             }
         }
         (inq, out, bands, near, far)
+    }
+
+    /// Run FD (see [`DMA_FEED`]).
+    #[inline(never)]
+    fn dma_feed(g: &mut Rig) {
+        const PIC: u32 = 480 * 640 * 2;
+        const FILLS: usize = 50;
+        const WORDS: usize = 352; // 50 x 7, padded to whole 32-byte lines
+        #[repr(align(32))]
+        struct Batch([u32; WORDS]);
+        log!(
+            "FD: 2D commands into the command window by DMA against the CPU's writes: {FILLS} 8 x 8 fills ({WORDS} words), three times each way"
+        );
+        clock_card(g, ["RUN FD", "2D COMMANDS", "BY DMA"], 0xFF20_2040, 2);
+        let Some(pic) = g.pool.alloc(PIC, 0x1000) else {
+            log!("  no memory for the picture");
+            return;
+        };
+        let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::SD) else {
+            log!("  no DMA channel");
+            let _ = g.pool.free(pic, PIC);
+            return;
+        };
+        let mut b = Batch([cmd::FLUSH; WORDS]);
+        for k in 0..FILLS {
+            let (x, y) = ((k % 10) as u16 * 40, (k / 10) as u16 * 40);
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    pic as usize,
+                    960,
+                    (x, y, x + 8, y + 8),
+                    0x0841 * k as u32,
+                ),
+                "a 2D rectangle",
+            );
+            b.0[7 * k..7 * k + 7].copy_from_slice(&w);
+        }
+        let clear = |g: &mut Rig| {
+            let w = rp_image::need(
+                cmd::fill(Format::RGB565, pic as usize, 960, (0, 0, 480, 640), 0),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+            g.e.finish(g.mem.0, 2_000_000).is_ok()
+        };
+        let mut want = None;
+        let mut same = true;
+        for round in 0..3 {
+            // The CPU's writes.
+            let idle = clear(g);
+            let t0 = g.clock.now_us();
+            let sent = g.e.submit(&b.0).is_ok();
+            let busy = g.clock.now_us().wrapping_sub(t0);
+            let done = g.e.finish(g.mem.0, 2_000_000).is_ok();
+            let all = g.clock.now_us().wrapping_sub(t0);
+            let h = ft_hash(g, pic, PIC / 4);
+            want.get_or_insert(h);
+            same &= want == Some(h);
+            log!(
+                "  FD {round} CPU: idle first {idle}, sent {sent}, the CPU busy {busy} us, done {done} after {all} us"
+            );
+            // DMA: the window's offset kept clear of its wrap.
+            let idle = clear(g);
+            let at = g.e.window_offset();
+            if at + 4 * WORDS > cmd::PORT_SIZE {
+                let pad = [cmd::FLUSH; 256];
+                let mut left = (cmd::PORT_SIZE - at) / 4;
+                while left > 0 {
+                    let n = left.min(pad.len());
+                    let _ = g.e.submit(&pad[..n]);
+                    left -= n;
+                }
+            }
+            let at = g.e.window_offset();
+            let t0 = g.clock.now_us();
+            let armed = dma.arm_copy_to_device_memory(
+                words_as_bytes(&b.0),
+                REGS_PHYS + (cmd::PORT + at) as u32,
+            );
+            let arm_us = g.clock.now_us().wrapping_sub(t0);
+            let mut moved = None;
+            while armed && g.clock.now_us().wrapping_sub(t0) < 200_000 {
+                if let Some(ok) = dma.done() {
+                    moved = Some((ok, g.clock.now_us().wrapping_sub(t0)));
+                    break;
+                }
+            }
+            if armed && moved.is_none() {
+                dma.abort();
+            }
+            if moved.is_some_and(|(ok, _)| ok) {
+                g.e.advanced(4 * WORDS);
+            }
+            let done = g.e.finish(g.mem.0, 2_000_000).is_ok();
+            let all = g.clock.now_us().wrapping_sub(t0);
+            let h = ft_hash(g, pic, PIC / 4);
+            same &= want == Some(h);
+            log!(
+                "  FD {round} DMA: idle first {idle}, window offset {at}, armed {armed} (the CPU busy {arm_us} us), moved {moved:?}, done {done} after {all} us; the picture as the CPU's: {}",
+                want == Some(h)
+            );
+            rt::check_in();
+        }
+        log!(
+            "FD: {}",
+            if same {
+                "both ways drew the same"
+            } else {
+                "NOT the same (see above)"
+            }
+        );
+        let _ = g.pool.free(pic, PIC);
+        clock_card(g, ["RUN FD", "DONE", ""], 0xFF10_6020, 3);
     }
 
     /// Run FI (see [`IRQ_BITS`]).
@@ -6791,6 +6912,8 @@ mod image {
                 "P2Y (what P2X's errors need: the CPU's reads, the display's fetch at 32 bits, 16 bits and stopped)"
             } else if SPECKS {
                 "P2X (P2W's white specks: the picture rendered 5 times a format, checked and compared)"
+            } else if DMA_FEED {
+                "FD (2D commands into the command window by DMA)"
             } else if IRQ_BITS {
                 "FI (the MBX status and interrupt bits around 2D and 3D jobs)"
             } else if TOGETHER {
@@ -6882,6 +7005,8 @@ mod image {
             specks2(&mut g);
         } else if SPECKS {
             specks(&mut g);
+        } else if DMA_FEED {
+            dma_feed(&mut g);
         } else if IRQ_BITS {
             irq_bits(&mut g);
         } else if TOGETHER {

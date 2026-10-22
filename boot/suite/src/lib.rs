@@ -67,6 +67,10 @@ mod target {
             }
             self.sink
                 .result(name, rt::ticks().wrapping_sub(start), iters);
+            // Outside the timing: the starter's run limit (30 s under the
+            // loader) holds a whole image, and the suite's runs together
+            // outgrew it (rp-probe, 2026-10-22: RunLimit after "done").
+            rt::check_in();
         }
 
         /// Reports a result measured by the caller (ticks for `iters`).

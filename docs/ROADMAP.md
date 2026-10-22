@@ -29,8 +29,8 @@ measurements these pages need. The owner gave the brief on 2026-10-20 and
 had to repeat it on 2026-10-21 because it wasn't kept in front of the
 work: **this section is read at the start of every session (CLAUDE.md).**
 
-**Count (`cargo xtask gate`, 2026-10-22 night): 6 of 71 lines done, 22
-partial, 43 open** (the sweeps V10 and V9 added lines as they found
+**Count (`cargo xtask gate`, 2026-10-22, later that night): 9 of 71 lines
+done, 43 partial, 19 open** (the sweeps V10 and V9 added lines as they found
 unchecked facts). Each page's ledger holds every line's status and its
 evidence; `cargo xtask ci` prints the count every run, and every summary
 quotes it.

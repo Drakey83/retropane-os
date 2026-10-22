@@ -46,6 +46,29 @@ checklist line is done **and** this is running.
    (its budget: "this screen opens in under X ms"), and its ADR names the
    checklist lines it uses.
 
+## Built (2026-10-22 night)
+
+`cargo xtask perf` (`xtask/src/perf.rs`, host-tested): the suite is
+`rp-probe` (its benchmark rows: copies, caches, SRAM, DMA, iWMMXt, the
+filter, LZ4, crypto, TLB), `rp-gpubench` run FT's alone timings (a
+full-screen render, ten 2D copies), `rp-mbx-blend` B7d (conversions,
+copies), B8 (the dither add) and B9e (scaling, palettes, a 16-bit copy):
+every number named from its run-log line, read from the card log.
+`cargo xtask perf noise 5` writes `docs/perf-floors.md` (floor = the
+median of five runs; tolerance = the largest of four standard deviations
+of the runs, twice the smallest step between their values, and two steps
+of the number's timer: 4000/13 ns for the probe, 4 us for the images.
+Not the runs' range: a sixth run falls outside five runs' range a third
+of the time, and the first check failed seven numbers within a tick);
+`cargo xtask perf refloor N` recomputes them from saved runs;
+`cargo xtask perf` fails on a number slower beyond its tolerance or gone
+from the run, and reports faster ones (`--update` ratchets them down).
+First floors: 99 numbers (2026-10-22 night); an independent check run
+after them: 103 numbers, 0 slower, 1 faster, 4 new. Not yet in it: the
+loader's boot line (needs a restart: owner present),
+touch and frames (taps), battery (P16), the harness's numbers (T1, T4,
+T7).
+
 ## Taps
 
 Touch numbers need taps on the device. Options, for the owner: a person

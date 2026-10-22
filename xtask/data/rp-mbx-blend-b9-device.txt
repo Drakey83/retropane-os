@@ -1,0 +1,17 @@
+# rp-mbx-blend B9 on the owner's X51v (2026-10-21, local/rp-mbx-blend-B9-run2.txt): the lines an emulator with mbx-2d-pal must reproduce (B9c 'without it' reads a stale palette address and B9e is timings: left out).
+B9a try: clip (8, 8)-(24, 20) around a 64 x 64 fill, header bit 18
+B9a clip (8, 8)-(24, 20), bit 18: ran true; written x, x, y, y (inclusive) Some((8, 23, 8, 19)); guard words changed 0
+B9b try: scale 1:1 (word 0x60800200), 16 x 16 out
+B9b scale 1:1: ran true; written Some((0, 15, 0, 15)); output columns from source x: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; rows from source y: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; pixels no single source gives 0; guard words changed 0
+B9b try: scale x2 (word 0x60400100), 32 x 32 out
+B9b scale x2: ran true; written Some((0, 31, 0, 31)); output columns from source x: 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7; rows from source y: 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7; pixels no single source gives 0; guard words changed 0
+B9b try: scale x0.5 (word 0x61000400), 8 x 8 out
+B9b scale x0.5: ran true; written Some((0, 7, 0, 7)); output columns from source x: 0 2 4 6 8 10 12 14 99 99 99 99 99 99 99 99; rows from source y: 0 2 4 6 8 10 12 14 99 99 99 99 99 99 99 99; pixels no single source gives 0; guard words changed 0
+B9b try: scale x1.5 (word 0x60540150), 24 x 24 out
+B9b scale x1.5: ran true; written Some((0, 23, 0, 23)); output columns from source x: 0 0 1 1 2 3 3 4 5 5 6 7 7 8 9 9; rows from source y: 0 0 1 1 2 3 3 4 5 5 6 7 7 8 9 9; pixels no single source gives 0; guard words changed 0
+B9c try: 8 bpp source with the palette word
+B9c 8 bpp with the palette word: ran true; 256 of 256 pixels are their palette entry; row 0 (hex)  07f5 07f5 07f5 07f5 07d5 07d5 07d5 07d5; guard words changed 0
+B9d try: 1 bpp source of 0xAA bytes, colour word red
+B9d 1 bpp 0xAA: ran true; row 0 (hex) 07e0 001f 07e0 001f 07e0 001f 07e0 001f 07e0 001f 07e0 001f 07e0 001f 07e0 001f; guard words changed 0
+B9d try: 1 bpp source of 0x0F bytes, colour word red
+B9d 1 bpp 0x0F: ran true; row 0 (hex) 001f 001f 001f 001f 07e0 07e0 07e0 07e0 001f 001f 001f 001f 07e0 07e0 07e0 07e0; guard words changed 0
