@@ -3518,6 +3518,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
+    // Run GS (the clocks' soak) with 70 s a setting: one minute's line and
+    // the closing line each.
+    let run_gs = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_SOAK", "1"),
+        Some(("RP_GPUBENCH_SOAK_SECS", "70")),
+    )?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3542,7 +3550,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 32] = [
+    let runs: [GpubenchRun; 33] = [
         (
             "run A",
             &run_a,
@@ -3623,6 +3631,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run G",
             &run_g,
             &["G5: the clocks", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GS (the clocks' soak): checked below.
+        (
+            "run GS",
+            &run_gs,
+            &["GS: the clocks' warm soak", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -4174,6 +4190,38 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         // chip must trace the lock bit, run both passes with every step
         // GOOD twice (the models don't fail at any clock) and every control
         // GOOD, and put everything back.
+        // Run GS soaks only from Windows Mobile's clock, as run G; stepping,
+        // both settings must run to their end with every round and control
+        // GOOD (the models don't fail at any clock), a minute's line each,
+        // and everything put back. `DSIG` isn't modelled (reads 0:
+        // emulator.md), so whether the label is sent is the device's.
+        if name == "run GS" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let soaked = [
+                "  the 16-bit label shown: DSIG 0x",
+                "  soak 1: 99.67 MHz CL2, cores / 1: lock Some(",
+                "  GS 99.67 MHz CL2, cores / 1, minute 1: ",
+                "  soak 1 at 99.67 MHz CL2, cores / 1: ",
+                "    control at 99.67 MHz after soak 1: GOOD",
+                "  soak 2: 133.25 MHz CL2, cores / 1: lock Some(",
+                "  GS 133.25 MHz CL2, cores / 1, minute 2: ",
+                "  soak 2 at 133.25 MHz CL2, cores / 1: ",
+                "    control at 99.67 MHz after soak 2: GOOD",
+                "  put back: COREPLL 0xbb1",
+            ]
+            .iter()
+            .all(|w| log.contains(w))
+                && log.matches(", 0 BAD | worst 3D").count() == 6
+                && log.matches(" | GOOD").count() == 4
+                && !log.contains("| BAD")
+                && !log.contains("STOPPED");
+            if !(refused && log.contains("as found: COREPLL 0x0,") || soaked) {
+                return Err(format!(
+                    "gpubench run GS: neither refused cleanly nor soaked both settings:{log}"
+                ));
+            }
+        }
         if name == "run G" {
             let refused =
                 log.contains("not Windows Mobile's clock and bus timing: nothing changed");

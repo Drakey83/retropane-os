@@ -81,6 +81,14 @@
 //! (code 4) and shown as RGB888 (display format 6), then RGB565 plain,
 //! RGB565 dithered (code 9) and ARGB8888: whether the 24-bit picture shows
 //! right and which ramps look smooth.
+//!
+//! **Run GS** (`RP_GPUBENCH_SOAK`, unattended; ROADMAP step 3): the
+//! clocks' soak, 20 minutes (`RP_GPUBENCH_SOAK_SECS`) at 99.67 MHz with the
+//! cores at divide 1 and then at 133.25 MHz CL2, cores at divide 1, every
+//! round the 3D core, the 2D engine, the bus, the SDRAM and the 16-bit
+//! scan-out all at work and checked; stops at the first BAD; a line a
+//! minute in the card log; the screen labelled with the setting and the
+//! minute. It asks nothing of the owner.
 
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
@@ -140,6 +148,40 @@ mod image {
     /// Run G: the clocks (the cores at divide 1, the system clock past
     /// 100 MHz).
     const CLOCK: bool = option_env!("RP_GPUBENCH_CLOCK").is_some();
+    /// Run GS: the clocks' warm soak (ROADMAP step 3; P1, P2, V1, V2,
+    /// V12-V14 of docs/research/2700g-full-potential.md): [`SOAK_SECS`] at
+    /// 99.67 MHz with the cores at divide 1, then at 133.25 MHz CL2 with the
+    /// cores at divide 1 (run G5's fastest right), every round stressed and
+    /// checked, stopping at the first BAD.
+    const SOAK: bool = option_env!("RP_GPUBENCH_SOAK").is_some();
+    /// Each soak setting's length in seconds: 1200 (20 minutes) unless
+    /// `RP_GPUBENCH_SOAK_SECS` says otherwise (the emulator's check runs a
+    /// short one).
+    const SOAK_SECS: u32 = match option_env!("RP_GPUBENCH_SOAK_SECS") {
+        Some(s) => parse_secs(s),
+        None => 1200,
+    };
+    /// A decimal number of seconds, at build time (a bad one fails the
+    /// build).
+    const fn parse_secs(s: &str) -> u32 {
+        let b = s.as_bytes();
+        assert!(
+            !b.is_empty() && b.len() <= 6,
+            "RP_GPUBENCH_SOAK_SECS: 1-6 digits"
+        );
+        let mut n = 0u32;
+        let mut k = 0;
+        while k < b.len() {
+            assert!(b[k].is_ascii_digit(), "RP_GPUBENCH_SOAK_SECS: digits only");
+            n = n * 10 + (b[k] - b'0') as u32;
+            k += 1;
+        }
+        assert!(n >= 10, "RP_GPUBENCH_SOAK_SECS: at least 10");
+        n
+    }
+    /// The runs that change the 2700G's clock: a crash in any puts
+    /// Windows Mobile's back ([`put_back`]).
+    const CHANGES_CLOCK: bool = CLOCK || SOAK || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
@@ -6118,6 +6160,8 @@ mod image {
         pat_bytes: u32,
         src: &'a [u32],
         reference: &'a mut [u32],
+        /// The RAM pool's rest (SDRAM), for run GS's CPU stream.
+        spare: &'a mut [u32],
     }
 
     /// One step's results.
@@ -6536,7 +6580,7 @@ mod image {
             log!("  no 2700G memory");
             return None;
         };
-        let (tex_copy, _) = rest.split_at_mut(tex.bytes() as usize / 4);
+        let (tex_copy, spare) = rest.split_at_mut(tex.bytes() as usize / 4);
         for (k, w) in tex_copy.iter_mut().enumerate() {
             *w = g.mem.load(tex.at as usize + 4 * k).unwrap_or(0);
         }
@@ -6548,6 +6592,7 @@ mod image {
             pat_bytes: 4 << 20,
             src,
             reference,
+            spare,
         })
     }
 
@@ -6775,6 +6820,415 @@ mod image {
         clock_rig_free(g, c);
     }
 
+    // ---- Run GS: the clocks' warm soak (ROADMAP step 3, 2026-10-22) ----
+    //
+    // G5's 60 s soak at 99.67 MHz with the cores at divide 1 (37 rounds,
+    // 0 bad) is the only soak there is. GS soaks the candidate and the
+    // fastest setting seen right for SOAK_SECS each, every round with the
+    // 3D core, the 2D engine, the CPU's bus to the 2700G, the CPU's own
+    // SDRAM and the 16-bit scan-out all working, and stops at the first
+    // BAD: a failure is the finding, never retried.
+
+    /// Run GS's label: the second screen picture as RGB565 (960-byte rows),
+    /// scanned out at 16 bits through the whole soak (the shell's screen,
+    /// ADR-0023); the 3D and 2D work goes to [`SCREEN`], not shown.
+    const SOAK_LABEL: u32 = map::SCREENS[1].at;
+    /// Run GS's 2D copy of the rendered picture lands here (32-bit, not
+    /// shown).
+    const SOAK_COPY: u32 = map::BACKGROUND.at;
+    /// SDRAM words the CPU streams each round (4 MiB: far past the caches).
+    const SOAK_STREAM_WORDS: usize = 1 << 20;
+    /// The label's colours (RGB565): working, stopped, done.
+    const SOAK_BLUE: u16 = 0x10D4;
+    const SOAK_RED: u16 = 0x8082;
+    const SOAK_GREEN: u16 = 0x1304;
+
+    /// The label: `bg` over the whole 16-bit screen and three lines of up
+    /// to 19 characters in white at 4x, drawn by the CPU.
+    fn soak_label(g: &mut Rig, lines: [&str; 3], bg: u16) {
+        let row = [u32::from(bg) << 16 | u32::from(bg); 240];
+        for y in 0..640u32 {
+            g.mem.store((SOAK_LABEL + y * 960) as usize, &row);
+        }
+        for (k, l) in lines.iter().enumerate() {
+            let y0 = 200 + 80 * k as u32;
+            for (i, ch) in l.chars().enumerate() {
+                // Even x, so each 4-pixel run is two whole words.
+                let x0 = 16 + i as u32 * (WIDTH as u32 + 1) * 4;
+                if x0 + WIDTH as u32 * 4 > 480 {
+                    break;
+                }
+                for (gy, &bits) in font::glyph(ch).iter().enumerate() {
+                    for gx in 0..WIDTH as u32 {
+                        if bits & (1 << (WIDTH as u32 - 1 - gx)) == 0 {
+                            continue;
+                        }
+                        for dy in 0..4 {
+                            let y = y0 + gy as u32 * 4 + dy;
+                            let at = SOAK_LABEL + y * 960 + 2 * (x0 + gx * 4);
+                            g.mem.store(at as usize, &[u32::MAX, u32::MAX]);
+                        }
+                    }
+                }
+            }
+        }
+        g.mem.sync();
+    }
+
+    /// The display's output signature twice, a frame apart, two frames
+    /// after the label changed: sending if nonzero (the label is never
+    /// black; run N: `DSIG` reads 0 for a black picture too).
+    fn soak_dsig(g: &mut Rig) -> (u32, u32) {
+        rt::delay_us(2 * FRAME_US);
+        let a = g.e.regs.read32(DSIG);
+        rt::delay_us(FRAME_US);
+        (a, g.e.regs.read32(DSIG))
+    }
+
+    /// The parts of a round [`clock_check`] doesn't cover.
+    struct SoakExtra {
+        /// From the 2D copy's start to its finish (the CPU's stream runs
+        /// meanwhile, so at least the stream's time).
+        copy_us: u32,
+        copy_hung: bool,
+        copy_wrong: u32,
+        stream_us: u32,
+        stream_wrong: u32,
+        /// Registers not reading as set: bit 0 `COREPLL`, 1 `LMTYPE`,
+        /// 2 `LMREFRESH`, 3 `LMTIM`, 4 `MBXCLK` (V12: memory-controller
+        /// writes lost).
+        regs_wrong: u32,
+        regs: ClockSpeed,
+    }
+
+    impl SoakExtra {
+        fn good(&self) -> bool {
+            !self.copy_hung && self.copy_wrong + self.stream_wrong + self.regs_wrong == 0
+        }
+    }
+
+    /// After [`clock_check`] (its 3D picture is in [`SCREEN`]): the 2D
+    /// engine copies the picture to [`SOAK_COPY`] while the CPU writes and
+    /// reads back 4 MiB of SDRAM, the copy checked word for word against
+    /// the reference, then the clock and memory registers against `want`
+    /// and `mbxclk`.
+    fn soak_extra(
+        g: &mut Rig,
+        c: &mut ClockRig,
+        want: ClockSpeed,
+        mbxclk: u32,
+        seed: u32,
+    ) -> SoakExtra {
+        let mut x = SoakExtra {
+            copy_us: 0,
+            copy_hung: false,
+            copy_wrong: 0,
+            stream_us: 0,
+            stream_wrong: 0,
+            regs_wrong: 0,
+            regs: want,
+        };
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                Format::BPP32,
+                (SOAK_COPY as usize, SCREEN.stride as usize),
+                (SCREEN.at as usize, SCREEN.stride as usize),
+                (0, 0),
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D copy",
+        );
+        let t0 = rt::ticks();
+        let sent = g.e.submit(&w[..n]).is_ok();
+        let s0 = rt::ticks();
+        let words = c.spare.len().min(SOAK_STREAM_WORDS);
+        let spare = &mut c.spare[..words];
+        for (k, v) in spare.iter_mut().enumerate() {
+            *v = clock_pat(4 * k as u32, seed);
+        }
+        // The read-back can't be folded into the writes.
+        let spare = core::hint::black_box(spare);
+        for (k, v) in spare.iter().enumerate() {
+            x.stream_wrong += u32::from(*v != clock_pat(4 * k as u32, seed));
+        }
+        x.stream_us = us_since(s0);
+        x.copy_hung = !(sent && g.e.finish(g.mem.0, 200_000).is_ok());
+        x.copy_us = us_since(t0);
+        rt::check_in();
+        for (k, &want) in c.reference.iter().enumerate() {
+            x.copy_wrong += u32::from(g.mem.load(SOAK_COPY as usize + 4 * k) != Some(want));
+        }
+        rt::check_in();
+        let got = clock_now(&mut g.e.regs);
+        x.regs_wrong = u32::from(got.pll != want.pll)
+            | u32::from(got.lmtype != want.lmtype) << 1
+            | u32::from(got.lmrefresh != want.lmrefresh) << 2
+            | u32::from(got.lmtim != want.lmtim) << 3
+            | u32::from(g.e.regs.read32(MBXCLK) != mbxclk) << 4;
+        x.regs = got;
+        x
+    }
+
+    fn soak_extra_log(x: &SoakExtra) {
+        log!(
+            "    2D copy (with the SDRAM stream) {} us{}, wrong {} | SDRAM stream {} us, wrong {} | registers wrong 0x{:x} (COREPLL 0x{:x} LMTYPE 0x{:x} LMREFRESH 0x{:x} LMTIM 0x{:x}) | {}",
+            x.copy_us,
+            if x.copy_hung { " HUNG" } else { "" },
+            x.copy_wrong,
+            x.stream_us,
+            x.stream_wrong,
+            x.regs_wrong,
+            x.regs.pll,
+            x.regs.lmtype,
+            x.regs.lmrefresh,
+            x.regs.lmtim,
+            if x.good() { "GOOD" } else { "BAD" }
+        );
+    }
+
+    /// The worst of each time over some rounds.
+    #[derive(Default, Clone, Copy)]
+    struct SoakWorst {
+        rounds: u32,
+        render_us: u32,
+        fill_us: u32,
+        copy_us: u32,
+        flush_us: u32,
+        read_us: u32,
+        /// Rounds with the display's underrun flag set (before or during).
+        short: u32,
+    }
+
+    impl SoakWorst {
+        fn add(&mut self, r: &ClockResult, x: &SoakExtra) {
+            self.rounds += 1;
+            self.render_us = self.render_us.max(r.render_us);
+            self.fill_us = self.fill_us.max(r.fill_us);
+            self.copy_us = self.copy_us.max(x.copy_us);
+            self.flush_us = self.flush_us.max(r.flush_us);
+            self.read_us = self.read_us.max(r.read_us);
+            self.short += u32::from(r.short_before || r.short_during);
+        }
+    }
+
+    /// Windows Mobile's clock after a soak setting: [`clock_control`] and
+    /// the copy, stream and registers. Whether both were GOOD.
+    fn soak_control(g: &mut Rig, c: &mut ClockRig, seed: u32, after: &str) -> bool {
+        let healthy = clock_control(g, c, seed, after);
+        let mbxclk = g.e.regs.read32(MBXCLK);
+        let x = soak_extra(g, c, WM_STEP.speed(), mbxclk, seed + 1);
+        soak_extra_log(&x);
+        healthy && x.good()
+    }
+
+    #[inline(never)]
+    fn soak(g: &mut Rig) {
+        log!(
+            "GS: the clocks' warm soak (ROADMAP step 3): {SOAK_SECS} s at each setting, 99.67 MHz with the cores at divide 1 then 133.25 MHz CL2 with the cores at divide 1; every round the bus flush and read-back, a memory pattern and its inverse, a 2D fill, the 3D scene against Windows Mobile's clock's picture, a 2D copy of it while the CPU streams 4 MiB of SDRAM, the copy checked, the clock and memory registers read back, the display's underrun flag; a 16-bit picture scanned out throughout; a line a minute; stops at the first BAD; Windows Mobile's clock and a control after each setting"
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(mut c) = clock_rig(g) else {
+            return;
+        };
+        soak_label(g, ["RUN GS: SOAK", "STARTING", "NOTHING TO DO"], SOAK_BLUE);
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let (a, b) = soak_dsig(g);
+        log!("  the 16-bit label shown: DSIG 0x{a:x} then 0x{b:x}");
+
+        // Windows Mobile's clock: the reference, and the copy's check at it.
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        let mbxclk = g.e.regs.read32(MBXCLK);
+        let x = soak_extra(g, &mut c, WM_STEP.speed(), mbxclk, 3);
+        soak_extra_log(&x);
+        let mut healthy = base.good() && x.good();
+        if !healthy {
+            log!("  the reference step itself is BAD: stopped");
+        }
+
+        let step = |m, n, p, div, cl3| ClockStep {
+            m,
+            n,
+            p,
+            div,
+            cl3,
+            restart: false,
+        };
+        // (the step, the log's name, the label's)
+        let settings = [
+            (
+                step(23, 3, 0, 1, None),
+                "99.67 MHz CL2, cores / 1",
+                "99.67 MHZ CORES/1",
+            ),
+            (
+                step(41, 4, 0, 1, Some(false)),
+                "133.25 MHz CL2, cores / 1",
+                "133.25 CL2 CORES/1",
+            ),
+        ];
+        let minutes = SOAK_SECS.div_ceil(60);
+        let mut seed = 4;
+        for (i, (s, name, label)) in settings.into_iter().enumerate() {
+            if !healthy {
+                break;
+            }
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "SOAK {} OF 2", i + 1);
+            soak_label(g, [l1.as_str(), label, "STARTING"], SOAK_BLUE);
+            let lock = clock_apply(g, s);
+            clock_readback(g);
+            let mbxclk = g.e.regs.read32(MBXCLK);
+            log!("  soak {}: {name}: lock {lock:?} us", i + 1);
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  STOPPED: the clock didn't take; Windows Mobile's put back");
+                soak_label(g, ["SOAK STOPPED", label, "CLOCK NOT TAKEN"], SOAK_RED);
+                healthy = false;
+                break;
+            }
+            let (mut total, mut minute) = (SoakWorst::default(), SoakWorst::default());
+            let (mut elapsed_us, mut lines) = (0u64, 0u32);
+            let end_us = u64::from(SOAK_SECS) * 1_000_000;
+            let mut bad = None;
+            while elapsed_us < end_us {
+                // Each round timed end to end and summed (the tick counter
+                // wraps in 22 minutes).
+                let t0 = rt::ticks();
+                let r = clock_check(g, &mut c, false, seed);
+                let x = soak_extra(g, &mut c, s.speed(), mbxclk, seed + 1);
+                seed += 2;
+                let first_short = total.short == 0 && (r.short_before || r.short_during);
+                total.add(&r, &x);
+                minute.add(&r, &x);
+                if first_short {
+                    log!(
+                        "    the display's underrun flag first set: round {}, {} s in ({}{})",
+                        total.rounds,
+                        elapsed_us / 1_000_000,
+                        if r.short_before {
+                            "before the round "
+                        } else {
+                            ""
+                        },
+                        if r.short_during { "during it" } else { "" }
+                    );
+                }
+                if !(r.good() && x.good()) {
+                    bad = Some((r, x));
+                    elapsed_us += u64::from(us_since(t0));
+                    break;
+                }
+                rt::check_in();
+                let line_due = elapsed_us + u64::from(us_since(t0))
+                    >= u64::from(lines + 1) * 60_000_000
+                    || elapsed_us + u64::from(us_since(t0)) >= end_us;
+                if line_due {
+                    lines += 1;
+                    let mut l3 = heapless_name();
+                    let _ = write!(l3, "MIN {lines} OF {minutes} GOOD");
+                    soak_label(g, [l1.as_str(), label, l3.as_str()], SOAK_BLUE);
+                    let (a, b) = soak_dsig(g);
+                    log!(
+                        "  GS {name}, minute {lines}: {} rounds ({} this minute), 0 BAD | worst 3D {} us, 2D fill {} us, copy {} us, flush {} us, read 256K {} us | underrun in {} rounds ({} in all) | DSIG 0x{a:x} then 0x{b:x} | LMTYPE 0x{:x} LMREFRESH 0x{:x}",
+                        total.rounds,
+                        minute.rounds,
+                        minute.render_us,
+                        minute.fill_us,
+                        minute.copy_us,
+                        minute.flush_us,
+                        minute.read_us,
+                        minute.short,
+                        total.short,
+                        x.regs.lmtype,
+                        x.regs.lmrefresh
+                    );
+                    minute = SoakWorst::default();
+                }
+                elapsed_us += u64::from(us_since(t0));
+            }
+            if let Some((r, x)) = bad {
+                clock_log(s, lock, &r);
+                soak_extra_log(&x);
+                clock_readback(g);
+                clock_restore(&mut g.e.regs);
+                log!(
+                    "  STOPPED: BAD at {name}, round {}, {} s in; Windows Mobile's clock put back",
+                    total.rounds,
+                    elapsed_us / 1_000_000
+                );
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "BAD AT {} S", elapsed_us / 1_000_000);
+                soak_label(g, ["SOAK STOPPED", label, l3.as_str()], SOAK_RED);
+                let _ = soak_control(g, &mut c, seed, "after the BAD round");
+                healthy = false;
+                break;
+            }
+            clock_restore(&mut g.e.regs);
+            log!(
+                "  soak {} at {name}: {} rounds in {} s, 0 BAD | worst 3D {} us, 2D fill {} us, copy {} us, flush {} us, read 256K {} us | the display's underrun in {} rounds",
+                i + 1,
+                total.rounds,
+                elapsed_us / 1_000_000,
+                total.render_us,
+                total.fill_us,
+                total.copy_us,
+                total.flush_us,
+                total.read_us,
+                total.short
+            );
+            let mut after = heapless_name();
+            let _ = write!(after, "after soak {}", i + 1);
+            healthy = soak_control(g, &mut c, seed, after.as_str());
+            seed += 4;
+            if !healthy {
+                log!("  STOPPED: Windows Mobile's clock stayed BAD after the soak");
+                soak_label(
+                    g,
+                    ["SOAK STOPPED", "GPU NOT RECOVERED", "SOFT RESET NEEDED"],
+                    SOAK_RED,
+                );
+            }
+        }
+        if healthy {
+            soak_label(g, ["RUN GS DONE", "BACK TO NORMAL", "LOG SENT"], SOAK_GREEN);
+        }
+        let (a, b) = soak_dsig(g);
+        log!("  the last label: DSIG 0x{a:x} then 0x{b:x}");
+        // Held for a person to see (the stop's label too).
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        let after = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            after.0,
+            after.1,
+            after.2
+        );
+        clock_rig_free(g, c);
+    }
+
     fn main() -> ! {
         rp_image::on_crash(put_back);
         rt::init_mmu();
@@ -6906,6 +7360,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if SOAK {
+                "GS (the clocks' warm soak: 99.67 MHz then 133.25 MHz CL2, the cores at divide 1, every round stressed and checked, stopping at the first BAD)"
             } else if CLOCK {
                 "G5 (the clocks: lock traces, divide 1 and 2 to 133.25 MHz with CL2, the display's underrun watched, a 60 s soak, memory-controller writes checked, the texture checked and repaired, time limits, controls after each step, the log kept in SRAM)"
             } else {
@@ -7001,6 +7457,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if SOAK {
+            soak(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if CLOCK || LOAD {
             clocks(&mut g);
@@ -8632,7 +9091,7 @@ mod image {
     /// On a crash, first (rp-image's crash order): run G's Windows Mobile
     /// clock and bus timing back.
     fn put_back() {
-        if CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+        if CHANGES_CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
         }
         // Run FS: a crash with the MBX clock off would leave the loader's
