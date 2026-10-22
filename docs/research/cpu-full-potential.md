@@ -168,7 +168,7 @@ named in its evidence.
 | C11 | partial | rp-probe (X51v, 2026-10-22): DMA copies 128 KiB SDRAM to SDRAM in 2.92 ms (45 MB/s) against `memcpy`'s 1.21 ms (108 MB/s), the CPU keeping 86% meanwhile; **polling the SD controller during its DMA slowed it: a 200-spin pause between polls makes SD DMA reads 28% faster (now in `pxa-mmc`)**; left: the same question for the USB drive's and the CF slot's DMA waits, burst sizes and priorities |
 | C12 | open | SDCLK0/3 run for synchronous flash nothing uses (`K0RUN`, `MDREFR` as WM leaves it); stopping them, and unused `CKEN` units, not tried |
 | T1 | open | the pipeline needs the compositor harness (owner's vote: built inside the gate) |
-| T2 | open | SRAM staging for uploads not tried |
+| T2 | partial | run E's E1e (X51v, 2026-10-22): a 1 MiB texture staged in SRAM (two 32 KiB buffers) and overlapped with DMA: **32.2 ms (32 MB/s, the 2700G bus's limit)**, the CPU free 7.4 ms of it, against 34.8 ms with the CPU writing straight in and 41.0 staged in SDRAM; to use it, the OS needs an SRAM plan (page tables, upload staging, the kept log: who owns the 256 KiB), the owner's decision |
 | T3 | open | commands fed by DMA not tried |
 | T4 | open | the routing table per kind of work not measured (harness) |
 | T5 | open | the GPU-format converters not timed together |

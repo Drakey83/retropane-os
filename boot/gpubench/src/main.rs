@@ -217,6 +217,12 @@ mod image {
     /// price): one full-screen render timed at each of its settings.
     /// Unattended.
     const RESOLVE: bool = option_env!("RP_GPUBENCH_RESOLVE").is_some();
+    /// Run FT (the performance gate's P8 / T8): the 2D engine and the 3D
+    /// core at once (ADR-0030 G2 has them take turns): a full-screen RGB565
+    /// render and ten full-screen 16-bit 2D copies, each alone (timed,
+    /// hashed), then together; both results must hash as alone. Unattended;
+    /// a hang is the run's finding (engines reset, logged).
+    const TOGETHER: bool = option_env!("RP_GPUBENCH_TOGETHER").is_some();
     /// Run P2X: P2W's white specks (in memory after the render, in the
     /// black bar of the 24- and 32-bit pictures): the picture rendered 5
     /// times per format over a marker fill, the bars checked and every
@@ -2870,6 +2876,197 @@ mod image {
     /// background picture; the exact time from the status bit as
     /// [`Rig::frame`] takes it.
     #[inline(never)]
+    /// FNV-1a over `words` words of 2700G memory from `at`.
+    fn ft_hash(g: &Rig, at: u32, words: u32) -> u32 {
+        (0..words).fold(0x811C_9DC5u32, |h, k| {
+            (h ^ g.mem.load((at + 4 * k) as usize).unwrap_or(0)).wrapping_mul(0x0100_0193)
+        })
+    }
+
+    /// Run FT (see [`TOGETHER`]).
+    #[inline(never)]
+    fn together(g: &mut Rig) {
+        const PIC: u32 = 480 * 640 * 2;
+        log!(
+            "FT: the 2D engine and the 3D core at once: a full-screen RGB565 render (a Gouraud background and a textured quad, 2400 tiles) and ten full-screen 16-bit 2D copies; each alone, then together"
+        );
+        clock_card(g, ["RUN FT", "2D AND 3D", "AT ONCE"], 0xFF20_2040, 2);
+        let Some(tex) = p_texture(g, 2, p_texel) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let (Some(src), Some(dst), Some(pic)) = (
+            g.pool.alloc(PIC, 0x1000),
+            g.pool.alloc(PIC, 0x1000),
+            g.pool.alloc(PIC, 0x1000),
+        ) else {
+            log!("  no memory for the pictures");
+            p_texture_free(g, tex);
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        g.set(
+            &mut r,
+            1,
+            Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
+        );
+        let t = Target {
+            picture: Picture::packed(pic, 480, 640, PixelFormat::Rgb565),
+            x: 0,
+            y: 0,
+        };
+        // The copies' source: a pattern written once by a 2D fill per band.
+        for k in 0..8u16 {
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    src as usize,
+                    960,
+                    (0, 80 * k, 480, 80 * k + 80),
+                    0x1111 * u32::from(k),
+                ),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+        }
+        let _ = g.e.finish(g.mem.0, 2_000_000);
+        let copies = |g: &mut Rig| -> bool {
+            for _ in 0..10 {
+                let (w, n) = rp_image::need(
+                    cmd::copy(
+                        Format::RGB565,
+                        (dst as usize, 960),
+                        (src as usize, 960),
+                        (0, 0),
+                        (0, 0, 480, 640),
+                        0,
+                    ),
+                    "a 2D rectangle",
+                );
+                if g.e.submit(&w[..n]).is_err() {
+                    return false;
+                }
+            }
+            true
+        };
+        // Starts the render (RGB565, code 1); false if refused (logged).
+        let render = |g: &mut Rig, r: &mut Renderer| -> bool {
+            r.invalidate_all();
+            match r.render(
+                &mut CodeBus {
+                    bus: &mut g.e.regs,
+                    code: 1,
+                    extra: None,
+                },
+                &mut g.mem,
+                &mut g.clock,
+                t,
+            ) {
+                Ok(_) => true,
+                Err(e) => {
+                    log!("  render refused: {e:?}");
+                    false
+                }
+            }
+        };
+        let wait_3d = |g: &mut Rig, r: &mut Renderer, t0: u32| -> Option<u32> {
+            let mut done = None;
+            while g.clock.now_us().wrapping_sub(t0) < 1_000_000 {
+                if g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
+                    done = Some(g.clock.now_us().wrapping_sub(t0));
+                    break;
+                }
+            }
+            loop {
+                match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                    Poll::Wait(_) => {}
+                    Poll::Done(_) => break,
+                    p => {
+                        g.sync_resets(r);
+                        log!("    3D: {p:?}");
+                        return None;
+                    }
+                }
+            }
+            done
+        };
+        // Alone: 3D, then 2D.
+        let t0 = g.clock.now_us();
+        let alone_3d = if render(g, &mut r) {
+            wait_3d(g, &mut r, t0)
+        } else {
+            None
+        };
+        let h3 = ft_hash(g, pic, PIC / 4);
+        let t0 = g.clock.now_us();
+        let ok2 = copies(g) && g.e.finish(g.mem.0, 2_000_000).is_ok();
+        let alone_2d = ok2.then(|| g.clock.now_us().wrapping_sub(t0));
+        let h2 = ft_hash(g, dst, PIC / 4);
+        log!("  FT alone: 3D {alone_3d:?} us, 2D (10 copies) {alone_2d:?} us");
+        rt::check_in();
+        // Together: the pictures cleared, the render started, the copies
+        // queued straight after; both waited for.
+        for at in [pic, dst] {
+            let w = rp_image::need(
+                cmd::fill(Format::RGB565, at as usize, 960, (0, 0, 480, 640), 0xF81F),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+        }
+        let _ = g.e.finish(g.mem.0, 2_000_000);
+        let t0 = g.clock.now_us();
+        let started = render(g, &mut r);
+        let queued = copies(g);
+        let both_3d = if started {
+            wait_3d(g, &mut r, t0)
+        } else {
+            None
+        };
+        let ok2 = queued && g.e.finish(g.mem.0, 2_000_000).is_ok();
+        let both = g.clock.now_us().wrapping_sub(t0);
+        let (s3, s2) = (
+            ft_hash(g, pic, PIC / 4) == h3,
+            ft_hash(g, dst, PIC / 4) == h2,
+        );
+        log!(
+            "  FT together: 3D done after {both_3d:?} us, both after {both} us (2D finished {ok2}); the render as alone: {s3}; the copies as alone: {s2}; alone the two took {:?} us in all",
+            alone_3d.zip(alone_2d).map(|(a, b)| a + b)
+        );
+        log!(
+            "FT: {}",
+            if s3 && s2 && ok2 && both_3d.is_some() {
+                "both right together"
+            } else {
+                "NOT both right together (see above)"
+            }
+        );
+        for k in 0..2 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        for at in [src, dst, pic] {
+            let _ = g.pool.free(at, PIC);
+        }
+        clock_card(g, ["RUN FT", "DONE", ""], 0xFF10_6020, 3);
+    }
+
     fn resolve(g: &mut Rig) {
         log!(
             "T3: the write-out downsample's cost: one full-screen render (2400 tiles), 5 times at each 0x644 (0, 1, 2, 3), code 6, into the background picture"
@@ -4660,6 +4857,55 @@ mod image {
         );
         rt::check_in();
 
+        // E1e, the performance gate's T2: staged in the internal SRAM (two
+        // 32 KiB buffers below the kept log's first copy at 64 KiB): each
+        // piece reordered into one while the DMA moves the other, so the CPU
+        // reads SDRAM and the DMA reads SRAM (E1c shared SDRAM and lost its
+        // overlap: 41.0 ms against E1d's 34.8).
+        const SP: usize = 8 * 1024;
+        // The SRAM is the kept log's in this image: the part below its
+        // first copy (64 KiB) is free.
+        let sram = rp_hal_pxa27x::diag::take_sram_words().or_else(rp_hal_x51v::devices::kept_spare);
+        if let Some(sram) = sram.filter(|s| s.len() >= 2 * SP) {
+            let sram = &mut sram[..2 * SP];
+            let t0 = rt::ticks();
+            let (mut waited, mut busy, mut ok2) = (0u32, false, true);
+            for k in 0..TW / SP {
+                let (lo, hi) = sram.split_at_mut(SP);
+                let buf = if k % 2 == 0 { lo } else { hi };
+                for j in 0..SP / 32 {
+                    block(px, k * SP / 32 + j, &mut buf[32 * j..32 * j + 32]);
+                }
+                if busy {
+                    let w0 = rt::ticks();
+                    ok2 &= dma_wait(&mut dma);
+                    waited += us_since(w0);
+                }
+                ok2 &= dma.arm_copy_to_device_memory(
+                    words_as_bytes(buf),
+                    CS3 + twd + (k * SP * 4) as u32,
+                );
+                busy = true;
+            }
+            ok2 &= dma_wait(&mut dma);
+            let total = us_since(t0);
+            rate(
+                "E1e fast reorder staged in SRAM, overlapped with DMA",
+                TW * 4,
+                total,
+            );
+            log!(
+                "  E1e the CPU waited for the DMA {waited} us of {total} (free for other work then); DMA ok {ok2}"
+            );
+            let landed = [0usize, 1, 777, TW / 2, TW - 1]
+                .iter()
+                .all(|&w| g.mem.load(twd as usize + 4 * w) == Some(staging[w]));
+            log!("  E1e the texture in 2700G memory is right: {landed}");
+        } else {
+            log!("  E1e: no SRAM");
+        }
+        rt::check_in();
+
         // E2/E3: fewer bytes. A layer's texture at 8 bits (code 10) and as
         // PVRTC 4 / 2 bpp: the bytes DMA moves for each.
         for (what, bytes) in [
@@ -6303,6 +6549,8 @@ mod image {
                 "P2Y (what P2X's errors need: the CPU's reads, the display's fetch at 32 bits, 16 bits and stopped)"
             } else if SPECKS {
                 "P2X (P2W's white specks: the picture rendered 5 times a format, checked and compared)"
+            } else if TOGETHER {
+                "FT (the 2D engine and the 3D core at once: a render and 2D copies, alone then together)"
             } else if RESOLVE {
                 "T3 (the write-out downsample's cost: a full-screen render at each 0x644)"
             } else if FETCH {
@@ -6390,6 +6638,8 @@ mod image {
             specks2(&mut g);
         } else if SPECKS {
             specks(&mut g);
+        } else if TOGETHER {
+            together(&mut g);
         } else if RESOLVE {
             resolve(&mut g);
         } else if FETCH {

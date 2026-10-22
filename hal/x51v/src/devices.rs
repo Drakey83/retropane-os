@@ -447,6 +447,28 @@ pub fn kept_open(mut report: impl FnMut(usize, Result<&str, &'static str>)) -> b
     true
 }
 
+static mut KEPT_SPARE_TAKEN: bool = false;
+
+/// While the kept log holds the internal SRAM ([`kept_open`]), the part
+/// below its first copy (`kept::COPIES[0]`, 64 KiB), which it never
+/// writes: handed out once, as words. `None` without the kept log, or the
+/// second time. For staging buffers beside the kept log (the performance
+/// gate's T2).
+pub fn kept_spare() -> Option<&'static mut [u32]> {
+    let base = kept_base() & !1;
+    if base == 0 {
+        return None;
+    }
+    // SAFETY: single core; the flag makes this the only slice.
+    if unsafe { core::ptr::addr_of_mut!(KEPT_SPARE_TAKEN).replace(true) } {
+        return None;
+    }
+    // SAFETY: SRAM from `base` (word-aligned, mapped by the bring-up map,
+    // owned by the kept log) up to its first copy, which nothing else
+    // uses: the kept log writes only its copies; the flag hands it out once.
+    Some(unsafe { core::slice::from_raw_parts_mut(base as *mut u32, crate::kept::COPIES[0] / 4) })
+}
+
 /// Starts an empty kept log in both copies: from here every [`RunLog`]
 /// write goes there too ([`KeptRunLog`]'s; each cleaned from the cache to the SRAM at once,
 /// so a reset loses nothing written). Only [`KeptRunLog`] writes it.

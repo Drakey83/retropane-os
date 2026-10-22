@@ -3364,6 +3364,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_p2l = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LONG_COUNT", "1"))?;
     let run_ff = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FIFO_FULL", "1"))?;
     let run_fs = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_REAL_STALL", "1"))?;
+    let run_ft = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3388,7 +3389,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 29] = [
+    let runs: [GpubenchRun; 30] = [
         (
             "run A",
             &run_a,
@@ -3441,6 +3442,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "E1a agrees with the reference order: true",
                 "E1c the texture in 2700G memory is right: true",
                 "E1d fast reorder written by the CPU straight in",
+                "E1e the texture in 2700G memory is right: true",
                 "E3 PVRTC 2 bpp layer",
                 "E4 a screen of text",
             ],
@@ -3837,6 +3839,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        (
+            // The gate's P8: the engines at once; both results as alone.
+            "run FT",
+            &run_ft,
+            &[
+                "  FT alone: 3D Some(",
+                "the render as alone: true; the copies as alone: true",
+                "FT: both right together",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
     ];
     // One card for every run, with someone else's file on it: each run
     // keeps its log there as it goes (the loader's card log), the next number each
@@ -3854,7 +3869,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     });
     let sd = scratch(root, "sd-gpubench.img")?;
     std::fs::write(&sd, &card).map_err(|e| format!("{}: {e}", sd.display()))?;
-    for (number, (name, bin, want, needs_model, (first, every, presses))) in (1u32..).zip(runs) {
+    // `RETROPANE_GPUBENCH_RUNS="run E,run FT"`: only those runs (a new
+    // run's check without the other 29, ~25 minutes); the card logs are
+    // numbered by the runs that ran.
+    let only: Option<Vec<String>> = std::env::var("RETROPANE_GPUBENCH_RUNS")
+        .ok()
+        .map(|v| v.split(',').map(|n| n.trim().to_string()).collect());
+    let mut number = 0u32;
+    for (name, bin, want, needs_model, (first, every, presses)) in runs {
+        if only.as_ref().is_some_and(|o| !o.iter().any(|n| n == name)) {
+            continue;
+        }
+        number += 1;
         let payload = std::fs::read(bin).map_err(|e| format!("{}: {e}", bin.display()))?;
         // Named, so each run's card log is rplog/gpubench-NNNN.txt.
         let mut input = rp_loadproto::control_frame("name gpubench");
