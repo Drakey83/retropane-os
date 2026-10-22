@@ -101,6 +101,28 @@ why those two loops lose (the code each build makes for LZ4's compress
 loop and the DMA copy's poll, compared), which could keep both gains (a
 backlog optimization, device runs without a reset).
 
+**Decision (owner, 2026-10-22): keep B and find why those two loops lose.**
+
+**Why, and what was fixed (2026-10-22, the X51v; docs/design/perf-ratchet.md).**
+Neither loop got worse code. LZ4 compress: its hash multiplies by a
+32-bit constant, and the XScale takes 2 cycles more for that than for a
+15-bit one, 1 more for 27 bits (docs/hw/cpu.md, measured); LLVM has no
+XScale timing model and puts the product's use right after the multiply,
+so the wait is paid every position. With frame pointers one unrelated
+instruction happened to sit between them; may-omit freed a register and
+lost it. Reordering the source doesn't help (LLVM moves the use back), so
+the multiplier is now LZ4's constant shifted into 27 bits: the same
+compression on our images and texts, compress 7.8% faster in a like-for-
+like build. The DMA copy: may-omit's leaner `done()` polls the controller
+faster, and polling back to back slows the copy (as SD's did, C11); the
+probe's copy rows now pause 1,000 spins between polls (swept: where it
+levels off). Against the floors, the workspace build: the 8-byte copy
+-3.0% (was +4.7%), page compress +1.2% (was +6.1%), page decompress
+-10.4%. **Left:** text compress +5.8%, which a like-for-like build shows
+moving with code layout by about 2.5% (aligning every loop to 32 bytes
+didn't steady it, and cost 4 KB): where its cycles go needs the event
+counters (C8), not the listing.
+
 **The crash-screen backtrace is mode-dependent (owner, 2026-10-22).** B
 stands. Frame pointers are opt-in per image, a list in xtask (like the
 Thumb list), starting with `rp-crash` only: such an image is built in its

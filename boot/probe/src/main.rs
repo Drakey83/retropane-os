@@ -366,6 +366,7 @@ mod image {
                 );
             }
             suite::wmmx_dot(&mut r);
+            suite::mul_sizes(&mut r);
             suite::pmu(&mut r, &mut bench_ram[..256 * 1024]);
             // C11: DMA as a copy engine, on the CompactFlash channel (the
             // probe reads no CF card).

@@ -2257,6 +2257,17 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-hal-pxa27x", "a_long_chain_is_cut_at_the_limit"]),
     },
     Mutant {
+        name: "lz4: the hash back on the 32-bit multiplier (the XScale's long multiply)",
+        file: "kernel/lz4/src/lib.rs",
+        from: "    None => 0x04F1_BBCD,",
+        to: "    None => 0x9E37_79B1,",
+        check: Check::Host(&[
+            "-p",
+            "rp-lz4",
+            "the_hash_multiplier_takes_the_short_multiply",
+        ]),
+    },
+    Mutant {
         name: "C61: the FIQ entry keeps no SPSR (run-limit reports say spsr 0)",
         file: "hal/pxa27x/src/rt.rs",
         from: "    mrs     r9, spsr

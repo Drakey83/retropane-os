@@ -230,3 +230,66 @@ fn bench_page_shape() {
         "compressed {n} bytes, {seqs} sequences, {lit_total} literal bytes, {match_total} match bytes"
     );
 }
+
+/// The compression a hash multiplier gives on the files under
+/// `RP_LZ4_CORPUS` (a folder), in 4 KiB pages as the kernel compresses
+/// them: total bytes out for each multiplier. A measurement, not a check:
+/// `cargo test -p rp-lz4 -- --ignored --nocapture multipliers_compress`.
+#[test]
+#[ignore = "a measurement over a local corpus"]
+fn multipliers_compress() {
+    let Some(dir) = std::env::var_os("RP_LZ4_CORPUS") else {
+        return;
+    };
+    let mut pages: Vec<Vec<u8>> = Vec::new();
+    let mut stack = vec![std::path::PathBuf::from(dir)];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if let Ok(b) = std::fs::read(&p) {
+                pages.extend(b.chunks(4096).map(<[u8]>::to_vec));
+            }
+        }
+    }
+    fn total<const K: u32>(pages: &[Vec<u8>]) -> usize {
+        let mut table = [0u16; TABLE_LEN];
+        let mut out = vec![0u8; max_compressed(4096)];
+        pages
+            .iter()
+            .map(|p| compress_k::<K>(&mut table, p, &mut out).unwrap())
+            .sum()
+    }
+    let input: usize = pages.iter().map(Vec::len).sum();
+    for (name, n) in [
+        ("32-bit 0x9E3779B1", total::<0x9E37_79B1>(&pages)),
+        ("27-bit 0x04F1BBCD", total::<0x04F1_BBCD>(&pages)),
+        ("16-bit 0x00009E37", total::<0x0000_9E37>(&pages)),
+        ("15-bit 0x00004F1B", total::<0x0000_4F1B>(&pages)),
+    ] {
+        println!(
+            "{name}: {n} of {input} bytes ({:.2}%)",
+            n as f64 * 100.0 / input as f64
+        );
+    }
+}
+
+#[test]
+fn the_hash_multiplier_takes_the_short_multiply() {
+    // The XScale takes a cycle longer for a multiplier above 27 bits and
+    // LLVM doesn't hide it (docs/hw/cpu.md): compress was 7.8% slower with
+    // LZ4's 32-bit constant. Odd, so no input bit is dropped.
+    const {
+        assert!(
+            HASH_K < 1 << 27,
+            "the hash multiplier takes the long multiply"
+        )
+    };
+    const { assert!(HASH_K % 2 == 1) };
+    assert_eq!(
+        HASH_K,
+        0x9E37_79B1 >> 5,
+        "LZ4's constant, shifted into 27 bits"
+    );
+}

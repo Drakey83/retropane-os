@@ -198,9 +198,40 @@ pub const fn max_compressed(n: usize) -> usize {
     n + n / 255 + 16
 }
 
+/// The hash's multiplier: LZ4's own (Knuth's 2^32 / golden ratio,
+/// `0x9E3779B1`) shifted down 5 bits, so it fits in 27. The XScale ends a
+/// multiply early by its multiplier's size: 32 bits costs 2 cycles more
+/// than 15, 27 bits 1 more (docs/hw/cpu.md, measured on the X51v), and
+/// LLVM puts the hash's use right after it, so the wait is paid every
+/// position. Measured 2026-10-22 on the X51v (`rp-probe`, same build
+/// method each): compress 221.4 -> 204.2 us a page (-7.8%); the same
+/// compression on a corpus of our images and texts (69.39% vs 69.41%,
+/// 81.49% vs 81.45%; `multipliers_compress`), where 16 or 15 bits lose
+/// 0.7 points. `RP_LZ4_HASH_K` (decimal) at build time overrides it, for
+/// a sweep.
+pub const HASH_K: u32 = match option_env!("RP_LZ4_HASH_K") {
+    Some(s) => parse_u32(s),
+    None => 0x04F1_BBCD,
+};
+
+/// A decimal `u32` at compile time (0 for anything else).
+const fn parse_u32(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut v = 0u32;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            return 0;
+        }
+        v = v.wrapping_mul(10).wrapping_add((b[i] - b'0') as u32);
+        i += 1;
+    }
+    v
+}
+
 #[inline(always)]
-fn hash(v: u32) -> usize {
-    (v.wrapping_mul(2_654_435_761) >> (32 - HASH_BITS)) as usize
+fn hash<const K: u32>(v: u32) -> usize {
+    (v.wrapping_mul(K) >> (32 - HASH_BITS)) as usize
 }
 
 /// The little-endian word at `at` (one bounds check, not four).
@@ -309,6 +340,16 @@ pub fn compress_with(
     src: &[u8],
     dst: &mut [u8],
 ) -> Result<usize, Error> {
+    compress_k::<HASH_K>(table, src, dst)
+}
+
+/// [`compress_with`] with the hash's multiplier `K` (the tests compare
+/// multipliers' compression on the same data).
+fn compress_k<const K: u32>(
+    table: &mut [u16; TABLE_LEN],
+    src: &[u8],
+    dst: &mut [u8],
+) -> Result<usize, Error> {
     if src.len() > 0x1_0000 {
         return Err(Error::Overflow);
     }
@@ -325,10 +366,10 @@ pub fn compress_with(
         // files, media) is skimmed instead of searched byte by byte. Any
         // match resets the step.
         let mut misses = 0usize;
-        table[hash(read32(src, 0))] = 0;
+        table[hash::<K>(read32(src, 0))] = 0;
         while i <= limit {
             let v = read32(src, i);
-            let h = hash(v);
+            let h = hash::<K>(v);
             let cand = usize::from(table[h]);
             table[h] = i as u16;
             if cand < i && i - cand <= 0xFFFF && read32(src, cand) == v {
@@ -347,7 +388,7 @@ pub fn compress_with(
                 anchor = i;
                 // Index a position inside the match so repeats are found.
                 if i <= limit {
-                    table[hash(read32(src, i - 2))] = (i - 2) as u16;
+                    table[hash::<K>(read32(src, i - 2))] = (i - 2) as u16;
                 }
             } else {
                 misses += 1;

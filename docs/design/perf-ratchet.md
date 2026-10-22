@@ -204,6 +204,21 @@ floors back to the unit:
 The floors are the owner's to set, with ADR-0001's options in its
 "Measured again" note.
 
+**The owner kept B and asked why the loops lose (2026-10-22).** The why
+and the fixes are in ADR-0001 ("Why, and what was fixed"); the sweep
+(four `rp-probe` builds, two runs each, then the DMA pause at 1,000,
+3,000 and 10,000): the multiply's cost by size (docs/hw/cpu.md); LZ4
+compress page 221.4 / 204.2 / 185.9 / 174.1 us at a 32 / 27 / 16 / 15-bit
+multiplier (16 and 15 bits lose 0.7 points of compression); the 8-byte
+copy 8.90 / 8.50 / 8.47 / 8.25 / 8.26 / 8.26 ms at 0 / 50 / 200 / 1,000 /
+3,000 / 10,000 spins. **The suite after the fixes**
+(`local/perf/`, newest): 119 numbers, 15 faster (the 8-byte copy -3.0%,
+16-byte -4.9%, page decompress -10.4%), 8 slower: text compress +5.8%,
+page compress +1.2%, `cache_walk_40k` +1.2% (placement, C8), five within
+0.0-0.2%. Loop alignment (`-align-loops=32`) tried: no help (text +0.4%,
+decompress +3.8%, +4 KB). Next for text compress: the event counters
+(C8) on its loop in both modes.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

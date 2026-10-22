@@ -780,6 +780,26 @@ mod target {
         r.count("pmu_copy64k_bufstall", c.events[2]);
     }
 
+    /// The multiply's cost by its multiplier's size: 1,000 dependent
+    /// multiplies a run by `k` of 1, 15, 16, 27 and 32 significant bits
+    /// (rp-lz4's hash multiplies by a 32-bit constant: ADR-0001 "Measured
+    /// again"). ns per 1,000.
+    pub fn mul_sizes(r: &mut Runner) {
+        for (name, k) in [
+            ("mul_chain_k1", 1u32),
+            ("mul_chain_k15", 0x4F1B),
+            ("mul_chain_k16", 0x9E37),
+            ("mul_chain_k27", 0x04F1_BBCD),
+            ("mul_chain_k32", 0x9E37_79B1),
+        ] {
+            let mut x = 0x1234_5679u32;
+            r.run(name, 8, &mut || {
+                x = rp_hal_pxa27x::cpu::mul_chain(1000, black_box(k), x);
+            });
+            black_box(x);
+        }
+    }
+
     /// The resampler's filter (C6's mixer step): one channel's 48 kHz output
     /// sample, 11 taps a wing, three ways on the same data, a block of 32
     /// frames by two channels each time: the mixer's loop as it is (an
@@ -966,8 +986,23 @@ mod target {
         // shape the controller doesn't finish is aborted and reported, not
         // a frozen probe.
         use rp_hal_api::Width;
+        // Spins between polls: polling the controller back to back slows
+        // the copy it waits for (as SD's, pxa-mmc's POLL_SPIN), so a faster
+        // poll loop made the 8-byte-burst copy 4.7% slower (ADR-0001
+        // "Measured again"). Swept on the X51v 2026-10-22 (8-byte bursts,
+        // ms a 128 KiB copy): none 8.90, 50 8.50, 200 8.47, 1,000 8.25,
+        // 3,000 8.26, 10,000 8.26 (16-byte 4.74 -> 4.54, 32-byte 2.92 ->
+        // 2.91): 1,000, where it levels off. `RP_PROBE_DMA_POLL_SPIN`
+        // overrides it.
+        const POLL_SPIN: u32 = match option_env!("RP_PROBE_DMA_POLL_SPIN") {
+            Some(s) => rp_hal_api::parse_u32(s),
+            None => 1000,
+        };
         let finish = |dma: &mut rp_hal_pxa27x::dma::Dma| -> bool {
             for _ in 0..1u32 << 22 {
+                for k in 0..POLL_SPIN {
+                    black_box(k);
+                }
                 if let Some(ok) = dma.done() {
                     return ok;
                 }

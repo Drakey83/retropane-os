@@ -334,6 +334,12 @@ watching.
   on socket 0, reset GPIO89, interrupt GPIO107. Interrupt lines:
   [interrupts.md](interrupts.md).
 
+### CPU core (XScale)
+- A multiply costs by its `Rs` operand's size: base when it fits in 15
+  bits, +1 cycle up to 27 bits, +2 cycles beyond (measured 2026-10-22,
+  `rp-probe` `mul_chain_*`, confirming Intel's early termination); LLVM
+  doesn't schedule around it. Page: [cpu.md](cpu.md).
+
 ### Clocks, voltage, reset
 - Seven operating points (91, 104, 208, 312, 416, 520, 624 MHz) with core voltages
   1050-1574 mV set through GPIO3/4/38; memory clocks from `MDREFR`.

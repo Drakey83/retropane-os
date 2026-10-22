@@ -8,6 +8,39 @@
 //! cacheable 32 KiB region (evicting, and so writing back, everything else),
 //! then invalidating. Addresses are modified virtual addresses (FCSE).
 
+/// `n` (at least 1) dependent multiplies by `k`, each using the product
+/// before (`mul` then `mov`), returning the last: timed over many, the time
+/// a multiply by `k` holds the next instruction that needs its result. The
+/// XScale ends a multiply early when its `Rs` operand (`k` here) has few
+/// significant bits ([Intel] claim, Core Developer's Manual; measured by
+/// `rp-probe`'s `mul_chain_*` rows). An odd `k` keeps an odd `x` odd, so the
+/// chain never collapses to 0.
+#[inline(never)]
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn mul_chain(n: u32, k: u32, x: u32) -> u32 {
+    let mut x = x;
+    let mut n = n.max(1);
+    // SAFETY: arithmetic on registers only; `t` is an `out` operand, so it
+    // never shares a register with `x` (MUL's Rd and Rm must differ on
+    // ARMv5) or `k`.
+    unsafe {
+        core::arch::asm!(
+            "2:",
+            "mul {t}, {x}, {k}",
+            "mov {x}, {t}",
+            "subs {n}, {n}, #1",
+            "bne 2b",
+            t = out(reg) _,
+            x = inout(reg) x,
+            k = in(reg) k,
+            n = inout(reg) n,
+            options(nomem, nostack),
+        );
+    }
+    let _ = n;
+    x
+}
+
 /// D-cache line size.
 pub const LINE: u32 = 32;
 /// D-cache size (32-way, 32 sets of 32-byte lines).
