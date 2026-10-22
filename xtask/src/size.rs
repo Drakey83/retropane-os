@@ -347,9 +347,12 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 20 -> 23 KiB on 2026-10-21 (test image): its data-abort
     // variant (RP_CRASH_DATA) is 20,668 B with C38's crash path, caught by
     // the variant size check (quality audit C45); + ~10%.
+    // Ratcheted 23 -> 26 KiB on 2026-10-22 (test image): built with frame
+    // pointers and the backtrace walker (ADR-0001), its run-limit variant
+    // (RP_CRASH_RUN_LIMIT) is 23,768 B; + ~10%.
     Budget {
         image: "rp-crash",
-        max_load: 23 * 1024,
+        max_load: 26 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

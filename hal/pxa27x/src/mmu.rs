@@ -67,6 +67,9 @@ pub fn build(table: &mut [u32; 4096], regions: &[Region]) {
     }
 }
 
+/// SDRAM, identity-mapped by the bring-up map: 64 MiB.
+pub const SDRAM: core::ops::Range<u32> = 0xA800_0000..0xAC00_0000;
+
 /// Physical address of the bring-up first-level table: the 16 KiB just below
 /// images' load address (0xA8008000), 16 KiB aligned as the MMU requires.
 pub const L1_TABLE: u32 = 0xA800_4000;
@@ -157,9 +160,9 @@ pub const X51V_BRINGUP: &[Region] = &[
     },
     // 64 MiB SDRAM.
     Region {
-        virt: 0xA800_0000,
-        phys: 0xA800_0000,
-        len: 64 * MIB,
+        virt: SDRAM.start,
+        phys: SDRAM.start,
+        len: SDRAM.end - SDRAM.start,
         memory: Memory::Normal,
     },
     // High vectors: the top MiB maps SDRAM's first MiB, so 0xFFFF0000 is

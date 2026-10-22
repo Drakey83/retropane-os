@@ -9,7 +9,13 @@
 //! fault instead (MMU on, so the bring-up map's unmapped 0x80000000 aborts):
 //! `RP_CRASH_DATA` a data abort (a read there), `RP_CRASH_PREFETCH` a
 //! prefetch abort (a jump there), `RP_CRASH_UNDEFINED` an undefined
-//! instruction. `emu-crash` runs all four.
+//! instruction, `RP_CRASH_SWI` a system call with no handler,
+//! `RP_CRASH_RUN_LIMIT` the soft run limit (a 1 s limit, then a spin with
+//! interrupts off: the FIQ stops it). `emu-crash` runs all six.
+//!
+//! Built with frame pointers (xtask's list, ADR-0001): each crash's report
+//! carries its backtrace (`CHAIN ...`), which `emu-crash` follows back to
+//! `_start`.
 //!
 //! Before crashing it moves the visible plane to offset 0 of the 2700G's
 //! memory, where Windows Mobile leaves it on a real X51v (the emulator
@@ -36,6 +42,10 @@ pub enum Kind {
     PrefetchAbort,
     /// `UDF #0`.
     Undefined,
+    /// `SVC #0`, with no system-call handler.
+    Swi,
+    /// A spin past a 1 s run limit, interrupts off.
+    RunLimit,
 }
 
 /// Built with `RP_CRASH_BOARD` (the emulator's check of quality audit C39):
@@ -48,13 +58,17 @@ pub enum Kind {
 pub const BOARD: bool = option_env!("RP_CRASH_BOARD").is_some();
 
 /// The crash this build makes, from the build switches (the first set wins,
-/// in the order data, prefetch, undefined).
+/// in the order data, prefetch, undefined, SWI, run limit).
 pub const KIND: Kind = if option_env!("RP_CRASH_DATA").is_some() {
     Kind::DataAbort
 } else if option_env!("RP_CRASH_PREFETCH").is_some() {
     Kind::PrefetchAbort
 } else if option_env!("RP_CRASH_UNDEFINED").is_some() {
     Kind::Undefined
+} else if option_env!("RP_CRASH_SWI").is_some() {
+    Kind::Swi
+} else if option_env!("RP_CRASH_RUN_LIMIT").is_some() {
+    Kind::RunLimit
 } else {
     Kind::Panic
 };
@@ -140,6 +154,24 @@ mod image {
             }
             Kind::PrefetchAbort => rt::prefetch_probe(UNMAPPED),
             Kind::Undefined => rt::undefined_probe(),
+            Kind::Swi => rt::swi_probe(),
+            Kind::RunLimit => {
+                // As rp-hang: interrupts on (the tick), then off, and spin,
+                // which only the FIQ-routed run limit can stop.
+                rt::start_tick(100);
+                rt::irq_disable();
+                rt::arm_run_limit(1000);
+                spin()
+            }
+        }
+    }
+
+    /// Spins forever, in a frame of its own: the run limit interrupts it
+    /// here, a call below `main` (the chain's first link).
+    #[inline(never)]
+    fn spin() -> ! {
+        loop {
+            core::hint::spin_loop();
         }
     }
 }

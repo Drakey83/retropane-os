@@ -5,7 +5,25 @@ use core::fmt::Write;
 use rp_drv_mbx_display::crash::emergency_console;
 use rp_drv_pxa_uart::PxaUart;
 use rp_hal_pxa27x::rt::{self, Global};
+#[cfg(rp_frame_pointers)]
+use rp_hal_pxa27x::{backtrace, mmu};
 use rp_hal_x51v::devices;
+
+/// Where a crash's backtrace starts: the caller's frame record (a
+/// frame-pointer build, `--cfg rp_frame_pointers`; 0 in every other build,
+/// which has no chain to walk).
+#[cfg(rp_frame_pointers)]
+macro_rules! here {
+    () => {
+        rt::frame_pointer()
+    };
+}
+#[cfg(not(rp_frame_pointers))]
+macro_rules! here {
+    () => {
+        0
+    };
+}
 
 /// How many crashes this run has started ([`super::steps`]).
 static DEPTH: Global<u32> = Global::new(0);
@@ -80,13 +98,17 @@ pub fn fault(kind: rt::Fault, addr: u32) -> ! {
         },
         spsr: rt::fault_spsr(),
     };
-    report(Line::Fault(kind, addr, detail))
+    #[cfg(rp_frame_pointers)]
+    let fp = rt::fault_fp();
+    #[cfg(not(rp_frame_pointers))]
+    let fp = 0;
+    report(Line::Fault(kind, addr, detail), fp)
 }
 
 /// A crash with a message: `rp_image::crash(format_args!(...))`.
 #[inline(never)]
 pub fn crash(msg: core::fmt::Arguments) -> ! {
-    report(Line::Message(msg))
+    report(Line::Message(msg), here!())
 }
 
 /// `v`'s value, or a crash naming `what` and the caller's line: for a call
@@ -112,12 +134,12 @@ pub fn need<T>(v: Option<T>, what: &str) -> T {
 /// silent stop (which the loader would see as a hang).
 #[inline(never)]
 pub fn fail(what: &str) -> ! {
-    report(Line::Failed(what))
+    report(Line::Failed(what), here!())
 }
 
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    report(Line::Panic(info))
+    report(Line::Panic(info), here!())
 }
 
 /// A crash's own line. One type (not a closure per kind): the line's code
@@ -153,8 +175,46 @@ impl Line<'_> {
     }
 }
 
-/// The crash path, in its fixed order (the crate's docs).
-fn report(what: Line) -> ! {
+/// A crash's backtrace (hal/pxa27x/src/backtrace.rs), walked once for
+/// every place it goes: in a frame-pointer build the chain, or `None` when
+/// it isn't walked (a crash inside the crash path: the walk reads memory,
+/// which may be what faulted); in every other build nothing to walk.
+#[cfg(rp_frame_pointers)]
+type Trace = Option<backtrace::Chain>;
+#[cfg(not(rp_frame_pointers))]
+type Trace = ();
+
+/// The backtrace from frame pointer `fp`, walked if `walk` (the first crash
+/// of a run). The walk reads only word-aligned SDRAM, by `try_read`, which
+/// can't fault out.
+#[cfg(rp_frame_pointers)]
+fn trace(fp: u32, walk: bool) -> Trace {
+    walk.then(|| backtrace::walk(fp, mmu::SDRAM, &mut |a| rt::try_read(a as usize)))
+}
+#[cfg(not(rp_frame_pointers))]
+fn trace(_fp: u32, _walk: bool) -> Trace {}
+
+/// The backtrace's line: `CHAIN ...`, or what a build without frame
+/// pointers says instead.
+#[cfg(rp_frame_pointers)]
+fn trace_line(w: &mut dyn Write, t: &Trace) -> core::fmt::Result {
+    match t {
+        Some(chain) => backtrace::chain_line(w, chain)?,
+        None => w.write_str("CHAIN not walked (a crash in the crash path)")?,
+    }
+    w.write_char('\n')
+}
+#[cfg(not(rp_frame_pointers))]
+fn trace_line(w: &mut dyn Write, _t: &Trace) -> core::fmt::Result {
+    w.write_str(rp_hal_pxa27x::backtrace::NO_CHAIN)?;
+    w.write_char('\n')
+}
+
+/// The crash path, in its fixed order (the crate's docs). `fp`: where its
+/// backtrace starts ([`trace`]). The backtrace goes to the serial line and
+/// the run log (so the loader's crash screen and `crashlog.txt`), not the
+/// crash box: its two lines hold the crash's own line.
+fn report(what: Line, fp: u32) -> ! {
     let depth = DEPTH.with(|d| {
         let was = *d;
         *d = d.saturating_add(1);
@@ -162,6 +222,7 @@ fn report(what: Line) -> ! {
     });
     let steps = crate::steps(depth);
     let note = if steps.note { NOTE.with(|n| *n) } else { None };
+    let trace = trace(fp, steps.note);
     let both = |w: &mut dyn Write| {
         let mut lines = || -> core::fmt::Result {
             what.write(w)?;
@@ -187,10 +248,13 @@ fn report(what: Line) -> ! {
         // The report starts on a line of its own (ignored as in `both`).
         let _ = uart.write_char('\n');
         both(&mut uart);
+        // Ignored as in `both`.
+        let _ = trace_line(&mut uart, &trace);
     }
     let shown = steps.screen && SCREEN.with(|s| *s).is_some_and(|screen| screen(&both));
     if steps.report {
         both(&mut devices::RunLog);
+        let _ = trace_line(&mut devices::RunLog, &trace);
         if shown && devices::loader_present() {
             rt::delay_us(crate::BOX_HOLD_US);
         }

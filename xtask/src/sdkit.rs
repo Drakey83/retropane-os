@@ -191,7 +191,7 @@ pub fn raw_binary(elf: &Path, out: &Path) -> Result<(), String> {
 }
 
 /// `llvm-objcopy` from the toolchain's `llvm-tools` component.
-fn objcopy() -> std::path::PathBuf {
+pub(crate) fn objcopy() -> std::path::PathBuf {
     let sysroot = Command::new("rustc")
         .args(["--print", "sysroot"])
         .output()

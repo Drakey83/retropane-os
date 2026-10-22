@@ -17,6 +17,7 @@ mod sdkit;
 mod serve;
 mod size;
 mod spot;
+mod symbols;
 mod trace;
 mod usb;
 mod usbbench;
@@ -33,6 +34,32 @@ pub(crate) const TARGET_SPEC: &str = "targets/armv5te-x51v-none-eabi.json";
 const THUMB_TARGET_SPEC: &str = "targets/thumbv5te-x51v-none-eabi.json";
 /// Images built as Thumb (ADR-0015); empty it to go back to all-ARM.
 const THUMB_IMAGES: &[&str] = &["rp-loader"];
+/// Images built with frame pointers (ADR-0001, "The crash-screen backtrace
+/// is mode-dependent"): their crash report walks the frame chain
+/// (hal/pxa27x/src/backtrace.rs). Every other image is may-omit, has no
+/// walker and says so. Emptying it puts every image back to may-omit. ARM
+/// code only: a Thumb image's frame pointer is r7 and calls between ARM and
+/// Thumb break the chain (`cross` refuses an image in both lists).
+pub(crate) const FRAME_POINTER_IMAGES: &[&str] = &["rp-crash"];
+/// What a frame-pointer image is built with: frame pointers in the whole
+/// build (`core` and `compiler_builtins` too, `-Zbuild-std` builds them
+/// with these flags, so the chain is unbroken) and the walker compiled in.
+const FRAME_POINTER_FLAGS: &str = "-C force-frame-pointers=yes --cfg rp_frame_pointers";
+
+/// Sets up a cargo build of `image` into target folder `dir`: for a
+/// frame-pointer image ([`FRAME_POINTER_IMAGES`]) its flags, and a folder of
+/// its own inside `dir` (the flags rebuild everything, `core` included, so
+/// it never shares a folder with a may-omit build). Returns the target
+/// folder to build into. Every image build goes through it (`cross`, the
+/// emulator's variants, `perf`, `codegen-variant`).
+pub(crate) fn frame_pointer_build(cmd: &mut Command, image: &str, dir: &str) -> String {
+    if FRAME_POINTER_IMAGES.contains(&image) {
+        cmd.env("RUSTFLAGS", FRAME_POINTER_FLAGS);
+        format!("{dir}/frame-pointers")
+    } else {
+        dir.to_string()
+    }
+}
 
 const USAGE: &str = "\
 usage: cargo xtask <command>
@@ -46,6 +73,8 @@ commands:
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   gate      count the performance gate's checklist lines (docs/ROADMAP.md)
+  symbols   a crash report's addresses as functions and source lines:
+            `symbols <image | elf> <addr...>` (its CHAIN line, the fault address)
   perf      the performance ratchet on the docked X51v: the device suite against
             docs/perf-floors.md (`--update` ratchets faster floors down;
             `perf noise N` sets every floor and tolerance from N runs;
@@ -244,7 +273,8 @@ commands:
   emu-storfast the storage speed-ups' device test (rp-storfast) under the
             loader with SD and CF cards: DMA sizes, the write soak, CF paths
   mutants   the deliberate bugs each test suite must catch (docs/testing.md);
-            --emu adds the slow emulator ones
+            --emu adds the slow emulator ones; RETROPANE_MUTANT=<text> only those
+            whose name holds it
   bench     deterministic emulator benchmarks vs bench/baseline-emulator.json
             (--update records a new baseline)";
 
@@ -523,6 +553,14 @@ fn main() -> ExitCode {
                 .and_then(|()| sdkit::build(&workspace_root()))
                 .and_then(|()| usb::install(&workspace_root()))
         }
+        "symbols" => {
+            let addrs: Vec<String> = args().skip(3).collect();
+            symbols::symbols(&workspace_root(), &flag, &addrs).map(|lines| {
+                for l in lines {
+                    println!("{l}");
+                }
+            })
+        }
         "bench" => {
             eprintln!("==> bench");
             cross().and_then(|()| emu::bench(&workspace_root(), flag == "--update"))
@@ -732,8 +770,21 @@ fn run_step(step: &str) -> Result {
 }
 
 fn cargo(args: &[&str]) -> Result {
+    cargo_with(&mut Command::new(""), args)
+}
+
+/// [`cargo`] with `cmd`'s environment (a [`frame_pointer_build`]'s flags):
+/// only its environment is used.
+fn cargo_with(cmd: &mut Command, args: &[&str]) -> Result {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let status = Command::new(cargo)
+    let mut run = Command::new(cargo);
+    for (k, v) in cmd.get_envs() {
+        match v {
+            Some(v) => run.env(k, v),
+            None => run.env_remove(k),
+        };
+    }
+    let status = run
         .args(args)
         .env("RP_BUILD_ID", build_id())
         .env(local_input::VAR, local_inputs(&workspace_root()))
@@ -820,7 +871,8 @@ fn codegen_variant(image: &str, rest: &[String]) -> Result {
     {
         return Err("codegen-variant: an image name and a label of letters, digits and -".into());
     }
-    let dir = format!("target/variants/{label}");
+    let mut env = Command::new("");
+    let dir = frame_pointer_build(&mut env, image, &format!("target/variants/{label}"));
     let mut args: Vec<&str> = vec![
         "build",
         "--release",
@@ -837,7 +889,7 @@ fn codegen_variant(image: &str, rest: &[String]) -> Result {
         args.extend(["--config", c.as_str()]);
     }
     eprintln!("==> codegen-variant {image} {label}: {}", configs.join(" "));
-    cargo(&args)?;
+    cargo_with(&mut env, &args)?;
     let root = workspace_root();
     let elf = root
         .join(&dir)
@@ -1143,6 +1195,42 @@ fn cross() -> Result {
         ])?;
         let from = workspace_root()
             .join("target/thumbv5te-x51v-none-eabi/release")
+            .join(image);
+        let to = workspace_root()
+            .join("target/armv5te-x51v-none-eabi/release")
+            .join(image);
+        std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
+    }
+    // ADR-0001: these images are built with frame pointers (their crash
+    // report walks the chain), in a folder of their own, then put where the
+    // build above put them, as the Thumb ones are.
+    for image in FRAME_POINTER_IMAGES {
+        if THUMB_IMAGES.contains(image) {
+            return Err(format!(
+                "{image}: in both the Thumb and the frame-pointer lists (the walker follows ARM \
+                 code's chain only)"
+            ));
+        }
+        let mut env = Command::new("");
+        let dir = frame_pointer_build(&mut env, image, "target");
+        cargo_with(
+            &mut env,
+            &[
+                "build",
+                "--release",
+                "--target",
+                TARGET_SPEC,
+                "-Zbuild-std=core,compiler_builtins",
+                "-Zjson-target-spec",
+                "-p",
+                image,
+                "--target-dir",
+                &dir,
+            ],
+        )?;
+        let from = workspace_root()
+            .join(&dir)
+            .join("armv5te-x51v-none-eabi/release")
             .join(image);
         let to = workspace_root()
             .join("target/armv5te-x51v-none-eabi/release")

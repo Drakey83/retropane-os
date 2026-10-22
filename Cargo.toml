@@ -107,6 +107,9 @@ publish = false
 [workspace.lints.rust]
 missing_docs = "warn"
 unsafe_op_in_unsafe_fn = "deny"
+# Frame-pointer images (xtask's list, ADR-0001) are built with
+# `--cfg rp_frame_pointers`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(rp_frame_pointers)"] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "deny"

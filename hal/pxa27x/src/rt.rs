@@ -19,6 +19,39 @@ use rp_hal_api::RegisterBus;
 use crate::devmap::va;
 use crate::{FFUART_BASE, Mmio, UART_WINDOW};
 
+/// The exception entries' frame-pointer work, in a frame-pointer build only
+/// (`--cfg rp_frame_pointers`, ADR-0001; backtrace.rs): `start` clears r11
+/// before `rp_main`, so the chain ends there; `keep <reg>` keeps the
+/// faulting code's r11 for the crash path (`<reg>` a scratch register the
+/// entry overwrites anyway); `fiq` the same from FIQ mode, whose r11 is its
+/// own: the store with `^` takes the user bank's, which every other mode
+/// shares. Every other build gets nothing: no instruction, no address moved.
+#[cfg(rp_frame_pointers)]
+macro_rules! fp_asm {
+    (start) => {
+        "    mov     r11, #0"
+    };
+    (keep $r:ident) => {
+        concat!(
+            "    ldr     ",
+            stringify!($r),
+            ", =rp_fault_fp\n",
+            "    str     r11, [",
+            stringify!($r),
+            "]"
+        )
+    };
+    (fiq) => {
+        "    ldr     r8, =rp_fault_fp\n    stmia   r8, {{r11}}^\n    nop"
+    };
+}
+#[cfg(not(rp_frame_pointers))]
+macro_rules! fp_asm {
+    ($($t:tt)*) => {
+        ""
+    };
+}
+
 core::arch::global_asm!(
     r#"
     .section .text.start, "ax"
@@ -91,7 +124,9 @@ _start:
 3:  cmp     r0, r3
     strlo   r1, [r0], #4
     blo     3b
-
+"#,
+    fp_asm!(start),
+    r#"
     bl      rp_main
 2:  b       2b
 
@@ -112,8 +147,16 @@ rp_vectors:
     .word   rp_dabt_entry, rp_undef_entry, rp_irq_entry, rp_fiq_entry
 
     @ FIQ: only the soft run limit is routed here (`arm_run_limit`). It
-    @ never returns: the program goes back to its starter.
+    @ never returns: the program goes back to its starter. The interrupted
+    @ code's mode and flags kept for the report first (quality audit C61:
+    @ every run-limit report said spsr 0; r8-r12 are FIQ's own).
 rp_fiq_entry:
+    mrs     r9, spsr
+    ldr     r8, =rp_fault_spsr
+    str     r9, [r8]
+"#,
+    fp_asm!(fiq),
+    r#"
     bl      rp_fiq
 
     @ IRQ: move straight to SVC mode and save a full frame on the
@@ -155,6 +198,9 @@ rp_irq_entry:
     @ its own entry into the vector page, iwmmxt.rs, and falls back here.)
     .global rp_undef_entry
 rp_undef_entry:
+"#,
+    fp_asm!(keep r1),
+    r#"
     mrs     r0, spsr
     ldr     r1, =rp_fault_spsr
     str     r0, [r1]
@@ -165,6 +211,12 @@ rp_undef_entry:
     @ real entry (rp_swi_entry) into the vector page when a handler is set,
     @ so images without system calls don't link it.
 rp_swi_fault:
+"#,
+    fp_asm!(keep r1),
+    r#"
+    mrs     r0, spsr                    @ the mode and flags for the report
+    ldr     r1, =rp_fault_spsr          @ (quality audit C61)
+    str     r0, [r1]
     mov     r0, #2
     sub     r1, lr, #4
     b       rp_fault
@@ -201,6 +253,9 @@ rp_dabt_entry:
     mrs     r2, spsr                    @ unresolved: the faulting mode and
     ldr     r3, =rp_fault_spsr          @ flags for the report (C44: only
     str     r2, [r3]                    @ the undefined entry kept them)
+"#,
+    fp_asm!(keep r3),
+    r#"
     mov     r0, r12                     @ report and stop
     ldr     r1, [sp, #20]               @ the faulting pc
     b       rp_fault
@@ -1245,17 +1300,49 @@ impl<T> Slot<T> {
     }
 }
 
-/// The SPSR at the last undefined-instruction exception (bring-up).
+/// The SPSR at the last fault, kept by its exception entry.
 #[unsafe(export_name = "rp_fault_spsr")]
 static mut FAULT_SPSR: u32 = 0;
 
-/// The CPSR of the code that hit the last undefined-instruction fault
-/// (mode bits, and bit 5 for Thumb state).
+/// The CPSR of the code that hit the last fault (mode bits, and bit 5 for
+/// Thumb state): kept by every fault's entry (the aborts since C44, the run
+/// limit's since C61).
 #[must_use]
 pub fn fault_spsr() -> u32 {
     // SAFETY: a plain word, written by the exception entry before the
     // handler that reads it runs.
     unsafe { core::ptr::addr_of!(FAULT_SPSR).read_volatile() }
+}
+
+/// The faulting code's r11 at the last fault, kept by the exception entry
+/// (`fp_asm!`): where the crash path's backtrace starts. Frame-pointer
+/// builds only (backtrace.rs).
+#[cfg(rp_frame_pointers)]
+#[unsafe(export_name = "rp_fault_fp")]
+static mut FAULT_FP: u32 = 0;
+
+/// The frame pointer where the last fault happened (0: none kept).
+#[cfg(rp_frame_pointers)]
+#[must_use]
+pub fn fault_fp() -> u32 {
+    // SAFETY: a plain word, written by the exception entry before the
+    // handler that reads it runs.
+    unsafe { core::ptr::addr_of!(FAULT_FP).read_volatile() }
+}
+
+/// The caller's own frame pointer (r11): its frame record, where a
+/// backtrace from the caller starts. Always inlined, so it is the
+/// caller's. Frame-pointer builds only (backtrace.rs).
+#[cfg(rp_frame_pointers)]
+#[inline(always)]
+#[must_use]
+pub fn frame_pointer() -> u32 {
+    let fp: u32;
+    // SAFETY: reads a register; nothing else changes.
+    unsafe {
+        core::arch::asm!("mov {}, r11", out(reg) fp, options(nomem, nostack, preserves_flags))
+    };
+    fp
 }
 
 /// Reports an unrecoverable fault through the fault handler.
@@ -1333,7 +1420,7 @@ extern "C" fn rp_irq_frame(frame: *const u32) {
     // First, before any dispatch: the timestamp.
     // SAFETY: IRQs are masked in the handler; the only writer.
     unsafe { core::ptr::addr_of_mut!(IRQ_CYCLES).write_volatile(cycles()) };
-    rp_irq();
+    rp_irq(frame);
     // SAFETY: `frame` is the 18-word frame the IRQ entry built; word 17 is
     // the interrupted CPSR.
     let cpsr = unsafe { frame.add(17).read() };
@@ -1373,14 +1460,24 @@ pub(crate) fn preempt_if_pending() {
     }
 }
 
-fn rp_irq() {
+/// `frame`: the IRQ entry's 18-word frame (`rp_irq_frame`).
+fn rp_irq(frame: *const u32) {
     let pending = intc().pending();
     // The soft watchdog: the program ran past its limit. Disarm (one shot)
-    // and fault, which its handler turns into a return to the loader.
+    // and fault, which its handler turns into a return to the loader, with
+    // the interrupted code's mode and flags (quality audit C61) and, in a
+    // frame-pointer build, its r11 for the backtrace (frame words 17, 11).
     if pending & (1 << crate::soc::irq::OST_4_11) != 0
         && ost_block().read32(crate::soc::ost_reg::OSSR) & 1 << 4 != 0
     {
         disarm_run_limit();
+        // SAFETY: `frame` is the IRQ entry's frame; FAULT_SPSR and FAULT_FP
+        // are plain words only the crash path reads, IRQs masked here.
+        unsafe {
+            core::ptr::addr_of_mut!(FAULT_SPSR).write_volatile(frame.add(17).read());
+            #[cfg(rp_frame_pointers)]
+            core::ptr::addr_of_mut!(FAULT_FP).write_volatile(frame.add(11).read());
+        }
         report_fault(Fault::RunLimit, 0);
     }
     if pending & (1 << crate::soc::irq::OST1) != 0 {
@@ -1718,7 +1815,7 @@ pub fn take_kdata_page() -> Option<&'static mut [u32; 1024]> {
 pub fn map_test_section(virt: u32, phys: u32) -> bool {
     const MIB: u32 = 1 << 20;
     let native = (0xC000_0000..0xFE00_0000).contains(&virt);
-    let ram = (0xA800_0000..0xAC00_0000).contains(&phys);
+    let ram = crate::mmu::SDRAM.contains(&phys);
     if !native || !ram || virt % MIB != 0 || phys % MIB != 0 {
         return false;
     }
@@ -1795,6 +1892,16 @@ pub fn undefined_probe() -> ! {
     // SAFETY: the instruction traps to the undefined vector, whose handler
     // reports through the fault handler and never returns.
     unsafe { core::arch::asm!(".inst 0xe7f000f0", options(noreturn)) }
+}
+
+/// Makes a system call (`SVC #0`) with no handler, to exercise the fault
+/// path's SWI report, which doesn't return. Only for self-tests
+/// (`rp-crash`), in an image that sets no system-call handler.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn swi_probe() -> ! {
+    // SAFETY: with no system-call handler the SWI vector reports through
+    // the fault handler and never returns.
+    unsafe { core::arch::asm!("svc #0", options(noreturn)) }
 }
 
 /// Masks IRQs at the CPU.

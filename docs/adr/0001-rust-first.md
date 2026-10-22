@@ -100,3 +100,32 @@ may-omit)". Emptying the list recovers everything; nothing to remove. The
 Thumb loader (frame pointer r7, chains broken by ARM/Thumb calls) stays
 may-omit.
 
+**Built (2026-10-22).** The list is `FRAME_POINTER_IMAGES` in xtask (`rp-crash`);
+every image build (`cross`, the emulator's variants, `perf`,
+`codegen-variant`) goes through one helper that gives a listed image the
+flags and a target folder of its own, and `cross` refuses an image on both
+the Thumb and the frame-pointer lists. The record layout was read from
+`rp-crash` built that way, not assumed: every function, leaves included,
+pushes `{.., r11, lr}` and points r11 at the saved r11, the return address
+4 bytes above. In a frame-pointer build `_start` clears r11 before
+`rp_main` (the chain's end) and every fault entry keeps the faulting code's
+r11 (`rp_fault_fp`; the FIQ entry the user bank's, as FIQ has its own r11);
+in every other build those pieces are empty, so no instruction moves. The
+walk (`hal/pxa27x/src/backtrace.rs`) reads only word-aligned records wholly
+in SDRAM, through `try_read`, each above the one before, at most 16, on the
+first crash of a run only; its line goes to the serial port and the run log
+(so the loader's crash screen and `crashlog.txt`), not the two-line crash
+box: `CHAIN <call address>... start | cut | broken: fp <value> <why>`. Every
+may-omit image prints `no frame chain (built may-omit)` instead: 31 bytes of
+text and 36 to 68 bytes in `rp_image`'s report, nothing else changed
+(compared function by function against the build before). `cargo xtask
+symbols <image> <addr...>` names the addresses with the toolchain's
+`llvm-nm` and `llvm-objdump --line-numbers`: the `llvm-tools` component has
+no `llvm-symbolizer`, the tool this plan named. `emu-crash` follows all six
+of `rp-crash`'s crashes (the panic, the data and prefetch aborts, the
+undefined instruction, a system call with no handler, the run limit) to
+`_start`; `emu-run-limit` requires the no-chain line from the may-omit
+`rp-hang`. Building it found quality audit C61 (the run limit's and the
+SWI's reports carried no SPSR). Waiting: the deliberate crash on the X51v,
+both builds.
+

@@ -1105,6 +1105,7 @@ dependencies = [
  "rp-fat",
  "rp-gfx",
  "rp-hal-api",
+ "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-kernel-pe",
  "rp-kernel-trace",

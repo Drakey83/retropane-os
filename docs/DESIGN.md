@@ -523,7 +523,11 @@ takes it down:
    screen" with the reason, registers and backtrace.
    *(Implemented for bring-up: images draw a boot log and a red crash box; the
    SD-card probe image, `boot/probe`, shows everything we need from a real
-   device in pages with per-line checksums, read from a phone photo.)*
+   device in pages with per-line checksums, read from a phone photo. The
+   backtrace, 2026-10-22: an image built with frame pointers (`rp-crash`
+   first, ADR-0001) adds a `CHAIN` line of its calls back to `_start` to
+   every crash report, and `cargo xtask symbols` names them; every other
+   image says "no frame chain (built may-omit)".)*
 2. **Crash log that survives a reboot.** Panic data goes into a reserved RAM area
    that keeps its contents through a soft reset (SDRAM self-refresh). The next
    boot sends it over USB and saves it to SD.

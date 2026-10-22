@@ -1795,22 +1795,136 @@ pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
     if !String::from_utf8_lossy(&saved).contains("PANIC deliberate test panic") {
         return Err("crash: crashlog.txt on the card doesn't hold the report".into());
     }
+    check_chain(
+        root,
+        &release.join("rp-crash"),
+        log,
+        "the panic",
+        None,
+        (MAIN, false),
+    )?;
+    if !String::from_utf8_lossy(&saved).contains("CHAIN ") {
+        return Err("crash: crashlog.txt on the card doesn't hold the backtrace".into());
+    }
     eprintln!(
         "    crash path OK: the image's crash box showed on the plane on screen (offset 0, as WM          leaves it); the panic came back to the loader, reached the PC and the card, and is on          the screen"
     );
     crash_kinds(root, &loader)
 }
 
+/// `rp-crash`'s `main`, as `cargo xtask symbols` names it.
+const MAIN: &str = "rp_crash::image::main";
+/// The function that calls `main` (`rp_image::entry!`'s).
+const INTO_MAIN: &str = "rp_crash::image::__rp_image_main";
+
+/// A frame-pointer image's backtrace in its run log (ADR-0001,
+/// hal/pxa27x/src/backtrace.rs): one `CHAIN` line that reaches where the
+/// image began (`start`), its last call `_start`'s (the chain unbroken to
+/// the bottom), and the function `want.0` in it: its first call if
+/// `want.1`, else any call or where it faulted (`at`). The addresses are
+/// read through `cargo xtask symbols` on `elf`, the image as built.
+fn check_chain(
+    root: &Path,
+    elf: &Path,
+    log: &str,
+    what: &str,
+    at: Option<u32>,
+    want: (&str, bool),
+) -> Result<(), String> {
+    let chains: Vec<&str> = log
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("CHAIN "))
+        .collect();
+    let [chain] = chains[..] else {
+        return Err(format!(
+            "crash {what}: want one CHAIN line in the run log, found {}:{log}",
+            chains.len()
+        ));
+    };
+    let calls: Vec<String> = chain
+        .split_whitespace()
+        .skip(1)
+        .take_while(|w| w.starts_with("0x"))
+        .map(str::to_string)
+        .collect();
+    let end = chain
+        .split_whitespace()
+        .skip(1 + calls.len())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if end != "start" || calls.is_empty() {
+        return Err(format!(
+            "crash {what}: the chain doesn't reach the start: `{chain}`"
+        ));
+    }
+    let elf_arg = elf.display().to_string();
+    let named = crate::symbols::symbols(root, &elf_arg, &calls)?;
+    // A `symbols` line's function, without its offset.
+    let function = |l: &str| -> String {
+        let f = l.split_whitespace().nth(1).unwrap_or("");
+        f.split_once('+').map_or(f, |(name, _)| name).to_string()
+    };
+    if named.last().map(|l| function(l)).as_deref() != Some("_start") {
+        return Err(format!(
+            "crash {what}: the chain's last call isn't _start's:\n{}",
+            named.join("\n")
+        ));
+    }
+    let (name, first) = want;
+    let mut seen = named.clone();
+    if first {
+        seen.truncate(1);
+    } else if let Some(at) = at {
+        seen.extend(crate::symbols::symbols(
+            root,
+            &elf_arg,
+            &[format!("{at:#x}")],
+        )?);
+    }
+    if !seen.iter().any(|l| function(l) == name) {
+        return Err(format!(
+            "crash {what}: want {name} {}:\n{}",
+            if first {
+                "as the chain's first call"
+            } else {
+                "in the chain or where it faulted"
+            },
+            named.join("\n")
+        ));
+    }
+    eprintln!(
+        "    backtrace OK ({what}): {} calls back to _start, {name} {}",
+        calls.len(),
+        if first { "first" } else { "among them" }
+    );
+    for l in &named {
+        eprintln!("        {l}");
+    }
+    Ok(())
+}
+
 /// Each fault kind through rp-image's crash path (quality audit C38):
-/// `rp-crash` built to fault by a data abort, a prefetch abort and an
-/// undefined instruction. Each must come back to the loader marked as a
-/// crash (never "did not return", the watchdog's report of a hang, nor a
-/// clean return), with its fault line in the run log and on the card.
+/// `rp-crash` built to fault by a data abort, a prefetch abort, an
+/// undefined instruction, a system call with no handler and the run limit.
+/// Each must come back to the loader marked as a crash (never "did not
+/// return", the watchdog's report of a hang, nor a clean return), with its
+/// fault line in the run log and on the card, the SPSR of the mode it came
+/// from (C44, C61) and its backtrace back to `_start` (ADR-0001).
 fn crash_kinds(root: &Path, loader: &Path) -> Result<(), String> {
-    for (switch, line) in [
-        ("RP_CRASH_DATA", "FAULT DataAbort at "),
-        ("RP_CRASH_PREFETCH", "FAULT PrefetchAbort at "),
-        ("RP_CRASH_UNDEFINED", "FAULT Undefined at "),
+    for (switch, line, want) in [
+        ("RP_CRASH_DATA", "FAULT DataAbort at ", (MAIN, false)),
+        // `main` jumped to an unmapped address: the fault's address says
+        // nothing, the chain's first call is the call into `main`.
+        (
+            "RP_CRASH_PREFETCH",
+            "FAULT PrefetchAbort at ",
+            (INTO_MAIN, true),
+        ),
+        ("RP_CRASH_UNDEFINED", "FAULT Undefined at ", (MAIN, false)),
+        ("RP_CRASH_SWI", "FAULT Swi at ", (MAIN, false)),
+        // Interrupted in `spin`: its caller first.
+        ("RP_CRASH_RUN_LIMIT", "FAULT RunLimit at ", (MAIN, true)),
     ] {
         let image = variant_image(root, "rp-crash", (switch, "1"))?;
         let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
@@ -1877,6 +1991,11 @@ fn crash_kinds(root: &Path, loader: &Path) -> Result<(), String> {
                 "crash {switch}: crashlog.txt on the card doesn't hold the fault"
             ));
         }
+        let at = log
+            .split(line)
+            .nth(1)
+            .and_then(|rest| u32::from_str_radix(rest.strip_prefix("0x")?.get(..8)?, 16).ok());
+        check_chain(root, &image.with_extension("elf"), log, switch, at, want)?;
         eprintln!(
             "    crash path OK: `{}` came back to the loader as a crash",
             line.trim_end()
@@ -2083,6 +2202,27 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
         .ok_or("run limit: no run log after the image came back")?;
     if !log.contains("RETROPANE-HANG-TEST") || !log.contains("FAULT RunLimit") {
         return Err(format!("run limit: the run log doesn't report it:{log}"));
+    }
+    // The interrupted code's mode in the report (quality audit C61: the
+    // FIQ entry kept none, every run-limit report said spsr 0): rp-hang
+    // spins in SVC mode.
+    let spsr = log
+        .split("FAULT RunLimit at ")
+        .nth(1)
+        .and_then(|rest| rest.split(" spsr 0x").nth(1))
+        .and_then(|v| u32::from_str_radix(v.get(..8)?, 16).ok())
+        .ok_or_else(|| format!("run limit: no SPSR in the fault line:{log}"))?;
+    if spsr & 0x1F != 0x13 {
+        return Err(format!(
+            "run limit: the fault line's SPSR 0x{spsr:08x} isn't SVC mode, where rp-hang spins"
+        ));
+    }
+    // rp-hang is built may-omit (ADR-0001): no walker, and its report says so.
+    if !log.contains(rp_hal_pxa27x::backtrace::NO_CHAIN) || log.contains("CHAIN ") {
+        return Err(format!(
+            "run limit: a may-omit image's report must say `{}` and walk nothing:{log}",
+            rp_hal_pxa27x::backtrace::NO_CHAIN
+        ));
     }
     if log.contains("did not return") {
         return Err("run limit: went through a reset instead of back to the loader".into());
@@ -6957,8 +7097,8 @@ fn variant_image_with(
         Some(a) => format!("{}-{}", env.0, a.0).to_ascii_lowercase(),
         None => env.0.to_ascii_lowercase(),
     };
-    let dir = format!("target/variants/{name}");
     let mut cmd = Command::new("cargo");
+    let dir = crate::frame_pointer_build(&mut cmd, image, &format!("target/variants/{name}"));
     crate::with_local_inputs(&mut cmd);
     cmd.current_dir(root).env(env.0, env.1);
     if let Some((k, v)) = also {
@@ -6984,6 +7124,9 @@ fn variant_image_with(
     crate::size::check_variant(&elf, image)?;
     let out = emu_dir(root)?.join(format!("{image}-{name}.bin"));
     crate::sdkit::raw_binary(&elf, &out)?;
+    // The ELF beside it, for its addresses (`check_chain`, `symbols`).
+    let kept = out.with_extension("elf");
+    std::fs::copy(&elf, &kept).map_err(|e| format!("{}: {e}", kept.display()))?;
     Ok(out)
 }
 

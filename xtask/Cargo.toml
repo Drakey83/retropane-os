@@ -25,6 +25,7 @@ rp-hal-api = { path = "../hal/api" }
 rp-crypto = { path = "../kernel/crypto" }
 rp-kernel-pe = { path = "../kernel/pe" }
 rp-kernel-trace = { path = "../kernel/trace" }
+rp-hal-pxa27x = { path = "../hal/pxa27x" }
 
 [lints]
 workspace = true

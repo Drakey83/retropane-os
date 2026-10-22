@@ -110,6 +110,8 @@ was deleted in passing on 2026-10-15 and two runs overlapped.
 `cargo xtask mutants` applies deliberate bugs, one at a time, from the list
 in [`xtask/src/mutants.rs`](../xtask/src/mutants.rs), and requires the named
 tests to fail on each. `--emu` adds the slow ones that need the emulator.
+`RETROPANE_MUTANT=<text>` runs only the mutants whose name holds the text
+(a change's own, say `backtrace`).
 
 - **Every security or crash-safety rule with a test gets a mutant**: the
   region list's atomic reservations and page wiping, the pin limit, double

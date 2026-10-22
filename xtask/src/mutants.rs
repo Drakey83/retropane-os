@@ -2194,6 +2194,102 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Emu(crate::emu::boot_loader_cardlog),
     },
+    Mutant {
+        name: "backtrace: a frame record equal to the one before let through (a loop)",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "if below.is_some_and(|b| fp <= b) {",
+        to: "if below.is_some_and(|b| fp < b) {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_chain_corrupt_mid_way_keeps_what_came_before",
+        ]),
+    },
+    Mutant {
+        name: "backtrace: a misaligned frame pointer read",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "        if !fp.is_multiple_of(4) {\n            break End::Broken(Broken::NotAligned, fp);\n        }\n",
+        to: "",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_chain_corrupt_mid_way_keeps_what_came_before",
+        ]),
+    },
+    Mutant {
+        name: "backtrace: a record half outside RAM read",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "ram.end.saturating_sub(8) < fp",
+        to: "ram.end.saturating_sub(4) < fp",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_record_at_the_edge_of_ram_is_read_whole_or_not_at_all",
+        ]),
+    },
+    Mutant {
+        name: "backtrace: a record below RAM read",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "if fp < ram.start || ram.end",
+        to: "if ram.end",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_record_at_the_edge_of_ram_is_read_whole_or_not_at_all",
+        ]),
+    },
+    Mutant {
+        name: "backtrace: return addresses listed instead of the calls",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "chain.calls[chain.len] = ret.wrapping_sub(4);",
+        to: "chain.calls[chain.len] = ret;",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-pxa27x",
+            "a_valid_chain_lists_every_call_to_the_start",
+        ]),
+    },
+    Mutant {
+        name: "backtrace: a chain longer than the limit not called cut",
+        file: "hal/pxa27x/src/backtrace.rs",
+        from: "        End::Cut => w.write_str(\" cut\"),",
+        to: "        End::Cut => w.write_str(\" start\"),",
+        check: Check::Host(&["-p", "rp-hal-pxa27x", "a_long_chain_is_cut_at_the_limit"]),
+    },
+    Mutant {
+        name: "C61: the FIQ entry keeps no SPSR (run-limit reports say spsr 0)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "    mrs     r9, spsr
+    ldr     r8, =rp_fault_spsr
+    str     r9, [r8]
+",
+        to: "",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "C61: the SWI entry keeps no SPSR",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "    str     r0, [r1]
+    mov     r0, #2
+",
+        to: "    mov     r0, #2
+",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "backtrace: _start leaves r11 as found (the chain runs on into the loader's)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "        \"    mov     r11, #0\"",
+        to: "        \"\"",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "backtrace: the FIQ entry keeps no r11 (a run limit's chain lost)",
+        file: "hal/pxa27x/src/rt.rs",
+        from: "        \"    ldr     r8, =rp_fault_fp\\n    stmia   r8, {{r11}}^\\n    nop\"",
+        to: "        \"\"",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
@@ -2281,7 +2377,13 @@ error: could not compile `x`"
 pub fn run(root: &Path, emu: bool) -> Result<(), String> {
     let mut survived = Vec::new();
     let mut ran = 0;
+    // `RETROPANE_MUTANT=<text>`: only the mutants whose name holds it (a
+    // change's own mutants, without the whole list's hour).
+    let only = std::env::var("RETROPANE_MUTANT").ok();
     for m in MUTANTS {
+        if only.as_deref().is_some_and(|t| !m.name.contains(t)) {
+            continue;
+        }
         if matches!(m.check, Check::Emu(_)) && !emu {
             eprintln!("    skipped (needs --emu): {}", m.name);
             continue;

@@ -310,6 +310,7 @@ fn build(root: &Path, step: &Step) -> Result<PathBuf, String> {
         None => "target".to_string(),
     };
     let mut cmd = std::process::Command::new("cargo");
+    let dir = crate::frame_pointer_build(&mut cmd, step.image, &dir);
     crate::with_local_inputs(&mut cmd);
     cmd.current_dir(root);
     if let Some((k, v)) = step.env {
