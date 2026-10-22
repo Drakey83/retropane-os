@@ -163,6 +163,10 @@ mod image {
             cpld: Cpld::adopt(cpld_bus.0, cpld_bus.1).0,
         };
         rig.gpio.make_output(USB_PULLUP, true);
+        // What the run changes in `0x1C`, put back at the end as found
+        // (quality audit C39: it was left set, the codec's power among
+        // them, after every run).
+        let found = rig.cpld.shadow(CPLD_USB_REG) & (CPLD_BOOT_BITS | CPLD_USB_BIT);
         // AxDroid's boot bits + USB bit, on top of what the shared shadow
         // says is latched (`handover`), so clearing the USB bit keeps the rest.
         rig.cpld.set(CPLD_USB_REG, CPLD_BOOT_BITS | CPLD_USB_BIT);
@@ -189,6 +193,14 @@ mod image {
                 u8::from(rig.udc.configured())
             );
         }
+        // Bits 1-3 as found (the USB bit last, so the link the PC sees
+        // ends as it began).
+        let changed = (CPLD_BOOT_BITS | CPLD_USB_BIT) & !found;
+        rig.cpld.clear(CPLD_USB_REG, changed);
+        let _ = writeln!(
+            out,
+            "CPLD 0x1C bits 1-3 put back as found: 0x{found:x} (cleared 0x{changed:x})"
+        );
         let _ = writeln!(out, "{}", super::MARKER);
         rt::delay_us(3_000_000);
         rp_image::finish()
