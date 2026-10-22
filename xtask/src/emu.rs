@@ -6108,6 +6108,25 @@ fn joined_card_log(sd: &Path, cf: &Path, file: &str) -> Result<String, String> {
 ///   the machine (RAM kept, as a soft reset keeps it), and the loader closes
 ///   the log at its next start as a run that didn't return.
 pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
+    // A failure's whole text (the card's log with it) kept in a file: a
+    // rare failure was lost to a filtered terminal once (2026-10-22, the
+    // sdtime guard, 1 run in 10; quality audit C60).
+    cardlog_checks(root).map_err(|e| {
+        let kept = scratch(root, "cardlog-failure.txt")
+            .ok()
+            .filter(|p| std::fs::write(p, &e).is_ok());
+        match kept {
+            Some(p) => format!(
+                "{e}
+(kept in {})",
+                p.display()
+            ),
+            None => e,
+        }
+    })
+}
+
+fn cardlog_checks(root: &Path) -> Result<(), String> {
     let loader = raw_image(root, "rp-loader")?;
     let other = b"another session's file: must stay as it is".to_vec();
     let sd = scratch(root, "sd-cardlog.img")?;
