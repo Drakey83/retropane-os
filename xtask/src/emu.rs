@@ -5271,6 +5271,57 @@ pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The touch replay (`RP_TODAY_REPLAY`, the ratchet's touch row,
+/// docs/design/perf-ratchet.md): the owner's recorded taps through the
+/// image's filter, shell and drawing, no stylus. It must take all 28
+/// presses, answer them, write its `TR` line and return to the loader by
+/// itself. Its times are the emulator's, not the device's: not compared.
+pub fn today_replay(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-today", ("RP_TODAY_REPLAY", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), rp_today::MARKER)),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("today replay: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("today replay: didn't return cleanly:{log}"));
+    }
+    let Some(tr) = log.lines().find(|l| l.starts_with("TR touch replay: ")) else {
+        return Err(format!("today replay: no `TR touch replay:` line:{log}"));
+    };
+    if !tr.contains(" 28 presses, ") {
+        return Err(format!(
+            "today replay: not the recording's 28 presses: {tr}"
+        ));
+    }
+    if log.lines().any(|l| l.starts_with("R ")) {
+        return Err(format!(
+            "today replay: the recorder logged samples (it is off in the replay):{log}"
+        ));
+    }
+    eprintln!("      {}", tr.trim_end());
+    eprintln!(
+        "    today replay OK: 28 presses replayed and answered, back at the loader by itself (times are the emulator's)"
+    );
+    Ok(())
+}
+
 /// What rp-blend's `stage` should put on screen: the image's own drawing
 /// and register programming (shared code), through the reference model.
 fn blend_screen(stage: rp_drv_mbx_display::blendtest::Stage) -> Vec<u8> {

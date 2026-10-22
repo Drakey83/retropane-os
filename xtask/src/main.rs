@@ -581,7 +581,9 @@ fn run_step(step: &str) -> Result {
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
-        "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
+        "emu-today" => cross()
+            .and_then(|()| emu::boot_loader_today(&workspace_root()))
+            .and_then(|()| emu::today_replay(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
         "emu-probe" => cross().and_then(|()| emu::boot_probe(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),

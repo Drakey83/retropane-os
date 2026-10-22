@@ -12,7 +12,7 @@ checklist line is done **and** this is running.
 
 | Group | Number | Where it comes from today | State |
 |---|---|---|---|
-| Touch | tap to screen (median, worst) | `rp-today`'s run log ("touch to flush"), taps by a person | exists; needs taps (see "Taps" below) |
+| Touch | tap to screen, landing to verdict, frame, queue to flip, the pen-down loop's period (median, worst) | `rp-today` built with `RP_TODAY_REPLAY`: recorded taps replayed (see "Taps" below), its `TR` line | built 2026-10-22, emulator-checked; floors wait for its first device runs |
 | Frames | the shell's frame times (menu open, scroll) | `rp-today`'s per-frame costs (`FrameStats`) | exists, same |
 | 3D | frames a second for a set scene | `rp-gpubench` renders (ms a full screen) | exists (run A/T timings) |
 | 2D | fill, copy, convert, dither add a full screen | `rp-mbx-blend` B7/B8 | exists |
@@ -66,8 +66,8 @@ from the run, and reports faster ones (`--update` ratchets them down).
 First floors: 99 numbers (2026-10-22 night); an independent check run
 after them: 103 numbers, 0 slower, 1 faster, 4 new. Not yet in it: the
 loader's boot line (needs a restart: owner present),
-touch and frames (taps), battery (P16), the harness's numbers (T1, T4,
-T7).
+touch (the replay: built, its floors wait for device runs), battery
+(P16), the harness's numbers (T1, T4, T7).
 
 ## Taps
 
@@ -80,9 +80,43 @@ replay for the ratchet (repeatable), real taps at milestones.
 **Decision (owner, 2026-10-22): the hybrid.** Replay for the ratchet, real
 taps at milestones: a ratchet lives on repeatability, and person-taps would
 make the floors noisy; the touch controller's timing that replay skips is a
-constant offset, and the ratchet measures changes. To build: recorded pen
-samples replayed through the same filter and drawing path in `rp-today`,
-its numbers into the floors.
+constant offset, and the ratchet measures changes.
+
+**Built (2026-10-22).** `rp-today` built with `RP_TODAY_REPLAY=1` (the
+suite's sixth step; `emu-today` checks it):
+
+- *The recording:* the owner's taps of 2026-10-17
+  (`drivers/touch-cal/tests/data/owner-2026-10-17-12k.txt`), at today's
+  sample rate and conversions (7 ms, X and Y 32): 29 touches, 28 of them
+  presses, through the start menu. The older recordings are at 11 ms,
+  where the filter's per-sample thresholds mean something else
+  (docs/hw/touch.md). The last touch, the owner ending that run, is left
+  out: Align screen sits where it lands now. Packed by `rp-today`'s build
+  script (8 bytes a sample, 4,400 bytes, in the replay build only); a host
+  test checks the packing against the text, and another runs the scenario
+  through the filter and the shell and fails if a shell change moves a tap
+  off the Today screen.
+- *Pace:* within a touch the image's own loop takes one recorded sample a
+  pass and still makes the real sample's conversions
+  (`Tsc2046::convert_traced`), so a slower loop shows as a slower verdict
+  and a longer `pen-down period`, as C58's did. Without the conversions
+  a replay would have missed exactly that. Between touches the
+  recording's pause, at most 500 ms.
+- *Nothing logged mid-run:* the recorder and the slow-frame and
+  slow-answer lines are off in the replay. The card log writes a sector
+  at every line's end (quality audit C59), and a line inside the loop
+  would be measured with it. `RP_TODAY_REPLAY_RECORD=1` keeps the
+  recorder on to measure what it costs (its line says "with the
+  recorder" and isn't a floor).
+- *Numbers:* one `TR touch replay:` line at the end, ten numbers: touch
+  to flush, landing to verdict, frame and queueing, queue to flip, and
+  the pen-down period, each median and worst (the first 256 of each
+  counted for the median). The run returns to the loader by itself.
+
+On the emulator (its times, not the device's): 28 presses, 52 answers,
+520 periods. The first device runs set the floors, and the same run
+answers C58: the replay's period on the device, with and without the
+recorder.
 
 ## Not yet
 

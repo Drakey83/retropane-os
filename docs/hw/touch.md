@@ -212,6 +212,18 @@ sample that ends any touch. The older recordings are replayed with a gap
 of more than 30 ms before any report taken as that lift; with it the
 2026-10-13 rule reproduces the device's own verdicts on runs 2-4 exactly.
 
+**The 16-bit screen's run (P, 2026-10-22, the owner tapping; quality
+audit C58).** Touch to flush median 35.5 ms, landing to verdict 31.9 ms
+(the short-sample run: 15.0 and 7.0). Its `R` lines: while the pen was
+down the loop ran every **18 ms** (median), against 7 ms in every run
+since the short samples (933+ gaps each in three runs). The run differs
+from those in the card log (on since 2026-10-20), which writes a sector
+at every logged line's end and waits for the card to program it, and the
+recorder logs a line every sample (C59). Likely the cause, not proven: the
+touch replay (`RP_TODAY_REPLAY`, docs/design/perf-ratchet.md) measures
+the loop's period on the device with the recorder off, and with it on
+(`RP_TODAY_REPLAY_RECORD`).
+
 ## TSC2046 protocol (D)
 
 SPI mode 0. A conversion takes 24 clocks; with 8-bit frames that's three transfers:

@@ -29,6 +29,7 @@
 
 pub mod clock;
 pub mod fonts;
+pub mod replay;
 
 /// Printed in the run log once the Today screen is up.
 pub const MARKER: &str = "RETROPANE-TODAY-UP";

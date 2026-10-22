@@ -60,6 +60,13 @@ const SUITE: &[Step] = &[
         env: Some(("RP_MBX_BLEND_B9", "1")),
         heads: &["B9e "],
         probe_rows: false,
+    }, // The touch replay (the owner's hybrid, 2026-10-22): recorded taps
+    // through rp-today's filter, shell and drawing.
+    Step {
+        image: "rp-today",
+        env: Some(("RP_TODAY_REPLAY", "1")),
+        heads: &["TR touch replay:"],
+        probe_rows: false,
     },
 ];
 
@@ -559,6 +566,30 @@ mod tests {
         let mut m = BTreeMap::new();
         line_numbers("FT alone: 3D None us, 2D (10 copies) Some(1) us", &mut m);
         assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn the_touch_replay_line_gives_ten_numbers() {
+        // rp-today's `TR` line, as its format string writes it.
+        let mut m = BTreeMap::new();
+        line_numbers(
+            "TR touch replay: touch to flush median Some(15000), touch to flush worst Some(40000); \
+             landing to verdict median Some(7000), landing to verdict worst Some(14000); \
+             frame and queueing median Some(400), frame and queueing worst Some(25000); \
+             queue to flip median Some(6600), queue to flip worst Some(17000); \
+             pen-down period median Some(7000), pen-down period worst Some(9000) \
+             (us; 56 answered, 28 presses, 520 periods)",
+            &mut m,
+        );
+        assert_eq!(m.len(), 10, "{m:?}");
+        assert_eq!(m["tr_touch_replay.touch_to_flush_median"], 15000.0);
+        assert_eq!(m["tr_touch_replay.pen_down_period_worst"], 9000.0);
+        // The recorder variant isn't a floor: its head differs.
+        let step = SUITE
+            .iter()
+            .find(|s| s.image == "rp-today")
+            .expect("in the suite");
+        assert!(!"TR touch replay with the recorder: x".starts_with(step.heads[0]));
     }
 
     #[test]

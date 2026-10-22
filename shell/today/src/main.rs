@@ -86,8 +86,9 @@ mod image {
     static SHELL: rt::Slot<Shell> = rt::Slot::new();
     static FRAME: rt::Slot<Frame> = rt::Slot::new();
     /// Touch to flush, then its parts: landing to verdict, frame + queueing,
-    /// queue to flip.
-    static LATENCY: rt::Slot<[Latency; 4]> = rt::Slot::new();
+    /// queue to flip; then the loop's period while the pen is down (the
+    /// replay's: the first 256 of its ~530 count towards the median).
+    static LATENCY: rt::Slot<[Latency; 5]> = rt::Slot::new();
     /// The wallpaper's conversion rows (the 16-bit comparison's dither).
     static WALL: rt::Slot<WallScratch> = rt::Slot::new();
     /// The wallpaper this image was built with (`RP_TODAY_WALLPAPER`).
@@ -113,6 +114,15 @@ mod image {
     /// pressed far). Shorter samples first, a faster rate only once the
     /// filter is checked at it (docs/hw/touch.md, "Faster samples").
     const PEN_DOWN_SLEEP_MS: u32 = 5;
+
+    /// The touch replay (`RP_TODAY_REPLAY`, `rp_today::replay`): the
+    /// recording instead of the pen, its numbers on a `TR` line for the
+    /// ratchet, the run ending by itself. The recorder is off in it (its
+    /// lines go to the card as they are logged, a sector write each:
+    /// quality audit C58, C59), unless `RP_TODAY_REPLAY_RECORD` keeps it
+    /// on to measure what those lines cost.
+    const REPLAY: bool = option_env!("RP_TODAY_REPLAY").is_some();
+    const REPLAY_RECORD: bool = option_env!("RP_TODAY_REPLAY_RECORD").is_some();
 
     static WALLPAPER: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wallpaper.yuv"));
 
@@ -253,8 +263,9 @@ mod image {
         let mut minute_shown = -1i64;
 
         // Touch to flush, and the parts of a tap's answer, for their medians.
-        let Some([latency, settle, queueing, to_flip]) = LATENCY.put_with(|| {
+        let Some([latency, settle, queueing, to_flip, period]) = LATENCY.put_with(|| {
             [
+                Latency::new(),
                 Latency::new(),
                 Latency::new(),
                 Latency::new(),
@@ -282,6 +293,12 @@ mod image {
         // The GPU renderer's costs (rp_mbx_render::FrameStats), worst seen.
         let (mut queue_worst, mut wait_worst, mut engine_worst, mut rebuilds) =
             (0u32, 0u32, 0u32, 0u32);
+        // The replay: its steps, when the pause before the next touch ends
+        // (ms), whether a touch is in progress, the last sample's time.
+        let mut replay = rp_today::replay::steps(rp_today::replay::DATA).peekable();
+        let mut replay_until: Option<u64> = None;
+        let mut replay_touching = false;
+        let mut replay_last: Option<u32> = None;
 
         loop {
             rt::check_in();
@@ -321,14 +338,51 @@ mod image {
             }
 
             // The pen: down and up are what the shell acts on.
-            let pen_event = pen_irq.take();
+            let pen_event = pen_irq.take() && !REPLAY;
             let read_at = rt::ticks();
-            let traced = if pen_event || filter.down() || touch.pen_down() {
-                touch.sample_traced()
+            let (traced, raw) = if REPLAY {
+                // A touch's samples one a pass, as the pen gives them; a
+                // pause before the next touch, the pen up.
+                let step = match replay.peek() {
+                    Some(st) if st.wait_ms > 0 && !replay_touching => {
+                        let until = *replay_until.get_or_insert(now_ms + u64::from(st.wait_ms));
+                        if now_ms >= until {
+                            replay_until = None;
+                            replay.next()
+                        } else {
+                            None
+                        }
+                    }
+                    Some(_) => replay.next(),
+                    None => None,
+                };
+                match step {
+                    Some(st) => {
+                        // The real sample's work, its values not used.
+                        let _ = touch.convert_traced();
+                        if replay_touching && let Some(last) = replay_last {
+                            period.add(read_at.wrapping_sub(last) / 13 * 4);
+                        }
+                        replay_last = Some(read_at);
+                        replay_touching = st.sample.is_some();
+                        let raw = st.sample.map(|s| rp_drv_tsc2046::RawTouch {
+                            x: s.x,
+                            y: s.y,
+                            z1: s.z1,
+                            z2: 0,
+                        });
+                        (None, raw)
+                    }
+                    None => (None, None),
+                }
             } else {
-                None
+                let traced = if pen_event || filter.down() || touch.pen_down() {
+                    touch.sample_traced()
+                } else {
+                    None
+                };
+                (traced, traced.map(|(s, _)| s))
             };
-            let raw = traced.map(|(s, _)| s);
             if raw.is_some() && !filter.down() {
                 landed_ticks = Some(read_at);
             }
@@ -368,7 +422,10 @@ mod image {
             // sample that ends a touch is recorded whether or not the touch
             // was reported (2026-10-14: a lift before the press left no
             // line, so the replay ran two touches together).
-            if (raw.is_some() || ev != Pen::Nothing || was_down) && recorded < RECORD {
+            if (!REPLAY || REPLAY_RECORD)
+                && (raw.is_some() || ev != Pen::Nothing || was_down)
+                && recorded < RECORD
+            {
                 recorded += 1;
                 let what = match ev {
                     Pen::Nothing => 'n',
@@ -379,6 +436,18 @@ mod image {
                 };
                 let ms = (now_ms & 0xFFFF_FFFF) as u32;
                 match traced {
+                    // The replay's (`RP_TODAY_REPLAY_RECORD`): as long a
+                    // line as a recording's, from the replayed values.
+                    _ if REPLAY => {
+                        let _ = match raw {
+                            Some(s) => writeln!(
+                                RunLog,
+                                "R {ms} {} {} {} 0 {what} 0 0 0 0 0",
+                                s.x, s.y, s.z1
+                            ),
+                            None => writeln!(RunLog, "R {ms} - - - - {what}"),
+                        };
+                    }
                     // Then X and Y had they settled 16 conversions (32
                     // kept; X's 32/64/128 columns 0 now that it settles
                     // 32): how short a sample could be, from recordings.
@@ -477,6 +546,37 @@ mod image {
                 Action::Nothing => {}
             }
 
+            // The replay's end: every step taken, every answer on the screen.
+            if REPLAY
+                && replay.peek().is_none()
+                && showing.is_none()
+                && pending.is_none()
+                && !shell.needs_frame()
+            {
+                let (n, median, worst) = latency.summary();
+                let (sn, smedian, sworst) = settle.summary();
+                let (_, qmedian, qworst) = queueing.summary();
+                let (_, fmedian, fworst) = to_flip.summary();
+                let (pn, pmedian, pworst) = period.summary();
+                let _ = writeln!(
+                    RunLog,
+                    // Every number named in full: the ratchet names each
+                    // by the words before it (`cargo xtask perf`).
+                    "TR touch replay{}: touch to flush median Some({median}), touch to flush worst Some({worst}); \
+                     landing to verdict median Some({smedian}), landing to verdict worst Some({sworst}); \
+                     frame and queueing median Some({qmedian}), frame and queueing worst Some({qworst}); \
+                     queue to flip median Some({fmedian}), queue to flip worst Some({fworst}); \
+                     pen-down period median Some({pmedian}), pen-down period worst Some({pworst}) \
+                     (us; {n} answered, {sn} presses, {pn} periods)",
+                    if REPLAY_RECORD {
+                        " with the recorder"
+                    } else {
+                        ""
+                    }
+                );
+                back = true;
+            }
+
             if back {
                 let (n, median, worst) = latency.summary();
                 let (stalls, fifo_full) = (gfx.two_d().stalls, gfx.two_d().fifo_full);
@@ -520,7 +620,8 @@ mod image {
                 let s = gfx.two_d().last;
                 // A slow answer, taken apart (2026-10-14: one of 57 took
                 // 101 ms on the device, every part's worst far less).
-                if total > SLOW_ANSWER_US {
+                // Not in the replay: a line mid-run is a card write in the loop (C59).
+                if total > SLOW_ANSWER_US && !REPLAY {
                     let _ = writeln!(
                         RunLog,
                         "slow answer at {} ms: {total} us; its frame's CPU {last_frame_us} us, wait {} us, engine {} us",
@@ -551,7 +652,7 @@ mod image {
                 queueing.add(us);
                 last_frame_us = us;
                 let s = gfx.two_d().last;
-                if us > SLOW_FRAME_US && frames > 0 {
+                if us > SLOW_FRAME_US && frames > 0 && !REPLAY {
                     let _ = writeln!(
                         RunLog,
                         "slow frame {} at {} ms: {us} us (queueing {} us, wait {} us, background {})",
@@ -596,7 +697,10 @@ mod image {
             let wait_ms: u32 = if showing.is_some() {
                 // A frame is with the engine: flip it as soon as it's done.
                 1
-            } else if filter.down() || touch.pen_down() {
+            } else if REPLAY && !replay_touching {
+                // The pause before the next touch.
+                replay_until.map_or(1, |u| u.saturating_sub(now_ms).clamp(1, 50) as u32)
+            } else if filter.down() || touch.pen_down() || replay_touching {
                 PEN_DOWN_SLEEP_MS
             } else if pressed != rp_drv_pxa_keypad::Pressed::NONE {
                 20

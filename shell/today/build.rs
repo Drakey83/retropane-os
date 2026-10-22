@@ -11,6 +11,10 @@
 //! - the clock's start: the build machine's local time (there is no RTC
 //!   driver yet), as minutes since 1970 plus the UTC offset. The clock is
 //!   right to within the time between building and running.
+//! - the touch replay's pen samples (`RP_TODAY_REPLAY`, the ratchet's touch
+//!   row, docs/design/perf-ratchet.md): the owner's taps of 2026-10-17
+//!   (`drivers/touch-cal/tests/data/owner-2026-10-17-12k.txt`), packed as
+//!   `rp_today::replay` reads them.
 
 use std::path::Path;
 
@@ -85,6 +89,12 @@ pub static SMALL: [Image; 5] = [{empty}, {empty}, {empty}, {empty}, {empty}];
         "cargo:rustc-env=RP_TODAY_OFFSET_MIN={}",
         utc_offset_minutes()
     );
+
+    let rec = Path::new(&dir).join("../../drivers/touch-cal/tests/data/owner-2026-10-17-12k.txt");
+    println!("cargo:rerun-if-changed={}", rec.display());
+    let text = std::fs::read_to_string(&rec).expect("the touch replay's recording");
+    std::fs::write(Path::new(&out).join("replay.bin"), pack_replay(&text))
+        .expect("OUT_DIR writable");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("none") {
         println!("cargo:rustc-link-arg-bins=-T{dir}/../../boot/link.x");
@@ -173,5 +183,71 @@ fn looked(text: &str) -> String {
         }
     }
     out.push_str(rest);
+    out
+}
+
+/// The replay's longest wait between two touches: the recording's pauses
+/// (seconds, the owner deciding where to tap next) shortened so the run
+/// is short; long enough for every answer's frame to be on the screen.
+const REPLAY_GAP_MAX_MS: u32 = 500;
+
+/// A gap between two recorded samples longer than this is the pen up: the
+/// recorder logs only while a touch is in progress, and within one its
+/// samples are at most 11 ms apart (2026-10-17: 7 ms typical), between two
+/// at least 352 ms. A touch can end without a no-pressure line (the filter
+/// lifts on a near-zero pressure sample, and the recorder stops there).
+const REPLAY_LIFT_MS: u32 = 100;
+
+/// Where the replay stops: the recording's last touch (at 73,534 ms) is
+/// the owner ending the run from the developer menu; that menu has since
+/// gained Align screen where the tap lands, so it isn't replayed (the
+/// replay ends the run itself). `rp_today::replay`'s scenario test says
+/// when a shell change moves another tap off the Today screen.
+const REPLAY_END_MS: u32 = 73_534;
+
+/// The recorder's `R <ms> <x> <y> <z1> ...` lines (`-` for no pressure) as
+/// 8 bytes a sample, little-endian: the wait before it in ms (non-zero only
+/// on a touch's first sample: the pause since the last one, at most
+/// [`REPLAY_GAP_MAX_MS`]; within a touch the image's own loop sets the
+/// pace), then x, y and z1 (z1 0: no pressure). Where the pen lifted with
+/// no line saying so, a no-pressure sample is added, as the image's loop
+/// would have read one; and at the end.
+fn pack_replay(text: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut push = |wait: u32, x: u16, y: u16, z1: u16| {
+        for v in [wait as u16, x, y, z1] {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+    };
+    let mut prev: Option<(u32, bool)> = None; // (ms, pressure)
+    for line in text.lines().filter(|l| l.starts_with("R ")) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let ms: u32 = f[1].parse().expect("a recorder line's time");
+        if ms >= REPLAY_END_MS {
+            break;
+        }
+        let (x, y, z1) = if f[2] == "-" {
+            (0, 0, 0)
+        } else {
+            let n = |i: usize| f[i].parse::<u16>().expect("a recorder line's value");
+            assert!(n(4) != 0, "a sample with pressure has z1 > 0");
+            (n(2), n(3), n(4))
+        };
+        let wait = match prev {
+            None => REPLAY_GAP_MAX_MS,
+            Some((at, pressed)) if ms - at > REPLAY_LIFT_MS => {
+                if pressed {
+                    push(0, 0, 0, 0);
+                }
+                (ms - at).min(REPLAY_GAP_MAX_MS)
+            }
+            Some(_) => 0,
+        };
+        push(wait, x, y, z1);
+        prev = Some((ms, z1 != 0));
+    }
+    if prev.is_some_and(|(_, pressed)| pressed) {
+        push(0, 0, 0, 0);
+    }
     out
 }

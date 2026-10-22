@@ -238,6 +238,15 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
         if !self.pen_down() {
             return None;
         }
+        let (t, trace) = self.convert_traced();
+        (t.z1 != 0).then_some((t, trace))
+    }
+
+    /// Every conversion of [`Self::sample_traced`], whether or not the
+    /// screen is touched and whatever the pressure: the same SPI work, so a
+    /// replay of recorded samples (`rp-today`'s touch replay, the ratchet)
+    /// pays a real sample's time while it uses the recording's values.
+    pub fn convert_traced(&mut self) -> (RawTouch, Trace) {
         let trace = Trace {
             x: self.settle(channel::X),
             y: self.settle(channel::Y),
@@ -249,7 +258,7 @@ impl<S: SpiBus, C: OutputPin, P: InputPin> Tsc2046<S, C, P> {
             z1,
             z2: self.read_pd(channel::Z2, pd::IDLE),
         };
-        (t.z1 != 0).then_some((t, trace))
+        (t, trace)
     }
 }
 
@@ -347,6 +356,29 @@ mod tests {
             values,
             ..Chip::default()
         }))
+    }
+
+    #[test]
+    fn convert_traced_does_a_touched_samples_work_with_the_pen_up() {
+        let vals = [0, 1111, 0, 600, 2000, 3333, 0, 0];
+        let touched = chip(vals);
+        let mut a = Tsc2046::new(Spi(touched.clone()), Cs(touched.clone()), Pen(false));
+        let sampled = a.sample_traced().unwrap();
+        let up = chip(vals);
+        let mut b = Tsc2046::new(Spi(up.clone()), Cs(up.clone()), Pen(true));
+        assert!(b.sample_traced().is_none());
+        assert!(up.borrow().log.is_empty(), "no conversions with the pen up");
+        let converted = b.convert_traced();
+        assert_eq!(converted, sampled);
+        assert_eq!(up.borrow().log, touched.borrow().log);
+    }
+
+    #[test]
+    fn convert_traced_keeps_a_zero_pressure_reading() {
+        let c = chip([0, 1111, 0, 0, 2000, 3333, 0, 0]);
+        let mut ts = Tsc2046::new(Spi(c.clone()), Cs(c.clone()), Pen(false));
+        assert!(ts.sample_traced().is_none());
+        assert_eq!(ts.convert_traced().0.z1, 0);
     }
 
     #[test]
