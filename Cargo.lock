@@ -137,6 +137,7 @@ dependencies = [
  "rp-drv-mbx-display",
  "rp-drv-sdcard",
  "rp-gfx",
+ "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-pxa27x",
  "rp-kernel-mm",
@@ -210,8 +211,12 @@ dependencies = [
 name = "rp-crash"
 version = "0.0.0"
 dependencies = [
+ "rp-drv-cpld",
  "rp-drv-mbx-display",
+ "rp-drv-mved",
+ "rp-drv-pxa-pwm",
  "rp-drv-pxa-uart",
+ "rp-hal-api",
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-image",
@@ -624,6 +629,7 @@ dependencies = [
  "rp-drv-cf",
  "rp-drv-cpld",
  "rp-drv-mbx-display",
+ "rp-drv-mved",
  "rp-drv-pxa-gpio",
  "rp-drv-pxa-mmc",
  "rp-drv-pxa-pwm",
@@ -693,6 +699,7 @@ dependencies = [
  "rp-hal-pxa27x",
  "rp-hal-x51v",
  "rp-image",
+ "rp-mbx-render",
 ]
 
 [[package]]

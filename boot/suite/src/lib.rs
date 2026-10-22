@@ -643,6 +643,19 @@ mod target {
             while dma.done().is_none() {}
             a == b
         };
+        // The same with a pause between the status polls (the SD reads ran
+        // 28% faster so, 2026-10-22): does the polling slow this DMA too?
+        r.run("dma_copy_128k_paced", 4, &mut || {
+            if !dma.arm_copy(a, b) {
+                refused = true;
+                return;
+            }
+            while dma.done().is_none() {
+                for k in 0..200u32 {
+                    black_box(k);
+                }
+            }
+        });
         r.check(
             "dma_copy",
             ok && !refused,
