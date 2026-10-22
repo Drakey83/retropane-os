@@ -4345,7 +4345,8 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     }
     mbx_blend_b7(root)?;
     mbx_blend_b8(root)?;
-    mbx_blend_b9(root)
+    mbx_blend_b9(root)?;
+    mbx_blend_b10(root)
 }
 
 /// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
@@ -4367,6 +4368,55 @@ fn mbx_blend_b7_mismatches(log: &str, device: &str) -> Vec<String> {
         .filter(|want| !log.lines().any(|l| l.trim_end() == *want))
         .map(|want| format!("device `{want}`: not in the emulator's log"))
         .collect()
+}
+
+/// B10 alone (`RP_MBX_BLEND_B10`, the performance gate's P13, V15, V17):
+/// all 256 raster operations run (none stuck), each part to its line, the
+/// state put back, the image back by itself. The answers are the device's.
+fn mbx_blend_b10(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B10", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B10: never came back to the loader")?;
+    if crashed(log) {
+        return Err(format!("mbx-blend B10: crashed:{log}"));
+    }
+    for want in [
+        " of 256 as GDI's ROP3 (pattern = colour word), 0 stuck",
+        "B10b 8 bpp fill of 0xa5, 8 pixels: ran ",
+        "B10b 24 bpp fill of 0x123456, 8 pixels: ran ",
+        "B10c status while 20 fills are queued 0x",
+        "B10d a fill with header bit 21: ran ",
+        "B10 scale, key and blend put back: yes",
+        "RETROPANE-MBX-BLEND: PASS - B10 done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B10: the run log has no `{want}`:{log}"));
+        }
+    }
+    for l in log.lines().filter(|l| l.starts_with("B10")) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!("    mbx-blend B10 OK: every part ran, state put back, back at the loader");
+    Ok(())
 }
 
 /// B9 alone (`RP_MBX_BLEND_B9`, the performance gate's V15, P6, P7, V3):
@@ -4405,7 +4455,8 @@ fn mbx_blend_b9(root: &Path) -> Result<(), String> {
         "B9b scale 1:1: ran ",
         "B9b scale x1.5: ran ",
         "B9c 8 bpp with the palette word: ran ",
-        "B9c 8 bpp without it: ran ",
+        "B9c 8 bpp without it, first: ran ",
+        "B9e full screen (us each): 2x upscale from 240 x 320 32-bit Some(",
         "B9d 1 bpp 0x0F: ran ",
         "B9 scale, key and blend put back: yes",
         "RETROPANE-MBX-BLEND: PASS - B9 done",

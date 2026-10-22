@@ -161,6 +161,22 @@ pub const B8_ONLY: bool = option_env!("RP_MBX_BLEND_B8").is_some();
 /// source through a palette and a 1 bpp source. Measured, not judged.
 pub const B9_ONLY: bool = option_env!("RP_MBX_BLEND_B9").is_some();
 
+/// Whether this build runs B10 alone (`RP_MBX_BLEND_B10`): the gate's P13,
+/// V15 and V17: every raster operation against GDI's meaning, 8 and 24 bpp
+/// fills, the queued-commands status bit, header bit 21 on a fill.
+pub const B10_ONLY: bool = option_env!("RP_MBX_BLEND_B10").is_some();
+
+/// The bitwise result GDI's raster operation `rop` (ROP3) gives for
+/// pattern `p`, source `s` and destination `d`: bit `k` of each picks bit
+/// `(p << 2 | s << 1 | d)` of `rop`.
+#[must_use]
+pub fn rop3(rop: u8, p: u32, s: u32, d: u32) -> u32 {
+    (0..32).fold(0, |out, k| {
+        let i = ((p >> k) & 1) << 2 | ((s >> k) & 1) << 1 | ((d >> k) & 1);
+        out | u32::from((rop >> i) & 1) << k
+    })
+}
+
 /// How an 8-bit channel becomes `bits` bits: the rules B7 tells apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Narrow {
@@ -327,9 +343,9 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP, RampStats,
-        SRC16, SRC32, SetStats, channels, coverage_row, dither_tries, lerp565, near, ramp_level,
-        rule_counts, sweep,
+        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, B10_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP,
+        RampStats, SRC16, SRC32, SetStats, channels, coverage_row, dither_tries, lerp565, near,
+        ramp_level, rop3, rule_counts, sweep,
     };
 
     use rp_image::crash;
@@ -383,7 +399,7 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
-        if B7_ONLY || B8_ONLY || B9_ONLY {
+        if B7_ONLY || B8_ONLY || B9_ONLY || B10_ONLY {
             b7_only(display.into_inner(), vram);
         }
         let (plane, _) = display.adopt(vram.len());
@@ -1224,7 +1240,11 @@ mod image {
     /// B7 alone (`RP_MBX_BLEND_B7`): no events, no B1-B6, nothing shown,
     /// no button; back to the loader.
     fn b7_only(regs: Mmio, vram: &mut [u8]) -> ! {
-        if B9_ONLY {
+        if B10_ONLY {
+            log!(
+                "{MARKER}: B10 only (the performance gate's P13, V15, V17: raster operations, 8/24 bpp fills, status bit 10, header bit 21)"
+            );
+        } else if B9_ONLY {
             log!(
                 "{MARKER}: B9 only (the performance gate's V15, P6, P7, V3: clip, scaler, palette, 1 bpp)"
             );
@@ -1245,7 +1265,9 @@ mod image {
         e.reset(rt::delay_us);
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
-        let ok = if B9_ONLY {
+        let ok = if B10_ONLY {
+            b10(&mut e, vram)
+        } else if B9_ONLY {
             b9(&mut e, vram)
         } else if B8_ONLY {
             b8(&mut e, vram)
@@ -1255,7 +1277,9 @@ mod image {
         let verdict = if ok { "PASS" } else { "FAIL (see the log)" };
         log!(
             "{MARKER}: {verdict} - {} done",
-            if B9_ONLY {
+            if B10_ONLY {
+                "B10"
+            } else if B9_ONLY {
                 "B9"
             } else if B8_ONLY {
                 "B8"
@@ -1856,6 +1880,8 @@ mod image {
     const B9_SRC1: usize = 0x00D2_2000;
     const B9_PAL: usize = 0x00D2_3000;
     const B9_MARK: u16 = 0xDEAD;
+    /// B9e's full-size source (any contents: only timed).
+    const B8_PAL_SRC: usize = 0x00A0_0000;
 
     /// B9's destination filled with the marker, its guards set.
     fn b9_clear(vram: &mut [u8]) {
@@ -2023,7 +2049,12 @@ mod image {
             0xFF00_0000 | i << 16 | (255 - i) << 8 | (i ^ 0xAA)
         });
         set(vram, B9_PAL, &pal);
-        for (name, with) in [("with the palette word", true), ("without it", false)] {
+        // Version 2: without the palette word first (the engine fresh from
+        // its reset: version 1 tried it second, after the palette was set).
+        for (name, with) in [
+            ("without it, first", false),
+            ("with the palette word", true),
+        ] {
             b9_clear(vram);
             let mut w = [0u32; 12];
             let mut n = 0;
@@ -2060,7 +2091,11 @@ mod image {
         }
 
         // B9d, V3: a 1 bpp source (0xAA bytes, then 0x0F), copied to
-        // RGB565 with red in the colour word.
+        // RGB565 with red in the colour word, the palette's entries 0 and 1
+        // set apart first (blue, green: version 1's were the same colour in
+        // RGB565, so its bits couldn't be told apart) and sent.
+        set(vram, B9_PAL, &[0xFF00_00FF, 0xFF00_FF00]);
+        ok &= go(e, vram, &[0xC000_0000, B9_PAL as u32], "B9d palette");
         for (k, b) in [0xAAu8, 0x0F].into_iter().enumerate() {
             for row in 0..16usize {
                 let v = u32::from_le_bytes([b, b, b, b]);
@@ -2093,9 +2128,156 @@ mod image {
             rt::check_in();
         }
 
+        // B9e: speeds (5 each) of what B9 found: a full-screen 2x upscale
+        // (240 x 320 32-bit to 480 x 640 RGB565), the same at 1:1 from a
+        // full-size source, and a full-screen 8 bpp copy through the
+        // palette against a 16-bit copy.
+        let src32 = (Format::BPP32, B8_P1, (240 * 4) as i32);
+        let d565 = (Format::RGB565, B8_P2, 960);
+        let full = (0, 0, 480, 640);
+        let blit = |dst, src, r| {
+            rp_image::need(
+                cmd::blit(dst, src, (0, 0), r, ROP_SRCCOPY, 0, 0),
+                "a 2D rectangle",
+            )
+        };
+        let mut up = [0u32; 11];
+        up[0] = 0x6000_0000 | 0x10 << 18 | 0x10 << 4;
+        let (b, n) = blit(d565, src32, full);
+        up[1..1 + n].copy_from_slice(&b[..n]);
+        let t_up = b7_time(e, vram, &up[..1 + n], 5, "B9e upscale");
+        ok &= go(e, vram, &[cmd::SCALE_1_TO_1], "B9e scale back");
+        let (b, n) = blit(d565, (Format::BPP32, B8_PAL_SRC, 1920), full);
+        let t_1 = b7_time(e, vram, &b[..n], 5, "B9e 1:1");
+        let (b, n) = blit(d565, (Format::code(3), B8_PAL_SRC, 480), full);
+        let t_8 = b7_time(e, vram, &b[..n], 5, "B9e 8 bpp");
+        let (b, n) = blit(d565, (Format::RGB565, B8_PAL_SRC, 960), full);
+        let t_16 = b7_time(e, vram, &b[..n], 5, "B9e 16-bit");
+        log!(
+            "B9e full screen (us each): 2x upscale from 240 x 320 32-bit {t_up:?}; 1:1 from 480 x 640 32-bit {t_1:?}; 8 bpp through the palette {t_8:?}; 16-bit copy {t_16:?}"
+        );
+        ok &= t_up.is_some() && t_1.is_some() && t_8.is_some() && t_16.is_some();
         let back = go(e, vram, &base, "B9 state back");
         log!(
             "B9 scale, key and blend put back: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
+    }
+
+    // ----------------------------------------------------------------- B10
+
+    const B10_DST: usize = 0x00D4_0000;
+
+    /// B10 (measured, not judged).
+    fn b10(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B10 baseline");
+
+        // B10a, P13: every ROP3 on 32 bpp words: pattern (the colour word)
+        // 0xF0F0F0F0, source 0xCCCCCCCC, destination 0xAAAAAAAA, so every
+        // input combination meets in every byte. Same ROP in both halves of
+        // the ROP4 (no mask).
+        const P: u32 = 0xF0F0_F0F0;
+        const S: u32 = 0xCCCC_CCCC;
+        const D: u32 = 0xAAAA_AAAA;
+        set(vram, B9_SRC32, &[S; 4]);
+        let (mut gdi, mut stuck) = (0u32, 0u32);
+        let mut first_odd: [(u8, u32); 4] = [(0, 0); 4];
+        let mut odd = 0usize;
+        for r in 0..=255u8 {
+            set(vram, B10_DST, &[D; 4]);
+            let rop = u32::from(r) | u32::from(r) << 8;
+            let (w, n) = rp_image::need(
+                cmd::blit(
+                    (Format::BPP32, B10_DST, 16),
+                    (Format::BPP32, B9_SRC32, 16),
+                    (0, 0),
+                    (0, 0, 4, 1),
+                    rop,
+                    0,
+                    P,
+                ),
+                "a 2D rectangle",
+            );
+            if !go(e, vram, &w[..n], "B10a rop") {
+                stuck += 1;
+                let _ = go(e, vram, &base, "B10a baseline after a reset");
+                continue;
+            }
+            let got: [u32; 4] = words(vram, B10_DST);
+            if got.iter().all(|&g| g == rop3(r, P, S, D)) {
+                gdi += 1;
+            } else if odd < 4 {
+                first_odd[odd] = (r, got[0]);
+                odd += 1;
+            } else {
+                odd += 1;
+            }
+            if r % 32 == 31 {
+                rt::check_in();
+            }
+        }
+        log!(
+            "B10a raster operations: {gdi} of 256 as GDI's ROP3 (pattern = colour word), {stuck} stuck; the first others (rop, word): {:x?}",
+            &first_odd[..odd.min(4)]
+        );
+        ok &= stuck == 0;
+
+        // B10b, V15: 8 and 24 bpp fills, 8 pixels, read back as bytes.
+        for (name, fmt, colour, bytes) in [
+            ("8 bpp", Format::code(6), 0xA5u32, 8usize),
+            ("24 bpp", Format::code(11), 0x0012_3456, 24),
+        ] {
+            fill_words(vram, B10_DST, 16, 0x5A5A_5A5A);
+            let w = rp_image::need(
+                cmd::fill(fmt, B10_DST, 64, (0, 0, 8, 1), colour),
+                "a 2D rectangle",
+            );
+            let ran = go(e, vram, &w, "B10b fill");
+            let got: [u32; 8] = words(vram, B10_DST);
+            log!(
+                "B10b {name} fill of 0x{colour:x}, 8 pixels: ran {ran}; the first {bytes} bytes and on (words): {got:08x?}"
+            );
+        }
+
+        // B10c, V17: the status word while 20 full-screen fills are queued,
+        // then idle.
+        let full = (0, 0, 480, 640);
+        for k in 0..20u32 {
+            let w = rp_image::need(
+                cmd::fill(Format::BPP32, B8_P1, STRIDE32, full, 0xFF00_0000 | k),
+                "a 2D rectangle",
+            );
+            let _ = e.submit(&w);
+        }
+        let busy = e.status();
+        let done = e.finish(vram, 2_000_000).is_ok();
+        let idle = e.status();
+        log!(
+            "B10c status while 20 fills are queued 0x{busy:08x} (bit 10 {}), after they finished ({done}) 0x{idle:08x} (bit 10 {})",
+            busy >> 10 & 1,
+            idle >> 10 & 1
+        );
+
+        // B10d: header bit 21 on a fill (B7 found it writes nothing on a
+        // copy).
+        fill_words(vram, B10_DST, 16, 0x5A5A_5A5A);
+        let mut w = rp_image::need(
+            cmd::fill(Format::BPP32, B10_DST, 64, (0, 0, 8, 1), 0xFF12_3456),
+            "a 2D rectangle",
+        );
+        w[2] |= 1 << 21;
+        let ran = go(e, vram, &w, "B10d bit 21");
+        let got: [u32; 8] = words(vram, B10_DST);
+        log!("B10d a fill with header bit 21: ran {ran}; the words {got:08x?}");
+
+        let back = go(e, vram, &base, "B10 state back");
+        log!(
+            "B10 scale, key and blend put back: {}",
             if back { "yes" } else { "NO" }
         );
         ok && back
@@ -2174,6 +2356,23 @@ mod tests {
         assert_eq!(words.iter().filter(|&&w| w == 0x0910_0000).count(), 1);
         assert!(words.contains(&0x0010_0000), "nibble 24 at 0");
         assert!(words.contains(&0x0910_0001), "bit 0");
+    }
+
+    #[test]
+    fn rop3_is_gdis() {
+        let (p, s, d) = (0xF0F0_F0F0, 0xCCCC_CCCC, 0xAAAA_AAAA);
+        assert_eq!(rop3(0xCC, p, s, d), s, "SRCCOPY");
+        assert_eq!(rop3(0xF0, p, s, d), p, "PATCOPY");
+        assert_eq!(rop3(0xAA, p, s, d), d, "the destination");
+        assert_eq!(rop3(0x00, p, s, d), 0, "BLACKNESS");
+        assert_eq!(rop3(0xFF, p, s, d), !0, "WHITENESS");
+        assert_eq!(rop3(0x66, p, s, d), s ^ d, "SRCINVERT");
+        assert_eq!(rop3(0x88, p, s, d), s & d, "SRCAND");
+        assert_eq!(rop3(0x5A, p, s, d), p ^ d, "PATINVERT");
+        // With these inputs the ROP's own bits come back, byte by byte.
+        for r in 0..=255u8 {
+            assert_eq!(rop3(r, p, s, d) & 0xFF, u32::from(r));
+        }
     }
 
     #[test]
