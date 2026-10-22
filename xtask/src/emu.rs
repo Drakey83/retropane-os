@@ -4219,11 +4219,32 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     mbx_blend_b7(root)
 }
 
+/// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
+/// emulator must reproduce.
+const MBX_BLEND_B7_DEVICE: &str = include_str!("../data/rp-mbx-blend-b7-device.txt");
+
+/// The B7 result line the emulator doesn't model (docs/hw/emulator.md):
+/// header bit 21 wrote nothing on the X51v, meaning unknown.
+const MBX_BLEND_B7_UNMODELLED: &str = "B7c header bit 0x00200000:";
+
+/// Where an emulator run of B7 differs from the device's: each device
+/// line (B7a, B7b and B7c's results) must appear in the log exactly, but
+/// [`MBX_BLEND_B7_UNMODELLED`]'s.
+fn mbx_blend_b7_mismatches(log: &str, device: &str) -> Vec<String> {
+    device
+        .lines()
+        .filter(|l| !l.starts_with('#') && !l.is_empty())
+        .filter(|l| !l.starts_with(MBX_BLEND_B7_UNMODELLED))
+        .filter(|want| !log.lines().any(|l| l.trim_end() == *want))
+        .map(|want| format!("device `{want}`: not in the emulator's log"))
+        .collect()
+}
+
 /// B7 alone (`RP_MBX_BLEND_B7`, ADR-0023's 16-bit screen): every part
 /// must run to its line and the image return to the loader by itself (no
-/// button). The device's answers aren't known yet, so nothing is compared:
-/// once the X51v has run it, the fork's conversion is made to match
-/// (docs/hw/emulator.md).
+/// button); on an emulator that models the blend (`mbx-blend`), its
+/// conversion, blend and dither-try results must equal the X51v's run
+/// (timings aren't modelled, header bit 21 isn't: docs/hw/emulator.md).
 fn mbx_blend_b7(root: &Path) -> Result<(), String> {
     let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B7", "1"))?;
     let loader = emu_dir(root)?.join("rp-loader.bin");
@@ -4279,8 +4300,22 @@ fn mbx_blend_b7(root: &Path) -> Result<(), String> {
     for l in log.lines().filter(|l| l.starts_with("B7")) {
         eprintln!("      {}", l.trim_end());
     }
+    if !device_has(root, "intel-2700g", "mbx-blend") {
+        eprintln!(
+            "    mbx-blend B7 OK: every part ran ({tries} B7c tries), blend state put back, back at the loader by itself (this emulator release doesn't model the blend: not compared with the device)"
+        );
+        return Ok(());
+    }
+    let bad = mbx_blend_b7_mismatches(log, MBX_BLEND_B7_DEVICE);
+    if !bad.is_empty() {
+        return Err(format!(
+            "mbx-blend B7: {} line(s) differ from the X51v's run:\n  {}",
+            bad.len(),
+            bad.join("\n  ")
+        ));
+    }
     eprintln!(
-        "    mbx-blend B7 OK: every part ran ({tries} B7c tries), blend state put back, back at the loader by itself (answers not compared: the X51v hasn't run it)"
+        "    mbx-blend B7 OK: every part ran ({tries} B7c tries), the conversion, blends and tries match the X51v's run (header bit 21 not modelled), back at the loader by itself"
     );
     Ok(())
 }
@@ -9833,6 +9868,39 @@ mod tests",
                 .is_err()
         );
         assert!(check_stack("stack: deepest lots of room").is_err());
+    }
+
+    #[test]
+    fn mbx_blend_b7_compares_all_but_bit_21() {
+        use super::{MBX_BLEND_B7_DEVICE, MBX_BLEND_B7_UNMODELLED, mbx_blend_b7_mismatches};
+        let lines: Vec<&str> = MBX_BLEND_B7_DEVICE
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        // 3 conversion lines, 6 blend lines, 30 tries.
+        assert_eq!(lines.len(), 3 + 6 + 30);
+        let log = lines.join("\n");
+        assert!(mbx_blend_b7_mismatches(&log, MBX_BLEND_B7_DEVICE).is_empty());
+        // One channel's count off: caught.
+        let off = log.replacen("truncates 256", "truncates 255", 1);
+        assert_eq!(mbx_blend_b7_mismatches(&off, MBX_BLEND_B7_DEVICE).len(), 1);
+        // A try missing: caught.
+        let short: String = lines
+            .iter()
+            .filter(|l| !l.starts_with("B7c blend word 0x02000001:"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_eq!(
+            mbx_blend_b7_mismatches(&short, MBX_BLEND_B7_DEVICE).len(),
+            1
+        );
+        // Bit 21's line differing (the emulator writes the copy): not counted.
+        let bit21: String = lines
+            .iter()
+            .filter(|l| !l.starts_with(MBX_BLEND_B7_UNMODELLED))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(mbx_blend_b7_mismatches(&bit21, MBX_BLEND_B7_DEVICE).is_empty());
     }
 
     #[test]

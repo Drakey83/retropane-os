@@ -137,6 +137,17 @@ watching.
   buffered; its interrupt line is GPIO85. Windows Mobile's 648 x 645
   frame at `DISPPLL` `0xEC5` (23.56 MHz) gives 56.46 Hz; 60.0 Hz was
   measured working (display calibration C3).
+- **MBX 2D engine, 32 to 16 bits** (`rp-mbx-blend` B7, X51v,
+  2026-10-21): a copy from a 32-bit source to RGB565 **truncates** each
+  channel (all 256 levels, red, green and blue); a blend onto RGB565
+  truncates too (B1-B3's fitted arithmetic, exact at alpha 0xFF and
+  0x80). **No 2D dither bit**: header bits 19, 22, 27 and blend-word bits
+  `[31:28]`, `[19:0]` change nothing on a 64 x 64 ramp; **header bit 21
+  writes nothing** (no stray writes, no hang). At WM's clock: a
+  full-screen 32-to-16 conversion 9.6 ms (480 x 80: 1.2 ms), a 16-bit
+  full-screen copy 5.0 ms (0.63 ms), a 32-bit half-screen copy 5.1 ms, a
+  32-bit full-screen stride-0 copy 10.0 ms, the renderer's 4-blit dither
+  add over a full 32-bit screen 18.9 ms.
 - **MBX 3D core**: tile-based (8 x 16 px tiles at 32 bpp, 60 x 40 on the
   screen); each object carries an alpha-test word (bits 31-29 compare,
   28-21 reference), a TSP word (Gouraud bit 22, depth mode and write,

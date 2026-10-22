@@ -10,9 +10,11 @@
 - **Amended 2026-10-21 by the project owner: the scanned-out screen is
   RGB565 with the 2700G's ordered dither** (see "The screen goes 16-bit"
   below). Layers and textures may stay 32-bit.
-- **Amendment proposed 2026-10-21, vote waiting:** how the 16-bit screen
-  is built (which engine writes it; the pictures' layout). See "Building
-  the 16-bit screen" below.
+- **Amended 2026-10-21 by the project owner: how the 16-bit screen is
+  built:** the 2D engine composes at 32 bits in a work picture and one
+  converting copy writes the screen (Q1 A); 16-bit screens, wallpaper
+  and area cache, a full 32-bit work picture (Q2 L1). See "Building the
+  16-bit screen" below.
 - **Date:** 2026-10-14
 
 ## In plain words
@@ -295,7 +297,7 @@ Still to design (in the renderer's next step): which engine writes the
 final dithered picture (the 3D core has the dither, bit 3 of `0x650`; the
 2D engine's isn't measured) and the double-buffer sizes at 16 bits.
 
-## Building the 16-bit screen (proposed 2026-10-21, vote waiting)
+## Building the 16-bit screen (2026-10-21, voted)
 
 The vote above says what the screen is (dithered RGB565). Two things
 are left before the renderer changes: **which engine writes the final,
@@ -408,13 +410,30 @@ bits):
 Its emulator check joins the `mbx-blend` check; the fork's conversion is then made to match what the device
 does (or listed as not modellable in `docs/hw/emulator.md`).
 
-**B7 is built** (`RP_MBX_BLEND_B7=1 cargo xtask load rp-mbx-blend`;
-its emulator check passes: every part runs, the blend state is put back,
-the image returns by itself). Waiting for the owner's go.
+**B7 on the X51v (2026-10-21, `local/rp-mbx-blend-B7-run1.txt`;
+`docs/hw/2700g.md` "B7, measured"):**
 
-**Votes waiting:** Q1 (A / B / C) and Q2 (L1 / L2 / L3). Recommended:
-**A and L1**, with B7 run first (it can change B's case, and sets A's
-pattern shift).
+- The 32 to 16-bit copy **truncates** every channel (256 of 256 levels),
+  and so does a blend onto RGB565: today's threshold pattern works under
+  the conversion unchanged (no half-step shift).
+- **No 2D dither bit**: 29 untried bits, none changed the result, except
+  header bit 21, which wrote nothing (meaning open, not a dither). So B
+  can't have A's look.
+- Times at Windows Mobile's clock, full screen (480 x 80 band): the
+  conversion 9.6 ms (1.2), a 16-bit forward copy 5.0 ms (0.63), the
+  dither add over 32 bits 18.9 ms. **The dither add is the dearest step**,
+  twice the conversion; for a full redraw A costs ~28.5 ms of engine
+  time on top of composing (a typical tap's rectangles a fraction of it).
+  Results only: whether to make the add cheaper is for the build step.
+
+The emulator matches every B7 line but bit 21's (listed in
+`docs/hw/emulator.md`).
+
+**Owner's votes (2026-10-21):** **Q2: L1** ("B7 doesn't touch the memory
+layout... L1 frees 1.2 MiB and gives up nothing"). **Q1: A**, given
+provisionally before B7 with a re-vote only if B7 found a dither bit; it
+found none, so A stands ("A keeps everything exact against the CPU
+reference").
 
 ## Open questions
 

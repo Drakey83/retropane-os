@@ -1,0 +1,40 @@
+# rp-mbx-blend B7 on the owner's X51v (2026-10-21, local/rp-mbx-blend-B7-run1.txt): the lines the emulator must reproduce (B7c header bit 21 is skipped: not modelled).
+B7a convert red: of 256 levels truncates 256, rounds 132, scales 204; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 0 1 1 16 31 31
+B7a convert green: of 256 levels truncates 256, rounds 130, scales 214; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 1 2 3 32 63 63
+B7a convert blue: of 256 levels truncates 256, rounds 132, scales 204; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 0 1 1 16 31 31
+B7b over alpha 0xff red: of 256 levels truncates 256, rounds 132, scales 204; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 0 1 1 16 31 31
+B7b over alpha 0xff green: of 256 levels truncates 256, rounds 130, scales 214; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 1 2 3 32 63 63
+B7b over alpha 0xff blue: of 256 levels truncates 256, rounds 132, scales 204; no rule's: none; other channels written: 0; levels 4 8 12 128 252 255 gave 0 1 1 16 31 31
+B7b over alpha 0x80 red: of 256 levels truncates 248, rounds 120, scales 196; no rule's: 15 31 47 63; other channels written: 0; levels 4 8 12 128 252 255 gave 0 0 0 8 15 16
+B7b over alpha 0x80 green: of 256 levels truncates 240, rounds 112, scales 198; no rule's: 7 15 23 31; other channels written: 0; levels 4 8 12 128 252 255 gave 0 1 1 16 31 32
+B7b over alpha 0x80 blue: of 256 levels truncates 248, rounds 120, scales 196; no rule's: 15 31 47 63; other channels written: 0; levels 4 8 12 128 252 255 gave 0 0 0 8 15 16
+B7c header bit 0x00000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated
+B7c header bit 0x00080000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c header bit 0x00200000: trunc 0 up 0 other 0 unwritten 4096; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; something else (see the counts)
+B7c header bit 0x00400000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c header bit 0x08000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x12000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x22000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x42000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x82000000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000001: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000002: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000004: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000008: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000010: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000020: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000040: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000080: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000100: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000200: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000400: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02000800: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02001000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02002000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02004000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02008000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02010000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02020000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02040000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
+B7c blend word 0x02080000: trunc 4096 up 0 other 0 unwritten 0; mixed levels 0; level 68 red up at places 0x0000; guard words changed 0; every pixel truncated (as the plain conversion)
