@@ -152,9 +152,9 @@ named in its evidence.
 | V8 | open | P11 not run |
 | V9 | open | P5 not run |
 | V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
-| V15 | partial | B9 (X51v): the clip rectangle (right/bottom exclusive), the scale word, the source palette proven; fills, copies, blends, keys, strides, fence, reset, FIFO proven before; left: 8/24 bpp fills, mono masks, the brush palette |
+| V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; left: mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), the brush palette (`0xD0000000`) |
 | V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
-| V17 | partial | bits 2 (render done), 4 (TA done), 6 (parameter memory ready) seen on the device; bit 10 and the rest not |
+| V17 | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; its meaning and the other bits open (P18) |
 | V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
 | V11 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
 | V12 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
@@ -172,7 +172,7 @@ named in its evidence.
 | P10 | open | the cursor plane and colour keys not tried |
 | P11 | open | MVED1 never run past its safe stages |
 | P12 | open | DMA burst settings and DMA into the 2D window not tried |
-| P13 | open | the 2D engine's whole command set not swept (B7: header bit 21 writes nothing, meaning open) |
+| P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); left: lines, the brush palette and pattern brushes, mono masks, rotation bits 25-26 |
 | P14 | open | the 3D core's limits not measured |
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
 | P16 | open | power and heat per engine and clock not measured |

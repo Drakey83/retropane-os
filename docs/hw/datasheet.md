@@ -160,7 +160,9 @@ watching.
   (nearest pixel, `s` = 32 x source / destination), at half a copy's
   speed**; **8 bpp sources through a 256-entry palette** (`0xC0000000`,
   its address; required), 63 ms a full screen; 1 bpp sources through
-  palette entries 0/1, high bit first.
+  palette entries 0/1, high bit first. All 256 ROP3s are GDI's (B10);
+  8 and 24 bpp fills (24 packed, blue first); header bit 21 suppresses the
+  write (fills, copies); status bit 10 isn't "commands queued".
 - **MBX 3D core**: tile-based (8 x 16 px tiles at 32 bpp, 60 x 40 on the
   screen); each object carries an alpha-test word (bits 31-29 compare,
   28-21 reference), a TSP word (Gouraud bit 22, depth mode and write,
