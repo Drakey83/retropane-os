@@ -150,6 +150,26 @@ them: what both runs share and the floors' runs didn't is the new loader
 the old loader (the backup) to tell the two apart, then the owner
 decides the floors.
 
+**A third run under the old loader (2026-10-22, the owner present;
+`local/perf/run-1792700817.txt`; the backup's loader put on the card,
+started after `cargo xtask reboot-wm`, then today's put back the same
+way):** all 109 numbers the two new-loader runs agree on (within 0.5%)
+came out within 0.5% of them again; the same 7 slower than the floors
+(`probe.lz4_compress_page` +6.1%, `lz4_compress_text` +4.1%,
+`dma_copy_128k_b8_word` +4.7%, `cache_walk_40k` +1.0%, three by
+0.1-0.2%), 15 faster (`cpu_unit_alone` and `cpu_unit_during_dma`
+-16.7%). **The loader isn't it.** Correction to the line above: the
+floors were set at 01:20 that day (`run-*-noise1..5`), 16 commits before
+the first run that moved, so the cause is any of the images' code
+changes since, not only C59's first change: C8's event counters in
+`rp-probe` itself (`afb230c`), C11's CF polling switch, C43's clock
+guard, C59 (a). Code placement is ruled out (the second run). Options
+for the owner: (a) take the new numbers as the floors (`perf --update`
+for the faster ones, approval for the 7 slower); (b) first find which
+change moved the three that moved most, by running `rp-probe` built at
+the floors' commit and at each suspect under today's loader (about 4
+minutes a run, no reset, nobody at the device).
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor
