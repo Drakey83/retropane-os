@@ -289,7 +289,10 @@ unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
         unsafe {
             core::arch::asm!(
                 "2:",
-                "pld [r1, #64]",
+                // 128 bytes ahead: the C7 sweep on the X51v (2026-10-22,
+                // 256 KiB from memory) copied at 47 MB/s with no prefetch,
+                // 96 at 64 bytes ahead, 109 from 96 bytes on (flat to 256).
+                "pld [r1, #128]",
                 "ldmia r1!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
                 "subs r2, r2, #32",
                 "stmia r0!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",

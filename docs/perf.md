@@ -174,6 +174,8 @@ on the owner's X51v at 624 MHz, `local/rp-probe-gate-run1.txt`):**
 | `memcpy` by size | 64 B 254 ns, 256 B 705 ns, 1-16 KiB **~375 MB/s** (in the cache), 64 KiB-1 MiB **~96 MB/s** (memory-bound) |
 | Internal SRAM | copy within 64 KiB **286 MB/s** (3x SDRAM's 95), SDRAM to SRAM 141 MB/s, fill 475 MB/s (SDRAM 377); random hop **111 ns** (SDRAM 491) |
 | TLB, 60 sections | 20.0 us with the table in SDRAM, **3.9 us in SRAM** (5.2x) |
+| `memcpy`'s prefetch distance (256 KiB from memory) | none 5.60 ms (47 MB/s), 32 B ahead 3.40, **64 B (the old `memcpy`) 2.74 (96 MB/s)**, 96-256 B ahead **2.41 ms (109 MB/s)**, flat |
+| **`memcpy` changed to prefetch 128 B ahead** (same night, `rp-probe` again) | `memcpy_64k` 687 -> **606 us (-12%)**, 256 KiB 2.74 -> 2.41 ms, 1 MiB 10.95 -> 9.63 ms; in the SRAM unchanged; the memory self-check passes |
 
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)

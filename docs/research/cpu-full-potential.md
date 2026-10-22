@@ -161,7 +161,7 @@ named in its evidence.
 | C4 | partial | RetroPane's random hop 491 ns (perf.md); page sizes, table placement, TLB lock-down not tried |
 | C5 | partial | `pld` helps `memcpy` (perf.md); the mini cache and line locking not tried |
 | C6 | open | iWMMXt never exercised |
-| C7 | partial | rp-probe (X51v, 2026-10-22): `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory, by size from 64 B to 1 MiB; the methods (pld distance, ldm/stm widths, iWMMXt, DMA) not swept |
+| C7 | partial | rp-probe (X51v, 2026-10-22): `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; **the prefetch swept (none to 256 B): 128 B ahead now in `memcpy`, -12% on every large copy (109 MB/s)**; left: the store side (write-buffer coalescing, a line-allocate for destinations), iWMMXt 64-bit moves, DMA for large copies (C11) |
 | C8 | partial | the cycle counter used; the event counters not wired into the benches |
 | C9 | open | ARM/Thumb, inlining, layout, LTO A/B builds not run |
 | C10 | partial | interrupts, the run limit and idle work; wake latency per sleep depth not measured |
