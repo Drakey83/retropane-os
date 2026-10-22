@@ -1409,6 +1409,25 @@ pub const MUTANTS: &[Mutant] = &[
         check: Check::Host(&["-p", "rp-vram-map", "the_test_images_map_is_frozen"]),
     },
     Mutant {
+        name: "loader: every start taken for the first (the board never put back, C39)",
+        file: "hal/x51v/src/devices.rs",
+        from: "    unsafe { core::ptr::addr_of_mut!(LOADER_FRESH).replace(false) }",
+        to: "    unsafe { core::ptr::addr_of_mut!(LOADER_FRESH).replace(false) };
+    true",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
+        name: "board: a gamma change not seen (left as the image set it, C39)",
+        file: "hal/x51v/src/board.rs",
+        from: "        if (self.gsctrl ^ now.gsctrl) & GSCTRL_GAMMA != 0 || self.gamma != now.gamma {",
+        to: "        if (self.gsctrl ^ now.gsctrl) & GSCTRL_GAMMA != 0 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-hal-x51v",
+            "only_the_kept_bits_count_and_each_kind_is_named",
+        ]),
+    },
+    Mutant {
         name: "pe: an image for another CPU taken (x86)",
         file: "kernel/pe/src/lib.rs",
         from: "if u16_at(headers, opt)? != 0x10B || !matches!(machine, MACHINE_ARM | MACHINE_THUMB) {",

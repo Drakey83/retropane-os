@@ -38,6 +38,15 @@ pub enum Kind {
     Undefined,
 }
 
+/// Built with `RP_CRASH_BOARD` (the emulator's check of quality audit C39):
+/// before crashing, it changes every kind of board state the loader keeps
+/// (`rp_hal_x51v::board`): the amplifier and a `0x1C` bit, the backlight
+/// (dark), a gamma word and the gamma enable, `MBXCLK`'s divider and
+/// `M24CLK`. The loader must put each back. For the emulator: on the
+/// device it would switch the speaker amplifier (an owned bit) for a
+/// moment.
+pub const BOARD: bool = option_env!("RP_CRASH_BOARD").is_some();
+
 /// The crash this build makes, from the build switches (the first set wins,
 /// in the order data, prefetch, undefined).
 pub const KIND: Kind = if option_env!("RP_CRASH_DATA").is_some() {
@@ -58,7 +67,45 @@ mod image {
     use rp_drv_pxa_uart::PxaUart;
     use rp_hal_pxa27x::rt;
 
-    use super::{KIND, Kind, MARKER, UNMAPPED};
+    use super::{BOARD, KIND, Kind, MARKER, UNMAPPED};
+
+    /// `RP_CRASH_BOARD`: every kind of kept board state changed (see
+    /// [`BOARD`]); `regs` the 2700G's window.
+    fn change_board(regs: &mut rp_hal_pxa27x::Mmio) {
+        use rp_hal_api::RegisterBus;
+        if let Some(bus) = rp_hal_x51v::devices::take_cpld() {
+            let (mut c, _) = rp_drv_cpld::Cpld::adopt(bus.0, bus.1);
+            let (a, u) = (c.shadow(0x14), c.shadow(0x1C));
+            if a & 2 == 0 {
+                c.set(0x14, 2)
+            } else {
+                c.clear(0x14, 2)
+            }
+            if u & 4 == 0 {
+                c.set(0x1C, 4)
+            } else {
+                c.clear(0x1C, 4)
+            }
+        }
+        if let Some(mut p) = rt::take_pwm0() {
+            p.write32(rp_drv_pxa_pwm::reg::DCR, 0);
+        }
+        {
+            use rp_drv_mbx_display::{clock::MBXCLK, reg};
+            let g = regs.read32(reg::GFXGAM0);
+            regs.write32(reg::GFXGAM0, g ^ 0x0001_0101);
+            let s = regs.read32(reg::GSCTRL);
+            regs.write32(reg::GSCTRL, s ^ (1 << 26));
+            let m = regs.read32(MBXCLK);
+            regs.write32(MBXCLK, m ^ (1 << 2));
+            let v = regs.read32(rp_drv_mved::M24CLK);
+            regs.write32(rp_drv_mved::M24CLK, v ^ (1 << 1));
+        }
+        let _ = writeln!(
+            rp_hal_x51v::devices::RunLog,
+            "{MARKER}: the board changed (amplifier, 0x1C bit 2, backlight dark, gamma, MBXCLK, M24CLK)"
+        );
+    }
 
     rp_image::entry!(main);
 
@@ -75,7 +122,10 @@ mod image {
         if KIND != Kind::Panic {
             rt::init_mmu();
         }
-        if let Some((regs, _vram)) = rp_image::take_mbx() {
+        if let Some((mut regs, _vram)) = rp_image::take_mbx() {
+            if BOARD {
+                change_board(&mut regs);
+            }
             let wm = Plane {
                 offset: 0,
                 ..Plane::fullscreen(&X51V_VGA, PixelFormat::Rgb565)

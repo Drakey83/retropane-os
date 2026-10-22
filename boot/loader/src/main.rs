@@ -1820,6 +1820,145 @@ mod image {
         halt()
     }
 
+    /// What [`board_step`] did, for the serial line and the PC.
+    struct BoardReport {
+        /// The first start since HaRET: recorded, nothing put back.
+        first: bool,
+        /// No intact record was found on a return (recorded afresh).
+        lost: bool,
+        /// The kinds put back.
+        put_back: rp_hal_x51v::board::Differs,
+        /// The kinds that still differ when read back after.
+        still: rp_hal_x51v::board::Differs,
+    }
+
+    impl core::fmt::Display for BoardReport {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            use rp_hal_x51v::board::Differs;
+            if self.first {
+                return f.write_str("board: recorded as Windows Mobile left it");
+            }
+            if self.lost {
+                return f.write_str("board: no intact record on a return: recorded afresh");
+            }
+            if self.put_back.none() {
+                return f.write_str("board: as recorded, nothing to put back");
+            }
+            f.write_str("board: put back")?;
+            for (k, name) in Differs::NAMES.iter().enumerate() {
+                if self.put_back.0 & (1 << k) != 0 {
+                    write!(f, " {name};")?;
+                }
+            }
+            if self.still.none() {
+                return f.write_str(" read back: as recorded");
+            }
+            f.write_str(" read back: STILL DIFFERS")?;
+            for (k, name) in Differs::NAMES.iter().enumerate() {
+                if self.still.0 & (1 << k) != 0 {
+                    write!(f, " {name};")?;
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// The board state the record keeps, read now (`regs`: the 2700G's
+    /// window; the CPLD's values from its shared shadow).
+    fn board_now(
+        regs: &mut Mmio,
+        cpld: Option<&BoardCpld>,
+        pwm: Option<&mut Mmio>,
+    ) -> rp_hal_x51v::board::Board {
+        use rp_drv_mbx_display::{clock::MBXCLK, reg};
+        use rp_hal_api::RegisterBus;
+        let pwm = pwm.map_or([0; 3], |p| {
+            use rp_drv_pxa_pwm::reg as pr;
+            [p.read32(pr::CR), p.read32(pr::DCR), p.read32(pr::PCR)]
+        });
+        rp_hal_x51v::board::Board {
+            cpld14: cpld.map_or(0, |c| c.shadow(0x14)),
+            cpld1c: cpld.map_or(0, |c| c.shadow(0x1C)),
+            pwm,
+            gsctrl: regs.read32(reg::GSCTRL),
+            gamma: core::array::from_fn(|k| regs.read32(reg::GFXGAM0 + 4 * k)),
+            mbxclk: regs.read32(MBXCLK),
+            m24clk: regs.read32(rp_drv_mved::M24CLK),
+        }
+    }
+
+    /// Quality audit C39 (the owner's option B): at the first start since
+    /// HaRET the board as Windows Mobile left it is recorded
+    /// (`rp_hal_x51v::board`); on every return from an image, crashed or
+    /// not, whatever differs is put back.
+    fn board_step(
+        regs: &mut Mmio,
+        mut cpld: Option<&mut BoardCpld>,
+        mut pwm: Option<&mut Mmio>,
+    ) -> BoardReport {
+        use rp_drv_mbx_display::{clock::MBXCLK, reg};
+        use rp_hal_api::RegisterBus;
+        use rp_hal_x51v::board::{CPLD1C_BITS, CPLD14_BITS, Differs, GSCTRL_GAMMA};
+        let first = devices::loader_first_start();
+        let now = board_now(regs, cpld.as_deref(), pwm.as_deref_mut());
+        let record = devices::board_record();
+        let want = match record {
+            Some(r) if !first => r,
+            _ => {
+                devices::set_board_record(&now);
+                return BoardReport {
+                    first,
+                    lost: !first,
+                    put_back: Differs::default(),
+                    still: Differs::default(),
+                };
+            }
+        };
+        let d = want.differs(&now);
+        if let Some(c) = cpld.as_deref_mut() {
+            for (kind, off, bits, was) in [
+                (Differs::AMP, 0x14, CPLD14_BITS, want.cpld14),
+                (Differs::CPLD1C, 0x1C, CPLD1C_BITS, want.cpld1c),
+            ] {
+                if d.0 & kind != 0 {
+                    c.clear(off, bits & !was);
+                    c.set(off, bits & was);
+                }
+            }
+        }
+        if d.0 & Differs::PWM != 0
+            && let Some(p) = pwm.as_deref_mut()
+        {
+            use rp_drv_pxa_pwm::reg as pr;
+            p.write32(pr::CR, want.pwm[0]);
+            p.write32(pr::PCR, want.pwm[2]);
+            p.write32(pr::DCR, want.pwm[1]);
+        }
+        if d.0 & Differs::GAMMA != 0 {
+            for (k, &g) in want.gamma.iter().enumerate() {
+                regs.write32(reg::GFXGAM0 + 4 * k, g);
+            }
+            let g = regs.read32(reg::GSCTRL);
+            regs.write32(
+                reg::GSCTRL,
+                (g & !GSCTRL_GAMMA) | (want.gsctrl & GSCTRL_GAMMA),
+            );
+        }
+        if d.0 & Differs::MBXCLK != 0 {
+            regs.write32(MBXCLK, want.mbxclk);
+        }
+        if d.0 & Differs::M24CLK != 0 {
+            regs.write32(rp_drv_mved::M24CLK, want.m24clk);
+        }
+        let after = board_now(regs, cpld.as_deref(), pwm.as_deref_mut());
+        BoardReport {
+            first: false,
+            lost: false,
+            put_back: d,
+            still: want.differs(&after),
+        }
+    }
+
     /// Start-up colours (as in rp-light): a hang leaves the last one on
     /// screen. Red: main entered (the relocation worked); yellow: FFUART
     /// set up; green: MMU on; cyan: 2700G answered.
@@ -1920,10 +2059,16 @@ mod image {
         }
         stages[2] = rt::since_start();
 
-        let Some((regs, vram)) = devices::take_mbx() else {
+        let Some((mut regs, vram)) = devices::take_mbx() else {
             halt()
         };
         step(3);
+        // The board as Windows Mobile left it: recorded at the first start,
+        // put back after every image (quality audit C39). Before the
+        // display and the backlight are taken over, so they start from it.
+        let mut pwm0 = rt::take_pwm0();
+        let board = board_step(&mut regs, cpld.as_mut(), pwm0.as_mut());
+        let _ = writeln!(uart, "{board}");
         let (plane, _) = Display::new(regs).adopt(MBX_VRAM_SIZE as usize);
         let end = plane.offset + plane.stride * usize::from(plane.height);
         let (top, rest) = vram[plane.offset..end].split_at_mut(plane.stride * STATUS_H);
@@ -2051,7 +2196,7 @@ mod image {
         let mut watchdog = rt::watchdog();
         let mut msc = Msc::new(msc_buf, MSC_SERIAL, 2);
         // The backlight, left as Windows Mobile set it until asked.
-        let mut backlight = rt::take_pwm0().map(Backlight::new);
+        let mut backlight = pwm0.map(Backlight::new);
         // The USB controller's DMA channel (item 74).
         let mut udc_dma = rt::take_dma(dma_map::UDC);
         let mut power = PowerButton::new(&mut gpio);

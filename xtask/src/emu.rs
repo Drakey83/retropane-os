@@ -1882,6 +1882,62 @@ fn crash_kinds(root: &Path, loader: &Path) -> Result<(), String> {
             line.trim_end()
         );
     }
+    crash_board(root, loader)
+}
+
+/// The kinds of board state the loader keeps that the emulator models
+/// (all six: the CPLD, PWM0 and the 2700G's registers hold what's
+/// written). Quality audit C39.
+const BOARD_KINDS: [&str; 6] = [
+    "amplifier",
+    "codec/USB bits",
+    "backlight",
+    "gamma",
+    "MBXCLK",
+    "M24CLK",
+];
+
+/// Quality audit C39 (option B): `rp-crash` built with `RP_CRASH_BOARD`
+/// changes every kind of board state the loader keeps, then panics. The
+/// loader, recording the board at its first start, must put each kind back
+/// on the return and read it back as recorded.
+fn crash_board(root: &Path, loader: &Path) -> Result<(), String> {
+    let image = variant_image(root, "rp-crash", ("RP_CRASH_BOARD", "1"))?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let frame = rp_loadproto::frame(&payload);
+    let output = boot(
+        root,
+        &Boot {
+            image: loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&frame, "RETROPANE-CRASH-TEST")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: BOOT_TIMEOUT,
+        },
+    )?;
+    if !output.contains("board: recorded as Windows Mobile left it") {
+        return Err(format!(
+            "crash board: the loader's first start didn't record the board:{output}"
+        ));
+    }
+    let line = output
+        .lines()
+        .find(|l| l.contains("board: put back"))
+        .ok_or_else(|| format!("crash board: nothing put back on the return:{output}"))?;
+    for kind in BOARD_KINDS {
+        if !line.contains(&format!(" {kind};")) {
+            return Err(format!("crash board: `{kind}` not put back: {line}"));
+        }
+    }
+    if !line.ends_with("read back: as recorded") {
+        return Err(format!("crash board: not as recorded after: {line}"));
+    }
+    eprintln!("    crash board OK: {line}");
     Ok(())
 }
 

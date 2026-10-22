@@ -44,7 +44,7 @@ the PXA27x developer's manual memory map.
   page; `0xA80F1000` the KData page and `0xA80F2000` the top MiB's
   second-level table (1 KiB), once an image splits that MiB into pages
   (ADR-0010 rule 8); `0xA80F8000` cache-clean area (32 KiB); **`0xA8400000`–`0xA8500000`
-  the resident loader** (ADR-0012); `0xA8500000` the run log (64 KiB); `0xA8510000` the trace ring (4 KiB, item 54); `0xA8511000` the card log's state and sector buffer (4 KiB) and `0xA8520000` what a run logs past the run log, for its card log (192 KiB; `rp_hal_x51v::cardsink`, docs/hw/sd.md);
+  the resident loader** (ADR-0012); `0xA8500000` the run log (64 KiB); `0xA8510000` the trace ring (4 KiB, item 54); `0xA8511000` the card log's state and sector buffer (4 KiB), `0xA8512000` the board record (4 KiB: what the loader found at its first start and puts back after every image, quality audit C39) and `0xA8520000` what a run logs past the run log, for its card log (192 KiB; `rp_hal_x51v::cardsink`, docs/hw/sd.md);
   `0xA8800000` scratch (4 MiB, up to `0xA8C00000`);
   `0xA9000000` the kernel's RAM pool (48 MiB).
 - **SDRAM starts at 0xA8000000, not at the PXA27x's bank 0 (0xA0000000).**

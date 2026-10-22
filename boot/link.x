@@ -13,7 +13,9 @@
  * 0xA8400000-0xA8500000 (1 MiB) is the resident loader's home
  * (boot/loader/link.x, ADR-0012), 0xA8500000-0xA8510000 its run log and
  * 0xA8510000-0xA8511000 the trace ring (item 54), 0xA8511000-0xA8512000
- * the card log's state and 0xA8520000-0xA8550000 its stream past the run
+ * the card log's state, 0xA8512000-0xA8513000 the board record (what the
+ * loader found at its first start, quality audit C39) and
+ * 0xA8520000-0xA8550000 the card log's stream past the run
  * log (rp_hal_x51v::cardsink);
  * no image may use them.
  * The bring-up MMU maps everything 1:1, so virtual = physical.

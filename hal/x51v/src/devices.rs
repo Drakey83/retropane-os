@@ -627,6 +627,47 @@ pub fn take_trace_area() -> Option<&'static mut [u32]> {
     Some(unsafe { core::slice::from_raw_parts_mut(TRACE_BASE as *mut u32, TRACE_SIZE / 4) })
 }
 
+/// The board record (quality audit C39, [`crate::board`]): what the
+/// resident loader found at its first start, put back after every image.
+/// 4 KiB reserved after the card log's state (boot/link.x).
+pub const BOARD_BASE: usize = 0xA851_2000;
+/// Size of the board record's reservation.
+pub const BOARD_SIZE: usize = 4096;
+const _: () = assert!(crate::board::WORDS * 4 <= BOARD_SIZE);
+
+/// The board record as kept, if one is there and intact.
+#[must_use]
+pub fn board_record() -> Option<crate::board::Board> {
+    // SAFETY: BOARD_BASE..+BOARD_SIZE is SDRAM reserved for the record
+    // (boot/link.x), identity-mapped, word-aligned; read whole.
+    let w: [u32; crate::board::WORDS] = core::array::from_fn(|k| unsafe {
+        core::ptr::read_volatile((BOARD_BASE + 4 * k) as *const u32)
+    });
+    crate::board::unpack(&w)
+}
+
+/// Keeps `b` as the board record.
+pub fn set_board_record(b: &crate::board::Board) {
+    for (k, w) in crate::board::pack(b).into_iter().enumerate() {
+        // SAFETY: as in `board_record`.
+        unsafe { core::ptr::write_volatile((BOARD_BASE + 4 * k) as *mut u32, w) };
+    }
+}
+
+/// In the loader's `.data`: `true` in the image HaRET loads from the card,
+/// `false` once [`loader_first_start`] has run. `_start` zeroes `.bss` only,
+/// so on every return from an image (the same copy at the loader's home)
+/// it stays `false`; a soft reset or a watchdog reset starts a fresh copy.
+#[unsafe(link_section = ".data")]
+static mut LOADER_FRESH: bool = true;
+
+/// Whether this is the resident loader's first start since HaRET loaded it
+/// (Windows Mobile's board), not a return from an image. True once.
+pub fn loader_first_start() -> bool {
+    // SAFETY: single core; the loader calls it once, early in `main`.
+    unsafe { core::ptr::addr_of_mut!(LOADER_FRESH).replace(false) }
+}
+
 /// Start of the SDRAM scratch region handed out by [`take_scratch`]: 8 MiB into
 /// SDRAM, far above bare-metal images (linked at `0xA8008000`, a few tens of KiB).
 pub const SCRATCH_BASE: usize = 0xA880_0000;

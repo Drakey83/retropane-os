@@ -15,6 +15,7 @@ rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 rp-drv-pxa-udc = { path = "../../drivers/pxa-udc" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+rp-drv-mved = { path = "../../drivers/mved" }
 rp-drv-cpld = { path = "../../drivers/cpld" }
 rp-drv-sdcard = { path = "../../drivers/sdcard" }
 rp-drv-pxa-mmc = { path = "../../drivers/pxa-mmc" }
