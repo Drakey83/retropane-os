@@ -148,6 +148,160 @@ impl SetStats {
     }
 }
 
+/// Whether this build runs B7 alone (`RP_MBX_BLEND_B7`): ADR-0023's
+/// 16-bit screen measurement, unattended, nothing shown, no button.
+pub const B7_ONLY: bool = option_env!("RP_MBX_BLEND_B7").is_some();
+
+/// How an 8-bit channel becomes `bits` bits: the rules B7 tells apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Narrow {
+    /// The top bits (`v >> (8 - bits)`).
+    Truncate,
+    /// The nearest step of the top bits, half-way up (`(v + half) >> ..`,
+    /// held at the top).
+    Round,
+    /// Scaled to the nearest of `2^bits - 1` levels (`(v * max + 127) / 255`).
+    Scale,
+}
+
+impl Narrow {
+    /// Every rule, in the order B7 logs them.
+    pub const ALL: [Self; 3] = [Self::Truncate, Self::Round, Self::Scale];
+
+    /// The rule's name in the run log.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Truncate => "truncates",
+            Self::Round => "rounds",
+            Self::Scale => "scales",
+        }
+    }
+
+    /// `v` (0-255) narrowed to `bits` bits (5 or 6).
+    #[must_use]
+    pub const fn apply(self, v: u32, bits: u32) -> u32 {
+        let max = (1 << bits) - 1;
+        match self {
+            Self::Truncate => v >> (8 - bits),
+            Self::Round => {
+                let r = (v + (1 << (7 - bits))) >> (8 - bits);
+                if r > max { max } else { r }
+            }
+            Self::Scale => (v * max + 127) / 255,
+        }
+    }
+}
+
+/// Of the levels 0-255, how many each [`Narrow`] rule gives as `got`
+/// gave them: `got(v)` is the channel the engine wrote for level `v`,
+/// `level(v)` the 8-bit value an exact engine would narrow.
+#[must_use]
+pub fn rule_counts(bits: u32, level: impl Fn(u32) -> u32, got: impl Fn(u32) -> u32) -> [u32; 3] {
+    Narrow::ALL.map(|rule| {
+        (0..256)
+            .filter(|&v| got(v) == rule.apply(level(v), bits))
+            .count() as u32
+    })
+}
+
+/// The side of B7's grey ramp, pixels.
+pub const RAMP: usize = 64;
+
+/// B7's grey ramp (run P2b's): level `64 + x / 8 + 8 * (y / 8)`, so every
+/// level 64-127 fills one 8 x 8 cell and meets every place of a 4 x 4
+/// pattern.
+#[must_use]
+pub const fn ramp_level(x: usize, y: usize) -> u32 {
+    64 + (x / 8) as u32 + 8 * (y / 8) as u32
+}
+
+/// The marker B7 leaves in a 16-bit destination before each try: red 27,
+/// which no ramp level (64-127: red 8-15) converts to.
+pub const MARK16: u16 = 0xDEAD;
+
+/// What one converted ramp came out as, against truncation of each
+/// pixel's level.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RampStats {
+    /// Pixels still holding [`MARK16`] (not written).
+    pub unwritten: u32,
+    /// Pixels whose channels are all their level truncated.
+    pub trunc: u32,
+    /// Pixels with every channel truncated or one step up, one at least up.
+    pub up: u32,
+    /// Anything else.
+    pub other: u32,
+    /// Levels seen truncated somewhere (bit `level - 64`).
+    seen_trunc: u64,
+    /// Levels seen one step up somewhere.
+    seen_up: u64,
+}
+
+impl RampStats {
+    /// Adds pixel `p` written for ramp `level`.
+    pub fn add(&mut self, level: u32, p: u16) {
+        if p == MARK16 {
+            self.unwritten += 1;
+            return;
+        }
+        let got = channels(p);
+        let want = [
+            Narrow::Truncate.apply(level, 5),
+            Narrow::Truncate.apply(level, 6),
+            Narrow::Truncate.apply(level, 5),
+        ];
+        let bit = 1u64 << (level - 64).min(63);
+        if got == want {
+            self.trunc += 1;
+            self.seen_trunc |= bit;
+        } else if (0..3).all(|k| got[k] == want[k] || got[k] == want[k] + 1) {
+            self.up += 1;
+            self.seen_up |= bit;
+        } else {
+            self.other += 1;
+        }
+    }
+
+    /// Levels that came out truncated at some places and one step up at
+    /// others: a position-dependent result, which is what a dither does
+    /// (a plain rule gives one answer a level).
+    #[must_use]
+    pub const fn mixed_levels(&self) -> u32 {
+        (self.seen_trunc & self.seen_up).count_ones()
+    }
+
+    /// The reading, measured not judged: what the counts look like.
+    #[must_use]
+    pub const fn reading(&self) -> &'static str {
+        if self.unwritten > 0 || self.other > 0 {
+            "something else (see the counts)"
+        } else if self.mixed_levels() > 0 {
+            "position-dependent: dither-like"
+        } else if self.up > 0 {
+            "one answer a level, some up: rounding-like"
+        } else {
+            "every pixel truncated"
+        }
+    }
+}
+
+/// B7's tries for a 2D dither: `(header flags, blend word)`. First the
+/// plain conversion, then each header bit nobody has tried (19, 21, 22,
+/// 27) alone; then the blend path (bit 17 with Fs 1, Fd 0: a plain copy,
+/// `0x02000000`) and that word with each of the bits B2 only tried on one
+/// 16-pixel row (`[31:28]`, `[19:0]`) alone.
+pub fn dither_tries() -> impl Iterator<Item = (u32, Option<u32>)> {
+    const COPY: u32 = 0x0200_0000;
+    let plain = core::iter::once((0, None));
+    let header = [19u32, 21, 22, 27].into_iter().map(|b| (1 << b, None));
+    let path = core::iter::once((rp_drv_blit2d::OP_BLEND, Some(COPY)));
+    let words = (28..32)
+        .chain(0..20)
+        .map(|b| (rp_drv_blit2d::OP_BLEND, Some(COPY | 1 << b)));
+    plain.chain(header).chain(path).chain(words)
+}
+
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
@@ -164,7 +318,9 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        ARGB_CODES, FENCE, MARKER, SRC16, SRC32, SetStats, coverage_row, lerp565, near, sweep,
+        ARGB_CODES, B7_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP, RampStats, SRC16, SRC32,
+        SetStats, channels, coverage_row, dither_tries, lerp565, near, ramp_level, rule_counts,
+        sweep,
     };
 
     use rp_image::crash;
@@ -218,6 +374,9 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
+        if B7_ONLY {
+            b7_only(display.into_inner(), vram);
+        }
         let (plane, _) = display.adopt(vram.len());
         let mut regs = display.into_inner();
         let screen = (plane.offset, plane.stride);
@@ -782,7 +941,7 @@ mod image {
         match e.submit(w).and_then(|()| e.finish(vram, 1_000_000)) {
             Ok(_) => true,
             Err(why) => {
-                log!("B6 {what}: {why}: engine reset");
+                log!("{what}: {why}: engine reset");
                 e.reset(rt::delay_us);
                 false
             }
@@ -846,7 +1005,7 @@ mod image {
                     "a 2D rectangle",
                 ),
             );
-            if !go(e, vram, &w[..n], "stride 0") {
+            if !go(e, vram, &w[..n], "B6 stride 0") {
                 ok = false;
                 continue;
             }
@@ -883,7 +1042,7 @@ mod image {
                 "a 2D rectangle",
             ),
         );
-        if go(e, vram, &w[..n], "32 bpp blend") {
+        if go(e, vram, &w[..n], "B6 32 bpp blend") {
             let got: [u32; 4] = words(vram, DST32);
             let want = SRC32.map(|s| over_opaque(s, 0xFF00_FF00));
             let exact = got
@@ -926,7 +1085,7 @@ mod image {
                     "a 2D rectangle",
                 ),
             );
-            if go(e, vram, &w[..n], "ARGB4444 destination") {
+            if go(e, vram, &w[..n], "B6 ARGB4444 destination") {
                 let [w0, w1]: [u32; 2] = words(vram, DST4444);
                 let px = [w0 as u16, (w0 >> 16) as u16, w1 as u16, (w1 >> 16) as u16];
                 log!(
@@ -968,7 +1127,7 @@ mod image {
                 ),
                 "a 2D rectangle",
             );
-            ok &= go(e, vram, &w[..n], "ramp");
+            ok &= go(e, vram, &w[..n], "B6 ramp");
         }
         let fill32 = |c| {
             rp_image::need(
@@ -1033,6 +1192,433 @@ mod image {
         ok &= busy.is_ok() && fills.is_ok();
         log!("B6d the screen shows four 32 bpp ramps: grey, red, green, blue");
         (ok, Some(saved))
+    }
+
+    // ------------------------------------------------------------------ B7
+
+    // B7's local memory, clear of the loader's plane (below 1 MiB) and the
+    // fence. The ramp's destination sits between two guard bands.
+    const B7_RAMP: usize = 0x00C8_0000;
+    const B7_RAMP_STRIDE: usize = RAMP * 4;
+    const B7_GUARD: usize = 0x4000;
+    const B7_DST: usize = 0x00C9_0000 + B7_GUARD;
+    const B7_DST_STRIDE: usize = RAMP * 2;
+    const B7_GUARD_WORD: u32 = 0x5A5A_5A5A;
+    /// Three 256-pixel rows (red, green, blue ramps), 32 and 16 bits.
+    const B7_ROWS: usize = 0x00CA_0000;
+    const B7_ROWS16: usize = 0x00CA_1000;
+    /// Full-screen pictures for the timings.
+    const B7_SRC32: usize = 0x0040_0000;
+    const B7_SCREEN16: [usize; 2] = [0x0060_0000, 0x006A_0000];
+    const B7_PATTERN: usize = 0x00CB_0000;
+
+    /// B7 alone (`RP_MBX_BLEND_B7`): no events, no B1-B6, nothing shown,
+    /// no button; back to the loader.
+    fn b7_only(regs: Mmio, vram: &mut [u8]) -> ! {
+        log!(
+            "{MARKER}: B7 only (ADR-0023's 16-bit screen: the 2D engine's 32 to 16-bit conversion)"
+        );
+        let mut e = Engine::new(regs, FENCE, rt::ticks, TICKS_PER_MS);
+        log!(
+            "B0 engine: ID 0x{:08x}",
+            e.regs.read32(cmd::MBX + cmd::reg::ID)
+        );
+        e.reset(rt::delay_us);
+        let _ = store32_volatile(vram, FENCE, 0);
+        cpu::drain_write_buffer();
+        let ok = b7(&mut e, vram);
+        let verdict = if ok { "PASS" } else { "FAIL (see the log)" };
+        log!("{MARKER}: {verdict} - B7 done");
+        if let Some(bus) = rt::take_ffuart() {
+            let mut uart = PxaUart::new(bus);
+            uart.init(115_200);
+            let _ = writeln!(uart, "{MARKER}: {verdict}");
+        }
+        rp_image::finish()
+    }
+
+    /// A 16-bit pixel at `at`.
+    fn px16_at(vram: &[u8], at: usize) -> u16 {
+        load32_volatile(vram, at & !3).map_or(0xDEAD, |w| (w >> (8 * (at & 2))) as u16)
+    }
+
+    /// Fills `words` words from `at` with `v` (CPU writes).
+    fn fill_words(vram: &mut [u8], at: usize, words: usize, v: u32) {
+        for k in 0..words {
+            let _ = store32_volatile(vram, at + 4 * k, v);
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// Guard words around B7's ramp destination that changed.
+    fn guards_changed(vram: &[u8]) -> usize {
+        let before = B7_DST - B7_GUARD;
+        let after = B7_DST + RAMP * B7_DST_STRIDE;
+        [before, after]
+            .iter()
+            .map(|&at| {
+                (0..B7_GUARD / 4)
+                    .filter(|k| load32_volatile(vram, at + 4 * k) != Some(B7_GUARD_WORD))
+                    .count()
+            })
+            .sum()
+    }
+
+    /// Up to four levels, for the log.
+    struct Levels([u32; 4], usize);
+    impl core::fmt::Display for Levels {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            if self.1 == 0 {
+                return f.write_str("none");
+            }
+            for (i, v) in self.0[..self.1].iter().enumerate() {
+                write!(f, "{}{v}", if i == 0 { "" } else { " " })?;
+            }
+            Ok(())
+        }
+    }
+
+    /// B7a/b: three 256-pixel rows (a ramp of red, green, blue; `alpha` in
+    /// the top byte) copied into RGB565 with `flags` (and `word` as the
+    /// blend state first), each channel's results against the [`Narrow`]
+    /// rules applied to `level(v)` (what an exact engine would narrow).
+    fn b7_rows(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        label: &str,
+        (alpha, flags, word): (u32, u32, Option<u32>),
+        level: fn(u32) -> u32,
+    ) -> bool {
+        const NAMES: [&str; 3] = ["red", "green", "blue"];
+        const BITS: [u32; 3] = [5, 6, 5];
+        for (k, sh) in [16u32, 8, 0].into_iter().enumerate() {
+            for v in 0..256u32 {
+                let _ = store32_volatile(
+                    vram,
+                    B7_ROWS + k * 1024 + 4 * v as usize,
+                    alpha << 24 | v << sh,
+                );
+            }
+        }
+        fill_words(vram, B7_ROWS16, 3 * 128, 0);
+        let mut words = [0u32; 12];
+        let mut n = 0;
+        if let Some(b) = word {
+            words[..2].copy_from_slice(&cmd::blend(b));
+            n = 2;
+        }
+        let (bw, bn) = rp_image::need(
+            cmd::blit(
+                (Format::RGB565, B7_ROWS16, 512),
+                (Format::BPP32, B7_ROWS, 1024),
+                (0, 0),
+                (0, 0, 256, 3),
+                ROP_SRCCOPY,
+                flags,
+                0,
+            ),
+            "a 2D rectangle",
+        );
+        words[n..n + bn].copy_from_slice(&bw[..bn]);
+        if !go(e, vram, &words[..n + bn], label) {
+            return false;
+        }
+        for k in 0..3 {
+            let px = |v: u32| channels(px16_at(vram, B7_ROWS16 + k * 512 + 2 * v as usize));
+            let got = |v: u32| px(v)[k];
+            let others = (0..256u32)
+                .filter(|&v| (0..3).any(|j| j != k && px(v)[j] != 0))
+                .count();
+            let c = rule_counts(BITS[k], level, got);
+            let mut odd = Levels([0; 4], 0);
+            for v in 0..256u32 {
+                if odd.1 < 4
+                    && Narrow::ALL
+                        .iter()
+                        .all(|r| got(v) != r.apply(level(v), BITS[k]))
+                {
+                    odd.0[odd.1] = v;
+                    odd.1 += 1;
+                }
+            }
+            log!(
+                "{label} {}: of 256 levels {} {}, {} {}, {} {}; no rule's: {odd}; other channels written: {others}; levels 4 8 12 128 252 255 gave {} {} {} {} {} {}",
+                NAMES[k],
+                Narrow::ALL[0].name(),
+                c[0],
+                Narrow::ALL[1].name(),
+                c[1],
+                Narrow::ALL[2].name(),
+                c[2],
+                got(4),
+                got(8),
+                got(12),
+                got(128),
+                got(252),
+                got(255),
+            );
+        }
+        true
+    }
+
+    /// B7c: one try at a 2D dither: the 64 x 64 grey ramp converted to
+    /// RGB565 with header `flags` (and blend `word`), into a destination
+    /// marked [`MARK16`] between guard bands: what came out and how many
+    /// guard words changed, or `None` if the engine stuck (reset, logged).
+    fn b7_ramp_try(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        (flags, word): (u32, Option<u32>),
+    ) -> Option<(RampStats, usize)> {
+        fill_words(vram, B7_DST - B7_GUARD, B7_GUARD / 4, B7_GUARD_WORD);
+        fill_words(
+            vram,
+            B7_DST,
+            RAMP * B7_DST_STRIDE / 4,
+            u32::from(MARK16) * 0x0001_0001,
+        );
+        fill_words(
+            vram,
+            B7_DST + RAMP * B7_DST_STRIDE,
+            B7_GUARD / 4,
+            B7_GUARD_WORD,
+        );
+        let mut words = [0u32; 12];
+        let mut n = 0;
+        if let Some(b) = word {
+            words[..2].copy_from_slice(&cmd::blend(b));
+            n = 2;
+        }
+        let (bw, bn) = rp_image::need(
+            cmd::blit(
+                (Format::RGB565, B7_DST, B7_DST_STRIDE as i32),
+                (Format::BPP32, B7_RAMP, B7_RAMP_STRIDE as i32),
+                (0, 0),
+                (0, 0, RAMP as u16, RAMP as u16),
+                ROP_SRCCOPY,
+                flags,
+                0,
+            ),
+            "a 2D rectangle",
+        );
+        words[n..n + bn].copy_from_slice(&bw[..bn]);
+        if !go(e, vram, &words[..n + bn], "B7c try") {
+            return None;
+        }
+        let mut st = RampStats::default();
+        for y in 0..RAMP {
+            for x in 0..RAMP {
+                st.add(
+                    ramp_level(x, y),
+                    px16_at(vram, B7_DST + y * B7_DST_STRIDE + 2 * x),
+                );
+            }
+        }
+        Some((st, guards_changed(vram)))
+    }
+
+    /// The 4 x 4 places (bit `4 * (y % 4) + x % 4`) where ramp level
+    /// `level` came out one step up in red, from the destination as left.
+    fn up_places(vram: &[u8], level: u32) -> u16 {
+        let mut m = 0u16;
+        for y in 0..RAMP {
+            for x in 0..RAMP {
+                let r = channels(px16_at(vram, B7_DST + y * B7_DST_STRIDE + 2 * x))[0];
+                if ramp_level(x, y) == level && r == Narrow::Truncate.apply(level, 5) + 1 {
+                    m |= 1 << (4 * (y % 4) + x % 4);
+                }
+            }
+        }
+        m
+    }
+
+    /// Times `count` repeats of `words` queued back to back: microseconds
+    /// each, or `None` if the engine stuck (reset, logged).
+    fn b7_time(
+        e: &mut Engine<Mmio>,
+        vram: &[u8],
+        words: &[u32],
+        count: u32,
+        what: &str,
+    ) -> Option<u32> {
+        let t0 = rt::ticks();
+        let done = (0..count)
+            .try_for_each(|_| e.submit(words))
+            .and_then(|()| e.finish(vram, 2_000_000));
+        match done {
+            Ok(_) => Some(us_since(t0) / count),
+            Err(why) => {
+                log!("B7d {what}: {why}: engine reset");
+                e.reset(rt::delay_us);
+                None
+            }
+        }
+    }
+
+    /// B7 (ADR-0023's 16-bit screen; measured, not judged): B7a the
+    /// 32 to 16-bit conversion copy per channel; B7b blends onto RGB565;
+    /// B7c the untried bits on a converted ramp (a 2D dither?); B7d timings.
+    /// False only if a part couldn't run or the blend state wasn't put back.
+    fn b7(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B7 baseline");
+
+        // B7a: the plain conversion copy (no bit 17).
+        ok &= b7_rows(e, vram, "B7a convert", (0xFF, 0, None), |v| v);
+        rt::check_in();
+        // B7b: blends onto RGB565 with Dell's "over": opaque, then alpha
+        // 0x80 over black, against the exact result rounded to 8 bits.
+        let over = (OP_BLEND, Some(BLEND_DELL_TEXT));
+        ok &= b7_rows(
+            e,
+            vram,
+            "B7b over alpha 0xff",
+            (0xFF, over.0, over.1),
+            |v| v,
+        );
+        ok &= b7_rows(
+            e,
+            vram,
+            "B7b over alpha 0x80",
+            (0x80, over.0, over.1),
+            |v| (v * 0x80 + 127) / 255,
+        );
+        ok &= go(e, vram, &cmd::blend(0), "B7b blend back");
+        rt::check_in();
+
+        // B7c: the ramp, then each try.
+        for y in 0..RAMP {
+            for x in 0..RAMP {
+                let l = ramp_level(x, y);
+                let _ = store32_volatile(
+                    vram,
+                    B7_RAMP + y * B7_RAMP_STRIDE + 4 * x,
+                    0xFF00_0000 | l * 0x0001_0101,
+                );
+            }
+        }
+        cpu::drain_write_buffer();
+        let mut in_a_row = 0;
+        let mut plain: Option<RampStats> = None;
+        for (flags, word) in dither_tries() {
+            let (what, val) = match word {
+                None => ("header bit", flags),
+                Some(w) => ("blend word", w),
+            };
+            log!(
+                "B7c try: {what} 0x{val:08x} (header 0x{:08x})",
+                0x8000_0000 | ROP_SRCCOPY | flags
+            );
+            let Some((st, outside)) = b7_ramp_try(e, vram, (flags, word)) else {
+                in_a_row += 1;
+                let back = go(e, vram, &base, "B7c baseline after a reset");
+                log!(
+                    "B7c {what} 0x{val:08x}: STUCK; after the reset: {}",
+                    if back { "runs" } else { "STILL STUCK" }
+                );
+                if in_a_row >= 3 || !back {
+                    log!("B7c: three stuck in a row (or not back): the tries end here");
+                    ok = false;
+                    break;
+                }
+                continue;
+            };
+            in_a_row = 0;
+            let same = plain.is_some_and(|p| p == st);
+            plain.get_or_insert(st);
+            // Level 68 is half-way between two 5-bit steps (64, 72): a
+            // dither raises it at about half the places, which are listed.
+            let places = up_places(vram, 68);
+            log!(
+                "B7c {what} 0x{val:08x}: trunc {} up {} other {} unwritten {}; mixed levels {}; level 68 red up at places 0x{places:04x}; guard words changed {outside}; {}{}",
+                st.trunc,
+                st.up,
+                st.other,
+                st.unwritten,
+                st.mixed_levels(),
+                st.reading(),
+                if same {
+                    " (as the plain conversion)"
+                } else {
+                    ""
+                },
+            );
+            if word.is_some() {
+                ok &= go(e, vram, &cmd::blend(0), "B7c blend back");
+            }
+            rt::check_in();
+        }
+
+        // B7d: timings, 5 each. The 32-bit picture is made first (a
+        // CPU-written row repeated with stride 0).
+        let row: [u32; 16] = core::array::from_fn(|k| 0xFF00_0000 | k as u32 * 0x000F_0F0F);
+        set(vram, B7_PATTERN, &row);
+        let blit = |dst: (Format, usize, i32), src: (Format, usize, i32), r, flags| {
+            rp_image::need(
+                cmd::blit(dst, src, (0, 0), r, ROP_SRCCOPY, flags, 0),
+                "a 2D rectangle",
+            )
+        };
+        let full = (0, 0, 480, 640);
+        let band = (0, 0, 480, 80);
+        let s32 = (Format::BPP32, B7_SRC32, 1920);
+        let half32 = (Format::BPP32, B7_SRC32 + 1920 * 320, 1920);
+        let d16 = (Format::RGB565, B7_SCREEN16[0], 960);
+        let d16b = (Format::RGB565, B7_SCREEN16[1], 960);
+        let pattern = (Format::BPP32, B7_PATTERN, 0);
+        for (what, (w, n)) in [
+            (
+                "make the 32-bit picture (stride-0 copy), full screen",
+                blit(s32, pattern, full, 0),
+            ),
+            (
+                "convert 32 to 16 bits, full screen",
+                blit(d16, s32, full, 0),
+            ),
+            ("convert 32 to 16 bits, 480 x 80", blit(d16, s32, band, 0)),
+            (
+                "copy 32 to 32 bits, half screen (B6's control)",
+                blit(half32, s32, (0, 0, 480, 320), 0),
+            ),
+            (
+                "copy 16 to 16 bits (a forward copy), full screen",
+                blit(d16b, d16, full, 0),
+            ),
+            ("copy 16 to 16 bits, 480 x 80", blit(d16b, d16, band, 0)),
+        ] {
+            let us = b7_time(e, vram, &w[..n], 5, what);
+            log!("B7d {what}: {us:?} us each");
+            ok &= us.is_some();
+            rt::check_in();
+        }
+        // The pattern add as the renderer does it: four blits (stride x 4,
+        // the pattern row with stride 0), blend word 0 (add, saturating).
+        let mut add = [0u32; 2 + 4 * 10];
+        add[..2].copy_from_slice(&cmd::blend(0));
+        let mut n = 2;
+        for ph in 0..4usize {
+            let (w, k) = blit(
+                (Format::BPP32, B7_SRC32 + 1920 * ph, 1920 * 4),
+                pattern,
+                (0, 0, 480, 160),
+                OP_BLEND,
+            );
+            add[n..n + k].copy_from_slice(&w[..k]);
+            n += k;
+        }
+        let us = b7_time(e, vram, &add[..n], 5, "dither add");
+        log!("B7d dither add at 32 bits (4 blits, blend 0), full screen: {us:?} us each");
+        ok &= us.is_some();
+
+        let back = go(e, vram, &base, "B7 blend back");
+        log!(
+            "B7 blend state put back to 0: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
     }
 
     /// The keypad, enabled with earlier activity discarded: taken before
@@ -1108,6 +1694,121 @@ mod tests {
         assert_eq!(words.iter().filter(|&&w| w == 0x0910_0000).count(), 1);
         assert!(words.contains(&0x0010_0000), "nibble 24 at 0");
         assert!(words.contains(&0x0910_0001), "bit 0");
+    }
+
+    #[test]
+    fn narrow_rules_at_their_edges() {
+        // 5 bits: a step is 8. 7 -> 0 truncated, 1 rounded, 1 scaled
+        // (7 * 31 / 255 = 0.85); 255 stays the top under every rule.
+        assert_eq!(Narrow::Truncate.apply(7, 5), 0);
+        assert_eq!(Narrow::Round.apply(7, 5), 1);
+        assert_eq!(Narrow::Round.apply(3, 5), 0);
+        assert_eq!(Narrow::Round.apply(4, 5), 1);
+        assert_eq!(Narrow::Scale.apply(7, 5), 1);
+        for rule in Narrow::ALL {
+            assert_eq!(rule.apply(0, 5), 0);
+            assert_eq!(rule.apply(255, 5), 31);
+            assert_eq!(rule.apply(255, 6), 63);
+        }
+        // Round never passes the top (252 + 4 = 256 -> 32 held at 31).
+        assert_eq!(Narrow::Round.apply(252, 5), 31);
+    }
+
+    #[test]
+    fn rule_counts_tell_the_rules_apart() {
+        for (k, rule) in Narrow::ALL.into_iter().enumerate() {
+            for bits in [5, 6] {
+                let c = rule_counts(bits, |v| v, |v| rule.apply(v, bits));
+                assert_eq!(c[k], 256, "{rule:?} {bits}");
+                // The others differ somewhere, so a count names one rule.
+                for (j, &n) in c.iter().enumerate() {
+                    if j != k {
+                        assert!(n < 256, "{rule:?} vs {j} at {bits} bits");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ramp_covers_every_level_at_every_place() {
+        let mut seen = [[0u16; 64]; 16];
+        for y in 0..RAMP {
+            for x in 0..RAMP {
+                let l = ramp_level(x, y);
+                assert!((64..128).contains(&l));
+                seen[(y % 4) * 4 + x % 4][(l - 64) as usize] += 1;
+            }
+        }
+        assert!(seen.iter().flatten().all(|&n| n == 4));
+        // The marker isn't any level's conversion (red 27 > 15).
+        assert!(channels(MARK16)[0] > Narrow::Truncate.apply(127, 5));
+    }
+
+    fn rgb(r: u32, g: u32, b: u32) -> u16 {
+        (r << 11 | g << 5 | b) as u16
+    }
+
+    #[test]
+    fn ramp_stats_readings() {
+        let t = |l: u32| rgb(l >> 3, l >> 2, l >> 3);
+        // Plain truncation.
+        let mut s = RampStats::default();
+        (64..128).for_each(|l| s.add(l, t(l)));
+        assert_eq!((s.trunc, s.up, s.mixed_levels()), (64, 0, 0));
+        assert_eq!(s.reading(), "every pixel truncated");
+        // Rounding: one answer a level.
+        let mut s = RampStats::default();
+        for l in 64..128 {
+            let p = rgb(
+                Narrow::Round.apply(l, 5),
+                Narrow::Round.apply(l, 6),
+                Narrow::Round.apply(l, 5),
+            );
+            s.add(l, p);
+            s.add(l, p);
+        }
+        assert_eq!(s.mixed_levels(), 0);
+        assert_eq!(s.reading(), "one answer a level, some up: rounding-like");
+        // A dither: level 65 truncated at one place, up at another.
+        let mut s = RampStats::default();
+        s.add(65, t(65));
+        s.add(65, rgb(9, 17, 9));
+        assert_eq!((s.mixed_levels(), s.up), (1, 1));
+        assert_eq!(s.reading(), "position-dependent: dither-like");
+        // Unwritten and wild pixels.
+        let mut s = RampStats::default();
+        s.add(70, MARK16);
+        s.add(70, rgb(0, 0, 0));
+        assert_eq!((s.unwritten, s.other), (1, 1));
+        assert_eq!(s.reading(), "something else (see the counts)");
+    }
+
+    #[test]
+    fn dither_tries_cover_the_untried_bits_once() {
+        let t: std::vec::Vec<(u32, Option<u32>)> = dither_tries().collect();
+        assert_eq!(t.len(), 1 + 4 + 1 + 4 + 20);
+        assert_eq!(t[0], (0, None));
+        for b in [19, 21, 22, 27] {
+            assert!(t.contains(&(1 << b, None)));
+        }
+        assert_eq!(t[5], (rp_drv_blit2d::OP_BLEND, Some(0x0200_0000)));
+        for b in (28..32).chain(0..20) {
+            let w = 0x0200_0000 | 1 << b;
+            assert_eq!(t.iter().filter(|&&x| x.1 == Some(w)).count(), 1, "bit {b}");
+        }
+        // None touches a bit already known (16-18, 20, 23-26) or the
+        // blend word's factor nibbles.
+        let known = 0x07 << 16 | 1 << 20 | 0xF << 23;
+        assert!(
+            t.iter()
+                .all(|&(h, _)| h & known & !rp_drv_blit2d::OP_BLEND == 0)
+        );
+        assert!(
+            t.iter()
+                .filter_map(|&(_, w)| w)
+                .all(|w| w & 0x0FF0_0000 == 0x0200_0000)
+        );
     }
 
     #[test]

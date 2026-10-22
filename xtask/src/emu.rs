@@ -2444,20 +2444,6 @@ fn strip_tail(v: &str) -> String {
     format!(" `{}`", v.split(" ->").next().unwrap_or(v))
 }
 
-/// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
-/// loader starts it; it must run every stage to its verdict without a
-/// fault, put the blend state and the display registers back, and return
-/// on a button. Under `-icount` (the event stages time scan lines), on an
-/// emulator that models the blend and the display's events (`mbx-blend`,
-/// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
-/// device's run (docs/hw/emulator.md).
-/// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
-/// loader starts it; it must run every stage to its verdict without a
-/// fault, put the blend state and the display registers back, and return
-/// on a button. Under `-icount` (the event stages time scan lines), on an
-/// emulator that models the blend and the display's events (`mbx-blend`,
-/// rp-v0.13.0), its B1-B3 pixels and E1/E3/E4 timings must match the
-/// device's run (docs/hw/emulator.md).
 /// The noise-source measurement (rp-noise, ADR-0029): under the loader it
 /// must read the clocks, collect every source, save each to the card
 /// whole (1,000,000 16-bit samples), append its restart row to the rows
@@ -4131,6 +4117,13 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The blend and display-event probe (rp-mbx-blend, renderer step 1): the
+/// loader starts it; it must run every stage to its verdict without a
+/// fault, put the blend state and the display registers back, and return
+/// on a button; then B7 alone ([`mbx_blend_b7`]). Under `-icount` (the
+/// event stages time scan lines), on an emulator that models the blend
+/// and the display's events (`mbx-blend`, rp-v0.13.0), its B1-B3 pixels
+/// and E1/E3/E4 timings must match the device's run (docs/hw/emulator.md).
 pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     if !device_has(root, "intel-2700g", "mbx-2d") {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");
@@ -4223,7 +4216,79 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
             "    mbx-blend OK: every stage ran, state put back, back at the loader on a button press (this emulator release doesn't model the blend: not compared with the device)"
         );
     }
+    mbx_blend_b7(root)
+}
+
+/// B7 alone (`RP_MBX_BLEND_B7`, ADR-0023's 16-bit screen): every part
+/// must run to its line and the image return to the loader by itself (no
+/// button). The device's answers aren't known yet, so nothing is compared:
+/// once the X51v has run it, the fork's conversion is made to match
+/// (docs/hw/emulator.md).
+fn mbx_blend_b7(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B7", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B7: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("mbx-blend B7: didn't return cleanly:{log}"));
+    }
+    let tries = rp_mbx_blend_tries();
+    for want in [
+        "RETROPANE-MBX-BLEND: PASS - B7 done",
+        "B7a convert red: of 256 levels",
+        "B7a convert green: of 256 levels",
+        "B7a convert blue: of 256 levels",
+        "B7b over alpha 0xff red:",
+        "B7b over alpha 0x80 blue:",
+        "B7d convert 32 to 16 bits, full screen: Some(",
+        "B7d copy 16 to 16 bits (a forward copy), full screen: Some(",
+        "B7d dither add at 32 bits (4 blits, blend 0), full screen: Some(",
+        "B7 blend state put back to 0: yes",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B7: the run log has no `{want}`:{log}"));
+        }
+    }
+    let done = log
+        .lines()
+        .filter(|l| l.starts_with("B7c ") && l.contains(": trunc "))
+        .count();
+    if done != tries {
+        return Err(format!(
+            "mbx-blend B7: {done} of {tries} B7c tries logged a result:{log}"
+        ));
+    }
+    for l in log.lines().filter(|l| l.starts_with("B7")) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!(
+        "    mbx-blend B7 OK: every part ran ({tries} B7c tries), blend state put back, back at the loader by itself (answers not compared: the X51v hasn't run it)"
+    );
     Ok(())
+}
+
+/// B7c's tries (`rp-mbx-blend`'s `dither_tries`: 1 plain, 4 header bits,
+/// 1 blend path, 24 blend-word bits).
+const fn rp_mbx_blend_tries() -> usize {
+    1 + 4 + 1 + 4 + 20
 }
 
 /// The wallpaper rp-today was built with: its build script's output, the

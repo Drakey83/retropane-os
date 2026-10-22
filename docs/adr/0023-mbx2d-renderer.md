@@ -315,9 +315,10 @@ dithered pixels**, and **where the pictures live** in the 2700G's memory.
   measured working since 2026-10-13) but **whether it truncates or
   rounds** each channel isn't measured. Blends are "rounded to the
   destination's bits" (measured with coverage, 2026-10-14). **No 2D
-  dither bit is known**; four header bits (19, 21, 22, 27) and most of
-  the blend word's bits (`[31:28]`, `[19:0]`) have never been tried on a
-  16-bit destination.
+  dither bit is known**: four header bits (19, 21, 22, 27) have never
+  been tried; the blend word's `[31:28]` and `[19:0]` were tried (B2) on
+  one 16-pixel row, checked within one step, which can't show a 4 x 4
+  pattern.
 - **Today's renderer already dithers on the 2D engine**: it composes at
   32 bits and, last, adds a 4 x 4 threshold pattern (blend word 0: add,
   saturating) so the panel's truncation dithers. With a 16-bit screen
@@ -395,15 +396,21 @@ bits):
 2. **A blend onto RGB565** (B's arithmetic, for the record): how the
    result is rounded.
 3. **A 2D dither bit?** A 64 x 64 grey ramp converted 32 to 16 bits with
-   each untried header bit (19, 21, 22, 27) and each untried blend-word
-   bit alone: a position-dependent pattern means a dither. Each try is
-   logged before it's queued, has a fence timeout, and a stuck engine is
-   reset and the stage goes on (as B1-B6).
+   each untried header bit (19, 21, 22, 27) alone, then through the
+   blend path (bit 17, a plain-copy blend word) with each of the blend
+   word's bits `[31:28]` and `[19:0]` alone: a position-dependent pattern
+   means a dither. Each try is logged before it's queued, has a fence
+   timeout, is checked for writes outside its rectangle, and a stuck
+   engine is reset and the stage goes on (as B1-B6).
 4. **Timings:** full-screen and 480 x 80 conversion copies, the pattern
    add at 32 bits, a 16-bit forward copy.
 
 Its emulator check joins the `mbx-blend` check; the fork's conversion is then made to match what the device
 does (or listed as not modellable in `docs/hw/emulator.md`).
+
+**B7 is built** (`RP_MBX_BLEND_B7=1 cargo xtask load rp-mbx-blend`;
+its emulator check passes: every part runs, the blend state is put back,
+the image returns by itself). Waiting for the owner's go.
 
 **Votes waiting:** Q1 (A / B / C) and Q2 (L1 / L2 / L3). Recommended:
 **A and L1**, with B7 run first (it can change B's case, and sets A's
