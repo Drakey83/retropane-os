@@ -163,7 +163,7 @@ named in its evidence.
 | P1 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; soaks open |
 | P2 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
 | P3 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
-| P4 | open | the TA path against CPU-built lists not measured |
+| P4 | partial | `rp-mbx3d` versions 12-17 (X51v): the tile accelerator takes objects at `0x0FFF4000` and draws flat and textured, says done by status bit 4 in ~2 ms; its speed against the CPU-built lists (100 / 1,000 / 5,000 quads) not measured |
 | P5 | open | the second texture unit, fog, TSP bit 14 not tried |
 | P6 | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
 | P7 | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
@@ -171,9 +171,9 @@ named in its evidence.
 | P9 | open | the video plane's scaler and placement not tried |
 | P10 | open | the cursor plane and colour keys not tried |
 | P11 | open | MVED1 never run past its safe stages |
-| P12 | open | DMA burst settings and DMA into the 2D window not tried |
+| P12 | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, and DMA into the 2D command window, not tried |
 | P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); left: lines, the brush palette and pattern brushes, mono masks, rotation bits 25-26 |
-| P14 | open | the 3D core's limits not measured |
+| P14 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
 | P16 | open | power and heat per engine and clock not measured |
 | P17 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
