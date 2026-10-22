@@ -2607,8 +2607,8 @@ mod tests {
             }
             v
         };
-        for k in 0..8 {
-            assert_eq!(orientations(&lay(k), sw, sh), 1 << k, "{}", ORIENTATIONS[k]);
+        for (k, name) in ORIENTATIONS.iter().enumerate() {
+            assert_eq!(orientations(&lay(k), sw, sh), 1 << k, "{name}");
         }
         assert_eq!(orientations(&[], sw, sh), 0);
         // One pair fits several; a wrong pair fits none.
