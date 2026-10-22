@@ -200,9 +200,15 @@ fn report(what: Line) -> ! {
 }
 
 /// The clean end: the deepest stack into the run log, then back to the
-/// loader (which sends the log to the PC). Without a loader, stops here.
+/// loader (which sends the log to the PC). Without a loader (the emulator
+/// boots some images directly), the deepest stack goes on the serial port
+/// instead, so the emulator's 80% rule sees those images too (quality audit
+/// C50: `rp-probe` ran at 99% of its stack on the device unseen), then stops.
 pub fn finish() -> ! {
     devices::return_to_loader();
+    let (used, size) = rt::stack_used();
+    let mut uart = PxaUart::new(rt::emergency_uart());
+    let _ = writeln!(uart, "stack: deepest {used} of {size} bytes");
     stop()
 }
 

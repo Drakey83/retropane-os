@@ -501,6 +501,14 @@ mod image {
                 let _ = writeln!(rp_hal_x51v::devices::RunLog, "P{}|{}", p + 1, Ascii(l));
             }
         }
+        // The stack's deepest use on serial too, before the marker: started
+        // without the loader (the emulator's check) the return that prints
+        // it never runs, so the check's 80% rule never saw this image (the
+        // device's runs were at 98-99% of 16 KiB, 2026-10-22).
+        {
+            let (used, size) = rt::stack_used();
+            let _ = writeln!(uart, "stack: deepest {used} of {size} bytes");
+        }
         let _ = writeln!(uart, "{}", super::MARKER);
         let _ = writeln!(rp_hal_x51v::devices::RunLog, "{}", super::MARKER);
         // Started by the resident loader: the report is on its way to the PC,

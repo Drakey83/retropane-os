@@ -243,7 +243,10 @@ pub const BUDGETS: &[Budget] = &[
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 77.1 KiB measured, +~10%.
         max_load: 85 * 1024,
-        max_zero: 20 * 1024,
+        // Zeroed RAM ratcheted 20 -> 40 KiB on 2026-10-22 (test image): a
+        // 32 KiB stack (the device's runs used 16,076-16,268 of 16 KiB and
+        // one crashed); 35.7 KiB measured, +~12%.
+        max_zero: 40 * 1024,
         device: OnDevice::Returns,
     },
     // Bring-up: the USB link test (ADR-0012 U1): 17.9 KiB measured, +~10%.
@@ -383,7 +386,10 @@ pub const BUDGETS: &[Budget] = &[
     // writes and the sync); 26.3 KiB measured, + ~10%.
     Budget {
         image: "rp-cs3bus",
-        max_load: 29 * 1024,
+        // Ratcheted 29 -> 32 KiB on 2026-10-22 (test image): rp-image's
+        // finish prints the deepest stack on serial when no loader is
+        // there (quality audit C50); 29.1 KiB measured, + ~10%.
+        max_load: 32 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
