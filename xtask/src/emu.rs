@@ -2870,6 +2870,8 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         "A less 0 (version 23's depth 'less')",
         "D blue z 0.8 mode 1 (version 23's form)",
         "L code 10, texels 0x60, TEX2 0x86086610",
+        "M: the second texture unit through the TA",
+        "M two units, unit 1 TEX2 0xd6087e10",
         "RETROPANE-GLESFEAT: DONE",
     ] {
         if !log.contains(want) {

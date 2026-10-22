@@ -154,6 +154,10 @@ watching.
   spread evenly, half far off; alone it repeats exactly. Together saves
   9% of the time. The engines take turns (ADR-0030 G2); the cause is
   open (`2700g.md` "baseline audit").
+- **3D second texture unit** (`rp-glesfeat` M, X51v, 2026-10-22): TSP
+  bit 16 = a second coordinate set at the TA; the TA's two-unit object is
+  ISP, TEX0-2 x2, TSP, x/y, z, 1/w, then colour, u0, v0, u1, v1 a vertex
+  (list layout 12); the 3D stage hangs on it (open).
 - **MBX status `0x12c`** (`rp-gpubench` run FI, X51v, 2026-10-22): raw
   (the enables `0x130` don't change it); 2D sets no completion bit (bits
   16-23 hold the FIFO's fill while it works): 2D waits are polled; a

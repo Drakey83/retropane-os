@@ -150,7 +150,7 @@ named in its evidence.
 | V6 | open | P10 not run |
 | V7 | open | P10 not run |
 | V8 | open | P11 not run |
-| V9 | open | P5 not run |
+| V9 | partial | P5's test M: unit 1's words after unit 0's confirmed (emitter and TA output), TSP bit 16 found as the coordinate-set switch, the two-unit object's layout read from the TA; the render hangs (open); fog and TSP bit 14 not run |
 | V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
 | V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; left: mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), the brush palette (`0xD0000000`) |
 | V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
@@ -164,7 +164,7 @@ named in its evidence.
 | P2 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
 | P3 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
 | P4 | partial | `rp-mbx3d` versions 12-17 (X51v): the tile accelerator takes objects at `0x0FFF4000` and draws flat and textured, says done by status bit 4 in ~2 ms; its speed against the CPU-built lists (100 / 1,000 / 5,000 quads) not measured |
-| P5 | open | the second texture unit, fog, TSP bit 14 not tried |
+| P5 | partial | `rp-glesfeat` M (X51v, 2026-10-22): through the TA, **TSP bit 16 = a second coordinate set** (mask bit 3 alone ignored); the TA writes a 32-word two-unit object (list layout 12); **the 3D stage hangs on it** with three unit-1 combine words, and the TA path stays hung after a core reset (C53). Left: what the 3D stage needs for unit 1 (static: the 3D table for a two-unit scene), the direct form with layout 12, fog (TSP bits 24/23, `0x63C`), TSP bit 14 (no effect seen on the alpha test) |
 | P6 | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
 | P7 | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
 | P8 | partial | run FT (X51v): together 9% faster (85.4 against 93.8 ms) but the 3D render gets ~220 wrong pixels (450+ against 2D fills; the render alone repeats exactly), so ADR-0030 G2's turns hold; left: the mechanism, and whether a memory-controller setting or separate memory areas make it safe |

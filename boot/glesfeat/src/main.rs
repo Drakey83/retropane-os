@@ -82,6 +82,13 @@ mod image {
     const OBJECT: usize = PARAMS + 64;
     const REGIONS: usize = 0x00D1_0000;
     const TEX: usize = 0x00E0_0000;
+    /// Test M's second texture (8 x 8, one byte a texel).
+    const TEX_B: usize = TEX + 0x1_0000;
+    /// The TA's tail buffer (128 KiB aligned, 4 bytes a tile) and the
+    /// region array it writes (as `rp-mbx3d` versions 14-18).
+    const TAIL: usize = 0x00A0_0000;
+    const TAIL_SIZE: usize = 0x1_0000;
+    const TA_REGIONS: usize = 0x00A2_0000;
     const FENCE: usize = 0x00FF_F000;
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -360,6 +367,186 @@ mod image {
         }
     }
 
+    /// `stream` through the tile accelerator (`rp-mbx3d` version 18's
+    /// path: its buffers zeroed, its start table, the stream into its
+    /// window, `1` into the end window, the scene's end), then, if the TA
+    /// said done, the 3D stage on the TA's region array. Logs the first
+    /// object the TA wrote (`words` of it). Returns (TA done, render done).
+    #[inline(never)]
+    fn through_ta(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        stream: &[u32],
+        words: usize,
+    ) -> (bool, bool) {
+        for k in 0..TAIL_SIZE / 4 {
+            let _ = store32_volatile(vram, TAIL + 4 * k, 0);
+        }
+        for k in 0..2 * (COLS * ROWS + 1) as usize {
+            let _ = store32_volatile(vram, TA_REGIONS + 4 * k, 0);
+        }
+        cpu::drain_write_buffer();
+        let t = m3::ta::start_table(TAIL as u32, TA_REGIONS as u32, W, H, COLS, ROWS);
+        let n = stream.len().min(48);
+        let mut w = [(0usize, 0u32); 9 + 48 + 3];
+        w[..9].copy_from_slice(&t);
+        for (k, &v) in stream[..n].iter().enumerate() {
+            w[9 + k] = (m3::ta::PORT - MBX + 4 * k, v);
+        }
+        let r85c = t[7];
+        w[9 + n] = (m3::ta::END_PORT - MBX, 1);
+        w[10 + n] = (r85c.0, r85c.1 | m3::ta::SCENE_END);
+        w[11 + n] = (m3::ta::PORT - MBX + 4 * n, m3::END);
+        let ta = run(e, &w[..12 + n], m3::ta::DONE, 200_000);
+        e.regs.write32(MBX + r85c.0, r85c.1);
+        if !ta {
+            log!("    the TA never said done: no render");
+            return (false, false);
+        }
+        // The first tile the TA put something in, its list, its object.
+        let at = (0..(COLS * ROWS) as usize)
+            .map(|k| TA_REGIONS + 8 * k)
+            .find(|&a| load32_volatile(vram, a + 4).unwrap_or(0) != 0)
+            .unwrap_or(TA_REGIONS);
+        let list = load32_volatile(vram, at + 4).unwrap_or(0) as usize & m3::ADDR_MASK as usize;
+        let ptr = load32_volatile(vram, list).unwrap_or(0);
+        let obj = PARAMS + 4 * (ptr & 0x001F_FFFF) as usize;
+        let _ = write!(RunLog, "    TA list word 0x{ptr:08x}, object at 0x{obj:x}:");
+        for k in 0..words {
+            let _ = write!(
+                RunLog,
+                " {:08x}",
+                load32_volatile(vram, obj + 4 * k).unwrap_or(0)
+            );
+        }
+        log!("");
+        let (mut t3, len) = table();
+        for p in &mut t3[..len] {
+            if p.0 == 0x608 {
+                p.1 = TA_REGIONS as u32;
+            }
+        }
+        let done = run(e, &t3[..len], RENDER_DONE, 200_000);
+        if !done {
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("    (render timed out: core reset, memory manager ready again: {ok})");
+        }
+        (true, done)
+    }
+
+    /// M: the second texture unit (the performance gate's P5): two flat
+    /// 8 x 8 grey textures (code 10), 0x80 in unit 0 and 0x40 in unit 1,
+    /// through the TA with the state block's mask bit 3 (unit 1's three
+    /// words after unit 0's) and vertices of 9 words (u, v for each unit).
+    /// Unit 1 modulating gives about 0x20; ignored, 0x80. A one-unit draw
+    /// first (the control). The object the TA wrote is logged: the direct
+    /// form's layout for two units.
+    #[inline(never)]
+    fn two_units(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        for k in 0..16 {
+            let _ = store32_volatile(vram, TEX + 4 * k, 0x8080_8080);
+            let _ = store32_volatile(vram, TEX_B + 4 * k, 0x4040_4040);
+        }
+        cpu::drain_write_buffer();
+        let tex = |addr: usize, tex2: u32| {
+            let mut w = m3::ta::dell_texture(addr as u32);
+            w[0] = m3::tex::tex0(0, 10);
+            w[2] = tex2;
+            w
+        };
+        // Unit 0 as test L (texture's grey and alpha); unit 1 MODULATE (the
+        // GLES table's unit-1 form: bits 11 and 7 set).
+        let a = tex(TEX, 0x8608_4610);
+        let clip = m3::ta::clip(W, H);
+        let corners = [
+            (100.0f32, 100.0f32, 0.0f32, 0.0f32),
+            (380.0, 100.0, 1.0, 0.0),
+            (100.0, 540.0, 0.0, 1.0),
+        ];
+        // Version 2 (2026-10-22): mask bit 3 alone left the TA reading
+        // 7-word vertices. TSP bits 19-17 (1 in Dell's textured draw, 2 in
+        // DoomGLES's) and bit 16 (set by the GLES driver from a second
+        // field) are the candidates for "texture coordinate sets".
+        let dell = m3::ta::TSP_DELL_TEXTURED & !(0xF << 16);
+        // Version 2 found TSP bit 16 = a second coordinate set (the TA
+        // built two-unit objects, list layout 12) but each such render hung,
+        // and every render after the first hang hung too (the recovery, not
+        // the case). Version 3: bit 16 with unit 1's combine word in three
+        // forms (the GLES table's unit-1 MODULATE, unit 0's form, a unit-1
+        // REPLACE), a one-unit control after each, to tell a case's hang
+        // from a recovery that didn't.
+        let two = dell | 1 << 17 | 1 << 16;
+        let control = (
+            "one unit (control)",
+            1usize,
+            m3::ta::TSP_DELL_TEXTURED,
+            0u32,
+        );
+        for (name, units, tsp, tex2b) in [
+            control,
+            ("two units, unit 1 TEX2 0x86084e10", 2, two, 0x8608_4E10),
+            control,
+            ("two units, unit 1 TEX2 0x86084610", 2, two, 0x8608_4610),
+            control,
+            ("two units, unit 1 TEX2 0xd6087e10", 2, two, 0xD608_7E10),
+            control,
+        ] {
+            let b = tex(TEX_B, tex2b);
+            rt::check_in();
+            let fill = rp_image::need(
+                cmd::fill(
+                    Format::BPP32,
+                    TARGET,
+                    STRIDE,
+                    (0, 0, W as u16, H as u16),
+                    GREY,
+                ),
+                "a 2D rectangle",
+            );
+            let _ = e.submit(&fill).and_then(|()| e.finish(vram, 200_000));
+            let mut st = [0u32; 48];
+            let mut n = 0;
+            let mut put = |v: u32| {
+                st[n] = v;
+                n += 1;
+            };
+            put(if units == 2 { 0x1000_005F } else { 0x1000_0057 });
+            put(tsp);
+            put(ISP_ALWAYS);
+            a.iter().for_each(|&v| put(v));
+            if units == 2 {
+                b.iter().for_each(|&v| put(v));
+            }
+            put(clip);
+            put(0);
+            put(m3::ta::STRIP);
+            for &(x, y, u, v) in &corners {
+                for word in [
+                    x.to_bits(),
+                    y.to_bits(),
+                    1.0f32.to_bits(),
+                    1.0f32.to_bits(),
+                    0xFFFF_FFFF,
+                    u.to_bits(),
+                    v.to_bits(),
+                ] {
+                    put(word);
+                }
+                if units == 2 {
+                    put(u.to_bits());
+                    put(v.to_bits());
+                }
+            }
+            let (ta, done) = through_ta(e, vram, &st[..n], 32);
+            log!(
+                "  M {name} (TSP 0x{tsp:08x}): {n} words, TA done {ta}, render done {done}; inside (150,200) 0x{:08x}, outside (400,600) 0x{:08x}",
+                px(vram, 150, 200),
+                px(vram, 400, 600)
+            );
+        }
+    }
+
     fn main() -> ! {
         rt::init_mmu();
         let Some((regs, vram)) = rp_image::take_mbx() else {
@@ -402,6 +589,8 @@ mod image {
             depth(&mut e, vram);
             log!("L: 8-bit grey textures (code 10)");
             luminance(&mut e, vram);
+            log!("M: the second texture unit through the TA (0x80 x 0x40)");
+            two_units(&mut e, vram);
         }
         let saved = show_target(&mut e.regs);
         let keypad = arm_keypad();

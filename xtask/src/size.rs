@@ -504,9 +504,12 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 28.7 KiB measured, + ~10%.
+    // Ratcheted 32 -> 40 KiB on 2026-10-22 (test image): test M, the second
+    // texture unit through the tile accelerator (the gate's P5); 35.1 KiB
+    // measured, + ~10%.
     Budget {
         image: "rp-glesfeat",
-        max_load: 32 * 1024,
+        max_load: 40 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
