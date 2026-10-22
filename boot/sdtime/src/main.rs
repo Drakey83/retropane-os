@@ -106,7 +106,7 @@ mod image {
         rt::init_mmu();
         if GUARD {
             log!(
-                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 3"
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 4"
             );
             guard();
         } else {
@@ -395,8 +395,94 @@ mod image {
             .as_str(),
             failed == 0,
         );
+        g7(&mut card, n);
         let (checks, bad) = (c.checks, c.bad);
         log!("{MARKER}: the guard run: {checks} checks, {bad} BAD");
+    }
+
+    /// CMD13's status word, or `None` if it went unanswered.
+    fn status(card: &mut Card) -> Option<u32> {
+        let rca = u32::from(card.rca()) << 16;
+        card.host_mut()
+            .command(Command::new(13, rca, Response::R1))
+            .ok()
+            .map(|w| w[0])
+    }
+
+    /// G7 (version 4, quality audit C46): when the card raises OUT_OF_RANGE
+    /// after a read of its last block. Version 3 found a CMD13 straight
+    /// after the read too early and one a few milliseconds later in time.
+    /// G7a: 20 times, the last block read, then CMD13 every ~50 us for 50 ms
+    /// at most: when the bit first shows, and that the next CMD13 is clean.
+    /// G7b: after the read, one idle wait, then one CMD13 (time against
+    /// commands: does it show after a wait alone?), then one more. Measured,
+    /// not judged.
+    fn g7(card: &mut Card, n: u32) {
+        const OOR: u32 = 1 << 31;
+        let mut one = [0u8; BLOCK];
+        log!(
+            "G7a the last block read, then CMD13 every ~50 us up to 50 ms: when OUT_OF_RANGE shows"
+        );
+        let (mut seen, mut first_us, mut last_us, mut polls_max) = (0u32, u32::MAX, 0u32, 0u32);
+        for k in 0..20 {
+            rt::check_in();
+            // Start clean: whatever an earlier read left, collected.
+            for _ in 0..3 {
+                rt::delay_us(20_000);
+                let _ = status(card);
+            }
+            let r = card.read(n - 1, &mut one);
+            let t0 = rt::ticks();
+            let mut found = None;
+            let mut polls = 0u32;
+            while us(rt::ticks().wrapping_sub(t0)) < 50_000 {
+                polls += 1;
+                let st = status(card);
+                if st.is_some_and(|w| w & OOR != 0) {
+                    found = Some((us(rt::ticks().wrapping_sub(t0)), st.unwrap_or(0)));
+                    break;
+                }
+                rt::delay_us(50);
+            }
+            let after = status(card);
+            match found {
+                Some((t, w)) => {
+                    seen += 1;
+                    first_us = first_us.min(t);
+                    last_us = last_us.max(t);
+                    polls_max = polls_max.max(polls);
+                    log!(
+                        "  G7a {}: read {r:?}; OUT_OF_RANGE at {t} us (poll {polls}, 0x{w:08x}); the next CMD13 {after:x?}",
+                        k + 1
+                    );
+                }
+                None => log!(
+                    "  G7a {}: read {r:?}; no OUT_OF_RANGE in 50 ms ({polls} polls); the next CMD13 {after:x?}",
+                    k + 1
+                ),
+            }
+        }
+        log!(
+            "G7a: OUT_OF_RANGE in {seen} of 20, first seen {} us to {last_us} us after the read (at most {polls_max} polls)",
+            if first_us == u32::MAX { 0 } else { first_us }
+        );
+        log!("G7b the last block read, an idle wait, one CMD13, then one more:");
+        for wait in [100u32, 500, 1_000, 2_000, 5_000, 10_000] {
+            rt::check_in();
+            for _ in 0..3 {
+                rt::delay_us(20_000);
+                let _ = status(card);
+            }
+            let r = card.read(n - 1, &mut one);
+            rt::delay_us(wait);
+            let a = status(card);
+            let b = status(card);
+            log!("  G7b wait {wait} us: read {r:?}; CMD13 {a:x?}, then {b:x?}");
+        }
+        log!(
+            "  G7 the driver collected after {} last-block reads in all",
+            card.end_settles()
+        );
     }
 
     /// A check's description, formatted (the log's lines are short).

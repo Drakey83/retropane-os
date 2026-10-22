@@ -5584,6 +5584,8 @@ pub fn boot_loader_cardlog(root: &Path) -> Result<(), String> {
         "G1 the card-log writer: the loader handed over ",
         "ok  the loader's capacity is the driver's",
         "ok  the last block as it was",
+        "G7a: OUT_OF_RANGE in ",
+        "  G7b wait 10000 us: read Ok(())",
         "RETROPANE-SDTIME: the guard run: ",
     ] {
         if !card.contains(want) {

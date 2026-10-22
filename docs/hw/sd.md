@@ -302,6 +302,9 @@ driver's count agreeing):
   next read still fails); a CMD13 a few milliseconds later does, and
   clears it. The card raises OUT_OF_RANGE some time after the read
   (likely its read-ahead running off the end). How long: to measure.
+  The guard run version 4 (G7) measures it: 20 last-block reads each
+  followed by CMD13 every ~50 us for up to 50 ms, then single CMD13s after
+  idle waits of 0.1-10 ms.
 
 ## Emulator
 
