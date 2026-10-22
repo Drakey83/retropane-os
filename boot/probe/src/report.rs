@@ -14,7 +14,7 @@ pub const TEXT: usize = COLS - 3;
 /// Lines per page (40 rows: content plus the footer).
 pub const ROWS: usize = 39;
 /// Pages.
-pub const PAGES: usize = 5;
+pub const PAGES: usize = 6;
 
 /// The checksum of a line's content.
 #[must_use]

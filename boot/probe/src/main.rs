@@ -76,8 +76,9 @@ mod image {
     /// Results kept (the suite's, the performance gate's included); any
     /// past it are counted, never lost unseen.
     const MAX_RESULTS: usize = 64;
-    /// Result lines on page 4 before they go on to page 5.
-    const PAGE4_RESULTS: usize = 30;
+    /// Result lines a page (from page 4 on; the rest of each page holds its
+    /// title and, on the last, the checks).
+    const RESULTS_A_PAGE: usize = 30;
 
     struct TimerDelay;
     impl Delay for TimerDelay {
@@ -90,9 +91,9 @@ mod image {
     struct Results {
         bench: [(&'static str, u32, u32); MAX_RESULTS],
         n: usize,
-        checks: [(&'static str, bool, [u8; 12]); 8],
+        checks: [(&'static str, bool, [u8; 12]); 16],
         nc: usize,
-        /// Results that didn't fit [`MAX_RESULTS`].
+        /// Results and checks that didn't fit their tables.
         dropped: u32,
     }
 
@@ -106,7 +107,9 @@ mod image {
             }
         }
         fn check(&mut self, name: &'static str, ok: bool, detail: &str) {
-            if self.nc < self.checks.len() {
+            if self.nc >= self.checks.len() {
+                self.dropped += 1;
+            } else {
                 let mut d = [b' '; 12];
                 for (o, b) in d.iter_mut().zip(detail.bytes()) {
                     *o = b;
@@ -186,7 +189,7 @@ mod image {
         let mut results = Results {
             bench: [("", 0, 0); MAX_RESULTS],
             n: 0,
-            checks: [("", false, [b' '; 12]); 8],
+            checks: [("", false, [b' '; 12]); 16],
             nc: 0,
             dropped: 0,
         };
@@ -335,6 +338,7 @@ mod image {
             // The performance gate's CPU lines V1, C5 and C7.
             suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
             suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
+            suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
             suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
             if let Some(sram) = diag::take_sram() {
                 suite::chase(&mut r, "chase_sram_256k", sram);
@@ -459,9 +463,10 @@ mod image {
         rep.on_page(3);
         rep.line(format_args!("4 BENCH ns/iteration"));
         for (k, (name, ticks, iters)) in results.bench[..results.n].iter().enumerate() {
-            if k == PAGE4_RESULTS {
-                rep.on_page(4);
-                rep.line(format_args!("5 BENCH ns/iteration (more)"));
+            if k > 0 && k % RESULTS_A_PAGE == 0 {
+                let page = (3 + k / RESULTS_A_PAGE).min(report::PAGES - 1);
+                rep.on_page(page);
+                rep.line(format_args!("{} BENCH ns/iteration (more)", page + 1));
             }
             // 3.25 MHz ticks: 1 tick = 4000/13 ns. Exact in u32 (no 64-bit
             // division or formatting code in the image): split ticks per
@@ -478,7 +483,7 @@ mod image {
         }
         if results.dropped > 0 {
             rep.line(format_args!(
-                "DROPPED {} results (table full)",
+                "DROPPED {} results or checks (table full)",
                 results.dropped
             ));
         }

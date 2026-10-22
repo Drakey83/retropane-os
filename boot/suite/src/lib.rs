@@ -551,6 +551,64 @@ mod target {
         }
     }
 
+    /// The bulk copy's prefetch distance (the performance gate's CPU line
+    /// C7): 256 KiB copied from memory (past the D-cache) with the `pld`
+    /// none, 32, 64 (today's `memcpy`), 96, 128, 192 and 256 bytes ahead.
+    /// `buf` needs 512 KiB, word-aligned.
+    pub fn copy_pld(r: &mut Runner, buf: &mut [u8]) {
+        let Some(buf) = rp_hal_mem::bytes_as_words_mut(buf) else {
+            r.check("copy_pld", false, "not word-aligned");
+            return;
+        };
+        if buf.len() < 128 * 1024 {
+            r.check("copy_pld", false, "buffer too small");
+            return;
+        }
+        let (a, rest) = buf.split_at_mut(64 * 1024);
+        let b = &mut rest[..64 * 1024];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = i as u32;
+        }
+        let a = &*a;
+        r.run("copy_pld_none_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<0>(b, a)
+        });
+        r.run("copy_pld_32_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<32>(b, a)
+        });
+        r.run("copy_pld_64_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<64>(b, a)
+        });
+        r.run("copy_pld_96_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<96>(b, a)
+        });
+        r.run("copy_pld_128_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<128>(b, a)
+        });
+        r.run("copy_pld_192_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<192>(b, a)
+        });
+        r.run("copy_pld_256_256k", 4, &mut || {
+            rp_hal_mem::copy_words_pld::<256>(b, a)
+        });
+        // Each variant copies right, not just fast.
+        let mut right = true;
+        for f in [
+            rp_hal_mem::copy_words_pld::<0> as fn(&mut [u32], &[u32]),
+            rp_hal_mem::copy_words_pld::<32>,
+            rp_hal_mem::copy_words_pld::<64>,
+            rp_hal_mem::copy_words_pld::<96>,
+            rp_hal_mem::copy_words_pld::<128>,
+            rp_hal_mem::copy_words_pld::<192>,
+            rp_hal_mem::copy_words_pld::<256>,
+        ] {
+            b.fill(0);
+            f(b, a);
+            right &= b == a;
+        }
+        r.check("copy_pld", right, "");
+    }
+
     /// The internal SRAM against SDRAM (the performance gate's CPU lines V2
     /// and C3): 64 KiB copied within the SRAM, from SDRAM into it, and
     /// filled. `sram` needs 128 KiB, `sdram` 64 KiB.

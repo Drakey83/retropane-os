@@ -314,6 +314,61 @@ unsafe fn copy_aligned_32(dst: *mut u32, src: *const u32, bytes: usize) {
     }
 }
 
+/// The performance gate's C7 sweep: copies `src` into `dst` as the bulk
+/// `memcpy` does (32 bytes per `ldm`/`stm` pair) with the prefetch `D`
+/// bytes ahead, or none for `D` = 0. For measuring the best distance only:
+/// `memcpy` itself is the one to call. Copies the common length, rounded
+/// down to 8 words.
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn copy_words_pld<const D: usize>(dst: &mut [u32], src: &[u32]) {
+    let words = dst.len().min(src.len()) & !7;
+    let (d, s) = (dst.as_mut_ptr(), src.as_ptr());
+    #[cfg(all(target_arch = "arm", target_os = "none"))]
+    if words > 0 {
+        // SAFETY: both slices are valid for `words` words (a non-zero
+        // multiple of 8, so `bytes` a multiple of 32) and word-aligned;
+        // `pld` is a hint and never faults.
+        unsafe {
+            if D == 0 {
+                core::arch::asm!(
+                    "2:",
+                    "ldmia r1!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
+                    "subs r2, r2, #32",
+                    "stmia r0!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
+                    "bne 2b",
+                    inout("r0") d => _,
+                    inout("r1") s => _,
+                    inout("r2") words * 4 => _,
+                    out("r3") _, out("r4") _, out("r5") _, out("r8") _,
+                    out("r9") _, out("r10") _, out("r12") _, out("lr") _,
+                    options(nostack),
+                );
+            } else {
+                core::arch::asm!(
+                    "2:",
+                    "pld [r1, #{dist}]",
+                    "ldmia r1!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
+                    "subs r2, r2, #32",
+                    "stmia r0!, {{r3, r4, r5, r8, r9, r10, r12, lr}}",
+                    "bne 2b",
+                    dist = const D,
+                    inout("r0") d => _,
+                    inout("r1") s => _,
+                    inout("r2") words * 4 => _,
+                    out("r3") _, out("r4") _, out("r5") _, out("r8") _,
+                    out("r9") _, out("r10") _, out("r12") _, out("lr") _,
+                    options(nostack),
+                );
+            }
+        }
+    }
+    #[cfg(not(all(target_arch = "arm", target_os = "none")))]
+    for i in 0..words {
+        // SAFETY: `i` < `words`, within both slices.
+        unsafe { *d.add(i) = *s.add(i) };
+    }
+}
+
 /// Fills `bytes` (a multiple of 32) of a word-aligned buffer with `word`.
 #[inline(always)]
 #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]

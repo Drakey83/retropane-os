@@ -157,6 +157,8 @@ commands:
             Start opens the menu, Back to loader returns with latencies
   emu-crash only the crash path check (an image's crash box on the plane
             on screen, then the loader's crash screen, log and card report)
+  emu-probe only the probe's check (rp-probe: the device report, its
+            benchmarks and checks, every page's checksums)
   emu-kernel only the kernel image's check (VM, IPC, the driver host)
   emu-threads only the threads image's check (rp-threads: scheduler, user
             mode, KData, FCSE in a native slot): run it before `load rp-threads`
@@ -242,13 +244,14 @@ fn main() -> ExitCode {
         "fmt" | "clippy" | "lint" | "gate" | "test" | "cross" | "coverage" | "emu"
         | "emu-picture" | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d"
         | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-mved"
-        | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-cf" | "emu-kernel"
-        | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize" | "emu-usb"
-        | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast" | "emu-loader"
-        | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal" | "emu-looks"
-        | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2"
-        | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure"
-        | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
+        | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe" | "emu-cf"
+        | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace" | "emu-fullsize"
+        | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite" | "emu-storfast"
+        | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect" | "emu-display-cal"
+        | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep" | "emu-dma-restart"
+        | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
+        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants"
+        | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -540,6 +543,7 @@ fn run_step(step: &str) -> Result {
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
         "emu-today" => cross().and_then(|()| emu::boot_loader_today(&workspace_root())),
         "emu-crash" => cross().and_then(|()| emu::boot_loader_crash(&workspace_root())),
+        "emu-probe" => cross().and_then(|()| emu::boot_probe(&workspace_root())),
         "emu-cf" => cross().and_then(|()| emu::boot_loader_cf_alone(&workspace_root())),
         "emu-stale" => cross().and_then(|()| emu::boot_loader_stale_view_alone(&workspace_root())),
         "emu-kernel" => cross().and_then(|()| emu::boot_kernel(&workspace_root())),
