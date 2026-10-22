@@ -154,6 +154,11 @@ watching.
   spread evenly, half far off; alone it repeats exactly. Together saves
   9% of the time. The engines take turns (ADR-0030 G2); the cause is
   open (`2700g.md` "baseline audit").
+- **2D rotation and masks** (`rp-mbx-blend` B11, X51v, 2026-10-22):
+  header bits 25-26 = 1/2/3 turn a copy 90° cw / 180° / 270° cw
+  (rectangle in the source's shape); 1 bpp masks (`0x40000000`,
+  `0x50000000`, `0xE4000000`, address) expand a colour, high bit = left,
+  ROP4 as GDI's.
 - **3D second texture unit** (`rp-glesfeat` M, X51v, 2026-10-22): TSP
   bit 16 = a second coordinate set at the TA; the TA's two-unit object is
   ISP, TEX0-2 x2, TSP, x/y, z, 1/w, then colour, u0, v0, u1, v1 a vertex

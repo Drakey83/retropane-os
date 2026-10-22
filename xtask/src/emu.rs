@@ -4394,7 +4394,8 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     mbx_blend_b7(root)?;
     mbx_blend_b8(root)?;
     mbx_blend_b9(root)?;
-    mbx_blend_b10(root)
+    mbx_blend_b10(root)?;
+    mbx_blend_b11(root)
 }
 
 /// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
@@ -4464,6 +4465,51 @@ fn mbx_blend_b10(root: &Path) -> Result<(), String> {
         eprintln!("      {}", l.trim_end());
     }
     eprintln!("    mbx-blend B10 OK: every part ran, state put back, back at the loader");
+    Ok(())
+}
+
+fn mbx_blend_b11(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B11", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B11: never came back to the loader")?;
+    if crashed(log) {
+        return Err(format!("mbx-blend B11: crashed:{log}"));
+    }
+    for want in [
+        "B11a code 0 (header bits 0x00000000) rect 8x4: ran true; 32 source pixels written",
+        "B11a code 3 (header bits 0x06000000) rect 4x8: ran ",
+        "B11b ROP4 0xaaf0 bit offset 0: ran ",
+        "B11b ROP4 0xaaf0 bit offset 3: ran ",
+        "B11 scale, key and blend put back: yes",
+        "RETROPANE-MBX-BLEND: PASS - B11 done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B11: the run log has no `{want}`:{log}"));
+        }
+    }
+    for l in log.lines().filter(|l| l.starts_with("B11")) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!("    mbx-blend B11 OK: every part ran, state put back, back at the loader");
     Ok(())
 }
 

@@ -145,14 +145,14 @@ named in its evidence.
 | V1 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
 | V2 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
 | V3 | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
-| V4 | open | P6/P13 not run (B7 tried four header bits for a dither: none rotate-like) |
+| V4 | done | B11 (X51v, 2026-10-22, `local/rp-mbx-blend-B11.txt`): **the 2D engine rotates**: header bits 25-26 = 1 / 2 / 3 lay a copy down 90° clockwise / 180° / 270° clockwise (the rectangle given in the source's shape, the output in the turned box; Dell's table had 1 and 3 the other way round), every pixel checked; the claim "no 2D rotate" was wrong |
 | V5 | open | P9 not run |
 | V6 | open | P10 not run |
 | V7 | open | P10 not run |
 | V8 | open | P11 not run |
 | V9 | partial | P5's test M: unit 1's words after unit 0's confirmed (emitter and TA output), TSP bit 16 found as the coordinate-set switch, the two-unit object's layout read from the TA; the render hangs (open); fog and TSP bit 14 not run |
 | V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
-| V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; left: mono masks (`0x40000000`, `0x50000000`, `0xE4000000`), the brush palette (`0xD0000000`) |
+| V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; **B11: mono masks proven** (Dell's words `0x40000000 \| offset << 14`, `0x50000000 \| width << 14 \| rows`, `0xE4000000 \| stride`, address; high bit = leftmost pixel; ROP4 as GDI: low byte where the mask is 1); left: the brush palette (`0xD0000000`), the bit offset's meaning (offset 3 rotated each 8-bit row) |
 | V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
 | V17 | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; run FI: bit 3 sets with bit 2 at a render's end, 2D raises no bit; bit 10's meaning open |
 | V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
@@ -172,7 +172,7 @@ named in its evidence.
 | P10 | open | the cursor plane and colour keys not tried |
 | P11 | open | MVED1 never run past its safe stages |
 | P12 | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, and DMA into the 2D command window, not tried |
-| P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); left: lines, the brush palette and pattern brushes, mono masks, rotation bits 25-26 |
+| P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); B11: rotation bits 25-26 (90/180/270, every pixel) and mono-mask colour expansion proven; left: lines, the brush palette and pattern brushes |
 | P14 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
 | P16 | open | needs a battery reading: the TSC2046's VBAT isn't wired (entropy.md); Windows Mobile's gauge (`GetSystemPowerStatusEx2`, used by `rp-wmpower`, +-50 mA) comes from `battdrvr.dll`, which only calls `KernelIoControl` with Dell's own HAL codes `0x0101010D` (function 67) and `0x0101011B` (function 70) (2026-10-22, static); their handler in the kernel image wasn't found by constant (not as literals, nor the SSP/I2C bases): a bounded RE step next, or the WM gauge as a stand-in |

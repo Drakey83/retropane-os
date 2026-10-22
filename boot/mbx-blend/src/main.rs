@@ -166,6 +166,73 @@ pub const B9_ONLY: bool = option_env!("RP_MBX_BLEND_B9").is_some();
 /// fills, the queued-commands status bit, header bit 21 on a fill.
 pub const B10_ONLY: bool = option_env!("RP_MBX_BLEND_B10").is_some();
 
+/// Whether this build runs B11 alone (`RP_MBX_BLEND_B11`): the gate's V4,
+/// P13 and V15: the header's rotation bits 25-26 on a copy, and the 1 bpp
+/// mask words (`0x40000000`, `0x50000000`, `0xE4000000` + address, read
+/// from Dell's colour-expansion path `0x0210096c`).
+pub const B11_ONLY: bool = option_env!("RP_MBX_BLEND_B11").is_some();
+
+/// The eight ways a copy can lay a source down, as [`orientations`] names
+/// them (bit `k` of its result).
+pub const ORIENTATIONS: [&str; 8] = [
+    "as is",
+    "180",
+    "mirror x",
+    "mirror y",
+    "transposed",
+    "90 cw",
+    "270 cw",
+    "anti-transposed",
+];
+
+/// Which of [`ORIENTATIONS`] fit every `(dx, dy, sx, sy)` pair (a
+/// destination pixel at `(dx, dy)` from the rectangle's corner holds source
+/// pixel `(sx, sy)`) for a `sw` x `sh` source: bit `k` set when
+/// orientation `k` maps every pair. Empty pairs fit none.
+#[must_use]
+pub fn orientations(pairs: &[(u32, u32, u32, u32)], sw: u32, sh: u32) -> u8 {
+    if pairs.is_empty() || sw == 0 || sh == 0 {
+        return 0;
+    }
+    let (mx, my) = (sw - 1, sh - 1);
+    // The source pixel orientation `k` puts at (dx, dy).
+    let map = |k: usize, dx: u32, dy: u32| -> Option<(u32, u32)> {
+        Some(match k {
+            0 => (dx, dy),
+            1 => (mx.checked_sub(dx)?, my.checked_sub(dy)?),
+            2 => (mx.checked_sub(dx)?, dy),
+            3 => (dx, my.checked_sub(dy)?),
+            4 => (dy, dx),
+            5 => (dy, my.checked_sub(dx)?),
+            6 => (mx.checked_sub(dy)?, dx),
+            _ => (mx.checked_sub(dy)?, my.checked_sub(dx)?),
+        })
+    };
+    (0..8).fold(0, |m, k| {
+        let fits = pairs
+            .iter()
+            .all(|&(dx, dy, sx, sy)| map(k, dx, dy) == Some((sx, sy)));
+        if fits { m | 1 << k } else { m }
+    })
+}
+
+/// An 8 x 8 1 bpp mask (one byte a row) as 64 booleans, high bit first
+/// (`msb`) or low bit first.
+#[must_use]
+pub fn mask_bits(rows: &[u8; 8], msb: bool) -> [bool; 64] {
+    let mut out = [false; 64];
+    for (y, r) in rows.iter().enumerate() {
+        for x in 0..8 {
+            out[8 * y + x] = if msb {
+                r >> (7 - x) & 1 == 1
+            } else {
+                r >> x & 1 == 1
+            };
+        }
+    }
+    out
+}
+
 /// The bitwise result GDI's raster operation `rop` (ROP3) gives for
 /// pattern `p`, source `s` and destination `d`: bit `k` of each picks bit
 /// `(p << 2 | s << 1 | d)` of `rop`.
@@ -343,9 +410,9 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, B10_ONLY, FENCE, MARK16, MARKER, Narrow, RAMP,
-        RampStats, SRC16, SRC32, SetStats, channels, coverage_row, dither_tries, lerp565, near,
-        ramp_level, rop3, rule_counts, sweep,
+        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, B10_ONLY, B11_ONLY, FENCE, MARK16, MARKER, Narrow,
+        ORIENTATIONS, RAMP, RampStats, SRC16, SRC32, SetStats, channels, coverage_row,
+        dither_tries, lerp565, mask_bits, near, orientations, ramp_level, rop3, rule_counts, sweep,
     };
 
     use rp_image::crash;
@@ -399,7 +466,7 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
-        if B7_ONLY || B8_ONLY || B9_ONLY || B10_ONLY {
+        if B7_ONLY || B8_ONLY || B9_ONLY || B10_ONLY || B11_ONLY {
             b7_only(display.into_inner(), vram);
         }
         let (plane, _) = display.adopt(vram.len());
@@ -1240,7 +1307,11 @@ mod image {
     /// B7 alone (`RP_MBX_BLEND_B7`): no events, no B1-B6, nothing shown,
     /// no button; back to the loader.
     fn b7_only(regs: Mmio, vram: &mut [u8]) -> ! {
-        if B10_ONLY {
+        if B11_ONLY {
+            log!(
+                "{MARKER}: B11 only (the performance gate's V4, P13, V15: rotation bits 25-26, 1 bpp masks)"
+            );
+        } else if B10_ONLY {
             log!(
                 "{MARKER}: B10 only (the performance gate's P13, V15, V17: raster operations, 8/24 bpp fills, status bit 10, header bit 21)"
             );
@@ -1265,7 +1336,9 @@ mod image {
         e.reset(rt::delay_us);
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
-        let ok = if B10_ONLY {
+        let ok = if B11_ONLY {
+            b11(&mut e, vram)
+        } else if B10_ONLY {
             b10(&mut e, vram)
         } else if B9_ONLY {
             b9(&mut e, vram)
@@ -1277,7 +1350,9 @@ mod image {
         let verdict = if ok { "PASS" } else { "FAIL (see the log)" };
         log!(
             "{MARKER}: {verdict} - {} done",
-            if B10_ONLY {
+            if B11_ONLY {
+                "B11"
+            } else if B10_ONLY {
                 "B10"
             } else if B9_ONLY {
                 "B9"
@@ -2169,6 +2244,157 @@ mod image {
 
     const B10_DST: usize = 0x00D4_0000;
 
+    /// B11 (measured, not judged).
+    fn b11(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        const MARK: u32 = 0x5A5A_5A5A;
+        const MASK: usize = 0x00D5_0000;
+        const INK: u32 = 0xFF00_FF00;
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B11 baseline");
+
+        // B11a, V4 / P13: rotation bits 25-26 on a copy of an 8 x 4 source
+        // whose pixels hold their own (x, y), into a 16 x 16 destination
+        // area (64-byte rows) given as 8 x 4 and as 4 x 8.
+        let mut src = [0u32; 32];
+        for (k, v) in src.iter_mut().enumerate() {
+            *v = 0xFF00_0000 | ((k / 8) as u32) << 8 | (k % 8) as u32;
+        }
+        set(vram, B9_SRC32, &src);
+        for code in 0..4u32 {
+            for (shape, rect) in [("8x4", (0u16, 0u16, 8u16, 4u16)), ("4x8", (0, 0, 4, 8))] {
+                fill_words(vram, B10_DST, 256, MARK);
+                let (w, n) = rp_image::need(
+                    cmd::blit(
+                        (Format::BPP32, B10_DST, 64),
+                        (Format::BPP32, B9_SRC32, 32),
+                        (0, 0),
+                        rect,
+                        cmd::ROP_SRCCOPY,
+                        code << 25,
+                        0,
+                    ),
+                    "a 2D rectangle",
+                );
+                let ran = go(e, vram, &w[..n], "B11a rotation");
+                ok &= ran;
+                let got: [u32; 256] = words(vram, B10_DST);
+                let mut pairs = [(0u32, 0u32, 0u32, 0u32); 64];
+                let (mut n, mut odd) = (0usize, 0u32);
+                let (mut x1, mut y1) = (0u32, 0u32);
+                for (k, &v) in got.iter().enumerate() {
+                    if v == MARK {
+                        continue;
+                    }
+                    let (dx, dy) = ((k % 16) as u32, (k / 16) as u32);
+                    x1 = x1.max(dx + 1);
+                    y1 = y1.max(dy + 1);
+                    let (sx, sy) = (v & 0xFF, v >> 8 & 0xFF);
+                    if v >> 24 == 0xFF && sx < 8 && sy < 4 && v >> 16 & 0xFF == 0 && n < pairs.len()
+                    {
+                        pairs[n] = (dx, dy, sx, sy);
+                        n += 1;
+                    } else {
+                        odd += 1;
+                    }
+                }
+                let fit = orientations(&pairs[..n], 8, 4);
+                let _ = write!(
+                    RunLog,
+                    "B11a code {code} (header bits 0x{:08x}) rect {shape}: ran {ran}; {n} source pixels written within {x1} x {y1}, {odd} other; fits:",
+                    code << 25
+                );
+                for (k, name) in ORIENTATIONS.iter().enumerate() {
+                    if fit >> k & 1 == 1 {
+                        let _ = write!(RunLog, " {name}");
+                    }
+                }
+                let _ = write!(RunLog, "; first (dx,dy<-sx,sy):");
+                for &(dx, dy, sx, sy) in &pairs[..n.min(4)] {
+                    let _ = write!(RunLog, " ({dx},{dy}<-{sx},{sy})");
+                }
+                log!("");
+            }
+            rt::check_in();
+        }
+
+        // B11b, V15: colour expansion through a 1 bpp mask, in Dell's
+        // words: 0x40000000 | bit offset << 14, 0x50000000 | width << 14 |
+        // rows, 0xE4000000 | stride, the mask's address; then the header
+        // (ROP4: GDI's high byte where the mask is 0, low where 1), the
+        // colour, the rectangle. An 8 x 8 F (an X, version 1, read the same
+        // both ways), one byte a row, 4-byte rows; then the bit offset 3.
+        let rows: [u8; 8] = [0xF8, 0x80, 0x80, 0xF0, 0x80, 0x80, 0x80, 0x00];
+        let mut mw = [0u32; 8];
+        for (k, r) in rows.iter().enumerate() {
+            mw[k] = u32::from(*r);
+        }
+        set(vram, MASK, &mw);
+        let (hi, lo) = (mask_bits(&rows, true), mask_bits(&rows, false));
+        for (rop4, offset) in [(0xAAF0u32, 0u32), (0xF0AA, 0), (0xCCF0, 0), (0xAAF0, 3)] {
+            fill_words(vram, B10_DST, 128, MARK);
+            let [d, da] = cmd::dest(Format::BPP32, B10_DST, 64);
+            let w = [
+                d,
+                da,
+                0x4000_0000 | offset << 14,
+                0x5000_0000 | 8 << 14 | 8,
+                0xE400_0000 | 4,
+                MASK as u32 & 0x03FF_FFFC,
+                0x8000_0000 | rop4,
+                INK,
+                cmd::xy(0, 0),
+                cmd::xy(8, 8),
+                cmd::FLUSH,
+            ];
+            let ran = go(e, vram, &w, "B11b mask");
+            ok &= ran;
+            let got: [u32; 128] = words(vram, B10_DST);
+            // Each row's ink as a byte, high bit = x 0 (the picture drawn).
+            let _ = write!(RunLog, "B11b rows drawn:");
+            for y in 0..8 {
+                let b = (0..8).fold(0u32, |b, x| b << 1 | u32::from(got[16 * y + x] == INK));
+                let _ = write!(RunLog, " {b:02x}");
+            }
+            log!("");
+            let (mut ink, mut kept, mut other) = (0u32, 0u32, 0u32);
+            let mut seen = [false; 64];
+            for y in 0..8 {
+                for x in 0..8 {
+                    let v = got[16 * y + x];
+                    if v == INK {
+                        ink += 1;
+                        seen[8 * y + x] = true;
+                    } else if v == MARK {
+                        kept += 1;
+                    } else {
+                        other += 1;
+                    }
+                }
+            }
+            let outside = (0..128).filter(|&k| k % 16 >= 8 && got[k] != MARK).count();
+            let inv = |m: [bool; 64]| m.map(|b| !b);
+            log!(
+                "B11b ROP4 0x{rop4:04x} bit offset {offset}: ran {ran}; ink {ink}, kept {kept}, other {other}, written outside {outside}; ink where the mask is 1 (high bit first {}, low first {}), where 0 (high {}, low {}); row 0 0x{:08x} 0x{:08x}",
+                seen == hi,
+                seen == lo,
+                seen == inv(hi),
+                seen == inv(lo),
+                got[0],
+                got[1]
+            );
+        }
+
+        let back = go(e, vram, &base, "B11 state back");
+        log!(
+            "B11 scale, key and blend put back: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
+    }
+
     /// B10 (measured, not judged).
     fn b10(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
         let mut base = [0u32; 6];
@@ -2356,6 +2582,49 @@ mod tests {
         assert_eq!(words.iter().filter(|&&w| w == 0x0910_0000).count(), 1);
         assert!(words.contains(&0x0010_0000), "nibble 24 at 0");
         assert!(words.contains(&0x0910_0001), "bit 0");
+    }
+
+    #[test]
+    fn orientations_name_each_flip_and_turn() {
+        // An 8 x 4 source laid down each way; every pixel's pair.
+        let (sw, sh) = (8u32, 4u32);
+        let lay = |k: usize| {
+            let mut v = Vec::new();
+            for sy in 0..sh {
+                for sx in 0..sw {
+                    let (dx, dy) = match k {
+                        0 => (sx, sy),
+                        1 => (sw - 1 - sx, sh - 1 - sy),
+                        2 => (sw - 1 - sx, sy),
+                        3 => (sx, sh - 1 - sy),
+                        4 => (sy, sx),
+                        5 => (sh - 1 - sy, sx),
+                        6 => (sy, sw - 1 - sx),
+                        _ => (sh - 1 - sy, sw - 1 - sx),
+                    };
+                    v.push((dx, dy, sx, sy));
+                }
+            }
+            v
+        };
+        for k in 0..8 {
+            assert_eq!(orientations(&lay(k), sw, sh), 1 << k, "{}", ORIENTATIONS[k]);
+        }
+        assert_eq!(orientations(&[], sw, sh), 0);
+        // One pair fits several; a wrong pair fits none.
+        assert_eq!(orientations(&[(0, 0, 0, 0)], sw, sh) & 1, 1);
+        assert_eq!(orientations(&[(0, 0, 5, 3)], sw, sh) & 1, 0);
+    }
+
+    #[test]
+    fn mask_bits_reads_rows_both_ways() {
+        let rows = [0x80, 0x01, 0, 0, 0, 0, 0, 0xFF];
+        let hi = mask_bits(&rows, true);
+        let lo = mask_bits(&rows, false);
+        assert!(hi[0] && !hi[7] && hi[8 + 7] && !hi[8]);
+        assert!(lo[7] && !lo[0] && lo[8] && !lo[8 + 7]);
+        assert!(hi[56..].iter().all(|&b| b) && lo[56..].iter().all(|&b| b));
+        assert_eq!(hi.iter().filter(|&&b| b).count(), 10);
     }
 
     #[test]
