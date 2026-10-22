@@ -6854,6 +6854,7 @@ fn variant_image_with(
     };
     let dir = format!("target/variants/{name}");
     let mut cmd = Command::new("cargo");
+    crate::with_local_inputs(&mut cmd);
     cmd.current_dir(root).env(env.0, env.1);
     if let Some((k, v)) = also {
         cmd.env(k, v);
@@ -10458,6 +10459,44 @@ mod tests",
             local_input::nearest(&file),
             Some(root.join("local/concept"))
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Quality audit C40's last case: a picture overwritten in place by an
+    /// older-dated copy changes the fingerprint the build scripts watch;
+    /// a file outside their folders doesn't.
+    #[test]
+    fn an_older_copy_over_a_local_picture_changes_the_fingerprint() {
+        let root = std::env::temp_dir().join(format!("rp-c40b-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let none = crate::local_inputs(&root);
+        std::fs::create_dir_all(root.join("local/concept")).unwrap();
+        let file = root.join("local/concept/picture.rgb565");
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+        let write = |bytes: &[u8], time: std::time::SystemTime| {
+            std::fs::write(&file, bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        };
+        write(b"first", old);
+        let first = crate::local_inputs(&root);
+        assert_ne!(first, none);
+        assert_eq!(
+            crate::local_inputs(&root),
+            first,
+            "steady when nothing changes"
+        );
+        // Same length, an even older time: cargo's time check misses this.
+        write(b"other", old - std::time::Duration::from_secs(86_400));
+        let second = crate::local_inputs(&root);
+        assert_ne!(second, first);
+        // A run log in local/ isn't an input.
+        std::fs::write(root.join("local/rp-today-run.txt"), b"log").unwrap();
+        assert_eq!(crate::local_inputs(&root), second);
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -303,6 +303,7 @@ fn build(root: &Path, step: &Step) -> Result<PathBuf, String> {
         None => "target".to_string(),
     };
     let mut cmd = std::process::Command::new("cargo");
+    crate::with_local_inputs(&mut cmd);
     cmd.current_dir(root);
     if let Some((k, v)) = step.env {
         cmd.env(k, v);

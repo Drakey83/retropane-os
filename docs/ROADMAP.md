@@ -41,8 +41,8 @@ In order:
   - [ ] the 16-bit screen (ADR-0023 Q1 A, Q2 L1): built and committed (8219182), pushed on the owner's yes
   - [ ] the device batch (one session, numbered steps first): loader reinstall on the card; `rp-today` on the 16-bit screen (its proof); the guard run version 6 (C46: each end-of-card wait logged); run FS (C43: a real 2D stall, the owner watching, last); results recorded
   - [ ] C39: what each image changes on the board and whether a crash puts it back, measured; then the put-backs (quality audit)
-  - [ ] C40: build scripts that miss a picture arriving in `local/` (quality audit)
-  - [ ] C41: the emulator checks refuse a build that isn't the pinned release (quality audit)
+  - [x] C40: build scripts that miss a picture arriving in `local/` (quality audit) *(fixed 2026-10-22: the last case, an older-dated copy overwriting a picture, by the `RP_LOCAL_INPUTS` fingerprint)*
+  - [x] C41: the emulator checks refuse a build that isn't the pinned release (quality audit) *(fixed 2026-10-21, c45f881: quality audit C41)*
 - [x] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; **`cargo xtask gate`** counts them (and, from step 2b, the benchmark results) and `cargo xtask ci` prints it every run, so the count comes from a check, not from memory
 - [ ] 2b. **The performance ratchet (owner's vote, 2026-10-21):** a device benchmark suite of what people feel (tap to screen, frame times scrolling and in the menu, 3D frames a second, boot time, copy and upload speeds, battery at idle and under load), each result kept as its floor, as code size already is: a change that makes one slower fails until fixed or approved by the owner. Every new feature from then on comes with its own benchmark and budget, and its ADR names the checklist's tricks it uses
 - [ ] 3. The 2700G's clocks (P1, P2, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote

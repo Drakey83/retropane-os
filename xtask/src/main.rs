@@ -718,6 +718,7 @@ fn cargo(args: &[&str]) -> Result {
     let status = Command::new(cargo)
         .args(args)
         .env("RP_BUILD_ID", build_id())
+        .env(local_input::VAR, local_inputs(&workspace_root()))
         .current_dir(workspace_root())
         .status()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
@@ -726,6 +727,61 @@ fn cargo(args: &[&str]) -> Result {
     } else {
         Err(format!("`cargo {}` failed", args.join(" ")))
     }
+}
+
+/// The build scripts' `local/` helper (quality audit C40), for its folder
+/// list and variable name.
+mod local_input {
+    include!("../../tools/build/local_input.rs");
+    pub const DIRS: &[&str] = LOCAL_INPUT_DIRS;
+    pub const VAR: &str = LOCAL_INPUTS_VAR;
+}
+
+/// Quality audit C40: a fingerprint of every file the build scripts read
+/// from `local/` (its path, length and modification time), given to every
+/// cargo build as `RP_LOCAL_INPUTS`. The scripts watch the variable, so a
+/// picture overwritten in place by an older-dated copy, which cargo's time
+/// comparison misses, still reruns them. Times alone would do for a copy;
+/// a same-length file given its predecessor's exact time is the one change
+/// it can't see (only by setting the time on purpose).
+fn local_inputs(root: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            // Followed, not the entry's own type: `local/` may be a link.
+            if p.is_dir() {
+                files(&p, out);
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for dir in local_input::DIRS {
+        dir.hash(&mut h);
+        let mut list = Vec::new();
+        files(&root.join(dir), &mut list);
+        list.sort();
+        for f in list {
+            f.strip_prefix(root).unwrap_or(&f).hash(&mut h);
+            let meta = std::fs::metadata(&f).ok();
+            meta.as_ref().map(std::fs::Metadata::len).hash(&mut h);
+            meta.and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .hash(&mut h);
+        }
+    }
+    format!("{:016x}", h.finish())
+}
+
+/// Gives a cargo command the `local/` inputs' fingerprint (C40).
+fn with_local_inputs(cmd: &mut Command) -> &mut Command {
+    cmd.env(local_input::VAR, local_inputs(&workspace_root()))
 }
 
 /// The commit being built (short hash, `+` if there are uncommitted
