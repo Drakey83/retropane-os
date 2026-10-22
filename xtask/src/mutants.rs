@@ -1880,8 +1880,8 @@ pub const MUTANTS: &[Mutant] = &[
     Mutant {
         name: "SD card: one CMD13 straight after a last-block read, too early for the X51v's card (quality audit C46, guard run version 3)",
         file: "drivers/sdcard/src/lib.rs",
-        from: "        for _ in 0..END_POLLS {",
-        to: "        for _ in 0..1 {",
+        from: "        for poll in 1..=END_POLLS {",
+        to: "        for poll in 1..=1 {",
         check: Check::Host(&[
             "-p",
             "rp-drv-sdcard",

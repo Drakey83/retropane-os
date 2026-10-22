@@ -175,15 +175,17 @@ mod tests {
     fn full_pages_count_overflow() {
         let mut buf = storage();
         let mut r = Report::new(&mut buf);
-        r.on_page(3);
+        let last = PAGES - 1;
+        r.on_page(last);
         for i in 0..ROWS + 2 {
             r.line(format_args!("{i}"));
         }
-        assert_eq!(r.page_lines(3).count(), ROWS);
+        assert_eq!(r.page_lines(last).count(), ROWS);
         assert_eq!(r.overflow, 2);
+        // A page past the end is the last one, still full.
         r.on_page(99);
         r.line(format_args!("clamped"));
-        assert_eq!(r.overflow, 3, "page 3 is still full");
+        assert_eq!(r.overflow, 3, "the last page is still full");
     }
 
     #[test]
