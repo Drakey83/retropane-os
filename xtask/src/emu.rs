@@ -6488,6 +6488,18 @@ pub fn boot_loader_cf(root: &Path) -> Result<(), String> {
                 .parse()
                 .ok()
         };
+        // The board line reaches the PC (audit C57: serial only before).
+        s.write_all(&rp_loadproto::control_frame("board"))
+            .map_err(|e| e.to_string())?;
+        let board = usb_read_until(
+            &mut s, "
+", 10,
+        )?;
+        if !board.contains("RPL OK board: recorded as Windows Mobile left it") {
+            return Err(format!(
+                "the loader's board line didn't reach the PC: {board:?}"
+            ));
+        }
         match (at("dma+fat "), at("cf ")) {
             (Some(before), Some(cf)) if cf - before < 200 => {}
             _ => {

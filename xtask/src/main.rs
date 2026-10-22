@@ -114,6 +114,8 @@ commands:
             (read-only diagnostics)
   handoff   which DMA channels the loader's start found running, how long
             it waited for it to stop, and its boot time
+  board     what the loader's start did with the board record (quality
+            audit C39/C57): recorded, put back, or still differing
   trace    the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)
   wmbench   build the stock Windows Mobile baseline program (tools/wmbench:
@@ -455,6 +457,10 @@ fn main() -> ExitCode {
         "handoff" => {
             eprintln!("==> handoff");
             usb::command(&workspace_root(), "handoff")
+        }
+        "board" => {
+            eprintln!("==> board");
+            usb::command(&workspace_root(), "board")
         }
         "trace" => {
             eprintln!("==> trace");

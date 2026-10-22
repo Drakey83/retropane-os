@@ -2523,6 +2523,17 @@ mod image {
                             let _ = status.write_str("\r\n");
                             status.as_str()
                         }
+                        Ok(b"board") => {
+                            // What the board step did at this start (C39's
+                            // record or put-back), for the PC: the serial
+                            // line isn't wired on the X51v (audit C57).
+                            let _ = write!(
+                                status,
+                                "RPL OK {board}
+"
+                            );
+                            status.as_str()
+                        }
                         Ok(b"handoff") => {
                             // What this start found and waited for: the
                             // previous owner's DMA (HaRET's hand-off

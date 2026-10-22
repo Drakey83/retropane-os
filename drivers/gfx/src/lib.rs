@@ -26,6 +26,7 @@
 
 pub mod dirty;
 pub mod layer;
+pub mod look;
 pub mod render;
 
 /// A 16-bit RGB565 pixel.
