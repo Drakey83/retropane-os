@@ -258,7 +258,10 @@ fn multipliers_compress() {
         let mut out = vec![0u8; max_compressed(4096)];
         pages
             .iter()
-            .map(|p| compress_k::<K>(&mut table, p, &mut out).unwrap())
+            .map(|p| {
+                table.fill(0);
+                compress_k::<K>(&mut table, p, &mut out).unwrap()
+            })
             .sum()
     }
     let input: usize = pages.iter().map(Vec::len).sum();

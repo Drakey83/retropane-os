@@ -6,6 +6,7 @@
 mod calib;
 mod devlock;
 mod emu;
+mod frames;
 mod gate;
 mod measure;
 mod mutants;
@@ -1251,8 +1252,7 @@ fn cross() -> Result {
         .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
         .map(|c| c.name.as_str())
         .collect();
-    size::check(
-        &workspace_root().join("target/armv5te-x51v-none-eabi/release"),
-        &images,
-    )
+    let release = workspace_root().join("target/armv5te-x51v-none-eabi/release");
+    size::check(&release, &images)?;
+    frames::check(&release, &images)
 }

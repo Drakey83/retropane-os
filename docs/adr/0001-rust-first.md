@@ -123,6 +123,24 @@ moving with code layout by about 2.5% (aligning every loop to 32 bytes
 didn't steady it, and cost 4 KB): where its cycles go needs the event
 counters (C8), not the listing.
 
+**Text compress, found with the event counters (owner: "we need to figure
+this out", 2026-10-22).** Not layout: per 16 text pages may-omit ran
+1,240,979 instructions against 1,184,547 and 218,834 data-stall cycles
+against 184,208, together the whole 6.2%. `compress` kept its 8 KiB hash
+table on the stack in the loop's own frame; an ARM load reaches 4,095
+bytes from its base, so every local past the table took
+`add r, sp, #8192; add r, r, #48; ldr` and a stall, where `r11` (the frame
+pointer, at the frame's far end) had reached it in one load. The loop is
+now its own function (`compress_k`, `#[inline(never)]`) with an 84-byte
+frame, the caller zeroing the table once. After: the two modes within
+0.7-1.1% on compress, may-omit 2.6% faster on decompress; against the
+floors (workspace build) page compress -1.8%, text compress +2.0% (from
++5.8%: the rest is the same in both modes, D-cache misses the split
+brings, next to measure). `cargo xtask cross` now fails on any new frame
+of 4 KiB or more, and on the loop being inlined back (quality audit C65).
+**So all three losses had causes, each now fixed: the hash's multiply
+wait, the copy rows' polling, and the 8 KiB frame.**
+
 **The crash-screen backtrace is mode-dependent (owner, 2026-10-22).** B
 stands. Frame pointers are opt-in per image, a list in xtask (like the
 Thumb list), starting with `rp-crash` only: such an image is built in its

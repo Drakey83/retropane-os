@@ -219,6 +219,13 @@ page compress +1.2%, `cache_walk_40k` +1.2% (placement, C8), five within
 decompress +3.8%, +4 KB). Next for text compress: the event counters
 (C8) on its loop in both modes.
 
+**Text compress found (2026-10-22): the 8 KiB table in the loop's frame**
+(ADR-0001, quality audit C65). The suite after the fix: 119 numbers, 16
+faster, 4 slower: text compress +2.0% (the split's D-cache misses, both
+modes alike) and three at 0.1-0.2% (`b9e` 16-bit copy, `ft_alone` 2D,
+`gfx_flush_vga`) that were over before any of this. The floors are the
+owner's to set.
+
 ## Not yet
 
 Battery (no reading found yet: gate line P16), and the compositor

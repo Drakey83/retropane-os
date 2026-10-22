@@ -326,7 +326,8 @@ fn put_sequence_long(
 /// bytes guarantees success), returning the compressed size. Inputs up to
 /// 64 KiB per block (offsets are 16-bit and positions are stored as `u16`).
 pub fn compress(src: &[u8], dst: &mut [u8]) -> Result<usize, Error> {
-    compress_with(&mut [0; TABLE_LEN], src, dst)
+    // Zeroed as made: the loop doesn't clear it again.
+    compress_k::<HASH_K>(&mut [0; TABLE_LEN], src, dst)
 }
 
 /// Entries in the compressor's hash table.
@@ -340,11 +341,23 @@ pub fn compress_with(
     src: &[u8],
     dst: &mut [u8],
 ) -> Result<usize, Error> {
+    table.fill(0);
     compress_k::<HASH_K>(table, src, dst)
 }
 
 /// [`compress_with`] with the hash's multiplier `K` (the tests compare
-/// multipliers' compression on the same data).
+/// multipliers' compression on the same data), on a `table` the caller has
+/// zeroed (once: a second clear of 8 KiB, the loop's own after the
+/// caller's, filled the write buffer: 25,681 stall cycles per 16 pages).
+///
+/// Never inlined: a caller's 8 KiB table on the stack ([`compress`]) must
+/// stay out of this loop's frame. An ARM load reaches 4,095 bytes from its
+/// base, so with the table in the same frame every local beyond it took two
+/// adds and a stall to reach from `sp`: text compress 6.2% slower with frame
+/// pointers off, where `r11` had reached them (2026-10-22, the X51v's event
+/// counters: +4.8% instructions, +34,626 data-stall cycles per 16 pages;
+/// ADR-0001 "Why, and what was fixed").
+#[inline(never)]
 fn compress_k<const K: u32>(
     table: &mut [u16; TABLE_LEN],
     src: &[u8],
@@ -353,7 +366,6 @@ fn compress_k<const K: u32>(
     if src.len() > 0x1_0000 {
         return Err(Error::Overflow);
     }
-    table.fill(0);
     let mut o = 0;
     let mut anchor = 0; // start of pending literals
     if src.len() >= MF_LIMIT {

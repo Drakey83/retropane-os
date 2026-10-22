@@ -1255,7 +1255,39 @@ mod target {
             r.run(decomp, 64, &mut || {
                 black_box(rp_lz4::decompress(black_box(&packed[..n]), back).ok());
             });
+            if check == "lz4 text" {
+                lz4_text_events(r, page, packed);
+            }
         }
+    }
+
+    /// Where text compress's time goes (ADR-0001 "Why, and what was
+    /// fixed": it lost 4-6% with frame pointers off and the listing didn't
+    /// say why): 16 compressions of the text page counted twice, six events
+    /// and the cycles ([Intel] event numbers, C8's checks).
+    fn lz4_text_events(r: &mut Runner, page: &[u8], packed: &mut [u8]) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        let mut twice = |events: [Event; 3]| {
+            black_box(rp_lz4::compress(black_box(page), packed).ok());
+            let s = pmu::start(events);
+            for _ in 0..16 {
+                black_box(rp_lz4::compress(black_box(page), packed).ok());
+            }
+            pmu::read(s)
+        };
+        let a = twice([Event::Instruction, Event::DataStall, Event::IcacheStall]);
+        let b = twice([
+            Event::BranchMiss,
+            Event::DcacheMiss,
+            Event::BufferStallCycles,
+        ]);
+        r.count("lz4t_cycles", a.cycles);
+        r.count("lz4t_insns", a.events[0]);
+        r.count("lz4t_data_stall", a.events[1]);
+        r.count("lz4t_fetch_stall", a.events[2]);
+        r.count("lz4t_branch_miss", b.events[0]);
+        r.count("lz4t_dcache_miss", b.events[1]);
+        r.count("lz4t_buffer_stall", b.events[2]);
     }
 
     fn heap_page(page: &mut [u8]) {

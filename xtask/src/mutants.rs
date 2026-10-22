@@ -2268,6 +2268,14 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "lz4: the compress loop inlined back into its caller's 8 KiB frame",
+        file: "kernel/lz4/src/lib.rs",
+        from: "#[inline(never)]
+fn compress_k<const K: u32>(",
+        to: "fn compress_k<const K: u32>(",
+        check: Check::Emu(crate::emu::boot_loader_crash),
+    },
+    Mutant {
         name: "C61: the FIQ entry keeps no SPSR (run-limit reports say spsr 0)",
         file: "hal/pxa27x/src/rt.rs",
         from: "    mrs     r9, spsr
