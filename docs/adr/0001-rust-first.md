@@ -4,6 +4,9 @@
   the Phase 0 foundations, commit 34e8cd2)
 - **Date:** 2026-10-10
 - **Last verified:** 2026-10-13 (against commit 3158b26)
+- **Amendment proposed 2026-10-22 (the performance gate's C9), vote
+  waiting:** frame pointers from "always" to "may-omit". See "Frame
+  pointers, measured" below.
 
 ## Context
 
@@ -59,3 +62,24 @@ tests on a PC for everything above the hardware.
 
 Nightly churn is possible, so we pin and bump deliberately. Contributors need
 `rustup` (it installs the pinned toolchain automatically).
+
+## Frame pointers, measured (2026-10-22, proposed amendment, vote waiting)
+
+The target keeps frame pointers in every function "for crash-screen
+backtraces". Nothing walks them: no backtrace was ever built (the crash
+line reports the fault's address, word and SPSR). Measured on the X51v
+(`rp-probe` built both ways, every self-check passing, docs/perf.md):
+
+- **Frame pointers optional (`"frame-pointer": "may-omit"`):** lz4 2-6%
+  faster, the photo row 7%, the frame allocator 3%, the TLB test 6%; the
+  image 1.5 KB smaller; **nothing slower** (the SD reads that first looked
+  6% slower were the driver's tight polling, since fixed).
+- `cpu = xscale` (written above) isn't in the target spec, and measured
+  makes byte-identical code: no gain either way.
+
+**Options:** A, keep "always" (backtraces stay possible by walking frames,
+when one is built); **B (recommended), "may-omit"**: 2-7% on compute and
+smaller code everywhere; a backtrace, when wanted, comes from a debug
+build with frame pointers on (one flag) or unwind tables, not every
+build paying for it. **Vote waiting.**
+
