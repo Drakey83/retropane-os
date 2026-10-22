@@ -39,4 +39,5 @@ counts runs on the X51v (U = unattended, W = the owner watching).
 | 19 | 2700G V7 | Colour keys at scan-out | Cut-outs with no drawing; the compositor doesn't need them | 1 W run | With P10's run (phase 9) |
 | 20 | 2700G P5 | The second texture unit: a mask times a picture in one pass | Effects in one pass instead of two; needs the TA path, which hangs (C53) and whose use is P4's (architectural) answer | Several runs, each hang needs a restart | After P4 and C53 |
 | 21 | 2700G V9 | The second unit's words, fog bit 24, TSP bit 14 | as rank 20 | as rank 20 | as rank 20 |
-| 22 | CPU C12 | Stopping SDCLK0/3 and unused clocks | Battery only, and no battery reading exists (P16 declined for that): the payoff can't be measured | 1 U run, a clock register change | Candidate for declining with P16's reason: the owner's call |
+
+Declined from the backlog: CPU C12 (the owner, 2026-10-22: battery only, no battery reading exists, as P16).
