@@ -171,7 +171,7 @@ named in its evidence.
 | P9 | open | the video plane's scaler and placement not tried |
 | P10 | open | the cursor plane and colour keys not tried |
 | P11 | open | MVED1 never run past its safe stages |
-| P12 | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, and DMA into the 2D command window, not tried |
+| P12 | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, DMA into the 2D command window works (run FD, T3: the CPU 2 us against 43-60 us for 352 words, same pictures) |
 | P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); B11: rotation bits 25-26 (90/180/270, every pixel) and mono-mask colour expansion proven; left: lines, the brush palette and pattern brushes |
 | P14 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
 | P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
