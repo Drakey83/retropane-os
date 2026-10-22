@@ -319,6 +319,18 @@ driver's count agreeing):
   reads the driver's wait ended without the bit (`end_unseen`) and no read
   failed after: either the card didn't raise it then, or it came later and
   one of G7's clean-up CMD13s took it. Which reads: not logged.
+- **Version 6 (`local/rp-sdtime-guard-run6.txt`, 2026-10-21): every wait
+  logged, 19 checks, 0 BAD.** 30 of 31 waits saw OUT_OF_RANGE: at the 2nd
+  and 3rd CMD13 for G2's two reads, the 5th for G6's two, the 4th for all
+  26 of G7's (each after 60 ms of idle CMD13s). **One ended unseen: the
+  last-block read straight after G4's refused writes**; the reads after it
+  (G5's block 0, G6's) succeeded, so the card didn't raise the bit for
+  that read at all (a raised bit fails the next read, version 2). So the
+  card doesn't always raise it, and when it does it shows within 5 CMD13s
+  (~65 us), well inside the driver's 80. Version 5's five unseen were the
+  same kind (nothing failed after them). Why that read didn't raise it is
+  open (the only read that followed refused commands; harmless to the
+  driver either way: an unraised bit needs no collecting).
 
 ## Emulator
 

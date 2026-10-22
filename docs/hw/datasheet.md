@@ -239,7 +239,10 @@ watching.
   (confirmed 2026-10-21). Reading the last block makes the card report
   `OUT_OF_RANGE` under 76 us after the read, kept until a command collects
   it (confirmed 2026-10-21, 20 of 20; a CMD13 straight after the read is
-  too early). The driver polls CMD13 for it, ~1 ms at most. Page: [sd.md](sd.md).
+  too early). The driver polls CMD13 for it, ~1 ms at most. Not every
+  such read raises it (guard run version 6: 30 of 31 within 5 CMD13s; the
+  one after refused writes didn't, and the next reads were fine). Page:
+  [sd.md](sd.md).
 
 ### CompactFlash slot
 - PC Card socket 1; power CPLD `0x16` bit 1 then `0x10` bit 12; RESET CPLD
