@@ -131,6 +131,9 @@ happens to hand over r11 = 0, so a run alone can't tell). `RP_MAY_OMIT=1`
 builds a listed image may-omit anyway (the X51v check of the no-chain
 line: `RP_MAY_OMIT=1 cargo xtask codegen-variant rp-crash may-omit`).
 Building it found quality audit C61 (the run limit's and the
-SWI's reports carried no SPSR). Waiting: the deliberate crash on the X51v,
-both builds.
+SWI's reports carried no SPSR). **Proven on the X51v 2026-10-22** (the
+owner present): the frame-pointer build's panic chained `panic_fmt`, `main`
+at main.rs:150, `__rp_image_main`, `rp_main`, `_start` (the emulator's
+chain, address for address); the may-omit build said only `no frame chain
+(built may-omit)`. Both came back to the loader, their reports on the card.
 
