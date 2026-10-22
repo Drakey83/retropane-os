@@ -181,7 +181,7 @@ named in its evidence.
 | P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
 | P20 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
 | P21 | partial | B8 (X51v): one blit from a full-screen pattern = the four row blits, same picture, same 18.9 ms (declined: the cost is the blend pass); left: fewer passes (the dither folded into the background where it never changes, the 3D core) |
-| F6 | open | written (text's lean commands), not run on the device |
+| F6 | partial | run F, third run (X51v, 2026-10-20): the engine keeps its surfaces and a copy runs without its colour word (4 words a glyph, not 10), but a screen of text stays 12.4 ms: ~6 us a operation is fixed on the engine, so fewer bytes don't help; the lever is fewer operations (whole words or lines kept rendered, one blit each), not yet built or measured |
 
 ## The checklist rule
 
