@@ -97,7 +97,7 @@ mod image {
             let s = regs.read32(reg::GSCTRL);
             regs.write32(reg::GSCTRL, s ^ (1 << 26));
             let m = regs.read32(MBXCLK);
-            regs.write32(MBXCLK, m ^ (1 << 2));
+            rp_drv_mbx_display::clock::restore(regs, m ^ (1 << 2));
             let v = regs.read32(rp_drv_mved::M24CLK);
             regs.write32(rp_drv_mved::M24CLK, v ^ (1 << 1));
         }

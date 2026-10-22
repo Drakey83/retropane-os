@@ -3834,8 +3834,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &[
                 "FS1: 20 full-screen fills",
                 "  ok  FS1: the queued work finished once the clock was back",
-                "  FS2: it returned 0x",
+                "FS2: not repeated",
                 "  ok  FS3: the engine caught up (the fence landed)",
+                "  ok  FS3: A still on screen after the stall",
                 "  ok  FS3: B after the stall is B drawn after A (the screens' hashes)",
                 " checks, 0 BAD; MBXCLK at the end ",
                 "RETROPANE-GPUBENCH: done",

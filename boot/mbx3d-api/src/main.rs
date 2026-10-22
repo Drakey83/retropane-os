@@ -721,7 +721,7 @@ mod image {
             g.e.regs.write32(off, v);
         }
         g.e.reset(rt::delay_us);
-        g.e.regs.write32(MBXCLK, clk0);
+        rp_drv_mbx_display::clock::restore(&mut g.e.regs, clk0);
         rp_image::finish()
     }
 

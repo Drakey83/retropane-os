@@ -11,6 +11,16 @@
 //! across a clock off and on, so a caller that switches the clock on
 //! ([`Gate::work`] returning true) needs to redo nothing.
 //!
+//! **The MBX clocks off (enable 0) is fatal to touch** (quality audit C43,
+//! `rp-gpubench` run FS, X51v 2026-10-22): queued 2D work pauses and
+//! finishes once the clock is back, but one read of an MBX register with
+//! it off hung the CPU's bus until the watchdog reset the device. So the
+//! clocks go off only through [`stop`], whose [`Stopped`] holds the only
+//! handle to the register bus until it puts the clock back: code that
+//! would touch a register meanwhile doesn't compile. Nothing else writes
+//! `MBXCLK` but this module (`cargo xtask lint`: [`restore`] for a value
+//! kept from before).
+//!
 //! The system clock (the core PLL) is a set-up option: [`Speed`] and
 //! [`set_speed`]. It clocks both MBX cores (through `MBXCLK`'s divider)
 //! and the 2700G's local SDRAM, so a speed carries the memory timing for
@@ -249,6 +259,73 @@ fn write_speed<B: RegisterBus>(
     Some(a)
 }
 
+/// The MBX clocks stopped (`MBXCLK` enable 0, the divider kept) by
+/// [`stop`]: it holds the register bus, so nothing can read or write an MBX
+/// register while the clocks are off (the bus would hang: C43). Dropped or
+/// [`resumed`](Stopped::resume), it writes back the value it found.
+///
+/// The guard is the compiler's: a register touched while the clocks are
+/// stopped doesn't build.
+///
+/// ```compile_fail
+/// use rp_drv_mbx_display::clock::stop;
+/// use rp_hal_api::RegisterBus;
+/// let mut bus = rp_hal_mock::MockBus::new();
+/// let s = stop(&mut bus);
+/// let _status = bus.read32(0x12c); // the bus is held: error[E0499]
+/// s.resume();
+/// ```
+#[must_use = "dropping it puts the clocks straight back"]
+pub struct Stopped<'a, B: RegisterBus> {
+    bus: &'a mut B,
+    was: u32,
+}
+
+impl<B: RegisterBus> Stopped<'_, B> {
+    /// `MBXCLK` as [`stop`] found it.
+    #[must_use]
+    pub fn found(&self) -> u32 {
+        self.was
+    }
+
+    /// The clocks back on as found.
+    pub fn resume(self) {}
+}
+
+impl<B: RegisterBus> Drop for Stopped<'_, B> {
+    fn drop(&mut self) {
+        self.bus.write32(MBXCLK, self.was);
+    }
+}
+
+/// Stops the MBX clocks (enable 0, the divider kept) until the returned
+/// [`Stopped`] is dropped or resumed. Queued 2D work pauses and finishes
+/// afterwards (run FS); the bus is held so no register is touched meanwhile.
+pub fn stop<B: RegisterBus>(bus: &mut B) -> Stopped<'_, B> {
+    let was = bus.read32(MBXCLK);
+    bus.write32(MBXCLK, was & !3);
+    Stopped { bus, was }
+}
+
+/// Writes `MBXCLK` = `mbxclk`, a value kept from before (the loader's
+/// put-back, a test image's run): the divider and the enable as given,
+/// except that an enable of 0 is written as 1 (2D on): the clocks go off
+/// only through [`stop`]. Returns what was written.
+pub fn restore<B: RegisterBus>(bus: &mut B, mbxclk: u32) -> u32 {
+    let v = never_off(mbxclk);
+    bus.write32(MBXCLK, v);
+    v
+}
+
+/// `mbxclk` as [`restore`] writes it: an enable of 0 (the clocks off) as 1
+/// (2D on). A record of the board keeps this, so what is put back reads
+/// back as recorded (the emulator starts `MBXCLK` at 0; the X51v at
+/// Windows Mobile's `0x5`).
+#[must_use]
+pub const fn never_off(mbxclk: u32) -> u32 {
+    if mbxclk & 3 == 0 { mbxclk | 1 } else { mbxclk }
+}
+
 /// `MBXCLK` with the 2D and 3D clocks on, the divider kept.
 #[must_use]
 pub const fn with_3d(mbxclk: u32) -> u32 {
@@ -334,6 +411,30 @@ mod tests {
         assert_eq!(two_d_only(0x6), 0x5);
         assert_eq!(with_3d(0x9), 0xA);
         assert!(has_3d(0xA) && !has_3d(0x9));
+    }
+
+    #[test]
+    fn stop_holds_the_bus_and_puts_the_clock_back() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        bus.preset(MBXCLK, 0x5);
+        {
+            let s = stop(&mut bus);
+            assert_eq!(s.found(), 0x5);
+            // `bus.read32(0x12c)` here doesn't compile: `s` holds the bus.
+        }
+        assert_eq!(bus.writes(), [(MBXCLK, 0x4), (MBXCLK, 0x5)]);
+        bus.preset(MBXCLK, 0xA);
+        stop(&mut bus).resume();
+        assert_eq!(&bus.writes()[2..], [(MBXCLK, 0x8), (MBXCLK, 0xA)]);
+    }
+
+    #[test]
+    fn restore_never_leaves_the_clocks_off() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        assert_eq!(restore(&mut bus, 0x5), 0x5);
+        assert_eq!(restore(&mut bus, 0x6), 0x6);
+        assert_eq!(restore(&mut bus, 0x4), 0x5, "enable 0 written as 2D on");
+        assert_eq!(bus.writes(), [(MBXCLK, 0x5), (MBXCLK, 0x6), (MBXCLK, 0x5)]);
     }
 
     #[test]

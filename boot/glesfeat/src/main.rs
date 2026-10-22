@@ -562,7 +562,7 @@ mod image {
         cpu::drain_write_buffer();
         let mut ready = false;
         if e.regs.read32(PLLSTAT) & 4 != 0 {
-            e.regs.write32(MBXCLK, with_3d(clk0));
+            rp_drv_mbx_display::clock::restore(&mut e.regs, with_3d(clk0));
             rt::delay_us(1_000);
             e.reset(rt::delay_us);
             ready = pm_init(&mut e, vram);
@@ -603,7 +603,7 @@ mod image {
             e.regs.write32(off, v);
         }
         e.reset(rt::delay_us);
-        e.regs.write32(MBXCLK, clk0);
+        rp_drv_mbx_display::clock::restore(&mut e.regs, clk0);
         rp_image::finish()
     }
 

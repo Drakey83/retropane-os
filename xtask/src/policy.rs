@@ -184,6 +184,32 @@ pub fn check_unchecked_2d(path: &str, text: &str) -> Vec<String> {
         .collect()
 }
 
+/// The one file that writes `MBXCLK` (quality audit C43): the MBX clocks
+/// go off only through `clock::stop`, whose guard holds the register bus
+/// (one MBX register read with them off hung the X51v's bus, run FS).
+pub const MBXCLK_HOME: &str = "drivers/mbx-display/src/clock.rs";
+
+/// `MBXCLK` written outside [`MBXCLK_HOME`]: everything else goes through
+/// `clock::stop` (off, guarded) or `clock::restore` (a kept value, never
+/// off).
+#[must_use]
+pub fn check_mbxclk_writes(path: &str, text: &str) -> Vec<String> {
+    if !path.ends_with(".rs") || path.starts_with("xtask/") || path == MBXCLK_HOME {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim_start().starts_with("//"))
+        .filter(|(_, l)| l.contains("write32(") && l.contains("MBXCLK"))
+        .map(|(i, _)| {
+            format!(
+                "{path}:{}: MBXCLK written directly: use rp_drv_mbx_display::clock::stop (the clocks off, guarded) or clock::restore (a kept value) (quality audit C43: an MBX register touched with the clocks off hangs the bus)",
+                i + 1
+            )
+        })
+        .collect()
+}
+
 /// The marker of a value copied from Windows Mobile, Dell or another
 /// original (docs/quality-audit.md D1): `// inherited: <audit item>,
 /// <source>`.
@@ -388,5 +414,26 @@ const B: u32 = 2;
         assert!(check_unsafe_policy("drv", CORE, "#![no_std]").is_some());
         assert!(check_unsafe_policy("drv", CORE, "#![forbid(unsafe_code)]").is_none());
         assert!(check_unsafe_policy("xtask", Placement::Host, "").is_none());
+    }
+
+    #[test]
+    fn mbxclk_is_written_only_by_the_clock_module() {
+        let bad = "        regs.write32(MBXCLK, 0x4);";
+        assert_eq!(
+            check_mbxclk_writes("boot/gpubench/src/main.rs", bad).len(),
+            1
+        );
+        assert_eq!(check_mbxclk_writes("hal/x51v/src/board.rs", bad).len(), 1);
+        assert!(check_mbxclk_writes(MBXCLK_HOME, bad).is_empty());
+        assert!(
+            check_mbxclk_writes("boot/gpubench/src/main.rs", "// regs.write32(MBXCLK, 0)")
+                .is_empty()
+        );
+        assert!(
+            check_mbxclk_writes("boot/x/src/main.rs", "clock::restore(&mut regs, v);").is_empty()
+        );
+        assert!(
+            check_mbxclk_writes("boot/x/src/main.rs", "let v = regs.read32(MBXCLK);").is_empty()
+        );
     }
 }

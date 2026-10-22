@@ -1071,6 +1071,17 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "MBX clock: restore writes an enable of 0 (the clocks off, unguarded: C43)",
+        file: "drivers/mbx-display/src/clock.rs",
+        from: "if mbxclk & 3 == 0 { mbxclk | 1 } else { mbxclk }",
+        to: "mbxclk",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "restore_never_leaves_the_clocks_off",
+        ]),
+    },
+    Mutant {
         name: "resampler: 48 kHz's right wing read from the wrong row",
         file: "services/audio/src/resample.rs",
         from: "let right = wing_coefs(&r, ((147 - k) as u32 * 300) * PHASES as u32);",

@@ -519,7 +519,7 @@ mod image {
             return;
         }
         set_cs3(LONG_CS3);
-        regs.write32(MBXCLK, clk & !0xC | 1 << 2);
+        rp_drv_mbx_display::clock::restore(regs, clk & !0xC | 1 << 2);
         rt::delay_us(1_000);
         if speed != Speed::WM {
             let _ = clk::set_speed(regs, Speed::WM, rt::delay_us);
@@ -804,7 +804,7 @@ mod image {
             .filter(|a| a.unwritten == 0)
             .map(|a| a.lock_us);
         if lock.is_some() {
-            e.regs.write32(MBXCLK, clk0 & !0xC);
+            rp_drv_mbx_display::clock::restore(&mut e.regs, clk0 & !0xC);
             rt::delay_us(1_000);
             e.reset(rt::delay_us);
             let _ = pm_init(e, vram);
@@ -1057,7 +1057,7 @@ mod image {
                 );
                 break;
             }
-            e.regs.write32(MBXCLK, clk);
+            rp_drv_mbx_display::clock::restore(&mut e.regs, clk);
             rt::delay_us(1_000);
             e.reset(rt::delay_us);
             log!("P: parameter memory set-up, MBXCLK 0x{clk:x} ({name})");
@@ -1189,7 +1189,7 @@ mod image {
             e.regs.write32(off, v);
         }
         e.reset(rt::delay_us);
-        e.regs.write32(MBXCLK, clk0);
+        rp_drv_mbx_display::clock::restore(&mut e.regs, clk0);
         rp_image::finish()
     }
 

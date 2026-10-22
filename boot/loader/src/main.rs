@@ -1882,7 +1882,8 @@ mod image {
             pwm,
             gsctrl: regs.read32(reg::GSCTRL),
             gamma: core::array::from_fn(|k| regs.read32(reg::GFXGAM0 + 4 * k)),
-            mbxclk: regs.read32(MBXCLK),
+            // As the put-back writes it: never the clocks off (C43).
+            mbxclk: rp_drv_mbx_display::clock::never_off(regs.read32(MBXCLK)),
             m24clk: regs.read32(rp_drv_mved::M24CLK),
         }
     }
@@ -1896,7 +1897,7 @@ mod image {
         mut cpld: Option<&mut BoardCpld>,
         mut pwm: Option<&mut Mmio>,
     ) -> BoardReport {
-        use rp_drv_mbx_display::{clock::MBXCLK, reg};
+        use rp_drv_mbx_display::reg;
         use rp_hal_api::RegisterBus;
         use rp_hal_x51v::board::{CPLD1C_BITS, CPLD14_BITS, Differs, GSCTRL_GAMMA};
         let first = devices::loader_first_start();
@@ -1945,7 +1946,7 @@ mod image {
             );
         }
         if d.0 & Differs::MBXCLK != 0 {
-            regs.write32(MBXCLK, want.mbxclk);
+            rp_drv_mbx_display::clock::restore(regs, want.mbxclk);
         }
         if d.0 & Differs::M24CLK != 0 {
             regs.write32(rp_drv_mved::M24CLK, want.m24clk);
