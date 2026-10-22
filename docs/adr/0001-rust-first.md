@@ -88,3 +88,15 @@ today: no backtrace was ever built, the crash line reports the fault
 directly." Both `targets/*.json` say `"frame-pointer": "may-omit"`; a
 debug build that wants a backtrace turns them back on with one flag.
 
+**The crash-screen backtrace is mode-dependent (owner, 2026-10-22).** B
+stands. Frame pointers are opt-in per image, a list in xtask (like the
+Thumb list), starting with `rp-crash` only: such an image is built in its
+own target folder with `-C force-frame-pointers=yes --cfg rp_frame_pointers`
+(the whole build, `core` included, so the chain is unbroken), and only
+there is the walker compiled in. Every other image (the kernel, the loader,
+and the benchmark images whose numbers are the perf ratchet's floors) is
+may-omit, carries no walker code at all, and prints "no frame chain (built
+may-omit)". Emptying the list recovers everything; nothing to remove. The
+Thumb loader (frame pointer r7, chains broken by ARM/Thumb calls) stays
+may-omit.
+

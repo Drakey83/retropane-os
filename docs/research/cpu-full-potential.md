@@ -125,6 +125,38 @@ slowest direction (12 MB/s).
 | **T7** | **Clocks set per moment:** the CPU slowed or asleep while the GPU works, the GPU's clocks off while the CPU works | Battery drain against frame rate for the compositor's modes | Speed and battery together |
 | **T8** | **The 2D engine and 3D core at once** (P8 in the GPU map) | As there | Up to ~2x throughput when both are busy |
 
+## C6 wired in: the SIMD crate (design, 2026-10-22; the owner's choice b)
+
+The owner chose a small HAL-level crate over a HAL hook (no callback in the
+hot path; the plain loop runs on host and emulator; the ARM path is already
+checked equal). The plan, built in this order:
+
+1. **`hal/simd` (`rp-hal-simd`)**, beside `hal/mem` and shaped like it: the
+   dot product's assembly moves here from `rp_hal_pxa27x::iwmmxt` (which
+   re-exports it, so the probe's `wmmx_dot` row measures the same code),
+   with the plain loop as the only path on the host. One call,
+   `dot(win, at, coef) -> i32`: wrapping 32-bit sums as today, the plain
+   loop whenever iWMMXt's conditions (8-aligned, a multiple of 8 long,
+   reads inside `win`) don't hold.
+2. **Never a fault:** iWMMXt runs only after whoever guarantees the unit is
+   reachable says so (`rp_hal_simd::set_unit(true)`: the kernel once its
+   lazy context switching is set up, a bare image after `single_access`).
+   The default is the plain loop, so an image that never says so is right,
+   just slower; one flag read a block, not a sample.
+3. **The mixer's block path** (`services/audio` `add_fast`): the window
+   becomes 16-bit (it is 16-bit samples today, widened to `i32`), 8-aligned,
+   with the padding the routine reads; each phase's coefficients become one
+   contiguous row (the left wing reversed, then the right, zeros to a
+   multiple of 8: 24 for 48 kHz's 11 taps, 48 at most). 48 kHz's table
+   `T48` is stored in that shape (replaced, not added: memory first), the
+   whole-number strides and the general case build it once a phase as now.
+   `add_exact` (the frame-by-frame reference) stays as it is; the existing
+   tests that hold `add_fast` equal to it are the check, plus a host test
+   of the crate against a naive sum at every alignment and length.
+4. **Measured:** the mixer's cycles a frame on the X51v (669 at 48 kHz
+   today: `docs/hw/audio.md` "The mixer's cost", re-run the same way), the probe's rows for the floors, and the emulator
+   audio check; a device run waits for the owner.
+
 ## The order
 
 The GPU program's clock run (`rp-gpubench` run G) comes first, as asked.

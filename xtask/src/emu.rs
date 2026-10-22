@@ -7436,6 +7436,44 @@ fn fine_pitch(x: &[i16], rate: u32) -> f64 {
     }
 }
 
+/// `emu-audio-e3`'s rule that a scale never goes down (quality audit
+/// C22). A window raises the highest note only when the next window is the
+/// same note: a window across a join (or a note's quiet onset after
+/// silence) can read as any pitch, and one read too high made every window
+/// of the true note after it "below" (C22's "note 1 after 3/4" at part B's
+/// first window, 2026-10-22). Two windows in a row below the highest
+/// confirmed note are a replay (a lap of the ring is a quarter second of
+/// earlier notes, a dozen windows).
+#[derive(Default)]
+struct Rising {
+    /// The highest note seen in two windows in a row.
+    high: usize,
+    /// The window before, if it was a note.
+    prev: Option<usize>,
+    /// Windows in a row below `high` by more than one note.
+    below: usize,
+}
+
+impl Rising {
+    /// A window holding note `n`: `Some(high)` if it is a replay.
+    fn note(&mut self, n: usize) -> Option<usize> {
+        self.below = if n + 1 < self.high { self.below + 1 } else { 0 };
+        if self.below >= 2 {
+            return Some(self.high);
+        }
+        if self.prev == Some(n) {
+            self.high = self.high.max(n);
+        }
+        self.prev = Some(n);
+        None
+    }
+
+    /// A window that is quiet or no note of the scale.
+    fn other(&mut self) {
+        self.prev = None;
+    }
+}
+
 /// `emu-audio-e3`'s recording: 20 ms windows, each silent, a note of the
 /// scale (its pitch within 2.5%, by [`fine_pitch`]), or neither (a join
 /// between notes). The two scales (A, B) are the two runs of notes split
@@ -7501,30 +7539,28 @@ fn e3_recording(wav: &Path) -> Result<String, String> {
     let mut said = Vec::new();
     // In windows: A's gap at least 100 ms, B's at most 20 ms.
     for (name, p, gap_min, gap_max) in [("A", &parts[0], 5, usize::MAX), ("B", &parts[1], 0, 1)] {
-        let mut last = 0;
-        let mut below = 0;
+        let mut rising = Rising::default();
         let mut seen = [0usize; 24];
         let (mut run, mut gaps, mut longest) = (0usize, 0usize, 0usize);
         for &(k, v) in p {
             match v {
                 Win::Note(n) => {
-                    below = if n + 1 < last { below + 1 } else { 0 };
-                    if below >= 2 {
+                    if let Some(high) = rising.note(n) {
                         return Err(format!(
                             "audio E3: in {name} the scale went down at {:.2} s (note {} after {}): a replay",
                             k as f64 / 50.0,
                             n + 1,
-                            last + 1
+                            high + 1
                         ));
                     }
-                    last = last.max(n);
                     seen[n] += 1;
                 }
                 Win::Quiet => {
+                    rising.other();
                     run += 1;
                     continue;
                 }
-                Win::Other => {}
+                Win::Other => rising.other(),
             }
             if run > 1 {
                 gaps += usize::from(run >= gap_min.max(2));
@@ -10517,6 +10553,45 @@ mod tests",
         std::fs::write(root.join("local/rp-today-run.txt"), b"log").unwrap();
         assert_eq!(crate::local_inputs(&root), second);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Quality audit C22: a scale's first window read too high (part B's
+    /// onset, 2026-10-22: one window of note 4, then note 1) is not a
+    /// replay; a quarter second of earlier notes still is.
+    #[test]
+    fn e3_rising_ignores_one_wrong_window_and_catches_a_replay() {
+        use super::Rising;
+        let run = |notes: &[Option<usize>]| -> Option<(usize, usize)> {
+            let mut r = Rising::default();
+            for (k, n) in notes.iter().enumerate() {
+                match n {
+                    Some(n) => {
+                        if let Some(high) = r.note(*n) {
+                            return Some((k, high));
+                        }
+                    }
+                    None => r.other(),
+                }
+            }
+            None
+        };
+        // Five windows a note (100 ms of 20 ms windows), notes from `from`.
+        let scale = |from: usize, to: usize| -> Vec<Option<usize>> {
+            (from..to).flat_map(|n| [Some(n); 5]).collect()
+        };
+        // The failing run's onset: silence, note 4 once, then the scale.
+        let mut onset = vec![None, None, Some(3)];
+        onset.extend(scale(0, 24));
+        assert_eq!(run(&onset), None);
+        // A join window between notes, read high or low.
+        let mut joins = scale(0, 6);
+        joins.insert(10, Some(9));
+        joins.insert(20, Some(0));
+        assert_eq!(run(&joins), None);
+        // A replay: the ring's last quarter second again after note 12.
+        let mut replay = scale(0, 12);
+        replay.extend(scale(7, 12));
+        assert_eq!(run(&replay), Some((61, 11)));
     }
 
     /// Run FI's check reads the X51v's own lines (local/rp-gpubench-runFI.txt).
