@@ -180,6 +180,7 @@ on the owner's X51v at 624 MHz, `local/rp-probe-gate-run1.txt`):**
 | `memcpy`'s prefetch distance (256 KiB from memory) | none 5.60 ms (47 MB/s), 32 B ahead 3.40, **64 B (the old `memcpy`) 2.74 (96 MB/s)**, 96-256 B ahead **2.41 ms (109 MB/s)**, flat |
 | **`memcpy` changed to prefetch 128 B ahead** (same night, `rp-probe` again) | `memcpy_64k` 687 -> **606 us (-12%)**, 256 KiB 2.74 -> 2.41 ms, 1 MiB 10.95 -> 9.63 ms; in the SRAM unchanged; the memory self-check passes |
 | DMA as a copy engine (128 KiB SDRAM to SDRAM, 32-byte bursts, words; two runs) | **2.92 ms (45 MB/s) against `memcpy`'s 1.21 ms (108 MB/s)**; the CPU keeps **86%** of its speed while the DMA copies (a unit of cached work 14.86 us against 12.85 alone): worth it only with other work to overlap |
+| **Code generation (C9): the probe built four ways, each run on the device, every check passing** | `-C target-cpu=xscale`: **byte-identical** to today's build (no effect); **frame pointers optional** (target spec `may-omit`, 1.5 KB smaller): lz4 -2 to -6%, photo row -7%, TLB-fit -6%, small copies -5%, frames -2%, **but SD DMA reads +6% slower** (two runs each, spread ~0%: real; a code-layout effect is the suspect); **Thumb**: 26% smaller, compute +25% to +120% (photo row 13x) |
 
 
 ### SD card writes (2026-10-11, `cargo xtask install`, ADR-0013)
