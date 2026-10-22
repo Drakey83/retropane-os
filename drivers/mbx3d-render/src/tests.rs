@@ -1130,6 +1130,64 @@ fn mip_levels_are_made_by_averaging() {
     assert!(upload_mipmapped(&mut g.pool, &mut g.mem, 0, format::ARGB8888, &texels).is_none());
 }
 
+/// The performance gate's T6: mip levels are made on the CPU side, never
+/// by reading 2700G memory back (12 MB/s, the bus's slowest direction),
+/// and they're exactly the level-by-level 2 x 2 cascade.
+#[test]
+fn mip_levels_read_nothing_back_and_match_the_cascade() {
+    struct NoReads {
+        words: std::collections::BTreeMap<usize, u32>,
+    }
+    impl LocalMem for NoReads {
+        fn store(&mut self, at: usize, words: &[u32]) {
+            for (k, &w) in words.iter().enumerate() {
+                self.words.insert(at + 4 * k, w);
+            }
+        }
+        fn load(&self, _at: usize) -> Option<u32> {
+            // Any load at all is the failure.
+            panic!("upload_mipmapped read 2700G memory back");
+        }
+        fn sync(&mut self) {}
+    }
+    let side = 64usize;
+    let base: Vec<u16> = (0..side * side)
+        .map(|i| (i as u32).wrapping_mul(0x9E37_79B9).rotate_right(7) as u16)
+        .collect();
+    let mut pool = Pool::new(POOL);
+    let mut mem = NoReads {
+        words: std::collections::BTreeMap::new(),
+    };
+    let t = upload_mipmapped(&mut pool, &mut mem, 3, format::RGB565, &base).unwrap();
+    // The reference: each level from the one above, as Vecs.
+    let mut level = base.clone();
+    let mut s = side;
+    let mut offset = 0u32;
+    for _ in 0..t.levels {
+        for y in 0..s {
+            for x in 0..s {
+                let a = t.at + offset + 2 * tex::twiddle(x as u32, y as u32);
+                let w = mem.words[&((a & !3) as usize)];
+                let got = (if a & 2 == 0 { w } else { w >> 16 }) as u16;
+                assert_eq!(got, level[y * s + x], "level size {s} at ({x}, {y})");
+            }
+        }
+        offset += (s * s * 2).max(4) as u32;
+        if s == 1 {
+            break;
+        }
+        let n = s / 2;
+        level = (0..n * n)
+            .map(|i| {
+                let (x, y) = (i % n, i / n);
+                let at = |dx: usize, dy: usize| level[(2 * y + dy) * s + 2 * x + dx];
+                average4(format::RGB565, [at(0, 0), at(1, 0), at(0, 1), at(1, 1)])
+            })
+            .collect();
+        s = n;
+    }
+}
+
 #[test]
 fn sixteen_bit_targets_as_measured() {
     // rp-mbx3d run 26, S26b: a 4 x 4 tile block, quarters red, green, blue

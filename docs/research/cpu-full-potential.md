@@ -172,7 +172,7 @@ named in its evidence.
 | T3 | open | commands fed by DMA not tried |
 | T4 | open | the routing table per kind of work not measured (harness) |
 | T5 | open | the GPU-format converters not timed together |
-| T6 | partial | audit 2026-10-21 of the OS path's CPU reads of 2700G memory: (1) `upload_mipmapped` reads each level back to make the next (a 256 x 256 texture: ~64 K word reads at 12 MB/s), fix: make the levels from a CPU-side copy; (2) the 2D renderer spins on the fence word while the engine works: whether that slows the engine is `rp-mbx-blend` B8c (built); register reads (FIFO level, status) are single words. Both to finish |
+| T6 | partial | audit 2026-10-21 of the OS path's CPU reads of 2700G memory: (1) `upload_mipmapped` read each level back to make the next (a 256 x 256 texture: ~64 K word reads at 12 MB/s): **fixed** 2026-10-21, levels made from the base in SDRAM by the same cascade, a test fails on any read back (its device speed not measured yet: no device image uploads mipmaps); (2) the 2D renderer spins on the fence word while the engine works: whether that slows the engine is `rp-mbx-blend` B8c (built); register reads (FIFO level, status) are single words. Both to finish |
 | T7 | open | clocks per moment against battery not measured (harness) |
 | T8 | open | as the GPU page's P8 |
 

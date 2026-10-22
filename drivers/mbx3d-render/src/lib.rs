@@ -809,6 +809,17 @@ fn average4(format: u32, t: [u16; 4]) -> u16 {
     out as u16
 }
 
+/// Texel `(x, y)` of mip level `k` of the `side`-wide square `base`: the
+/// base itself at level 0, else the [`average4`] of the four level `k - 1`
+/// texels under it (the cascade a level-by-level build computes, exactly).
+fn cascade(format: u32, base: &[u16], side: u32, k: u32, x: u32, y: u32) -> u16 {
+    if k == 0 {
+        return base[(y * side + x) as usize];
+    }
+    let t = |dx: u32, dy: u32| cascade(format, base, side, k - 1, 2 * x + dx, 2 * y + dy);
+    average4(format, [t(0, 0), t(1, 0), t(0, 1), t(1, 1)])
+}
+
 /// Uploads a square texture of 16-bit texels with its mip levels down to
 /// 1 x 1, each made from the larger one by averaging 2 x 2 texels (on the
 /// CPU, integer only): the base first, each level after the larger one,
@@ -840,36 +851,21 @@ pub fn upload_mipmapped<M: LocalMem>(
         ..texture(code, format)
     };
     let at = pool.alloc(t.bytes(), 128)?;
-    // Each level in a scratch row of at most 1024 texels: the base is read
-    // from `texels`, smaller levels from the level above (kept in 2700G
-    // memory and read back, so no level-sized buffer on the stack).
+    // Each level made from the base texels in `texels` (SDRAM, cached), by
+    // the same 2 x 2 cascade a level-by-level build does: a level-k texel
+    // is the average of four level k-1 texels, each made the same way
+    // down to the base. No read of 2700G memory (the bus's slowest
+    // direction, 12 MB/s: the performance gate's T6 found the old build
+    // reading each level back, ~64 K words for a 256 x 256 texture), and
+    // no level-sized buffer (the stack). A level-k pass reads the base
+    // once over: levels x side^2 SDRAM reads in all.
     let mut offset = 0u32;
     for k in 0..u32::from(levels) {
         let s = side >> k;
-        let texel = |mem: &M, x: u32, y: u32| -> u16 {
-            if k == 0 {
-                return texels[(y * side + x) as usize];
-            }
-            // The level above, twiddled, 2 x 2 averaged.
-            let above = offset - (2 * s) * (2 * s) * 2;
-            let read = |x: u32, y: u32| {
-                let a = at + above + 2 * tex::twiddle(x, y);
-                let w = mem.load((a & !3) as usize).unwrap_or(0);
-                (if a & 2 == 0 { w } else { w >> 16 }) as u16
-            };
-            average4(
-                format,
-                [
-                    read(2 * x, 2 * y),
-                    read(2 * x + 1, 2 * y),
-                    read(2 * x, 2 * y + 1),
-                    read(2 * x + 1, 2 * y + 1),
-                ],
-            )
-        };
+        let texel = |x: u32, y: u32| -> u16 { cascade(format, texels, side, k, x, y) };
         if s == 1 {
             // One texel: half a word (the next half is padding).
-            let w = u32::from(texel(mem, 0, 0));
+            let w = u32::from(texel(0, 0));
             mem.store((at + offset) as usize, &[w]);
         } else {
             let mut buf = [0u32; 32];
@@ -881,7 +877,7 @@ pub fn upload_mipmapped<M: LocalMem>(
                     let i = 2 * (m + j as u32);
                     let (x0, y0) = untwiddle(i);
                     let (x1, y1) = untwiddle(i + 1);
-                    *w = u32::from(texel(mem, x0, y0)) | u32::from(texel(mem, x1, y1)) << 16;
+                    *w = u32::from(texel(x0, y0)) | u32::from(texel(x1, y1)) << 16;
                 }
                 mem.store((at + offset + 4 * m) as usize, &buf[..n as usize]);
                 m += n;
