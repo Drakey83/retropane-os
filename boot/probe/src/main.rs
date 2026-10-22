@@ -75,7 +75,7 @@ mod image {
     const TS_PENIRQ: u8 = 94;
     /// Results kept (the suite's, the performance gate's included); any
     /// past it are counted, never lost unseen.
-    const MAX_RESULTS: usize = 96;
+    const MAX_RESULTS: usize = 112;
     /// Result lines a page (from page 4 on; the rest of each page holds its
     /// title and, on the last, the checks).
     const RESULTS_A_PAGE: usize = 30;

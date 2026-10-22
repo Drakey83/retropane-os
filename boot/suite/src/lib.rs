@@ -1293,7 +1293,7 @@ mod target {
         // (its clear and the loop); D-cache misses, buffer-stall cycles,
         // data stalls and cycles each.
         let mut table = [0u16; rp_lz4::TABLE_LEN];
-        let mut span = |r: &mut Runner, name: [&'static str; 4], f: &mut dyn FnMut()| {
+        let span = |r: &mut Runner, name: [&'static str; 4], f: &mut dyn FnMut()| {
             f();
             let s = pmu::start([
                 Event::DcacheMiss,
@@ -1313,6 +1313,21 @@ mod target {
             r,
             ["lz4c_dmiss", "lz4c_bstall", "lz4c_dstall", "lz4c_cycles"],
             &mut || black_box(&mut table).fill(0),
+        );
+        // Read the whole table, then clear it: if reads put its lines in
+        // the cache, this clear hits.
+        span(
+            r,
+            ["lz4r_dmiss", "lz4r_bstall", "lz4r_dstall", "lz4r_cycles"],
+            &mut || {
+                let t = black_box(&mut table);
+                let mut sum = 0u32;
+                for e in t.iter().step_by(16) {
+                    sum = sum.wrapping_add(u32::from(*e));
+                }
+                black_box(sum);
+                t.fill(0);
+            },
         );
         span(
             r,

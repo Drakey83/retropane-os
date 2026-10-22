@@ -339,6 +339,10 @@ watching.
   bits, +1 cycle up to 27 bits, +2 cycles beyond (measured 2026-10-22,
   `rp-probe` `mul_chain_*`, confirming Intel's early termination); LLVM
   doesn't schedule around it. Page: [cpu.md](cpu.md).
+- Stores don't allocate D-cache lines: clearing memory not in the cache
+  misses every store (~4,600 cycles for 8 KiB), clearing it after a read
+  doesn't. Line allocate (c7, c2, 5) used to zero memory hung the device
+  (2026-10-22, not isolated): kept out of data paths. Page: [cpu.md](cpu.md).
 
 ### Clocks, voltage, reset
 - Seven operating points (91, 104, 208, 312, 416, 520, 624 MHz) with core voltages

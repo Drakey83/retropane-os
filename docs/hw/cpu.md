@@ -31,3 +31,26 @@ hash uses `0x04F1BBCD`.
 
 Signed values with all high bits set count as small too, per Intel; not
 measured.
+
+## Clearing memory: the cache's state decides the cost
+
+Measured 2026-10-22 on the X51v (`rp-probe`'s `lz4c_*`, `lz4r_*`, `lz4w_*`
+counts; 16 clears of LZ4's 8 KiB table each):
+
+- A clear of lines **not in the D-cache** misses on every store (9,728
+  misses, 11,558-14,930 write-buffer stall cycles; ~4,600 cycles a clear):
+  stores don't allocate lines, so the lines stay out of the cache and the
+  next clear misses again.
+- After the lines are **read** (read-allocate), the same clear has **0
+  misses and 0 stall cycles**, and they stay in: LZ4's compress on a warm
+  table ran 1.4% faster (1,526,413 against 1,547,575 cycles).
+- Whether a stack array starts out cached is luck of where it sits.
+
+**Line allocate (CP15 c7, c2, 5) to zero memory hung the X51v** (the
+hardware watchdog, Dell's restore prompt): a probe build zeroing an 8 KiB
+buffer by allocating each line then storing to it, after a clean and
+invalidate of the range and with the lines already cached, never came back
+(`local/cardlog/probe-0065.txt` ends in the benchmarks). Not isolated (one
+row a run, the owner present, would). The whole-cache clean's own use of
+it (a reserved region, then invalidated) is unaffected and in use. Until
+isolated: line allocate stays out of data paths.
