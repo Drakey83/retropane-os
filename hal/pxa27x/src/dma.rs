@@ -330,6 +330,25 @@ impl Dma {
     /// [`DmaEngine::done`]. `false` if refused (busy, the lengths differ,
     /// not whole lines, empty).
     pub fn arm_copy(&mut self, src: &[u8], dst: &mut [u8]) -> bool {
+        self.arm_copy_shaped(src, dst, 32, Some(Width::Word))
+    }
+
+    /// [`Self::arm_copy`] with the burst size (`8`, `16` or `32` bytes,
+    /// DCMD SIZE) and the width field (`None`: 0) chosen: the gate's C11
+    /// sweep. `false` also for any other burst.
+    pub fn arm_copy_shaped(
+        &mut self,
+        src: &[u8],
+        dst: &mut [u8],
+        burst: u32,
+        w: Option<Width>,
+    ) -> bool {
+        let size = match burst {
+            8 => 1 << 16,
+            16 => 2 << 16,
+            32 => DCMD_SIZE32,
+            _ => return false,
+        };
         let (s, d) = (src.as_ptr() as u32, dst.as_mut_ptr() as u32);
         let Ok(len) = u32::try_from(src.len()) else {
             return false;
@@ -353,7 +372,7 @@ impl Dma {
             dst_step: CHUNK,
             chunk: CHUNK,
             len,
-            cmd: DCMD_INCSRC | DCMD_INCTRG | DCMD_SIZE32 | width(Width::Word),
+            cmd: DCMD_INCSRC | DCMD_INCTRG | size | w.map_or(0, width),
         };
         if !self.begin(shape, None) {
             return false;

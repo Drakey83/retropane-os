@@ -14,7 +14,7 @@ pub const TEXT: usize = COLS - 3;
 /// Lines per page (40 rows: content plus the footer).
 pub const ROWS: usize = 39;
 /// Pages.
-pub const PAGES: usize = 6;
+pub const PAGES: usize = 7;
 
 /// The checksum of a line's content.
 #[must_use]
@@ -80,7 +80,9 @@ impl<'a> Report<'a> {
         self.page = page.min(PAGES - 1);
     }
 
-    /// Appends a line to the current page.
+    /// Appends a line to the current page; a full page flows onto the next
+    /// (the report stays whole as it grows), and only the last page can
+    /// overflow (counted in [`Self::overflow`]).
     pub fn line(&mut self, args: fmt::Arguments) {
         let mut l = LineBuf {
             buf: [b' '; TEXT],
@@ -90,6 +92,9 @@ impl<'a> Report<'a> {
         let _ = l.write_fmt(args);
         if l.cut {
             l.buf[TEXT - 1] = b'>';
+        }
+        while self.used[self.page] == ROWS && self.page < PAGES - 1 {
+            self.page += 1;
         }
         let p = self.page;
         if self.used[p] == ROWS {
@@ -169,6 +174,20 @@ mod tests {
         assert!(lines[0].starts_with("LMPROTMIN DEADBEEF LMPROTMAX 00000001"));
         assert!(!lines[0][..TEXT].contains('>'), "two full pairs fit");
         assert!(lines[1].starts_with("CCCR      00000002"));
+    }
+
+    #[test]
+    fn a_full_page_flows_onto_the_next() {
+        let mut buf = storage();
+        let mut r = Report::new(&mut buf);
+        r.on_page(1);
+        for i in 0..ROWS + 3 {
+            r.line(format_args!("{i}"));
+        }
+        assert_eq!(r.page_lines(1).count(), ROWS);
+        assert_eq!(r.page_lines(2).count(), 3);
+        assert!(text(r.page_lines(2).next().unwrap()).starts_with(&format!("{ROWS}")));
+        assert_eq!(r.overflow, 0);
     }
 
     #[test]

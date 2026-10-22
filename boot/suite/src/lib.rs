@@ -888,6 +888,55 @@ mod target {
             b.copy_from_slice(black_box(&*a));
             black_box(&b);
         });
+        // C11's sweep: the burst size and the width field (0 or word; the
+        // shipped copy is 32-byte bursts, word), each timed and checked.
+        // Every wait is bounded (2^22 polls, far past any copy's time): a
+        // shape the controller doesn't finish is aborted and reported, not
+        // a frozen probe.
+        use rp_hal_api::Width;
+        let finish = |dma: &mut rp_hal_pxa27x::dma::Dma| -> bool {
+            for _ in 0..1u32 << 22 {
+                if let Some(ok) = dma.done() {
+                    return ok;
+                }
+            }
+            dma.abort();
+            false
+        };
+        let mut shaped = true;
+        let mut stuck = 0u32;
+        for (name, burst, w) in [
+            ("dma_copy_128k_b8_word", 8, Some(Width::Word)),
+            ("dma_copy_128k_b16_word", 16, Some(Width::Word)),
+            // Width 0 (32, 16, 8) timed the same as word on the X51v
+            // (2026-10-22, local/rp-probe-dma-shapes.txt); left out until
+            // an emulator release carries fork branch rp-next (rp-v0.29.0
+            // runs away on width 0: docs/hw/emulator.md).
+        ] {
+            b.fill(0);
+            let right = dma.arm_copy_shaped(a, b, burst, w) && finish(dma) && a == b;
+            if !right {
+                // Not timed: a wrong or stuck shape is the finding.
+                stuck += 1;
+                shaped = false;
+                continue;
+            }
+            r.run(name, 4, &mut || {
+                if dma.arm_copy_shaped(a, b, burst, w) {
+                    let _ = finish(dma);
+                }
+            });
+        }
+        r.check(
+            "dma_shapes",
+            shaped && !refused,
+            if refused {
+                "refused"
+            } else {
+                "a shape copied wrong or stuck"
+            },
+        );
+        r.result("dma_shapes_wrong", stuck, 1);
         // The CPU's share: units of cached work (1,000 dependent adds)
         // done while the DMA copies (its status read once a unit), then the
         // same number of units with nothing else running; ns a unit each.

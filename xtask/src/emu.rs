@@ -9220,6 +9220,7 @@ const PROBE_EXPECT: &[&str] = &[
     "check wmmx_copy OK",
     "check wmmx_avg OK",
     "check wmmx_dot OK",
+    "check dma_shapes OK",
 ];
 
 /// Probe checks the emulator is known to fail, each with why (they pass on
@@ -9230,11 +9231,11 @@ const PROBE_EXPECT: &[&str] = &[
 const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[
     (
         "wmmx_mix",
-        "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
+        "rp-v0.29.0's iWMMXt adds don't saturate (QEMU's TODO); modelled on fork branch rp-next, not yet released (docs/hw/emulator.md)",
     ),
     (
         "wmmx_align",
-        "rp-v0.29.0's WALIGNR at offset 0 shifts by 64 (undefined in C); fixed on fork branch iwmmxt-sat, not yet released (docs/hw/emulator.md)",
+        "rp-v0.29.0's WALIGNR at offset 0 shifts by 64 (undefined in C); fixed on fork branch rp-next, not yet released (docs/hw/emulator.md)",
     ),
 ];
 

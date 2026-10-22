@@ -154,6 +154,10 @@ watching.
   spread evenly, half far off; alone it repeats exactly. Together saves
   9% of the time. The engines take turns (ADR-0030 G2); the cause is
   open (`2700g.md` "baseline audit").
+- **DMA memory-to-memory** (`rp-probe`, X51v, 2026-10-22): 128 KiB in
+  2.90 / 4.78 / 8.50 ms with 32 / 16 / 8-byte bursts (~0.5 us fixed a
+  burst; 45 MB/s at best against `memcpy`'s 108); the DCMD width field
+  0 or word makes no difference.
 - **iWMMXt** (`rp-probe`, X51v, 2026-10-22): `wCID` `0x69051020`, access
   (CPAR bits 0-1) on as Windows Mobile leaves it; saturating adds
   saturate. Against plain ARM code: a 16-bit saturating mix 6.7x faster
