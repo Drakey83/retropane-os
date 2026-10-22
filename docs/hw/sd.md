@@ -297,6 +297,11 @@ driver's count agreeing):
   one of the last block; a CMD13 straight after showed `0x80000900` and the
   next read was clean). The driver now collects it with a CMD13 after any
   read ending on the last block (quality audit C46).
+- **Version 3 (`local/rp-sdtime-guard-run3.txt`): that CMD13 is too early.**
+  Sent straight after the last-block read it doesn't find the flag (the
+  next read still fails); a CMD13 a few milliseconds later does, and
+  clears it. The card raises OUT_OF_RANGE some time after the read
+  (likely its read-ahead running off the end). How long: to measure.
 
 ## Emulator
 

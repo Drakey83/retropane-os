@@ -279,6 +279,15 @@ controls of 5 renders with the screen at 32 bits (where P2Y found errors:
 if the controls find none, the count can't tell anything). Its emulator
 check is in `emu-gpubench`; the device run is waiting.
 
+**Verified on the X51v (2026-10-21, run P2L version 3,
+`local/rp-gpubench-runP2L3.txt`):** 1,000 32-bit renders under the
+dithered RGB565 screen, **0 wrong or differing pixels in 307.2 million**
+(the bars and the whole picture against a reference made under the same
+screen, never changed); the controls with the screen at 32 bits found 237
+and 213 wrong bar pixels in 5 renders each, as P2Y did. Vote B stands with
+32-bit layers. (Versions 1 and 2 broke their own comparison with a 2D fill
+given an inverted rectangle, quality audit C47.)
+
 Still to design (in the renderer's next step): which engine writes the
 final dithered picture (the 3D core has the dither, bit 3 of `0x650`; the
 2D engine's isn't measured) and the double-buffer sizes at 16 bits.
