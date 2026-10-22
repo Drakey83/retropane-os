@@ -1,0 +1,11 @@
+[package]
+name = "rp-hal-simd"
+description = "The XScale's media unit (iWMMXt) for hot loops, with the plain loop everywhere else"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

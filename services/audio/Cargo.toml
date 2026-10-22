@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 rp-hal-api = { path = "../../hal/api" }
+rp-hal-simd = { path = "../../hal/simd" }
 rp-drv-pxa-i2s = { path = "../../drivers/pxa-i2s" }
 rp-drv-wm8750 = { path = "../../drivers/wm8750" }
 

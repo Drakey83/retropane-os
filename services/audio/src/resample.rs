@@ -123,28 +123,47 @@ const fn gcd(mut a: u32, mut b: u32) -> u32 {
 /// Table points the filter spans (past them, 0).
 pub const POINTS: usize = ZEROS * PHASES;
 
-/// 48 kHz's coefficients, worked out at compile time: a 48 kHz source's
-/// instants fall on only 148 phases (multiples of 300 / 44100), so its
-/// wing for phase `300 k` is row `k`; the right wing of phase `p` is the
-/// row of `44100 - p`. The same integers [`Ratio::coefs`] computes (one
-/// formula, [`wing_coefs`]); 6.5 KB read-only, for the commonest
-/// fractional rate.
-pub static T48: [[i16; MAX_TAPS]; 148] = table48();
+/// Coefficients a filter row holds at most: both wings, padded to a
+/// multiple of 8 (the dot product's unit takes 8 at a time: `rp-hal-simd`).
+pub const ROW: usize = (2 * MAX_TAPS).next_multiple_of(8);
 
-const fn table48() -> [[i16; MAX_TAPS]; 148] {
+/// 48 kHz's taps a wing (as [`Ratio::taps`] works them out).
+pub const TAPS48: usize = (ZEROS * 48_000).div_ceil(OUT as usize);
+
+/// A 48 kHz row's length: both wings, padded to a multiple of 8.
+pub const ROW48: usize = (2 * TAPS48).next_multiple_of(8);
+
+/// 48 kHz's filter rows, 8-aligned (each row is a multiple of 8 bytes, so
+/// every row is).
+#[repr(align(8))]
+pub struct Rows48(pub [[i16; ROW48]; 148]);
+
+/// 48 kHz's coefficients, worked out at compile time: a 48 kHz source's
+/// instants fall on only 148 phases (multiples of 300 / 44100), so phase
+/// `300 k` is row `k`: its left wing reversed (the tap nearest the
+/// instant last), then its right wing (the left wing of phase `44100 -
+/// 300 k`, row `147 - k`'s), then zeros: the row the dot product takes
+/// against the window from `TAPS48 - 1` frames before the instant. The
+/// same integers [`Ratio::coefs`] computes (one formula, [`wing_coefs`]);
+/// 7.1 KB read-only, for the commonest fractional rate.
+pub static T48: Rows48 = table48();
+
+const fn table48() -> Rows48 {
     let r = Ratio::of(48_000);
-    let mut t = [[0i16; MAX_TAPS]; 148];
+    let mut t = [[0i16; ROW48]; 148];
     let mut k = 0;
     while k < 148 {
-        let w = wing_coefs(&r, (k as u32 * 300) * PHASES as u32);
+        let left = wing_coefs(&r, (k as u32 * 300) * PHASES as u32);
+        let right = wing_coefs(&r, ((147 - k) as u32 * 300) * PHASES as u32);
         let mut i = 0;
-        while i < MAX_TAPS {
-            t[k][i] = w[i] as i16;
+        while i < TAPS48 {
+            t[k][TAPS48 - 1 - i] = left[i] as i16;
+            t[k][TAPS48 + i] = right[i] as i16;
             i += 1;
         }
         k += 1;
     }
-    t
+    Rows48(t)
 }
 
 /// One wing's coefficients from table position `start` (in units of
@@ -321,17 +340,14 @@ impl Ratio {
         ))
     }
 
-    /// For 48 kHz: the rows of [`T48`] for `phase` (left, right).
+    /// For 48 kHz: the row of [`T48`] for `phase` (both wings, the left
+    /// reversed).
     #[must_use]
-    pub fn rows48(
-        &self,
-        phase: u32,
-    ) -> Option<(&'static [i16; MAX_TAPS], &'static [i16; MAX_TAPS])> {
+    pub fn row48(&self, phase: u32) -> Option<&'static [i16; ROW48]> {
         if self.rate != 48_000 {
             return None;
         }
-        let k = (phase / 300) as usize;
-        Some((&T48[k], &T48[147 - k]))
+        Some(&T48.0[(phase / 300) as usize])
     }
 
     /// A sum of samples times [`Self::coefs`] (Q15, under 2^31: see the
@@ -576,14 +592,18 @@ mod tests {
                 break;
             }
             r.coefs(phase, &mut l, &mut rr);
-            let (tl, tr) = r.rows48(phase).unwrap();
-            for i in 0..MAX_TAPS {
+            let row = r.row48(phase).unwrap();
+            assert_eq!(r.taps(), TAPS48);
+            for i in 0..TAPS48 {
                 assert_eq!(
-                    (i32::from(tl[i]), i32::from(tr[i])),
+                    (i32::from(row[TAPS48 - 1 - i]), i32::from(row[TAPS48 + i])),
                     (l[i], rr[i]),
                     "phase {phase} tap {i}"
                 );
             }
+            assert!(row[2 * TAPS48..].iter().all(|&c| c == 0), "the padding");
+            assert!(l[TAPS48..].iter().chain(&rr[TAPS48..]).all(|&c| c == 0));
+            assert_eq!(row.as_ptr() as usize % 8, 0, "8-aligned");
         }
         for rate in [11_025, 22_050] {
             let r = Ratio::new(rate).unwrap();
@@ -604,7 +624,7 @@ mod tests {
         }
         assert!(Ratio::new(48_000).unwrap().stride(0).is_none());
         assert!(Ratio::new(OUT).unwrap().stride(0).is_none());
-        assert!(Ratio::new(22_050).unwrap().rows48(0).is_none());
+        assert!(Ratio::new(22_050).unwrap().row48(0).is_none());
     }
 
     #[test]

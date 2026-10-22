@@ -153,6 +153,8 @@ checked equal). The plan, built in this order:
    `add_exact` (the frame-by-frame reference) stays as it is; the existing
    tests that hold `add_fast` equal to it are the check, plus a host test
    of the crate against a naive sum at every alignment and length.
+**Built 2026-10-22 (steps 1-3):** `hal/simd` (`dot`, `dot_plain`, `wmmx`, `set_unit`; host tests at every start and length, wrapping), `iwmmxt::dot` re-exported from it; `T48` is now `Rows48` (148 rows of 24, 8-aligned, 7,104 B against 6,512: the old rows were half empty); `add_fast` takes 16-bit aligned windows and one row a frame through `rp_hal_simd::dot`; `rp-audio-s2` switches the unit on (logs "the filter's dot product: iWMMXt"; `RP_AUDIO_PLAIN` builds it with the plain loop) and puts the access back at the end. The block path still equals the frame path at every rate (77 audio tests; two new mutants for the rows' reversal and the T48 one moved, all three caught by hand). Emulator (rp-v0.30.0 code): `emu-audio-s2` passes with the unit on (the tune at pitch from 22.05, 11.025 and 48 kHz), `emu-audio-sleep` and `emu-probe` pass, `emu-audio-e3` 3 of 3 after one C49 late wake. Not yet: step 4 on the device (owner present or an unattended go).
+
 4. **Measured:** the mixer's cycles a frame on the X51v (669 at 48 kHz
    today: `docs/hw/audio.md` "The mixer's cost", re-run the same way), the probe's rows for the floors, and the emulator
    audio check; a device run waits for the owner.

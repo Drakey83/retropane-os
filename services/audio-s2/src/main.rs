@@ -81,6 +81,13 @@ mod image {
     /// stops at the mix's end): a 400 ms stall mid-music, then wakes forced
     /// inside the end's piece (the race). Tests 1-7 are skipped.
     const E3: bool = option_env!("RP_AUDIO_E3").is_some();
+    /// `RP_AUDIO_PLAIN` at build time: the mixer's filter by the plain loop
+    /// (the media unit left off), for the gate's C6 comparison; otherwise
+    /// the unit is switched on and the filter's dot product uses it
+    /// (`rp-hal-simd`), put back as found at the end.
+    const PLAIN: bool = option_env!("RP_AUDIO_PLAIN").is_some();
+    /// The media unit's access as found (put back by [`finish`]).
+    static UNIT_WAS: rt::Global<bool> = rt::Global::new(false);
     /// An ascending scale from 440 Hz, a semitone every 100 ms: no two
     /// notes alike, so a replay would show as the pitch going down.
     const SCALE: [u32; 24] = [
@@ -1099,6 +1106,20 @@ mod image {
             mixed: 0,
             lead_max: 0,
         };
+        if !PLAIN {
+            let was = rp_hal_pxa27x::iwmmxt::single_access(true);
+            UNIT_WAS.with(|w| *w = was);
+            rp_hal_simd::set_unit(true);
+        }
+        let _ = writeln!(
+            devices::RunLog,
+            "  the filter's dot product: {}",
+            if rp_hal_simd::unit() {
+                "iWMMXt"
+            } else {
+                "the plain loop"
+            }
+        );
         let started = rig.m.start(&mut rig.dma, ms());
         if rig.m.stats().ring_failed != 0 {
             let _ = writeln!(devices::RunLog, "  ring end failed at the start");
@@ -1236,6 +1257,10 @@ mod image {
     /// Puts the two board bits back as found, reports, returns to the loader.
     fn finish(cpld: Option<BoardCpld>, found: Option<(u16, u16)>) -> ! {
         put_back(cpld, found);
+        if rp_hal_simd::unit() {
+            rp_hal_simd::set_unit(false);
+            rp_hal_pxa27x::iwmmxt::single_access(UNIT_WAS.with(|w| *w));
+        }
         let _ = writeln!(devices::RunLog, "{}", super::MARKER);
         if devices::loader_present() {
             rt::delay_us(1_000_000);

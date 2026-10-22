@@ -11,6 +11,7 @@ publish.workspace = true
 rp-image = { path = "../../boot/image" }
 rp-hal-api = { path = "../../hal/api" }
 rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+rp-hal-simd = { path = "../../hal/simd" }
 rp-hal-x51v = { path = "../../hal/x51v" }
 rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
 rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }

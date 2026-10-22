@@ -498,63 +498,6 @@ pub fn avg(dst: &mut [u32], a: &[u32], b: &[u32]) -> bool {
     true
 }
 
-// The resampler's filter as one dot product (gate C6): 16-bit samples
-// against 16-bit coefficients, four at a time. WMADDS wRd, wRn, wRm
-// (`0xEEAn_d10m`) multiplies four pairs and adds them two by two into two
-// 32-bit lanes; WADDW (`0xEE8n_d18m`) accumulates them; WALIGNR0
-// (`0xEE8n_d02m`) takes 8 bytes from offset `wCGR0` of wRn:wRm for a window
-// that isn't 8-aligned. An aligned window takes its own loop: QEMU's
-// WALIGNR at offset 0 shifts by 64 (undefined in C; on x86 it ORs the two
-// registers), where the device gives wRn.
-core::arch::global_asm!(
-    r#"
-    .section .text.rp_wmmx_dot, "ax"
-    .arm
-    @ rp_wmmx_dot(win, coef, pairs) -> i32: sum of win[k] * coef[k] for
-    @ k < 8 * pairs; coef 8-aligned, pairs > 0. Two chains interleaved
-    @ (wR3/wR4/wR15 and wR7/wR8/wR14) to hide the load-to-multiply-to-add
-    @ latencies.
-    .global rp_wmmx_dot
-rp_wmmx_dot:
-    mov     r12, #0
-    mcrr    p0, #0, r12, r12, c15       @ wR15 = 0
-    mcrr    p0, #0, r12, r12, c14       @ wR14 = 0
-    ands    r3, r0, #7
-    bic     r0, r0, #7
-    beq     2f
-    mcr     p1, #0, r3, c8, c0, #0      @ wCGR0 = the window's offset
-    ldcl    p1, c0, [r0], #8
-1:  ldcl    p1, c1, [r0], #8
-    ldcl    p1, c5, [r0], #8
-    ldcl    p1, c2, [r1], #8
-    ldcl    p1, c6, [r1], #8
-    .inst   0xEE803021                  @ WALIGNR0 wR3, wR0, wR1
-    .inst   0xEE817025                  @ WALIGNR0 wR7, wR1, wR5
-    .inst   0xEEA34102                  @ WMADDS wR4, wR3, wR2
-    .inst   0xEEA78106                  @ WMADDS wR8, wR7, wR6
-    .inst   0xEE050005                  @ WOR wR0, wR5, wR5
-    .inst   0xEE8FF184                  @ WADDW wR15, wR15, wR4
-    .inst   0xEE8EE188                  @ WADDW wR14, wR14, wR8
-    subs    r2, r2, #1
-    bne     1b
-    b       3f
-2:  ldcl    p1, c3, [r0], #8
-    ldcl    p1, c7, [r0], #8
-    ldcl    p1, c2, [r1], #8
-    ldcl    p1, c6, [r1], #8
-    .inst   0xEEA34102                  @ WMADDS wR4, wR3, wR2
-    .inst   0xEEA78106                  @ WMADDS wR8, wR7, wR6
-    .inst   0xEE8FF184                  @ WADDW wR15, wR15, wR4
-    .inst   0xEE8EE188                  @ WADDW wR14, wR14, wR8
-    subs    r2, r2, #1
-    bne     2b
-3:  .inst   0xEE8FF18E                  @ WADDW wR15, wR15, wR14
-    mrrc    p0, #0, r0, r1, c15
-    add     r0, r0, r1
-    bx      lr
-    "#
-);
-
 core::arch::global_asm!(
     r#"
     .section .text.rp_wmmx_align, "ax"
@@ -574,32 +517,11 @@ rp_wmmx_align:
 
 unsafe extern "C" {
     fn rp_wmmx_align(lo: *const u64, hi: *const u64, n: u32) -> u64;
-    fn rp_wmmx_dot(win: *const i16, coef: *const i16, pairs: usize) -> i32;
 }
 
-/// `sum(win[at + k] * coef[k])` over `coef` (wrapping 32-bit sums, as the
-/// plain loop's `i32`), by iWMMXt; `None` (nothing read) unless `win` and
-/// `coef` start 8-aligned, `coef` is a nonzero multiple of 8 long, and the
-/// whole 8-byte words the routine reads lie inside `win`. The unit must be
-/// on.
-#[must_use]
-pub fn dot(win: &[i16], at: usize, coef: &[i16]) -> Option<i32> {
-    let (wb, cb) = (win.as_ptr() as usize, coef.as_ptr() as usize);
-    if wb % 8 != 0 || cb % 8 != 0 || coef.is_empty() || coef.len() % 8 != 0 {
-        return None;
-    }
-    // Bytes read: from `at`'s 8-byte word to the end of the word after the
-    // last (one more word when `at` isn't aligned).
-    let first = (2 * at) & !7;
-    let words = coef.len() / 4 + usize::from((2 * at) % 8 != 0);
-    if first + 8 * words > 2 * win.len() {
-        return None;
-    }
-    // SAFETY: both start 8-aligned (checked); the routine reads `words`
-    // 8-byte words of `win` from byte `first` (inside it, checked) and
-    // `coef.len()` samples of `coef`.
-    Some(unsafe { rp_wmmx_dot(win.as_ptr().add(at), coef.as_ptr(), coef.len() / 8) })
-}
+/// The resampler's dot product by the unit (moved to `rp-hal-simd`, the
+/// crate the mixer uses; the probe measures it here).
+pub use rp_hal_simd::wmmx as dot;
 
 /// WALIGNR0: the 8 bytes from byte `n` (0-7) of `lo` then `hi` (little
 /// endian). The unit must be on.

@@ -1049,10 +1049,32 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "mixer: a whole-number step's left wing not reversed in its row (C6 rows)",
+        file: "services/audio/src/mixer.rs",
+        from: "r[taps - 1 - k] = if p < POINTS { WING[p] } else { 0 };",
+        to: "r[k] = if p < POINTS { WING[p] } else { 0 };",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_block_path_gives_exactly_what_the_frame_path_gives",
+        ]),
+    },
+    Mutant {
+        name: "mixer: a worked-out left wing not reversed in its row (C6 rows)",
+        file: "services/audio/src/mixer.rs",
+        from: "general.0[taps - 1 - k] = l[k] as i16;",
+        to: "general.0[k] = l[k] as i16;",
+        check: Check::Host(&[
+            "-p",
+            "rp-audio",
+            "the_block_path_gives_exactly_what_the_frame_path_gives",
+        ]),
+    },
+    Mutant {
         name: "resampler: 48 kHz's right wing read from the wrong row",
         file: "services/audio/src/resample.rs",
-        from: "Some((&T48[k], &T48[147 - k]))",
-        to: "Some((&T48[k], &T48[k]))",
+        from: "let right = wing_coefs(&r, ((147 - k) as u32 * 300) * PHASES as u32);",
+        to: "let right = wing_coefs(&r, (k as u32 * 300) * PHASES as u32);",
         check: Check::Host(&[
             "-p",
             "rp-audio",

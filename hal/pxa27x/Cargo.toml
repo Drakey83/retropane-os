@@ -10,9 +10,11 @@ publish.workspace = true
 [dependencies]
 rp-hal-api = { path = "../api" }
 
-# Bare-metal images link RetroPane's memcpy family.
+# Bare-metal images link RetroPane's memcpy family; the media unit's dot
+# product lives in rp-hal-simd (re-exported as iwmmxt::dot).
 [target.'cfg(target_os = "none")'.dependencies]
 rp-hal-mem = { path = "../mem" }
+rp-hal-simd = { path = "../simd" }
 
 [dev-dependencies]
 rp-hal-mock = { path = "../mock" }

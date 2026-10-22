@@ -6,6 +6,7 @@ members = [
     "hal/pxa27x",
     "hal/x51v",
     "hal/mem",
+    "hal/simd",
     "hal/user",
     "drivers/pxa-uart",
     "drivers/mbx-display",

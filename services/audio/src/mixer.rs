@@ -44,12 +44,18 @@ use rp_drv_pxa_i2s::{StreamError, TX_PORT};
 use rp_hal_api::{DmaRing, RingEnd};
 
 use crate::chain::{self, BLOCK};
-use crate::resample::{MAX_TAPS, OUT, PHASES, POINTS, Ratio, WING};
+use crate::resample::{MAX_TAPS, OUT, PHASES, POINTS, ROW, Ratio, WING};
 
 /// Source frames a block's fast path decodes at most: a 96 kHz source's
 /// 70 frames a block and both wings of its filter.
 const WINDOW: usize = 128;
 use crate::role::{Role, Unplug, on_unplug};
+
+/// 16-bit samples or coefficients, 8-aligned (the dot product's unit
+/// reads 8-byte words: `rp-hal-simd`).
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+struct Aligned<const N: usize>([i16; N]);
 
 /// Streams open at once.
 pub const MAX_STREAMS: usize = 8;
@@ -489,13 +495,15 @@ impl Slot<'_> {
         if n > WINDOW {
             return false;
         }
-        let mut win = [[0i32; WINDOW]; 2];
+        // Each channel's window 16-bit and 8-aligned, with room past it
+        // for the dot product's padded reads (`rp-hal-simd`).
+        let mut win = [Aligned([0i16; WINDOW + ROW]); 2];
         let mut pos = (w0 % self.cap) as usize;
         for k in 0..n {
             let at = pos * self.ch * 2;
             for (c, w) in win.iter_mut().enumerate().take(self.ch) {
                 let i = at + 2 * c;
-                w[k] = i32::from(i16::from_le_bytes([self.buf[i], self.buf[i + 1]]));
+                w.0[k] = i16::from_le_bytes([self.buf[i], self.buf[i + 1]]);
             }
             pos += 1;
             if pos == self.cap as usize {
@@ -503,11 +511,16 @@ impl Slot<'_> {
             }
         }
         let taps = ratio.taps();
+        // A frame's filter is one row: the left wing reversed, the right
+        // wing, zeros to a multiple of 8; taken against the window from
+        // `taps - 1` frames before the instant. The reads end at most
+        // `len - 2 * taps` (under 8) past the window's last frame.
+        let len = (2 * taps).next_multiple_of(8);
         // Whole-number steps repeat their coefficients every 2 or 4 frames:
-        // each phase's set is built once a block (by quarters of a frame).
-        let mut quarter = [([0i16; MAX_TAPS], [0i16; MAX_TAPS]); 4];
+        // each phase's row is built once a block (by quarters of a frame).
+        let mut quarter = [Aligned([0i16; ROW]); 4];
         let mut have = [false; 4];
-        let mut general = ([0i16; MAX_TAPS], [0i16; MAX_TAPS]);
+        let mut general = Aligned([0i16; ROW]);
         let (mut idx, mut ph) = (i0, ph0);
         for f in 0..BLOCK {
             if f > 0 {
@@ -516,40 +529,36 @@ impl Slot<'_> {
                 ph = p;
             }
             let base = (idx - w0) as usize;
-            // The coefficients: table points by stride (whole-number
-            // steps), 48 kHz's table rows, or worked out.
-            let (cl, cr): (&[i16; MAX_TAPS], &[i16; MAX_TAPS]) =
-                if let Some((a, b)) = ratio.stride(ph) {
-                    let q = ph as usize * 4 / OUT as usize;
-                    if !have[q] {
-                        let (l, r) = &mut quarter[q];
-                        for k in 0..taps {
-                            let (p, q) = (a + k * PHASES, b + k * PHASES);
-                            l[k] = if p < POINTS { WING[p] } else { 0 };
-                            r[k] = if q < POINTS { WING[q] } else { 0 };
-                        }
-                        have[q] = true;
+            // The row: table points by stride (whole-number steps), 48
+            // kHz's table, or worked out.
+            let row: &[i16] = if let Some((a, b)) = ratio.stride(ph) {
+                let q = ph as usize * 4 / OUT as usize;
+                if !have[q] {
+                    let r = &mut quarter[q].0;
+                    for k in 0..taps {
+                        let (p, q) = (a + k * PHASES, b + k * PHASES);
+                        r[taps - 1 - k] = if p < POINTS { WING[p] } else { 0 };
+                        r[taps + k] = if q < POINTS { WING[q] } else { 0 };
                     }
-                    (&quarter[q].0, &quarter[q].1)
-                } else if let Some(rows) = ratio.rows48(ph) {
-                    rows
-                } else {
-                    let (mut l, mut r) = ([0i32; MAX_TAPS], [0i32; MAX_TAPS]);
-                    ratio.coefs(ph, &mut l, &mut r);
-                    for k in 0..MAX_TAPS {
-                        // Every coefficient fits 16 bits (Q15, at most 0.9).
-                        general.0[k] = l[k] as i16;
-                        general.1[k] = r[k] as i16;
-                    }
-                    (&general.0, &general.1)
-                };
-            for (c, w) in win.iter().enumerate().take(self.ch) {
-                let lw = &w[base + 1 - taps..=base];
-                let rw = &w[base + 1..=base + taps];
-                let mut sum = 0i32;
-                for ((x, y), (cx, cy)) in lw.iter().rev().zip(rw).zip(cl.iter().zip(cr)) {
-                    sum += x * i32::from(*cx) + y * i32::from(*cy);
+                    have[q] = true;
                 }
+                &quarter[q].0[..len]
+            } else if let Some(row) = ratio.row48(ph) {
+                &row[..len]
+            } else {
+                let (mut l, mut r) = ([0i32; MAX_TAPS], [0i32; MAX_TAPS]);
+                ratio.coefs(ph, &mut l, &mut r);
+                for k in 0..taps {
+                    // Every coefficient fits 16 bits (Q15, at most 0.9).
+                    general.0[taps - 1 - k] = l[k] as i16;
+                    general.0[taps + k] = r[k] as i16;
+                }
+                &general.0[..len]
+            };
+            for (c, w) in win.iter().enumerate().take(self.ch) {
+                // In range: `base + taps < n <= WINDOW` and `len - 2 * taps
+                // < 8 <= ROW` (so never the 0).
+                let sum = rp_hal_simd::dot(&w.0, base + 1 - taps, row).unwrap_or(0);
                 add(acc, f, c, Ratio::finish(sum));
             }
         }

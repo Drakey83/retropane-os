@@ -59,6 +59,7 @@ dependencies = [
  "rp-drv-pxa-i2s",
  "rp-drv-wm8750",
  "rp-hal-api",
+ "rp-hal-simd",
 ]
 
 [[package]]
@@ -96,6 +97,7 @@ dependencies = [
  "rp-drv-wm8750",
  "rp-hal-api",
  "rp-hal-pxa27x",
+ "rp-hal-simd",
  "rp-hal-x51v",
  "rp-image",
 ]
@@ -485,7 +487,12 @@ dependencies = [
  "rp-hal-api",
  "rp-hal-mem",
  "rp-hal-mock",
+ "rp-hal-simd",
 ]
+
+[[package]]
+name = "rp-hal-simd"
+version = "0.0.0"
 
 [[package]]
 name = "rp-hal-user"
