@@ -198,12 +198,18 @@ pub const fn max_compressed(n: usize) -> usize {
     n + n / 255 + 16
 }
 
+#[inline(always)]
 fn hash(v: u32) -> usize {
     (v.wrapping_mul(2_654_435_761) >> (32 - HASH_BITS)) as usize
 }
 
+/// The little-endian word at `at` (one bounds check, not four).
+#[inline(always)]
 fn read32(b: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+    match b.get(at..at + 4) {
+        Some(&[x, y, z, w]) => u32::from_le_bytes([x, y, z, w]),
+        _ => panic!("lz4: read past the block"),
+    }
 }
 
 fn put_length(dst: &mut [u8], o: &mut usize, mut n: usize) -> Result<(), Error> {
@@ -217,6 +223,11 @@ fn put_length(dst: &mut [u8], o: &mut usize, mut n: usize) -> Result<(), Error> 
     Ok(())
 }
 
+/// One sequence: the fast path (short literals and match, room for it)
+/// inline in the compressor's loop, the rest out of line (the performance
+/// gate's C9: a build with more inlining compressed 26-33% faster on the
+/// X51v, 2026-10-22).
+#[inline(always)]
 fn put_sequence(
     dst: &mut [u8],
     o: &mut usize,
@@ -243,6 +254,22 @@ fn put_sequence(
         *o += n;
         return Ok(());
     }
+    put_sequence_long(dst, o, literals, matched, token, ml)
+}
+
+/// [`put_sequence`]'s general case: long literals or match, or near the
+/// end of `dst`.
+#[cold]
+#[inline(never)]
+fn put_sequence_long(
+    dst: &mut [u8],
+    o: &mut usize,
+    literals: &[u8],
+    matched: Option<(u16, usize)>,
+    token: u8,
+    ml: usize,
+) -> Result<(), Error> {
+    let lit = literals.len();
     *dst.get_mut(*o).ok_or(Error::Overflow)? = token;
     *o += 1;
     if lit >= 15 {
