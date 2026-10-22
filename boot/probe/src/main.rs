@@ -91,8 +91,11 @@ mod image {
     struct Results {
         bench: [(&'static str, u32, u32); MAX_RESULTS],
         n: usize,
-        checks: [(&'static str, bool, [u8; 12]); 16],
+        checks: [(&'static str, bool, [u8; 12]); 24],
         nc: usize,
+        /// Event counts (the performance monitor's, C8).
+        counts: [(&'static str, u32); 12],
+        ncount: usize,
         /// Results and checks that didn't fit their tables.
         dropped: u32,
     }
@@ -121,6 +124,14 @@ mod image {
                 }
                 self.checks[self.nc] = (name, ok, d);
                 self.nc += 1;
+            }
+        }
+        fn count(&mut self, name: &'static str, n: u32) {
+            if self.ncount < self.counts.len() {
+                self.counts[self.ncount] = (name, n);
+                self.ncount += 1;
+            } else {
+                self.dropped += 1;
             }
         }
     }
@@ -194,8 +205,10 @@ mod image {
         let mut results = Results {
             bench: [("", 0, 0); MAX_RESULTS],
             n: 0,
-            checks: [("", false, [b' '; 12]); 16],
+            checks: [("", false, [b' '; 12]); 24],
             nc: 0,
+            counts: [("", 0); 12],
+            ncount: 0,
             dropped: 0,
         };
         let mut sd_lines = [[b' '; 37]; 5];
@@ -353,6 +366,7 @@ mod image {
                 );
             }
             suite::wmmx_dot(&mut r);
+            suite::pmu(&mut r, &mut bench_ram[..256 * 1024]);
             // C11: DMA as a copy engine, on the CompactFlash channel (the
             // probe reads no CF card).
             if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {
@@ -500,6 +514,9 @@ mod image {
             let d = Ascii(detail);
             let v = if *ok { "OK" } else { "FAIL" };
             rep.line(format_args!("check {name} {v} {d}"));
+        }
+        for (name, n) in &results.counts[..results.ncount] {
+            rep.line(format_args!("count {name} {n}"));
         }
         if results.dropped > 0 {
             rep.line(format_args!(

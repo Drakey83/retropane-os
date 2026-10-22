@@ -62,6 +62,12 @@ commands:
             fail at once instead; RP_AXIM_WHO=<label> names the holder)
   usb       talk to an X51v running the USB link test (target/sdkit/usb) over
             its sync cable: find the COM port, check the banner and echo
+  codegen-variant <image> <label> <--config ...>...
+            build a measurement variant of an image with other build
+            settings (e.g. 'profile.release.package.rp-probe.opt-level=3')
+            into target/variants/<label>/, its .bin beside it, for
+            `load <file.bin>`; size reported against the budget, not
+            enforced (never shipped: the gate's C9 comparisons)
   load      send an image (name, e.g. rp-probe, or a .bin) to an X51v running
             the resident loader (target/sdkit/loader) over USB
             (--setup: create the admin task that lets it re-find the Axim
@@ -292,6 +298,10 @@ fn main() -> ExitCode {
             } else {
                 Err("usage: cargo xtask perf [--update] | perf noise <runs>".into())
             }
+        }
+        "codegen-variant" => {
+            let rest: Vec<String> = args().skip(3).collect();
+            codegen_variant(&flag, &rest)
         }
         "load" => {
             eprintln!("==> load {flag}");
@@ -782,6 +792,65 @@ fn local_inputs(root: &Path) -> String {
 /// Gives a cargo command the `local/` inputs' fingerprint (C40).
 fn with_local_inputs(cmd: &mut Command) -> &mut Command {
     cmd.env(local_input::VAR, local_inputs(&workspace_root()))
+}
+
+/// `cargo xtask codegen-variant <image> <label> <--config ...>...`: the gate's
+/// C9 comparisons (code generation) built the same way every time. The
+/// image is built with the extra cargo `--config` settings in
+/// `target/variants/<label>/`, and its raw binary written there for
+/// `cargo xtask load <file.bin>`. Its size is reported against the image's
+/// budget but not held to it: a measurement variant is never shipped.
+fn codegen_variant(image: &str, rest: &[String]) -> Result {
+    let (Some(label), configs) = (rest.first(), &rest[rest.len().min(1)..]) else {
+        return Err("usage: cargo xtask codegen-variant <image> <label> <--config ...>...".into());
+    };
+    if image.is_empty()
+        || !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        || label.is_empty()
+    {
+        return Err("codegen-variant: an image name and a label of letters, digits and -".into());
+    }
+    let dir = format!("target/variants/{label}");
+    let mut args: Vec<&str> = vec![
+        "build",
+        "--release",
+        "--target",
+        TARGET_SPEC,
+        "-Zbuild-std=core,compiler_builtins",
+        "-Zjson-target-spec",
+        "-p",
+        image,
+        "--target-dir",
+        &dir,
+    ];
+    for c in configs {
+        args.extend(["--config", c.as_str()]);
+    }
+    eprintln!("==> codegen-variant {image} {label}: {}", configs.join(" "));
+    cargo(&args)?;
+    let root = workspace_root();
+    let elf = root
+        .join(&dir)
+        .join("armv5te-x51v-none-eabi/release")
+        .join(image);
+    let bin = root.join(&dir).join(format!("{image}.bin"));
+    sdkit::raw_binary(&elf, &bin)?;
+    let bytes = std::fs::read(&elf).map_err(|e| format!("{}: {e}", elf.display()))?;
+    let s = size::measure(&bytes)?;
+    let budget = size::BUDGETS.iter().find(|b| b.image == image);
+    eprintln!(
+        "    {image} ({label}): {} B loaded{}, {} B zeroed RAM; load it with: cargo xtask load {}",
+        s.load,
+        budget.map_or(String::new(), |b| format!(
+            " (the shipped image's budget {}, not held: a measurement variant)",
+            b.max_load
+        )),
+        s.zero,
+        bin.display()
+    );
+    Ok(())
 }
 
 /// The commit being built (short hash, `+` if there are uncommitted

@@ -26,6 +26,7 @@ pub mod handoff;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod iwmmxt;
 pub mod mmu;
+pub mod pmu;
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub mod rt;
 pub mod soc;

@@ -9444,9 +9444,22 @@ fn fi_render_done(log: &str) -> Vec<u32> {
         .collect()
 }
 
-/// None since rp-v0.30.0 (its iWMMXt saturation and WALIGNR fixes moved
-/// `wmmx_mix` and `wmmx_align` into `PROBE_EXPECT`).
-const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[];
+/// (rp-v0.30.0's iWMMXt fixes moved `wmmx_mix` and `wmmx_align` into
+/// `PROBE_EXPECT`.)
+const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[
+    (
+        "pmu_insns",
+        "the fork's event counters read 0 (cache, TLB and instruction counts not modellable: docs/hw/emulator.md)",
+    ),
+    (
+        "pmu_branches",
+        "the fork's event counters read 0 (docs/hw/emulator.md)",
+    ),
+    (
+        "pmu_dmiss",
+        "the fork's event counters read 0 (docs/hw/emulator.md)",
+    ),
+];
 
 /// Boots the probe image (the real-device report), then checks every page
 /// line's checksum, that the report is complete, and that it's on screen.

@@ -18,6 +18,10 @@ pub trait Sink {
     fn result(&mut self, name: &'static str, ticks: u32, iters: u32);
     /// A self-check result (`ok` = passed), with a short detail if it failed.
     fn check(&mut self, name: &'static str, ok: bool, detail: &str);
+    /// A count of events (not a time: the performance monitor's, C8).
+    fn count(&mut self, name: &'static str, n: u32) {
+        let _ = (name, n);
+    }
 }
 
 /// Hops per pointer-chase run (each touches a new cache line).
@@ -81,6 +85,11 @@ mod target {
         /// Reports a self-check.
         pub fn check(&mut self, name: &'static str, ok: bool, detail: &str) {
             self.sink.check(name, ok, detail);
+        }
+
+        /// Reports a count of events.
+        pub fn count(&mut self, name: &'static str, n: u32) {
+            self.sink.count(name, n);
         }
     }
 
@@ -710,6 +719,65 @@ mod target {
         r.check("wmmx_mix", m_ok, "differs from the plain mix");
         r.check("wmmx_avg", a_ok, "differs from the plain average");
         Some((id, was))
+    }
+
+    /// The performance monitor's event counters (the gate's C8). Known
+    /// answers first, which turn the manual's register layout and event
+    /// numbers into facts: a loop of `N` `subs`/`bne` pairs is `2 N`
+    /// instructions and `N` branches (a few more for the reads around it);
+    /// a line-stride read of 64 KiB, twice the D-cache, misses every line
+    /// (2,048) once warm, 16 KiB none. Then what the work costs in events:
+    /// a 64 KiB `memcpy` from memory and a 256 KiB pointer chase. `buf`
+    /// needs 256 KiB.
+    pub fn pmu(r: &mut Runner, buf: &mut [u8]) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        const N: u32 = 10_000;
+        let s = pmu::start([Event::Instruction, Event::Branch, Event::DcacheMiss]);
+        pmu::known_loop(N);
+        let c = pmu::read(s);
+        let [insns, branches, _] = c.events;
+        r.count("pmu_loop_insns", insns);
+        r.count("pmu_loop_branches", branches);
+        r.check("pmu_insns", (2 * N..2 * N + 64).contains(&insns), "not 2N");
+        r.check("pmu_branches", (N..N + 16).contains(&branches), "not N");
+        let Some(area) = buf.get_mut(..256 << 10) else {
+            r.check("pmu_dmiss", false, "buffer too small");
+            return;
+        };
+        let walk = |a: &[u8]| {
+            let mut sum = 0u32;
+            for line in a.chunks_exact(32) {
+                sum = sum.wrapping_add(u32::from(black_box(line)[0]));
+            }
+            black_box(sum);
+        };
+        let mut misses = [0u32; 2];
+        for (m, size) in misses.iter_mut().zip([64 << 10, 16 << 10]) {
+            walk(&area[..size]);
+            let s = pmu::start([Event::DcacheMiss, Event::DcacheAccess, Event::DtlbMiss]);
+            walk(&area[..size]);
+            *m = pmu::read(s).events[0];
+        }
+        r.count("pmu_walk64k_dmiss", misses[0]);
+        r.count("pmu_walk16k_dmiss", misses[1]);
+        r.check(
+            "pmu_dmiss",
+            (1_800..2_300).contains(&misses[0]) && misses[1] < 64,
+            "miss counts off",
+        );
+        // What the work costs.
+        let (src, dst) = area.split_at_mut(128 << 10);
+        let s = pmu::start([
+            Event::DcacheMiss,
+            Event::DcacheWriteback,
+            Event::BufferStallCycles,
+        ]);
+        dst[..64 << 10].copy_from_slice(&src[..64 << 10]);
+        let c = pmu::read(s);
+        r.count("pmu_copy64k_cycles", c.cycles);
+        r.count("pmu_copy64k_dmiss", c.events[0]);
+        r.count("pmu_copy64k_writeback", c.events[1]);
+        r.count("pmu_copy64k_bufstall", c.events[2]);
     }
 
     /// The resampler's filter (C6's mixer step): one channel's 48 kHz output
