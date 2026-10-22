@@ -1,13 +1,17 @@
 # Working on RetroPane OS (read at the start of every session)
 
-1. **Read [docs/ROADMAP.md](docs/ROADMAP.md) "Now: the performance gate"
-   before choosing any work or answering a progress question.** The gate
-   blocks every phase: nothing new until every line of
+1. **Read [docs/ROADMAP.md](docs/ROADMAP.md) "Now: the gate" before
+   choosing any work or answering a progress question.** The gate holds
+   the architectural lines (`arch N` in the ledgers of
    [docs/research/2700g-full-potential.md](docs/research/2700g-full-potential.md)
-   and [docs/research/cpu-full-potential.md](docs/research/cpu-full-potential.md)
-   is ticked with device evidence. Work its steps in order; report the
-   count from `cargo xtask gate` (never from memory) in every summary, and
-   change a ledger row only with the run that shows it.
+   and [docs/research/cpu-full-potential.md](docs/research/cpu-full-potential.md))
+   phase by phase: work waits only when its design depends on an open
+   architectural line, and you name that line ("the gate" alone is not a
+   reason). Optimizations are worked from
+   [docs/research/backlog.md](docs/research/backlog.md), top first. Report
+   the count from `cargo xtask gate` (never from memory) in every summary,
+   change a ledger row only with the run (or the owner's ruling) that shows
+   it, and add no architectural line without the owner's yes.
 2. Before answering "have we done X?", look in the docs that plan X (the
    roadmap, the two full-potential pages, `docs/quality-audit.md`, the
    ADRs) instead of answering from memory.

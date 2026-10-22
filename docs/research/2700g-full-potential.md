@@ -140,48 +140,48 @@ measured reason), **partial** (some device evidence, more to do) or
 **open**. Only done counts as ticked. A row changes only with a run
 named in its evidence.
 
-| Line | Status | Evidence, or what's left |
-|---|---|---|
-| V1 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
-| V2 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
-| V3 | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
-| V4 | done | B11 (X51v, 2026-10-22, `local/rp-mbx-blend-B11.txt`): **the 2D engine rotates**: header bits 25-26 = 1 / 2 / 3 lay a copy down 90° clockwise / 180° / 270° clockwise (the rectangle given in the source's shape, the output in the turned box; Dell's table had 1 and 3 the other way round), every pixel checked; the claim "no 2D rotate" was wrong |
-| V5 | open | P9 not run |
-| V6 | open | P10 not run |
-| V7 | open | P10 not run |
-| V8 | open | P11 not run |
-| V9 | partial | P5's test M: unit 1's words after unit 0's confirmed (emitter and TA output), TSP bit 16 found as the coordinate-set switch, the two-unit object's layout read from the TA; the render hangs (open); fog and TSP bit 14 not run |
-| V10 | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
-| V15 | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; **B11: mono masks proven** (Dell's words `0x40000000 \| offset << 14`, `0x50000000 \| width << 14 \| rows`, `0xE4000000 \| stride`, address; high bit = leftmost pixel; ROP4 as GDI: low byte where the mask is 1); left: the brush palette (`0xD0000000`), the bit offset's meaning (offset 3 rotated each 8-bit row) |
-| V16 | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
-| V17 | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; run FI: bit 3 sets with bit 2 at a render's end, 2D raises no bit; bit 10's meaning open |
-| V18 | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
-| V11 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
-| V12 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
-| V13 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; soaks warm and cold, the self-test open |
-| V14 | partial | run G4: CL3 breaks 3D every time, CL2 right to 133.25 MHz (short checks); soaks open |
-| P1 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; soaks open |
-| P2 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
-| P3 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
-| P4 | partial | `rp-mbx3d` versions 12-17 (X51v): the tile accelerator takes objects at `0x0FFF4000` and draws flat and textured, says done by status bit 4 in ~2 ms; its speed against the CPU-built lists (100 / 1,000 / 5,000 quads) not measured |
-| P5 | partial | `rp-glesfeat` M (X51v, 2026-10-22): through the TA, **TSP bit 16 = a second coordinate set** (mask bit 3 alone ignored); the TA writes a 32-word two-unit object (list layout 12); **the 3D stage hangs on it** with three unit-1 combine words, and the TA path stays hung after a core reset (C53). Left: what the 3D stage needs for unit 1 (static: the 3D table for a two-unit scene), the direct form with layout 12, fog (TSP bits 24/23, `0x63C`), TSP bit 14 (no effect seen on the alpha test) |
-| P6 | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
-| P7 | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
-| P8 | partial | run FT (X51v): together 9% faster (85.4 against 93.8 ms) but the 3D render gets ~220 wrong pixels (450+ against 2D fills; the render alone repeats exactly), so ADR-0030 G2's turns hold; left: the mechanism, and whether a memory-controller setting or separate memory areas make it safe |
-| P9 | open | the video plane's scaler and placement not tried |
-| P10 | open | the cursor plane and colour keys not tried |
-| P11 | open | MVED1 never run past its safe stages |
-| P12 | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, DMA into the 2D command window works (run FD, T3: the CPU 2 us against 43-60 us for 352 words, same pictures) |
-| P13 | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); B11: rotation bits 25-26 (90/180/270, every pixel) and mono-mask colour expansion proven; left: lines, the brush palette and pattern brushes |
-| P14 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
-| P15 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
-| P16 | open | needs a battery reading: the TSC2046's VBAT isn't wired (entropy.md); Windows Mobile's gauge (`GetSystemPowerStatusEx2`, used by `rp-wmpower`, +-50 mA) comes from `battdrvr.dll`, which only calls `KernelIoControl` with Dell's own HAL codes `0x0101010D` (function 67) and `0x0101011B` (function 70) (2026-10-22, static); their handler in the kernel image wasn't found by constant (not as literals, nor the SSP/I2C bases): a bounded RE step next, or the WM gauge as a stand-in |
-| P17 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
-| P18 | partial | run FI (X51v, 2026-10-22): `0x12c` around 2D and 3D jobs with enables 0 / all: **no 2D completion bit** (bits 16-23 the FIFO's fill while busy, nothing latched), so 2D waits stay polled; a render's end sets bits 2 and 3 (3 new, meaning open); the enables don't change the raw status. Left: the TA's bit 4 and other units (the display's `DINTRS`, the system block's interrupt registers, MVED1), and whether the FIFO level can interrupt at a low-water mark |
-| P19 | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
-| P20 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
-| P21 | partial | B8 (X51v): one blit from a full-screen pattern = the four row blits, same picture, same 18.9 ms (declined: the cost is the blend pass); left: fewer passes (the dither folded into the background where it never changes, the 3D core) |
-| F6 | partial | run F, third run (X51v, 2026-10-20): the engine keeps its surfaces and a copy runs without its colour word (4 words a glyph, not 10), but a screen of text stays 12.4 ms: ~6 us a operation is fixed on the engine, so fewer bytes don't help; the lever is fewer operations (whole words or lines kept rendered, one blit each), not yet built or measured |
+| Line | Kind | Status | Evidence, or what's left |
+|---|---|---|---|
+| V1 | arch 5 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
+| V2 | arch 5 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); soaks open |
+| V3 | opt | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
+| V4 | arch 5 | done | B11 (X51v, 2026-10-22, `local/rp-mbx-blend-B11.txt`): **the 2D engine rotates**: header bits 25-26 = 1 / 2 / 3 lay a copy down 90° clockwise / 180° / 270° clockwise (the rectangle given in the source's shape, the output in the turned box; Dell's table had 1 and 3 the other way round), every pixel checked; the claim "no 2D rotate" was wrong |
+| V5 | arch 5 | open | P9 not run |
+| V6 | arch 9 | open | P10 not run |
+| V7 | opt | open | P10 not run |
+| V8 | arch 7 | open | P11 not run |
+| V9 | opt | partial | P5's test M: unit 1's words after unit 0's confirmed (emitter and TA output), TSP bit 16 found as the coordinate-set switch, the two-unit object's layout read from the TA; the render hangs (open); fog and TSP bit 14 not run |
+| V10 | meta | done | 2026-10-21: the 51 rows of `docs/hw/2700g.md` resting on Dell's code or `mbxfb` alone swept: what device runs since prove is noted in each new line, the rest became V15-V18 |
+| V15 | opt | partial | B9, B10 (X51v): clip, scale word, source palette, 8 and 24 bpp fills proven; fills, copies, blends, keys, strides, fence, reset, FIFO before; **B11: mono masks proven** (Dell's words `0x40000000 \| offset << 14`, `0x50000000 \| width << 14 \| rows`, `0xE4000000 \| stride`, address; high bit = leftmost pixel; ROP4 as GDI: low byte where the mask is 1); left: the brush palette (`0xD0000000`), the bit offset's meaning (offset 3 rotated each 8-bit row) |
+| V16 | opt | partial | runs rp-blend, P2W: ARGB4444, ARGB8888, RGB565, packed 24-bit, planar 4:2:0, per-pixel and global alpha shown; the indexed plane, inverse alpha and the packed YUV formats not |
+| V17 | opt | partial | bits 2, 4, 6 seen on the device; B10 (X51v): bit 10 stayed clear with 130 words queued, so it isn't "commands queued"; run FI: bit 3 sets with bit 2 at a render's end, 2D raises no bit; bit 10's meaning open |
+| V18 | opt | done | declined: Windows Mobile's own plumbing (mapping, services layer, escapes, power votes); RetroPane's drivers own the chip, nothing here bears on speed |
+| V11 | arch 5 | done | run G3: `PLLSTAT` bit 2 drops after the write and relocks in ~16 us |
+| V12 | arch 5 | partial | run G3: writes to `LMTYPE`/`LMREFRESH` can be lost; `set_speed` reads back and rewrites; a count over many changes open |
+| V13 | arch 5 | partial | runs G3, G4: the cores right at 99.67 MHz divide 1 (2D 1.89x, 3D 1.81x), short checks on one unit; soaks warm and cold, the self-test open |
+| V14 | arch 5 | partial | run G4: CL3 breaks 3D every time, CL2 right to 133.25 MHz (short checks); soaks open |
+| P1 | arch 5 | partial | runs G3, G4 (divide 1 right at 99.67 MHz); version 29's wrong 3D at 74.75 MHz unexplained; soaks open |
+| P2 | arch 5 | partial | runs G1-G4 (steps to 133 MHz with CL2); stressed soaks, warm and cold, and the bus at each step open |
+| P3 | arch 5 | done | runs P, P2: `0x650` = 8 layouts + a dither bit, none twiddled: no render-to-texture through it (declined: the hardware has none) |
+| P4 | arch 5 | partial | `rp-mbx3d` versions 12-17 (X51v): the tile accelerator takes objects at `0x0FFF4000` and draws flat and textured, says done by status bit 4 in ~2 ms; its speed against the CPU-built lists (100 / 1,000 / 5,000 quads) not measured |
+| P5 | opt | partial | `rp-glesfeat` M (X51v, 2026-10-22): through the TA, **TSP bit 16 = a second coordinate set** (mask bit 3 alone ignored); the TA writes a 32-word two-unit object (list layout 12); **the 3D stage hangs on it** with three unit-1 combine words, and the TA path stays hung after a core reset (C53). Left: what the 3D stage needs for unit 1 (static: the 3D table for a two-unit scene), the direct form with layout 12, fog (TSP bits 24/23, `0x63C`), TSP bit 14 (no effect seen on the alpha test) |
+| P6 | opt | partial | B9 (X51v): the scale word scales (nearest pixel, s = 32 x src / dst), a full-screen 2x upscale 18.7 ms (half a copy's speed); its use (zoom, thumbnails) to be wired where the compositor needs it |
+| P7 | opt | partial | B9 (X51v): 8 bpp sources through a 256-entry palette (required), 63 ms a full screen (12x a 16-bit copy: not for anything redrawn often); 1 bpp through entries 0/1, high bit first; left: 2/4 bpp, the brush palette, mono masks |
+| P8 | arch 5 | partial | run FT (X51v): together 9% faster (85.4 against 93.8 ms) but the 3D render gets ~220 wrong pixels (450+ against 2D fills; the render alone repeats exactly), so ADR-0030 G2's turns hold; left: the mechanism, and whether a memory-controller setting or separate memory areas make it safe |
+| P9 | arch 5 | open | the video plane's scaler and placement not tried |
+| P10 | arch 9 | open | the cursor plane and colour keys not tried |
+| P11 | arch 7 | open | MVED1 never run past its safe stages |
+| P12 | opt | partial | DMA writes 2700G memory at 30 MB/s with the CPU 84% free (`rp-mbx`, 2026-10-13); run E (2026-10-20) overlapped the reorder with DMA; burst size and width settings, DMA into the 2D command window works (run FD, T3: the CPU 2 us against 43-60 us for 352 words, same pictures) |
+| P13 | opt | partial | B10 (X51v): all 256 ROP3s are GDI's (pattern = the colour word), 8/24 bpp fills; B9: scaling, palettes, 1 bpp, clip; B7: header bit 21 writes nothing (copies and fills, its purpose open); B11: rotation bits 25-26 (90/180/270, every pixel) and mono-mask colour expansion proven; left: lines, the brush palette and pattern brushes |
+| P14 | arch 5 | partial | `rp-gpubench` G1 and datasheet (X51v): a bare tile ~5.3 us, a textured one ~11.3 us, each translucent layer ~8 us more, a full-screen textured layer 25-29 ms; objects and textures a frame before it slows, the texture cache's size, points/lines/strips, trilinear not measured |
+| P15 | arch 5 | partial | runs P2X, P2Y, P2L: a 32-bit scan-out corrupts 32-bit 3D renders, a 16-bit one doesn't; 2D and 3D both busy with scan-out open |
+| P16 | arch 9 | declined | **Declined (the owner's ruling 2026-10-22, docs/research/gate-classification.md, B7): no battery reading exists** (reopen if one does). What was found: needs a battery reading: the TSC2046's VBAT isn't wired (entropy.md); Windows Mobile's gauge (`GetSystemPowerStatusEx2`, used by `rp-wmpower`, +-50 mA) comes from `battdrvr.dll`, which only calls `KernelIoControl` with Dell's own HAL codes `0x0101010D` (function 67) and `0x0101011B` (function 70) (2026-10-22, static); their handler in the kernel image wasn't found by constant (not as literals, nor the SSP/I2C bases): a bounded RE step next, or the WM gauge as a stand-in |
+| P17 | arch 5 | partial | display calibration C3: 60.0-60.5 Hz works; rates above and below not tried |
+| P18 | arch 5 | partial | run FI (X51v, 2026-10-22): `0x12c` around 2D and 3D jobs with enables 0 / all: **no 2D completion bit** (bits 16-23 the FIFO's fill while busy, nothing latched), so 2D waits stay polled; a render's end sets bits 2 and 3 (3 new, meaning open); the enables don't change the raw status. Left: the TA's bit 4 and other units (the display's `DINTRS`, the system block's interrupt registers, MVED1), and whether the FIFO level can interrupt at a low-water mark |
+| P19 | meta | partial | the render table read statically (no render-to-texture in Dell's code); the rest of the GPU code not read for unused features |
+| P20 | arch 5 | done | run T: a 16-bit screen saves 3D 6%, reads 15%; `0x644` is a free 2:1 resolve (T3); used: ADR-0023's 16-bit screen |
+| P21 | arch 5 | partial | B8 (X51v): one blit from a full-screen pattern = the four row blits, same picture, same 18.9 ms (declined: the cost is the blend pass); left: fewer passes (the dither folded into the background where it never changes, the 3D core) |
+| F6 | arch 4 | partial | run F, third run (X51v, 2026-10-20): the engine keeps its surfaces and a copy runs without its colour word (4 words a glyph, not 10), but a screen of text stays 12.4 ms: ~6 us a operation is fixed on the engine, so fewer bytes don't help; the lever is fewer operations (whole words or lines kept rendered, one blit each), not yet built or measured |
 
 ## The checklist rule
 

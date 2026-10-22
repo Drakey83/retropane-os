@@ -1,4 +1,4 @@
-# The gate's lines classified (proposal for the owner's ruling, 2026-10-22)
+# The gate's lines classified (the owner's rulings, 2026-10-22)
 
 The owner's brief (2026-10-22, "Gate restructure: architectural gate +
 payoff-ordered backlog"): tag every line of
@@ -7,9 +7,21 @@ payoff-ordered backlog"): tag every line of
 a design decision: an ADR's decision, memory layout, clock or power
 settings, driver architecture, a compositor or renderer choice) or **OPT**
 (faster, no design changes), one line of why each, boundary cases flagged.
-**Nothing is reclassified or restructured until the owner rules**; the
-gate, its count (`cargo xtask gate`: 9 of 71 done, 44 partial, 18 open)
-and the ledgers are unchanged.
+
+**Ruled (owner, 2026-10-22), and applied the same day:** B6 yes (the
+architectural lines are phase-tagged, `arch N`; the gate lifts per phase on
+that phase's lines; video and power lines gate their own phases); B7
+decline with the reason, no defaults (P16 and CPU V4 declined, reopened if
+measurable); B10 yes (C3 and T2 ticked on the shared SRAM layout, the rest
+to the backlog); B11 yes (T8 = P8, counted once). Standing rules: "the
+ratchet running" stays in the lift; verify-yourself unchanged; the
+compositor harness stays in the gate. The other flags stand as proposed
+below. Applied: the ledgers' Kind column, [backlog.md](backlog.md),
+`cargo xtask gate` (counts by phase and checks the backlog), the ROADMAP's
+gate section, CLAUDE.md. The phases assigned: 2 (kernel memory: CPU V2,
+V7, C3, C4), 4 (drawing: F6), 5 (the rest of the graphics, clocks and
+compositor lines), 7 (video: P11, V8), 9 (power and clocks for battery,
+the cursor plane for mice).
 
 Tags: **ARCH**, **OPT**, and **META** for the three lines that are sweeps
 or reads producing other lines (neither kind; proposed: done ones stay

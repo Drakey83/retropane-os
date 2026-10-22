@@ -14,28 +14,46 @@ GATE:   ▲ now: the performance gate (below) blocks every phase until it is don
 
 ---
 
-## Now: the performance gate (owner, 2026-10-21) — blocks everything else
+## Now: the gate (owner, 2026-10-21; restructured by the owner's rulings, 2026-10-22)
 
-**Nothing moves forward until this is done.** No new phase, feature or
-design work until every clever software trick has been tried to get the
-most out of the 2700G's 3D core, its 2D engine, the PXA270, and all of
-them together (custom drivers, modern techniques, tenacity): every line
-of [2700g-full-potential.md](research/2700g-full-potential.md) and
-[cpu-full-potential.md](research/cpu-full-potential.md) ticked with
-device evidence (used, or declined with the measured reason), so the
-owner can say every stone was turned. Allowed meanwhile: finishing and
-proving work already built, fixes and the quality audit, and the
-measurements these pages need. The owner gave the brief on 2026-10-20 and
-had to repeat it on 2026-10-21 because it wasn't kept in front of the
-work: **this section is read at the start of every session (CLAUDE.md).**
+**No building on unmeasured foundations.** The gate holds the
+**architectural** lines of [2700g-full-potential.md](research/2700g-full-potential.md)
+and [cpu-full-potential.md](research/cpu-full-potential.md): the ones whose
+answer changes a design (an ADR's decision, memory layout, clock or power
+settings, driver architecture, a compositor or renderer choice), each tagged
+with the phase whose design needs it (`arch N` in the ledgers). Everything
+else is an **optimization**, in [backlog.md](research/backlog.md) by payoff
+against device time, worked continuously from the top, each landing with
+its benchmark in the ratchet. The classification and the owner's rulings:
+[gate-classification.md](research/gate-classification.md).
 
-**Count (`cargo xtask gate`, 2026-10-22, later that night): 9 of 71 lines
-done, 43 partial, 19 open** (the sweeps V10 and V9 added lines as they found
-unchecked facts). Each page's ledger holds every line's status and its
-evidence; `cargo xtask ci` prints the count every run, and every summary
-quotes it.
+The rules (owner, 2026-10-22):
 
-In order:
+- **A phase's gate lifts** when its architectural lines are ticked (used, or
+  declined with the reason written down: measured, unmeasurable, or not
+  worth the device time) **and the ratchet runs**; the owner lifts it. The
+  gate now holds **phases 2, 4 and 5** (kernel memory, drawing, the shell
+  and compositor); video (phase 7) and power (phase 9) lines gate their own
+  phases when those start.
+- **Work is held back only by a named line.** Work waits only if its design
+  depends on an open architectural line, and the session names that line;
+  "the gate" alone is not a reason. Everything else proceeds.
+- **The gate can't grow on its own.** No new architectural line without the
+  owner's explicit yes (sweeps and reads like P19 propose their finds).
+- **Unmeasurable lines are declined with the reason**, no defaults (P16:
+  no battery reading; CPU V4: voltages need the device opened), and
+  reopened if they become measurable.
+- **The ratchet** (`cargo xtask perf`) is the regression guarantee,
+  unchanged. "Verify yourself" is unchanged: an unverified Dell or Intel
+  claim used in code stays an open quality-audit item wherever it sits.
+- **This section is read at the start of every session (CLAUDE.md).**
+
+**Count (`cargo xtask gate`, 2026-10-22): phases 2, 4, 5: 8 of 30
+architectural lines ticked (17 partial, 5 open)**; phase 7: 0 of 2; phase 9:
+2 of 11; the backlog: 24 optimizations (4 ticked, 18 partial, 2 open).
+`cargo xtask ci` prints the count every run, and every summary quotes it.
+
+In order (the gate's own steps; the backlog runs alongside, top first):
 
 - [ ] 1. **Finish everything already started, then the gate's own work (owner, 2026-10-21):**
   - [ ] the 16-bit screen (ADR-0023 Q1 A, Q2 L1): built and committed (8219182), pushed on the owner's yes
@@ -46,12 +64,12 @@ In order:
   - [x] C41: the emulator checks refuse a build that isn't the pinned release (quality audit) *(fixed 2026-10-21, c45f881: quality audit C41)*
 - [x] 2. Both checklists made countable: every line gets a status (open / used / declined) and the run that shows it; **`cargo xtask gate`** counts them (and, from step 2b, the benchmark results) and `cargo xtask ci` prints it every run, so the count comes from a check, not from memory
 - [ ] 2b. **The performance ratchet (owner's vote, 2026-10-21):** a device benchmark suite of what people feel (tap to screen, frame times scrolling and in the menu, 3D frames a second, boot time, copy and upload speeds, battery at idle and under load), each result kept as its floor, as code size already is: a change that makes one slower fails until fixed or approved by the owner. Every new feature from then on comes with its own benchmark and budget, and its ADR names the checklist's tricks it uses. *Built 2026-10-22: `cargo xtask perf`, 99 floors. Touch: the owner chose the hybrid (2026-10-22): recorded pen samples replayed through `rp-today`'s filter and drawing path for the ratchet, real taps at milestones (docs/design/perf-ratchet.md); to build*
-- [ ] 3. The 2700G's clocks (P1, P2, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote
-- [ ] 4. P21: the 2D dither add (18.9 ms a full screen) against its alternatives
-- [ ] 5. The CPU, by payoff: T2 (SRAM staging), C4 (memory lookups), C8 (the performance counters), C6/C7 (iWMMXt, copies), C1 (operating points), C2 (the overclock study). *Owner's choices 2026-10-22: T2 uses a shared SRAM layout (ADR-0006 amendment: staging borrows two 32 KiB buffers during a transfer); C6 goes in through a small HAL-level SIMD crate (the mixer's resampler dot product first, plain loop on host and emulator), then the mixer's cycles a frame re-measured on the X51v*
-- [ ] 6. The rest of the 2700G map in its order: F6, P9 + P10, P6 + P7, P8, P4 + P5, P11, P12, then P13-P19 and the V lines
-- [ ] 7. Together: T1 (a pipeline, not turns), T3-T8. T1, T4 and T7 are measured on **a minimal compositor test harness built inside the gate, as a benchmark only** (owner's vote, 2026-10-21: option a), not the real compositor
-- [ ] 8. Every line ticked **and the ratchet running** (owner's vote, 2026-10-21): the owner checks both pages; the gate is lifted only by the owner. From then on performance is held by the ratchet, every day, not by a one-time gate
+- [ ] 3. The 2700G's clocks (phase 5: P1, P2, V1, V2, V12, V13, V14): soaks warm and cold at the cores' divide 1 (run G4: 3D 1.81x, 2D 1.89x, short checks on one unit), the per-device self-test, an ADR for the owner's vote
+- [ ] 4. P21 (phase 5): the 2D dither add (18.9 ms a full screen) against its alternatives (folded into the background, the 3D core)
+- [ ] 5. Memory layout (phase 2): C4 and CPU V7 (page sizes, table placement, TLB lock-down; the hop with 4 KiB pages). *C3 and T2 ticked on the owner's shared SRAM layout (2026-10-22, ADR-0006 amendment); building it is in the backlog*
+- [ ] 6. The rest of the 2700G's phase 4 and 5 lines: F6 (text: fewer operations), P9 with V5 (the video plane scaled and placed), P8 (= CPU T8: 2D and 3D at once), P4 (the TA's speed: which 3D path), P14 (the 3D core's limits), P15 (scan-out with both engines), P17 (refresh rates), P18 (status bits)
+- [ ] 7. Together (phase 5): T1 (a pipeline, not turns), T3 (commands by DMA: the driver's choice), T4 (each unit's job). T1 and T4 are measured on **a minimal compositor test harness built inside the gate, as a benchmark only** (owner's vote, 2026-10-21: option a), not the real compositor
+- [ ] 8. Phases 2, 4 and 5's architectural lines ticked **and the ratchet running** (owner's votes, 2026-10-21 and 2026-10-22): the owner checks the ledgers and lifts the gate. From then on performance is held by the ratchet, every day. Phase 7 (P11, V8: MVED1) and phase 9 (power and clocks for battery: C1, C2, C10, T7, V3, V5, V11, P10, V6 of the 2700G; P16 and CPU V4 declined) gate those phases
 
 ---
 
