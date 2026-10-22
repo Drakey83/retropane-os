@@ -399,12 +399,15 @@ mod image {
         yuy2: bool,
         rgb3: Option<Rgb3>,
     ) {
-        let w = cmd::fill(
-            Format::BPP32,
-            TARGET,
-            STRIDE,
-            (0, 0, W as u16, H as u16),
-            GREY,
+        let w = rp_image::need(
+            cmd::fill(
+                Format::BPP32,
+                TARGET,
+                STRIDE,
+                (0, 0, W as u16, H as u16),
+                GREY,
+            ),
+            "a 2D rectangle",
         );
         if e.submit(&w).and_then(|()| e.finish(vram, 200_000)).is_err() {
             log!("the 2D clear didn't finish: the screen may show old pixels");

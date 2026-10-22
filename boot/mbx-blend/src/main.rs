@@ -552,14 +552,17 @@ mod image {
     /// The coverage blit: 16 pixels of the test row, red through coverage,
     /// with `flags` on the header (Dell's: [`OP_BLEND`]).
     fn coverage_blit(flags: u32) -> ([u32; 10], usize) {
-        cmd::blit(
-            (Format::RGB565, DST, DST_STRIDE),
-            (Format::COVERAGE4, COV, COV_STRIDE),
-            (0, 0),
-            (0, 0, 16, 1),
-            ROP_SRCCOPY,
-            flags,
-            u32::from(RED),
+        rp_image::need(
+            cmd::blit(
+                (Format::RGB565, DST, DST_STRIDE),
+                (Format::COVERAGE4, COV, COV_STRIDE),
+                (0, 0),
+                (0, 0, 16, 1),
+                ROP_SRCCOPY,
+                flags,
+                u32::from(RED),
+            ),
+            "a 2D rectangle",
         )
     }
 
@@ -672,14 +675,17 @@ mod image {
                         break;
                     }
                     let stride = if name == "16" { 8 } else { 16 };
-                    let blit = cmd::blit(
-                        (Format::RGB565, DST, DST_STRIDE),
-                        (Format::code(code), src, stride),
-                        (0, 0),
-                        (0, 0, 4, 1),
-                        ROP_SRCCOPY,
-                        flags,
-                        u32::from(RED),
+                    let blit = rp_image::need(
+                        cmd::blit(
+                            (Format::RGB565, DST, DST_STRIDE),
+                            (Format::code(code), src, stride),
+                            (0, 0),
+                            (0, 0, 4, 1),
+                            ROP_SRCCOPY,
+                            flags,
+                            u32::from(RED),
+                        ),
+                        "a 2D rectangle",
                     );
                     let (w, n) = with_blend(blend, blit);
                     match p.run::<4>(GREEN, &w[..n]) {
@@ -696,7 +702,10 @@ mod image {
                 if p.gave_up() {
                     break;
                 }
-                let mut fill = cmd::fill(Format::RGB565, DST, 64, (0, 0, 4, 1), colour);
+                let mut fill = rp_image::need(
+                    cmd::fill(Format::RGB565, DST, 64, (0, 0, 4, 1), colour),
+                    "a 2D rectangle",
+                );
                 fill[2] = 0x8000_0000 | ROP_PATCOPY | OP_BLEND;
                 let mut w = [0u32; 9];
                 w[..2].copy_from_slice(&cmd::blend(blend));
@@ -724,12 +733,9 @@ mod image {
         let before = e.regs.read32(DINTRS) & flags;
         let t0 = rt::ticks();
         for i in 0..20u32 {
-            let _ = e.submit(&cmd::fill(
-                Format::RGB565,
-                OFFSCREEN,
-                s,
-                (0, 0, 480, 640),
-                i,
+            let _ = e.submit(&rp_image::need(
+                cmd::fill(Format::RGB565, OFFSCREEN, s, (0, 0, 480, 640), i),
+                "a 2D rectangle",
             ));
         }
         let fine = e.finish(vram, 1_000_000).is_ok();
@@ -827,14 +833,17 @@ mod image {
             }
             let (w, n) = with_blend(
                 blend,
-                cmd::blit(
-                    (Format::RGB565, DST, DST_STRIDE),
-                    (Format::BPP32, ROW, 0),
-                    (0, 0),
-                    (0, 0, 16, 4),
-                    ROP_SRCCOPY,
-                    flags,
-                    0,
+                rp_image::need(
+                    cmd::blit(
+                        (Format::RGB565, DST, DST_STRIDE),
+                        (Format::BPP32, ROW, 0),
+                        (0, 0),
+                        (0, 0, 16, 4),
+                        ROP_SRCCOPY,
+                        flags,
+                        0,
+                    ),
+                    "a 2D rectangle",
                 ),
             );
             if !go(e, vram, &w[..n], "stride 0") {
@@ -861,14 +870,17 @@ mod image {
         set(vram, DST32, &[0xFF00_FF00; 4]);
         let (w, n) = with_blend(
             BLEND_DELL_TEXT,
-            cmd::blit(
-                (Format::BPP32, DST32, 16),
-                (Format::BPP32, ARGB32, 16),
-                (0, 0),
-                (0, 0, 4, 1),
-                ROP_SRCCOPY,
-                OP_BLEND,
-                0,
+            rp_image::need(
+                cmd::blit(
+                    (Format::BPP32, DST32, 16),
+                    (Format::BPP32, ARGB32, 16),
+                    (0, 0),
+                    (0, 0, 4, 1),
+                    ROP_SRCCOPY,
+                    OP_BLEND,
+                    0,
+                ),
+                "a 2D rectangle",
             ),
         );
         if go(e, vram, &w[..n], "32 bpp blend") {
@@ -901,14 +913,17 @@ mod image {
             set(vram, DST4444, &[d | d << 16; 2]);
             let (w, n) = with_blend(
                 BLEND_DELL_TEXT,
-                cmd::blit(
-                    (Format::code(7), DST4444, 8),
-                    (Format::BPP32, ARGB32, 16),
-                    (0, 0),
-                    (0, 0, 4, 1),
-                    ROP_SRCCOPY,
-                    OP_BLEND,
-                    0,
+                rp_image::need(
+                    cmd::blit(
+                        (Format::code(7), DST4444, 8),
+                        (Format::BPP32, ARGB32, 16),
+                        (0, 0),
+                        (0, 0, 4, 1),
+                        ROP_SRCCOPY,
+                        OP_BLEND,
+                        0,
+                    ),
+                    "a 2D rectangle",
                 ),
             );
             if go(e, vram, &w[..n], "ARGB4444 destination") {
@@ -941,18 +956,26 @@ mod image {
             }
             cpu::drain_write_buffer();
             let y = 160 * k as u16;
-            let (w, n) = cmd::blit(
-                (Format::BPP32, SCREEN32, STRIDE32 as i32),
-                (Format::BPP32, ROW, 0),
-                (0, 0),
-                (0, y, 480, y + 160),
-                ROP_SRCCOPY,
-                0,
-                0,
+            let (w, n) = rp_image::need(
+                cmd::blit(
+                    (Format::BPP32, SCREEN32, STRIDE32 as i32),
+                    (Format::BPP32, ROW, 0),
+                    (0, 0),
+                    (0, y, 480, y + 160),
+                    ROP_SRCCOPY,
+                    0,
+                    0,
+                ),
+                "a 2D rectangle",
             );
             ok &= go(e, vram, &w[..n], "ramp");
         }
-        let fill32 = |c| cmd::fill(Format::BPP32, SCREEN32B, STRIDE32, (0, 0, 480, 640), c);
+        let fill32 = |c| {
+            rp_image::need(
+                cmd::fill(Format::BPP32, SCREEN32B, STRIDE32, (0, 0, 480, 640), c),
+                "a 2D rectangle",
+            )
+        };
         let t0 = rt::ticks();
         for i in 0..10 {
             let _ = e.submit(&fill32(0xFF00_0000 | i));
@@ -988,13 +1011,16 @@ mod image {
         let t0 = rt::ticks();
         for i in 0..10u32 {
             let _ = e.submit(&fill32(0xFF10_1010 * (i & 1)));
-            let (w, n) = cmd::copy(
-                Format::BPP32,
-                (SCREEN32B, STRIDE32),
-                (SCREEN32B + STRIDE32 * 320, STRIDE32),
-                (0, 0),
-                (0, 0, 480, 320),
-                0,
+            let (w, n) = rp_image::need(
+                cmd::copy(
+                    Format::BPP32,
+                    (SCREEN32B, STRIDE32),
+                    (SCREEN32B + STRIDE32 * 320, STRIDE32),
+                    (0, 0),
+                    (0, 0, 480, 320),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             let _ = e.submit(&w[..n]);
         }

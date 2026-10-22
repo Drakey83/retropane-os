@@ -299,7 +299,10 @@ mod image {
 
     /// Clears the target to `c` with the 2D engine (proven), waits for it.
     fn clear(e: &mut Engine<Mmio>, vram: &[u8], c: u32) -> bool {
-        let w = cmd::fill(Format::BPP32, TARGET, STRIDE, (0, 0, W as u16, H as u16), c);
+        let w = rp_image::need(
+            cmd::fill(Format::BPP32, TARGET, STRIDE, (0, 0, W as u16, H as u16), c),
+            "a 2D rectangle",
+        );
         e.submit(&w).and_then(|()| e.finish(vram, 200_000)).is_ok()
     }
 

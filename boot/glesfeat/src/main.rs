@@ -385,12 +385,15 @@ mod image {
             e.regs.read32(MBXCLK)
         );
         if ready {
-            let fill = cmd::fill(
-                Format::BPP32,
-                TARGET,
-                STRIDE,
-                (0, 0, W as u16, H as u16),
-                GREY,
+            let fill = rp_image::need(
+                cmd::fill(
+                    Format::BPP32,
+                    TARGET,
+                    STRIDE,
+                    (0, 0, W as u16, H as u16),
+                    GREY,
+                ),
+                "a 2D rectangle",
             );
             let _ = e.submit(&fill).and_then(|()| e.finish(vram, 200_000));
             log!("A: alpha test, red square with vertex alpha 64 over grey");

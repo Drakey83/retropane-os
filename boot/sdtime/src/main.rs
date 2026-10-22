@@ -32,9 +32,9 @@
 //! block-device interface (G3, G4) refuse them before any command (the
 //! read-command count unchanged, each refusal in microseconds), a run
 //! crossing the end is refused whole, and the last block reads and stays as
-//! it was. G6 logs what each read after a read of the last block
-//! returns, with the card's status between (run 1 found every read
-//! failing after one). It writes nothing: every write it tries is off the card, and
+//! it was. G6 reads after a read of the last block, with the card's
+//! status between (run 1 found every read failing after one; version 2
+//! found why: C46), and every one must succeed. It writes nothing: every write it tries is off the card, and
 //! each carries the last block's own bytes, so even one that got through
 //! would leave the card as it was. No folder, no file.
 
@@ -106,7 +106,7 @@ mod image {
         rt::init_mmu();
         if GUARD {
             log!(
-                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 2"
+                "{MARKER} 1: the guard run, block numbers off the end of the card (quality audit C32), version 3"
             );
             guard();
         } else {
@@ -350,8 +350,12 @@ mod image {
         // G6, run 1's finding (2026-10-21: after the last block's second
         // read every read failed, block 0's too): what each read after a
         // read of the last block returns, and the card's status (CMD13)
-        // between them. Logged, not judged.
+        // between them. Version 2 found the card raising OUT_OF_RANGE on a
+        // last-block read and reporting it in the next command (C46); the
+        // driver now collects it after such a read, so every read here
+        // must succeed and CMD13 must find it gone.
         log!("G6 the reads after the last block (each result, then CMD13's status word):");
+        let mut failed = 0u32;
         let rca = u32::from(card.rca()) << 16;
         for (step, lba) in [
             (1, Some(1)),
@@ -368,10 +372,12 @@ mod image {
             match lba {
                 Some(lba) => {
                     let r = card.read(lba, &mut again);
+                    failed += u32::from(r.is_err());
                     log!("  G6 {step}: block {lba}: {r:?}");
                 }
                 None => {
                     let st = card.host_mut().command(Command::new(13, rca, Response::R1));
+                    failed += u32::from(!matches!(st, Ok(w) if w[0] & (1 << 31) == 0));
                     log!(
                         "  G6 {step}: CMD13 {:?}",
                         st.map(|w| format_line(format_args!("0x{:08x}", w[0])))
@@ -381,6 +387,14 @@ mod image {
                 }
             }
         }
+        c.expect(
+            format_line(format_args!(
+                "G6 every read after the last block succeeds: {failed} failed ({} collected after it)",
+                card.end_settles()
+            ))
+            .as_str(),
+            failed == 0,
+        );
         let (checks, bad) = (c.checks, c.bad);
         log!("{MARKER}: the guard run: {checks} checks, {bad} BAD");
     }

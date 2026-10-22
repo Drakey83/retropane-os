@@ -164,9 +164,12 @@ watching.
   inside the driver's 100 ms.
 - **32-bit renders under a 16-bit screen (run P2L, 2026-10-21):** 0 wrong
   bar pixels in 1,000 renders (153.6 million), against ~47 a render with
-  the screen at 32 bits (ADR-0023's vote B). Open: the first render, kept
-  in the background picture, read all black after the 16-bit screen was
-  set up (2700g.md).
+  the screen at 32 bits (ADR-0023's vote B); version 2 found 1 in 1,000
+  renders, not yet attributable (the run's own stray fill, below), and 25
+  renders exact pixel for pixel. Open: version 3.
+- **2D rectangles:** a fill with `y1 < y0` writes far past its surface on
+  the device (confirmed 2026-10-21, `rp-gpubench` run P2L version 2); the
+  driver refuses empty, inverted and past-13-bit rectangles.
 - Panel brightness: PWM0 (GPIO17) up to full duty, Windows Mobile caps it
   at 137/216; PWM1 drives the panel's VCOM (Dell's value 70/216).
 - Pages: [2700g.md](2700g.md), [backlight.md](backlight.md),
@@ -223,8 +226,9 @@ watching.
 - A multi-block write's CMD12 needs the stop-transmission bit; the card
   stays busy after it (poll CMD13).
 - Blocks past the end are refused by the driver before any command
-  (confirmed 2026-10-21). Open: after the last block is read, the next
-  reads failed (sd.md). Page: [sd.md](sd.md).
+  (confirmed 2026-10-21). Reading the last block makes the card report
+  `OUT_OF_RANGE` in the next command's status (confirmed 2026-10-21; the
+  driver collects it with CMD13). Page: [sd.md](sd.md).
 
 ### CompactFlash slot
 - PC Card socket 1; power CPLD `0x16` bit 1 then `0x10` bit 12; RESET CPLD

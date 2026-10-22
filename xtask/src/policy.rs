@@ -156,6 +156,34 @@ pub fn check_crash_path(path: &str, text: &str) -> Vec<String> {
     found
 }
 
+/// Where the 2D commands' unchecked builders may be called: the driver
+/// itself and the image that measures the engine's own response to
+/// rectangles the checked ones refuse (quality audit C47).
+pub const UNCHECKED_2D_HOMES: &[&str] = &["drivers/blit2d/", "boot/mbx/"];
+
+/// Calls of `blit_unchecked` / `copy_unchecked` outside
+/// [`UNCHECKED_2D_HOMES`]: drawing goes through the checked commands.
+#[must_use]
+pub fn check_unchecked_2d(path: &str, text: &str) -> Vec<String> {
+    if !path.ends_with(".rs")
+        || path.starts_with("xtask/")
+        || UNCHECKED_2D_HOMES.iter().any(|h| path.starts_with(h))
+    {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim_start().starts_with("//"))
+        .filter(|(_, l)| l.contains("blit_unchecked") || l.contains("copy_unchecked"))
+        .map(|(i, _)| {
+            format!(
+                "{path}:{}: an unchecked 2D command: draw through fill/blit/copy, which refuse rectangles the engine can't draw (quality audit C47); the unchecked ones are for rp-mbx's measurements",
+                i + 1
+            )
+        })
+        .collect()
+}
+
 /// The marker of a value copied from Windows Mobile, Dell or another
 /// original (docs/quality-audit.md D1): `// inherited: <audit item>,
 /// <source>`.
@@ -203,6 +231,28 @@ pub fn inherited_tags(path: &str, text: &str) -> (Vec<Inherited>, Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unchecked_2d_commands_only_in_their_homes() {
+        let bad = "let (w, n) = cmd::copy_unchecked(f, d, s, o, r, 0);";
+        assert_eq!(
+            check_unchecked_2d("drivers/mbx-render/src/lib.rs", bad).len(),
+            1
+        );
+        assert_eq!(
+            check_unchecked_2d("boot/gpubench/src/main.rs", "cmd::blit_unchecked(").len(),
+            1
+        );
+        assert!(check_unchecked_2d("boot/mbx/src/main.rs", bad).is_empty());
+        assert!(check_unchecked_2d("drivers/blit2d/src/lib.rs", bad).is_empty());
+        assert!(
+            check_unchecked_2d(
+                "boot/gpubench/src/main.rs",
+                "// copy_unchecked is for rp-mbx"
+            )
+            .is_empty()
+        );
+    }
 
     #[test]
     fn inherited_tags_are_counted_and_malformed_ones_refused() {

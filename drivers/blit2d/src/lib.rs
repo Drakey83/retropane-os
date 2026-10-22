@@ -142,18 +142,37 @@ pub fn blend(value: u32) -> [u32; 2] {
     [0x2000_0004, value]
 }
 
+/// The largest coordinate a coordinate word holds (13 bits, [`xy`]).
+pub const MAX_COORD: u16 = 0x1FFF;
+
+/// Whether `[x0, x1) × [y0, y1)` is a rectangle the engine draws as asked:
+/// not empty, not inverted, inside the 13-bit coordinate fields. On the
+/// X51v a fill with `y1 < y0` doesn't draw nothing: it wrote far past its
+/// surface, over a picture 4.5 MiB on (`rp-gpubench` run P2L, 2026-10-21;
+/// quality audit C47), and a coordinate past 13 bits wraps. Every command
+/// with a rectangle checks it and is refused (`None`) otherwise.
+#[must_use]
+pub const fn drawable((x0, y0, x1, y1): (u16, u16, u16, u16)) -> bool {
+    x0 < x1 && y0 < y1 && x1 <= MAX_COORD && y1 <= MAX_COORD
+}
+
 /// A solid fill of `[x0, x1) × [y0, y1)` with `color` into the surface at
-/// local-memory offset `addr`, `stride` bytes per line: seven words.
+/// local-memory offset `addr`, `stride` bytes per line: seven words;
+/// `None` for a rectangle that isn't [`drawable`].
 #[must_use]
 pub fn fill(
     format: Format,
     addr: usize,
     stride: usize,
-    (x0, y0, x1, y1): (u16, u16, u16, u16),
+    rect: (u16, u16, u16, u16),
     color: u32,
-) -> [u32; 7] {
+) -> Option<[u32; 7]> {
+    if !drawable(rect) {
+        return None;
+    }
+    let (x0, y0, x1, y1) = rect;
     let [d, a] = dest(format, addr, stride as i32);
-    [
+    Some([
         d,
         a,
         0x8000_0000 | ROP_PATCOPY,
@@ -161,14 +180,32 @@ pub fn fill(
         xy(x0, y0),
         xy(x1, y1),
         FLUSH,
-    ]
+    ])
 }
 
 /// The general operation: surfaces, origin, the header (`0x80000000 | rop
 /// | flags`), its colour word (left out with [`OP_NO_COLOUR`]), the
-/// destination rectangle, end of batch. Ten words, or nine.
+/// destination rectangle, end of batch. Ten words, or nine; `None` for a
+/// rectangle that isn't [`drawable`].
 #[must_use]
 pub fn blit(
+    dst: (Format, usize, i32),
+    src: (Format, usize, i32),
+    origin: (u16, u16),
+    rect: (u16, u16, u16, u16),
+    rop: u32,
+    flags: u32,
+    colour: u32,
+) -> Option<([u32; 10], usize)> {
+    drawable(rect).then(|| blit_unchecked(dst, src, origin, rect, rop, flags, colour))
+}
+
+/// [`blit`] without the rectangle check: **only for measuring what the
+/// engine does with a rectangle [`drawable`] refuses** (`rp-mbx`'s ways
+/// down, bit 23 with the destination given bottom to top: wrong on the
+/// X51v, 2026-10-14; the emulator's model of C47). Never for drawing.
+#[must_use]
+pub fn blit_unchecked(
     (dst_format, dst, dst_stride): (Format, usize, i32),
     (src_format, src, src_stride): (Format, usize, i32),
     (sx, sy): (u16, u16),
@@ -202,9 +239,23 @@ pub fn blit(
 /// source surface at `src` (`src_stride`), starting at `(sx, sy)` there.
 /// `flags`: [`OP_RIGHT_LEFT`] for a rightward overlap, or [`OP_KEY`].
 /// Strides as [`dest`] takes them, given as 15-bit fields. Ten words (nine
-/// keyed: no colour word).
+/// keyed: no colour word); `None` for a rectangle that isn't [`drawable`].
 #[must_use]
 pub fn copy(
+    format: Format,
+    dst: (usize, usize),
+    src: (usize, usize),
+    origin: (u16, u16),
+    rect: (u16, u16, u16, u16),
+    flags: u32,
+) -> Option<([u32; 10], usize)> {
+    drawable(rect).then(|| copy_unchecked(format, dst, src, origin, rect, flags))
+}
+
+/// [`copy`] without the rectangle check: only for measurements, as
+/// [`blit_unchecked`].
+#[must_use]
+pub fn copy_unchecked(
     format: Format,
     (dst, dst_stride): (usize, usize),
     (src, src_stride): (usize, usize),
@@ -213,7 +264,7 @@ pub fn copy(
     flags: u32,
 ) -> ([u32; 10], usize) {
     let flags = flags | if flags & OP_KEY != 0 { OP_NO_COLOUR } else { 0 };
-    blit(
+    blit_unchecked(
         (format, dst, dst_stride as i32),
         (format, src, src_stride as i32),
         origin,
@@ -227,7 +278,16 @@ pub fn copy(
 /// The fence: writes `n` into the 32-bit word at local-memory `addr`.
 #[must_use]
 pub fn fence(addr: usize, n: u32) -> [u32; 7] {
-    fill(Format::BPP32, addr, 4, (0, 0, 1, 1), n)
+    let [d, a] = dest(Format::BPP32, addr, 4);
+    [
+        d,
+        a,
+        0x8000_0000 | ROP_PATCOPY,
+        n,
+        xy(0, 0),
+        xy(1, 1),
+        FLUSH,
+    ]
 }
 
 /// Free bytes in the command FIFO, from the status register.
@@ -394,7 +454,7 @@ mod tests {
         let w = fill(Format::RGB565, 0x6_0000, 960, (40, 120, 440, 320), 0xF800);
         assert_eq!(
             w,
-            [
+            Some([
                 0xA005_03C0,
                 0x0006_0000,
                 0x8000_F0F0,
@@ -402,8 +462,31 @@ mod tests {
                 0x0028_0078,
                 0x01B8_0140,
                 0x7000_0000
-            ]
+            ])
         );
+    }
+
+    /// C47: what the X51v drew past its surface (a fill with `y1 < y0`) and
+    /// every other rectangle the engine can't take as asked are refused.
+    #[test]
+    fn undrawable_rectangles_are_refused() {
+        for r in [
+            (0, 280, 480, 40),
+            (40, 0, 10, 10),
+            (0, 0, 0, 10),
+            (0, 0, 10, 0),
+            (0, 0, MAX_COORD + 1, 1),
+            (0, 0, 1, MAX_COORD + 1),
+        ] {
+            assert!(!drawable(r), "{r:?}");
+            assert_eq!(fill(Format::BPP32, 0, 1920, r, 0), None, "{r:?}");
+            assert_eq!(
+                copy(Format::BPP32, (0, 1920), (0, 1920), (0, 0), r, 0),
+                None
+            );
+        }
+        assert!(drawable((0, 0, 1, 1)));
+        assert!(drawable((0, 0, MAX_COORD, MAX_COORD)));
     }
 
     #[test]
@@ -433,7 +516,8 @@ mod tests {
             (3, 5),
             (40, 360, 104, 424),
             OP_RIGHT_LEFT,
-        );
+        )
+        .unwrap();
         assert_eq!(
             w[..n],
             [
@@ -460,7 +544,8 @@ mod tests {
             (0, 0),
             (0, 0, 1, 1),
             OP_KEY,
-        );
+        )
+        .unwrap();
         assert_eq!(n, 9);
         assert_eq!(w[5], 0x8011_CCCC, "the driver's keyed header");
         assert_eq!(w[6..9], [0, 0x0001_0001, 0x7000_0000]);
@@ -494,7 +579,8 @@ mod tests {
             ROP_SRCCOPY,
             OP_BLEND,
             0xF800,
-        );
+        )
+        .unwrap();
         assert_eq!(n, 10);
         assert_eq!(w[2], 0x9402_8008);
         assert_eq!(w[4], 0x3000_4000, "Dell: ((sx & 1) | 0xC000) << 14");

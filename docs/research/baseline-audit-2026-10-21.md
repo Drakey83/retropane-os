@@ -93,6 +93,10 @@ The owner's second reviewer read these and conceded all eight
   while after a relock it wrote the running point's multipliers. It now
   always ends with `CCCR` naming the point running, both ways the same.
   Run F checks it, and an emulator mutant drops the write.
+- **C44** (fixed): an abort's crash line always said SPSR 0 (found by run F).
+- **C45** (fixed): emulator checks didn't size-check variants (found by run FF).
+- **C46** (fixed, your option a): reads failed after a read of the card's last block.
+- **C47** (fixed): 2D commands took any rectangle; on the device an inverted one writes past its picture.
 - **C43** (open; your call: the faked reading first, the real stall
   decided after it): the FIFO-full device run (C37)
   fakes the FIFO's "full" reading. The only way known to really stall the
@@ -122,6 +126,8 @@ mutants. It isn't proven on the device or by repeat emulator runs yet.
 | guard, C32 | **Passed for C32:** every block off the card refused in under a microsecond with no command sent, by the driver's four calls, the block-device interface and the card-log writer; a run crossing the end refused whole; nothing written. **Found:** after the last block was read, the next reads failed (C46); version 2 logs why | `rp-sdtime-guard-run1.txt` |
 | F, C31 and C42 | **Passed, 13 checks, 0 BAD:** a `CCCR` write alone changed nothing; after a deliberate data abort the crash path kept 624 MHz running (not the 208 MHz C31's bug would have chosen) and left `CCCR` naming it. The first device proof of C38's crash path. **Found:** an abort's crash line always said SPSR 0 (C44, fixed) | `rp-clocks-runF1.txt` |
 | FF, C37 | **Passed, 11 checks, 0 BAD,** after the zeroed-RAM budget was raised 2 KiB (the emulator checks hadn't size-checked the variant: C45, fixed): the FIFO's level reads full on the device and a busy engine is never refused; with the level faked full, the frame is dropped, not shown, not a hang, and the next one is identical to a normal draw | `rp-gpubench-runFF1.txt` |
+| guard version 2, C46 | **Diagnosed:** a read of the last block makes the card report `OUT_OF_RANGE` (`0x80000900`) in the next command's status; a CMD13 clears it. Fixed with your option (a); version 3 checks it | `rp-sdtime-guard-run2.txt` |
+| P2L version 2 | **Cause found:** my test's own 2D fill, `(0, 280, 480, 40)` given as a size to a command that takes corners, wrote far past the screen on the device (the emulator drew nothing) and blackened the reference. C47: every 2D command now refuses such a rectangle. Renders 1-25 exact; 1 wrong bar pixel in 1,000, not attributable (the stray fill), version 3 lists them | `rp-gpubench-runP2L2.txt` |
 | P2L, ADR-0023 | **Half measured:** 0 wrong bar pixels in 1,000 renders under the 16-bit screen, ~47 a render in the 32-bit controls. **The comparison half failed as a measurement:** the first render read all black by the 16-bit phase, a device-only effect; version 2 hashes it after every step and makes it again under the 16-bit screen | `rp-gpubench-runP2L1-card.txt` |
 
 ## The device runs as built

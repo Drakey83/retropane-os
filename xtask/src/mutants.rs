@@ -1778,6 +1778,31 @@ pub const MUTANTS: &[Mutant] = &[
         to: "",
         check: Check::Emu(crate::emu::boot_loader_crash),
     },
+    Mutant {
+        name: "SD card: a read of the last block leaves its OUT_OF_RANGE for the next read (quality audit C46)",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "        if lba.saturating_add(count) != self.blocks {",
+        to: "        if true {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "a_read_ending_on_the_last_block_leaves_no_error_for_the_next",
+        ]),
+    },
+    Mutant {
+        name: "SD card: the status collected after the last block not checked (quality audit C46)",
+        file: "drivers/sdcard/src/lib.rs",
+        from: "        check(status & !OUT_OF_RANGE)
+",
+        to: "        let _ = status;
+        Ok(())
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-sdcard",
+            "another_error_after_the_last_block_still_fails",
+        ]),
+    },
     // The audio ring's end (ADR-0032 A6, dmaring).
     Mutant {
         name: "ring: old STOP cleared before the new one is set (ADR-0032 A6)",

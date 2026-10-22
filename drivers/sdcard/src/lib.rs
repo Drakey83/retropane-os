@@ -176,6 +176,8 @@ const CMD8_ARG: u32 = 0x1AA; // 2.7-3.6 V, check pattern 0xAA
 /// succeeded. Counting them made one unanswered CMD12 fail every later
 /// read on the X51v (status 0x00400900 on good CMD17s).
 const STATUS_ERRORS: u32 = 0xFD39_0008;
+/// Card status bit 31: an argument or a transfer past the card's end.
+const OUT_OF_RANGE: u32 = 1 << 31;
 /// Card status: ready for data (not busy programming).
 const STATUS_READY_FOR_DATA: u32 = 1 << 8;
 /// Card status: the current state, `prg` = programming.
@@ -239,6 +241,8 @@ pub struct SdCard<H> {
     read_fallbacks: u32,
     /// Single blocks read at the slower clock.
     slow_reads: u32,
+    /// Reads ending on the last block whose status was collected after.
+    end_settles: u32,
     /// Ranges (first block, count) read block by block from now on.
     weak: [(u32, u32); WEAK_RANGES],
     weak_len: u8,
@@ -267,6 +271,7 @@ impl<H: SdHost> SdCard<H> {
                 read_retries: 0,
                 read_fallbacks: 0,
                 slow_reads: 0,
+                end_settles: 0,
                 weak: [(0, 0); WEAK_RANGES],
                 weak_len: 0,
                 weak_next: 0,
@@ -296,6 +301,7 @@ impl<H: SdHost> SdCard<H> {
             read_retries: 0,
             read_fallbacks: 0,
             slow_reads: 0,
+            end_settles: 0,
             weak: [(0, 0); WEAK_RANGES],
             weak_len: 0,
             weak_next: 0,
@@ -458,7 +464,43 @@ impl<H: SdHost> SdCard<H> {
         check(
             self.host
                 .read_block(Command::new(17, addr, Response::R1), buf)?,
-        )
+        )?;
+        self.after_reading_to(lba, 1)
+    }
+
+    /// After a read of blocks `lba..lba + count`: if it ended on the card's
+    /// last block, CMD13 collects the `OUT_OF_RANGE` the card raised doing
+    /// it, which it reports in the *next* command's status (the owner's
+    /// 32 GB card on the X51v, 2026-10-21: every read after one of the last
+    /// block failed with `0x80000900`, until a CMD13 or another command took
+    /// it; quality audit C46, the owner's option a). That bit alone is
+    /// expected there; anything else CMD13 reports is an error. Other reads
+    /// send nothing more.
+    #[inline(always)]
+    fn after_reading_to(&mut self, lba: u32, count: u32) -> Result<(), Error> {
+        if lba.saturating_add(count) != self.blocks {
+            return Ok(());
+        }
+        self.settle_end()
+    }
+
+    /// [`Self::after_reading_to`]'s CMD13, out of line: every other read
+    /// pays only the compare (ADR-0005 rule 8; a call per read cost
+    /// `sd_read_4_blocks` 1.5% in the emulator).
+    #[cold]
+    #[inline(never)]
+    fn settle_end(&mut self) -> Result<(), Error> {
+        let arg = u32::from(self.rca) << 16;
+        let status = self.host.command(Command::new(13, arg, Response::R1))?[0];
+        self.end_settles = self.end_settles.wrapping_add(1);
+        check(status & !OUT_OF_RANGE)
+    }
+
+    /// Reads that ended on the last block and had the card's status
+    /// collected after (see [`Self::after_reading_to`]).
+    #[must_use]
+    pub fn end_settles(&self) -> u32 {
+        self.end_settles
     }
 
     /// Single blocks that needed the slower clock to read.
@@ -615,7 +657,7 @@ impl<H: SdHost> SdCard<H> {
             let stop = self.host.command(Command::new(12, 0, Response::R1b));
             check(status?)?;
             stop?;
-            return Ok(());
+            return self.after_reading_to(lba, (buf.len() / BLOCK) as u32);
         }
         for (i, block) in buf.as_chunks_mut::<BLOCK>().0.iter_mut().enumerate() {
             self.read(lba + i as u32, block)?;
@@ -860,6 +902,13 @@ mod tests {
         busy_polls: u32,
         /// Refuses ACMD23 (no answer, illegal command reported next).
         no_acmd23: bool,
+        /// Raises OUT_OF_RANGE reading the last block, reported in the
+        /// next command's status (the owner's card on the X51v, C46).
+        end_out_of_range: bool,
+        /// OUT_OF_RANGE to report in the next response.
+        oor_pending: bool,
+        /// Status bits every CMD13 adds.
+        cmd13_extra: u32,
     }
 
     impl FakeCard {
@@ -888,11 +937,34 @@ mod tests {
                 still_sending: false,
                 busy_polls: 0,
                 no_acmd23: false,
+                end_out_of_range: false,
+                oor_pending: false,
+                cmd13_extra: 0,
             }
         }
 
         fn data_status(&self) -> u32 {
             if self.fail_status { 0x8000_0900 } else { 0x900 }
+        }
+
+        /// The card's capacity in blocks, as its CSD gives it.
+        fn capacity(&self) -> usize {
+            if self.sdhc { 1024 } else { 8 }
+        }
+
+        /// A data transfer of `range` done: the X51v card's OUT_OF_RANGE
+        /// raised if it ended on the last block. Returns the bit pending
+        /// from before (reported in this response).
+        fn transfer_done(&mut self, range: core::ops::Range<usize>) -> u32 {
+            let earlier = if core::mem::take(&mut self.oor_pending) {
+                OUT_OF_RANGE
+            } else {
+                0
+            };
+            if self.end_out_of_range && range.end == self.capacity() {
+                self.oor_pending = true;
+            }
+            earlier
         }
     }
 
@@ -954,7 +1026,7 @@ mod tests {
                         self.busy_polls -= 1;
                         STATE_PRG << 9 // programming, not ready
                     } else {
-                        0x900 // tran state, ready for data
+                        0x900 | self.cmd13_extra // tran state, ready for data
                     }
                 }
                 (6, true) if c.arg == 2 => 0x0920,
@@ -971,7 +1043,12 @@ mod tests {
             } else {
                 0
             };
-            Ok([r | illegal, 0, 0, 0])
+            let oor = if core::mem::take(&mut self.oor_pending) {
+                OUT_OF_RANGE
+            } else {
+                0
+            };
+            Ok([r | illegal | oor, 0, 0, 0])
         }
         fn read_block(&mut self, c: Command, buf: &mut [u8; BLOCK]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
@@ -999,7 +1076,8 @@ mod tests {
                 return Ok(0x900 | 1 << 22);
             }
             buf.copy_from_slice(&self.data[block * BLOCK..(block + 1) * BLOCK]);
-            Ok(self.data_status())
+            let earlier = self.transfer_done(block..block + 1);
+            Ok(self.data_status() | earlier)
         }
         fn can_wide_bus(&self) -> bool {
             self.capable
@@ -1029,7 +1107,8 @@ mod tests {
                 return Err(HostError::Timeout);
             }
             buf.copy_from_slice(&self.data[first * BLOCK..first * BLOCK + buf.len()]);
-            Ok(0x900)
+            let earlier = self.transfer_done(range);
+            Ok(0x900 | earlier)
         }
         fn write_block(&mut self, c: Command, buf: &[u8; BLOCK]) -> Result<u32, HostError> {
             self.log.push((c.index, c.arg));
@@ -1211,6 +1290,50 @@ mod tests {
         assert_eq!(cmds[from..].iter().filter(|&&c| c == 17).count(), 4);
         assert!(cmds[from..].ends_with(&[17, 17, 17, 17]));
         assert_eq!((card.read_retries(), card.read_fallbacks()), (0, 1));
+    }
+
+    /// C46, the X51v card's way: reading the last block raises
+    /// OUT_OF_RANGE, reported in the next command's status. The read after
+    /// it must not fail (on the device every later read did), whichever
+    /// read comes next, single or multi-block, the last block again too.
+    #[test]
+    fn a_read_ending_on_the_last_block_leaves_no_error_for_the_next() {
+        for capable in [false, true] {
+            let mut fake = FakeCard::new(true, false);
+            fake.capable = capable;
+            fake.end_out_of_range = true;
+            let mut card = SdCard::init(fake).unwrap();
+            let n = card.blocks();
+            assert_eq!(n, 8);
+            let mut one = [0u8; BLOCK];
+            let mut two = vec![0u8; 2 * BLOCK];
+            for _ in 0..2 {
+                card.read(n - 1, &mut one).unwrap();
+                assert!(one.iter().all(|&b| b == 7));
+                card.read(0, &mut one).unwrap();
+                card.read_many(n - 2, &mut two).unwrap();
+                assert!(two[BLOCK..].iter().all(|&b| b == 7));
+                card.read(1, &mut one).unwrap();
+            }
+            assert_eq!(card.end_settles(), 4, "capable {capable}");
+            // Reads elsewhere send nothing more.
+            let before = card.host.log.len();
+            card.read(2, &mut one).unwrap();
+            assert_eq!(card.host.log.len(), before + 1);
+        }
+    }
+
+    /// The status collected after the last block is still checked: an
+    /// error beside OUT_OF_RANGE there (a card ECC failure, bit 21) fails
+    /// the read.
+    #[test]
+    fn another_error_after_the_last_block_still_fails() {
+        let mut fake = FakeCard::new(true, false);
+        fake.end_out_of_range = true;
+        let mut card = SdCard::init(fake).unwrap();
+        card.host.cmd13_extra = 1 << 21;
+        let mut one = [0u8; BLOCK];
+        assert!(matches!(card.read(7, &mut one), Err(Error::CardStatus(_))));
     }
 
     #[test]

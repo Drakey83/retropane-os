@@ -102,8 +102,11 @@ mod image {
         let rect = (40, 120, 440, 320);
         log!("rectangle {rect:?} red 0xf800 at 0x{a:x}, stride {s}");
         let t0 = rt::ticks();
-        if e.submit(&cmd::fill(cmd::Format::RGB565, a, s, rect, 0xF800))
-            .is_err()
+        if e.submit(&rp_image::need(
+            cmd::fill(cmd::Format::RGB565, a, s, rect, 0xF800),
+            "a 2D rectangle",
+        ))
+        .is_err()
         {
             fail(format_args!("FIFO full"));
         }
@@ -139,12 +142,15 @@ mod image {
         let colors: [u16; 4] = [0x001F, 0x07E0, 0xF81F, 0xFFE0];
         let t0 = rt::ticks();
         for i in 0..20 {
-            let w = cmd::fill(
-                cmd::Format::RGB565,
-                a,
-                s,
-                (0, 0, 480, 640),
-                u32::from(colors[i % 4]),
+            let w = rp_image::need(
+                cmd::fill(
+                    cmd::Format::RGB565,
+                    a,
+                    s,
+                    (0, 0, 480, 640),
+                    u32::from(colors[i % 4]),
+                ),
+                "a 2D rectangle",
             );
             if e.submit(&w).is_err() {
                 fail(format_args!("FIFO full at fill {i}"));
@@ -198,8 +204,11 @@ mod image {
             ((456, 20, 460, 620), 0xFFFF),
         ];
         for (r, c) in scene {
-            if e.submit(&cmd::fill(cmd::Format::RGB565, a, s, r, c))
-                .is_err()
+            if e.submit(&rp_image::need(
+                cmd::fill(cmd::Format::RGB565, a, s, r, c),
+                "a 2D rectangle",
+            ))
+            .is_err()
             {
                 fail(format_args!("FIFO full"));
             }
@@ -284,13 +293,16 @@ mod image {
         let checks = |dx: usize, dy: usize| {
             [(0, 0), (63, 63), (17, 40), (63, 0)].map(|(x, y)| (dx + x, dy + y, tile(x, y)))
         };
-        let (w, n) = cmd::copy(
-            cmd::Format::RGB565,
-            (a, s),
-            (TILE, TILE_STRIDE),
-            (0, 0),
-            (40, 360, 104, 424),
-            0,
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                cmd::Format::RGB565,
+                (a, s),
+                (TILE, TILE_STRIDE),
+                (0, 0),
+                (40, 360, 104, 424),
+                0,
+            ),
+            "a 2D rectangle",
         );
         run(
             e,
@@ -298,13 +310,16 @@ mod image {
             &w[..n],
             &checks(40, 360),
         );
-        let (w, n) = cmd::copy(
-            cmd::Format::RGB565,
-            (a, s),
-            (a, s),
-            (40, 360),
-            (48, 360, 112, 424),
-            OP_RIGHT_LEFT,
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                cmd::Format::RGB565,
+                (a, s),
+                (a, s),
+                (40, 360),
+                (48, 360, 112, 424),
+                OP_RIGHT_LEFT,
+            ),
+            "a 2D rectangle",
         );
         run(
             e,
@@ -320,13 +335,16 @@ mod image {
         let mut words = [0u32; 10 * 8];
         let mut len = 0;
         for k in (0..64 / DY).rev() {
-            let (w, n) = cmd::copy(
-                cmd::Format::RGB565,
-                (a, s),
-                (a, s),
-                (48, 360 + k * DY),
-                (48, 368 + k * DY, 112, 368 + (k + 1) * DY),
-                0,
+            let (w, n) = rp_image::need(
+                cmd::copy(
+                    cmd::Format::RGB565,
+                    (a, s),
+                    (a, s),
+                    (48, 360 + k * DY),
+                    (48, 368 + k * DY, 112, 368 + (k + 1) * DY),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             words[len..len + n].copy_from_slice(&w[..n]);
             len += n;
@@ -337,14 +355,20 @@ mod image {
             &words[..len],
             &checks(48, 368),
         );
-        let green = cmd::fill(cmd::Format::RGB565, a, s, (200, 360, 264, 424), 0x07E0);
-        let (w, n) = cmd::copy(
-            cmd::Format::RGB565,
-            (a, s),
-            (KEYED, TILE_STRIDE),
-            (0, 0),
-            (200, 360, 264, 424),
-            OP_KEY,
+        let green = rp_image::need(
+            cmd::fill(cmd::Format::RGB565, a, s, (200, 360, 264, 424), 0x07E0),
+            "a 2D rectangle",
+        );
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                cmd::Format::RGB565,
+                (a, s),
+                (KEYED, TILE_STRIDE),
+                (0, 0),
+                (200, 360, 264, 424),
+                OP_KEY,
+            ),
+            "a 2D rectangle",
         );
         let mut words = [0u32; 3 + 7 + 9];
         words[..3].copy_from_slice(&cmd::key(u32::from(KEY), 0xFFFF));
@@ -366,13 +390,16 @@ mod image {
         // Copy speed: ten full screens from off-screen memory.
         let t0 = rt::ticks();
         for _ in 0..10 {
-            let (w, n) = cmd::copy(
-                cmd::Format::RGB565,
-                (a, s),
-                (SCREEN_COPY, s),
-                (0, 0),
-                (0, 0, 480, 640),
-                0,
+            let (w, n) = rp_image::need(
+                cmd::copy(
+                    cmd::Format::RGB565,
+                    (a, s),
+                    (SCREEN_COPY, s),
+                    (0, 0),
+                    (0, 0, 480, 640),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             if e.submit(&w[..n]).is_err() {
                 fail(format_args!("FIFO full"));
@@ -516,13 +543,16 @@ mod image {
             }
             cpu::drain_write_buffer();
             log!("probe: engine reads local address 0x{src:08x} ({mib} MiB)");
-            let (w, n) = cmd::copy(
-                cmd::Format::RGB565,
-                (PROBE_DST, 64),
-                (src, 64),
-                (0, 0),
-                (0, 0, 32, 1),
-                0,
+            let (w, n) = rp_image::need(
+                cmd::copy(
+                    cmd::Format::RGB565,
+                    (PROBE_DST, 64),
+                    (src, 64),
+                    (0, 0),
+                    (0, 0, 32, 1),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             if e.submit(&w[..n]).is_err() {
                 log!("  FIFO full: stopping the probe");
@@ -597,8 +627,12 @@ mod image {
         dy: u16,
     ) -> Result<u32, Stuck> {
         let surf = (at, st);
+        // The measurement itself sends rectangles the driver refuses for
+        // drawing (bit 23 with the destination bottom to top: wrong on the
+        // X51v, docs/hw/2700g.md), so it builds them unchecked (C47).
         let mut send = |dst, src, origin, rect, flags| {
-            let (words, n) = cmd::copy(cmd::Format::RGB565, dst, src, origin, rect, flags);
+            let (words, n) =
+                cmd::copy_unchecked(cmd::Format::RGB565, dst, src, origin, rect, flags);
             e.submit(&words[..n])
         };
         let bottom = h - dy - 1;
@@ -804,7 +838,10 @@ mod image {
             log!("completion: 0x130 = 0x{enables:04x}, status 0x{st0:08x} before");
             let t0 = rt::ticks();
             for i in 0..20 {
-                let w = cmd::fill(cmd::Format::RGB565, a, s, (0, 0, 480, 640), 0x0841 * i);
+                let w = rp_image::need(
+                    cmd::fill(cmd::Format::RGB565, a, s, (0, 0, 480, 640), 0x0841 * i),
+                    "a 2D rectangle",
+                );
                 if e.submit(&w).is_err() {
                     log!("  FIFO full at fill {i}: stopping");
                     return None;

@@ -198,12 +198,15 @@ mod image {
     /// The 2D engine fills the fill region with `colour` (and waits); the
     /// words that came out wrong, read back at the current timing.
     fn fill_check(e: &mut Engine<rp_hal_pxa27x::Mmio>, vram: &mut [u8], colour: u32) -> u32 {
-        let words = cmd::fill(
-            Format::BPP32,
-            FILL_AT,
-            FILL_STRIDE,
-            (0, 0, 480, FILL_ROWS as u16),
-            colour,
+        let words = rp_image::need(
+            cmd::fill(
+                Format::BPP32,
+                FILL_AT,
+                FILL_STRIDE,
+                (0, 0, 480, FILL_ROWS as u16),
+                colour,
+            ),
+            "a 2D rectangle",
         );
         if e.submit(&words)
             .and_then(|()| e.finish(vram, 200_000))

@@ -278,6 +278,11 @@ pub struct Mbx2dRenderer<R, M> {
     /// two are drawn whole. Only if its fence never lands either is it
     /// also a stall.
     pub fifo_full: u32,
+    /// 2D commands not sent because their rectangle isn't one the engine
+    /// draws as asked (empty, inverted, past 13 bits: `cmd::drawable`,
+    /// quality audit C47); each would otherwise have drawn nothing, or on
+    /// the X51v far outside its picture.
+    pub refused: u32,
     /// The frame being queued lost a command (the FIFO stayed full).
     dropping: bool,
     /// The frame queued lost a command: not shown when its fence lands.
@@ -348,6 +353,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             drawn_n: 0,
             stalls: 0,
             fifo_full: 0,
+            refused: 0,
             dropping: false,
             pending_dropped: false,
             dither: true,
@@ -556,7 +562,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     fn copy(&mut self, dst: usize, src: usize, r: Rect) {
         self.last.px_copy += u32::from(r.w) * u32::from(r.h);
         self.last.blits += 1;
-        let (w, n) = cmd::blit(
+        if let Some((w, n)) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, src, STRIDE as i32),
             (r.x, r.y),
@@ -564,16 +570,22 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             ROP_SRCCOPY,
             0,
             0,
-        );
-        self.submit(&w[..n]);
+        ) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
     }
 
     /// `r` set to the opaque colour `c`.
     fn fill(&mut self, dst: usize, r: Rect, c: Argb) {
         self.last.px_copy += u32::from(r.w) * u32::from(r.h);
         self.last.blits += 1;
-        let w = cmd::fill(Format::BPP32, dst, STRIDE, Self::coords(r), c | 0xFF00_0000);
-        self.submit(&w);
+        if let Some(w) = cmd::fill(Format::BPP32, dst, STRIDE, Self::coords(r), c | 0xFF00_0000) {
+            self.submit(&w);
+        } else {
+            self.refused += 1;
+        }
     }
 
     /// One row of colours, column `k` of `r` being `col(k)`, drawn down `r`
@@ -602,7 +614,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             self.last.px_copy += a;
         }
         self.last.blits += 1;
-        let (w, n) = cmd::blit(
+        if let Some((w, n)) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, at, 0),
             (0, 0),
@@ -610,8 +622,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             ROP_SRCCOPY,
             if blend { OP_BLEND } else { 0 },
             0,
-        );
-        self.submit(&w[..n]);
+        ) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
     }
 
     /// `c` over `r` (nothing if clear, a fill if opaque).
@@ -636,7 +651,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     ) {
         self.last.px_blend += u32::from(to.w) * u32::from(to.h);
         self.last.blits += 1;
-        let (w, n) = cmd::blit(
+        if let Some((w, n)) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, src, stride as i32),
             (sx, sy),
@@ -644,8 +659,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             ROP_SRCCOPY,
             OP_BLEND,
             0,
-        );
-        self.submit(&w[..n]);
+        ) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
     }
 
     /// Adds the dither pattern to `r` of picture `dst`: one blit per line
@@ -662,7 +680,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             let lines = (r.bottom() - first).div_ceil(4);
             self.last.px_dither += u32::from(r.w) * u32::from(lines);
             self.last.blits += 1;
-            let (w, n) = cmd::blit(
+            if let Some((w, n)) = cmd::blit(
                 (
                     Format::BPP32,
                     dst + usize::from(first) * STRIDE,
@@ -678,8 +696,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
                 ROP_SRCCOPY,
                 OP_BLEND,
                 0,
-            );
-            self.submit(&w[..n]);
+            ) {
+                self.submit(&w[..n]);
+            } else {
+                self.refused += 1;
+            }
         }
         self.submit(&cmd::blend(BLEND_DELL_TEXT));
     }
@@ -858,7 +879,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
     fn copy_in(&mut self, dst: usize, clip: Rect, at: usize) {
         self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
         self.last.blits += 1;
-        let (w, n) = cmd::blit(
+        if let Some((w, n)) = cmd::blit(
             (Format::BPP32, dst, STRIDE as i32),
             (Format::BPP32, at, Self::cache_stride(clip) as i32),
             (0, 0),
@@ -866,8 +887,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             ROP_SRCCOPY,
             0,
             0,
-        );
-        self.submit(&w[..n]);
+        ) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
     }
 
     /// Keeps `clip` of picture `dst`, just drawn, under `key`: the second
@@ -895,7 +919,7 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
         self.last.cache_stores += 1;
         self.last.px_copy += u32::from(clip.w) * u32::from(clip.h);
         self.last.blits += 1;
-        let (w, n) = cmd::blit(
+        if let Some((w, n)) = cmd::blit(
             (Format::BPP32, at, Self::cache_stride(clip) as i32),
             (Format::BPP32, dst, STRIDE as i32),
             (clip.x, clip.y),
@@ -903,8 +927,11 @@ impl<R: RegisterBus, M: LocalMem> Mbx2dRenderer<R, M> {
             ROP_SRCCOPY,
             0,
             0,
-        );
-        self.submit(&w[..n]);
+        ) {
+            self.submit(&w[..n]);
+        } else {
+            self.refused += 1;
+        }
     }
 
     fn command(&mut self, frame: &Frame, c: &Cmd, clip: Rect, dst: usize) {

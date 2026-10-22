@@ -459,7 +459,10 @@ mod image {
         /// Fills a rectangle of the 32-bit picture at `at` with the 2D
         /// engine (and waits).
         fn fill(&mut self, at: u32, rect: (u16, u16, u16, u16), c: u32) {
-            let w = cmd::fill(Format::BPP32, at as usize, SCREEN.stride as usize, rect, c);
+            let w = rp_image::need(
+                cmd::fill(Format::BPP32, at as usize, SCREEN.stride as usize, rect, c),
+                "a 2D rectangle",
+            );
             let ok = self
                 .e
                 .submit(&w)
@@ -3266,7 +3269,10 @@ mod image {
     fn p2l_label(g: &mut Rig, s: &str) {
         // Rows 560-639 of the RGB565 screen are rows 280-319 of the 32-bit
         // picture the 2D fill sees (960 bytes a row against 1920).
-        g.fill(SCREEN.at, (0, 280, 480, 40), 0);
+        // `(x0, y0, x1, y1)`: run P2L version 2 asked for `(0, 280, 480, 40)`,
+        // which on the X51v filled far past the screen, the first render
+        // with it (quality audit C47).
+        g.fill(SCREEN.at, (0, 280, 480, 320), 0);
         let white = 0xFFFF_FFFFu32;
         for (k, ch) in s.chars().enumerate() {
             let x0 = 16 + k as u32 * (WIDTH as u32 + 1) * 4;
@@ -3325,7 +3331,7 @@ mod image {
     #[inline(never)]
     fn long_count(g: &mut Rig) {
         log!(
-            "P2L: ADR-0023's long count. P2W's picture rendered at 32 bits (code 6) into the background picture once (the first render), then into the second screen, each checked as in P2X and compared with the first: {P2L_CONTROLS} with the screen at 32 bits (a control: P2Y found errors there), {P2L_RENDERS} with the screen as dithered RGB565 (P2W's picture, 0x650 9, 960-byte rows) against the first made again under it, {P2L_CONTROLS} at 32 bits again; version 2"
+            "P2L: ADR-0023's long count. P2W's picture rendered at 32 bits (code 6) into the background picture once (the first render), then into the second screen, each checked as in P2X and compared with the first: {P2L_CONTROLS} with the screen at 32 bits (a control: P2Y found errors there), {P2L_RENDERS} with the screen as dithered RGB565 (P2W's picture, 0x650 9, 960-byte rows) against the first made again under it, {P2L_CONTROLS} at 32 bits again; version 3"
         );
         clock_card(
             g,
@@ -3399,10 +3405,23 @@ mod image {
             again.list.as_str()
         );
         let mut main = P2lTally::default();
-        let (mut listed, mut changed) = (0u32, 0u32);
+        let (mut listed, mut changed, mut bars_listed) = (0u32, 0u32, 0u32);
         let t0 = rt::ticks();
         for k in 1..=P2L_RENDERS {
             let c = p2x_count(g, &mut r, b, 1920, 4, 6, Some(a));
+            // A wrong bar pixel is the count's answer (version 2's one was
+            // hidden by the cap): every render with one is listed, apart.
+            let bars = c.white + c.unwritten + c.wrong;
+            if bars > 0 && bars_listed < P2L_LISTED {
+                bars_listed += 1;
+                log!(
+                    "   16-bit screen render {k}: {bars} wrong bar pixels ({} white, {} never written, {} other):{}",
+                    c.white,
+                    c.unwritten,
+                    c.wrong,
+                    c.list.as_str()
+                );
+            }
             if (c.bad > 0 || !c.ok) && listed < P2L_LISTED {
                 listed += 1;
                 log!(
@@ -3415,16 +3434,16 @@ mod image {
             main.add(&c);
             if k % 100 == 0 {
                 main.log("so far, the screen at 16 bits", us_since(t0));
-                let h = p2l_hash(g, a);
-                if h != ref_hash {
-                    changed += 1;
-                    log!("   the reference changed by render {k}: hash 0x{h:08x}");
-                }
             }
             if k % 25 == 0 {
                 let mut l = heapless_name();
                 let _ = write!(l, "{k} OF {P2L_RENDERS} BAD {}", main.bad_renders);
                 p2l_label(g, l.as_str());
+                let h = p2l_hash(g, a);
+                if h != ref_hash {
+                    changed += 1;
+                    log!("   the reference changed by the line after render {k}: hash 0x{h:08x}");
+                }
             }
         }
         if main.bad_renders > listed {
@@ -3435,7 +3454,7 @@ mod image {
         }
         log!(
             "  the reference: changed at {changed} of {} checks",
-            P2L_RENDERS / 100
+            P2L_RENDERS / 25
         );
         main.log("the screen at 16 bits", us_since(t0));
         let after = p2l_control(g, &mut r, a, b, "control after (the screen at 32 bits)");
@@ -3589,12 +3608,15 @@ mod image {
         let t_all = rt::ticks();
         for k in 0..FILLS {
             let c = if k % 2 == 0 { 0xFF40_2020 } else { 0xFF20_2040 };
-            let w = cmd::fill(
-                Format::BPP32,
-                SCREEN.at as usize,
-                SCREEN.stride as usize,
-                (0, 0, 480, 640),
-                c,
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::BPP32,
+                    SCREEN.at as usize,
+                    SCREEN.stride as usize,
+                    (0, 0, 480, 640),
+                    c,
+                ),
+                "a 2D rectangle",
             );
             min_free = min_free.min(cmd::free_bytes(g.e.status()));
             let t0 = rt::ticks();
@@ -4556,12 +4578,15 @@ mod image {
         g.mem.sync();
 
         // The target: an RGB565 picture (PIC16), black.
-        let w = cmd::fill(
-            Format::RGB565,
-            PIC16.at as usize,
-            PIC16.stride as usize,
-            (0, 0, 480, 640),
-            0,
+        let w = rp_image::need(
+            cmd::fill(
+                Format::RGB565,
+                PIC16.at as usize,
+                PIC16.stride as usize,
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D rectangle",
         );
         let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
 
@@ -4577,18 +4602,21 @@ mod image {
                 let k = (l * 7 + c) % 94 + 1;
                 lit += lit_per_glyph[k as usize];
                 let (x, y) = ((4 + c * CELL_W) as u16, (8 + l * CELL_H + 1) as u16);
-                let (cmdw, n) = cmd::blit(
-                    (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
-                    (
-                        Format::COVERAGE4,
-                        (atlas + k * ATLAS_CELL / 2) as usize,
-                        ATLAS_STRIDE as i32,
+                let (cmdw, n) = rp_image::need(
+                    cmd::blit(
+                        (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
+                        (
+                            Format::COVERAGE4,
+                            (atlas + k * ATLAS_CELL / 2) as usize,
+                            ATLAS_STRIDE as i32,
+                        ),
+                        (0, 0),
+                        (x, y, x + CELL_W as u16, y + CELL_H as u16),
+                        cmd::ROP_SRCCOPY,
+                        cmd::OP_BLEND,
+                        0x00FF_FFFF,
                     ),
-                    (0, 0),
-                    (x, y, x + CELL_W as u16, y + CELL_H as u16),
-                    cmd::ROP_SRCCOPY,
-                    cmd::OP_BLEND,
-                    0x00FF_FFFF,
+                    "a 2D rectangle",
                 );
                 if g.e.submit(&cmdw[..n]).is_err() {
                     log!("  E4: the 2D engine stopped taking commands");
@@ -4686,12 +4714,15 @@ mod image {
         rt::check_in();
 
         let black = |g: &mut Rig| {
-            let w = cmd::fill(
-                Format::RGB565,
-                PIC16.at as usize,
-                PIC16.stride as usize,
-                (0, 0, 480, 640),
-                0,
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    PIC16.at as usize,
+                    PIC16.stride as usize,
+                    (0, 0, 480, 640),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
         };
@@ -4775,18 +4806,21 @@ mod image {
             let mut ok = true;
             for k in 0..n {
                 let y0 = (8 + k * rows) as u16;
-                let (w, len) = cmd::blit(
-                    (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
-                    (
-                        Format::COVERAGE4,
-                        at + (k * rows) as usize * F_ROW_BYTES,
-                        F_ROW_BYTES as i32,
+                let (w, len) = rp_image::need(
+                    cmd::blit(
+                        (Format::RGB565, PIC16.at as usize, PIC16.stride as i32),
+                        (
+                            Format::COVERAGE4,
+                            at + (k * rows) as usize * F_ROW_BYTES,
+                            F_ROW_BYTES as i32,
+                        ),
+                        (0, 0),
+                        (0, y0, 480, y0 + rows as u16),
+                        cmd::ROP_SRCCOPY,
+                        cmd::OP_BLEND,
+                        0x00FF_FFFF,
                     ),
-                    (0, 0),
-                    (0, y0, 480, y0 + rows as u16),
-                    cmd::ROP_SRCCOPY,
-                    cmd::OP_BLEND,
-                    0x00FF_FFFF,
+                    "a 2D rectangle",
                 );
                 ok &= g.e.submit(&w[..len]).is_ok();
             }
@@ -4845,12 +4879,15 @@ mod image {
             16 * ATLAS565_STRIDE
         );
         let t0 = rt::ticks();
-        let w = cmd::fill(
-            Format::RGB565,
-            PIC16.at as usize,
-            PIC16.stride as usize,
-            (0, 0, 480, 640),
-            0,
+        let w = rp_image::need(
+            cmd::fill(
+                Format::RGB565,
+                PIC16.at as usize,
+                PIC16.stride as usize,
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D rectangle",
         );
         let mut ok = g.e.submit(&w).is_ok();
         let mut sent = w.len();
@@ -4858,13 +4895,16 @@ mod image {
             for c in 0..F_COLS {
                 let k = f_glyph(l, c) as u16;
                 let (x, y) = ((4 + c * 12) as u16, (8 + l * 16) as u16);
-                let (cw, n) = cmd::copy(
-                    Format::RGB565,
-                    (PIC16.at as usize, PIC16.stride as usize),
-                    (a565, ATLAS565_STRIDE),
-                    (k * 12, 0),
-                    (x, y, x + 12, y + 16),
-                    0,
+                let (cw, n) = rp_image::need(
+                    cmd::copy(
+                        Format::RGB565,
+                        (PIC16.at as usize, PIC16.stride as usize),
+                        (a565, ATLAS565_STRIDE),
+                        (k * 12, 0),
+                        (x, y, x + 12, y + 16),
+                        0,
+                    ),
+                    "a 2D rectangle",
                 );
                 ok &= g.e.submit(&cw[..n]).is_ok();
                 sent += n;
@@ -4884,12 +4924,15 @@ mod image {
         // F5: the engine fills the background (and is waited for), then the
         // CPU writes only the words that hold ink.
         let t0 = rt::ticks();
-        let w = cmd::fill(
-            Format::RGB565,
-            PIC16.at as usize,
-            PIC16.stride as usize,
-            (0, 0, 480, 640),
-            0,
+        let w = rp_image::need(
+            cmd::fill(
+                Format::RGB565,
+                PIC16.at as usize,
+                PIC16.stride as usize,
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D rectangle",
         );
         let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
         let filled = us_since(t0);
@@ -4928,12 +4971,15 @@ mod image {
             ),
         ] {
             let t0 = rt::ticks();
-            let w = cmd::fill(
-                Format::RGB565,
-                PIC16.at as usize,
-                PIC16.stride as usize,
-                (0, 0, 480, 640),
-                0,
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::RGB565,
+                    PIC16.at as usize,
+                    PIC16.stride as usize,
+                    (0, 0, 480, 640),
+                    0,
+                ),
+                "a 2D rectangle",
             );
             let mut ok = g.e.submit(&w).is_ok();
             let mut sent = w.len();
@@ -4960,13 +5006,16 @@ mod image {
                         batch[n + 1] = cmd::xy(x + 12, y + 16);
                         n += 2;
                     } else {
-                        let (cw, len) = cmd::copy(
-                            Format::RGB565,
-                            (PIC16.at as usize, PIC16.stride as usize),
-                            (a565, ATLAS565_STRIDE),
-                            (k * 12, 0),
-                            (x, y, x + 12, y + 16),
-                            0,
+                        let (cw, len) = rp_image::need(
+                            cmd::copy(
+                                Format::RGB565,
+                                (PIC16.at as usize, PIC16.stride as usize),
+                                (a565, ATLAS565_STRIDE),
+                                (k * 12, 0),
+                                (x, y, x + 12, y + 16),
+                                0,
+                            ),
+                            "a 2D rectangle",
                         );
                         batch[n..n + len].copy_from_slice(&cw[..len]);
                         n += len;
@@ -5380,12 +5429,15 @@ mod image {
         }
         // The 2D engine: a full-screen fill, timed, 4096 words checked.
         let colour = clock_pat(seed, 0x2D) | 0xFF00_0000;
-        let w = cmd::fill(
-            Format::BPP32,
-            SCREEN.at as usize,
-            SCREEN.stride as usize,
-            (0, 0, 480, 640),
-            colour,
+        let w = rp_image::need(
+            cmd::fill(
+                Format::BPP32,
+                SCREEN.at as usize,
+                SCREEN.stride as usize,
+                (0, 0, 480, 640),
+                colour,
+            ),
+            "a 2D rectangle",
         );
         let t0 = rt::ticks();
         let ok =
@@ -5516,12 +5568,15 @@ mod image {
             let _ = write!(l, " flush x5 {}", underrun_take(&mut g.e.regs));
             // The 2D engine: 20 full-screen fills.
             for k in 0..20u32 {
-                let w = cmd::fill(
-                    Format::BPP32,
-                    SCREEN.at as usize,
-                    SCREEN.stride as usize,
-                    (0, 0, 480, 640),
-                    0xFF00_0000 | (k * 0x0001_0101),
+                let w = rp_image::need(
+                    cmd::fill(
+                        Format::BPP32,
+                        SCREEN.at as usize,
+                        SCREEN.stride as usize,
+                        (0, 0, 480, 640),
+                        0xFF00_0000 | (k * 0x0001_0101),
+                    ),
+                    "a 2D rectangle",
                 );
                 let _ = g.e.submit(&w).and_then(|()| g.e.finish(g.mem.0, 200_000));
             }

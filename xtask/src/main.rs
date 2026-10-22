@@ -824,6 +824,7 @@ fn lint() -> Result {
             violations.extend(policy::check_conflict_markers(path, &text));
             // One crash path for every image (quality audit C38).
             violations.extend(policy::check_crash_path(path, &text));
+            violations.extend(policy::check_unchecked_2d(path, &text));
             // Copied values (quality-audit D1), in Rust sources outside xtask
             // (whose policy code names the tag itself).
             if path.ends_with(".rs") && !path.starts_with("xtask/") {

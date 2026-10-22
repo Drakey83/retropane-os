@@ -266,7 +266,7 @@ pub fn probe_widen<R: rp_hal_api::RegisterBus, M: rp_mbx_render::LocalMem>(
         ROP_SRCCOPY,
         0,
         0,
-    );
+    )?;
     e.submit(&w[..n]).ok()?;
     e.finish_with(20_000, |a| mem.load(a)).ok()?;
     Some(classify(|i| mem.load(out + 4 * i).unwrap_or(0)))

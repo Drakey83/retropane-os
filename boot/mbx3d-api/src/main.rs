@@ -168,12 +168,15 @@ mod image {
 
         /// Fills the screen picture with the 2D engine (and waits).
         fn clear(&mut self, c: u32) {
-            let w = cmd::fill(
-                Format::BPP32,
-                SCREEN.at as usize,
-                SCREEN.stride as usize,
-                (0, 0, SCREEN.w, SCREEN.h),
-                c,
+            let w = rp_image::need(
+                cmd::fill(
+                    Format::BPP32,
+                    SCREEN.at as usize,
+                    SCREEN.stride as usize,
+                    (0, 0, SCREEN.w, SCREEN.h),
+                    c,
+                ),
+                "a 2D rectangle",
             );
             let ok = self
                 .e

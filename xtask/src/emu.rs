@@ -3695,7 +3695,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  the screen: P2W's picture dithered to RGB565 (true), scanned out at 16 bits",
                 "  P2L so far, the screen at 16 bits: 500 renders (0 unfinished)",
                 "  P2L the screen at 16 bits: 1000 renders (0 unfinished)",
-                "  the reference: changed at 0 of 10 checks",
+                "  the reference: changed at 0 of 40 checks",
                 "  P2L control after (the screen at 32 bits): 5 renders (0 unfinished)",
                 "P2L: 0 of 1000 renders under the 16-bit screen had a wrong pixel (0 pixels); the controls at 32 bits: 0 of 5 before, 0 of 5 after",
                 "P2L: done",

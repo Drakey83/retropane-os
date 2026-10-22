@@ -89,6 +89,25 @@ pub fn crash(msg: core::fmt::Arguments) -> ! {
     report(Line::Message(msg))
 }
 
+/// `v`'s value, or a crash naming `what` and the caller's line: for a call
+/// that refuses what it was given (a 2D command whose rectangle the engine
+/// can't draw, `rp_drv_blit2d::drawable`, quality audit C47) in a test
+/// image, where carrying on would test something else.
+#[track_caller]
+pub fn need<T>(v: Option<T>, what: &str) -> T {
+    match v {
+        Some(v) => v,
+        None => {
+            let at = core::panic::Location::caller();
+            crash(format_args!(
+                "{what} refused at {}:{}",
+                at.file(),
+                at.line()
+            ))
+        }
+    }
+}
+
 /// A setup step that failed: `SETUP-FAIL <what>` reported as a crash, never a
 /// silent stop (which the loader would see as a hang).
 #[inline(never)]

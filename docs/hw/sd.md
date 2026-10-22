@@ -289,6 +289,14 @@ driver's count agreeing):
   the driver takes as that read's failure; each failing read here was
   again of the last block. The guard run's version 2 logs each result and
   the card's status (CMD13) through a sequence after a last-block read.
+- **Version 2 (`local/rp-sdtime-guard-run2.txt`): confirmed.** Every
+  failed read returned status `0x80000900`: `OUT_OF_RANGE` (bit 31) with
+  the card in transfer state and ready. A read of the last block
+  succeeds; the card raises `OUT_OF_RANGE` doing it and reports it in the
+  next command's status, whatever that is (a read of block 5 failed after
+  one of the last block; a CMD13 straight after showed `0x80000900` and the
+  next read was clean). The driver now collects it with a CMD13 after any
+  read ending on the last block (quality audit C46).
 
 ## Emulator
 
