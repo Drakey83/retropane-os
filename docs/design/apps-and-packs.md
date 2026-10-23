@@ -131,8 +131,9 @@ and one full-screen textured layer costs the 2700G 25-29 ms at Windows
 Mobile's clock, so the multi-pass engines (Quake 3, Half-Life, Turok)
 can approach 60 only at a reduced 3D resolution (gate line P9: the
 scaler), and then only if their game logic fits the same frame on a
-624 MHz CPU with no FPU. Expected, to be measured: DOOM, Heretic, Hexen
-and Descent at 60 at full resolution; Quake and Hexen II near 60 at a
+624 MHz CPU with no FPU. Expected, to be measured: Descent at 60 at full
+resolution; the 3D Doom family (DOOM, Heretic, Hexen) near 60, at full
+resolution only with faster clocks; Quake and Hexen II near 60 at a
 reduced 3D resolution; Quake 2 uncertain; Quake 3, Half-Life and Turok
 30 at a reduced resolution, 60 unlikely on this hardware.
 
@@ -199,6 +200,48 @@ were written for FPUs.
 What remains per port is converting only what the performance counters
 still show as hot. Not automatic: a blanket float-to-fixed conversion would
 break physics that need float's range.
+
+**What others did without an FPU (survey of known practice, 2026-10-23;
+each to be measured on the X51v before it is used):**
+
+- **Fixed point by kind of value**, not one format (Q3CE's six;
+  PlayStation 1 games on its fixed-point GTE coprocessor; Nintendo DS and
+  GBA games; OpenGL ES 1.x's Common-Lite profile, a fixed-point API made
+  for chips like ours; J2ME's M3G).
+- **Integer SIMD for vector maths:** iWMMXt multiply-accumulates four
+  16-bit values an instruction (`WMADD`): transforms, lighting, skinning.
+- **No divides in hot code:** ARMv5 has no divide instruction. Reciprocal
+  tables refined by one Newton-Raphson step, a reciprocal computed once
+  per object or frame and multiplied after (Doom's `FixedDiv` already
+  avoids most).
+- **Tables for the costly functions:** sine and cosine, square root and
+  its inverse, arctangent, at the precision each use needs.
+- **Do it once, ahead of time:** game data converted to fixed point at
+  install or first run (by the device or LegacySync on the PC): map
+  geometry, model vertices, lighting baked in.
+- **Smaller numbers where they suffice:** 16-bit vertices relative to a
+  model's bounding box (Quake's models are already 8-bit).
+- **A faster software float for what remains:** hand-written ARM
+  assembly routines (GCC's `ieee754-sf.S` for ARM; Qfplib's measured gains
+  over generic code on Cortex-M0), and a relaxed float for games (no
+  denormals, NaNs or rounding modes) where IEEE exactness isn't needed.
+  Rust's own software float is generic code: the first measurement is how
+  far behind an ARM assembly version it is.
+- **Floats built from integers for the 3D core:** the 2700G's vertex
+  words are IEEE floats; ARMv5's `CLZ` normalises an integer into one in
+  a few instructions.
+- **Find the floats that matter:** the event counters and the cross
+  build's float-helper check (perf.md) show which calls are hot.
+
+**The Doom family means the 3D (GLES) versions** (owner, 2026-10-23):
+DOOM, DOOM II, Heretic and Hexen as hardware-rendered 3D ports, like
+DoomGLES, HereticGLES and HexenGLES, not the 2.5D software renderer. Their
+game logic stays the integer engine; their renderer is ours, on the
+2700G, in fixed point. Like every 3D port they are fill-bound: walls,
+floors and sprites at 480 x 640 are at least one full textured layer
+(25-29 ms at Windows Mobile's clock), so 60 fps at full resolution needs
+the faster clocks (above) or a reduced 3D resolution; sector light is a
+flat tint a polygon, which avoids the Gouraud limit found by run GC.
 
 **Reuse first: earlier ports' conversions.** These engines were ported to
 FPU-less ARM before (Pocket PC, GP2X, the Nintendo DS), and those ports are
