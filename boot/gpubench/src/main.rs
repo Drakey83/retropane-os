@@ -271,6 +271,12 @@ mod image {
     /// hashed), then together; both results must hash as alone. Unattended;
     /// a hang is the run's finding (engines reset, logged).
     const TOGETHER: bool = option_env!("RP_GPUBENCH_TOGETHER").is_some();
+    /// Run FT2 (the gate's P15 and P8): run FT's test under each scan-out
+    /// (16-bit, stopped, 32-bit; run P2X found a 32-bit scan-out alone
+    /// corrupts 3D renders, which FT ran under) and with the 2D copies'
+    /// memory apart from the 3D target or beside it; five rounds each.
+    /// Unattended.
+    const TOGETHER2: bool = option_env!("RP_GPUBENCH_TOGETHER2").is_some();
     /// Run FI (the performance gate's P18 / V17): the MBX core's status
     /// word (`0x12c`), its enables (`0x130`) and clear (`0x134`) around a 2D
     /// fill and a 3D render, idle, busy, done and after a clear, with the
@@ -3476,6 +3482,240 @@ mod image {
             let _ = g.pool.free(at, PIC);
         }
         clock_card(g, ["RUN FT", "DONE", ""], 0xFF10_6020, 3);
+    }
+
+    // ---- Run FT2: 2D and 3D at once, by scan-out and placement (P15, P8) ----
+
+    /// FT2's 16-bit pictures (600 KiB each), at fixed places none of the
+    /// run's other memory uses. The 3D target and its reference in the
+    /// second 4 MiB of the 2700G's memory; the 2D copies' source and
+    /// destination either in the third 4 MiB ("apart") or beside the
+    /// target in the second ("together"). Quarters as banks is a guess
+    /// (the SDRAM's bank bits aren't documented); the run measures whether
+    /// distance matters at all.
+    const FT2_PIC: u32 = map::WALLPAPER.at;
+    const FT2_REF: u32 = map::BACKGROUND.at;
+    const FT2_APART: (u32, u32) = (map::CACHE.at, map::CACHE.at + 480 * 640 * 2);
+    const FT2_NEAR: (u32, u32) = (
+        map::WALLPAPER.at + 480 * 640 * 2,
+        map::WALLPAPER.at + 2 * 480 * 640 * 2,
+    );
+    /// Rounds together per setting.
+    const FT2_ROUNDS: usize = 5;
+
+    /// One FT round: `pic` and `dst` filled magenta, the render started
+    /// into `pic`, ten full-screen RGB565 copies `src` to `dst` queued
+    /// straight after, both waited for. The 3D render's time (`None`: no
+    /// done or refused) and whether the 2D work finished.
+    fn ft2_round(
+        g: &mut Rig,
+        r: &mut Renderer,
+        pic: u32,
+        (src, dst): (u32, u32),
+        with_2d: bool,
+    ) -> (Option<u32>, bool) {
+        for at in [pic, dst] {
+            let w = rp_image::need(
+                cmd::fill(Format::RGB565, at as usize, 960, (0, 0, 480, 640), 0xF81F),
+                "a 2D rectangle",
+            );
+            let _ = g.e.submit(&w);
+        }
+        let _ = g.e.finish(g.mem.0, 2_000_000);
+        let t = Target {
+            picture: Picture::packed(pic, 480, 640, PixelFormat::Rgb565),
+            x: 0,
+            y: 0,
+        };
+        let t0 = g.clock.now_us();
+        r.invalidate_all();
+        let started = match r.render(
+            &mut CodeBus {
+                bus: &mut g.e.regs,
+                code: 1,
+                extra: None,
+            },
+            &mut g.mem,
+            &mut g.clock,
+            t,
+        ) {
+            Ok(_) => true,
+            Err(e) => {
+                log!("  render refused: {e:?}");
+                false
+            }
+        };
+        let mut queued = true;
+        if with_2d {
+            for _ in 0..10 {
+                let (w, n) = rp_image::need(
+                    cmd::copy(
+                        Format::RGB565,
+                        (dst as usize, 960),
+                        (src as usize, 960),
+                        (0, 0),
+                        (0, 0, 480, 640),
+                        0,
+                    ),
+                    "a 2D rectangle",
+                );
+                queued &= g.e.submit(&w[..n]).is_ok();
+            }
+        }
+        let mut done = None;
+        if started {
+            while g.clock.now_us().wrapping_sub(t0) < 1_000_000 {
+                if g.e.regs.read32(MBX + reg::STATUS) & RENDER_DONE != 0 {
+                    done = Some(g.clock.now_us().wrapping_sub(t0));
+                    break;
+                }
+            }
+            loop {
+                match r.poll(&mut g.e.regs, &mut g.mem, &mut g.clock) {
+                    Poll::Wait(_) => {}
+                    Poll::Done(_) => break,
+                    p => {
+                        g.sync_resets(r);
+                        log!("    3D: {p:?}");
+                        done = None;
+                        break;
+                    }
+                }
+            }
+        }
+        let finished = queued && g.e.finish(g.mem.0, 2_000_000).is_ok();
+        rt::check_in();
+        (done, finished)
+    }
+
+    /// FT2's scan-outs: the graphics plane showing a 32-bit label (P2X:
+    /// errors in 32-bit renders), a 16-bit one (the shell's), or stopped
+    /// (`GSCADR` bit 31 clear, run T).
+    fn ft2_scan(g: &mut Rig, which: usize) {
+        match which {
+            0 => {
+                soak_label(g, ["RUN FT2", "16-BIT SCREEN", "NOTHING TO DO"], SOAK_BLUE);
+                p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+            }
+            1 => {
+                let v = g.e.regs.read32(dreg::GSCADR);
+                g.e.regs.write32(dreg::GSCADR, v & !(1 << 31));
+            }
+            _ => {
+                let _ = show_screen(&mut g.e.regs);
+                g.fill(SCREEN.at, (0, 0, 480, 640), 0xFF20_2040);
+                g.text(SCREEN.at, 16, 280, "RUN FT2 32-BIT", WHITE, 4);
+            }
+        }
+        rt::delay_us(50_000);
+    }
+
+    #[inline(never)]
+    fn together2(g: &mut Rig) {
+        log!(
+            "FT2: the 2D engine and the 3D core at once (P15, P8), as run FT (a full-screen RGB565 render, a Gouraud background and a textured quad, with ten full-screen 16-bit 2D copies queued straight after it), under each scan-out (a 16-bit screen, stopped, a 32-bit screen) and with the copies' memory apart from the 3D target (another 4 MiB quarter: a guess at the banks) or beside it; per setting two renders alone (the first the reference), then {FT2_ROUNDS} together, each compared word for word with the reference"
+        );
+        let Some(tex) = p_texture(g, 2, p_texel) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        g.set(
+            &mut r,
+            1,
+            Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
+        );
+        const WORDS: u32 = 480 * 640 * 2 / 4;
+        let mut clean = 0;
+        let mut settings = 0;
+        for (s, scan) in ["16-bit screen", "scan-out stopped", "32-bit screen"]
+            .into_iter()
+            .enumerate()
+        {
+            ft2_scan(g, s);
+            for (place, bufs) in [("apart", FT2_APART), ("beside", FT2_NEAR)] {
+                settings += 1;
+                // The copies' source: eight bands of a pattern.
+                for k in 0..8u16 {
+                    let w = rp_image::need(
+                        cmd::fill(
+                            Format::RGB565,
+                            bufs.0 as usize,
+                            960,
+                            (0, 80 * k, 480, 80 * k + 80),
+                            0x1111 * u32::from(k),
+                        ),
+                        "a 2D rectangle",
+                    );
+                    let _ = g.e.submit(&w);
+                }
+                let _ = g.e.finish(g.mem.0, 2_000_000);
+                // Alone, twice: the reference, then its repeat.
+                let (alone, _) = ft2_round(g, &mut r, FT2_PIC, bufs, false);
+                let (w, n) = rp_image::need(
+                    cmd::copy(
+                        Format::RGB565,
+                        (FT2_REF as usize, 960),
+                        (FT2_PIC as usize, 960),
+                        (0, 0),
+                        (0, 0, 480, 640),
+                        0,
+                    ),
+                    "a 2D rectangle",
+                );
+                let _ = g.e.submit(&w[..n]);
+                let _ = g.e.finish(g.mem.0, 2_000_000);
+                let _ = ft2_round(g, &mut r, FT2_PIC, bufs, false);
+                let (again, _) = ft_diff(g, FT2_PIC, FT2_REF, WORDS);
+                let mut diffs = [0u32; FT2_ROUNDS];
+                let mut first = None;
+                let mut worst_3d = 0;
+                let mut all_done = true;
+                for d in &mut diffs {
+                    let (t3d, ok2) = ft2_round(g, &mut r, FT2_PIC, bufs, true);
+                    all_done &= ok2 && t3d.is_some();
+                    worst_3d = worst_3d.max(t3d.unwrap_or(0));
+                    let (n, f) = ft_diff(g, FT2_PIC, FT2_REF, WORDS);
+                    *d = n;
+                    if n != 0 && first.is_none() {
+                        first = Some(f);
+                    }
+                }
+                let ok = again == 0 && diffs.iter().all(|&d| d == 0) && all_done;
+                clean += u32::from(ok);
+                log!(
+                    "  FT2 {scan}, copies {place}: alone {alone:?} us, a second alone differs in {again} words; together {diffs:?} words differ (of {WORDS}), 3D at most {worst_3d} us, every job finished {all_done} | {}",
+                    if ok { "CLEAN" } else { "ERRORS" }
+                );
+                if let Some(f) = first {
+                    log!("    the first difference (pixel, together, alone): {f:08x?}");
+                }
+            }
+        }
+        log!("FT2: {clean} of {settings} settings clean");
+        let _ = show_screen(&mut g.e.regs);
+        for k in 0..2 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        clock_card(g, ["RUN FT2", "DONE", ""], 0xFF10_6020, 3);
     }
 
     fn resolve(g: &mut Rig) {
@@ -7523,6 +7763,8 @@ mod image {
                 "FD (2D commands into the command window by DMA)"
             } else if IRQ_BITS {
                 "FI (the MBX status and interrupt bits around 2D and 3D jobs)"
+            } else if TOGETHER2 {
+                "FT2 (2D and 3D at once by scan-out and memory placement: P15, P8)"
             } else if TOGETHER {
                 "FT (the 2D engine and the 3D core at once: a render and 2D copies, alone then together)"
             } else if RESOLVE {
@@ -7620,6 +7862,8 @@ mod image {
             dma_feed(&mut g);
         } else if IRQ_BITS {
             irq_bits(&mut g);
+        } else if TOGETHER2 {
+            together2(&mut g);
         } else if TOGETHER {
             together(&mut g);
         } else if RESOLVE {

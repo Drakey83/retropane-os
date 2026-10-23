@@ -3527,6 +3527,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         Some(("RP_GPUBENCH_SOAK_SECS", "70")),
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
+    let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3551,7 +3552,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 34] = [
+    let runs: [GpubenchRun; 35] = [
         (
             "run A",
             &run_a,
@@ -3641,6 +3642,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gs,
             &["GS: the clocks' warm soak", "RETROPANE-GPUBENCH: done"],
             false,
+            (0, 0, 0),
+        ),
+        // Run FT2 (2D and 3D at once by scan-out and placement): every
+        // setting ran and finished; the model has no interference, so every
+        // setting is clean.
+        (
+            "run FT2",
+            &run_ft2,
+            &[
+                "  FT2 16-bit screen, copies apart: ",
+                "  FT2 scan-out stopped, copies beside: ",
+                "  FT2 32-bit screen, copies beside: ",
+                "FT2: 6 of 6 settings clean",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
             (0, 0, 0),
         ),
         // Run GV (the local memory's clock, V1): checked below.
