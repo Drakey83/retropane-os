@@ -248,7 +248,11 @@ watching.
   0 BAD, the same times.** **The local memory runs on the system clock**
   (run GV, 2026-10-22: with the cores held, halving the system clock made
   a full-screen 2D copy 1.85x slower; doubling the cores with it held,
-  only 1.20x faster). Details: 2700g.md.
+  only 1.20x faster). **The 2D engine and the 3D core can't overlap
+  while the display scans out** (run FT2, 2026-10-22): the render gets
+  10-17 wrong words a frame with a 16-bit screen, ~200-240 with a 32-bit
+  one, none with scan-out stopped or with either engine alone; placing
+  their memory apart doesn't help. Details: 2700g.md.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
   fill takes ~6.3 ms at WM's clock, so a busy engine makes room well

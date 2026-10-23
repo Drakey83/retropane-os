@@ -48,8 +48,8 @@ The rules (owner, 2026-10-22):
   claim used in code stays an open quality-audit item wherever it sits.
 - **This section is read at the start of every session (CLAUDE.md).**
 
-**Count (`cargo xtask gate`, 2026-10-22): phases 2, 4, 5: 17 of 30
-architectural lines ticked (9 partial, 4 open)**; phase 7: 0 of 2; phase 9:
+**Count (`cargo xtask gate`, 2026-10-22): phases 2, 4, 5: 18 of 30
+architectural lines ticked (8 partial, 4 open)**; phase 7: 0 of 2; phase 9:
 2 of 11; the backlog: 24 optimizations (7 ticked, 16 partial, 1 open).
 `cargo xtask ci` prints the count every run, and every summary quotes it.
 

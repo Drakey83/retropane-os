@@ -3528,6 +3528,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
+    let run_ft2f = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_TOGETHER2", "1"),
+        Some(("RP_GPUBENCH_FT2_FAST", "1")),
+    )?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3552,7 +3558,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 35] = [
+    let runs: [GpubenchRun; 36] = [
         (
             "run A",
             &run_a,
@@ -3655,6 +3661,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  FT2 scan-out stopped, copies beside: ",
                 "  FT2 32-bit screen, copies beside: ",
                 "FT2: 6 of 6 settings clean",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run FT2 at 133.25 MHz: checked below (a release that doesn't
+        // model Windows Mobile's clocks refuses).
+        (
+            "run FT2F",
+            &run_ft2f,
+            &[
+                "FT2: the 2D engine and the 3D core at once",
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
@@ -4255,6 +4273,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         // stepping, all five settings GOOD with a control GOOD after each
         // (the models' times don't follow the clock, so only that every
         // setting ran right and the clock went back), and put back.
+        if name == "run FT2F" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let ran = log.contains("  FT2 at 133.25 MHz CL2, cores / 1: lock Some(")
+                && log.contains("FT2: 6 of 6 settings clean")
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || ran) {
+                return Err(format!(
+                    "gpubench run FT2F: neither refused cleanly nor ran every setting at 133.25 MHz:
+{log}"
+                ));
+            }
+        }
         if name == "run GV" {
             let refused =
                 log.contains("not Windows Mobile's clock and bus timing: nothing changed");

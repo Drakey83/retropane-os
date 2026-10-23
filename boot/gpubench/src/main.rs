@@ -187,7 +187,7 @@ mod image {
     /// The runs that change the 2700G's clock: a crash in any puts
     /// Windows Mobile's back ([`put_back`]).
     const CHANGES_CLOCK: bool =
-        CLOCK || SOAK || MEMCLOCK || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
+        CLOCK || SOAK || MEMCLOCK || FT2_FAST || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
@@ -277,6 +277,10 @@ mod image {
     /// memory apart from the 3D target or beside it; five rounds each.
     /// Unattended.
     const TOGETHER2: bool = option_env!("RP_GPUBENCH_TOGETHER2").is_some();
+    /// Run FT2 at 133.25 MHz CL2 with the cores at divide 1 (ADR-0035's
+    /// fastest setting): does the extra memory bandwidth change P8's
+    /// errors? `RP_GPUBENCH_FT2_FAST` beside `RP_GPUBENCH_TOGETHER2`.
+    const FT2_FAST: bool = option_env!("RP_GPUBENCH_FT2_FAST").is_some();
     /// Run FI (the performance gate's P18 / V17): the MBX core's status
     /// word (`0x12c`), its enables (`0x130`) and clear (`0x134`) around a 2D
     /// fill and a 3D render, idle, busy, done and after a clear, with the
@@ -3615,13 +3619,42 @@ mod image {
         log!(
             "FT2: the 2D engine and the 3D core at once (P15, P8), as run FT (a full-screen RGB565 render, a Gouraud background and a textured quad, with ten full-screen 16-bit 2D copies queued straight after it), under each scan-out (a 16-bit screen, stopped, a 32-bit screen) and with the copies' memory apart from the 3D target (another 4 MiB quarter: a guess at the banks) or beside it; per setting two renders alone (the first the reference), then {FT2_ROUNDS} together, each compared word for word with the reference"
         );
+        if FT2_FAST {
+            let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+            if found.0 != ClockSpeed::WM.pll || found.1 != 0x2484_2481 {
+                log!("  not Windows Mobile's clock and bus timing: nothing changed");
+                return;
+            }
+            let fast = ClockStep {
+                m: 41,
+                n: 4,
+                p: 0,
+                div: 1,
+                cl3: Some(false),
+                restart: false,
+            };
+            let lock = clock_apply(g, fast);
+            clock_readback(g);
+            log!("  FT2 at 133.25 MHz CL2, cores / 1: lock {lock:?} us");
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  the clock didn't take: Windows Mobile's put back, nothing run");
+                return;
+            }
+        }
         let Some(tex) = p_texture(g, 2, p_texel) else {
             log!("  no memory for the texture");
+            if FT2_FAST {
+                clock_restore(&mut g.e.regs);
+            }
             return;
         };
         let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
             log!("  no renderer");
             p_texture_free(g, tex);
+            if FT2_FAST {
+                clock_restore(&mut g.e.regs);
+            }
             return;
         };
         let _ = r.set_background(Some(BLACK));
@@ -3709,6 +3742,15 @@ mod image {
             }
         }
         log!("FT2: {clean} of {settings} settings clean");
+        if FT2_FAST {
+            clock_restore(&mut g.e.regs);
+            log!(
+                "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+                g.e.regs.read32(clock::COREPLL),
+                g.e.regs.read32(MBXCLK),
+                diag::msc1()
+            );
+        }
         let _ = show_screen(&mut g.e.regs);
         for k in 0..2 {
             g.set(&mut r, k, None);
