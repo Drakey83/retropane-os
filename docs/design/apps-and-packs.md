@@ -114,8 +114,8 @@ direct path is faster), downloadable from the same location as the pack:
 | Game | Engine source (GPL) | Note |
 |---|---|---|
 | DOOM, DOOM II | id's 1997 source release (GPL-2.0) | DoomGLES stays the legacy flagship test (DESIGN.md); the port is our own fast path |
-| Heretic | Raven's 1999 source release (GPL-2.0; the year it became GPL to confirm: the 1999 release may have carried Raven's own licence first) | HereticGLES is the legacy reference |
-| Hexen | Raven's source release (GPL, to confirm, as Heretic's) | Added 2026-10-22 (owner): HexenGLES (the Pocket PC GLES version) is the legacy reference, as HereticGLES is for Heretic; Heretic's engine with hubs, ACS scripts and three classes, so about a week once Heretic is ported; game data (`hexen.wad`) stays the user's own |
+| Heretic | Raven's source: released 1999-01-11 under a restrictive licence, **re-released under the GPL on 2008-09-04** (survey 2026-10-23) | HereticGLES is the legacy reference |
+| Hexen | Raven's source: as Heretic's, **GPL since 2008-09-04** (survey 2026-10-23) | Added 2026-10-22 (owner): HexenGLES (the Pocket PC GLES version) is the legacy reference, as HereticGLES is for Heretic; Heretic's engine with hubs, ACS scripts and three classes, so about a week once Heretic is ported; game data (`hexen.wad`) stays the user's own |
 | Quake | id's Quake 1 source (GPL-2.0) | New addition |
 | Quake 2 | id's 2001 source release (GPL-2.0) | Added 2026-10-16 (owner): lighter than Quake 3 (built for 1997-98 PCs, 16-32 MB); software and OpenGL 1.x renderers to start from; game data (`pak0.pak`) stays the user's own |
 | Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one |
@@ -133,9 +133,9 @@ pack ships the engine code even when the data is the user's.
 
 | Game | Engine source | Fit on the X51v (624 MHz, 64 MiB, the 2700G) | Effort, and what to check |
 |---|---|---|---|
-| Hexen II | Raven's source release (GPL, to confirm) | Good: Quake 1's engine | Small once Quake is ported (the same renderer and file formats) |
+| Hexen II | Raven's source release: **GPL-2.0, November 2000** (with Portals of Praevus and HexenWorld; survey 2026-10-23) | Good: Quake 1's engine | Small once Quake is ported (the same renderer and file formats) |
 | Half-Life | No source from Valve; Xash3D (FWGS), a reimplementation of its engine | Plausible: built for 1998 PCs; Xash3D runs on old ARM phones | Moderate. Check: Xash3D's licence, and the game logic (Valve's HLSDK, a non-commercial licence) shipped as a separate pack |
-| Descent, Descent II | Parallax's source release (a non-commercial licence, to read) | Excellent: full 3D on 1995 hardware | Small to moderate. Check: the licence allows a free pack |
+| Descent, Descent II | Parallax's source release (1997-1999): **the Parallax licence, non-commercial use only**; DXX-Rebirth's additions GPLv3 with an exception where they conflict (read 2026-10-23: a free pack is allowed, a paid one isn't) | Excellent: full 3D on 1995 hardware | Small to moderate. Check: the licence allows a free pack |
 | Turok: Dinosaur Hunter | **Turok EX** (Samuel Villarreal, github.com/svkaiser/TurokEX, 2012-14, unfinished beta): 181 of its 197 engine files carry GPL-2.0-or-later headers (checked 2026-10-22; the other 16 are imgui, tinyxml2, an unzip library, a convex-hull routine and tools, each to check or replace). Not the leaked original code (never looked at or used: CLEANROOM.md) | Fits (the N64 game ran in 4 MiB; Turok EX targets 2012 PCs: memory and speed to fit) | **Moderate (revised 2026-10-22 from "very hard, clean-room")**: the engine, game logic (AngelScript) and a converter for the 1997 PC version's files (KPFGen) exist; left: its OpenGL renderer onto RetroPane's 2700G driver, SDL2/OpenAL onto our input and audio, fitting 64 MiB, and finishing what it never did. **First: an evaluation** (what plays, what's missing) before any estimate. Needs the owner's 1997 PC copy (the Nightdive remaster's formats differ) |
 
 **Estimates (2026-10-22, at the pace so far; rough).** Each after the OS
@@ -198,6 +198,51 @@ source (it ran on XScale Pocket PCs); Quake 2, Hexen II: Pocket PC or GP2X
 ports, if any; Half-Life (Xash3D), Turok EX: likely nothing (FPU targets),
 so the layers matter most. **The surveys' results are recorded in this
 section** as they are done.
+
+**The surveys (overnight 2026-10-22/23; sources read on the web and in the
+repositories named, nothing copied into this repository yet; each to be
+read in full before its port is planned):**
+
+| Engine | Floating point today | Earlier work for FPU-less CPUs, and what to reuse | Licence |
+|---|---|---|---|
+| DOOM, Heretic, Hexen | **None needed:** all integer; 16.16 fixed point throughout (`fixed_t`, `FixedMul`/`FixedDiv`, the latter needing a 64-bit multiply or a split), no float anywhere in the engine | Nothing to convert; the ports' work is the renderer onto our 2700G driver | GPL (Doom 1999; Heretic and Hexen 2008) |
+| Descent, Descent II | **None needed:** a fixed-point engine (`fix`) | Nothing to convert | Parallax non-commercial + GPLv3 additions |
+| Quake | Float-heavy (game, physics, transforms); its software renderer's inner span loops are already fixed point | **PocketQuake** (Dan East, Pocket PC, 2001; GPL): a 16.16 conversion for ARM, and a later community rewrite (a PocketMatrix forum post) with its multiply in ARM assembly, ~1.4-1.5x faster than the original and fixing several of its graphical bugs, tested on Symbian. **Handheld Quake** (SourceForge, CVS) built on East's changes for Qt Palmtop and the iPAQ. Nintendo DS ports (QuakeDS, Q1DS, DSQuake) exist; their float handling isn't documented in what was found. First source to read: PocketQuake's | GPL-2.0 (id) |
+| Hexen II | Quake's engine, so Quake's floats | A Palm OS port (ZHexen 2, MetaViewSoft, on yoyofr92's work: ARM CPUs without an FPU) exists; its float handling not documented. Hammer of Thyrion (uHexen2) is the maintained GPL engine to start from; Quake's conversion should carry over | GPL-2.0 (Raven, 2000); uHexen2 GPL-2.0-or-later |
+| Quake 2 | Float-heavy, as Quake | **Pocket Quake 2** (Dan East, January 2002; ~5 fps on a ~200 MHz iPAQ, MIPS and ARM builds); whether it converted to fixed point isn't documented, and its source wasn't found. Quake2DS (Nintendo DS) moved most drawing to the DS's 3D hardware; source and float handling not found. Likely little to reuse: Quake's and Quake 3's conversions are the better guides | GPL-2.0 (id, 2001) |
+| **Quake 3** | Float-heavy | **Q3CE** (Christien Rioux, NoctemWare, 2005-2008; github.com/crioux/q3ce, 4 commits, the last 2008; GPLv2 per its listing, no licence file in the repository: to confirm): **the whole engine converted to fixed point**, in C++. Six fixed-point formats by kind of value (12.20, 21.11 for coordinates, 8.24 for unit values, 24.8, 16.16, and a 64-bit 32.32), a range check in debug builds (`VERIFY_FIXEDREP`), ARM assembly for the core operations, and a switch (`FIXED_IS_FLOAT`) that builds the same code with floats to compare. Used in 87 files: renderer, bots, game, UI, sound. Also: OpenGL ES through a wrapper, the X51v's 2700G supported, textures halved, the mod VM removed for speed (modules built in), memory moved to mapped files, many original bugs and overflows fixed. **The strongest find of the survey:** both the conversion and its method (per-kind formats, checked ranges, a float build to compare against) | GPL-2.0 (id) |
+| Half-Life (Xash3D FWGS) | Float throughout; written for CPUs with FPUs (Android, PCs); its software renderer comes from Quake 2's (fixed-point inner loops) | No FPU-less port found: the three layers carry this one, as planned | **Xash3D: GPLv3** (CMake files MIT); the game logic (Valve's HLSDK, hlsdk-portable) under Valve's SDK licence: free distribution only, with the licence; it ships as its own pack, as planned |
+| Turok (Turok EX) | Float throughout (a 2012 PC engine: "float" in ~400 files, last commit 2014-06-20) | None: the layers carry it, after its evaluation | GPL-2.0-or-later headers on most files (read 2026-10-22) |
+
+**What the surveys change:**
+
+1. **Quake 3 gets cheaper:** Q3CE's conversion exists, works on XScale
+   (15-25 fps on the X50v per its forum reports) and is GPL. Its estimate
+   (2-3 months) leaned on converting the engine ourselves; reading,
+   measuring and adopting Q3CE's conversion should take much of that
+   off. Re-estimated when the port starts, after reading it in full.
+2. **Q3CE's method shapes layer 3** (the shared fixed-point library): a
+   format per kind of value instead of one 16.16, overflow checks in
+   debug builds, and a float build of the same code to compare against.
+   It is the same discipline as the project's testing rules (both
+   directions, disagreeing inputs).
+3. **Quake gets a head start** from PocketQuake's 16.16 conversion and
+   its community rewrite: to read before converting anything.
+4. **A licence point for the ports' SDK:** Xash3D is GPLv3, RetroPane is
+   GPL-2.0. A GPLv3 port can't be combined with GPL-2.0-only code. The
+   SDK the ports build against (the repositories plan below) needs a
+   licence that GPLv3 ports can use: GPL-2.0-or-later, or a linking
+   exception. A decision for the owner when the SDK is published.
+5. **Descent's licence is non-commercial:** a free pack only, never sold
+   or bundled with anything sold.
+6. **Correction to this page:** Heretic's and Hexen's source were first
+   released in 1999 under a restrictive licence and became GPL only on
+   2008-09-04; the table above now says so.
+7. **Not a source of fixed point but worth a look:** PocketQuake for the
+   Analogue Pocket (2026, github.com/thinkelastic/PocketQuake) runs on a
+   RISC-V soft CPU *with* an FPU, but moves span drawing and model
+   transforms into hardware: the same split RetroPane plans with the
+   2700G.
 
 **The ports' repositories (proposed 2026-10-22, the owner's vote to
 come):** one GitHub organization holding the OS and the ports; one
