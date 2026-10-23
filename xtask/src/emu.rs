@@ -3148,7 +3148,9 @@ fn boot_loader_glesfeat_g(root: &Path) -> Result<(), String> {
     // The control after divide 1 proves the clock was put back; the same
     // read back as Windows Mobile's.
     if controls > 0 && !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
-        return Err(format!("glesfeat G: Windows Mobile's clock not read back:{log}"));
+        return Err(format!(
+            "glesfeat G: Windows Mobile's clock not read back:{log}"
+        ));
     }
     eprintln!(
         "    glesfeat G OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"
