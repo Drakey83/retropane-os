@@ -157,6 +157,60 @@ Enemy Territory, Jedi Outcast and Jedi Academy, and Doom 3 (too heavy for
 Rise of the Triad, the Build games, Marathon), which the owner didn't ask
 for here (Hexen joined §6's ports on 2026-10-22). Quake 3 stays the stretch goal it is (about 64 MiB and a real GPU).
 
+### Floating point in the ports (discussed 2026-10-22; for the owner's confirmation)
+
+The X51v's CPU (PXA270) has no floating-point unit: a hardware fact no
+driver changes. Every float operation is a software routine costing tens to
+over a hundred cycles (perf.md's rules). Nothing in our 2700G findings shows
+a geometry unit that could do the maths either: its 3D core takes vertices
+the CPU already transformed. Doom, Heretic, Hexen and Descent are integer
+or fixed-point engines; the Quake family, Half-Life (Xash3D) and Turok EX
+were written for FPUs.
+
+**Three layers, built once for every port:**
+
+1. **The driver speaks fixed point:** the renderer API the ports draw
+   through takes fixed-point coordinates (as OpenGL ES Common-Lite did) and
+   transforms in integer maths, so nothing drawn passes through a float.
+2. **A tuned software-float runtime:** the compiler's generic float
+   routines replaced by ones hand-tuned for the XScale; every remaining
+   float operation in every port gets faster with no change to the port
+   (its gain measured on the X51v first: a backlog item, not a gate line).
+3. **A shared fixed-point maths library on iWMMXt** (the PXA270's SIMD
+   unit: several 16-bit multiply-adds an instruction) for the hot paths
+   ports call: matrices, vectors, interpolation, physics.
+
+What remains per port is converting only what the performance counters
+still show as hot. Not automatic: a blanket float-to-fixed conversion would
+break physics that need float's range.
+
+**Reuse first: earlier ports' conversions.** These engines were ported to
+FPU-less ARM before (Pocket PC, GP2X, the Nintendo DS), and those ports are
+GPL like the engines, so their fixed-point work can be reused with credit
+(CLEANROOM.md's rule covers Dell's and Microsoft's code, not GPL engines).
+Before each port is planned, a short survey: two to four earlier ports for
+FPU-less ARM, each one's licence read in full, what it converted and what
+it gave up (some cut precision for speed: wobbly physics, jittery aim),
+then measured against layers 2 and 3 on the X51v; the faster faithful one
+is kept. **Candidates to check, from memory, none verified yet:** Quake:
+PocketQuake (Pocket PC), GP2X and Nintendo DS ports; Quake 3: Q3CE's own
+source (it ran on XScale Pocket PCs); Quake 2, Hexen II: Pocket PC or GP2X
+ports, if any; Half-Life (Xash3D), Turok EX: likely nothing (FPU targets),
+so the layers matter most. **The surveys' results are recorded in this
+section** as they are done.
+
+**The ports' repositories (proposed 2026-10-22, the owner's vote to
+come):** one GitHub organization holding the OS and the ports; one
+repository per engine family (Doom, Heretic and Hexen; Quake and Hexen II;
+Quake 2; Quake 3; and each later pack); the OS publishes a versioned SDK
+(the GPU driver's API, input, audio, file access) on its GitHub Releases,
+which each port pins; a shared library repository for what crosses
+families (the renderer layer, the fixed-point maths, input and audio
+glue); reusable GitHub Actions workflows and a port template repository;
+the organization's `.github` repository for the shared contributing,
+security and conduct files; one documentation site for hosting, install
+and download-location instructions, each port's README linking to it.
+
 ## 6b. The Emulation pack (owner, 2026-10-18)
 
 **Owner:** an **emulation program pack** as a download pack on the card
