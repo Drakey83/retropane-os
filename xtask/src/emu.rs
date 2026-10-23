@@ -3539,6 +3539,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2_H", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc2r = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_R", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3583,7 +3589,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 41] = [
+    let runs: [GpubenchRun; 42] = [
         (
             "run A",
             &run_a,
@@ -3754,6 +3760,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2H",
             &run_gc2h,
             &["GC2: run GC past 133 MHz", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2R (divide 1's registers and ways in), one render a way:
+        // checked below.
+        (
+            "run GC2R",
+            &run_gc2r,
+            &["GC2R: what divide 1 changes", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -4494,6 +4509,34 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             if !(refused || mapped) {
                 return Err(format!(
                     "gpubench {run}: neither refused cleanly nor mapped every setting:
+{log}"
+                ));
+            }
+        }
+        // GC2R refuses where Windows Mobile's clocks aren't modelled;
+        // stepping, the references repeatable, the registers compared
+        // (the models change none but the clocks'), and every way into
+        // 58.50 / 1 right on both kinds (the models draw the same at any
+        // clock) with every control right.
+        if name == "run GC2R" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let ways = log
+                .lines()
+                .filter(|l| l.starts_with("  GC2R ") && l.contains(" | "))
+                .collect::<Vec<_>>();
+            let mapped = log.matches("  GC2R reference ").count() == 2
+                && !log.contains("isn't repeatable")
+                && log.contains("  GC2R registers: ")
+                && ways.len() == 10
+                && ways.iter().all(|l| {
+                    l.contains(": B wrong in 0 of 1 (the clock not taken 0)")
+                        && l.ends_with("| A wrong in 0 of 1")
+                })
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || mapped) {
+                return Err(format!(
+                    "gpubench run GC2R: neither refused cleanly nor tried every way:
 {log}"
                 ));
             }

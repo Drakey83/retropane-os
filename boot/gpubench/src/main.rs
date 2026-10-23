@@ -179,6 +179,11 @@ mod image {
     /// Intel's 133 MHz rating) and 2 (the cores at 71.5 and 74.75 MHz,
     /// inside Intel's 75). Unattended.
     const GC2_H: bool = option_env!("RP_GPUBENCH_GC2_H").is_some();
+    /// Run GC2R: what divide 1 changes and how it's entered (the owner's
+    /// brute force, 2026-10-23, points 1 and 4): every named register at
+    /// 58.50 / 1 against 117.00 / 2 (the cores at 58.5 MHz both ways),
+    /// then 58.50 / 1 entered five ways. Unattended.
+    const GC2_R: bool = option_env!("RP_GPUBENCH_GC2_R").is_some();
     /// Run GC2F: the roadmap's idea (f) by GC2's rules (the owner,
     /// 2026-10-23: "exhaust every idea"): Gouraud where it fails, with the
     /// render table as ours (Dell's 2D driver's) and with each word Dell's
@@ -230,6 +235,7 @@ mod image {
         || MEMCLOCK
         || CMAP
         || GC2
+        || GC2_R
         || FT2_FAST
         || LOAD
         || SLOW
@@ -8609,6 +8615,311 @@ mod image {
         clock_rig_free(g, c);
     }
 
+    // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----
+
+    /// GC2R's states for the register diff: the cores at 58.5 MHz through
+    /// divide 2 (right in GC2) and through divide 1 (wrong in GC2D), and
+    /// Windows Mobile's.
+    const GC2R_STATES: [(ClockStep, &str); 3] = [
+        (WM_STEP, "99.67 / 2 (Windows Mobile's)"),
+        (gc2_step(27, 3, 0, 2), "117.00 / 2"),
+        (gc2_step(9, 2, 0, 1), "58.50 / 1"),
+    ];
+
+    /// GC2R's ways into 58.50 / 1 (the owner's point 4: order and state,
+    /// not only values).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Gc2rWay {
+        /// As GC2D: the PLL, then the divider, the core as it is.
+        AsGc2,
+        /// The 3D core held in reset across the change, set up again after.
+        CoreInReset,
+        /// The MBX clocks at 2D only across the change, 3D on after.
+        ClockGated,
+        /// As GC2D, then 100 ms before the render.
+        Settled,
+        /// The divider to 1 first (at Windows Mobile's PLL: the cores at
+        /// 99.67 MHz for a moment, unused), then the PLL.
+        DividerFirst,
+    }
+
+    const GC2R_WAYS: [(Gc2rWay, &str); 5] = [
+        (Gc2rWay::AsGc2, "as GC2D (the PLL, then the divider)"),
+        (
+            Gc2rWay::CoreInReset,
+            "the 3D core held in reset across the change",
+        ),
+        (Gc2rWay::ClockGated, "the 3D clock off across the change"),
+        (Gc2rWay::Settled, "100 ms after the change before rendering"),
+        (Gc2rWay::DividerFirst, "the divider first, then the PLL"),
+    ];
+
+    /// Every named register below the MBX block, then the render table's.
+    fn gc2r_dump(g: &mut Rig) -> ([u32; 146], [u32; 15]) {
+        let mut sys = [0u32; 146];
+        for (v, &(_, off)) in sys.iter_mut().zip(SNAPSHOT_REGS.iter()) {
+            *v = g.e.regs.read32(off);
+        }
+        (sys, gc2_regs(g).1)
+    }
+
+    /// 58.50 / 1 entered `way`, from Windows Mobile's clock. Whether the
+    /// clock took.
+    fn gc2r_enter(g: &mut Rig, r: &mut Renderer, way: Gc2rWay) -> bool {
+        let s = GC2R_STATES[2].0;
+        match way {
+            Gc2rWay::AsGc2 | Gc2rWay::Settled => {
+                let ok = clock_apply(g, s).is_some();
+                if way == Gc2rWay::Settled {
+                    for _ in 0..10 {
+                        rt::delay_us(10_000);
+                        rt::check_in();
+                    }
+                }
+                ok
+            }
+            Gc2rWay::CoreInReset => {
+                g.e.regs.write32(MBX + reg::RESET, 0x111);
+                rt::delay_us(1_000);
+                let ok = clock_apply(g, s).is_some();
+                rt::delay_us(1_000);
+                g.e.regs.write32(MBX + reg::RESET, 0);
+                rt::delay_us(1_000);
+                r.start_clean();
+                ok
+            }
+            Gc2rWay::ClockGated => {
+                let clk = g.e.regs.read32(MBXCLK);
+                clock::restore(&mut g.e.regs, (clk & !3) | 1);
+                rt::delay_us(1_000);
+                let ok = clock_apply(g, s).is_some();
+                let clk = g.e.regs.read32(MBXCLK);
+                clock::restore(&mut g.e.regs, clock::with_3d(clk));
+                rt::delay_us(1_000);
+                r.start_clean();
+                ok
+            }
+            Gc2rWay::DividerFirst => {
+                let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
+                let clk = g.e.regs.read32(MBXCLK);
+                clock::restore(&mut g.e.regs, clk & !0xC);
+                rt::delay_us(1_000);
+                let ok = clock::set_speed(&mut g.e.regs, s.speed(), rt::delay_us)
+                    .is_some_and(|a| a.unwritten == 0);
+                rt::delay_us(1_000);
+                ok
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn divider_hunt(g: &mut Rig) {
+        log!(
+            "GC2R: what divide 1 changes and how it is entered (the owner's points 1 and 4): every named 2700G register and the render table read after a render at Windows Mobile's 99.67 / 2, at 117.00 / 2 and at 58.50 / 1 (the cores at 58.5 MHz both ways) and compared; then 58.50 / 1 entered five ways, {} renders of the RGB565 and ARGB8888 Gouraud kinds each way, each followed by a control at Windows Mobile's clock; references from 5 renders, read twice; a 16-bit label throughout",
+            GC2_RENDERS
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(c) = clock_rig(g) else {
+            return;
+        };
+        // The Gouraud kinds draw no texture.
+        let tex = gc2::Tex {
+            t565: gc2::TEXTURES[0],
+            t4444: gc2::TEXTURES[1],
+            t8888: gc2::TEXTURES[2],
+            plane: gc2::TEXTURES[3],
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            clock_rig_free(g, c);
+            return;
+        };
+        soak_label(
+            g,
+            ["RUN GC2R: DIVIDE", "1, REGISTERS", "AND ORDER"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let _ = underrun_take(&mut g.e.regs);
+        const KINDS: [usize; 2] = [0, 2];
+        let (w0, w2) = (gc2::words(0) as usize, gc2::words(2) as usize);
+        if c.spare.len() < w0 + 2 * w2 {
+            log!("  not enough SDRAM for the references");
+            let _ = r.release(&mut g.pool);
+            clock_rig_free(g, c);
+            return;
+        }
+        let (refs, rest) = c.spare.split_at_mut(w0 + w2);
+        let first = &mut rest[..w2];
+        let offs = [0, w0];
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let mut refs_ok = true;
+        for (n, &k) in KINDS.iter().enumerate() {
+            gc2_scene(g, &mut r, k, tex);
+            let want = &mut refs[offs[n]..offs[n] + gc2::words(k) as usize];
+            r.invalidate_all();
+            let t0 = g.frame(
+                &mut r,
+                Target {
+                    picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+                    x: 0,
+                    y: 0,
+                },
+            );
+            gc2_take(g, want);
+            gc2_wait();
+            let settled = gc2_still(g, k, want);
+            let (mut base, mut side) = (Gc2Baseline(None), Gc2Side::new(false));
+            let mut again = [0u32; 4];
+            for a in &mut again {
+                *a = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side)
+                    .unwrap_or(u32::MAX);
+            }
+            refs_ok &= t0.is_some() && settled == 0 && again == [0; 4];
+            log!(
+                "  GC2R reference {}: {t0:?} us, second read differs in {settled} words, renders 2-5 in {again:?}",
+                gc2::KINDS[k].0
+            );
+        }
+        if !refs_ok {
+            log!("  a reference isn't repeatable: stopped");
+        }
+        // Point 1: the registers after a render in each state.
+        if refs_ok {
+            let mut dumps = [([0u32; 146], [0u32; 15]); 3];
+            for (i, &(s, label)) in GC2R_STATES.iter().enumerate() {
+                if i > 0 && clock_apply(g, s).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2R {label}: the clock didn't take");
+                    continue;
+                }
+                gc2_scene(g, &mut r, 0, tex);
+                r.invalidate_all();
+                let _ = g.frame(
+                    &mut r,
+                    Target {
+                        picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
+                        x: 0,
+                        y: 0,
+                    },
+                );
+                dumps[i] = gc2r_dump(g);
+                clock_restore(&mut g.e.regs);
+            }
+            let mut differ = 0;
+            for (j, &(name, off)) in SNAPSHOT_REGS.iter().enumerate() {
+                let v = [dumps[0].0[j], dumps[1].0[j], dumps[2].0[j]];
+                if v[1] != v[2] || v[0] != v[1] {
+                    differ += 1;
+                    log!(
+                        "  GC2R {name} (0x{off:x}): WM 0x{:x}, 117.00 / 2 0x{:x}, 58.50 / 1 0x{:x}{}",
+                        v[0],
+                        v[1],
+                        v[2],
+                        if v[1] == v[2] {
+                            ""
+                        } else {
+                            "  <- divide 1 differs"
+                        }
+                    );
+                }
+            }
+            for (j, &off) in GC2_MBX.iter().enumerate() {
+                let v = [dumps[0].1[j], dumps[1].1[j], dumps[2].1[j]];
+                if v[1] != v[2] || v[0] != v[1] {
+                    differ += 1;
+                    log!(
+                        "  GC2R MBX 0x{off:x}: WM 0x{:x}, 117.00 / 2 0x{:x}, 58.50 / 1 0x{:x}{}",
+                        v[0],
+                        v[1],
+                        v[2],
+                        if v[1] == v[2] {
+                            ""
+                        } else {
+                            "  <- divide 1 differs"
+                        }
+                    );
+                }
+            }
+            log!(
+                "  GC2R registers: {differ} of {} differ between any two states (listed above)",
+                SNAPSHOT_REGS.len() + GC2_MBX.len()
+            );
+        }
+        // Point 4: 58.50 / 1 entered each way.
+        for (i, &(way, label)) in GC2R_WAYS.iter().enumerate() {
+            if !refs_ok {
+                break;
+            }
+            let mut l2 = heapless_name();
+            let _ = write!(l2, "WAY {} OF {}", i + 1, GC2R_WAYS.len());
+            soak_label(g, ["RUN GC2R", l2.as_str(), "58.50 / 1"], SOAK_BLUE);
+            let want_regs = gc2_clock_want(GC2R_STATES[2].0.speed(), 1);
+            for (n, &k) in KINDS.iter().enumerate() {
+                gc2_scene(g, &mut r, k, tex);
+                let want = &refs[offs[n]..offs[n] + gc2::words(k) as usize];
+                let (mut b, mut a) = (Gc2Side::new(false), Gc2Side::new(false));
+                let (mut base_b, mut base_a) = (Gc2Baseline(None), Gc2Baseline(None));
+                let mut untaken = 0;
+                for _ in 0..GC2_RENDERS {
+                    if !gc2r_enter(g, &mut r, way) {
+                        untaken += 1;
+                        clock_restore(&mut g.e.regs);
+                        continue;
+                    }
+                    let _ = gc2_render(g, &mut r, k, want, first, want_regs, &mut base_b, &mut b);
+                    clock_restore(&mut g.e.regs);
+                    r.start_clean();
+                    let _ = gc2_render(g, &mut r, k, want, first, wm, &mut base_a, &mut a);
+                }
+                log!(
+                    "  GC2R {label} | {}: B wrong in {} of {} (the clock not taken {untaken}), {}; held: {} | A wrong in {} of {}",
+                    gc2::KINDS[k].0,
+                    b.wrong,
+                    b.renders,
+                    Gc2Pixels(&b.tally),
+                    Gc2Held(&b),
+                    a.wrong,
+                    a.renders
+                );
+            }
+        }
+        soak_label(
+            g,
+            ["RUN GC2R DONE", "BACK TO NORMAL", "LOG SENT"],
+            SOAK_GREEN,
+        );
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        for k in 0..3 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1()
+        );
+        clock_rig_free(g, c);
+    }
+
     // ---- Run GV: the local memory's clock (V1, 2026-10-22) ----
 
     /// The 2D copy of [`SCREEN`] to [`SOAK_COPY`] alone, five times: the
@@ -8911,6 +9222,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if GC2_R {
+                "GC2R (what divide 1 changes in every named register, and 58.50 / 1 entered five ways)"
             } else if GC2_H {
                 "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_F {
@@ -9023,6 +9336,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if GC2_R {
+            divider_hunt(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
             content_map2(&mut g);
