@@ -256,7 +256,13 @@ watching.
   divide 1 an RGB565 Gouraud scene isn't repeatable even alone** (run
   FT2 fast: 104-365 words differ render to render; exact at Windows
   Mobile's clock), though run GS's 32-bit scene was exact there for 40
-  minutes: the content matters. Details: 2700g.md.
+  minutes: the content matters. **Run GC (the content map, 2026-10-22):
+  with the cores at divide 1, Gouraud shading is wrong at every system
+  clock (99.67-133.25 MHz: 65-1,026 words a render), textures, blending
+  and flat fills right; the cores at divide 2 with the system clock at
+  133.25 MHz right but one word in two of three ARGB8888 Gouraud
+  renders. The cores' clock limits Gouraud; Dell's 75 MHz cap may hold
+  for it.** Details: 2700g.md.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
   fill takes ~6.3 ms at WM's clock, so a busy engine makes room well
