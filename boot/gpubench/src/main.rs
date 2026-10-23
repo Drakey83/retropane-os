@@ -184,6 +184,10 @@ mod image {
     /// 58.50 / 1 against 117.00 / 2 (the cores at 58.5 MHz both ways),
     /// then 58.50 / 1 entered five ways. Unattended.
     const GC2_R: bool = option_env!("RP_GPUBENCH_GC2_R").is_some();
+    /// Run GC2X: `MBXCLK`'s reserved bits 31-4 at divide 1, each alone
+    /// (the owner's brute force, point 3; the owner nearby: a bit can hang
+    /// the bus).
+    const GC2_X: bool = option_env!("RP_GPUBENCH_GC2_X").is_some();
     /// Run GC2F: the roadmap's idea (f) by GC2's rules (the owner,
     /// 2026-10-23: "exhaust every idea"): Gouraud where it fails, with the
     /// render table as ours (Dell's 2D driver's) and with each word Dell's
@@ -236,6 +240,7 @@ mod image {
         || CMAP
         || GC2
         || GC2_R
+        || GC2_X
         || FT2_FAST
         || LOAD
         || SLOW
@@ -6395,8 +6400,10 @@ mod image {
     /// G1 put the registers back and the 2700G still didn't work.
     fn clock_restore<B: RegisterBus>(regs: &mut B) {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
+        // Only the enable kept: run GC2X sets MBXCLK's reserved bits, and a
+        // crash mid-bit must not leave one set.
         let clk = regs.read32(MBXCLK);
-        clock::restore(regs, (clk & !0xC) | 1 << 2);
+        clock::restore(regs, (clk & 3) | 1 << 2);
         rt::delay_us(1_000);
         if let Some(a) = clock::set_speed(regs, ClockSpeed::WM, rt::delay_us)
             && a.rewrites + a.unwritten > 0
@@ -6419,7 +6426,7 @@ mod image {
     fn clock_apply(g: &mut Rig, s: ClockStep) -> Option<u32> {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = g.e.regs.read32(MBXCLK);
-        clock::restore(&mut g.e.regs, (clk & !0xC) | 1 << 2);
+        clock::restore(&mut g.e.regs, (clk & 3) | 1 << 2);
         rt::delay_us(1_000);
         let lock = if clock_now(&mut g.e.regs) == s.speed() {
             Some(0)
@@ -6446,7 +6453,7 @@ mod image {
             }
         }
         let clk = g.e.regs.read32(MBXCLK);
-        clock::restore(&mut g.e.regs, (clk & !0xC) | (s.div - 1) << 2);
+        clock::restore(&mut g.e.regs, (clk & 3) | (s.div - 1) << 2);
         rt::delay_us(1_000);
         let cs3 = if s.khz() < 99_000 { CS3_LONG } else { CS3_WM };
         let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
@@ -8920,6 +8927,167 @@ mod image {
         clock_rig_free(g, c);
     }
 
+    // ---- Run GC2X: MBXCLK's reserved bits at divide 1 (2026-10-23) ----
+
+    /// Renders a GC2X bit gets at 58.50 / 1.
+    const GC2X_RENDERS: u32 = 3;
+
+    #[inline(never)]
+    fn reserved_bits(g: &mut Rig) {
+        log!(
+            "GC2X: MBXCLK's reserved bits 31-4 at divide 1 (the owner's brute force, point 3): 58.50 / 1, each bit set alone over the divider and the enable, read back, {GC2X_RENDERS} RGB565 Gouraud renders checked against the reference, the bit cleared, a control at Windows Mobile's clock; the line before each bit is in the log first (a bit that hangs the bus is named by it)"
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(c) = clock_rig(g) else {
+            return;
+        };
+        let tex = gc2::Tex {
+            t565: gc2::TEXTURES[0],
+            t4444: gc2::TEXTURES[1],
+            t8888: gc2::TEXTURES[2],
+            plane: gc2::TEXTURES[3],
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            clock_rig_free(g, c);
+            return;
+        };
+        soak_label(
+            g,
+            ["RUN GC2X: MBXCLK", "RESERVED BITS", "REFERENCE"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let _ = underrun_take(&mut g.e.regs);
+        let words = gc2::words(0) as usize;
+        if c.spare.len() < 2 * words {
+            log!("  not enough SDRAM for the reference");
+            let _ = r.release(&mut g.pool);
+            clock_rig_free(g, c);
+            return;
+        }
+        let (want, rest) = c.spare.split_at_mut(words);
+        let first = &mut rest[..words];
+        gc2_scene(g, &mut r, 0, tex);
+        r.invalidate_all();
+        let t0 = g.frame(
+            &mut r,
+            Target {
+                picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
+                x: 0,
+                y: 0,
+            },
+        );
+        gc2_take(g, want);
+        gc2_wait();
+        let settled = gc2_still(g, 0, want);
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (mut base, mut side) = (Gc2Baseline(None), Gc2Side::new(false));
+        let mut again = [0u32; 4];
+        for a in &mut again {
+            *a =
+                gc2_render(g, &mut r, 0, want, first, wm, &mut base, &mut side).unwrap_or(u32::MAX);
+        }
+        log!(
+            "  GC2X reference RGB565 Gouraud: {t0:?} us, second read differs in {settled} words, renders 2-5 in {again:?}"
+        );
+        if t0.is_none() || settled != 0 || again != [0; 4] {
+            log!("  the reference isn't repeatable: stopped");
+        } else {
+            let s = GC2R_STATES[2].0;
+            let want_regs = gc2_clock_want(s.speed(), 1);
+            // No bit first: the divide-1 result to compare each bit with.
+            for bit in core::iter::once(None).chain((4..32).map(Some)) {
+                let mut l2 = heapless_name();
+                match bit {
+                    Some(b) => {
+                        let _ = write!(l2, "BIT {b}");
+                    }
+                    None => {
+                        let _ = write!(l2, "NO BIT");
+                    }
+                }
+                soak_label(g, ["RUN GC2X", l2.as_str(), "58.50 / 1"], SOAK_BLUE);
+                if clock_apply(g, s).is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2X {}: the clock didn't take", l2.as_str());
+                    continue;
+                }
+                let clk = g.e.regs.read32(MBXCLK);
+                let set = clk | bit.map_or(0, |b| 1 << b);
+                log!("  GC2X {}: MBXCLK 0x{clk:x} written 0x{set:x}", l2.as_str());
+                clock::restore(&mut g.e.regs, set);
+                rt::delay_us(1_000);
+                let back = g.e.regs.read32(MBXCLK);
+                r.start_clean();
+                let (mut b_side, mut b_base) = (Gc2Side::new(false), Gc2Baseline(None));
+                for _ in 0..GC2X_RENDERS {
+                    let _ = gc2_render(
+                        g,
+                        &mut r,
+                        0,
+                        want,
+                        first,
+                        want_regs,
+                        &mut b_base,
+                        &mut b_side,
+                    );
+                }
+                // The bit cleared before anything else touches the clock.
+                clock::restore(&mut g.e.regs, clk);
+                rt::delay_us(1_000);
+                clock_restore(&mut g.e.regs);
+                r.start_clean();
+                let (mut a_side, mut a_base) = (Gc2Side::new(false), Gc2Baseline(None));
+                let _ = gc2_render(g, &mut r, 0, want, first, wm, &mut a_base, &mut a_side);
+                log!(
+                    "  GC2X {}: reads 0x{back:x}; B wrong in {} of {} ({} not drawn), {} | A wrong in {} of {}",
+                    l2.as_str(),
+                    b_side.wrong,
+                    b_side.renders,
+                    b_side.undrawn,
+                    Gc2Pixels(&b_side.tally),
+                    a_side.wrong,
+                    a_side.renders
+                );
+            }
+        }
+        soak_label(
+            g,
+            ["RUN GC2X DONE", "BACK TO NORMAL", "LOG SENT"],
+            SOAK_GREEN,
+        );
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        for k in 0..3 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1()
+        );
+        clock_rig_free(g, c);
+    }
+
     // ---- Run GV: the local memory's clock (V1, 2026-10-22) ----
 
     /// The 2D copy of [`SCREEN`] to [`SOAK_COPY`] alone, five times: the
@@ -9222,6 +9390,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if GC2_X {
+                "GC2X (MBXCLK's reserved bits 31-4 at divide 1, each alone)"
             } else if GC2_R {
                 "GC2R (what divide 1 changes in every named register, and 58.50 / 1 entered five ways)"
             } else if GC2_H {
@@ -9336,6 +9506,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if GC2_X {
+            reserved_bits(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2_R {
             divider_hunt(&mut g);
