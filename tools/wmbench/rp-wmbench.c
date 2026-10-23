@@ -23,6 +23,11 @@
  *
  * v3: the drawing rows wait for the 2700G's 2D engine to finish (a pixel
  * read back), with per-operation rows and a coloured fill beside them.
+ *
+ * v4 (2026-10-23): started with "suite" on its command line (by
+ * rp-wmprobe, the probe and baseline suite), it asks nothing and shows no
+ * message, and tests only the card it's on, inside its own folder (the
+ * owner's shared-card rule).
  */
 
 #ifndef _WIN32_WCE
@@ -496,7 +501,8 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     OSVERSIONINFO ver;
     WIN32_FIND_DATAW fd;
     HANDLE find, light, awake;
-    (void)prev; (void)cmd; (void)show;
+    int suite = cmd && wcsstr(cmd, L"suite") != NULL;
+    (void)prev; (void)show;
 
     QueryPerformanceFrequency(&freq);
     GetModuleFileNameW(inst, exe, MAX_PATH);
@@ -524,10 +530,12 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     out("INFO memory_free_kb %lu", (unsigned long)(ms.dwAvailPhys / 1024));
     out("INFO uptime_ms %lu", (unsigned long)GetTickCount());
 
-    MessageBoxW(NULL,
-                L"RetroPane baseline: about two minutes. The screen will flash; don't touch "
-                L"the device until the 'Done' message.",
-                L"rp-wmbench", MB_OK);
+    out("INFO mode %s", suite ? "suite (run by rp-wmprobe)" : "alone");
+    if (!suite)
+        MessageBoxW(NULL,
+                    L"RetroPane baseline: about two minutes. The screen will flash; don't touch "
+                    L"the device until the 'Done' message.",
+                    L"rp-wmbench", MB_OK);
 
     /* Backlight held fully on for the run (as video players do); the idle
      * timer reset covers devices whose backlight driver has another name. */
@@ -560,7 +568,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     status(L"This card (writes 8 MB, then removes it)");
     card(dir, "card_here");
     /* Other storage cards (the CF card): root folders marked temporary. */
-    find = FindFirstFileW(L"\\*", &fd);
+    find = suite ? INVALID_HANDLE_VALUE : FindFirstFileW(L"\\*", &fd);
     if (find != INVALID_HANDLE_VALUE) {
         do {
             if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
@@ -584,8 +592,9 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     out("# done");
     CloseHandle(logf_);
     status(L"Done");
-    MessageBoxW(win, L"Done: rp-wm-baseline.txt is next to the program.", L"rp-wmbench",
-                MB_OK | MB_TOPMOST);
+    if (!suite)
+        MessageBoxW(win, L"Done: rp-wm-baseline.txt is next to the program.", L"rp-wmbench",
+                    MB_OK | MB_TOPMOST);
     if (win) {
         ReleaseDC(win, win_dc);
         DestroyWindow(win);

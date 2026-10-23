@@ -1,6 +1,31 @@
 /*
  * rp-wmprobe: the Windows Mobile probe and baseline suite (the owner,
- * 2026-10-23: one program on the card, run from Windows Mobile, one log).
+ * 2026-10-23: one program on the card, run from Windows Mobile, one log:
+ * every baseline the gate's lines want from Windows Mobile, and probes of
+ * how Windows Mobile sets the hardware up).
+ *
+ * v2, every launch, in order (each module's lines start with its name):
+ *   env     Windows Mobile's version, memory, uptime, the running programs
+ *           (a shell such as SPB shows here);
+ *   pxa     the PXA270's clock, memory-timing, power, LCD and GPIO
+ *           registers as Windows Mobile leaves them, the core-voltage pins
+ *           (GPIO3, 4, 38) decoded;
+ *   2700g   all 146 named 2700G registers below the MBX block;
+ *   reg     every value of Dell's display driver key;
+ *   hop     the 4 KiB page hop (gate line CPU V7): a random walk over 8 MiB,
+ *           one word a page, against the same walk over 32 KiB and 256 KiB;
+ *   vram    CPU reads of 2700G memory (256 KiB, the best of three);
+ *   gl      3D through Dell's libGLES_CL: clear, flat, Gouraud, RGB565
+ *           texture nearest and bilinear, ARGB8888 texture, translucent,
+ *           two translucent textured layers, 2,000 small triangles; each 20
+ *           frames timed (glFinish), the first and last read back and
+ *           compared; glReadPixels and eglSwapBuffers timed;
+ *   bench   rp-wmbench run beside it ("suite": no questions, its own folder
+ *           only): CPU, memory, threads, SHA-256, 2D drawing, the card;
+ *           its rows copied into this log;
+ *   div1    module 1 below, last.
+ * A second launch (after module 1's soft reset) repeats everything at Dell's
+ * divide-1 setting.
  *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
@@ -34,6 +59,15 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <tlhelp32.h>
+
+#include "rp-2700g-regs.h"
+
+/* Windows CE's flag for a process list without heap lists (tlhelp32.h on
+ * CE; cegcc's header lacks it). */
+#ifndef TH32CS_SNAPNOHEAPS
+#define TH32CS_SNAPNOHEAPS 0x40000000
+#endif
 
 BOOL VirtualCopy(LPVOID dest, LPVOID src, DWORD size, DWORD protect);
 
@@ -175,6 +209,17 @@ static void (*glDrawArrays)(GLenum, GLint, GLsizei);
 static void (*glFinish)(void);
 static void (*glReadPixels)(GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *);
 static GLenum (*glGetError)(void);
+static void (*glGenTextures)(GLsizei, unsigned int *);
+static void (*glBindTexture)(GLenum, unsigned int);
+static void (*glTexImage2D)(GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum,
+                            const void *);
+static void (*glTexParameterx)(GLenum, GLenum, GLfixed);
+static void (*glEnable)(GLenum);
+static void (*glDisableClientState)(GLenum);
+static void (*glTexCoordPointer)(GLint, GLenum, GLsizei, const void *);
+static void (*glTexEnvx)(GLenum, GLenum, GLfixed);
+static void (*glBlendFunc)(GLenum, GLenum);
+static void (*glColor4x)(GLfixed, GLfixed, GLfixed, GLfixed);
 
 static int load_gles(void)
 {
@@ -201,6 +246,9 @@ static int load_gles(void)
     GET(glLoadIdentity); GET(glOrthox); GET(glShadeModel); GET(glDisable);
     GET(glEnableClientState); GET(glVertexPointer); GET(glColorPointer);
     GET(glDrawArrays); GET(glFinish); GET(glReadPixels); GET(glGetError);
+    GET(glGenTextures); GET(glBindTexture); GET(glTexImage2D); GET(glTexParameterx);
+    GET(glEnable); GET(glDisableClientState); GET(glTexCoordPointer); GET(glTexEnvx);
+    GET(glBlendFunc); GET(glColor4x);
 #undef GET
     return missing == 0;
 }
@@ -358,6 +406,399 @@ static void draws(unsigned long *first, unsigned long *pic, const unsigned long 
     out("GL error 0x%x", glGetError());
 }
 
+/* ---- env: Windows Mobile itself ------------------------------------- */
+
+static void module_env(void)
+{
+    OSVERSIONINFO ver;
+    MEMORYSTATUS ms;
+    SYSTEMTIME st;
+    HANDLE snap;
+    PROCESSENTRY32 pe;
+    ver.dwOSVersionInfoSize = sizeof ver;
+    GetVersionEx(&ver);
+    ms.dwLength = sizeof ms;
+    GlobalMemoryStatus(&ms);
+    GetLocalTime(&st);
+    out("env: run %04d-%02d-%02d %02d:%02d:%02d", st.wYear, st.wMonth, st.wDay, st.wHour,
+        st.wMinute, st.wSecond);
+    out("env: Windows CE %lu.%lu build %lu", (unsigned long)ver.dwMajorVersion,
+        (unsigned long)ver.dwMinorVersion, (unsigned long)ver.dwBuildNumber);
+    out("env: memory %lu KB, %lu KB free; uptime %lu ms", (unsigned long)(ms.dwTotalPhys / 1024),
+        (unsigned long)(ms.dwAvailPhys / 1024), (unsigned long)GetTickCount());
+    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        out("env: no process list, error %lu", (unsigned long)GetLastError());
+        return;
+    }
+    pe.dwSize = sizeof pe;
+    if (Process32First(snap, &pe))
+        do {
+            char name[64];
+            int k;
+            for (k = 0; pe.szExeFile[k] && k < 63; k++)
+                name[k] = (char)pe.szExeFile[k];
+            name[k] = 0;
+            out("env: process %s (%lu threads)", name, (unsigned long)pe.cntThreads);
+        } while (Process32Next(snap, &pe));
+    CloseToolhelp32Snapshot(snap);
+}
+
+/* ---- pxa: the processor's registers as Windows Mobile leaves them ---- */
+
+static void dump_block(const char *what, DWORD phys, const unsigned long *offs, const char *const *names,
+                       unsigned n, DWORD size)
+{
+    volatile unsigned long *r = map_phys(phys, size);
+    unsigned i;
+    if (!r)
+        return;
+    for (i = 0; i < n; i++)
+        out("pxa: %s %s (0x%08lx) 0x%08lx", what, names[i], (unsigned long)(phys + offs[i]),
+            r[offs[i] / 4]);
+    VirtualFree((void *)r, 0, MEM_RELEASE);
+}
+
+static void module_pxa(void)
+{
+    static const unsigned long clk_o[] = {0x0, 0x4, 0x8, 0xC};
+    static const char *const clk_n[] = {"CCCR", "CKEN", "OSCC", "CCSR"};
+    static const unsigned long mem_o[] = {0x0, 0x4, 0x8, 0xC, 0x10, 0x14, 0x1C, 0x40, 0x58};
+    static const char *const mem_n[] = {"MDCNFG", "MDREFR", "MSC0", "MSC1", "MSC2",
+                                        "MECR", "SXCNFG", "MDMRS", "MDMRSLP"};
+    static const unsigned long pm_o[] = {0x0, 0x4, 0x8, 0x1C, 0x30};
+    static const char *const pm_n[] = {"PMCR", "PSSR", "PSPR", "PCFR", "RCSR"};
+    static const unsigned long lcd_o[] = {0x0, 0x4, 0x8, 0xC, 0x10};
+    static const char *const lcd_n[] = {"LCCR0", "LCCR1", "LCCR2", "LCCR3", "LCCR4"};
+    static const unsigned long gp_o[] = {0x0, 0x4, 0x8, 0x100, 0xC, 0x10, 0x14, 0x10C};
+    static const char *const gp_n[] = {"GPLR0", "GPLR1", "GPLR2", "GPLR3",
+                                       "GPDR0", "GPDR1", "GPDR2", "GPDR3"};
+    volatile unsigned long *gp;
+    dump_block("clocks", 0x41300000UL, clk_o, clk_n, 4, 0x1000);
+    dump_block("memory", 0x48000000UL, mem_o, mem_n, 9, 0x1000);
+    dump_block("power", 0x40F00000UL, pm_o, pm_n, 5, 0x1000);
+    dump_block("lcd", 0x44000000UL, lcd_o, lcd_n, 5, 0x1000);
+    dump_block("gpio", 0x40E00000UL, gp_o, gp_n, 8, 0x1000);
+    /* The core-voltage pins (docs/hw/clocks.md: GPIO38, GPIO4, GPIO3). */
+    gp = map_phys(0x40E00000UL, 0x1000);
+    if (gp) {
+        out("pxa: core voltage pins GPIO38 %lu, GPIO4 %lu, GPIO3 %lu (Dell's 1,1,1 = its 1467/1574 mV)",
+            gp[1] >> 6 & 1, gp[0] >> 4 & 1, gp[0] >> 3 & 1);
+        VirtualFree((void *)gp, 0, MEM_RELEASE);
+    }
+}
+
+/* ---- 2700g: every named register ------------------------------------- */
+
+static void module_2700g(void)
+{
+    unsigned i;
+    if (!sys)
+        return;
+    for (i = 0; i < sizeof named_2700g / sizeof named_2700g[0]; i++)
+        out("2700g: %s (0x%04lx) 0x%08lx", named_2700g[i].name, named_2700g[i].off,
+            sys[named_2700g[i].off / 4]);
+}
+
+/* ---- reg: Dell's display driver key ---------------------------------- */
+
+static void module_reg(void)
+{
+    HKEY key;
+    DWORD i;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, KEY, 0, 0, &key) != ERROR_SUCCESS) {
+        out("reg: HKLM\\Drivers\\Display\\PowerVR not opened");
+        return;
+    }
+    for (i = 0;; i++) {
+        WCHAR name[64];
+        BYTE data[128];
+        DWORD nl = 64, dl = sizeof data, type;
+        char an[64];
+        int k;
+        if (RegEnumValueW(key, i, name, &nl, NULL, &type, data, &dl) != ERROR_SUCCESS)
+            break;
+        for (k = 0; name[k] && k < 63; k++)
+            an[k] = (char)name[k];
+        an[k] = 0;
+        if (type == REG_DWORD)
+            out("reg: %s = %lu (0x%lx)", an, *(DWORD *)data, *(DWORD *)data);
+        else if (type == REG_SZ) {
+            char av[64];
+            WCHAR *v = (WCHAR *)data;
+            for (k = 0; v[k] && k < 63 && (DWORD)k * 2 < dl; k++)
+                av[k] = (char)v[k];
+            av[k] = 0;
+            out("reg: %s = \"%s\"", an, av);
+        } else
+            out("reg: %s (type %lu, %lu bytes)", an, (unsigned long)type, (unsigned long)dl);
+    }
+    RegCloseKey(key);
+}
+
+/* ---- hop: the 4 KiB page hop (CPU V7) -------------------------------- */
+
+/* A random walk over `bytes`, one word every `step` bytes: ns a hop. */
+static unsigned long walk(unsigned long *buf, unsigned long bytes, unsigned long step)
+{
+    unsigned long n = bytes / step, i, j, t, *idx, at = 0, hops = 200000;
+    unsigned long long t0;
+    volatile unsigned long sink;
+    idx = (unsigned long *)malloc(n * sizeof *idx);
+    if (!idx)
+        return 0;
+    for (i = 0; i < n; i++)
+        idx[i] = i;
+    srand(12345);
+    for (i = n - 1; i > 0; i--) {
+        j = (unsigned long)rand() % (i + 1);
+        t = idx[i];
+        idx[i] = idx[j];
+        idx[j] = t;
+    }
+    for (i = 0; i < n; i++)
+        buf[idx[i] * (step / 4)] = idx[(i + 1) % n] * (step / 4);
+    free(idx);
+    for (i = 0; i < 1000; i++)
+        at = buf[at];
+    t0 = ticks();
+    for (i = 0; i < hops; i++)
+        at = buf[at];
+    sink = at;
+    (void)sink;
+    return (unsigned long)((unsigned long long)us_since(t0) * 1000ULL / hops);
+}
+
+static void module_hop(void)
+{
+    unsigned long *buf = (unsigned long *)VirtualAlloc(NULL, 8UL << 20, MEM_COMMIT, PAGE_READWRITE);
+    if (!buf) {
+        out("hop: no 8 MiB");
+        return;
+    }
+    out("hop: 8 MiB, one word a 4 KiB page: %lu ns a hop", walk(buf, 8UL << 20, 4096));
+    out("hop: 256 KiB, one word a 32-byte line: %lu ns a hop", walk(buf, 256UL << 10, 32));
+    out("hop: 32 KiB (the D-cache), a 32-byte line: %lu ns a hop", walk(buf, 32UL << 10, 32));
+    VirtualFree(buf, 0, MEM_RELEASE);
+}
+
+/* ---- vram: CPU reads of 2700G memory ---------------------------------- */
+
+static void module_vram(void)
+{
+    volatile unsigned long *m = map_phys(0x0C000000UL + (8UL << 20), 256UL << 10);
+    unsigned long best = 0xFFFFFFFFUL, us, i, s = 0;
+    int k;
+    if (!m)
+        return;
+    for (k = 0; k < 3; k++) {
+        unsigned long long t0 = ticks();
+        for (i = 0; i < (256UL << 10) / 4; i++)
+            s += m[i];
+        us = us_since(t0);
+        if (us < best)
+            best = us;
+    }
+    out("vram: 256 KiB read by the CPU in %lu us (best of 3; sum 0x%lx)", best, s);
+    VirtualFree((void *)m, 0, MEM_RELEASE);
+}
+
+/* ---- gl: 3D through Dell's driver ------------------------------------ */
+
+static unsigned short tex565[256 * 256];
+static unsigned long tex8888[256 * 256];
+static GLfixed many_xy[2000 * 3 * 2];
+static unsigned char many_rgba[2000 * 3 * 4];
+static const GLfixed quad_uv[8] = {0, 0, 65536, 0, 0, 65536, 65536, 65536};
+
+enum scene { CLEAR, FLAT, GOURAUD, TEX_NEAREST, TEX_BILINEAR, TEX_8888, TRANSLUCENT, TWO_LAYERS, MANY };
+static const char *const scene_name[] = {
+    "clear only", "flat", "Gouraud", "RGB565 texture nearest", "RGB565 texture bilinear",
+    "ARGB8888 texture", "translucent flat", "two translucent textured layers",
+    "2000 small Gouraud triangles",
+};
+
+static unsigned int tex_ids[2];
+
+static void scene_setup(enum scene s)
+{
+    glDisable(0x0BE2);
+    glDisable(0x0DE1);
+    glDisableClientState(0x8078);
+    glEnableClientState(0x8076);
+    glVertexPointer(2, 0x140C, 0, quad_xy);
+    glColorPointer(4, 0x1401, 0, quad_rgba);
+    switch (s) {
+    case FLAT:
+    case TRANSLUCENT:
+        glDisableClientState(0x8076);
+        glColor4x(0x8000, 0x4000, 0xC000, s == TRANSLUCENT ? 0x8000 : 0x10000);
+        if (s == TRANSLUCENT) {
+            glEnable(0x0BE2);
+            glBlendFunc(0x0302, 0x0303);
+        }
+        break;
+    case TEX_NEAREST:
+    case TEX_BILINEAR:
+    case TEX_8888:
+    case TWO_LAYERS:
+        glDisableClientState(0x8076);
+        glColor4x(0x10000, 0x10000, 0x10000, s == TWO_LAYERS ? 0x8000 : 0x10000);
+        glEnable(0x0DE1);
+        glBindTexture(0x0DE1, tex_ids[s == TEX_8888 ? 1 : 0]);
+        glTexParameterx(0x0DE1, 0x2801, s == TEX_BILINEAR ? 0x2601 : 0x2600);
+        glTexParameterx(0x0DE1, 0x2800, s == TEX_BILINEAR ? 0x2601 : 0x2600);
+        glTexEnvx(0x2300, 0x2200, 0x2100); /* modulate */
+        glEnableClientState(0x8078);
+        glTexCoordPointer(2, 0x140C, 0, quad_uv);
+        if (s == TWO_LAYERS) {
+            glEnable(0x0BE2);
+            glBlendFunc(0x0302, 0x0303);
+        }
+        break;
+    case MANY:
+        glVertexPointer(2, 0x140C, 0, many_xy);
+        glColorPointer(4, 0x1401, 0, many_rgba);
+        break;
+    default:
+        break;
+    }
+}
+
+static void scene_draw(enum scene s)
+{
+    glClearColorx(0, 0, 0, 65536);
+    glClear(0x4000);
+    if (s == CLEAR)
+        return;
+    if (s == MANY)
+        glDrawArrays(4, 0, 2000 * 3);
+    else {
+        glDrawArrays(5, 0, 4);
+        if (s == TWO_LAYERS)
+            glDrawArrays(5, 0, 4);
+    }
+}
+
+static unsigned long pic_sum(const unsigned long *p)
+{
+    unsigned long s = 0x811C9DC5UL, i;
+    for (i = 0; i < (unsigned long)(w * h); i++)
+        s = (s ^ p[i]) * 0x01000193UL;
+    return s;
+}
+
+static void module_gl(void)
+{
+    unsigned long *pic = (unsigned long *)malloc((size_t)w * h * 4);
+    int x, y, i, f;
+    if (!pic || !load_gles() || !gl_start()) {
+        out("gl: not started");
+        free(pic);
+        return;
+    }
+    for (y = 0; y < 256; y++)
+        for (x = 0; x < 256; x++) {
+            tex565[y * 256 + x] = (unsigned short)(((x >> 3) << 11) | (((x + y) >> 2 & 63) << 5) | (y >> 3));
+            tex8888[y * 256 + x] = 0x80000000UL | (unsigned long)x << 16 | (unsigned long)((x ^ y) & 255) << 8 | (unsigned long)y;
+        }
+    glGenTextures(2, tex_ids);
+    glBindTexture(0x0DE1, tex_ids[0]);
+    glTexImage2D(0x0DE1, 0, 0x1907, 256, 256, 0, 0x1907, 0x8363, tex565);
+    glBindTexture(0x0DE1, tex_ids[1]);
+    glTexImage2D(0x0DE1, 0, 0x1908, 256, 256, 0, 0x1908, 0x1401, tex8888);
+    srand(7);
+    for (i = 0; i < 2000 * 3; i++) {
+        many_xy[i * 2] = (GLfixed)((rand() % 480) << 16);
+        many_xy[i * 2 + 1] = (GLfixed)((rand() % 640) << 16);
+        many_rgba[i * 4] = (unsigned char)rand();
+        many_rgba[i * 4 + 1] = (unsigned char)rand();
+        many_rgba[i * 4 + 2] = (unsigned char)rand();
+        many_rgba[i * 4 + 3] = 255;
+    }
+    for (i = CLEAR; i <= MANY; i++) {
+        unsigned long best = 0xFFFFFFFFUL, worst = 0, us, first = 0, last;
+        unsigned long long t0;
+        scene_setup((enum scene)i);
+        for (f = 0; f < RENDERS; f++) {
+            MSG msg;
+            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+                DispatchMessageW(&msg);
+            SystemIdleTimerReset();
+            t0 = ticks();
+            scene_draw((enum scene)i);
+            glFinish();
+            us = us_since(t0);
+            if (us < best)
+                best = us;
+            if (us > worst)
+                worst = us;
+            if (f == 0 || f == RENDERS - 1)
+                glReadPixels(0, 0, w, h, 0x1908, 0x1401, pic);
+            if (f == 0)
+                first = pic_sum(pic);
+            eglSwapBuffers(dpy, surf);
+        }
+        last = pic_sum(pic);
+        out("gl: %s: %lu to %lu us a frame (%d frames); the last frame %s the first", scene_name[i], best,
+            worst, RENDERS, last == first ? "as" : "DIFFERS FROM");
+    }
+    {
+        unsigned long long t0 = ticks();
+        glReadPixels(0, 0, w, h, 0x1908, 0x1401, pic);
+        out("gl: glReadPixels of the whole screen %lu us", us_since(t0));
+        t0 = ticks();
+        eglSwapBuffers(dpy, surf);
+        out("gl: eglSwapBuffers %lu us", us_since(t0));
+    }
+    out("gl: GL error 0x%x", glGetError());
+    gl_stop();
+    free(pic);
+}
+
+/* ---- bench: rp-wmbench beside it ------------------------------------- */
+
+static void module_bench(void)
+{
+    WCHAR exe[MAX_PATH], logp[MAX_PATH];
+    PROCESS_INFORMATION pi;
+    HANDLE f;
+    DWORD before = 0, size, n;
+    char *buf;
+    _snwprintf(exe, MAX_PATH, L"%s\\rp-wmbench.exe", dir);
+    _snwprintf(logp, MAX_PATH, L"%s\\rp-wm-baseline.txt", dir);
+    f = CreateFileW(logp, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        before = GetFileSize(f, NULL);
+        CloseHandle(f);
+    }
+    WCHAR args[] = L"suite";
+    if (!CreateProcessW(exe, args, NULL, NULL, FALSE, 0, NULL, NULL, NULL, &pi)) {
+        out("bench: rp-wmbench.exe not started (error %lu): is it beside rp-wmprobe.exe?",
+            (unsigned long)GetLastError());
+        return;
+    }
+    WaitForSingleObject(pi.hProcess, 15 * 60 * 1000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    f = CreateFileW(logp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+        out("bench: no rp-wm-baseline.txt");
+        return;
+    }
+    size = GetFileSize(f, NULL);
+    if (size > before && (buf = (char *)malloc(size - before)) != NULL) {
+        SetFilePointer(f, (LONG)before, NULL, FILE_BEGIN);
+        ReadFile(f, buf, size - before, &n, NULL);
+        out("bench: rp-wmbench's rows (%lu bytes) follow", (unsigned long)n);
+        WriteFile(logf_, buf, n, &n, NULL);
+        FlushFileBuffers(logf_);
+        free(buf);
+    } else
+        out("bench: rp-wmbench wrote nothing");
+    CloseHandle(f);
+}
+
 /* ---- the module ----------------------------------------------------- */
 
 static LRESULT CALLBACK wndproc(HWND hw, UINT m, WPARAM wp, LPARAM lp)
@@ -461,7 +902,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v1 (Windows Mobile probe and baseline suite), tick %lu",
+    out("rp-wmprobe v2 (Windows Mobile probe and baseline suite), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
@@ -480,6 +921,16 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         out("no window, error %lu", (unsigned long)GetLastError());
         return 1;
     }
+    out("== probes and baselines");
+    module_env();
+    module_pxa();
+    module_2700g();
+    module_reg();
+    module_hop();
+    module_vram();
+    module_gl();
+    module_bench();
+    out("== module 1");
     divide1();
     out("== end");
     CloseHandle(logf_);
