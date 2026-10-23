@@ -426,22 +426,50 @@ static void module_env(void)
         (unsigned long)ver.dwMinorVersion, (unsigned long)ver.dwBuildNumber);
     out("env: memory %lu KB, %lu KB free; uptime %lu ms", (unsigned long)(ms.dwTotalPhys / 1024),
         (unsigned long)(ms.dwAvailPhys / 1024), (unsigned long)GetTickCount());
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
-    if (snap == INVALID_HANDLE_VALUE) {
-        out("env: no process list, error %lu", (unsigned long)GetLastError());
-        return;
+    /* toolhelp.dll looked up, not linked: a Windows Mobile build without it
+     * refused to start v2 at all (the owner, 2026-10-23: "it isn't doing
+     * anything when it's clicked on"). */
+    {
+        HMODULE th = LoadLibraryW(L"toolhelp.dll");
+        HANDLE (*snapshot)(DWORD, DWORD) = NULL;
+        BOOL (*first)(HANDLE, PROCESSENTRY32 *) = NULL;
+        BOOL (*next)(HANDLE, PROCESSENTRY32 *) = NULL;
+        BOOL (*close_snap)(HANDLE) = NULL;
+        FARPROC a;
+        if (!th) {
+            out("env: no toolhelp.dll: no process list");
+            return;
+        }
+        a = GetProcAddressW(th, L"CreateToolhelp32Snapshot");
+        memcpy(&snapshot, &a, sizeof a);
+        a = GetProcAddressW(th, L"Process32First");
+        memcpy(&first, &a, sizeof a);
+        a = GetProcAddressW(th, L"Process32Next");
+        memcpy(&next, &a, sizeof a);
+        a = GetProcAddressW(th, L"CloseToolhelp32Snapshot");
+        memcpy(&close_snap, &a, sizeof a);
+        if (!snapshot || !first || !next) {
+            out("env: toolhelp.dll lacks the process functions: no process list");
+            return;
+        }
+        snap = snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
+        if (snap == INVALID_HANDLE_VALUE) {
+            out("env: no process list, error %lu", (unsigned long)GetLastError());
+            return;
+        }
+        pe.dwSize = sizeof pe;
+        if (first(snap, &pe))
+            do {
+                char name[64];
+                int k;
+                for (k = 0; pe.szExeFile[k] && k < 63; k++)
+                    name[k] = (char)pe.szExeFile[k];
+                name[k] = 0;
+                out("env: process %s (%lu threads)", name, (unsigned long)pe.cntThreads);
+            } while (next(snap, &pe));
+        if (close_snap)
+            close_snap(snap);
     }
-    pe.dwSize = sizeof pe;
-    if (Process32First(snap, &pe))
-        do {
-            char name[64];
-            int k;
-            for (k = 0; pe.szExeFile[k] && k < 63; k++)
-                name[k] = (char)pe.szExeFile[k];
-            name[k] = 0;
-            out("env: process %s (%lu threads)", name, (unsigned long)pe.cntThreads);
-        } while (Process32Next(snap, &pe));
-    CloseToolhelp32Snapshot(snap);
 }
 
 /* ---- pxa: the processor's registers as Windows Mobile leaves them ---- */
