@@ -3049,26 +3049,36 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
             }
         }
         eprintln!("    glesfeat OK: every case drew as on the X51v, back at the loader");
-        return boot_loader_glesfeat_g(root);
+        boot_loader_glesfeat_g(root, false)?;
+        return boot_loader_glesfeat_g(root, true);
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
-    boot_loader_glesfeat_g(root)
+    boot_loader_glesfeat_g(root, false)?;
+    boot_loader_glesfeat_g(root, true)
 }
 
 /// Test G (`RP_GLESFEAT_G`, the give-up audit's item 1): Gouraud through
-/// the TA against our objects at the cores' divide 1. Every way runs with
-/// a repeatable reference and is logged, the clock is put back, and the
-/// image returns; a release that doesn't model Windows Mobile's 2700G
-/// clocks refuses the change, which the image logs and the check accepts.
-fn boot_loader_glesfeat_g(root: &Path) -> Result<(), String> {
+/// the TA against our objects at the cores' divide 1; with `g2`, test G2
+/// (`RP_GLESFEAT_G2`): the TA's choices one at a time through our direct
+/// path, then the TA. Every way that draws has a repeatable reference and a
+/// right control after divide 1 (the clock put back), and the image
+/// returns; a release that doesn't model Windows Mobile's 2700G clocks
+/// refuses the change, which the image logs and the check accepts.
+fn boot_loader_glesfeat_g(root: &Path, g2: bool) -> Result<(), String> {
+    let (env, name, ours, after) = if g2 {
+        ("RP_GLESFEAT_G2", "G2", "G2 way 1 (", "G2 way 2 (")
+    } else {
+        ("RP_GLESFEAT_G", "G", "G way 2 (", "G way 3")
+    };
     let loader = raw_image(root, "rp-loader")?;
-    let bin = variant_image_with(root, "rp-glesfeat", ("RP_GLESFEAT_G", "1"), None)?;
+    let bin = variant_image_with(root, "rp-glesfeat", (env, "1"), None)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
         mon.query("sendkey ret 200")?;
         Ok(())
     };
+    let summary = format!("{name}: right at 74.75 / 1");
     let output = boot(
         root,
         &Boot {
@@ -3078,48 +3088,71 @@ fn boot_loader_glesfeat_g(root: &Path) -> Result<(), String> {
             sd_image: None,
             steps: &[],
             extra: &[],
-            input: Some((&rp_loadproto::frame(&payload), "G: right at 74.75 / 1")),
+            input: Some((&rp_loadproto::frame(&payload), &summary)),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(600),
+            timeout: Duration::from_secs(900),
         },
     )?;
     let log = output
         .rsplit_once("RPL LOG")
         .map(|(_, l)| l)
-        .ok_or("glesfeat G: never came back to the loader")?;
+        .ok_or(format!("glesfeat {name}: never came back to the loader"))?;
     if crashed(log) || log.contains("did not return") {
-        return Err(format!("glesfeat G: didn't return cleanly:{log}"));
+        return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    for want in [
-        "test G, Gouraud at the cores' divide 1",
-        "parameter memory ready: true",
-        "G way 1 (through the TA):",
-        "G way 2 (our objects, our layout 4):",
-        "G way 4 (through the TA, one strip of four):",
-        "G: right at 74.75 / 1 of 20:",
-        "RETROPANE-GLESFEAT: DONE",
-    ] {
+    let wants: &[&str] = if g2 {
+        &[
+            "test G2, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G2 way 1 (ours (G's way 2)):",
+            "G2 way 2 (one 4-corner object):",
+            "G2 way 3 (z 1.0):",
+            "G2 way 4 (the clear underneath):",
+            "G2 way 5 (per-tile lists):",
+            "G2 way 6 (all four: the TA's form):",
+            "G2 way 7 (through the TA, one strip of four):",
+            "G2 way 8 (through the TA):",
+            "G2: right at 74.75 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else {
+        &[
+            "test G, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G way 1 (through the TA):",
+            "G way 2 (our objects, our layout 4):",
+            "G way 4 (through the TA, one strip of four):",
+            "G: right at 74.75 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    };
+    for want in wants {
         if !log.contains(want) {
-            return Err(format!("glesfeat G: the run log has no `{want}`:{log}"));
+            return Err(format!(
+                "glesfeat {name}: the run log has no `{want}`:{log}"
+            ));
         }
     }
     // Every way that drew: its reference rendered twice the same, then the
     // clock refused or a right control after it. The fork doesn't model
     // the tile accelerator (docs/hw/emulator.md: its TA never says done),
-    // so a TA way may stop at its reference, safely, and way 3 is skipped
-    // for want of the TA's object; our own way (2) must always draw.
+    // so a TA way may stop at its reference, safely (and G's way 3 is
+    // skipped for want of the TA's object); our own way must always draw.
+    let head = format!("{name} way ");
     let ways = log
         .lines()
-        .filter(|l| l.contains("G way ") && l.trim_end().ends_with("):"))
+        .filter(|l| l.starts_with(&head) && l.trim_end().ends_with("):"))
         .count();
     let refs = log
         .matches("rendered true then true, the second 0 words off the first")
         .count();
     let no_ta = log.matches("no repeatable reference").count();
-    if no_ta > 0 && !log.contains("the TA never said done") {
+    let ta_silent = log.matches("the TA never said done: no render").count();
+    // Each way that stopped for want of the TA: its two reference renders.
+    if no_ta * 2 != ta_silent {
         return Err(format!(
-            "glesfeat G: a reference that didn't repeat, not for want of the TA:{log}"
+            "glesfeat {name}: {no_ta} references that didn't repeat, {ta_silent} renders the TA never finished:{log}"
         ));
     }
     let drew = ways - no_ta.min(ways);
@@ -3129,31 +3162,52 @@ fn boot_loader_glesfeat_g(root: &Path) -> Result<(), String> {
         .count();
     if refs != drew {
         return Err(format!(
-            "glesfeat G: {refs} repeatable references for {drew} ways that drew:{log}"
+            "glesfeat {name}: {refs} repeatable references for {drew} ways that drew:{log}"
         ));
     }
     if drew == 0 || refused + controls != drew {
         return Err(format!(
-            "glesfeat G: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
+            "glesfeat {name}: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
         ));
     }
-    let ours = log
-        .split("G way 2 (")
+    let own = log
+        .split(ours)
         .nth(1)
-        .and_then(|s| s.split("G way 3").next())
+        .and_then(|s| s.split(after).next())
         .unwrap_or("");
-    if !ours.contains("rendered true then true, the second 0 words off the first") {
-        return Err(format!("glesfeat G: our own way didn't draw:{log}"));
+    if !own.contains("rendered true then true, the second 0 words off the first") {
+        return Err(format!("glesfeat {name}: our own way didn't draw:{log}"));
+    }
+    // G2's two-triangle forms over our flat background (ways 1, 3 and 5:
+    // ours, z 1.0, per-tile lists) draw one picture: their references'
+    // hashes equal, so a way that drew a wrong picture the same way twice
+    // (a broken region array, an empty list) is caught too.
+    if g2 {
+        let hash = |way: u32| {
+            log.split(&format!("G2 way {way} ("))
+                .nth(1)
+                .and_then(|s| s.split("reference hash ").nth(1))
+                .map(|s| s.chars().take(10).collect::<String>())
+        };
+        let first = hash(1).ok_or(format!("glesfeat G2: way 1 has no reference hash:{log}"))?;
+        for way in [3, 5] {
+            if hash(way).as_deref() != Some(first.as_str()) {
+                return Err(format!(
+                    "glesfeat G2: way {way}'s reference isn't way 1's picture ({:?} against {first}):{log}",
+                    hash(way)
+                ));
+            }
+        }
     }
     // The control after divide 1 proves the clock was put back; the same
     // read back as Windows Mobile's.
     if controls > 0 && !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
         return Err(format!(
-            "glesfeat G: Windows Mobile's clock not read back:{log}"
+            "glesfeat {name}: Windows Mobile's clock not read back:{log}"
         ));
     }
     eprintln!(
-        "    glesfeat G OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"
+        "    glesfeat {name} OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"
     );
     Ok(())
 }

@@ -117,6 +117,93 @@ pub const fn adopt_flags(ours: u32, ta: u32) -> (u32, bool) {
     }
 }
 
+/// Test G2 (2026-10-23, after test G): the TA's strip of four was nearly
+/// right at divide 1 where our two triangles were wrong in every render;
+/// G2 tries each difference alone through our direct path. The list
+/// flags the TA wrote for the strip of four (`0x60A098A0`): triangles 0
+/// and 1 (mask bits 30 and 29), layout 5.
+pub const QUAD_FLAGS: u32 = 0x60A0_0000;
+/// Words in the TA's four-corner Gouraud object: ISP, TSP, x/y x4, z x4,
+/// 1/w x4, colour x4.
+pub const QUAD_WORDS: usize = 22;
+/// The strip's corner order (of [`QUAD`]): top left, top right, bottom
+/// left, bottom right.
+pub const STRIP_ORDER: [usize; 4] = [0, 1, 3, 2];
+/// The GLES clear's TSP (no colour per vertex: its colour from the state).
+pub const TSP_CLEAR: u32 = 0x2220_6F80;
+/// The list flags the TA wrote for the clear (`0x40012E92`): triangle 0,
+/// layout 0.
+pub const CLEAR_FLAGS: u32 = 0x4000_0000;
+/// Words in the TA's clear object: TSP, x/y x3, z x3 (no ISP, no 1/w, no
+/// colours).
+pub const CLEAR_WORDS: usize = 10;
+
+/// [`QUAD`] as the one object the TA writes for a strip of four, at depth
+/// `z` (the TA's: the z it was sent; 1/w 1.0).
+#[must_use]
+pub fn quad_object(isp: u32, tsp: u32, z: f32) -> [u32; QUAD_WORDS] {
+    let mut w = [0u32; QUAD_WORDS];
+    w[0] = isp;
+    w[1] = tsp;
+    for (n, &k) in STRIP_ORDER.iter().enumerate() {
+        let (x, y, c) = QUAD[k];
+        w[2 + 2 * n] = x.to_bits();
+        w[3 + 2 * n] = y.to_bits();
+        w[10 + n] = z.to_bits();
+        w[14 + n] = 1.0f32.to_bits();
+        w[18 + n] = c;
+    }
+    w
+}
+
+/// The GLES clear of a `width` x `height` target as the TA writes its
+/// object: one triangle covering the target twice over, z 1.0.
+#[must_use]
+pub fn clear_object(width: u32, height: u32) -> [u32; CLEAR_WORDS] {
+    let (w, h) = (2.0 * width as f32, 2.0 * height as f32);
+    let one = 1.0f32.to_bits();
+    [
+        TSP_CLEAR,
+        0,
+        0,
+        w.to_bits(),
+        0,
+        0,
+        h.to_bits(),
+        one,
+        one,
+        one,
+    ]
+}
+
+/// Whether triangle `t` touches the rectangle `(x0, y0)`-`(x1, y1)`
+/// (edges included): the per-tile lists G2 builds as the TA does, an
+/// object listed only in the tiles it touches. No triangle edge has every
+/// corner strictly outside it, and the bounding boxes overlap.
+#[must_use]
+pub fn touches(t: [(f32, f32); 3], (x0, y0, x1, y1): (f32, f32, f32, f32)) -> bool {
+    let (lo_x, hi_x) = (
+        t[0].0.min(t[1].0).min(t[2].0),
+        t[0].0.max(t[1].0).max(t[2].0),
+    );
+    let (lo_y, hi_y) = (
+        t[0].1.min(t[1].1).min(t[2].1),
+        t[0].1.max(t[1].1).max(t[2].1),
+    );
+    if hi_x < x0 || lo_x > x1 || hi_y < y0 || lo_y > y1 {
+        return false;
+    }
+    let cross = |a: (f32, f32), b: (f32, f32), p: (f32, f32)| {
+        (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0)
+    };
+    let s = cross(t[0], t[1], t[2]).signum();
+    let corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
+    (0..3).all(|e| {
+        let (a, b) = (t[e], t[(e + 1) % 3]);
+        corners.iter().any(|&p| s * cross(a, b, p) >= 0.0)
+    })
+}
+
 /// A picture held to its reference, word by word.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
@@ -131,6 +218,11 @@ pub struct Tally {
     pub max_step: u32,
     /// The first wrong word: (its index, the reference's, the picture's).
     pub first: Option<(u32, u32, u32)>,
+    /// Of the wrong words, those on the picture's outer edge (from
+    /// [`Tally::add_px`]).
+    pub edge: u32,
+    /// The first wrong word off the edge, as `first`.
+    pub first_inner: Option<(u32, u32, u32)>,
 }
 
 impl Tally {
@@ -156,14 +248,33 @@ impl Tally {
         }
     }
 
-    /// `o` added to this one (the first wrong word kept if set).
+    /// Pixel `(x, y)` of a `w` x `h` picture, as [`Tally::add`], its place
+    /// counted too (on the outer edge or not).
+    pub fn add_px(&mut self, (x, y): (u32, u32), (w, h): (u32, u32), want: u32, got: u32) {
+        if want == got {
+            return;
+        }
+        let i = y * w + x;
+        self.add(i, want, got);
+        if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+            self.edge += 1;
+        } else if self.first_inner.is_none() {
+            self.first_inner = Some((i, want, got));
+        }
+    }
+
+    /// `o` added to this one (the first wrong words kept if set).
     pub fn merge(&mut self, o: &Self) {
         self.wrong += o.wrong;
         self.one_step += o.one_step;
         self.unwritten += o.unwritten;
+        self.edge += o.edge;
         self.max_step = self.max_step.max(o.max_step);
         if self.first.is_none() {
             self.first = o.first;
+        }
+        if self.first_inner.is_none() {
+            self.first_inner = o.first_inner;
         }
     }
 }
@@ -236,7 +347,17 @@ mod image {
 
     /// Test G alone instead of A, D, L and M (`RP_GLESFEAT_G=1`; device
     /// build `RP_GLESFEAT_G=1 cargo xtask codegen-variant rp-glesfeat g`).
-    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some();
+    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2;
+    /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
+    /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
+    const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
+    /// The label's title and the log's way prefix.
+    const G_TITLE: &str = if TEST_G2 {
+        "RP-GLESFEAT TEST G2"
+    } else {
+        "RP-GLESFEAT TEST G"
+    };
+    const G_NAME: &str = if TEST_G2 { "G2" } else { "G" };
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
@@ -249,7 +370,7 @@ mod image {
     const _: () = assert!(TARGET + STRIDE * H as usize <= LABEL);
     const _: () = assert!(LABEL + LABEL_STRIDE * H as usize <= PM);
     /// The label's text: lines, the font's scale, colours (RGB565).
-    const LABEL_LINES: usize = 8;
+    const LABEL_LINES: usize = 12;
     const LABEL_SCALE: usize = 3;
     const LABEL_LINE_H: usize = 32;
     const LABEL_TOP: usize = 24;
@@ -895,8 +1016,9 @@ mod image {
         let mut t = Tally::default();
         for i in 0..W * H {
             let at = 4 * i as usize;
-            t.add(
-                i,
+            t.add_px(
+                (i % W, i / W),
+                (W, H),
                 load32_volatile(vram, reference + at).unwrap_or(0),
                 load32_volatile(vram, TARGET + at).unwrap_or(0xDEAD_BEEF),
             );
@@ -927,6 +1049,25 @@ mod image {
         /// Through the TA: the clear, then the quad as one strip of four
         /// (as a GLES program draws a quad).
         TaStrip4,
+        /// Test G2: our direct path with the TA's choices taken one at a
+        /// time.
+        Direct(Form),
+    }
+
+    /// Test G2's direct forms: which of the TA's choices it takes.
+    #[derive(Clone, Copy)]
+    struct Form {
+        name: &'static str,
+        /// One four-corner object (layout 5, [`super::quad_object`]), not
+        /// two triangles.
+        quad: bool,
+        /// z 1.0 (the TA's), not 0.
+        z1: bool,
+        /// The clear's object underneath (layout 0), not our flat triangle.
+        clear: bool,
+        /// Each tile lists only the objects that touch it (the TA's lists),
+        /// not every object.
+        tiled: bool,
     }
 
     impl Way {
@@ -936,7 +1077,136 @@ mod image {
                 Self::Ours => "our objects, our layout 4",
                 Self::OursTaFlags(_) => "our objects, the TA's list flags",
                 Self::TaStrip4 => "through the TA, one strip of four",
+                Self::Direct(f) => f.name,
             }
+        }
+    }
+
+    /// Where test G2's per-tile lists go: after the objects, in the
+    /// parameter memory (16 bytes a tile: up to three objects and the end).
+    const LISTS: usize = PARAMS + 0x1000;
+    const LIST_WORDS: usize = 4;
+    const _: () = assert!(LISTS + 16 * (COLS * ROWS) as usize <= PM + PM_SIZE as usize);
+
+    /// Which of [`TRIS`] an object covers (bit k: triangle k); every
+    /// tile for [`ALL`].
+    const ALL: u8 = 0xFF;
+
+    /// `objs` (words, list flags, cover) rendered with a list for each
+    /// tile holding only the objects that touch it ([`super::touches`]);
+    /// true if it finished. A timeout resets the core.
+    #[inline(never)]
+    fn scene_tiled(e: &mut Engine<Mmio>, vram: &mut [u8], objs: &[(&[u32], u32, u8)]) -> bool {
+        let mut at = OBJECT;
+        let mut word = [m3::END; LIST_WORDS - 1];
+        let n = objs.len().min(LIST_WORDS - 1);
+        for (k, (w, flags, _)) in objs[..n].iter().enumerate() {
+            store(vram, at, w);
+            word[k] = flags | ((at - PARAMS) / 4) as u32;
+            at += 4 * w.len();
+        }
+        let p = |k: usize| (QUAD[k].0, QUAD[k].1);
+        let total = COLS * ROWS;
+        for t in 0..total {
+            let (c, r) = (t % COLS, t / COLS);
+            let rect = (
+                (c * m3::TILE_W) as f32,
+                (r * m3::TILE_H) as f32,
+                ((c + 1) * m3::TILE_W) as f32,
+                ((r + 1) * m3::TILE_H) as f32,
+            );
+            let mut list = [m3::END; LIST_WORDS];
+            let mut len = 0;
+            for (k, &(_, _, cover)) in objs[..n].iter().enumerate() {
+                let hit = cover == ALL
+                    || (0..TRIS.len())
+                        .any(|j| cover & 1 << j != 0 && super::touches(TRIS[j].map(p), rect));
+                if hit {
+                    list[len] = word[k];
+                    len += 1;
+                }
+            }
+            let addr = LISTS + 16 * t as usize;
+            store(vram, addr, &list);
+            let entry = m3::region_entry(c, r, addr as u32, t + 1 == total);
+            store(vram, REGIONS + 8 * t as usize, &entry);
+        }
+        cpu::drain_write_buffer();
+        let (t, len) = table();
+        let done = run(e, &t[..len], RENDER_DONE, 200_000);
+        if !done {
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("  (timed out: core reset, memory manager ready again: {ok})");
+        }
+        done
+    }
+
+    /// Test G2's direct form `f` drawn (the target already blanked). With
+    /// `words`, the quad's first object and its list word logged.
+    fn draw_direct(e: &mut Engine<Mmio>, vram: &mut [u8], f: Form, words: usize) -> bool {
+        let z = if f.z1 { 1.0 } else { 0.0 };
+        let flat_bg = m3::triangle(
+            ISP_ALWAYS,
+            TSP_DELL,
+            &[
+                Vertex::flat(0.0, 0.0, 0xFF00_0000),
+                Vertex::flat(2048.0, 0.0, 0xFF00_0000),
+                Vertex::flat(0.0, 2048.0, 0xFF00_0000),
+            ],
+        );
+        let clear_bg = super::clear_object(W, H);
+        let (bg, bg_flags): (&[u32], u32) = if f.clear {
+            (&clear_bg, super::CLEAR_FLAGS)
+        } else {
+            (&flat_bg, STRIP)
+        };
+        let tri = |t: [usize; 3]| {
+            m3::triangle(
+                ISP_ALWAYS,
+                TSP_SMOOTH,
+                &t.map(|k| Vertex {
+                    x: QUAD[k].0,
+                    y: QUAD[k].1,
+                    z,
+                    rhw: 1.0,
+                    argb: QUAD[k].2,
+                }),
+            )
+        };
+        let (a, b) = (tri(TRIS[0]), tri(TRIS[1]));
+        let quad = super::quad_object(ISP_ALWAYS, TSP_SMOOTH, z);
+        let mut objs: [(&[u32], u32, u8); 3] =
+            [(bg, bg_flags, ALL), (&a, STRIP, 1), (&b, STRIP, 2)];
+        let n = if f.quad {
+            objs[1] = (&quad, super::QUAD_FLAGS, 3);
+            2
+        } else {
+            3
+        };
+        if words > 0 {
+            let _ = write!(
+                RunLog,
+                "    list word 0x{:08x} (layout {}), object:",
+                objs[1].1,
+                (objs[1].1 & super::LAYOUT) >> 21
+            );
+            for w in objs[1].0 {
+                let _ = write!(RunLog, " {w:08x}");
+            }
+            log!(
+                "; background list word 0x{bg_flags:08x}, {} words",
+                bg.len()
+            );
+        }
+        if f.tiled {
+            scene_tiled(e, vram, &objs[..n])
+        } else {
+            let mut plain = [(&[][..], 0u32); 3];
+            for (k, o) in objs[..n].iter().enumerate() {
+                plain[k] = (o.0, o.1);
+            }
+            scene(e, vram, &plain[..n])
         }
     }
 
@@ -1001,6 +1271,10 @@ mod image {
                 let done = scene(e, vram, &[(&bg, STRIP), (&a, flags), (&b, flags)]);
                 (done, us_since(t0), [m3::END; TA_LIST])
             }
+            Way::Direct(f) => {
+                let done = draw_direct(e, vram, f, words);
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
         }
     }
 
@@ -1055,15 +1329,21 @@ mod image {
         let head = fmt(&mut head, format_args!("STEP {step} OF {steps}"));
         let mut name = [0u8; 32];
         let name = fmt(&mut name, format_args!("WAY {}: {}", step - 1, w.name()));
-        say(
-            vram,
-            &["RP-GLESFEAT TEST G", head, name, "WM CLOCK: REFERENCE"],
-        );
-        log!("G way {} ({}):", step - 1, w.name());
+        say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
+        log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
         let ready = clean(e, vram);
         let (d1, us1, list) = draw(e, vram, w, 24);
         keep_reference(vram);
+        // The reference's hash: ways that must draw the same picture (G2's
+        // forms of one quad over one background) are held to each other,
+        // not only each to itself.
+        let mut hash = 0x811C_9DC5u32;
+        for k in 0..(W * H) as usize {
+            let v = load32_volatile(vram, REF + 4 * k).unwrap_or(0);
+            hash = (hash ^ v).wrapping_mul(0x0100_0193);
+        }
+        log!("  reference hash 0x{hash:08x}");
         let (d2, us2, _) = draw(e, vram, w, 0);
         let again = compare(vram, REF);
         r.repeatable = d1 && d2 && again.wrong == 0;
@@ -1074,13 +1354,23 @@ mod image {
             r.us_wm
         );
         if !r.repeatable {
+            // What differs (test G's way 1 differed in every word): five
+            // places, the first render's word then the second's.
+            let _ = write!(RunLog, "    samples (first, second):");
+            for (x, y) in [(2, 2), (240, 320), (477, 2), (2, 637), (477, 637)] {
+                let at = 4 * (y * W + x) as usize;
+                let _ = write!(
+                    RunLog,
+                    " ({x}, {y}) 0x{:08x} 0x{:08x};",
+                    load32_volatile(vram, REF + at).unwrap_or(0),
+                    load32_volatile(vram, TARGET + at).unwrap_or(0)
+                );
+            }
+            log!("");
             log!("  no repeatable reference: nothing at divide 1");
             return (r, list);
         }
-        say(
-            vram,
-            &["RP-GLESFEAT TEST G", head, name, "74.75 MHZ / 1: SETTING"],
-        );
+        say(vram, &[G_TITLE, head, name, "74.75 MHZ / 1: SETTING"]);
         r.clocked = to_divide_1(&mut e.regs);
         clock_readback(&mut e.regs);
         if !r.clocked {
@@ -1096,7 +1386,7 @@ mod image {
             rt::check_in();
             let mut line = [0u8; 32];
             let line = fmt(&mut line, format_args!("74.75 MHZ / 1: {n} OF {G_DRAWS}"));
-            say(vram, &["RP-GLESFEAT TEST G", head, name, line]);
+            say(vram, &[G_TITLE, head, name, line]);
             let (done, us, _) = draw(e, vram, w, 0);
             r.us_d1 = r.us_d1.min(us);
             if !done {
@@ -1132,6 +1422,17 @@ mod image {
                 i % W,
                 i / W
             );
+        }
+        if TEST_G2 && t.wrong > 0 {
+            let _ = write!(RunLog, "; on the picture's edge {}", t.edge);
+            if let Some((i, want, got)) = t.first_inner {
+                let _ = write!(
+                    RunLog,
+                    ", first inside at ({}, {}) 0x{got:08x} for 0x{want:08x}",
+                    i % W,
+                    i / W
+                );
+            }
         }
         log!(
             "; fastest {} us (Windows Mobile's {} us); control at Windows Mobile's clock after: {}",
@@ -1219,6 +1520,91 @@ mod image {
         );
     }
 
+    /// Test G2's ways, in order: our form (G's way 2, the control), each
+    /// of the TA's four choices alone, all four together, then the TA
+    /// itself (last: a TA hang isn't recovered within a run, C53).
+    const G2_WAYS: [Way; 8] = {
+        const OURS: Form = Form {
+            name: "ours (G's way 2)",
+            quad: false,
+            z1: false,
+            clear: false,
+            tiled: false,
+        };
+        [
+            Way::Direct(OURS),
+            Way::Direct(Form {
+                name: "one 4-corner object",
+                quad: true,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "z 1.0",
+                z1: true,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "the clear underneath",
+                clear: true,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "per-tile lists",
+                tiled: true,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "all four: the TA's form",
+                quad: true,
+                z1: true,
+                clear: true,
+                tiled: true,
+            }),
+            Way::TaStrip4,
+            Way::Ta,
+        ]
+    };
+
+    /// Test G2: each of [`G2_WAYS`] against its own reference; the summary
+    /// on the label.
+    #[inline(never)]
+    fn test_g2(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G2: which of the TA's choices makes Gouraud right at 74.75 MHz / 1 (TSP 0x{TSP_SMOOTH:08x}, GC2's ARGB8888 quad)"
+        );
+        rp_image::on_crash(put_back);
+        let steps = G2_WAYS.len() as u32 + 1;
+        let mut right = [None; G2_WAYS.len()];
+        for (k, &w) in G2_WAYS.iter().enumerate() {
+            let (r, _) = way(e, vram, w, k as u32 + 2, steps);
+            right[k] = (r.repeatable && r.clocked).then_some(r.right);
+        }
+        let _ = write!(RunLog, "G2: right at 74.75 / 1 of {G_DRAWS}:");
+        for (k, w) in G2_WAYS.iter().enumerate() {
+            match right[k] {
+                Some(n) => {
+                    let _ = write!(RunLog, " {} {n};", w.name());
+                }
+                None => {
+                    let _ = write!(RunLog, " {} not run;", w.name());
+                }
+            }
+        }
+        log!("");
+        let mut l = [[0u8; 32]; 8];
+        let mut lines: [&str; 10] = [""; 10];
+        lines[0] = G_TITLE;
+        lines[1] = "DONE: PRESS A BUTTON";
+        for (k, (buf, w)) in l.iter_mut().zip(G2_WAYS.iter()).enumerate() {
+            lines[2 + k] = match right[k] {
+                Some(n) => fmt(buf, format_args!("{}: {n} OF {G_DRAWS}", k + 1)),
+                None => fmt(buf, format_args!("{}: NOT RUN", k + 1)),
+            };
+            let _ = w;
+        }
+        say(vram, &lines);
+    }
+
     fn main() -> ! {
         rt::init_mmu();
         let Some((regs, vram)) = rp_image::take_mbx() else {
@@ -1231,14 +1617,21 @@ mod image {
         // The label first: the screen says what runs from the first moment.
         let saved = show_label(&mut e.regs, vram);
         let title = if TEST_G {
-            "RP-GLESFEAT TEST G"
+            G_TITLE
         } else {
             "RP-GLESFEAT A D L M"
         };
-        say(vram, &[title, "STEP 1 OF 5", "SETTING UP THE 3D CORE"]);
+        let first = if TEST_G2 {
+            "STEP 1 OF 9"
+        } else {
+            "STEP 1 OF 5"
+        };
+        say(vram, &[title, first, "SETTING UP THE 3D CORE"]);
         let clk0 = e.regs.read32(MBXCLK);
         if TEST_G {
-            log!("{MARKER}: test G, Gouraud at the cores' divide 1 (the give-up audit's item 1)");
+            log!(
+                "{MARKER}: test {G_NAME}, Gouraud at the cores' divide 1 (the give-up audit's item 1)"
+            );
         } else {
             log!("{MARKER}: alpha test, depth 'less', 8-bit grey textures (ADR-0026)");
         }
@@ -1255,7 +1648,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G {
+        if ready && TEST_G2 {
+            test_g2(&mut e, vram);
+        } else if ready && TEST_G {
             test_g(&mut e, vram);
         } else if ready {
             let fill = rp_image::need(
@@ -1514,5 +1909,173 @@ mod g_tests {
     fn the_sentinel_is_no_colour_of_the_quad() {
         assert!(QUAD.iter().all(|&(_, _, c)| c >> 24 == 0xFF));
         assert_ne!(SENTINEL >> 24, 0xFF);
+    }
+}
+
+/// Test G2's pure parts, held to the words the TA wrote on the X51v
+/// (test G, `local/rp-glesfeat-G1.txt`, 2026-10-23).
+#[cfg(test)]
+mod g2_tests {
+    use super::*;
+    use rp_drv_mbx3d as m3;
+
+    #[test]
+    fn the_quad_object_is_the_tas_strip_of_four_word_for_word() {
+        // Way 4's object at 0x626280 (its first 22 words).
+        let ta: [u32; QUAD_WORDS] = [
+            0xe000_0000,
+            0x2260_0e80,
+            0,
+            0,
+            0x43f0_0000,
+            0,
+            0,
+            0x4420_0000,
+            0x43f0_0000,
+            0x4420_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0xff00_0000,
+            0xffff_ffff,
+            0xffff_e000,
+            0xff10_20a0,
+        ];
+        assert_eq!(quad_object(m3::ISP_ALWAYS, TSP_SMOOTH, 1.0), ta);
+        // Its list word 0x60a098a0: two triangles, layout 5.
+        assert_eq!(0x60a0_98a0 & FLAGS, QUAD_FLAGS);
+        assert_eq!((QUAD_FLAGS & LAYOUT) >> 21, 5);
+        // z 0: only the four z words change.
+        let z0 = quad_object(m3::ISP_ALWAYS, TSP_SMOOTH, 0.0);
+        for (k, (&a, &b)) in z0.iter().zip(ta.iter()).enumerate() {
+            assert_eq!(a == b, !(10..14).contains(&k), "word {k}");
+        }
+    }
+
+    #[test]
+    fn the_clear_object_is_the_tas_word_for_word() {
+        // Way 4's clear at 0x64ba48 and its list word 0x40012e92.
+        let ta = [
+            0x2220_6f80,
+            0,
+            0,
+            0x4470_0000,
+            0,
+            0,
+            0x44a0_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+        ];
+        assert_eq!(clear_object(480, 640), ta);
+        assert_eq!(0x4001_2e92 & FLAGS, CLEAR_FLAGS);
+        assert_eq!(CLEAR_FLAGS & LAYOUT, 0);
+        // The clear stream's TSP is the object's.
+        assert_eq!(m3::ta::clear_stream(480, 640)[1], TSP_CLEAR);
+    }
+
+    #[test]
+    fn the_tas_gouraud_triangle_is_ours_but_its_z() {
+        // Way 1's second object at 0x626100, list word 0x40809840.
+        let ta = [
+            0xe000_0000,
+            0x2260_0e80,
+            0,
+            0,
+            0x43f0_0000,
+            0,
+            0,
+            0x4420_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0x3f80_0000,
+            0xff00_0000,
+            0xffff_ffff,
+            0xffff_e000,
+        ];
+        let v = |k: usize, z| m3::Vertex {
+            x: QUAD[k].0,
+            y: QUAD[k].1,
+            z,
+            rhw: 1.0,
+            argb: QUAD[k].2,
+        };
+        let ours = |z| m3::triangle(m3::ISP_ALWAYS, TSP_SMOOTH, &TRIS[0].map(|k| v(k, z)));
+        assert_eq!(ours(1.0), ta);
+        assert_ne!(ours(0.0), ta);
+        assert_eq!(0x4080_9840 & FLAGS, m3::STRIP_ONE_TRIANGLE);
+    }
+
+    #[test]
+    fn a_triangle_touches_the_tiles_it_covers_and_no_others() {
+        let tile = |c: u32, r: u32| {
+            let (x, y) = ((c * 8) as f32, (r * 16) as f32);
+            (x, y, x + 8.0, y + 16.0)
+        };
+        let p = |k: usize| (QUAD[k].0, QUAD[k].1);
+        let (a, b) = (TRIS[0].map(p), TRIS[1].map(p));
+        // The corners: each half holds its own.
+        assert!(touches(a, tile(0, 0)) && !touches(b, tile(0, 0)));
+        assert!(touches(b, tile(59, 39)) && !touches(a, tile(59, 39)));
+        // Both on the diagonal (480, 0)-(0, 640): the top-right and
+        // bottom-left corners' tiles, and one across its middle.
+        for t in [tile(59, 0), tile(0, 39), tile(30, 19)] {
+            assert!(touches(a, t) && touches(b, t));
+        }
+        // Every tile touched by one or the other (the quad covers all).
+        for r in 0..40 {
+            for c in 0..60 {
+                assert!(
+                    touches(a, tile(c, r)) || touches(b, tile(c, r)),
+                    "tile {c},{r}"
+                );
+            }
+        }
+        // Either winding; a tile well outside a small triangle.
+        let small = [(10.0, 10.0), (20.0, 10.0), (10.0, 20.0)];
+        let flipped = [small[0], small[2], small[1]];
+        for t in [small, flipped] {
+            assert!(touches(t, (8.0, 8.0, 16.0, 16.0)));
+            assert!(!touches(t, (100.0, 100.0, 108.0, 116.0)));
+            // Inside the box, beyond the hypotenuse.
+            assert!(!touches(t, (18.0, 18.0, 19.0, 19.0)));
+            // Wholly inside the triangle (no corner on any edge).
+            assert!(touches(t, (11.0, 11.0, 12.0, 12.0)));
+            // Thin strips past a corner: no edge separates them, only the
+            // bounding box does (one across, one down).
+            assert!(!touches(t, (21.0, 0.0, 22.0, 30.0)));
+            assert!(!touches(t, (0.0, 21.0, 30.0, 22.0)));
+        }
+    }
+
+    #[test]
+    fn the_tally_places_wrong_pixels_on_the_edge_or_inside() {
+        let mut t = Tally::default();
+        t.add_px((0, 107), (480, 640), 0, 0x48ee_b980);
+        t.add_px((479, 5), (480, 640), 0, 1);
+        t.add_px((5, 639), (480, 640), 0, 1);
+        t.add_px((5, 0), (480, 640), 0, 1);
+        assert_eq!((t.wrong, t.edge, t.first_inner), (4, 4, None));
+        t.add_px((38, 8), (480, 640), 0xff17_1714, 0xff17_1717);
+        t.add_px((1, 1), (480, 640), 0, 1);
+        t.add_px((2, 2), (480, 640), 5, 5);
+        assert_eq!((t.wrong, t.edge), (6, 4));
+        assert_eq!(
+            t.first_inner,
+            Some((8 * 480 + 38, 0xff17_1714, 0xff17_1717))
+        );
+        assert_eq!(t.first, Some((107 * 480, 0, 0x48ee_b980)));
+        let mut u = Tally::default();
+        u.merge(&t);
+        u.merge(&t);
+        assert_eq!((u.edge, u.first_inner), (8, t.first_inner));
     }
 }
