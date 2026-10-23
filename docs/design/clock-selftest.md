@@ -85,9 +85,14 @@ fastest, or one step below it for margin.
 
 ### 3. The guard while running
 
-- Now and then, while the GPU is idle, a small block of spare 2700G
-  memory is pattern-checked, and a small known render is compared with
-  its picture.
+- While the GPU is idle, **one small check a second at most**: a 64 x 64
+  render against its picture, or a 4 KiB block of spare 2700G memory
+  pattern-checked (~1 ms each, 0.1% of the GPU's time), rotating through
+  every kind of drawing (each target format, Gouraud, flat, every texture
+  format, blending, 2D fills and copies) so all are covered **every
+  ~10 s**. When the GPU is never idle (a game), **one check every 10 s**,
+  between frames. Detection: ~1 s idle, ~10 s in a game (owner's vote on
+  the red-team review, 2026-10-22; ADR-0035).
 - Any check failing, a GPU hang the driver recovers from, the underrun
   flag set outside a clock change, or a reset nobody asked for: the clock
   drops straight back to Windows Mobile's, the event is logged, and a
@@ -137,7 +142,9 @@ fastest, or one step below it for margin.
    Windows Mobile's clock until then; nobody waits. B: a screen at first
    boot, about 25 minutes, docked, skippable. C: only when the user asks
    in Settings.
-3. **How long a step.** A (recommended): 5 minutes a step (about 25
+3. **How long a step** (re-argued after the red-team review, 2026-10-22,
+   and kept: every failure seen was immediate, the gap was content, not
+   length; ADR-0035 "The red-team review"). A (recommended): 5 minutes a step (about 25
    minutes for the ladder with the warm-up). GS's soaks were 20 minutes a
    setting, with no error at any minute. B: 20 minutes a step (about 1.5
    hours, overnight only). C: 2 minutes (a quick check, less margin).
