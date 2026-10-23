@@ -114,7 +114,8 @@ direct path is faster), downloadable from the same location as the pack:
 | Game | Engine source (GPL) | Note |
 |---|---|---|
 | DOOM, DOOM II | id's 1997 source release (GPL-2.0) | DoomGLES stays the legacy flagship test (DESIGN.md); the port is our own fast path |
-| Heretic | Raven's 1999 source release (GPL-2.0) | HereticGLES is the legacy reference |
+| Heretic | Raven's 1999 source release (GPL-2.0; the year it became GPL to confirm: the 1999 release may have carried Raven's own licence first) | HereticGLES is the legacy reference |
+| Hexen | Raven's source release (GPL, to confirm, as Heretic's) | Added 2026-10-22 (owner): HexenGLES (the Pocket PC GLES version) is the legacy reference, as HereticGLES is for Heretic; Heretic's engine with hubs, ACS scripts and three classes, so about a week once Heretic is ported; game data (`hexen.wad`) stays the user's own |
 | Quake | id's Quake 1 source (GPL-2.0) | New addition |
 | Quake 2 | id's 2001 source release (GPL-2.0) | Added 2026-10-16 (owner): lighter than Quake 3 (built for 1997-98 PCs, 16-32 MB); software and OpenGL 1.x renderers to start from; game data (`pak0.pak`) stays the user's own |
 | Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one |
@@ -139,9 +140,9 @@ pack ships the engine code even when the data is the user's.
 
 Considered and left out (2026-10-22): Return to Castle Wolfenstein,
 Enemy Territory, Jedi Outcast and Jedi Academy, and Doom 3 (too heavy for
-64 MiB and the 2700G), and the 2.5D games (Wolfenstein 3D, Hexen, Strife,
+64 MiB and the 2700G), and the 2.5D games (Wolfenstein 3D, Strife,
 Rise of the Triad, the Build games, Marathon), which the owner didn't ask
-for here. Quake 3 stays the stretch goal it is (about 64 MiB and a real GPU).
+for here (Hexen joined §6's ports on 2026-10-22). Quake 3 stays the stretch goal it is (about 64 MiB and a real GPU).
 
 ## 6b. The Emulation pack (owner, 2026-10-18)
 
