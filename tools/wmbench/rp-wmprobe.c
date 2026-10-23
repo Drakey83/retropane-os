@@ -753,32 +753,38 @@ static void module_gl(void)
         many_rgba[i * 4 + 2] = (unsigned char)rand();
         many_rgba[i * 4 + 3] = 255;
     }
+    /* Dell's glFinish returns before the render (v2: a full-screen quad
+     * "0.5 ms"), so frames are timed swap to swap: RENDERS frames drawn
+     * and swapped back to back, nothing read between them, the total over
+     * the count; the pictures are read after, from two more frames. */
     for (i = CLEAR; i <= MANY; i++) {
-        unsigned long best = 0xFFFFFFFFUL, worst = 0, us, first = 0, last;
+        unsigned long total, first, last;
         unsigned long long t0;
+        MSG msg;
         scene_setup((enum scene)i);
+        scene_draw((enum scene)i);
+        eglSwapBuffers(dpy, surf);
+        t0 = ticks();
         for (f = 0; f < RENDERS; f++) {
-            MSG msg;
-            while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
-                DispatchMessageW(&msg);
-            SystemIdleTimerReset();
-            t0 = ticks();
             scene_draw((enum scene)i);
-            glFinish();
-            us = us_since(t0);
-            if (us < best)
-                best = us;
-            if (us > worst)
-                worst = us;
-            if (f == 0 || f == RENDERS - 1)
-                glReadPixels(0, 0, w, h, 0x1908, 0x1401, pic);
-            if (f == 0)
-                first = pic_sum(pic);
             eglSwapBuffers(dpy, surf);
         }
+        total = us_since(t0);
+        while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageW(&msg);
+        SystemIdleTimerReset();
+        scene_draw((enum scene)i);
+        glFinish();
+        glReadPixels(0, 0, w, h, 0x1908, 0x1401, pic);
+        first = pic_sum(pic);
+        eglSwapBuffers(dpy, surf);
+        scene_draw((enum scene)i);
+        glFinish();
+        glReadPixels(0, 0, w, h, 0x1908, 0x1401, pic);
         last = pic_sum(pic);
-        out("gl: %s: %lu to %lu us a frame (%d frames); the last frame %s the first", scene_name[i], best,
-            worst, RENDERS, last == first ? "as" : "DIFFERS FROM");
+        eglSwapBuffers(dpy, surf);
+        out("gl: %s: %lu us a frame (%d frames drawn and swapped in %lu us); two frames read back %s",
+            scene_name[i], total / RENDERS, RENDERS, total, last == first ? "the same" : "DIFFERENT");
     }
     {
         unsigned long long t0 = ticks();
@@ -986,8 +992,13 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     wc.hInstance = inst;
     wc.lpszClassName = L"rp-wmprobe";
     RegisterClassW(&wc);
-    win = CreateWindowW(L"rp-wmprobe", L"rp-wmprobe", WS_VISIBLE | WS_POPUP, 0, 0, w, h, NULL,
-                        NULL, inst, NULL);
+    /* Topmost and in front: v2's run 1 had other programs (the weather
+     * app's updates, likely) drawing over the window, which spoilt its
+     * read-backs and slowed its drawing 200 times. */
+    win = CreateWindowExW(WS_EX_TOPMOST, L"rp-wmprobe", L"rp-wmprobe", WS_VISIBLE | WS_POPUP, 0, 0,
+                          w, h, NULL, NULL, inst, NULL);
+    if (win)
+        SetForegroundWindow(win);
     if (!win) {
         out("no window, error %lu", (unsigned long)GetLastError());
         return 1;
