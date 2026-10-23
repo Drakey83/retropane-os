@@ -806,6 +806,25 @@ static LRESULT CALLBACK wndproc(HWND hw, UINT m, WPARAM wp, LPARAM lp)
     return DefWindowProcW(hw, m, wp, lp);
 }
 
+/* What it's doing, in large letters on its own window (v2's first try
+ * showed a blank screen for minutes: the owner couldn't tell it ran). */
+static void status(const WCHAR *what)
+{
+    HDC dc = GetDC(win);
+    RECT r = {0, 0, w, h};
+    MSG msg;
+    if (!dc)
+        return;
+    FillRect(dc, &r, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    ExtTextOutW(dc, 20, 60, 0, NULL, L"RetroPane probe: running,", 25, NULL);
+    ExtTextOutW(dc, 20, 90, 0, NULL, L"please don't touch it.", 22, NULL);
+    ExtTextOutW(dc, 20, 150, 0, NULL, what, (UINT)wcslen(what), NULL);
+    ReleaseDC(win, dc);
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
+        DispatchMessageW(&msg);
+    SystemIdleTimerReset();
+}
+
 static void say(const WCHAR *a, const WCHAR *b)
 {
     MessageBoxW(NULL, b, a, MB_OK | MB_TOPMOST);
@@ -922,14 +941,23 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         return 1;
     }
     out("== probes and baselines");
+    status(L"1 of 9: Windows Mobile itself");
     module_env();
+    status(L"2 of 9: the processor's registers");
     module_pxa();
+    status(L"3 of 9: the graphics chip's registers");
     module_2700g();
+    status(L"4 of 9: Dell's driver settings");
     module_reg();
+    status(L"5 of 9: memory page hops");
     module_hop();
+    status(L"6 of 9: graphics memory reads");
     module_vram();
+    status(L"7 of 9: 3D through Dell's driver (flashes)");
     module_gl();
+    status(L"8 of 9: rp-wmbench (about 2 minutes, flashes)");
     module_bench();
+    status(L"9 of 9: divide 1 under Dell's driver");
     out("== module 1");
     divide1();
     out("== end");
