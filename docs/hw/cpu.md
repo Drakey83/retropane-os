@@ -81,3 +81,27 @@ unit. **The chase is the cache's worst case, not the TLB's:** it cycles
 through a few pages at a time (257 misses, none at 64 KiB). Run 2 adds a
 page-hopping chase (`suite::far_chase`: every hop to the next 4 KiB page)
 for the TLB's worst case and what 64 KiB pages save.
+
+**Run 2 (2026-10-22, `local/rp-probe-pages2.txt`, `probe-0069`): the
+TLB's worst case.** `suite::far_chase` hops 4,128 bytes each time, so
+every hop lands on a new 4 KiB page:
+
+| Mapping | ns a hop | D-TLB misses in 4,096 hops |
+|---|---|---|
+| 1 MiB sections (tables in SDRAM / the first level in the SRAM) | 448.8 / 448.8 | 0 / 0 |
+| 64 KiB pages, tables in SDRAM | 483.4 | 266 |
+| 64 KiB pages, the second level in the SRAM | 476.5 | 266 |
+| 4 KiB pages, both tables in SDRAM | 1,015.6 | 4,224 |
+| 4 KiB, the second level in the SRAM | 880.3 | 4,224 |
+| 4 KiB, the first level in the SRAM | 787.7 | 4,224 |
+| 4 KiB, both levels in the SRAM | 473.1 | 4,224 |
+
+**Every hop a miss, the cost of a miss matches run 1:** ~550 ns with
+both tables in SDRAM, ~418 with the second level in the SRAM, ~329 with
+the first, **~24 with both** (run 1: 565 / 424 / 331 / 25); a 64 KiB
+page's miss costs the same as a 4 KiB one's (~533 ns, tables in SDRAM)
+but comes 16 times less often. So with both levels in the SRAM even the
+worst case for 4 KiB pages is 5% over sections (473 against 449 ns),
+where with the tables in SDRAM it is 2.26x. Run 1's own chase (a few
+pages at a time) repeated its numbers within 0.1%.
+

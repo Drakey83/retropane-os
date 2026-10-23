@@ -196,8 +196,10 @@ watching.
   4,096 hops over 8 MiB): ~565 ns with both page-table levels in SDRAM,
   ~424 with the second level in the SRAM, ~331 with the first, **~25 with
   both in the SRAM**; the hop itself 448.6 ns on sections, 484.1 on 4 KiB
-  pages (tables in SDRAM), 450.2 with both tables in the SRAM. Details:
-  cpu.md.
+  pages (tables in SDRAM), 450.2 with both tables in the SRAM. **Worst
+  case** (run 2, a new 4 KiB page every hop): 1,016 ns a hop with the
+  tables in SDRAM, 473 with both levels in the SRAM (sections 449); a
+  miss ~550 / ~24 ns. Details: cpu.md.
   `memcpy` with its prefetch 128 bytes ahead copies 109 MB/s from memory
   (96 at 64 bytes, 47 with none); DMA copies SDRAM to SDRAM at 45 MB/s,
   the CPU keeping 86% of its speed meanwhile. SD multi-block reads by DMA
