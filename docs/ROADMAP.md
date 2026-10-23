@@ -96,6 +96,16 @@ Personality's drawing (Phase 4) are designed:
 
 ---
 
+## The alpha (owner, 2026-10-22)
+
+**The alpha is the OS's basic functionality, a proof of concept:** the
+device boots RetroPane's own kernel from the card and is usable as an
+offline PDA through the shell (Phase 5's exit, at proof-of-concept depth),
+with simple Windows Mobile apps running (Phase 4's exit). Bugs are
+expected. Not in it: Wi-Fi (Phase 6), flash install, Bluetooth and the
+release work (Phase 9). Estimated 2026-10-22 at the pace so far: about 3-4
+months (late January to February 2027); with Wi-Fi about 4-6.
+
 ## Phase 0 — Foundations
 **Goal:** a project anyone can clone, build and test, before any OS code exists.
 
