@@ -198,13 +198,27 @@ fn query_script(frame: &Path) -> String {
     )
 }
 
+/// `command` as a control frame, refused here when it is longer than the
+/// loader takes (`COMMAND_MAX`): the loader would answer only "bad
+/// command" (2026-10-23: `get rp-wmprobe/rp-wm-baseline.txt`, 33 bytes).
+fn control_frame_checked(command: &str) -> Result<Vec<u8>, String> {
+    if command.len() > rp_loadproto::COMMAND_MAX {
+        return Err(format!(
+            "`{command}` is {} bytes; the loader takes commands of at most {} (a shorter path, or the file's 8.3 short name)",
+            command.len(),
+            rp_loadproto::COMMAND_MAX
+        ));
+    }
+    Ok(rp_loadproto::control_frame(command))
+}
+
 /// Sends a control command; returns its `RPD` data lines (without the
 /// prefix) and the reply after `RPL OK `.
 pub fn query(root: &Path, command: &str) -> Result<(Vec<String>, String), String> {
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let frame = out.join("query.frame");
-    std::fs::write(&frame, rp_loadproto::control_frame(command))
+    std::fs::write(&frame, control_frame_checked(command)?)
         .map_err(|e| format!("{}: {e}", frame.display()))?;
     let text = run_refinding(&query_script(&frame))?;
     if text.contains("NOPORT") {
@@ -937,7 +951,7 @@ pub fn command_reply(root: &Path, command: &str) -> Result<String, String> {
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let frame = out.join("command.frame");
-    std::fs::write(&frame, rp_loadproto::control_frame(command))
+    std::fs::write(&frame, control_frame_checked(command)?)
         .map_err(|e| format!("{}: {e}", frame.display()))?;
     let text = run_put(&frame)?;
     if text.contains("NOPORT") {
@@ -1213,5 +1227,26 @@ mod tests {
     fn load_paths_are_quoted_for_powershell() {
         let s = load_script(Path::new("C:/it's/x.frame"));
         assert!(s.contains("ReadAllBytes('C:/it''s/x.frame')"));
+    }
+}
+
+#[cfg(test)]
+mod command_length_tests {
+    use super::control_frame_checked;
+
+    #[test]
+    fn a_command_the_loader_cannot_take_is_refused_on_the_pc() {
+        let max = rp_loadproto::COMMAND_MAX;
+        let at = "g".repeat(max);
+        assert_eq!(
+            control_frame_checked(&at),
+            Ok(rp_loadproto::control_frame(&at))
+        );
+        let over = "g".repeat(max + 1);
+        let err = control_frame_checked(&over).unwrap_err();
+        assert!(err.contains(&format!("{} bytes", max + 1)), "{err}");
+        // The command that met it (2026-10-23).
+        assert!(control_frame_checked("get rp-wmprobe/rp-wm-baseline.txt").is_err());
+        assert!(control_frame_checked("get rp-wmprobe/rp-wmprobe.txt").is_ok());
     }
 }
