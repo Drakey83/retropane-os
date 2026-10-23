@@ -3566,6 +3566,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC3", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc2m = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2M", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3610,7 +3616,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 46] = [
+    let runs: [GpubenchRun; 47] = [
         (
             "run A",
             &run_a,
@@ -3821,6 +3827,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2: the memory interface's drive strength",
                 "RETROPANE-GPUBENCH: done",
             ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2M (divide 1 with M24CLK as Dell's driver sets it):
+        // checked below.
+        (
+            "run GC2M",
+            &run_gc2m,
+            &["GC2: divide 1 with M24CLK", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -4543,6 +4558,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 48,
                 ("  GC2 references at the end: 3 of 3 as at the start", 8),
                 7 * 3,
+            ),
+            (
+                "run GC2M",
+                54,
+                "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
+                24,
+                ("  GC2 references at the end: 9 of 9 as at the start", 3),
+                2 * 9,
             ),
             (
                 "run GC3",

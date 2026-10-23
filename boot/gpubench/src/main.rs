@@ -177,7 +177,8 @@ mod image {
         || GC2_H
         || GC2_H2
         || GC2_W
-        || GC3;
+        || GC3
+        || GC2M;
     /// Run GC3: the give-up audit's items 2 and 3 (the owner, 2026-10-23:
     /// "no stone unturned"): the 2700G's memory interface and display
     /// fetch, never set by RetroPane: `LMCFG`'s drive strength (Windows
@@ -196,6 +197,16 @@ mod image {
     /// 1:1 and its target decoded (rows or twiddled); the owner nearby (an
     /// unknown register can hang the core).
     const GC3T: bool = option_env!("RP_GPUBENCH_GC3T").is_some();
+    /// Run GC2M: divide 1 with the video and scale clock's divider set as
+    /// Dell's driver sets it (rp-wmprobe module 1, 2026-10-23: Dell's own
+    /// driver drew 20 Gouraud quads at divide 1, 74.75 MHz, every one as
+    /// at divide 2, with `M24CLK` 0, its divider 1; every RetroPane divide-1
+    /// run left `M24CLK` at Windows Mobile's 2, divider 2). GC2's nine kinds
+    /// at divide 1 under `M24CLK` as found, 0 and 1. Unattended.
+    const GC2M: bool = option_env!("RP_GPUBENCH_GC2M").is_some();
+    /// Windows Mobile's `M24CLK` (runs S, W): put back by [`put_back`] after
+    /// a crash in run GC2M.
+    const WM_M24CLK: u32 = 0x2;
     /// Windows Mobile's `LMCFG` and `DMCTRL` (runs S, W): put back by
     /// [`put_back`] after a crash in run GC3.
     const WM_LMCFG: u32 = 0x27;
@@ -8093,9 +8104,20 @@ mod image {
         (gc2_step(24, 2, 0, 4), "156.00 / 4"),
     ];
 
+    /// GC2M's settings: divide 1 from GC2X's 58.50 through Dell's 74.75
+    /// (the setting Dell's driver drew right at) to the aim.
+    const GC2M_STEPS: [(ClockStep, &str); 4] = [
+        (gc2_step(9, 2, 0, 1), "58.50 / 1"),
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
     const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
         &GC2_D_STEPS
+    } else if GC2M {
+        &GC2M_STEPS
     } else if GC3 {
         &GC3_STEPS
     } else if GC2_W {
@@ -8158,7 +8180,19 @@ mod image {
 
     /// The render tables a build runs under: GC2F's eight, every other
     /// build ours alone.
-    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC3 {
+    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC2M {
+        &[
+            (
+                "M24CLK as found (Windows Mobile's 0x2: off, divider 2)",
+                &[],
+            ),
+            (
+                "M24CLK 0x0 (Dell's at divide 1: off, divider 1)",
+                &[(0x050, 0)],
+            ),
+            ("M24CLK 0x1 (on, divider 1)", &[(0x050, 1)]),
+        ]
+    } else if GC3 {
         &GC3_SETS
     } else if GC2_W {
         &[
@@ -8453,7 +8487,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_D {
+            if GC2M {
+                "divide 1 with M24CLK as Dell's driver sets it (as found, 0, 1),"
+            } else if GC2_D {
                 "idea (d), Gouraud drawn as a bilinear texture of a plane's corners against real Gouraud, the cores at divide 1,"
             } else if GC2_H2 {
                 "run GC to 169 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 84.5 MHz),"
@@ -8578,15 +8614,16 @@ mod image {
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         for (vi, &(vname, over)) in GC2_VARIANTS.iter().enumerate() {
             // Each table from a clean start: the core reset, every register
-            // written, the table's own words with them. Offsets from 0x1000
-            // are the system block's (GC3: LMCFG, DMCTRL), written here and
-            // put back after the table; the rest are the render table's.
+            // written, the table's own words with them. Offsets outside the
+            // render block 0x600-0x6FF are the system block's (GC3: LMCFG,
+            // DMCTRL; GC2M: M24CLK), written here and put back after the
+            // table; the rest are the render table's.
             let mut table = [(0, 0); 8];
             let mut n_table = 0;
             let mut sys_was = [(0usize, 0u32); 4];
             let mut n_sys = 0;
             for &(off, v) in over {
-                if off >= 0x1000 {
+                if !(0x600..0x700).contains(&off) {
                     if n_sys < sys_was.len() {
                         sys_was[n_sys] = (off, g.e.regs.read32(off));
                         n_sys += 1;
@@ -8691,7 +8728,7 @@ mod image {
             // of an unproven register can hang the bus); then what the
             // table changes at Windows Mobile's clock, against ours.
             if GC2_VARIANTS.len() > 1 {
-                for &(reg, v) in over.iter().filter(|&&(o, _)| o < 0x1000) {
+                for &(reg, v) in over.iter().filter(|&&(o, _)| (0x600..0x700).contains(&o)) {
                     if reg == 0x6D0 {
                         log!("  GC2F {vname}: 0x6d0 set to 0x{v:x}, not read back");
                     } else {
@@ -9816,6 +9853,8 @@ mod image {
                 "GC2H2 (GC2's kinds and rules, the system clock at 156.00, 162.50 and 169.00 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_H {
                 "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
+            } else if GC2M {
+                "GC2M (divide 1 with M24CLK's divider as Dell's driver sets it: nine kinds, three M24CLK values, 58.50 to 133.25 MHz)"
             } else if GC3T {
                 "GC3T (render-to-texture: every other render-block word's bits flipped alone)"
             } else if GC3 {
@@ -11595,6 +11634,9 @@ mod image {
         if GC3 && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             regs.write32(0x1004, WM_LMCFG);
             regs.write32(0x2188, WM_DMCTRL);
+        }
+        if GC2M && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            regs.write32(0x050, WM_M24CLK);
         }
         // Run FS: a crash with the MBX clock off would leave the loader's
         // 2D engine stopped: the 2D clock back on (enable 1, Windows

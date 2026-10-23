@@ -590,10 +590,12 @@ pub const BUDGETS: &[Budget] = &[
     // FF's 2D renderer frame (`FF_FRAME`), 22,840 B measured.
     // Ratcheted 117 -> 140 KiB on 2026-10-23 (test image): run GC3 carries
     // run FT2 and GC2's machinery in one image, 128,680 B measured.
+    // Zeroed RAM 24 -> 32 KiB the same day: the stack 16 -> 24 KiB (runs
+    // GC2H, GC2H2 and GC3 near 80% of 16), 28,408 B measured.
     Budget {
         image: "rp-gpubench",
         max_load: 140 * 1024,
-        max_zero: 24 * 1024,
+        max_zero: 32 * 1024,
         device: OnDevice::Returns,
     },
     // Test image (docs/research/storage-speed.md): the CF socket's timings,
