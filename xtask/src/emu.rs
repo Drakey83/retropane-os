@@ -4409,7 +4409,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                         "4 of 4 kinds right with everything held; their controls: 4 of 4 right",
                     )
                     .count()
-                    == 10
+                    == 14
                 && !log.contains("WRONG")
                 && !log.contains("the clock didn't take")
                 && log.contains("  GC2 references at the end: 4 of 4 as at the start")

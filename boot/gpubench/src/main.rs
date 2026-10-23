@@ -7811,8 +7811,14 @@ mod image {
     ];
 
     /// GC2D's settings: the cores at divide 1 from Dell's 75 MHz cap to the
-    /// aim, 133 (run GC drew textures right at 133.25 / 1).
-    const GC2_D_STEPS: [(ClockStep, &str); 5] = [
+    /// aim, 133 (run GC drew textures right at 133.25 / 1); first the cores
+    /// at divide 1 at 58.50 and 66.63 MHz, speeds GC2 drew right through
+    /// divide 2 (117.00 / 2, 133.25 / 2 on RGB565): wrong there, and the
+    /// way the clock reaches the cores at divide 1 is at fault, not their
+    /// speed (the owner's question, 2026-10-23).
+    const GC2_D_STEPS: [(ClockStep, &str); 7] = [
+        (gc2_step(9, 2, 0, 1), "58.50 / 1"),
+        (gc2_step(41, 4, 1, 1), "66.63 / 1"),
         (gc2_step(23, 4, 0, 1), "74.75 / 1"),
         (gc2_step(23, 3, 0, 1), "99.67 / 1"),
         (gc2_step(25, 3, 0, 1), "108.33 / 1"),
