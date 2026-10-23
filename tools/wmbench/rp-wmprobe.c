@@ -841,12 +841,27 @@ static void status(const WCHAR *what)
     HDC dc = GetDC(win);
     RECT r = {0, 0, w, h};
     MSG msg;
+    LOGFONTW lf;
+    HFONT big, old;
     if (!dc)
         return;
+    memset(&lf, 0, sizeof lf);
+    lf.lfHeight = -36;
+    lf.lfWeight = FW_BOLD;
+    big = CreateFontIndirectW(&lf);
+    old = big ? (HFONT)SelectObject(dc, big) : NULL;
     FillRect(dc, &r, (HBRUSH)GetStockObject(WHITE_BRUSH));
-    ExtTextOutW(dc, 20, 60, 0, NULL, L"RetroPane probe: running,", 25, NULL);
-    ExtTextOutW(dc, 20, 90, 0, NULL, L"please don't touch it.", 22, NULL);
-    ExtTextOutW(dc, 20, 150, 0, NULL, what, (UINT)wcslen(what), NULL);
+    ExtTextOutW(dc, 16, 80, 0, NULL, L"RetroPane probe", 15, NULL);
+    ExtTextOutW(dc, 16, 130, 0, NULL, L"is running.", 11, NULL);
+    ExtTextOutW(dc, 16, 180, 0, NULL, L"Don't touch it.", 15, NULL);
+    r.top = 280;
+    r.left = 16;
+    r.right = w - 16;
+    DrawTextW(dc, what, -1, &r, DT_LEFT | DT_WORDBREAK);
+    if (old)
+        SelectObject(dc, old);
+    if (big)
+        DeleteObject(big);
     ReleaseDC(win, dc);
     while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
         DispatchMessageW(&msg);
