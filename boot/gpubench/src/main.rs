@@ -159,6 +159,10 @@ mod image {
     /// implies?): memory-heavy work timed at settings that move the system
     /// clock with the cores held, and the cores with the system clock held.
     const MEMCLOCK: bool = option_env!("RP_GPUBENCH_MEMCLOCK").is_some();
+    /// Run GC: which of ADR-0035's settings draw every kind of content
+    /// right (run FT2 at 133.25 / 1 found a Gouraud scene wrong where run
+    /// GS's scene was right). Unattended.
+    const CMAP: bool = option_env!("RP_GPUBENCH_CMAP").is_some();
     /// Each soak setting's length in seconds: 1200 (20 minutes) unless
     /// `RP_GPUBENCH_SOAK_SECS` says otherwise (the emulator's check runs a
     /// short one).
@@ -186,8 +190,16 @@ mod image {
     }
     /// The runs that change the 2700G's clock: a crash in any puts
     /// Windows Mobile's back ([`put_back`]).
-    const CHANGES_CLOCK: bool =
-        CLOCK || SOAK || MEMCLOCK || FT2_FAST || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
+    const CHANGES_CLOCK: bool = CLOCK
+        || SOAK
+        || MEMCLOCK
+        || CMAP
+        || FT2_FAST
+        || LOAD
+        || SLOW
+        || START
+        || FINGERPRINT
+        || UNDERRUN;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
@@ -7517,6 +7529,264 @@ mod image {
         clock_rig_free(g, c);
     }
 
+    // ---- Run GC: which clock settings draw every content right (2026-10-22) ----
+
+    /// GC's kinds of drawing: (name, the target's format).
+    const GC_KINDS: [(&str, PixelFormat); 7] = [
+        ("RGB565 Gouraud", PixelFormat::Rgb565),
+        ("RGB565 dithered Gouraud", PixelFormat::Rgb565Dithered),
+        ("ARGB8888 Gouraud", PixelFormat::Argb8888),
+        ("RGB565 Gouraud + 8888 texture (FT2)", PixelFormat::Rgb565),
+        ("ARGB8888 GS scene", PixelFormat::Argb8888),
+        ("RGB565 bilinear 565 texture", PixelFormat::Rgb565),
+        ("RGB565 Gouraud + blended 4444", PixelFormat::Rgb565),
+    ];
+    /// Where GC renders (not shown): the wallpaper picture.
+    const GC_AT: u32 = map::WALLPAPER.at;
+
+    /// GC's textures: RGB565 (nearest and bilinear), ARGB4444, ARGB8888.
+    #[derive(Clone, Copy)]
+    struct GcTex {
+        t565: Texture,
+        t4444: Texture,
+        t8888: Texture,
+    }
+
+    /// Kind `k`'s scene in `r` (every slot set or cleared).
+    fn gc_scene(g: &mut Rig, r: &mut Renderer, k: usize, t: GcTex) {
+        let gouraud = Draw::rect(0, 0, 480, 640, Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]));
+        let mut lin = t.t565;
+        lin.linear = true;
+        let (bg, slots): (u32, [Option<Draw>; 3]) = match k {
+            0..=2 => (BLACK, [Some(gouraud), None, None]),
+            3 => (
+                BLACK,
+                [
+                    Some(gouraud),
+                    Some(Draw::rect(40, 40, 400, 560, Paint::texture(t.t8888))),
+                    None,
+                ],
+            ),
+            4 => (
+                GREY,
+                [
+                    Some(cover(t.t565, 16, false)),
+                    Some(flat(0x8040_A0C0, true)),
+                    Some(Draw::rect(100, 200, 96, 96, Paint::Flat(0xFFFF_2000))),
+                ],
+            ),
+            5 => (GREY, [Some(cover(lin, 11, false)), None, None]),
+            _ => (BLACK, [Some(gouraud), Some(cover(t.t4444, 16, true)), None]),
+        };
+        let _ = r.set_background(Some(bg));
+        for (s, d) in slots.into_iter().enumerate() {
+            g.set(r, s, d);
+        }
+    }
+
+    /// Words of [`GC_AT`] differing from `want` (or copied into it, with
+    /// `take`), checking in every 16K words: the loader's run limit holds
+    /// for any speed of the bus (the emulator's reads are far slower than
+    /// the X51v's 8 MB/s).
+    fn gc_compare(g: &mut Rig, want: &mut [u32], take: bool) -> usize {
+        let mut n = 0;
+        for (i, w) in want.iter_mut().enumerate() {
+            let got = g.mem.load(GC_AT as usize + 4 * i).unwrap_or(0);
+            if take {
+                *w = got;
+            } else {
+                n += usize::from(got != *w);
+            }
+            if i % 16_384 == 16_383 {
+                rt::check_in();
+            }
+        }
+        rt::check_in();
+        n
+    }
+
+    /// Words in kind `k`'s picture.
+    const fn gc_words(k: usize) -> u32 {
+        480 * 640 * GC_KINDS[k].1.bytes() / 4
+    }
+
+    #[inline(never)]
+    fn content_map(g: &mut Rig) {
+        log!(
+            "GC: which clock settings draw every content right: seven kinds of drawing (RGB565, dithered RGB565 and ARGB8888 targets; Gouraud, flat, textures 565 nearest and bilinear, 4444 blended, 8888) rendered three times at each setting and compared word for word with their pictures at Windows Mobile's clock, nothing stops at an error; Windows Mobile's clock and every kind again as a control after each setting; a 16-bit label throughout"
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(c) = clock_rig(g) else {
+            return;
+        };
+        let (Some(t565), Some(t4444), Some(t8888)) = (
+            tex16(g, 4, format::RGB565, 1, &pattern565),
+            tex16(g, 4, format::ARGB4444, 1, &pattern4444),
+            p_texture(g, 2, p_texel),
+        ) else {
+            log!("  no memory for the textures");
+            clock_rig_free(g, c);
+            return;
+        };
+        let tex = GcTex { t565, t4444, t8888 };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            clock_rig_free(g, c);
+            return;
+        };
+        soak_label(
+            g,
+            ["RUN GC: CONTENT", "MAP, TAKING", "REFERENCES"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let target = |k: usize| Target {
+            picture: Picture::packed(GC_AT, 480, 640, GC_KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        // References at Windows Mobile's clock, in SDRAM, one after
+        // another; each rendered twice (the second must match).
+        let mut offs = [0usize; GC_KINDS.len()];
+        let mut used = 0usize;
+        for k in 0..GC_KINDS.len() {
+            offs[k] = used;
+            used += gc_words(k) as usize;
+        }
+        if c.spare.len() < used {
+            log!("  not enough SDRAM for the references");
+            clock_rig_free(g, c);
+            return;
+        }
+        let mut refs_ok = true;
+        for k in 0..GC_KINDS.len() {
+            gc_scene(g, &mut r, k, tex);
+            r.invalidate_all();
+            let t0 = g.frame(&mut r, target(k));
+            let words = gc_words(k) as usize;
+            let _ = gc_compare(g, &mut c.spare[offs[k]..offs[k] + words], true);
+            r.invalidate_all();
+            let _ = g.frame(&mut r, target(k));
+            let again = gc_compare(g, &mut c.spare[offs[k]..offs[k] + words], false);
+            refs_ok &= t0.is_some() && again == 0;
+            log!(
+                "  GC reference {}: rendered {t0:?} us, a second render differs in {again} words",
+                GC_KINDS[k].0
+            );
+        }
+        if !refs_ok {
+            log!(
+                "  a reference isn't repeatable at Windows Mobile's clock: the map would mean nothing; stopped"
+            );
+        }
+        let step = |m, n, p, div, cl3| ClockStep {
+            m,
+            n,
+            p,
+            div,
+            cl3,
+            restart: false,
+        };
+        let settings = [
+            (step(23, 3, 0, 1, None), "99.67 / 1"),
+            (step(25, 3, 0, 1, Some(false)), "108.33 / 1"),
+            (step(27, 3, 0, 1, Some(false)), "117.00 / 1"),
+            (step(41, 4, 0, 1, Some(false)), "133.25 / 1"),
+            (step(41, 4, 0, 2, Some(false)), "133.25 / 2"),
+        ];
+        for (n, (s, label)) in settings.into_iter().enumerate() {
+            if !refs_ok {
+                break;
+            }
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "GC {} OF {}", n + 1, settings.len());
+            soak_label(g, [l1.as_str(), label, "MAPPING"], SOAK_BLUE);
+            let lock = clock_apply(g, s);
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  GC {label}: the clock didn't take");
+                continue;
+            }
+            clock_readback(g);
+            let mut clean = 0;
+            for k in 0..GC_KINDS.len() {
+                gc_scene(g, &mut r, k, tex);
+                let words = gc_words(k) as usize;
+                let mut diffs = [0usize; 3];
+                let mut best = u32::MAX;
+                for d in &mut diffs {
+                    r.invalidate_all();
+                    match g.frame(&mut r, target(k)) {
+                        Some(us) => best = best.min(us),
+                        None => *d = usize::MAX,
+                    }
+                    if *d == 0 {
+                        *d = gc_compare(g, &mut c.spare[offs[k]..offs[k] + words], false);
+                    }
+                }
+                let ok = diffs.iter().all(|&d| d == 0);
+                clean += usize::from(ok);
+                log!(
+                    "  GC {label} | {}: {diffs:?} words differ (of {words}), best {best} us | {}",
+                    GC_KINDS[k].0,
+                    if ok { "RIGHT" } else { "WRONG" }
+                );
+            }
+            clock_restore(&mut g.e.regs);
+            // The control: every kind once more at Windows Mobile's clock,
+            // against its reference (GC's own renderer; G5's check would
+            // make a second one).
+            let mut control = 0;
+            for k in 0..GC_KINDS.len() {
+                gc_scene(g, &mut r, k, tex);
+                r.invalidate_all();
+                let words = gc_words(k) as usize;
+                let drawn = g.frame(&mut r, target(k)).is_some();
+                let d = gc_compare(g, &mut c.spare[offs[k]..offs[k] + words], false);
+                control += usize::from(drawn && d == 0);
+            }
+            log!(
+                "  GC {label}: {clean} of {} kinds right; the control at Windows Mobile's clock after it: {control} of {} right",
+                GC_KINDS.len(),
+                GC_KINDS.len()
+            );
+        }
+        soak_label(g, ["RUN GC DONE", "BACK TO NORMAL", "LOG SENT"], SOAK_GREEN);
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        for k in 0..3 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        for t in [tex.t565, tex.t4444] {
+            let _ = rp_mbx3d_render::release(&mut g.pool, t);
+        }
+        p_texture_free(g, tex.t8888);
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1()
+        );
+        clock_rig_free(g, c);
+    }
+
     // ---- Run GV: the local memory's clock (V1, 2026-10-22) ----
 
     /// The 2D copy of [`SCREEN`] to [`SOAK_COPY`] alone, five times: the
@@ -7819,6 +8089,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if CMAP {
+                "GC (the content map: seven kinds of drawing at each clock setting)"
             } else if MEMCLOCK {
                 "GV (V1: the local memory's clock: the system clock moved with the cores held, the cores moved with the system clock held)"
             } else if SOAK {
@@ -7920,6 +8192,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if CMAP {
+            content_map(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if MEMCLOCK {
             memclock(&mut g);

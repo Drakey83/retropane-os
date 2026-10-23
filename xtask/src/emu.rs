@@ -3527,6 +3527,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         Some(("RP_GPUBENCH_SOAK_SECS", "70")),
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
+    let run_gc = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CMAP", "1"))?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft2f = variant_image_with(
         root,
@@ -3558,7 +3559,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 36] = [
+    let runs: [GpubenchRun; 37] = [
         (
             "run A",
             &run_a,
@@ -3676,6 +3677,17 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
+            (0, 0, 0),
+        ),
+        // Run GC (the content map): checked below.
+        (
+            "run GC",
+            &run_gc,
+            &[
+                "GC: which clock settings draw every content right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
             (0, 0, 0),
         ),
         // Run GV (the local memory's clock, V1): checked below.
@@ -4283,6 +4295,26 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 return Err(format!(
                     "gpubench run FT2F: neither refused cleanly nor ran every setting at 133.25 MHz:
 {log}"
+                ));
+            }
+        }
+        // Run GC refuses where Windows Mobile's clocks aren't modelled;
+        // stepping, every reference repeatable and every kind right at
+        // every setting (the models draw the same at any clock).
+        if name == "run GC" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let mapped = log.matches("  GC reference ").count() == 7
+                && !log.contains("isn't repeatable")
+                && log
+                    .matches("7 of 7 kinds right; the control at Windows Mobile's clock after it: 7 of 7 right")
+                    .count()
+                    == 5
+                && !log.contains("| WRONG")
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || mapped) {
+                return Err(format!(
+                    "gpubench run GC: neither refused cleanly nor mapped every setting:\n{log}"
                 ));
             }
         }
