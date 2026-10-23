@@ -210,7 +210,7 @@ Each step's results can reorder the rest; the map is kept current.
 
 ## Past Dell's limits: the per-device self-test (design)
 
-*The concrete draft, for the owner's vote: [design/clock-selftest.md](../design/clock-selftest.md) (2026-10-22).*
+*The concrete design, voted by the owner 2026-10-22 (1A, 2A, 3A, 4A): [design/clock-selftest.md](../design/clock-selftest.md); the decision: [ADR-0035](../adr/0035-2700g-clocks.md) (proposed).*
 
 For any setting past Dell's (a faster system clock, the cores past 75 MHz,
 a shorter bus strobe):

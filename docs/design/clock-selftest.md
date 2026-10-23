@@ -1,7 +1,9 @@
 # The 2700G clock self-test (draft for the owner's vote, 2026-10-22)
 
-**Status: a DRAFT. Nothing here is built or decided.** It makes the
-outline in [2700g-full-potential.md](../research/2700g-full-potential.md)
+**Status: the four questions voted by the owner (2026-10-22): 1A, 2A,
+3A, 4A** (all as recommended; recorded in
+[ADR-0035](../adr/0035-2700g-clocks.md), proposed). Nothing here is built
+yet. It makes the outline in [2700g-full-potential.md](../research/2700g-full-potential.md)
 ("Past Dell's limits: the per-device self-test") concrete, for the
 clocks ADR (ROADMAP step 3). The four questions at the end are for the
 owner's vote.
@@ -116,7 +118,7 @@ fastest, or one step below it for margin.
 - A mutant per rule: a step run after a failure, a hang not marked
   failed, a result kept on a fingerprint mismatch.
 
-## For the owner's vote
+## For the owner's vote (voted 2026-10-22: 1A, 2A, 3A, 4A)
 
 1. **Margin.** A (recommended): use one step below the fastest that
    passed. 133.25 passing means running at 117 (3D about 7% slower than
