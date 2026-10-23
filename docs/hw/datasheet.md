@@ -245,7 +245,10 @@ watching.
   with a 16-bit screen scanning out 3D 22.85 / 17.95 ms and 2D fill 4.23 /
   3.09 ms against 35.58 / 6.35 ms at Windows Mobile's setting (1.56x /
   1.98x 3D). **The cold soak (an hour off at room temperature) the same:
-  0 BAD, the same times.** Details: 2700g.md.
+  0 BAD, the same times.** **The local memory runs on the system clock**
+  (run GV, 2026-10-22: with the cores held, halving the system clock made
+  a full-screen 2D copy 1.85x slower; doubling the cores with it held,
+  only 1.20x faster). Details: 2700g.md.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
   fill takes ~6.3 ms at WM's clock, so a busy engine makes room well

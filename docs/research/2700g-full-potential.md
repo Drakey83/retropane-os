@@ -35,7 +35,7 @@ with the run that settles it, and stays unticked until then.
 
 | | Claim (source) | Our check |
 |---|---|---|
-| **V1** | The 2700G's local memory runs on the system clock, with no clock of its own (Linux `mbxfb`'s register map) | P2: the memory's timing measured as the system clock moves, against a core-only change |
+| **V1** | The 2700G's local memory runs on the system clock, with no clock of its own (Linux `mbxfb`'s register map) | P2: the memory's timing measured as the system clock moves, against a core-only change. **Run GV (2026-10-22): confirmed by our measurement** |
 | **V2** | The local memory is rated 100 MHz, and CL3 is needed above it (Dell's table and rule) | P2's steps: where errors start, with CL2 and CL3 at each (run G1: 3D all wrong at 108 MHz with CL3, where run 27 drew right at 133 with CL2; run G2 tries both) |
 | **V3** | The 2D engine takes 1, 2, 4 and 8 bpp sources (Dell's format table) | P7: each format copied and checked pixel by pixel |
 | **V4** | Dell rotates through the 3D core, so the 2D engine has no rotate (Dell's code) | P6/P13: the 2D engine's direction and rotate bits tried |
@@ -142,7 +142,7 @@ named in its evidence.
 
 | Line | Kind | Status | Evidence, or what's left |
 |---|---|---|---|
-| V1 | arch 5 | open | P2's measurement (the local memory's timing against a core-only clock change) not run |
+| V1 | arch 5 | done | **run GV (X51v, 2026-10-22, `gpubench-0054`): the local memory runs on the system clock** (a full-screen 2D copy 1.85x slower at half the system clock with the cores held, 1.20x faster at twice the cores with it held; 2700g.md "The local memory's clock") |
 | V2 | arch 5 | partial | run G4: CL3 breaks the 3D core at 108-133 MHz, CL2 right to 133.25 (short checks, one unit); **run GS (2026-10-22): 133.25 MHz CL2 0 BAD in a 20-min stressed warm soak**; **the cold soak 0 BAD too**; other units open |
 | V3 | opt | partial | B9 (X51v): 8 bpp (palette) and 1 bpp (palette entries 0/1) proven; 2 and 4 bpp not tried |
 | V4 | arch 5 | done | B11 (X51v, 2026-10-22, `local/rp-mbx-blend-B11.txt`): **the 2D engine rotates**: header bits 25-26 = 1 / 2 / 3 lay a copy down 90° clockwise / 180° / 270° clockwise (the rectangle given in the source's shape, the output in the turned box; Dell's table had 1 and 3 the other way round), every pixel checked; the claim "no 2D rotate" was wrong |
