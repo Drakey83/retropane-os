@@ -3526,6 +3526,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_SOAK", "1"),
         Some(("RP_GPUBENCH_SOAK_SECS", "70")),
     )?;
+    let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
     // Run H without its watchdog (the emulator's check needs it back).
     let run_h = variant_image_with(
         root,
@@ -3550,7 +3551,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 33] = [
+    let runs: [GpubenchRun; 34] = [
         (
             "run A",
             &run_a,
@@ -3639,6 +3640,17 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GS",
             &run_gs,
             &["GS: the clocks' warm soak", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GV (the local memory's clock, V1): checked below.
+        (
+            "run GV",
+            &run_gv,
+            &[
+                "GV: V1, the 2700G's local memory clock",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
@@ -4219,6 +4231,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             if !(refused && log.contains("as found: COREPLL 0x0,") || soaked) {
                 return Err(format!(
                     "gpubench run GS: neither refused cleanly nor soaked both settings:{log}"
+                ));
+            }
+        }
+        // Run GV steps only from Windows Mobile's clock, as runs G and GS;
+        // stepping, all five settings GOOD with a control GOOD after each
+        // (the models' times don't follow the clock, so only that every
+        // setting ran right and the clock went back), and put back.
+        if name == "run GV" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let stepped = (1..=5).all(|k| {
+                log.contains(&format!("    control at 99.67 MHz after GV step {k}: GOOD"))
+            }) && log.matches("  GV ").count() == 5
+                && log.matches("  GV ").count() == log.matches("us | GOOD").count()
+                && log.contains("  put back: COREPLL 0xbb1")
+                && !log.contains("STOPPED");
+            if !(refused && log.contains("as found: COREPLL 0x0,") || stepped) {
+                return Err(format!(
+                    "gpubench run GV: neither refused cleanly nor stepped every setting:\n{log}"
                 ));
             }
         }

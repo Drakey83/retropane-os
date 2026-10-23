@@ -154,6 +154,11 @@ mod image {
     /// cores at divide 1 (run G5's fastest right), every round stressed and
     /// checked, stopping at the first BAD.
     const SOAK: bool = option_env!("RP_GPUBENCH_SOAK").is_some();
+    /// Run GV: the 2700G's V1 (does its local memory run on the system
+    /// clock, with no clock of its own, as Linux mbxfb's register map
+    /// implies?): memory-heavy work timed at settings that move the system
+    /// clock with the cores held, and the cores with the system clock held.
+    const MEMCLOCK: bool = option_env!("RP_GPUBENCH_MEMCLOCK").is_some();
     /// Each soak setting's length in seconds: 1200 (20 minutes) unless
     /// `RP_GPUBENCH_SOAK_SECS` says otherwise (the emulator's check runs a
     /// short one).
@@ -181,7 +186,8 @@ mod image {
     }
     /// The runs that change the 2700G's clock: a crash in any puts
     /// Windows Mobile's back ([`put_back`]).
-    const CHANGES_CLOCK: bool = CLOCK || SOAK || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
+    const CHANGES_CLOCK: bool =
+        CLOCK || SOAK || MEMCLOCK || LOAD || SLOW || START || FINGERPRINT || UNDERRUN;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
@@ -7229,6 +7235,175 @@ mod image {
         clock_rig_free(g, c);
     }
 
+    // ---- Run GV: the local memory's clock (V1, 2026-10-22) ----
+
+    /// The 2D copy of [`SCREEN`] to [`SOAK_COPY`] alone, five times: the
+    /// shortest time, and whether every copy finished and the last one is
+    /// the reference word for word.
+    fn memclock_copy(g: &mut Rig, c: &mut ClockRig) -> (u32, bool) {
+        let (w, n) = rp_image::need(
+            cmd::copy(
+                Format::BPP32,
+                (SOAK_COPY as usize, SCREEN.stride as usize),
+                (SCREEN.at as usize, SCREEN.stride as usize),
+                (0, 0),
+                (0, 0, 480, 640),
+                0,
+            ),
+            "a 2D copy",
+        );
+        let (mut best, mut ok) = (u32::MAX, true);
+        for _ in 0..5 {
+            let t0 = rt::ticks();
+            ok &=
+                g.e.submit(&w[..n])
+                    .and_then(|()| g.e.finish(g.mem.0, 200_000))
+                    .is_ok();
+            best = best.min(us_since(t0));
+            rt::check_in();
+        }
+        let wrong = c
+            .reference
+            .iter()
+            .enumerate()
+            .filter(|&(k, &want)| g.mem.load(SOAK_COPY as usize + 4 * k) != Some(want))
+            .count();
+        rt::check_in();
+        (best, ok && wrong == 0)
+    }
+
+    #[inline(never)]
+    fn memclock(g: &mut Rig) {
+        log!(
+            "GV: V1, the 2700G's local memory clock: at each setting the 3D scene and a full-screen 2D fill (G5's check, three rounds, the best kept) and a full-screen 2D copy (five, the best), every picture checked; the system clock moved with the cores held (49.83 / 1 against 99.67 / 2; 66.63 / 1 against 133.25 / 2) and the cores moved with it held (99.67 / 1 against 99.67 / 2); a 16-bit label scanned out throughout; Windows Mobile's clock and a control after each"
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(mut c) = clock_rig(g) else {
+            return;
+        };
+        soak_label(
+            g,
+            ["RUN GV: MEMORY", "CLOCK TEST", "NOTHING TO DO"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let base = clock_check(g, &mut c, true, 2);
+        clock_log(WM_STEP, Some(0), &base);
+        if !base.good() {
+            log!("  the reference step itself is BAD: stopped");
+            clock_rig_free(g, c);
+            return;
+        }
+        let step = |m, n, p, div, cl3| ClockStep {
+            m,
+            n,
+            p,
+            div,
+            cl3,
+            restart: false,
+        };
+        // (the step, the label's line)
+        let steps = [
+            (WM_STEP, "99.67 / 2 (WM)"),
+            (step(23, 3, 1, 1, None), "49.83 / 1"),
+            (step(23, 3, 0, 1, None), "99.67 / 1"),
+            (step(41, 4, 0, 2, Some(false)), "133.25 CL2 / 2"),
+            (step(41, 4, 1, 1, Some(false)), "66.63 / 1"),
+        ];
+        let mut seed = 4;
+        let mut healthy = true;
+        for (k, (s, label)) in steps.into_iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "STEP {} OF {}", k + 1, steps.len());
+            soak_label(g, [l1.as_str(), label, "TESTING"], SOAK_BLUE);
+            let lock = clock_apply(g, s);
+            clock_readback(g);
+            let mut good = lock.is_some();
+            let (mut render_us, mut fill_us, mut read_us) = (u32::MAX, u32::MAX, u32::MAX);
+            for _ in 0..3 {
+                if lock.is_none() {
+                    break;
+                }
+                let r = clock_check(g, &mut c, false, seed);
+                seed += 2;
+                good &= r.good();
+                if !r.good() {
+                    clock_log(s, lock, &r);
+                }
+                render_us = render_us.min(r.render_us);
+                fill_us = fill_us.min(r.fill_us);
+                read_us = read_us.min(r.read_us);
+            }
+            let (copy_us, copy_ok) = if lock.is_some() {
+                memclock_copy(g, &mut c)
+            } else {
+                (0, false)
+            };
+            good &= copy_ok;
+            log!(
+                "  GV {}.{:02} MHz system, cores / {} = {} kHz: lock {lock:?} | 3D {render_us} us | 2D fill {fill_us} us | 2D copy {copy_us} us | CPU read 256K {read_us} us | {}",
+                s.khz() / 1000,
+                s.khz() % 1000 / 10,
+                s.div,
+                s.khz() / s.div,
+                if good { "GOOD" } else { "BAD" }
+            );
+            clock_restore(&mut g.e.regs);
+            let mut after = heapless_name();
+            let _ = write!(after, "after GV step {}", k + 1);
+            healthy = clock_control(g, &mut c, seed, after.as_str());
+            seed += 2;
+            if !good || !healthy {
+                log!(
+                    "  STOPPED at step {}: {}",
+                    k + 1,
+                    if good {
+                        "the control stayed BAD"
+                    } else {
+                        "a check was BAD (logged above)"
+                    }
+                );
+                soak_label(g, ["RUN GV STOPPED", label, "SEE THE LOG"], SOAK_RED);
+                healthy = false;
+                break;
+            }
+        }
+        if healthy {
+            soak_label(g, ["RUN GV DONE", "BACK TO NORMAL", "LOG SENT"], SOAK_GREEN);
+        }
+        // Held for a person to see.
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        let after = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            after.0,
+            after.1,
+            after.2
+        );
+        clock_rig_free(g, c);
+    }
+
     fn main() -> ! {
         rp_image::on_crash(put_back);
         rt::init_mmu();
@@ -7360,6 +7535,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if MEMCLOCK {
+                "GV (V1: the local memory's clock: the system clock moved with the cores held, the cores moved with the system clock held)"
             } else if SOAK {
                 "GS (the clocks' warm soak: 99.67 MHz then 133.25 MHz CL2, the cores at divide 1, every round stressed and checked, stopping at the first BAD)"
             } else if CLOCK {
@@ -7457,6 +7634,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if MEMCLOCK {
+            memclock(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if SOAK {
             soak(&mut g);
