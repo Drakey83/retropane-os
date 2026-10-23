@@ -679,9 +679,11 @@ mod image {
         use rp_hal_pxa27x::mmu::Pages;
         use suite::PageRow;
         const WINDOW: usize = 8 << 20;
-        let row = |name, tlb, pages, l2_sram| PageRow {
+        let row = |name: &'static str, tlb: &'static str, pages, l2_sram| PageRow {
             name,
             tlb,
+            far: far_name(name),
+            far_tlb: far_name(tlb),
             pages,
             l2_sram,
         };
@@ -768,6 +770,32 @@ mod image {
                 ),
             ],
         );
+    }
+
+    /// The page-hopping row's name for a [`pages`] row: static names, as
+    /// the results table keeps them.
+    fn far_name(name: &str) -> &'static str {
+        const FAR: [(&str, &str); 16] = [
+            ("pages_8m_sections", "far_sections"),
+            ("pages_8m_64k", "far_64k"),
+            ("pages_8m_4k", "far_4k"),
+            ("pages_8m_4k_l2sram", "far_4k_l2sram"),
+            ("pages_8m_64k_l2sram", "far_64k_l2sram"),
+            ("pages_8m_sections_l1sram", "far_sections_l1sram"),
+            ("pages_8m_4k_l1sram", "far_4k_l1sram"),
+            ("pages_8m_4k_l1l2sram", "far_4k_l1l2sram"),
+            ("pages_8m_sections_dtlb", "far_sections_dtlb"),
+            ("pages_8m_64k_dtlb", "far_64k_dtlb"),
+            ("pages_8m_4k_dtlb", "far_4k_dtlb"),
+            ("pages_8m_4k_l2sram_dtlb", "far_4k_l2sram_dtlb"),
+            ("pages_8m_64k_l2sram_dtlb", "far_64k_l2sram_dtlb"),
+            ("pages_8m_sections_l1sram_dtlb", "far_sections_l1sram_dtlb"),
+            ("pages_8m_4k_l1sram_dtlb", "far_4k_l1sram_dtlb"),
+            ("pages_8m_4k_l1l2sram_dtlb", "far_4k_l1l2sram_dtlb"),
+        ];
+        FAR.iter()
+            .find(|(n, _)| *n == name)
+            .map_or("far_unnamed", |(_, f)| f)
     }
 
     fn reg_value(soc: &[u32; diag::COUNT], name: &str) -> u32 {

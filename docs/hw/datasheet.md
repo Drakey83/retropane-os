@@ -191,7 +191,13 @@ watching.
   is 32 KiB (a line walk misses from 40 KiB, ~233 ns a missed line);
   `memcpy` ~375 MB/s in the cache, ~96 MB/s from memory; the internal
   SRAM copies at 286 MB/s, a random hop 111 ns (SDRAM 491); a page table
-  in the SRAM makes a 60-section TLB spill 5.2x cheaper.
+  in the SRAM makes a 60-section TLB spill 5.2x cheaper. **A D-TLB miss
+  on 4 KiB pages** (`rp-probe` pages run 1, 2026-10-22: 257 misses in
+  4,096 hops over 8 MiB): ~565 ns with both page-table levels in SDRAM,
+  ~424 with the second level in the SRAM, ~331 with the first, **~25 with
+  both in the SRAM**; the hop itself 448.6 ns on sections, 484.1 on 4 KiB
+  pages (tables in SDRAM), 450.2 with both tables in the SRAM. Details:
+  cpu.md.
   `memcpy` with its prefetch 128 bytes ahead copies 109 MB/s from memory
   (96 at 64 bytes, 47 with none); DMA copies SDRAM to SDRAM at 45 MB/s,
   the CPU keeping 86% of its speed meanwhile. SD multi-block reads by DMA

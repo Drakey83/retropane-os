@@ -9882,24 +9882,28 @@ fn probe_pages(root: &Path) -> Result<(), String> {
         "pages_8m_4k_l1sram",
         "pages_8m_4k_l1l2sram",
     ] {
-        let dtlb = format!("{row}_dtlb");
+        // Each row's chase, its page-hopping twin (`suite::far_chase`) and
+        // both miss counts.
+        let far = row.replace("pages_8m", "far");
+        let names = [
+            row.to_string(),
+            format!("{row}_dtlb"),
+            far.clone(),
+            format!("{far}_dtlb"),
+        ];
         let named = |n: &str| {
             output
                 .lines()
                 .filter_map(|l| l.split_once('|').map(|(_, t)| t))
                 .any(|t| t.split_whitespace().any(|w| w == n))
         };
-        if !named(row) || !named(&dtlb) {
-            return Err(format!(
-                "probe pages: `{row}` or `{dtlb}` missing:
-{output}"
-            ));
+        if let Some(n) = names.iter().find(|n| !named(n)) {
+            return Err(format!("probe pages: `{n}` missing:\n{output}"));
         }
     }
     if crashed(&output) || output.matches("check pages_mapping OK").count() != 2 {
         return Err(format!(
-            "probe pages: crashed, or a window wasn't the backing's frames:
-{output}"
+            "probe pages: crashed, or a window wasn't the backing's frames:\n{output}"
         ));
     }
     eprintln!("    probe pages OK: {lines} report lines, every mapping chased");

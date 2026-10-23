@@ -54,3 +54,30 @@ invalidate of the range and with the lines already cached, never came back
 row a run, the owner present, would). The whole-cache clean's own use of
 it (a reserved region, then invalidated) is unaffected and in use. Until
 isolated: line allocate stays out of data paths.
+
+## Page sizes and page-table placement (the CPU gate's C4 and V7)
+
+**`rp-probe` pages run 1 (X51v, 2026-10-22, `local/rp-probe-pages1.txt`,
+card log `probe-0068`; `RP_PROBE_PAGES`):** the probe's random hop (4,096
+hops, each to a new cache line, chained far apart) over 8 MiB of SDRAM
+mapped a second time by `diag::with_window`, each mapping checked to be
+the backing's own frames:
+
+| Mapping | ns a hop | D-TLB misses in 4,096 hops |
+|---|---|---|
+| 1 MiB sections | 448.6 | 0 |
+| 64 KiB pages, tables in SDRAM / SRAM | 450.8 / 450.2 | 0 / 0 |
+| 4 KiB pages, both tables in SDRAM | 484.1 | 257 |
+| 4 KiB, the second level in the SRAM | 475.2 | 257 |
+| 4 KiB, the first level in the SRAM | 469.4 | 257 |
+| 4 KiB, both levels in the SRAM | 450.2 | 257 |
+| sections, the first level in the SRAM | 448.6 | 0 |
+
+So a D-TLB miss on 4 KiB pages costs ~565 ns with both tables in SDRAM
+(the slowdown over sections divided by the misses), ~424 with the second
+level in the SRAM, ~331 with the first, and **~25 with both in the SRAM**
+(the walk's two reads, each a missed SDRAM line otherwise). One run, one
+unit. **The chase is the cache's worst case, not the TLB's:** it cycles
+through a few pages at a time (257 misses, none at 64 KiB). Run 2 adds a
+page-hopping chase (`suite::far_chase`: every hop to the next 4 KiB page)
+for the TLB's worst case and what 64 KiB pages save.

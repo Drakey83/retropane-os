@@ -1210,6 +1210,10 @@ mod target {
         pub name: &'static str,
         /// The D-TLB miss count's name.
         pub tlb: &'static str,
+        /// The page-hopping chase's result name ([`far_chase`]).
+        pub far: &'static str,
+        /// Its D-TLB miss count's name.
+        pub far_tlb: &'static str,
         /// How the window is mapped.
         pub pages: rp_hal_pxa27x::mmu::Pages,
         /// The second-level tables in the internal SRAM (else SDRAM).
@@ -1246,6 +1250,9 @@ mod target {
             let mut misses = 0;
             let mapped =
                 rp_hal_pxa27x::diag::with_window(0xC000_0000, backing, row.pages, l2, &mut |w| {
+                    // First (`chase` then writes over half of its chain,
+                    // the half checked below).
+                    far_chase(r, row.far, row.far_tlb, w);
                     chase(r, row.name, w);
                     // `chase` left its chain in the window: one more pass,
                     // counted.
@@ -1278,6 +1285,41 @@ mod target {
             }
         }
         r.check("pages_mapping", all_same, "");
+    }
+
+    /// Lines a [`far_chase`] hop moves: 4,128 bytes, so every hop lands on
+    /// a new 4 KiB page and a new cache line (odd, so the chain visits
+    /// every line of a power-of-two buffer).
+    const FAR_STEP: usize = 129;
+
+    /// The worst case for the D-TLB: [`CHASE_HOPS`] hops, each to the next
+    /// 4 KiB page (with 4 KiB pages every hop misses; with 64 KiB pages one
+    /// in 16; with sections none), timed, then one pass with the misses
+    /// counted. [`chase`] jumps far but stays within a few pages at a time,
+    /// so it measures the cache, not the TLB (`rp-probe` pages run 1).
+    pub fn far_chase(r: &mut Runner, name: &'static str, tlb: &'static str, buf: &mut [u8]) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        let lines = (buf.len() / 32).next_power_of_two() / 2;
+        if lines < 2048 {
+            r.check(name, false, "buffer too small");
+            return;
+        }
+        for i in 0..lines {
+            let next = ((i + FAR_STEP) % lines) as u32;
+            buf[i * 32..i * 32 + 4].copy_from_slice(&next.to_le_bytes());
+        }
+        let hop = |buf: &[u8], at: &mut usize| {
+            for _ in 0..CHASE_HOPS {
+                let b = &buf[*at * 32..*at * 32 + 4];
+                *at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            }
+            black_box(*at);
+        };
+        let mut at = 0usize;
+        r.run(name, 8, &mut || hop(buf, &mut at));
+        let s = pmu::start([Event::DtlbMiss, Event::DcacheMiss, Event::Instruction]);
+        hop(buf, &mut at);
+        r.count(tlb, pmu::read(s).events[0]);
     }
 
     /// TLB-miss cost: one read per 1 MiB section of SDRAM, over
