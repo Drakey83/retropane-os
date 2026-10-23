@@ -186,6 +186,11 @@ pool, quotas per client).
   it looks the same).** Half the memory and upload time; the 3D core's
   16-bit target saves 0-3 ms (G1). Minus: an ADR-0023 amendment (its
   screen pictures are 32-bit today).
+  **The dither to 16 bits (the owner's ruling 2026-10-22, gate line P21):**
+  areas that don't change (wallpaper, background) are dithered once, when
+  they change; 3D-drawn areas dither free in the render (`0x650` bit 3);
+  the 2D engine's dither add (18.9 ms a full screen at Windows Mobile's
+  clock) runs only on 2D-drawn areas that changed, priced per area.
 - B: keep 32-bit everywhere. Simplest; twice the memory and uploads.
 
 **C3. What a full-screen 3D effect does at today's clock** (a whole page
