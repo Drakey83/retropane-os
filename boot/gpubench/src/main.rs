@@ -96,6 +96,9 @@
 /// Printed with the verdict.
 pub const MARKER: &str = "RETROPANE-GPUBENCH";
 
+#[cfg(any(target_os = "none", test))]
+mod gc2;
+
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
@@ -124,7 +127,7 @@ mod image {
     };
     use rp_vram_map::{Pool, bench32 as map};
 
-    use super::MARKER;
+    use super::{MARKER, gc2};
 
     use rp_image::crash;
 
@@ -163,29 +166,43 @@ mod image {
     /// right (run FT2 at 133.25 / 1 found a Gouraud scene wrong where run
     /// GS's scene was right). Unattended.
     const CMAP: bool = option_env!("RP_GPUBENCH_CMAP").is_some();
+    /// Run GC2: run GC again by the owner's robustness rules (ROADMAP step
+    /// 3, 2026-10-23: "make the overclocking test as robust as possible"),
+    /// so a failure can't be the test's fault: two more kinds (Gouraud
+    /// with its colours capped), twelve settings (dividers 1-4, a second
+    /// PLL setting), rising then falling, controls interleaved. Unattended.
+    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some();
+    /// GC2's renders a kind a setting (rule 6): 20 unless
+    /// `RP_GPUBENCH_GC2_RENDERS` says otherwise (the emulator's check runs
+    /// fewer).
+    const GC2_RENDERS: u32 = match option_env!("RP_GPUBENCH_GC2_RENDERS") {
+        Some(s) => parse_decimal(s, 1),
+        None => 20,
+    };
     /// Each soak setting's length in seconds: 1200 (20 minutes) unless
     /// `RP_GPUBENCH_SOAK_SECS` says otherwise (the emulator's check runs a
     /// short one).
     const SOAK_SECS: u32 = match option_env!("RP_GPUBENCH_SOAK_SECS") {
-        Some(s) => parse_secs(s),
+        Some(s) => parse_decimal(s, 10),
         None => 1200,
     };
-    /// A decimal number of seconds, at build time (a bad one fails the
-    /// build).
-    const fn parse_secs(s: &str) -> u32 {
+    /// A decimal number of at least `min`, at build time (a bad one fails
+    /// the build: `RP_GPUBENCH_SOAK_SECS` at least 10,
+    /// `RP_GPUBENCH_GC2_RENDERS` at least 1).
+    const fn parse_decimal(s: &str, min: u32) -> u32 {
         let b = s.as_bytes();
         assert!(
             !b.is_empty() && b.len() <= 6,
-            "RP_GPUBENCH_SOAK_SECS: 1-6 digits"
+            "a build-time number: 1-6 digits"
         );
         let mut n = 0u32;
         let mut k = 0;
         while k < b.len() {
-            assert!(b[k].is_ascii_digit(), "RP_GPUBENCH_SOAK_SECS: digits only");
+            assert!(b[k].is_ascii_digit(), "a build-time number: digits only");
             n = n * 10 + (b[k] - b'0') as u32;
             k += 1;
         }
-        assert!(n >= 10, "RP_GPUBENCH_SOAK_SECS: at least 10");
+        assert!(n >= min, "a build-time number below its least");
         n
     }
     /// The runs that change the 2700G's clock: a crash in any puts
@@ -194,6 +211,7 @@ mod image {
         || SOAK
         || MEMCLOCK
         || CMAP
+        || GC2
         || FT2_FAST
         || LOAD
         || SLOW
@@ -6230,7 +6248,7 @@ mod image {
     const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
 
     /// A clock step: the core PLL (13 MHz x M / (N x 2^P)), the cores'
-    /// divider (1 or 2) and the local memory's CAS latency (`None`: Dell's
+    /// divider (1-4, `MBXCLK` bits 3-2; 3 and 4 first used by run GC2) and the local memory's CAS latency (`None`: Dell's
     /// rule, CL3 above 100 MHz; run G1's 108 MHz step with CL3 drew no 3D
     /// picture where `rp-mbx3d` run 27 drew right at 133 MHz with CL2, so
     /// G2 tries both).
@@ -7531,58 +7549,11 @@ mod image {
 
     // ---- Run GC: which clock settings draw every content right (2026-10-22) ----
 
-    /// GC's kinds of drawing: (name, the target's format).
-    const GC_KINDS: [(&str, PixelFormat); 7] = [
-        ("RGB565 Gouraud", PixelFormat::Rgb565),
-        ("RGB565 dithered Gouraud", PixelFormat::Rgb565Dithered),
-        ("ARGB8888 Gouraud", PixelFormat::Argb8888),
-        ("RGB565 Gouraud + 8888 texture (FT2)", PixelFormat::Rgb565),
-        ("ARGB8888 GS scene", PixelFormat::Argb8888),
-        ("RGB565 bilinear 565 texture", PixelFormat::Rgb565),
-        ("RGB565 Gouraud + blended 4444", PixelFormat::Rgb565),
-    ];
+    /// GC's kinds of drawing: (name, the target's format): GC2's first
+    /// seven.
+    const GC_KINDS: &[(&str, PixelFormat)] = gc2::KINDS.split_at(7).0;
     /// Where GC renders (not shown): the wallpaper picture.
     const GC_AT: u32 = map::WALLPAPER.at;
-
-    /// GC's textures: RGB565 (nearest and bilinear), ARGB4444, ARGB8888.
-    #[derive(Clone, Copy)]
-    struct GcTex {
-        t565: Texture,
-        t4444: Texture,
-        t8888: Texture,
-    }
-
-    /// Kind `k`'s scene in `r` (every slot set or cleared).
-    fn gc_scene(g: &mut Rig, r: &mut Renderer, k: usize, t: GcTex) {
-        let gouraud = Draw::rect(0, 0, 480, 640, Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]));
-        let mut lin = t.t565;
-        lin.linear = true;
-        let (bg, slots): (u32, [Option<Draw>; 3]) = match k {
-            0..=2 => (BLACK, [Some(gouraud), None, None]),
-            3 => (
-                BLACK,
-                [
-                    Some(gouraud),
-                    Some(Draw::rect(40, 40, 400, 560, Paint::texture(t.t8888))),
-                    None,
-                ],
-            ),
-            4 => (
-                GREY,
-                [
-                    Some(cover(t.t565, 16, false)),
-                    Some(flat(0x8040_A0C0, true)),
-                    Some(Draw::rect(100, 200, 96, 96, Paint::Flat(0xFFFF_2000))),
-                ],
-            ),
-            5 => (GREY, [Some(cover(lin, 11, false)), None, None]),
-            _ => (BLACK, [Some(gouraud), Some(cover(t.t4444, 16, true)), None]),
-        };
-        let _ = r.set_background(Some(bg));
-        for (s, d) in slots.into_iter().enumerate() {
-            g.set(r, s, d);
-        }
-    }
 
     /// Words of [`GC_AT`] differing from `want` (or copied into it, with
     /// `take`), checking in every 16K words: the loader's run limit holds
@@ -7642,7 +7613,7 @@ mod image {
             clock_rig_free(g, c);
             return;
         };
-        let tex = GcTex { t565, t4444, t8888 };
+        let tex = gc2::Tex { t565, t4444, t8888 };
         let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
             log!("  no renderer");
             clock_rig_free(g, c);
@@ -7674,7 +7645,7 @@ mod image {
         }
         let mut refs_ok = true;
         for k in 0..GC_KINDS.len() {
-            gc_scene(g, &mut r, k, tex);
+            gc2_scene(g, &mut r, k, tex);
             r.invalidate_all();
             let t0 = g.frame(&mut r, target(k));
             let words = gc_words(k) as usize;
@@ -7724,7 +7695,7 @@ mod image {
             clock_readback(g);
             let mut clean = 0;
             for k in 0..GC_KINDS.len() {
-                gc_scene(g, &mut r, k, tex);
+                gc2_scene(g, &mut r, k, tex);
                 let words = gc_words(k) as usize;
                 let mut diffs = [0usize; 3];
                 let mut best = u32::MAX;
@@ -7752,7 +7723,7 @@ mod image {
             // make a second one).
             let mut control = 0;
             for k in 0..GC_KINDS.len() {
-                gc_scene(g, &mut r, k, tex);
+                gc2_scene(g, &mut r, k, tex);
                 r.invalidate_all();
                 let words = gc_words(k) as usize;
                 let drawn = g.frame(&mut r, target(k)).is_some();
@@ -7778,6 +7749,580 @@ mod image {
             let _ = rp_mbx3d_render::release(&mut g.pool, t);
         }
         p_texture_free(g, tex.t8888);
+        log!(
+            "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1()
+        );
+        clock_rig_free(g, c);
+    }
+
+    // ---- Run GC2: the content map by the owner's robustness rules (2026-10-23) ----
+
+    /// GC2's settings (rule 8), rising: the cores at divide 1 in fine steps
+    /// to 99.67 MHz (idea (a)), the cores at divide 2 under every system
+    /// clock to 133.25, the memory at 133.25 with the cores at divide 4 and
+    /// 3 (idea (h): an error that stays is the memory's), and 99.67 / 1 and
+    /// 133.25 / 2 again from a second PLL setting whose internal frequency
+    /// is twice the first's (idea (g): jitter, not frequency). CL2 above
+    /// 100 MHz, as runs GS and GC.
+    const GC2_STEPS: [(ClockStep, &str); 12] = {
+        const fn s(m: u32, n: u32, p: u32, div: u32) -> ClockStep {
+            ClockStep {
+                m,
+                n,
+                p,
+                div,
+                cl3: if 13_000 * m / (n << p) > 100_000 {
+                    Some(false)
+                } else {
+                    None
+                },
+                restart: false,
+            }
+        }
+        [
+            (s(23, 4, 0, 1), "74.75 / 1"),
+            (s(32, 5, 0, 1), "83.20 / 1"),
+            (s(14, 2, 0, 1), "91.00 / 1"),
+            (s(23, 3, 0, 1), "99.67 / 1"),
+            (s(46, 3, 1, 1), "99.67 / 1 PLL B"),
+            (s(25, 3, 0, 2), "108.33 / 2"),
+            (s(27, 3, 0, 2), "117.00 / 2"),
+            (s(29, 3, 0, 2), "125.67 / 2"),
+            (s(41, 4, 0, 4), "133.25 / 4"),
+            (s(41, 4, 0, 3), "133.25 / 3"),
+            (s(41, 4, 0, 2), "133.25 / 2"),
+            (s(41, 2, 1, 2), "133.25 / 2 PLL B"),
+        ]
+    };
+
+    /// The 3D core's registers read around every render (rule 5): the
+    /// render table's (`rp_drv_mbx3d::start_table`) and the target's
+    /// address (`0x65C`). Dell's driver writes every one; run P read
+    /// `0x650` back safely; the rest are first read here.
+    const GC2_MBX: [usize; 15] = [
+        0x608, 0x60C, 0x610, 0x614, 0x618, 0x61C, 0x644, 0x648, 0x650, 0x654, 0x658, 0x65C, 0x660,
+        0x6D8, 0x6DC,
+    ];
+
+    /// The registers as read: the clock and memory ones (`COREPLL`,
+    /// `MBXCLK`'s divider, `LMTYPE`, `LMTIM`, `LMREFRESH`), then [`GC2_MBX`].
+    type Gc2Regs = ([u32; 5], [u32; 15]);
+
+    fn gc2_regs(g: &mut Rig) -> Gc2Regs {
+        let r = &mut g.e.regs;
+        let clock = [
+            r.read32(clock::COREPLL),
+            r.read32(MBXCLK) & 0xC,
+            r.read32(clock::LMTYPE),
+            r.read32(clock::LMTIM),
+            r.read32(clock::LMREFRESH),
+        ];
+        (clock, GC2_MBX.map(|off| r.read32(MBX + off)))
+    }
+
+    /// What a speed and the cores' divider put in the clock and memory
+    /// registers.
+    const fn gc2_clock_want(v: ClockSpeed, div: u32) -> [u32; 5] {
+        [v.pll, (div - 1) << 2, v.lmtype, v.lmtim, v.lmrefresh]
+    }
+
+    /// One kind at one clock (B, the setting; A, Windows Mobile's), over
+    /// its renders.
+    #[derive(Default)]
+    struct Gc2Side {
+        renders: u32,
+        /// Renders refused, hung or with nothing done.
+        undrawn: u32,
+        /// Renders whose second read differed from the reference.
+        wrong: u32,
+        /// Each render's wrong words (the first 20).
+        words: [u32; 20],
+        tally: gc2::Tally,
+        /// Words the two reads disagreed on (rule 2).
+        unsettled: u32,
+        /// Renders with the clock or memory registers not as set, before
+        /// or after (rule 5).
+        clock_off: u32,
+        /// Renders with a 3D register not as this kind's first render left
+        /// it, and which (a bit per [`GC2_MBX`] entry).
+        mbx_drift: u32,
+        mbx_which: u32,
+        /// The display (rule 9): the underrun flag found set before and
+        /// after renders; `DSIG` read 0 around them.
+        underrun: u32,
+        dark: u32,
+        /// Whether `DSIG` is watched: it read nonzero with the label shown
+        /// at the start (the emulator doesn't model it: 0 throughout).
+        watch_dsig: bool,
+        best_us: u32,
+        worst_us: u32,
+    }
+
+    impl Gc2Side {
+        fn new(watch_dsig: bool) -> Self {
+            Self {
+                best_us: u32::MAX,
+                watch_dsig,
+                ..Self::default()
+            }
+        }
+
+        fn held(&self) -> bool {
+            self.unsettled + self.clock_off + self.mbx_drift + self.underrun + self.dark == 0
+        }
+    }
+
+    /// The 3D registers a kind's first render at a clock left, which the
+    /// rest are held to.
+    struct Gc2Baseline(Option<[u32; 15]>);
+
+    /// GC's picture read into `into` (the first read), checking in.
+    fn gc2_take(g: &mut Rig, into: &mut [u32]) {
+        for (i, w) in into.iter_mut().enumerate() {
+            *w = g.mem.load(GC_AT as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            if i % 16_384 == 16_383 {
+                rt::check_in();
+            }
+        }
+    }
+
+    /// The 50 ms between a picture's two reads (rule 2).
+    fn gc2_wait() {
+        for _ in 0..5 {
+            rt::delay_us(10_000);
+            rt::check_in();
+        }
+    }
+
+    /// One render of kind `k` at the clock now set (wanting `clock_want`
+    /// in the registers), read twice (rule 2): at once into `first`, then
+    /// 50 ms later against `first` and against the reference `want`.
+    /// The second read's wrong words, or `None` if nothing was drawn.
+    #[expect(clippy::too_many_arguments, reason = "one render's whole context")]
+    fn gc2_render(
+        g: &mut Rig,
+        r: &mut Renderer,
+        k: usize,
+        want: &[u32],
+        first: &mut [u32],
+        clock_want: [u32; 5],
+        base: &mut Gc2Baseline,
+        side: &mut Gc2Side,
+    ) -> Option<u32> {
+        side.renders += 1;
+        side.underrun += u32::from(underrun_take(&mut g.e.regs));
+        side.dark += u32::from(side.watch_dsig && g.e.regs.read32(DSIG) == 0);
+        let before = gc2_regs(g);
+        r.invalidate_all();
+        let target = Target {
+            picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+            x: 0,
+            y: 0,
+        };
+        let us = g.frame(r, target);
+        let after = gc2_regs(g);
+        side.underrun += u32::from(underrun_take(&mut g.e.regs));
+        side.dark += u32::from(side.watch_dsig && g.e.regs.read32(DSIG) == 0);
+        side.clock_off += u32::from(before.0 != clock_want || after.0 != clock_want);
+        // The renderer writes the 3D registers as a render starts: a
+        // kind's first render sets what the rest are held to, before and
+        // after.
+        let held = *base.0.get_or_insert(after.1);
+        let mut which = 0;
+        for (j, &h) in held.iter().enumerate() {
+            if after.1[j] != h || (side.renders > 1 && before.1[j] != h) {
+                which |= 1 << j;
+            }
+        }
+        side.mbx_drift += u32::from(which != 0);
+        side.mbx_which |= which;
+        let Some(us) = us else {
+            side.undrawn += 1;
+            return None;
+        };
+        side.best_us = side.best_us.min(us);
+        side.worst_us = side.worst_us.max(us);
+        let words = gc2::words(k) as usize;
+        gc2_take(g, &mut first[..words]);
+        gc2_wait();
+        let f = gc2::KINDS[k].1;
+        let mut t = gc2::Tally::default();
+        let mut wrong = 0;
+        for i in 0..words {
+            let got = g.mem.load(GC_AT as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            side.unsettled += u32::from(got != first[i]);
+            if got != want[i] {
+                wrong += 1;
+                t.add(f, i as u32, want[i], got);
+            }
+            if i % 16_384 == 16_383 {
+                rt::check_in();
+            }
+        }
+        rt::check_in();
+        side.tally.merge(&t);
+        side.wrong += u32::from(wrong != 0);
+        if let Some(w) = side.words.get_mut(side.renders as usize - 1) {
+            *w = wrong;
+        }
+        Some(wrong)
+    }
+
+    /// Words of GC's picture differing from `want` now (a third read, at
+    /// Windows Mobile's clock: whether a wrong word is in the memory or
+    /// was in the reading).
+    fn gc2_still(g: &mut Rig, k: usize, want: &[u32]) -> u32 {
+        let mut n = 0;
+        for (i, &w) in want[..gc2::words(k) as usize].iter().enumerate() {
+            n += u32::from(g.mem.load(GC_AT as usize + 4 * i) != Some(w));
+            if i % 16_384 == 16_383 {
+                rt::check_in();
+            }
+        }
+        rt::check_in();
+        n
+    }
+
+    /// Kind `k`'s scene set in `r`.
+    fn gc2_scene(g: &mut Rig, r: &mut Renderer, k: usize, tex: gc2::Tex) {
+        let (bg, slots) = gc2::scene(k, tex);
+        let _ = r.set_background(Some(bg));
+        for (n, d) in slots.into_iter().enumerate() {
+            g.set(r, n, d);
+        }
+    }
+
+    /// A [`gc2::Tally`] for the log: by kind, where, the first three.
+    struct Gc2Pixels<'a>(&'a gc2::Tally);
+
+    impl core::fmt::Display for Gc2Pixels<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            let t = self.0;
+            write!(
+                f,
+                "pixels +1 {}, -1 {}, wrapped {}, other {}; bands 0x{:010x}",
+                t.by[0], t.by[1], t.by[2], t.by[3], t.bands
+            )?;
+            if let Some((x0, y0, x1, y1)) = t.bbox {
+                write!(f, ", box ({x0},{y0})-({x1},{y1})")?;
+            }
+            for &(x, y, a, b) in &t.first[..t.n_first] {
+                write!(f, ", ({x},{y}) 0x{a:x}->0x{b:x}")?;
+            }
+            Ok(())
+        }
+    }
+
+    /// What held around a [`Gc2Side`]'s renders, for the log.
+    struct Gc2Held<'a>(&'a Gc2Side);
+
+    impl core::fmt::Display for Gc2Held<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+            let s = self.0;
+            if s.held() {
+                return f.write_str("held");
+            }
+            write!(
+                f,
+                "reads unsettled in {} words, clock registers off in {}, 3D registers moved in {} (0x{:x}), underrun {}, DSIG 0 {}",
+                s.unsettled, s.clock_off, s.mbx_drift, s.mbx_which, s.underrun, s.dark
+            )
+        }
+    }
+
+    #[inline(never)]
+    fn content_map2(g: &mut Rig) {
+        log!(
+            "GC2: run GC by the owner's robustness rules: {} kinds (GC's seven, and Gouraud with every colour one step below the top on RGB565 and ARGB8888) at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
+            gc2::KINDS.len(),
+            GC2_STEPS.len()
+        );
+        let found = (
+            g.e.regs.read32(clock::COREPLL),
+            g.e.regs.read32(MBXCLK),
+            diag::msc1(),
+        );
+        log!(
+            "  as found: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
+            found.0,
+            found.1,
+            found.2
+        );
+        if found.0 != ClockSpeed::WM.pll || found.2 != 0x2484_2481 {
+            log!("  not Windows Mobile's clock and bus timing: nothing changed");
+            return;
+        }
+        let Some(c) = clock_rig(g) else {
+            return;
+        };
+        let mut placed = [None; 3];
+        for (n, t) in placed.iter_mut().enumerate() {
+            let d = gc2::TEXTURES[n];
+            if let Some(at) = g.pool.alloc(d.bytes(), 128) {
+                gc2::texture_words(n, |i, w| g.mem.store((at + 4 * i) as usize, &[w]));
+                *t = Some(Texture { at, ..d });
+            }
+        }
+        g.mem.sync();
+        let free_tex = |g: &mut Rig| {
+            for t in placed.into_iter().flatten() {
+                let _ = g.pool.free(t.at, t.bytes());
+            }
+        };
+        let [Some(t565), Some(t4444), Some(t8888)] = placed else {
+            log!("  no memory for the textures");
+            free_tex(g);
+            clock_rig_free(g, c);
+            return;
+        };
+        let tex = gc2::Tex { t565, t4444, t8888 };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            free_tex(g);
+            clock_rig_free(g, c);
+            return;
+        };
+        soak_label(
+            g,
+            ["RUN GC2: CONTENT", "MAP, TAKING", "REFERENCES"],
+            SOAK_BLUE,
+        );
+        p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
+        let (d0, d1) = soak_dsig(g);
+        let dsig = d0 != 0 && d1 != 0;
+        log!(
+            "  the 16-bit label shown: DSIG 0x{d0:x} then 0x{d1:x}: {}",
+            if dsig {
+                "sending, watched around every render"
+            } else {
+                "NOT read as sending: DSIG not watched (the display's state is the underrun flag alone)"
+            }
+        );
+        // The 3D registers read once before anything else: a read that
+        // hung the bus would be named by the line before it.
+        log!("  reading the 3D core's render-table registers once (only 0x650 read before, run P)");
+        let (clock0, mbx0) = gc2_regs(g);
+        log!("  read: clock {clock0:x?}, 3D {mbx0:x?}");
+        // The references (rule 1) in SDRAM one after another, then the
+        // first read's buffer.
+        let mut offs = [0usize; gc2::KINDS.len()];
+        let mut used = 0usize;
+        for (k, o) in offs.iter_mut().enumerate() {
+            *o = used;
+            used += gc2::words(k) as usize;
+        }
+        let largest = (0..gc2::KINDS.len()).map(gc2::words).max().unwrap_or(0) as usize;
+        if c.spare.len() < used + largest {
+            log!("  not enough SDRAM for the references");
+            let _ = r.release(&mut g.pool);
+            free_tex(g);
+            clock_rig_free(g, c);
+            return;
+        }
+        let (refs, rest) = c.spare.split_at_mut(used);
+        let first = &mut rest[..largest];
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let mut refs_ok = true;
+        let mut models = 0;
+        for k in 0..gc2::KINDS.len() {
+            gc2_scene(g, &mut r, k, tex);
+            let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
+            // The first render becomes the reference (read twice: the
+            // second must equal the first); four more must equal it.
+            r.invalidate_all();
+            let t0 = g.frame(
+                &mut r,
+                Target {
+                    picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+                    x: 0,
+                    y: 0,
+                },
+            );
+            gc2_take(g, want);
+            gc2_wait();
+            let settled = gc2_still(g, k, want);
+            let mut base = Gc2Baseline(None);
+            let mut side = Gc2Side::new(dsig);
+            let mut again = [0u32; 4];
+            for a in &mut again {
+                *a = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side)
+                    .unwrap_or(u32::MAX);
+            }
+            let bw = gc2::band_words(k) as usize;
+            let mut bands = 0u64;
+            for (b, &m) in gc2::MODEL[k].iter().enumerate() {
+                let h = want[b * bw..(b + 1) * bw]
+                    .iter()
+                    .fold(gc2::HASH_START, |h, &w| gc2::fold(h, w));
+                if h != m {
+                    bands |= 1 << b;
+                }
+            }
+            rt::check_in();
+            refs_ok &= t0.is_some() && settled == 0 && again == [0; 4] && side.held();
+            models += usize::from(bands == 0);
+            log!(
+                "  GC2 reference {}: {t0:?} us; its second read differs in {settled} words; renders 2-5 differ in {again:?} words; {}; the host model's pixels: {}",
+                gc2::KINDS[k].0,
+                Gc2Held(&side),
+                if bands == 0 {
+                    "EQUAL in every band"
+                } else {
+                    "DIFFERENT"
+                }
+            );
+            if bands != 0 {
+                log!("    bands differing from the model: 0x{bands:010x}");
+            }
+        }
+        log!(
+            "  references: {}; {models} of {} equal to the host model's",
+            if refs_ok {
+                "every one repeatable, read the same twice, registers and display held"
+            } else {
+                "NOT all repeatable"
+            },
+            gc2::KINDS.len()
+        );
+        if !refs_ok {
+            log!(
+                "  a reference isn't proven at Windows Mobile's clock: the map would mean nothing; stopped"
+            );
+        }
+        let total = 2 * GC2_STEPS.len();
+        let mut done = 0;
+        for pass in 0..2 {
+            if !refs_ok {
+                break;
+            }
+            for i in 0..GC2_STEPS.len() {
+                let at = if pass == 0 {
+                    i
+                } else {
+                    GC2_STEPS.len() - 1 - i
+                };
+                let (s, label) = GC2_STEPS[at];
+                let way = if pass == 0 { "up" } else { "down" };
+                done += 1;
+                let mut l1 = heapless_name();
+                let _ = write!(l1, "GC2 {done} OF {total}");
+                soak_label(g, [l1.as_str(), label, "MAPPING"], SOAK_BLUE);
+                let want_regs = gc2_clock_want(s.speed(), s.div);
+                let lock = clock_apply(g, s);
+                if lock.is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  GC2 {way} {label}: the clock didn't take");
+                    continue;
+                }
+                log!("  GC2 {way} {label}: lock {lock:?}");
+                clock_readback(g);
+                clock_restore(&mut g.e.regs);
+                // Rule 5: this setting's first render resets the core and
+                // writes every register.
+                r.start_clean();
+                let (mut right, mut controls) = (0, 0);
+                for k in 0..gc2::KINDS.len() {
+                    gc2_scene(g, &mut r, k, tex);
+                    let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                    let (mut b, mut a) = (Gc2Side::new(dsig), Gc2Side::new(dsig));
+                    let (mut base_b, mut base_a) = (Gc2Baseline(None), Gc2Baseline(None));
+                    let (mut still, mut seen, mut untaken) = (0u32, 0u32, 0u32);
+                    for _ in 0..GC2_RENDERS {
+                        if clock_apply(g, s).is_none() {
+                            untaken += 1;
+                            clock_restore(&mut g.e.regs);
+                            continue;
+                        }
+                        let wrong =
+                            gc2_render(g, &mut r, k, want, first, want_regs, &mut base_b, &mut b);
+                        clock_restore(&mut g.e.regs);
+                        if let Some(n) = wrong.filter(|&n| n != 0) {
+                            seen += n;
+                            still += gc2_still(g, k, want);
+                        }
+                        let _ = gc2_render(g, &mut r, k, want, first, wm, &mut base_a, &mut a);
+                    }
+                    let b_ok = b.wrong + b.undrawn + untaken == 0;
+                    let a_ok = a.wrong + a.undrawn == 0;
+                    right += usize::from(b_ok && b.held());
+                    controls += usize::from(a_ok && a.held());
+                    if b_ok && a_ok && b.held() && a.held() {
+                        log!(
+                            "  GC2 {way} {label} | {}: RIGHT, B 0 of {}, A 0 of {}, best {} us, worst {} us; held",
+                            gc2::KINDS[k].0,
+                            b.renders,
+                            a.renders,
+                            b.best_us,
+                            b.worst_us
+                        );
+                        continue;
+                    }
+                    let n = (b.renders as usize).min(b.words.len());
+                    log!(
+                        "  GC2 {way} {label} | {}: {} | B wrong in {} of {} ({} not drawn, the clock not taken {untaken}), words {:?}, best {} us, worst {} us; {}; still wrong at Windows Mobile's clock: {still} of {seen} words; B {} | A wrong in {} of {} ({} not drawn), {} pixels; A {}",
+                        gc2::KINDS[k].0,
+                        if b_ok { "RIGHT" } else { "WRONG" },
+                        b.wrong,
+                        b.renders,
+                        b.undrawn,
+                        &b.words[..n],
+                        b.best_us,
+                        b.worst_us,
+                        Gc2Pixels(&b.tally),
+                        Gc2Held(&b),
+                        a.wrong,
+                        a.renders,
+                        a.undrawn,
+                        a.tally.pixels(),
+                        Gc2Held(&a)
+                    );
+                }
+                log!(
+                    "  GC2 {way} {label}: {right} of {} kinds right with everything held; their controls: {controls} of {} right",
+                    gc2::KINDS.len(),
+                    gc2::KINDS.len()
+                );
+            }
+        }
+        // Rule 1's end: every reference taken again, against the start's.
+        if refs_ok {
+            soak_label(g, ["RUN GC2", "REFERENCES", "AGAIN"], SOAK_BLUE);
+            let mut same = 0;
+            for k in 0..gc2::KINDS.len() {
+                gc2_scene(g, &mut r, k, tex);
+                let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                let mut side = Gc2Side::new(dsig);
+                let mut base = Gc2Baseline(None);
+                let wrong = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side);
+                same += usize::from(wrong == Some(0) && side.held());
+                log!(
+                    "  GC2 reference {} at the end: {wrong:?} words differ from the start's; {}",
+                    gc2::KINDS[k].0,
+                    Gc2Held(&side)
+                );
+            }
+            log!(
+                "  GC2 references at the end: {same} of {} as at the start",
+                gc2::KINDS.len()
+            );
+        }
+        soak_label(
+            g,
+            ["RUN GC2 DONE", "BACK TO NORMAL", "LOG SENT"],
+            SOAK_GREEN,
+        );
+        for _ in 0..30 {
+            rt::delay_us(100_000);
+            rt::check_in();
+        }
+        for k in 0..3 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        free_tex(g);
         log!(
             "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}",
             g.e.regs.read32(clock::COREPLL),
@@ -8089,6 +8634,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if GC2 {
+                "GC2 (the content map by the owner's robustness rules: nine kinds, twelve settings rising then falling, controls interleaved)"
             } else if CMAP {
                 "GC (the content map: seven kinds of drawing at each clock setting)"
             } else if MEMCLOCK {
@@ -8192,6 +8739,9 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if START {
             start_opening(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if GC2 {
+            content_map2(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if CMAP {
             content_map(&mut g);

@@ -25,5 +25,10 @@ rp-vram-map = { path = "../../drivers/vram-map" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 rp-drv-pxa-uart = { path = "../../drivers/pxa-uart" }
 
+# Run GC2's references held to the model of the 3D core (src/gc2_tests.rs).
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+rp-mbx3d-render = { path = "../../drivers/mbx3d-render", features = ["model"] }
+rp-vram-map = { path = "../../drivers/vram-map" }
+
 [lints]
 workspace = true

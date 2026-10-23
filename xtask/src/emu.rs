@@ -3528,6 +3528,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
     let run_gc = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CMAP", "1"))?;
+    let run_gc2 = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft2f = variant_image_with(
         root,
@@ -3559,7 +3565,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 37] = [
+    let runs: [GpubenchRun; 38] = [
         (
             "run A",
             &run_a,
@@ -3685,6 +3691,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc,
             &[
                 "GC: which clock settings draw every content right",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2 (the content map by the owner's robustness rules, one
+        // render a kind a setting): checked below.
+        (
+            "run GC2",
+            &run_gc2,
+            &[
+                "GC2: run GC by the owner's robustness rules",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -4315,6 +4333,45 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             if !(refused || mapped) {
                 return Err(format!(
                     "gpubench run GC: neither refused cleanly nor mapped every setting:\n{log}"
+                ));
+            }
+        }
+        // Run GC2 refuses where Windows Mobile's clocks aren't modelled;
+        // stepping, every reference proven, every kind right with
+        // everything held at every setting both ways (the models draw the
+        // same at any clock), the references the same at the end, and
+        // each held to the host model of the 3D core.
+        if name == "run GC2" {
+            // Every reference the host model's, but the dithered one: the
+            // wm-clocks fork build (rp-v0.29.0-1) has no 3D dither model.
+            let modelled = log
+                .lines()
+                .filter(|l| {
+                    l.starts_with("  GC2 reference ")
+                        && !l.contains(" at the end: ")
+                        && !l.starts_with("  GC2 reference RGB565 dithered Gouraud: ")
+                })
+                .filter(|l| l.ends_with("the host model's pixels: EQUAL in every band"))
+                .count();
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let mapped = log.matches("  GC2 reference ").count() == 18
+                && log.contains("  references: every one repeatable")
+                && modelled == 8
+                && log
+                    .matches(
+                        "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
+                    )
+                    .count()
+                    == 24
+                && !log.contains("WRONG")
+                && !log.contains("the clock didn't take")
+                && log.contains("  GC2 references at the end: 9 of 9 as at the start")
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || mapped) {
+                return Err(format!(
+                    "gpubench run GC2: neither refused cleanly nor mapped every setting:
+{log}"
                 ));
             }
         }

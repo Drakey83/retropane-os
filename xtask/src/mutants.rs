@@ -2320,6 +2320,87 @@ fn compress_k<const K: u32>(",
         to: "        \"\"",
         check: Check::Emu(crate::emu::boot_loader_crash),
     },
+    Mutant {
+        name: "GC2 rule 5: a clean start leaves the core and the shadow as they were",
+        file: "drivers/mbx3d-render/src/lib.rs",
+        from: "    pub fn start_clean(&mut self) {
+        self.ready = false;
+    }",
+        to: "    pub fn start_clean(&mut self) {}",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx3d-render",
+            "--features",
+            "model",
+            "a_clean_start_resets_the_core_and_writes_every_register_again",
+        ]),
+    },
+    Mutant {
+        name: "GC2 rule 7: any big drop called wrapped, not only from a channel's top",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            d if w >= max - 1 && -d > max / 2 => wrapped = true,",
+        to: "            d if -d > max / 2 => wrapped = true,",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "a_wrong_pixel_is_described_channel_by_channel",
+        ]),
+    },
+    Mutant {
+        name: "GC2 rule 7: one channel up and another down called +1",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    } else if other || (up && down) {",
+        to: "    } else if other {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "a_wrong_pixel_is_described_channel_by_channel",
+        ]),
+    },
+    Mutant {
+        name: "GC2 rule 7: a 16-bit word's second pixel never looked at",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        let per = if f.bytes() == 4 { 1 } else { 2 };",
+        to: "        let per = 1;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "a_tally_places_and_counts_every_wrong_pixel",
+        ]),
+    },
+    Mutant {
+        name: "GC2 rule 7: a wrong pixel placed by its column, not its row",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            self.bands |= 1 << (u32::from(y) / BAND_ROWS);",
+        to: "            self.bands |= 1 << (u32::from(x) / BAND_ROWS);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "a_tally_places_and_counts_every_wrong_pixel",
+        ]),
+    },
+    Mutant {
+        name: "GC2 rule 1: the device's hash not the one the model table was made with",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    (h ^ w).wrapping_mul(0x0100_0193)",
+        to: "    (h ^ w).wrapping_mul(0x0100_0197)",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_model_table_is_what_the_model_renders",
+        ]),
+    },
+    Mutant {
+        name: "GC2 idea (c): the RGB565 cap left at white",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "const CORNERS_565_CAPPED: [u32; 4] = [BLACK, 0xFFF7_FBF7, BLUE, 0xFFF7_E000];",
+        to: "const CORNERS_565_CAPPED: [u32; 4] = [BLACK, 0xFFFF_FBF7, BLUE, 0xFFF7_E000];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_capped_scenes_keep_every_channel_below_its_top",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {

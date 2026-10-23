@@ -158,6 +158,37 @@ fn a_frame_after_the_first_costs_the_start_one_status_read_and_its_clear() {
 }
 
 #[test]
+fn a_clean_start_resets_the_core_and_writes_every_register_again() {
+    let mut g = rig(480, 640);
+    g.r.set_background(Some(GREY)).unwrap();
+    g.set(0, Some(square(100, 100, 200, Paint::Flat(BLUE))));
+    let first = g.frame();
+    g.r.invalidate_all();
+    assert_eq!(
+        g.frame().reg_writes,
+        1,
+        "only the start: the shadow holds the rest"
+    );
+    let resets = g.r.core_resets();
+    let n = g.gpu.writes.len();
+    g.r.start_clean();
+    g.r.invalidate_all();
+    let clean = g.frame();
+    assert_eq!(g.r.core_resets(), resets + 1);
+    assert!(
+        g.gpu.writes[n..].contains(&(MBX + reg::RESET, 0x111)),
+        "the core reset"
+    );
+    assert_eq!(clean.reg_writes, first.reg_writes, "every register again");
+    assert_eq!(clean.tiles, 2400);
+    assert_eq!(g.px(150, 150), BLUE);
+    assert_eq!(g.px(50, 50), GREY);
+    // Only the one render: the next is back to the shadow's diff.
+    g.r.invalidate_all();
+    assert_eq!(g.frame().reg_writes, 1);
+}
+
+#[test]
 fn unlisted_tiles_are_left_untouched() {
     let mut g = rig(480, 640);
     g.r.set_background(Some(GREY)).unwrap();

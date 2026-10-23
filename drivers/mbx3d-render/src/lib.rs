@@ -1212,6 +1212,14 @@ impl Renderer {
         self.dirty.add_first((self.cols * self.rows) as usize);
     }
 
+    /// The next render starts clean: the core reset, its parameter memory
+    /// manager set up again and every register written, none taken from
+    /// the shadow (`rp-gpubench` run GC2's rule 5: no state carried from
+    /// one clock setting into the next).
+    pub fn start_clean(&mut self) {
+        self.ready = false;
+    }
+
     /// Tiles the next render into the last target would cover.
     #[must_use]
     pub fn dirty(&self) -> u32 {
