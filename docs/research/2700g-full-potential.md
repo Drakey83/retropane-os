@@ -210,6 +210,8 @@ Each step's results can reorder the rest; the map is kept current.
 
 ## Past Dell's limits: the per-device self-test (design)
 
+*The concrete draft, for the owner's vote: [design/clock-selftest.md](../design/clock-selftest.md) (2026-10-22).*
+
 For any setting past Dell's (a faster system clock, the cores past 75 MHz,
 a shorter bus strobe):
 
