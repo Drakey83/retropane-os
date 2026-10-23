@@ -520,12 +520,21 @@ static void module_pxa(void)
 
 static void module_2700g(void)
 {
-    unsigned i;
+    unsigned i, skipped = 0;
     if (!sys)
         return;
-    for (i = 0; i < sizeof named_2700g / sizeof named_2700g[0]; i++)
+    for (i = 0; i < sizeof named_2700g / sizeof named_2700g[0]; i++) {
+        /* The display block (0x2000 up) froze the device when read under
+         * Windows Mobile (v2, three tries, 2026-10-23: the log stopped at
+         * GSCTRL each time); RetroPane's loader reads it safely. */
+        if (named_2700g[i].off >= 0x2000) {
+            skipped++;
+            continue;
+        }
         out("2700g: %s (0x%04lx) 0x%08lx", named_2700g[i].name, named_2700g[i].off,
             sys[named_2700g[i].off / 4]);
+    }
+    out("2700g: %u display-block registers not read (they froze Windows Mobile)", skipped);
 }
 
 /* ---- reg: Dell's display driver key ---------------------------------- */
