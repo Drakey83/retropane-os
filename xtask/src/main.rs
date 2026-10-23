@@ -3,6 +3,7 @@
 
 #![forbid(unsafe_code)]
 
+mod adrs;
 mod calib;
 mod devlock;
 mod emu;
@@ -69,7 +70,7 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
-  ci        everything CI runs: fmt, clippy, lint, test, cross
+  ci        everything CI runs: fmt, clippy, lint, gate, adrs, test, cross
   fmt       check formatting
   clippy    lint all crates (warnings are errors)
   lint      architecture policy: layering and unsafe rules (DESIGN.md §3.1)
@@ -77,6 +78,8 @@ commands:
   cross     build every OS crate for the X51v (ARMv5TE)
   coverage  host test coverage (needs cargo-llvm-cov), 80% line floor
   gate      count the performance gate's checklist lines (docs/ROADMAP.md)
+  adrs      the ADR index (docs/adr/README.md) must match the records
+  adr-index write the ADR index from the records
   symbols   a crash report's addresses as functions and source lines:
             `symbols <image | elf> <addr...>` (its CHAIN line, the fault address)
   perf      the performance ratchet on the docked X51v: the device suite against
@@ -286,10 +289,10 @@ fn main() -> ExitCode {
     let cmd = args().nth(1).unwrap_or_default();
     let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
-        "ci" => ["fmt", "clippy", "lint", "gate", "test", "cross"]
+        "ci" => ["fmt", "clippy", "lint", "gate", "adrs", "test", "cross"]
             .iter()
             .try_for_each(|c| run_step(c)),
-        "fmt" | "clippy" | "lint" | "gate" | "test" | "cross" | "coverage" | "emu"
+        "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross" | "coverage" | "emu"
         | "emu-picture" | "emu-blend" | "emu-mbx" | "emu-mbx-blend" | "emu-mbx3d"
         | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus" | "emu-mved"
         | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe" | "emu-cf"
@@ -317,6 +320,7 @@ fn main() -> ExitCode {
             eprintln!("==> usb");
             usb::run()
         }
+        "adr-index" => adrs::write(&workspace_root()),
         "perf" => {
             eprintln!("==> perf {flag}");
             if flag == "noise" {
@@ -608,6 +612,7 @@ fn run_step(step: &str) -> Result {
         ]),
         "lint" => lint(),
         "gate" => gate::run(&workspace_root()),
+        "adrs" => adrs::check(&workspace_root()),
         "test" => cargo(&["test", "--workspace"]),
         "cross" => cross(),
         "emu-picture" => cross().and_then(|()| emu::boot_loader_picture(&workspace_root())),

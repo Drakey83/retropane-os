@@ -81,6 +81,39 @@ buffer (the owner counted 150+ KiB without the kept log). The addresses are
 fixed when the upload path is built, in `docs/hw/memory-map.md` with the
 rest.
 
+## Amendment: page sizes, page tables and lock-down (owner, 2026-10-22)
+
+The gate's C4 (CPU), measured on the X51v by `rp-probe`'s pages runs 1-3
+(docs/hw/cpu.md "Page sizes and page-table placement"): a D-TLB miss on 4
+KiB pages costs ~550 ns with both table levels in SDRAM, ~418 with the
+second level in the SRAM, ~329 with the first, **~24 with both in the
+SRAM**; even a new page every hop is then 5% over 1 MiB sections (2.26x
+with the tables in SDRAM). Walks don't appear to use the D-cache (~544 ns
+with a table almost certainly cached), which answers this ADR's open
+question. 64 KiB pages miss 16 times less, at the same cost a miss.
+D-TLB lock-down works (`c10, c8, 0`, verified: locked pages stop
+missing).
+
+**Decided (the owner, 2026-10-22: "I accept what you think is best", on
+the recommendation):**
+
+1. **4 KiB pages** are the kernel's normal map.
+2. **The first-level table and the busiest second-level tables live in
+   the SRAM, within a fixed 32 KiB** (32 MiB of mapped memory); the rest
+   stay in SDRAM, and the kernel moves second-level tables in and out of
+   the SRAM as their use changes. Rule 1 above, sized by measurement; it
+   fits the SRAM layout amendment (about 144 KiB beyond the first-level
+   table, staging and the kept log).
+3. **Three hot kernel pages are locked in the D-TLB:** the exception
+   vectors, KData and the running kernel stack (29 entries left for the
+   rest).
+4. **64 KiB pages (rule 2) become a lower-priority optimization** for
+   large read-only code, not part of the base design: with the tables in
+   the SRAM a miss is nearly free.
+
+The CPU gate's V7 stays open for its other half: the same hop timed under
+Windows Mobile, a sourced number instead of the unsourced "~280 ns".
+
 ## The four lenses
 
 | Lens | Effect |
