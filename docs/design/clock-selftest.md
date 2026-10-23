@@ -71,6 +71,13 @@ Dell's restore-factory-settings prompt, which a user must not be asked to
 answer: before the self-test ships to anyone, that path needs its own
 answer, in the flash-install work or the loader.)
 
+**Its content must cover every kind of drawing (2026-10-22, run FT2 at
+133.25 / 1):** an RGB565 Gouraud scene failed at a setting where GS's
+32-bit textured scene passed 40 minutes. The round renders every target
+format the OS uses (RGB565, dithered RGB565, ARGB8888), Gouraud and flat
+and textured fills in every texture format, blending, and 2D copies and
+fills in both depths, each against its picture at Windows Mobile's clock.
+
 ### 2. The choice
 
 The setting used is chosen from the steps that passed (question 1): the

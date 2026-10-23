@@ -252,7 +252,11 @@ watching.
   while the display scans out** (run FT2, 2026-10-22): the render gets
   10-17 wrong words a frame with a 16-bit screen, ~200-240 with a 32-bit
   one, none with scan-out stopped or with either engine alone; placing
-  their memory apart doesn't help. Details: 2700g.md.
+  their memory apart doesn't help. **At 133.25 MHz with the cores at
+  divide 1 an RGB565 Gouraud scene isn't repeatable even alone** (run
+  FT2 fast: 104-365 words differ render to render; exact at Windows
+  Mobile's clock), though run GS's 32-bit scene was exact there for 40
+  minutes: the content matters. Details: 2700g.md.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
   fill takes ~6.3 ms at WM's clock, so a busy engine makes room well
