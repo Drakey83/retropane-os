@@ -83,6 +83,29 @@ Also found: two games draw through DirectDraw (`ddraw.dll`) instead: CE
 personality 2D work, not GLES. Most of the owner's other games use GAPI
 (`gx.dll`) or GDI.
 
+## DoomGLES's GLES calls (59): the compat floor (the owner, 2026-10-23)
+
+From the real DoomGLES Windows Mobile binary (`DoomGLES.exe`, release
+B07: PE32 for Windows CE, ARM (machine `0x1C2`), built 2008-05-04; read
+only, from the owner's download, nothing kept in the repo): **59 imports
+from `libGLES_CL.dll`, all by ordinal**, every one a named export of
+Intel's `libGLES_CL.dll` (ROM A08), all 59 within the union of 77. The
+owner's ordinal list and the import table agree exactly:
+
+1 `eglChooseConfig` 3 `eglCreateContext` 6 `eglCreateWindowSurface` 7 `eglDestroyContext` 8 `eglDestroySurface` 9 `eglGetConfigAttrib` 14 `eglGetDisplay` 15 `eglGetError` 17 `eglInitialize` 18 `eglMakeCurrent` 22 `eglSwapBuffers` 23 `eglTerminate` 26 `glActiveTexture` 27 `glAlphaFuncx` 28 `glBindTexture` 29 `glBlendFunc` 30 `glClear` 31 `glClearColorx` 32 `glClearDepthx` 34 `glClientActiveTexture` 35 `glColor4x` 37 `glColorPointer` 38 `glCompressedTexImage2D` 42 `glCullFace` 43 `glDeleteTextures` 44 `glDepthFunc` 45 `glDepthMask` 47 `glDisable` 48 `glDisableClientState` 49 `glDrawArrays` 50 `glDrawElements` 51 `glEnable` 52 `glEnableClientState` 53 `glFinish` 59 `glGenTextures` 60 `glGetError` 62 `glGetString` 63 `glHint` 65 `glLightModelxv` 66 `glLightx` 67 `glLightxv` 69 `glLoadIdentity` 73 `glMaterialxv` 74 `glMatrixMode` 75 `glMultMatrixx` 78 `glNormalPointer` 79 `glOrthox` 80 `glPixelStorei` 83 `glPopMatrix` 84 `glPushMatrix` 86 `glRotatex` 90 `glShadeModel` 94 `glTexCoordPointer` 95 `glTexEnvx` 97 `glTexImage2D` 98 `glTexParameterx` 100 `glTranslatex` 101 `glVertexPointer` 102 `glViewport`.
+
+This is the floor the compatibility layer has to meet for DoomGLES (what
+the binary needs from a Windows Mobile-compatible `libGLES_CL`); the
+native driver isn't bound by Dell's limits. For the clocks' work: it
+draws with `glShadeModel` and lighting (`glLightx`, `glLightxv`,
+`glLightModelxv`, `glMaterialxv`), so Gouraud shading is on its path
+(docs/hw/2700g.md, run GC2).
+
+**HereticGLES (release B05b, built 2008-02-19, ARM; read the same way):
+the same 59 ordinals, exactly.** Its data (`OpenGLES_Heretic_Datas`)
+adds `.md2` models (Quake 2's format: the items, ammunition and
+artifacts) beside the `.pvr` textures, drawn vertex-lit: Gouraud again.
+
 ## Enigmo's GLES calls (54)
 
 EGL: `eglChooseConfig eglCreateContext eglCreateWindowSurface
