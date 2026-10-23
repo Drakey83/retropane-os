@@ -3560,6 +3560,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2_W", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc3 = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC3", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3604,7 +3610,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 45] = [
+    let runs: [GpubenchRun; 46] = [
         (
             "run A",
             &run_a,
@@ -3801,6 +3807,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2w,
             &[
                 "GC2: the write-out downsample at divide 1",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC3 (the memory interface and the display's refresh window):
+        // checked below.
+        (
+            "run GC3",
+            &run_gc3,
+            &[
+                "GC2: the memory interface's drive strength",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -4527,6 +4545,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 7 * 3,
             ),
             (
+                "run GC3",
+                56,
+                "7 of 7 kinds right with everything held; their controls: 7 of 7 right",
+                40,
+                ("  GC2 references at the end: 7 of 7 as at the start", 4),
+                3 * 7,
+            ),
+            (
                 "run GC2W",
                 72,
                 "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
@@ -4601,6 +4627,17 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
 {log}"
                 ));
             }
+        }
+        // GC3's first part: run FT2 under each of the four settings, each
+        // clean (the models have no contention) and each put back.
+        if name == "run GC3"
+            && !log.contains("not Windows Mobile's clock and bus timing: nothing changed")
+            && (log.matches("FT2: 6 of 6 settings clean").count() != 4
+                || log.matches("  put back: LMCFG ").count() != 4)
+        {
+            return Err(format!(
+                "gpubench run GC3: run FT2 not clean under every memory setting:\n{log}"
+            ));
         }
         // GC2X refuses where Windows Mobile's clocks aren't modelled;
         // stepping, divide 1's own result and every flip tried (the

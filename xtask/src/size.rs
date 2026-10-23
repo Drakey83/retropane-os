@@ -588,9 +588,11 @@ pub const BUDGETS: &[Budget] = &[
     // + ~10%; zeroed RAM 26 -> 22 KiB (no reservation scratch).
     // Zeroed RAM ratcheted 22 -> 24 KiB on 2026-10-21 (test image): run
     // FF's 2D renderer frame (`FF_FRAME`), 22,840 B measured.
+    // Ratcheted 117 -> 140 KiB on 2026-10-23 (test image): run GC3 carries
+    // run FT2 and GC2's machinery in one image, 128,680 B measured.
     Budget {
         image: "rp-gpubench",
-        max_load: 117 * 1024,
+        max_load: 140 * 1024,
         max_zero: 24 * 1024,
         device: OnDevice::Returns,
     },

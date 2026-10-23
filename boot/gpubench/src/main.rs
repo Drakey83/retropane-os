@@ -171,8 +171,35 @@ mod image {
     /// so a failure can't be the test's fault: two more kinds (Gouraud
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
-    const GC2: bool =
-        option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H || GC2_H2 || GC2_W;
+    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some()
+        || GC2_D
+        || GC2_F
+        || GC2_H
+        || GC2_H2
+        || GC2_W
+        || GC3;
+    /// Run GC3: the give-up audit's items 2 and 3 (the owner, 2026-10-23:
+    /// "no stone unturned"): the 2700G's memory interface and display
+    /// fetch, never set by RetroPane: `LMCFG`'s drive strength (Windows
+    /// Mobile leaves `0x27`: the memory's data and address lines at 3 mA;
+    /// Intel's datasheet 4.11.2) and `DMCTRL`'s refresh window (Windows
+    /// Mobile `0x10303010`: refresh during the picture; Linux mbxfb
+    /// `0xD0303010`: only in blanking; 4.13.16). First run FT2 (2D, 3D and
+    /// scan-out at once) under each, then GC2's rules under each at divide
+    /// 1, 133.25 / 2, 149.50 / 2 and 156.00 / 4 (the memory's ceiling).
+    /// Unattended.
+    const GC3: bool = option_env!("RP_GPUBENCH_GC3").is_some();
+    /// Run GC3T: the give-up audit's item 4 (the owner, 2026-10-23):
+    /// render-to-texture, declined after runs P and P2 searched `0x650`
+    /// and six render-table words. Every other word of the render block
+    /// `0x600-0x6FC`, each bit flipped alone, run P's placed texture drawn
+    /// 1:1 and its target decoded (rows or twiddled); the owner nearby (an
+    /// unknown register can hang the core).
+    const GC3T: bool = option_env!("RP_GPUBENCH_GC3T").is_some();
+    /// Windows Mobile's `LMCFG` and `DMCTRL` (runs S, W): put back by
+    /// [`put_back`] after a crash in run GC3.
+    const WM_LMCFG: u32 = 0x27;
+    const WM_DMCTRL: u32 = 0x1030_3010;
     /// Run GC2W: the write-out downsample at divide 1 (run GC2X,
     /// 2026-10-23: `0x644` bit 0 or bit 1 alone drew right at 58.50 / 1,
     /// where every other flip drew wrong): GC2's nine kinds at divide 1 to
@@ -2713,6 +2740,39 @@ mod image {
         (0x6D8, 0x0100_0000),
     ];
 
+    /// GC3T's words: the render block `0x600-0x6FC` less P2d's six, the
+    /// words that place or size the target or the depth buffer (`0x608`,
+    /// `0x60C`, `0x610`, `0x650`-`0x660`, `0x674`: a flip there writes
+    /// elsewhere in memory, not a mode) and the start (`0x680`); each from
+    /// 0 (an unknown word's value after the core's reset, never read: a
+    /// read of an unproven register can hang the bus) or the renderer's.
+    const GC3T_REGS: [(usize, u32); 47] = {
+        let mut out = [(0usize, 0u32); 47];
+        let skip = [
+            0x608, 0x60C, 0x610, 0x61C, 0x644, 0x648, 0x64C, 0x650, 0x654, 0x658, 0x65C, 0x660,
+            0x674, 0x680, 0x6D0, 0x6D8, 0x6DC,
+        ];
+        let mut n = 0;
+        let mut off = 0x600;
+        while off <= 0x6FC {
+            let mut k = 0;
+            let mut skipped = false;
+            while k < skip.len() {
+                if skip[k] == off {
+                    skipped = true;
+                }
+                k += 1;
+            }
+            if !skipped {
+                out[n] = (off, 0);
+                n += 1;
+            }
+            off += 4;
+        }
+        assert!(n == 47, "GC3T's word count");
+        out
+    };
+
     /// P2d: each bit of each of [`P2D_REGS`] flipped alone (code 6, the
     /// placed texture 1:1 into run P's target), one line a try: whether any
     /// bit changes the target's order (twiddled: render-to-texture) or
@@ -2720,17 +2780,32 @@ mod image {
     /// (tries, hung, tries that read other than ARGB8888 rows).
     #[inline(never)]
     fn p2_bits(g: &mut Rig, area: u32, tex: Texture) -> (u32, u32, u32) {
+        p_bits(g, area, tex, &P2D_REGS, "RUN P2 BITS", "P2d")
+    }
+
+    /// Each bit of each of `regs` flipped alone from its value there, one
+    /// line a try (named `tag`); after each try the register is written
+    /// back where its value is known, and the core is reset (a clean start
+    /// for every unknown one: [`Renderer::start_clean`]).
+    fn p_bits(
+        g: &mut Rig,
+        area: u32,
+        tex: Texture,
+        regs: &[(usize, u32)],
+        card: &str,
+        tag: &str,
+    ) -> (u32, u32, u32) {
         let Some(mut r) = Renderer::new(&mut g.pool, P_SQUARE.w as u16, P_SQUARE.h as u16) else {
             log!("  no renderer");
             return (0, 0, 0);
         };
         p_setup(g, &mut r, P_SQUARE, tex);
         let (mut tries, mut hung, mut other) = (0, 0, 0);
-        for (ri, &(reg, base)) in P2D_REGS.iter().enumerate() {
+        for (ri, &(reg, base)) in regs.iter().enumerate() {
             for bit in 0..32u32 {
                 let v = base ^ 1 << bit;
-                p_card(g, "RUN P2 BITS", ri * 32 + bit as usize, 6 * 32, v);
-                log!("  P2d 0x{reg:03x} = 0x{v:08x} (bit {bit})");
+                p_card(g, card, ri * 32 + bit as usize, regs.len() * 32, v);
+                log!("  {tag} 0x{reg:03x} = 0x{v:08x} (bit {bit})");
                 tries += 1;
                 match p_try_with(g, &mut r, area, P_SQUARE, 6, Some((reg, v)), true) {
                     PTry::Hung => hung += 1,
@@ -2738,11 +2813,34 @@ mod image {
                     _ => other += 1,
                 }
                 g.e.regs.write32(MBX + reg, base);
+                r.start_clean();
             }
         }
         g.set(&mut r, 0, None);
         let _ = r.release(&mut g.pool);
         (tries, hung, other)
+    }
+
+    /// Run GC3T (see [`GC3T`]).
+    #[inline(never)]
+    fn gc3t(g: &mut Rig) {
+        log!(
+            "GC3T: render-to-texture searched further: each bit of {} render-block words (0x600-0x6FC less P2d's six, the target's and depth buffer's place and size, and the start) flipped alone from 0, code 6, run P's placed texture 1:1 into its 32 x 32 target, decoded as run P does; the core reset after each try; one line a try, written before it",
+            GC3T_REGS.len()
+        );
+        let Some(area) = g.pool.alloc(P_AREA, 4096) else {
+            log!("GC3T: no memory for the target");
+            return;
+        };
+        if let Some(tex) = p_texture(g, 2, p_texel) {
+            let (t, h, o) = p_bits(g, area, tex, &GC3T_REGS, "RUN GC3T BITS", "GC3T");
+            log!("GC3T: {t} tries, {h} hung, {o} not plain ARGB8888 rows");
+            p_texture_free(g, tex);
+        } else {
+            log!("GC3T: no memory for the texture");
+        }
+        g.e.regs.write32(MBX + 0x650, PixelFormat::Argb8888.code());
+        let _ = g.pool.free(area, P_AREA);
     }
 
     #[inline(never)]
@@ -7984,9 +8082,22 @@ mod image {
         (gc2_step(41, 4, 0, 1), "133.25 / 1"),
     ];
 
+    /// GC3's settings, rising: divide 1 (GC2D: wrong at any speed), the
+    /// two divide-2 settings with ARGB8888 Gouraud's few words, and the
+    /// memory alone at 156.00 MHz (GC2H2: wrong).
+    const GC3_STEPS: [(ClockStep, &str); 5] = [
+        (gc2_step(9, 2, 0, 1), "58.50 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+        (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+        (gc2_step(24, 2, 0, 4), "156.00 / 4"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
     const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
         &GC2_D_STEPS
+    } else if GC3 {
+        &GC3_STEPS
     } else if GC2_W {
         &GC2_W_STEPS
     } else if GC2_H2 {
@@ -8001,11 +8112,33 @@ mod image {
     /// The kinds this build runs (GC2F: the three Gouraud-only kinds).
     const GC2_KINDS: core::ops::Range<usize> = if GC2_D {
         gc2::RUN_D
+    } else if GC3 {
+        0..7
     } else if GC2_F {
         0..3
     } else {
         gc2::RUN
     };
+
+    /// GC3's memory settings: (name, system-block writes).
+    const GC3_SETS: [(&str, &[(usize, u32)]); 4] = [
+        (
+            "as Windows Mobile leaves them (LMCFG 0x27, DMCTRL 0x10303010)",
+            &[],
+        ),
+        (
+            "LMCFG 0x3F (the memory's data and address lines driven strong)",
+            &[(0x1004, 0x3F)],
+        ),
+        (
+            "DMCTRL 0xD0303010 (memory refresh only in blanking)",
+            &[(0x2188, 0xD030_3010)],
+        ),
+        (
+            "LMCFG 0x3F and DMCTRL 0xD0303010",
+            &[(0x1004, 0x3F), (0x2188, 0xD030_3010)],
+        ),
+    ];
 
     /// The render-table words Dell's OpenGL ES driver sets apart from ours
     /// (Dell's 2D driver's table, `rp_drv_mbx3d::start_table`;
@@ -8025,7 +8158,9 @@ mod image {
 
     /// The render tables a build runs under: GC2F's eight, every other
     /// build ours alone.
-    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC2_W {
+    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC3 {
+        &GC3_SETS
+    } else if GC2_W {
         &[
             ("the plain write-out", &[]),
             ("0x644 bit 0 (rows averaged)", &[(0x644, 1)]),
@@ -8285,6 +8420,35 @@ mod image {
         }
     }
 
+    /// Run GC3's first part: run FT2 (2D, 3D and scan-out at once) under
+    /// each of [`GC3_SETS`], each put back after.
+    #[inline(never)]
+    fn gc3_together(g: &mut Rig) {
+        for (name, sets) in GC3_SETS {
+            log!("GC3 FT2 under {name}");
+            let mut was = [(0usize, 0u32); 4];
+            for (w, &(off, v)) in was.iter_mut().zip(sets) {
+                *w = (off, g.e.regs.read32(off));
+                g.e.regs.write32(off, v);
+                rt::delay_us(1_000);
+                log!(
+                    "  0x{off:x} written 0x{v:x}, reads 0x{:x}",
+                    g.e.regs.read32(off)
+                );
+            }
+            together2(g);
+            for &(off, v) in &was[..sets.len()] {
+                g.e.regs.write32(off, v);
+                rt::delay_us(1_000);
+            }
+            log!(
+                "  put back: LMCFG 0x{:x}, DMCTRL 0x{:x}",
+                g.e.regs.read32(0x1004),
+                g.e.regs.read32(0x2188)
+            );
+        }
+    }
+
     #[inline(never)]
     fn content_map2(g: &mut Rig) {
         log!(
@@ -8295,6 +8459,8 @@ mod image {
                 "run GC to 169 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 84.5 MHz),"
             } else if GC2_H {
                 "run GC past 133 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 74.75 MHz),"
+            } else if GC3 {
+                "the memory interface's drive strength and the display's refresh window (LMCFG, DMCTRL: four settings),"
             } else if GC2_W {
                 "the write-out downsample at divide 1 (the plain write-out, rows averaged, columns averaged, both),"
             } else if GC2_F {
@@ -8412,8 +8578,31 @@ mod image {
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         for (vi, &(vname, over)) in GC2_VARIANTS.iter().enumerate() {
             // Each table from a clean start: the core reset, every register
-            // written, the table's own words with them.
-            g.over = Over::of(over);
+            // written, the table's own words with them. Offsets from 0x1000
+            // are the system block's (GC3: LMCFG, DMCTRL), written here and
+            // put back after the table; the rest are the render table's.
+            let mut table = [(0, 0); 8];
+            let mut n_table = 0;
+            let mut sys_was = [(0usize, 0u32); 4];
+            let mut n_sys = 0;
+            for &(off, v) in over {
+                if off >= 0x1000 {
+                    if n_sys < sys_was.len() {
+                        sys_was[n_sys] = (off, g.e.regs.read32(off));
+                        n_sys += 1;
+                    }
+                    g.e.regs.write32(off, v);
+                    rt::delay_us(1_000);
+                    log!(
+                        "  GC3 {vname}: 0x{off:x} written 0x{v:x}, reads 0x{:x}",
+                        g.e.regs.read32(off)
+                    );
+                } else if n_table < table.len() {
+                    table[n_table] = (off, v);
+                    n_table += 1;
+                }
+            }
+            g.over = Over::of(&table[..n_table]);
             r.start_clean();
             if GC2_VARIANTS.len() > 1 {
                 log!(
@@ -8502,7 +8691,7 @@ mod image {
             // of an unproven register can hang the bus); then what the
             // table changes at Windows Mobile's clock, against ours.
             if GC2_VARIANTS.len() > 1 {
-                for &(reg, v) in over {
+                for &(reg, v) in over.iter().filter(|&&(o, _)| o < 0x1000) {
                     if reg == 0x6D0 {
                         log!("  GC2F {vname}: 0x6d0 set to 0x{v:x}, not read back");
                     } else {
@@ -8677,6 +8866,10 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
+            }
+            for &(off, was) in &sys_was[..n_sys] {
+                g.e.regs.write32(off, was);
+                rt::delay_us(1_000);
             }
         }
         g.over = Over::NONE;
@@ -9623,6 +9816,10 @@ mod image {
                 "GC2H2 (GC2's kinds and rules, the system clock at 156.00, 162.50 and 169.00 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_H {
                 "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
+            } else if GC3T {
+                "GC3T (render-to-texture: every other render-block word's bits flipped alone)"
+            } else if GC3 {
+                "GC3 (the memory interface's drive strength and the display's refresh window: run FT2 and GC2's rules under each)"
             } else if GC2_W {
                 "GC2W (the write-out downsample at divide 1: nine kinds, four write-outs, 58.50 to 133.25 MHz)"
             } else if GC2_F {
@@ -9741,6 +9938,12 @@ mod image {
             rp_hal_x51v::devices::kept_stop();
         } else if GC2_R {
             divider_hunt(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if GC3T {
+            gc3t(&mut g);
+        } else if GC3 {
+            gc3_together(&mut g);
+            content_map2(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
             content_map2(&mut g);
@@ -11386,6 +11589,12 @@ mod image {
     fn put_back() {
         if CHANGES_CLOCK && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_restore(&mut regs);
+        }
+        // Run GC3: the memory interface and the display fetch as Windows
+        // Mobile leaves them.
+        if GC3 && let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            regs.write32(0x1004, WM_LMCFG);
+            regs.write32(0x2188, WM_DMCTRL);
         }
         // Run FS: a crash with the MBX clock off would leave the loader's
         // 2D engine stopped: the 2D clock back on (enable 1, Windows
