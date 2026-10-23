@@ -171,7 +171,14 @@ mod image {
     /// so a failure can't be the test's fault: two more kinds (Gouraud
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
-    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H || GC2_H2;
+    const GC2: bool =
+        option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H || GC2_H2 || GC2_W;
+    /// Run GC2W: the write-out downsample at divide 1 (run GC2X,
+    /// 2026-10-23: `0x644` bit 0 or bit 1 alone drew right at 58.50 / 1,
+    /// where every other flip drew wrong): GC2's nine kinds at divide 1 to
+    /// 133.25 MHz under the plain write-out, rows averaged, columns
+    /// averaged and both, each against its own reference. Unattended.
+    const GC2_W: bool = option_env!("RP_GPUBENCH_GC2_W").is_some();
     /// Run GC2H2: run GC2H further (the owner, 2026-10-23: "can we build
     /// something to make it run at that ratio?": divide 1 can't be made
     /// to, so the cores' speed comes from the system clock through divide
@@ -7969,9 +7976,19 @@ mod image {
         (gc2_step(26, 2, 0, 2), "169.00 / 2"),
     ];
 
+    /// GC2W's settings: divide 1 at GC2X's 58.50, Windows Mobile's
+    /// system clock and the aim.
+    const GC2_W_STEPS: [(ClockStep, &str); 3] = [
+        (gc2_step(9, 2, 0, 1), "58.50 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
     const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
         &GC2_D_STEPS
+    } else if GC2_W {
+        &GC2_W_STEPS
     } else if GC2_H2 {
         &GC2_H2_STEPS
     } else if GC2_H {
@@ -8008,7 +8025,14 @@ mod image {
 
     /// The render tables a build runs under: GC2F's eight, every other
     /// build ours alone.
-    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC2_F {
+    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC2_W {
+        &[
+            ("the plain write-out", &[]),
+            ("0x644 bit 0 (rows averaged)", &[(0x644, 1)]),
+            ("0x644 bit 1 (columns averaged)", &[(0x644, 2)]),
+            ("0x644 bits 0 and 1 (2 x 2 averaged)", &[(0x644, 3)]),
+        ]
+    } else if GC2_F {
         &[
             ("ours (Dell's 2D driver's table)", &[]),
             ("0x6D8 0x09000000", &[(0x6D8, 0x0900_0000)]),
@@ -8271,6 +8295,8 @@ mod image {
                 "run GC to 169 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 84.5 MHz),"
             } else if GC2_H {
                 "run GC past 133 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 74.75 MHz),"
+            } else if GC2_W {
+                "the write-out downsample at divide 1 (the plain write-out, rows averaged, columns averaged, both),"
             } else if GC2_F {
                 "idea (f), Gouraud under eight render tables (ours, each word Dell's OpenGL ES driver sets apart, all of them),"
             } else {
@@ -9597,6 +9623,8 @@ mod image {
                 "GC2H2 (GC2's kinds and rules, the system clock at 156.00, 162.50 and 169.00 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_H {
                 "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
+            } else if GC2_W {
+                "GC2W (the write-out downsample at divide 1: nine kinds, four write-outs, 58.50 to 133.25 MHz)"
             } else if GC2_F {
                 "GC2F (idea (f) by GC2's rules: Gouraud where it fails, under our render table and each word Dell's OpenGL ES driver sets apart)"
             } else if GC2_D {

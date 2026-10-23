@@ -3554,6 +3554,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2_H2", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc2w = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_W", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3598,7 +3604,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 44] = [
+    let runs: [GpubenchRun; 45] = [
         (
             "run A",
             &run_a,
@@ -3786,6 +3792,17 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             "run GC2H2",
             &run_gc2h2,
             &["GC2: run GC to 169 MHz", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2W (the write-out downsample at divide 1): checked below.
+        (
+            "run GC2W",
+            &run_gc2w,
+            &[
+                "GC2: the write-out downsample at divide 1",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
@@ -4508,6 +4525,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 48,
                 ("  GC2 references at the end: 3 of 3 as at the start", 8),
                 7 * 3,
+            ),
+            (
+                "run GC2W",
+                72,
+                "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
+                24,
+                ("  GC2 references at the end: 9 of 9 as at the start", 4),
+                3 * 9,
             ),
             (
                 "run GC2H2",
