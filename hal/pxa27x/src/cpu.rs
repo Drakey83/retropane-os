@@ -154,6 +154,39 @@ pub fn invalidate_tlb_entry(mva: u32) {
     cpwait();
 }
 
+/// Translates `mva` and locks its entry in the D-TLB, so it never misses
+/// (the CPU gate's C4: TLB lock-down). The entry is discarded first, as a
+/// lock of an address the TLB already holds would hold it twice. Locked
+/// entries leave fewer for the rest; [`unlock_dtlb`] frees them all.
+/// **The encoding (`c10, c8, 0`) is from Intel's XScale core manual as
+/// recalled, not checked against the manual in this repository: an
+/// unverified claim until a device run shows the locked addresses no longer
+/// missing** (rp-probe's pages run; Dell's kernel never uses lock-down).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn lock_dtlb(mva: u32) {
+    // SAFETY: TLB maintenance only: the locked entry is a translation of
+    // the live tables, as a walk would load; no memory is touched but the
+    // walk's own reads.
+    unsafe {
+        core::arch::asm!(
+            "mcr p15, 0, {a}, c8, c6, 1",  // discard the D TLB entry
+            "mcr p15, 0, {a}, c10, c8, 0", // translate and lock it
+            a = in(reg) mva,
+            options(nostack)
+        );
+    }
+    cpwait();
+}
+
+/// Unlocks every locked D-TLB entry ([`lock_dtlb`]; the same caveat).
+#[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+pub fn unlock_dtlb() {
+    // SAFETY: TLB maintenance only; unlocked entries are replaced as
+    // ordinary ones.
+    unsafe { core::arch::asm!("mcr p15, 0, {}, c10, c8, 1", in(reg) 0u32, options(nostack)) };
+    cpwait();
+}
+
 /// Discards every TLB entry.
 #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn invalidate_tlb_all() {

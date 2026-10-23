@@ -1322,6 +1322,56 @@ mod target {
         r.count(tlb, pmu::read(s).events[0]);
     }
 
+    /// Pages [`tlb_lock`] hops between: twice the D-TLB's 32 entries.
+    const LOCK_PAGES: usize = 64;
+    /// Of them, locked in the second row.
+    const LOCKED: usize = 16;
+
+    /// The CPU gate's C4, TLB lock-down: in `w` (mapped with 4 KiB pages,
+    /// at least [`LOCK_PAGES`] of them), a chain through one line of each
+    /// of [`LOCK_PAGES`] pages in turn (the lines on different cache sets,
+    /// so all stay in the cache and each hop's cost is the TLB's), timed
+    /// with nothing locked (`none`), then with the first [`LOCKED`] pages'
+    /// entries locked (`locked`), the D-TLB misses of one pass counted for
+    /// each (`none_dtlb`, `locked_dtlb`). Locked, a quarter of the hops
+    /// should stop missing. Everything is unlocked before it returns.
+    pub fn tlb_lock(
+        r: &mut Runner,
+        w: &mut [u8],
+        [none, locked, none_dtlb, locked_dtlb]: [&'static str; 4],
+    ) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        if w.len() < LOCK_PAGES * 4096 {
+            r.check(none, false, "window too small");
+            return;
+        }
+        let at = |p: usize| p * 4096 + (p % 32) * 32;
+        for p in 0..LOCK_PAGES {
+            let next = at((p + 1) % LOCK_PAGES) as u32;
+            w[at(p)..at(p) + 4].copy_from_slice(&next.to_le_bytes());
+        }
+        let hop = |w: &[u8], a: &mut usize| {
+            for _ in 0..CHASE_HOPS {
+                let b = &w[*a..*a + 4];
+                *a = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+            }
+            black_box(*a);
+        };
+        for (name, count, lock) in [(none, none_dtlb, false), (locked, locked_dtlb, true)] {
+            if lock {
+                for p in 0..LOCKED {
+                    rp_hal_pxa27x::cpu::lock_dtlb(w.as_ptr() as u32 + at(p) as u32);
+                }
+            }
+            let mut a = 0usize;
+            r.run(name, 8, &mut || hop(w, &mut a));
+            let s = pmu::start([Event::DtlbMiss, Event::DcacheMiss, Event::Instruction]);
+            hop(w, &mut a);
+            r.count(count, pmu::read(s).events[0]);
+        }
+        rp_hal_pxa27x::cpu::unlock_dtlb();
+    }
+
     /// TLB-miss cost: one read per 1 MiB section of SDRAM, over
     /// [`TLB_FIT`] sections (all fit the 32-entry D-TLB) and [`TLB_SPILL`]
     /// (every read misses). The reads stay in cache (each section's address is

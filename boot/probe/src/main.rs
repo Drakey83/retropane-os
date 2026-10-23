@@ -743,6 +743,17 @@ mod image {
                 ),
             ],
         );
+        lock_rows(
+            r,
+            backing,
+            l2_sdram,
+            [
+                "tlblock_none",
+                "tlblock_16",
+                "tlblock_none_dtlb",
+                "tlblock_16_dtlb",
+            ],
+        );
         diag::move_l1_table(l1_sram);
         suite::pages(
             r,
@@ -770,6 +781,37 @@ mod image {
                 ),
             ],
         );
+        lock_rows(
+            r,
+            backing,
+            l2_sram,
+            [
+                "tlblock_none_sram",
+                "tlblock_16_sram",
+                "tlblock_none_sram_dtlb",
+                "tlblock_16_sram_dtlb",
+            ],
+        );
+    }
+
+    /// `suite::tlb_lock` in the first MiB of `backing`, mapped with 4 KiB
+    /// pages, the second-level table in `l2`.
+    fn lock_rows(
+        r: &mut suite::Runner,
+        backing: &mut [u8],
+        l2: &mut [u8],
+        names: [&'static str; 4],
+    ) {
+        let mapped = diag::with_window(
+            0xC000_0000,
+            &mut backing[..1 << 20],
+            rp_hal_pxa27x::mmu::Pages::Small,
+            l2,
+            &mut |w| suite::tlb_lock(r, w, names),
+        );
+        if !mapped {
+            r.check(names[0], false, "not mapped");
+        }
     }
 
     /// The page-hopping row's name for a [`pages`] row: static names, as

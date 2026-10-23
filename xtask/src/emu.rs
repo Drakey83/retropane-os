@@ -9901,6 +9901,27 @@ fn probe_pages(root: &Path) -> Result<(), String> {
             return Err(format!("probe pages: `{n}` missing:\n{output}"));
         }
     }
+    // TLB lock-down (C4), with the tables in SDRAM and in the SRAM: rows
+    // and counts (the fork's lock is a no-op or modelled: the counts are
+    // the device's).
+    for n in [
+        "tlblock_none",
+        "tlblock_16",
+        "tlblock_none_dtlb",
+        "tlblock_16_dtlb",
+        "tlblock_none_sram",
+        "tlblock_16_sram",
+        "tlblock_none_sram_dtlb",
+        "tlblock_16_sram_dtlb",
+    ] {
+        let named = output
+            .lines()
+            .filter_map(|l| l.split_once('|').map(|(_, t)| t))
+            .any(|t| t.split_whitespace().any(|w| w == n));
+        if !named {
+            return Err(format!("probe pages: `{n}` missing:\n{output}"));
+        }
+    }
     if crashed(&output) || output.matches("check pages_mapping OK").count() != 2 {
         return Err(format!(
             "probe pages: crashed, or a window wasn't the backing's frames:\n{output}"
