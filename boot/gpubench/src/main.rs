@@ -171,7 +171,19 @@ mod image {
     /// so a failure can't be the test's fault: two more kinds (Gouraud
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
-    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D;
+    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H;
+    /// Run GC2H: GC2's kinds and rules with the system clock past 133 MHz
+    /// (run GC2D: divide 1 fails at every speed, so the cores' speed comes
+    /// through divide 2, and the memory runs at twice it): 143.00 and
+    /// 149.50 MHz, the cores at divide 4 and 3 (the memory alone, past
+    /// Intel's 133 MHz rating) and 2 (the cores at 71.5 and 74.75 MHz,
+    /// inside Intel's 75). Unattended.
+    const GC2_H: bool = option_env!("RP_GPUBENCH_GC2_H").is_some();
+    /// Run GC2F: the roadmap's idea (f) by GC2's rules (the owner,
+    /// 2026-10-23: "exhaust every idea"): Gouraud where it fails, with the
+    /// render table as ours (Dell's 2D driver's) and with each word Dell's
+    /// OpenGL ES driver sets differently, alone and all together. Unattended.
+    const GC2_F: bool = option_env!("RP_GPUBENCH_GC2_F").is_some();
     /// Run GC2D: the roadmap's idea (d) by GC2's rules (the owner,
     /// 2026-10-23): Gouraud drawn as a bilinear texture of the plane's four
     /// corners, against real Gouraud, with the cores at divide 1 from 74.75
@@ -476,6 +488,37 @@ mod image {
         measured: u32,
         keypad: Option<Keypad<Mmio>>,
         pressed: bool,
+        /// 3D registers [`Rig::frame`] sets to the run's values (run GC2F,
+        /// idea (f)): written as each render starts, over the renderer's.
+        over: &'static [(usize, u32)],
+    }
+
+    /// The renderer's register writes with [`Rig::over`]'s values in
+    /// place of its own, and all of them written again as a render starts
+    /// (after any core reset the render began with).
+    struct OverBus<'a> {
+        bus: &'a mut Mmio,
+        over: &'a [(usize, u32)],
+    }
+
+    impl RegisterBus for OverBus<'_> {
+        fn read32(&mut self, off: usize) -> u32 {
+            self.bus.read32(off)
+        }
+
+        fn write32(&mut self, off: usize, v: u32) {
+            if off == MBX + rp_drv_mbx3d::START {
+                for &(reg, x) in self.over {
+                    self.bus.write32(MBX + reg, x);
+                }
+            }
+            let v = self
+                .over
+                .iter()
+                .find(|&&(reg, _)| off == MBX + reg)
+                .map_or(v, |&(_, x)| x);
+            self.bus.write32(off, v);
+        }
     }
 
     /// Up to eight times, their median, least and most.
@@ -528,7 +571,16 @@ mod image {
         /// own poll to the end. `None` if refused, hung or nothing to do.
         fn frame(&mut self, r: &mut Renderer, t: Target) -> Option<u32> {
             rt::check_in();
-            let res = r.render(&mut self.e.regs, &mut self.mem, &mut self.clock, t);
+            let over = self.over;
+            let res = r.render(
+                &mut OverBus {
+                    bus: &mut self.e.regs,
+                    over,
+                },
+                &mut self.mem,
+                &mut self.clock,
+                t,
+            );
             self.sync_resets(r);
             let mut at = match res {
                 Ok(Some(at)) => at,
@@ -548,7 +600,15 @@ mod image {
             }
             loop {
                 while (self.clock.now_us().wrapping_sub(at) as i32) < 0 {}
-                match r.poll(&mut self.e.regs, &mut self.mem, &mut self.clock) {
+                let p = r.poll(
+                    &mut OverBus {
+                        bus: &mut self.e.regs,
+                        over,
+                    },
+                    &mut self.mem,
+                    &mut self.clock,
+                );
+                match p {
                     Poll::Wait(t) => at = t,
                     Poll::Done(_) => {
                         self.measured += 1;
@@ -7826,10 +7886,79 @@ mod image {
         (gc2_step(41, 4, 0, 1), "133.25 / 1"),
     ];
 
+    /// GC2F's settings: where GC2 found Gouraud wrong (every render at
+    /// divide 1; ARGB8888's few words at 133.25 / 2).
+    const GC2_F_STEPS: [(ClockStep, &str); 3] = [
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+    ];
+
+    /// GC2H's settings, rising: at each system clock the memory alone
+    /// first (the cores slow), then the cores at divide 2.
+    const GC2_H_STEPS: [(ClockStep, &str); 6] = [
+        (gc2_step(22, 2, 0, 4), "143.00 / 4"),
+        (gc2_step(22, 2, 0, 3), "143.00 / 3"),
+        (gc2_step(22, 2, 0, 2), "143.00 / 2"),
+        (gc2_step(23, 2, 0, 4), "149.50 / 4"),
+        (gc2_step(23, 2, 0, 3), "149.50 / 3"),
+        (gc2_step(23, 2, 0, 2), "149.50 / 2"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D { &GC2_D_STEPS } else { &GC2_ALL };
-    /// The kinds this build runs.
-    const GC2_KINDS: core::ops::Range<usize> = if GC2_D { gc2::RUN_D } else { gc2::RUN };
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
+        &GC2_D_STEPS
+    } else if GC2_H {
+        &GC2_H_STEPS
+    } else if GC2_F {
+        &GC2_F_STEPS
+    } else {
+        &GC2_ALL
+    };
+    /// The kinds this build runs (GC2F: the three Gouraud-only kinds).
+    const GC2_KINDS: core::ops::Range<usize> = if GC2_D {
+        gc2::RUN_D
+    } else if GC2_F {
+        0..3
+    } else {
+        gc2::RUN
+    };
+
+    /// The render-table words Dell's OpenGL ES driver sets apart from ours
+    /// (Dell's 2D driver's table, `rp_drv_mbx3d::start_table`;
+    /// docs/hw/2700g.md, P19's read of `libGLES_CL`): `0x6D8` it never
+    /// writes (the parameter manager's `0x09000000` stays); `0x610`'s
+    /// depth load and store left out (with no depth buffer at `0x674`
+    /// it would write 2700G memory at 0).
+    const GC2_GLES: [(usize, u32); 7] = [
+        (0x6D8, 0x0900_0000),
+        (0x61C, 0x0002_0007),
+        (0x614, 0x1E3C_E508),
+        (0x618, 0x1E3C_E508),
+        (0x648, 1),
+        (0x6D0, 1),
+        (0x6DC, 1),
+    ];
+
+    /// The render tables a build runs under: GC2F's eight, every other
+    /// build ours alone.
+    const GC2_VARIANTS: &[(&str, &[(usize, u32)])] = if GC2_F {
+        &[
+            ("ours (Dell's 2D driver's table)", &[]),
+            ("0x6D8 0x09000000", &[(0x6D8, 0x0900_0000)]),
+            ("0x61C 0x00020007", &[(0x61C, 0x0002_0007)]),
+            (
+                "0x614 and 0x618 0x1E3CE508",
+                &[(0x614, 0x1E3C_E508), (0x618, 0x1E3C_E508)],
+            ),
+            ("0x648 1", &[(0x648, 1)]),
+            ("0x6D0 1", &[(0x6D0, 1)]),
+            ("0x6DC 1", &[(0x6DC, 1)]),
+            ("Dell's OpenGL ES table (all of the above)", &GC2_GLES),
+        ]
+    } else {
+        &[("ours", &[])]
+    };
 
     /// The 3D core's registers read around every render (rule 5): the
     /// render table's (`rp_drv_mbx3d::start_table`) and the target's
@@ -8072,6 +8201,10 @@ mod image {
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
             if GC2_D {
                 "idea (d), Gouraud drawn as a bilinear texture of a plane's corners against real Gouraud, the cores at divide 1,"
+            } else if GC2_H {
+                "run GC past 133 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 74.75 MHz),"
+            } else if GC2_F {
+                "idea (f), Gouraud under eight render tables (ours, each word Dell's OpenGL ES driver sets apart, all of them),"
             } else {
                 "run GC"
             },
@@ -8170,7 +8303,7 @@ mod image {
             used += gc2::words(k) as usize;
         }
         let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
-        if c.spare.len() < used + largest {
+        if c.spare.len() < 2 * used + largest {
             log!("  not enough SDRAM for the references");
             let _ = r.release(&mut g.pool);
             free_tex(g);
@@ -8178,220 +8311,281 @@ mod image {
             return;
         }
         let (refs, rest) = c.spare.split_at_mut(used);
+        // The first render table's references, for GC2F's others to be
+        // compared with at Windows Mobile's clock.
+        let (table0, rest) = rest.split_at_mut(used);
         let first = &mut rest[..largest];
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
-        let mut refs_ok = true;
-        let mut models = 0;
-        for k in GC2_KINDS {
-            gc2_scene(g, &mut r, k, tex);
-            let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
-            // The first render becomes the reference (read twice: the
-            // second must equal the first, the display watched around it
-            // as around every other); four more must equal it.
-            let mut base = Gc2Baseline(None);
-            let mut side = Gc2Side::new(dsig);
-            side.underrun += u32::from(underrun_take(&mut g.e.regs));
-            side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
-            r.invalidate_all();
-            let t0 = g.frame(
-                &mut r,
-                Target {
-                    picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
-                    x: 0,
-                    y: 0,
+        for (vi, &(vname, over)) in GC2_VARIANTS.iter().enumerate() {
+            // Each table from a clean start: the core reset, every register
+            // written, the table's own words with them.
+            g.over = over;
+            r.start_clean();
+            if GC2_VARIANTS.len() > 1 {
+                log!(
+                    "  GC2F render table {} of {}: {vname}",
+                    vi + 1,
+                    GC2_VARIANTS.len()
+                );
+                let mut l2 = heapless_name();
+                let _ = write!(l2, "TABLE {} OF {}", vi + 1, GC2_VARIANTS.len());
+                soak_label(g, ["RUN GC2F", l2.as_str(), "REFERENCES"], SOAK_BLUE);
+            }
+            let mut refs_ok = true;
+            let mut models = 0;
+            for k in GC2_KINDS {
+                gc2_scene(g, &mut r, k, tex);
+                let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                // The first render becomes the reference (read twice: the
+                // second must equal the first, the display watched around it
+                // as around every other); four more must equal it.
+                let mut base = Gc2Baseline(None);
+                let mut side = Gc2Side::new(dsig);
+                side.underrun += u32::from(underrun_take(&mut g.e.regs));
+                side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
+                r.invalidate_all();
+                let t0 = g.frame(
+                    &mut r,
+                    Target {
+                        picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+                        x: 0,
+                        y: 0,
+                    },
+                );
+                side.underrun += u32::from(underrun_take(&mut g.e.regs));
+                side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
+                gc2_take(g, want);
+                gc2_wait();
+                let settled = gc2_still(g, k, want);
+                let mut again = [0u32; 4];
+                for a in &mut again {
+                    *a = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side)
+                        .unwrap_or(u32::MAX);
+                }
+                let bw = gc2::band_words(k) as usize;
+                let mut bands = 0u64;
+                for (b, &m) in gc2::MODEL[k].iter().enumerate() {
+                    let h = want[b * bw..(b + 1) * bw]
+                        .iter()
+                        .fold(gc2::HASH_START, |h, &w| gc2::fold(h, w));
+                    if h != m {
+                        bands |= 1 << b;
+                    }
+                }
+                rt::check_in();
+                refs_ok &= t0.is_some() && settled == 0 && again == [0; 4] && side.held();
+                models += usize::from(bands == 0);
+                log!(
+                    "  GC2 reference {}: {t0:?} us; its second read differs in {settled} words; renders 2-5 differ in {again:?} words; {}; the host model's pixels: {}",
+                    gc2::KINDS[k].0,
+                    Gc2Held(&side),
+                    if bands == 0 {
+                        "EQUAL in every band"
+                    } else {
+                        "DIFFERENT"
+                    }
+                );
+                if bands != 0 {
+                    log!("    bands differing from the model: 0x{bands:010x}");
+                }
+            }
+            log!(
+                "  references: {}; {models} of {} equal to the host model's",
+                if refs_ok {
+                    "every one repeatable, read the same twice, registers and display held"
+                } else {
+                    "NOT all repeatable"
                 },
+                GC2_KINDS.len()
             );
-            side.underrun += u32::from(underrun_take(&mut g.e.regs));
-            side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
-            gc2_take(g, want);
-            gc2_wait();
-            let settled = gc2_still(g, k, want);
-            let mut again = [0u32; 4];
-            for a in &mut again {
-                *a = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side)
-                    .unwrap_or(u32::MAX);
-            }
-            let bw = gc2::band_words(k) as usize;
-            let mut bands = 0u64;
-            for (b, &m) in gc2::MODEL[k].iter().enumerate() {
-                let h = want[b * bw..(b + 1) * bw]
-                    .iter()
-                    .fold(gc2::HASH_START, |h, &w| gc2::fold(h, w));
-                if h != m {
-                    bands |= 1 << b;
-                }
-            }
-            rt::check_in();
-            refs_ok &= t0.is_some() && settled == 0 && again == [0; 4] && side.held();
-            models += usize::from(bands == 0);
-            log!(
-                "  GC2 reference {}: {t0:?} us; its second read differs in {settled} words; renders 2-5 differ in {again:?} words; {}; the host model's pixels: {}",
-                gc2::KINDS[k].0,
-                Gc2Held(&side),
-                if bands == 0 {
-                    "EQUAL in every band"
-                } else {
-                    "DIFFERENT"
-                }
-            );
-            if bands != 0 {
-                log!("    bands differing from the model: 0x{bands:010x}");
-            }
-        }
-        log!(
-            "  references: {}; {models} of {} equal to the host model's",
-            if refs_ok {
-                "every one repeatable, read the same twice, registers and display held"
-            } else {
-                "NOT all repeatable"
-            },
-            GC2_KINDS.len()
-        );
-        if !refs_ok {
-            log!(
-                "  a reference isn't proven at Windows Mobile's clock: the map would mean nothing; stopped"
-            );
-        }
-        // Idea (d)'s cost in pixels: each texture-drawn reference against
-        // its Gouraud twin, both at Windows Mobile's clock.
-        for (gk, tk) in gc2::PAIRS_D {
-            if !GC2_KINDS.contains(&gk) || !GC2_KINDS.contains(&tk) {
-                continue;
-            }
-            let words = gc2::words(gk) as usize;
-            let mut t = gc2::Tally::default();
-            let mut differ = 0;
-            for i in 0..words {
-                let (a, b) = (refs[offs[gk] + i], refs[offs[tk] + i]);
-                if a != b {
-                    differ += 1;
-                    t.add(gc2::KINDS[gk].1, i as u32, a, b);
-                }
-            }
-            log!(
-                "  (d) at Windows Mobile's clock: {} against {}: {differ} of {words} words differ; {}",
-                gc2::KINDS[tk].0,
-                gc2::KINDS[gk].0,
-                Gc2Pixels(&t)
-            );
-        }
-        let total = 2 * GC2_STEPS.len();
-        let mut done = 0;
-        for pass in 0..2 {
             if !refs_ok {
-                break;
+                log!(
+                    "  a reference isn't proven at Windows Mobile's clock: the map would mean nothing; stopped"
+                );
             }
-            for i in 0..GC2_STEPS.len() {
-                let at = if pass == 0 {
-                    i
-                } else {
-                    GC2_STEPS.len() - 1 - i
-                };
-                let (s, label) = GC2_STEPS[at];
-                let way = if pass == 0 { "up" } else { "down" };
-                done += 1;
-                let mut l1 = heapless_name();
-                let _ = write!(l1, "GC2 {done} OF {total}");
-                soak_label(g, [l1.as_str(), label, "MAPPING"], SOAK_BLUE);
-                let want_regs = gc2_clock_want(s.speed(), s.div);
-                let lock = clock_apply(g, s);
-                if lock.is_none() {
-                    clock_restore(&mut g.e.regs);
-                    log!("  GC2 {way} {label}: the clock didn't take");
+            // GC2F: the table's words read back after its references (that
+            // they reached the core), `0x6D0` excepted (never read: a read
+            // of an unproven register can hang the bus); then what the
+            // table changes at Windows Mobile's clock, against ours.
+            if GC2_VARIANTS.len() > 1 {
+                for &(reg, v) in over {
+                    if reg == 0x6D0 {
+                        log!("  GC2F {vname}: 0x6d0 set to 0x{v:x}, not read back");
+                    } else {
+                        let got = g.e.regs.read32(MBX + reg);
+                        log!(
+                            "  GC2F {vname}: 0x{reg:x} set to 0x{v:x}, reads 0x{got:x}{}",
+                            if got == v { "" } else { ": NOT AS SET" }
+                        );
+                    }
+                }
+                for k in GC2_KINDS {
+                    let (a, b) = (offs[k], offs[k] + gc2::words(k) as usize);
+                    if vi == 0 {
+                        table0[a..b].copy_from_slice(&refs[a..b]);
+                        continue;
+                    }
+                    let differ = refs[a..b]
+                        .iter()
+                        .zip(&table0[a..b])
+                        .filter(|(x, y)| x != y)
+                        .count();
+                    log!(
+                        "  GC2F {vname}: the {} reference at Windows Mobile's clock differs from ours in {differ} words",
+                        gc2::KINDS[k].0
+                    );
+                }
+            }
+            // Idea (d)'s cost in pixels: each texture-drawn reference against
+            // its Gouraud twin, both at Windows Mobile's clock.
+            for (gk, tk) in gc2::PAIRS_D {
+                if !GC2_KINDS.contains(&gk) || !GC2_KINDS.contains(&tk) {
                     continue;
                 }
-                log!("  GC2 {way} {label}: lock {lock:?}");
-                clock_readback(g);
-                clock_restore(&mut g.e.regs);
-                // Rule 5: this setting's first render resets the core and
-                // writes every register.
-                r.start_clean();
-                let (mut right, mut controls) = (0, 0);
+                let words = gc2::words(gk) as usize;
+                let mut t = gc2::Tally::default();
+                let mut differ = 0;
+                for i in 0..words {
+                    let (a, b) = (refs[offs[gk] + i], refs[offs[tk] + i]);
+                    if a != b {
+                        differ += 1;
+                        t.add(gc2::KINDS[gk].1, i as u32, a, b);
+                    }
+                }
+                log!(
+                    "  (d) at Windows Mobile's clock: {} against {}: {differ} of {words} words differ; {}",
+                    gc2::KINDS[tk].0,
+                    gc2::KINDS[gk].0,
+                    Gc2Pixels(&t)
+                );
+            }
+            let total = 2 * GC2_STEPS.len();
+            let mut done = 0;
+            for pass in 0..2 {
+                if !refs_ok {
+                    break;
+                }
+                for i in 0..GC2_STEPS.len() {
+                    let at = if pass == 0 {
+                        i
+                    } else {
+                        GC2_STEPS.len() - 1 - i
+                    };
+                    let (s, label) = GC2_STEPS[at];
+                    let way = if pass == 0 { "up" } else { "down" };
+                    done += 1;
+                    let mut l1 = heapless_name();
+                    let _ = write!(l1, "GC2 {done} OF {total}");
+                    soak_label(g, [l1.as_str(), label, "MAPPING"], SOAK_BLUE);
+                    let want_regs = gc2_clock_want(s.speed(), s.div);
+                    let lock = clock_apply(g, s);
+                    if lock.is_none() {
+                        clock_restore(&mut g.e.regs);
+                        log!("  GC2 {way} {label}: the clock didn't take");
+                        continue;
+                    }
+                    log!("  GC2 {way} {label}: lock {lock:?}");
+                    clock_readback(g);
+                    clock_restore(&mut g.e.regs);
+                    // Rule 5: this setting's first render resets the core and
+                    // writes every register.
+                    r.start_clean();
+                    let (mut right, mut controls) = (0, 0);
+                    for k in GC2_KINDS {
+                        gc2_scene(g, &mut r, k, tex);
+                        let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                        let (mut b, mut a) = (Gc2Side::new(dsig), Gc2Side::new(dsig));
+                        let (mut base_b, mut base_a) = (Gc2Baseline(None), Gc2Baseline(None));
+                        let (mut still, mut seen, mut untaken) = (0u32, 0u32, 0u32);
+                        for _ in 0..GC2_RENDERS {
+                            if clock_apply(g, s).is_none() {
+                                untaken += 1;
+                                clock_restore(&mut g.e.regs);
+                                continue;
+                            }
+                            let wrong = gc2_render(
+                                g,
+                                &mut r,
+                                k,
+                                want,
+                                first,
+                                want_regs,
+                                &mut base_b,
+                                &mut b,
+                            );
+                            clock_restore(&mut g.e.regs);
+                            if let Some(n) = wrong.filter(|&n| n != 0) {
+                                seen += n;
+                                still += gc2_still(g, k, want);
+                            }
+                            let _ = gc2_render(g, &mut r, k, want, first, wm, &mut base_a, &mut a);
+                        }
+                        let b_ok = b.wrong + b.undrawn + untaken == 0;
+                        let a_ok = a.wrong + a.undrawn == 0;
+                        right += usize::from(b_ok && b.held());
+                        controls += usize::from(a_ok && a.held());
+                        if b_ok && a_ok && b.held() && a.held() {
+                            log!(
+                                "  GC2 {way} {label} | {}: RIGHT, B 0 of {}, A 0 of {}, best {} us, worst {} us; held",
+                                gc2::KINDS[k].0,
+                                b.renders,
+                                a.renders,
+                                b.best_us,
+                                b.worst_us
+                            );
+                            continue;
+                        }
+                        let n = (b.renders as usize).min(b.words.len());
+                        log!(
+                            "  GC2 {way} {label} | {}: {} | B wrong in {} of {} ({} not drawn, the clock not taken {untaken}), words {:?}, best {} us, worst {} us; {}; still wrong at Windows Mobile's clock: {still} of {seen} words; B {} | A wrong in {} of {} ({} not drawn), {} pixels; A {}",
+                            gc2::KINDS[k].0,
+                            if b_ok { "RIGHT" } else { "WRONG" },
+                            b.wrong,
+                            b.renders,
+                            b.undrawn,
+                            &b.words[..n],
+                            b.best_us,
+                            b.worst_us,
+                            Gc2Pixels(&b.tally),
+                            Gc2Held(&b),
+                            a.wrong,
+                            a.renders,
+                            a.undrawn,
+                            a.tally.pixels(),
+                            Gc2Held(&a)
+                        );
+                    }
+                    log!(
+                        "  GC2 {way} {label}: {right} of {} kinds right with everything held; their controls: {controls} of {} right",
+                        GC2_KINDS.len(),
+                        GC2_KINDS.len()
+                    );
+                }
+            }
+            // Rule 1's end: every reference taken again, against the start's.
+            if refs_ok {
+                soak_label(g, ["RUN GC2", "REFERENCES", "AGAIN"], SOAK_BLUE);
+                let mut same = 0;
                 for k in GC2_KINDS {
                     gc2_scene(g, &mut r, k, tex);
                     let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
-                    let (mut b, mut a) = (Gc2Side::new(dsig), Gc2Side::new(dsig));
-                    let (mut base_b, mut base_a) = (Gc2Baseline(None), Gc2Baseline(None));
-                    let (mut still, mut seen, mut untaken) = (0u32, 0u32, 0u32);
-                    for _ in 0..GC2_RENDERS {
-                        if clock_apply(g, s).is_none() {
-                            untaken += 1;
-                            clock_restore(&mut g.e.regs);
-                            continue;
-                        }
-                        let wrong =
-                            gc2_render(g, &mut r, k, want, first, want_regs, &mut base_b, &mut b);
-                        clock_restore(&mut g.e.regs);
-                        if let Some(n) = wrong.filter(|&n| n != 0) {
-                            seen += n;
-                            still += gc2_still(g, k, want);
-                        }
-                        let _ = gc2_render(g, &mut r, k, want, first, wm, &mut base_a, &mut a);
-                    }
-                    let b_ok = b.wrong + b.undrawn + untaken == 0;
-                    let a_ok = a.wrong + a.undrawn == 0;
-                    right += usize::from(b_ok && b.held());
-                    controls += usize::from(a_ok && a.held());
-                    if b_ok && a_ok && b.held() && a.held() {
-                        log!(
-                            "  GC2 {way} {label} | {}: RIGHT, B 0 of {}, A 0 of {}, best {} us, worst {} us; held",
-                            gc2::KINDS[k].0,
-                            b.renders,
-                            a.renders,
-                            b.best_us,
-                            b.worst_us
-                        );
-                        continue;
-                    }
-                    let n = (b.renders as usize).min(b.words.len());
+                    let mut side = Gc2Side::new(dsig);
+                    let mut base = Gc2Baseline(None);
+                    let wrong = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side);
+                    same += usize::from(wrong == Some(0) && side.held());
                     log!(
-                        "  GC2 {way} {label} | {}: {} | B wrong in {} of {} ({} not drawn, the clock not taken {untaken}), words {:?}, best {} us, worst {} us; {}; still wrong at Windows Mobile's clock: {still} of {seen} words; B {} | A wrong in {} of {} ({} not drawn), {} pixels; A {}",
+                        "  GC2 reference {} at the end: {wrong:?} words differ from the start's; {}",
                         gc2::KINDS[k].0,
-                        if b_ok { "RIGHT" } else { "WRONG" },
-                        b.wrong,
-                        b.renders,
-                        b.undrawn,
-                        &b.words[..n],
-                        b.best_us,
-                        b.worst_us,
-                        Gc2Pixels(&b.tally),
-                        Gc2Held(&b),
-                        a.wrong,
-                        a.renders,
-                        a.undrawn,
-                        a.tally.pixels(),
-                        Gc2Held(&a)
+                        Gc2Held(&side)
                     );
                 }
                 log!(
-                    "  GC2 {way} {label}: {right} of {} kinds right with everything held; their controls: {controls} of {} right",
-                    GC2_KINDS.len(),
+                    "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
             }
         }
-        // Rule 1's end: every reference taken again, against the start's.
-        if refs_ok {
-            soak_label(g, ["RUN GC2", "REFERENCES", "AGAIN"], SOAK_BLUE);
-            let mut same = 0;
-            for k in GC2_KINDS {
-                gc2_scene(g, &mut r, k, tex);
-                let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
-                let mut side = Gc2Side::new(dsig);
-                let mut base = Gc2Baseline(None);
-                let wrong = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side);
-                same += usize::from(wrong == Some(0) && side.held());
-                log!(
-                    "  GC2 reference {} at the end: {wrong:?} words differ from the start's; {}",
-                    gc2::KINDS[k].0,
-                    Gc2Held(&side)
-                );
-            }
-            log!(
-                "  GC2 references at the end: {same} of {} as at the start",
-                GC2_KINDS.len()
-            );
-        }
+        g.over = &[];
         soak_label(
             g,
             ["RUN GC2 DONE", "BACK TO NORMAL", "LOG SENT"],
@@ -8717,6 +8911,10 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if GC2_H {
+                "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
+            } else if GC2_F {
+                "GC2F (idea (f) by GC2's rules: Gouraud where it fails, under our render table and each word Dell's OpenGL ES driver sets apart)"
             } else if GC2_D {
                 "GC2D (idea (d) by GC2's rules: Gouraud drawn as a bilinear texture, against real Gouraud, the cores at divide 1 to 133.25 MHz)"
             } else if GC2 {
@@ -8753,6 +8951,7 @@ mod image {
             measured: 0,
             keypad,
             pressed: false,
+            over: &[],
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");

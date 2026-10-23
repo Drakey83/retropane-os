@@ -3527,6 +3527,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         Some(("RP_GPUBENCH_SOAK_SECS", "70")),
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
+    let run_gc2f = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_F", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
+    let run_gc2h = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_H", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3571,7 +3583,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 39] = [
+    let runs: [GpubenchRun; 41] = [
         (
             "run A",
             &run_a,
@@ -3723,6 +3735,25 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "GC2: idea (d), Gouraud drawn as a bilinear texture",
                 "RETROPANE-GPUBENCH: done",
             ],
+            false,
+            (0, 0, 0),
+        ),
+        // Runs GC2F (idea (f): eight render tables) and GC2H (past 133
+        // MHz), one render a kind a setting: checked below.
+        (
+            "run GC2F",
+            &run_gc2f,
+            &[
+                "GC2: idea (f), Gouraud under eight render tables",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        (
+            "run GC2H",
+            &run_gc2h,
+            &["GC2: run GC past 133 MHz", "RETROPANE-GPUBENCH: done"],
             false,
             (0, 0, 0),
         ),
@@ -4417,6 +4448,52 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             if !(refused || mapped) {
                 return Err(format!(
                     "gpubench run GC2D: neither refused cleanly nor mapped every setting:
+{log}"
+                ));
+            }
+        }
+        // GC2F and GC2H refuse where Windows Mobile's clocks aren't
+        // modelled; stepping, as run GC2: every reference proven and the
+        // same at the end, every kind right with everything held at every
+        // setting both ways (GC2F: under each of its eight tables, each
+        // compared with ours at Windows Mobile's clock).
+        for (run, refs, line, settings, ends, tables) in [
+            (
+                "run GC2F",
+                48,
+                "3 of 3 kinds right with everything held; their controls: 3 of 3 right",
+                48,
+                ("  GC2 references at the end: 3 of 3 as at the start", 8),
+                7 * 3,
+            ),
+            (
+                "run GC2H",
+                18,
+                "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
+                12,
+                ("  GC2 references at the end: 9 of 9 as at the start", 1),
+                0,
+            ),
+        ] {
+            if name != run {
+                continue;
+            }
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let mapped = log.matches("  GC2 reference ").count() == refs
+                && log.matches("  references: every one repeatable").count() == ends.1
+                && log.matches(line).count() == settings
+                && log.matches(ends.0).count() == ends.1
+                && log
+                    .matches(" reference at Windows Mobile's clock differs from ours in ")
+                    .count()
+                    == tables
+                && !log.contains("WRONG")
+                && !log.contains("the clock didn't take")
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || mapped) {
+                return Err(format!(
+                    "gpubench {run}: neither refused cleanly nor mapped every setting:
 {log}"
                 ));
             }
