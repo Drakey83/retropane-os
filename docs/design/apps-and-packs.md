@@ -120,6 +120,22 @@ direct path is faster), downloadable from the same location as the pack:
 | Quake 2 | id's 2001 source release (GPL-2.0) | Added 2026-10-16 (owner): lighter than Quake 3 (built for 1997-98 PCs, 16-32 MB); software and OpenGL 1.x renderers to start from; game data (`pak0.pak`) stays the user's own |
 | Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one |
 
+**Frame rate, every port (owner, 2026-10-23): a solid 30 fps at the very
+least, 60 fps the target** (the workload brief's "games: 60 fps, full
+stop"). Each port's frame rate is measured on the X51v, never assumed.
+Where a port can't reach 60, the trade-offs (a lower 3D resolution scaled
+up by the display's video plane, fewer effects, a rate between 30 and 60)
+go to the owner as measured options; none is chosen silently. The
+physics as measured so far (2026-10-23): a frame at 60 fps is 16.6 ms,
+and one full-screen textured layer costs the 2700G 25-29 ms at Windows
+Mobile's clock, so the multi-pass engines (Quake 3, Half-Life, Turok)
+can approach 60 only at a reduced 3D resolution (gate line P9: the
+scaler), and then only if their game logic fits the same frame on a
+624 MHz CPU with no FPU. Expected, to be measured: DOOM, Heretic, Hexen
+and Descent at 60 at full resolution; Quake and Hexen II near 60 at a
+reduced 3D resolution; Quake 2 uncertain; Quake 3, Half-Life and Turok
+30 at a reduced resolution, 60 unlikely on this hardware.
+
 Game data (WADs, PAKs) stays the user's own, except freely distributable
 shareware data. Each port is likely its own repository (as the Quake 3
 note says), measured against the stock-WM baseline (DESIGN.md §10).
