@@ -551,7 +551,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     out("INFO mode %s", suite ? "suite (run by rp-wmprobe)" : "alone");
     if (!suite)
         MessageBoxW(NULL,
-                    L"RetroPane baseline: about two minutes. The screen will flash; don't touch "
+                    L"RetroPane baseline: about 30 seconds (longer if other programs are drawing). The screen will flash; don't touch "
                     L"the device until the 'Done' message.",
                     L"rp-wmbench", MB_OK | MB_TOPMOST);
 

@@ -1094,7 +1094,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     module_vram();
     status(L"7 of 9: 3D through Dell's driver (flashes)");
     module_gl();
-    status(L"8 of 9: rp-wmbench (about 2 minutes, flashes)");
+    status(L"8 of 9: rp-wmbench (about 30 seconds, flashes)");
     module_bench();
     status(L"9 of 9: divide 1 under Dell's driver");
     out("== module 1");
