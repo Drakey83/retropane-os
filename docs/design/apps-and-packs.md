@@ -138,6 +138,19 @@ pack ships the engine code even when the data is the user's.
 | Descent, Descent II | Parallax's source release (a non-commercial licence, to read) | Excellent: full 3D on 1995 hardware | Small to moderate. Check: the licence allows a free pack |
 | Turok: Dinosaur Hunter | **Turok EX** (Samuel Villarreal, github.com/svkaiser/TurokEX, 2012-14, unfinished beta): 181 of its 197 engine files carry GPL-2.0-or-later headers (checked 2026-10-22; the other 16 are imgui, tinyxml2, an unzip library, a convex-hull routine and tools, each to check or replace). Not the leaked original code (never looked at or used: CLEANROOM.md) | Fits (the N64 game ran in 4 MiB; Turok EX targets 2012 PCs: memory and speed to fit) | **Moderate (revised 2026-10-22 from "very hard, clean-room")**: the engine, game logic (AngelScript) and a converter for the 1997 PC version's files (KPFGen) exist; left: its OpenGL renderer onto RetroPane's 2700G driver, SDL2/OpenAL onto our input and audio, fitting 64 MiB, and finishing what it never did. **First: an evaluation** (what plays, what's missing) before any estimate. Needs the owner's 1997 PC copy (the Nightdive remaster's formats differ) |
 
+**Estimates (2026-10-22, at the pace so far; rough).** Each after the OS
+work, in this order, and counting on what the earlier ports build once: a
+renderer layer onto RetroPane's 2700G driver, input and audio glue, and
+fixed-point maths for engines written for an FPU (the X51v's CPU has
+none, so float-heavy engines run on software floats until their hot paths
+are converted: most of the Quake-family and later effort). DOOM and DOOM
+II 2-3 weeks; Heretic ~1 week; Hexen ~1 week; Quake 3-5 weeks; Hexen II
+1-2 weeks after Quake; Quake 2 4-5 weeks; Descent and Descent II 3-5 weeks
+together (a fixed-point engine built for 486s: the best fit here); Turok
+1.5-3 months after its evaluation (~1 week); Half-Life 2-3 months
+(Xash3D's maths, 64 MiB, and its licence first); Quake 3 2-3 months. In
+all about 10-15 months of port work after the alpha.
+
 Considered and left out (2026-10-22): Return to Castle Wolfenstein,
 Enemy Territory, Jedi Outcast and Jedi Academy, and Doom 3 (too heavy for
 64 MiB and the 2700G), and the 2.5D games (Wolfenstein 3D, Strife,
