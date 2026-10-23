@@ -8093,6 +8093,18 @@ mod image {
         p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
         let (d0, d1) = soak_dsig(g);
         let dsig = d0 != 0 && d1 != 0;
+        // The underrun flag latches until cleared: whatever set it before
+        // this run's renders (the label switched in, the loader) is read
+        // and cleared here, not counted against the first reference (run
+        // GC2's first try stopped on one, 2026-10-23).
+        log!(
+            "  the underrun flag as found with the label up: {} (cleared)",
+            if underrun_take(&mut g.e.regs) {
+                "SET"
+            } else {
+                "clear"
+            }
+        );
         log!(
             "  the 16-bit label shown: DSIG 0x{d0:x} then 0x{d1:x}: {}",
             if dsig {
@@ -8131,7 +8143,12 @@ mod image {
             gc2_scene(g, &mut r, k, tex);
             let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
             // The first render becomes the reference (read twice: the
-            // second must equal the first); four more must equal it.
+            // second must equal the first, the display watched around it
+            // as around every other); four more must equal it.
+            let mut base = Gc2Baseline(None);
+            let mut side = Gc2Side::new(dsig);
+            side.underrun += u32::from(underrun_take(&mut g.e.regs));
+            side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
             r.invalidate_all();
             let t0 = g.frame(
                 &mut r,
@@ -8141,11 +8158,11 @@ mod image {
                     y: 0,
                 },
             );
+            side.underrun += u32::from(underrun_take(&mut g.e.regs));
+            side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
             gc2_take(g, want);
             gc2_wait();
             let settled = gc2_still(g, k, want);
-            let mut base = Gc2Baseline(None);
-            let mut side = Gc2Side::new(dsig);
             let mut again = [0u32; 4];
             for a in &mut again {
                 *a = gc2_render(g, &mut r, k, want, first, wm, &mut base, &mut side)
