@@ -171,7 +171,13 @@ mod image {
     /// so a failure can't be the test's fault: two more kinds (Gouraud
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
-    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some();
+    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D;
+    /// Run GC2D: the roadmap's idea (d) by GC2's rules (the owner,
+    /// 2026-10-23): Gouraud drawn as a bilinear texture of the plane's four
+    /// corners, against real Gouraud, with the cores at divide 1 from 74.75
+    /// to 133.25 MHz (GC2: textures right at every clock, Gouraud wrong at
+    /// every divide-1 setting). Unattended.
+    const GC2_D: bool = option_env!("RP_GPUBENCH_GC2_D").is_some();
     /// GC2's renders a kind a setting (rule 6): 20 unless
     /// `RP_GPUBENCH_GC2_RENDERS` says otherwise (the emulator's check runs
     /// fewer).
@@ -7613,7 +7619,13 @@ mod image {
             clock_rig_free(g, c);
             return;
         };
-        let tex = gc2::Tex { t565, t4444, t8888 };
+        // GC's kinds never draw the plane: it stays unplaced.
+        let tex = gc2::Tex {
+            t565,
+            t4444,
+            t8888,
+            plane: gc2::TEXTURES[3],
+        };
         let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
             log!("  no renderer");
             clock_rig_free(g, c);
@@ -7760,43 +7772,58 @@ mod image {
 
     // ---- Run GC2: the content map by the owner's robustness rules (2026-10-23) ----
 
+    /// A GC2 setting: the PLL's M, N, P and the cores' divider; CL2 above
+    /// 100 MHz, as runs GS and GC.
+    const fn gc2_step(m: u32, n: u32, p: u32, div: u32) -> ClockStep {
+        ClockStep {
+            m,
+            n,
+            p,
+            div,
+            cl3: if 13_000 * m / (n << p) > 100_000 {
+                Some(false)
+            } else {
+                None
+            },
+            restart: false,
+        }
+    }
+
     /// GC2's settings (rule 8), rising: the cores at divide 1 in fine steps
     /// to 99.67 MHz (idea (a)), the cores at divide 2 under every system
     /// clock to 133.25, the memory at 133.25 with the cores at divide 4 and
     /// 3 (idea (h): an error that stays is the memory's), and 99.67 / 1 and
     /// 133.25 / 2 again from a second PLL setting whose internal frequency
-    /// is twice the first's (idea (g): jitter, not frequency). CL2 above
-    /// 100 MHz, as runs GS and GC.
-    const GC2_STEPS: [(ClockStep, &str); 12] = {
-        const fn s(m: u32, n: u32, p: u32, div: u32) -> ClockStep {
-            ClockStep {
-                m,
-                n,
-                p,
-                div,
-                cl3: if 13_000 * m / (n << p) > 100_000 {
-                    Some(false)
-                } else {
-                    None
-                },
-                restart: false,
-            }
-        }
-        [
-            (s(23, 4, 0, 1), "74.75 / 1"),
-            (s(32, 5, 0, 1), "83.20 / 1"),
-            (s(14, 2, 0, 1), "91.00 / 1"),
-            (s(23, 3, 0, 1), "99.67 / 1"),
-            (s(46, 3, 1, 1), "99.67 / 1 PLL B"),
-            (s(25, 3, 0, 2), "108.33 / 2"),
-            (s(27, 3, 0, 2), "117.00 / 2"),
-            (s(29, 3, 0, 2), "125.67 / 2"),
-            (s(41, 4, 0, 4), "133.25 / 4"),
-            (s(41, 4, 0, 3), "133.25 / 3"),
-            (s(41, 4, 0, 2), "133.25 / 2"),
-            (s(41, 2, 1, 2), "133.25 / 2 PLL B"),
-        ]
-    };
+    /// is twice the first's (idea (g): jitter, not frequency).
+    const GC2_ALL: [(ClockStep, &str); 12] = [
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (gc2_step(32, 5, 0, 1), "83.20 / 1"),
+        (gc2_step(14, 2, 0, 1), "91.00 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(46, 3, 1, 1), "99.67 / 1 PLL B"),
+        (gc2_step(25, 3, 0, 2), "108.33 / 2"),
+        (gc2_step(27, 3, 0, 2), "117.00 / 2"),
+        (gc2_step(29, 3, 0, 2), "125.67 / 2"),
+        (gc2_step(41, 4, 0, 4), "133.25 / 4"),
+        (gc2_step(41, 4, 0, 3), "133.25 / 3"),
+        (gc2_step(41, 4, 0, 2), "133.25 / 2"),
+        (gc2_step(41, 2, 1, 2), "133.25 / 2 PLL B"),
+    ];
+
+    /// GC2D's settings: the cores at divide 1 from Dell's 75 MHz cap to the
+    /// aim, 133 (run GC drew textures right at 133.25 / 1).
+    const GC2_D_STEPS: [(ClockStep, &str); 5] = [
+        (gc2_step(23, 4, 0, 1), "74.75 / 1"),
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(25, 3, 0, 1), "108.33 / 1"),
+        (gc2_step(27, 3, 0, 1), "117.00 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+
+    /// The settings this build runs (rule 8 for GC2), rising.
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D { &GC2_D_STEPS } else { &GC2_ALL };
+    /// The kinds this build runs.
+    const GC2_KINDS: core::ops::Range<usize> = if GC2_D { gc2::RUN_D } else { gc2::RUN };
 
     /// The 3D core's registers read around every render (rule 5): the
     /// render table's (`rp_drv_mbx3d::start_table`) and the target's
@@ -8036,8 +8063,13 @@ mod image {
     #[inline(never)]
     fn content_map2(g: &mut Rig) {
         log!(
-            "GC2: run GC by the owner's robustness rules: {} kinds (GC's seven, and Gouraud with every colour one step below the top on RGB565 and ARGB8888) at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            gc2::KINDS.len(),
+            "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
+            if GC2_D {
+                "idea (d), Gouraud drawn as a bilinear texture of a plane's corners against real Gouraud, the cores at divide 1,"
+            } else {
+                "run GC"
+            },
+            GC2_KINDS.len(),
             GC2_STEPS.len()
         );
         let found = (
@@ -8058,7 +8090,7 @@ mod image {
         let Some(c) = clock_rig(g) else {
             return;
         };
-        let mut placed = [None; 3];
+        let mut placed = [None; gc2::TEXTURES.len()];
         for (n, t) in placed.iter_mut().enumerate() {
             let d = gc2::TEXTURES[n];
             if let Some(at) = g.pool.alloc(d.bytes(), 128) {
@@ -8072,13 +8104,18 @@ mod image {
                 let _ = g.pool.free(t.at, t.bytes());
             }
         };
-        let [Some(t565), Some(t4444), Some(t8888)] = placed else {
+        let [Some(t565), Some(t4444), Some(t8888), Some(plane)] = placed else {
             log!("  no memory for the textures");
             free_tex(g);
             clock_rig_free(g, c);
             return;
         };
-        let tex = gc2::Tex { t565, t4444, t8888 };
+        let tex = gc2::Tex {
+            t565,
+            t4444,
+            t8888,
+            plane,
+        };
         let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
             log!("  no renderer");
             free_tex(g);
@@ -8122,11 +8159,11 @@ mod image {
         // first read's buffer.
         let mut offs = [0usize; gc2::KINDS.len()];
         let mut used = 0usize;
-        for (k, o) in offs.iter_mut().enumerate() {
-            *o = used;
+        for k in GC2_KINDS {
+            offs[k] = used;
             used += gc2::words(k) as usize;
         }
-        let largest = (0..gc2::KINDS.len()).map(gc2::words).max().unwrap_or(0) as usize;
+        let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
         if c.spare.len() < used + largest {
             log!("  not enough SDRAM for the references");
             let _ = r.release(&mut g.pool);
@@ -8139,7 +8176,7 @@ mod image {
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         let mut refs_ok = true;
         let mut models = 0;
-        for k in 0..gc2::KINDS.len() {
+        for k in GC2_KINDS {
             gc2_scene(g, &mut r, k, tex);
             let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
             // The first render becomes the reference (read twice: the
@@ -8202,11 +8239,34 @@ mod image {
             } else {
                 "NOT all repeatable"
             },
-            gc2::KINDS.len()
+            GC2_KINDS.len()
         );
         if !refs_ok {
             log!(
                 "  a reference isn't proven at Windows Mobile's clock: the map would mean nothing; stopped"
+            );
+        }
+        // Idea (d)'s cost in pixels: each texture-drawn reference against
+        // its Gouraud twin, both at Windows Mobile's clock.
+        for (gk, tk) in gc2::PAIRS_D {
+            if !GC2_KINDS.contains(&gk) || !GC2_KINDS.contains(&tk) {
+                continue;
+            }
+            let words = gc2::words(gk) as usize;
+            let mut t = gc2::Tally::default();
+            let mut differ = 0;
+            for i in 0..words {
+                let (a, b) = (refs[offs[gk] + i], refs[offs[tk] + i]);
+                if a != b {
+                    differ += 1;
+                    t.add(gc2::KINDS[gk].1, i as u32, a, b);
+                }
+            }
+            log!(
+                "  (d) at Windows Mobile's clock: {} against {}: {differ} of {words} words differ; {}",
+                gc2::KINDS[tk].0,
+                gc2::KINDS[gk].0,
+                Gc2Pixels(&t)
             );
         }
         let total = 2 * GC2_STEPS.len();
@@ -8241,7 +8301,7 @@ mod image {
                 // writes every register.
                 r.start_clean();
                 let (mut right, mut controls) = (0, 0);
-                for k in 0..gc2::KINDS.len() {
+                for k in GC2_KINDS {
                     gc2_scene(g, &mut r, k, tex);
                     let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
                     let (mut b, mut a) = (Gc2Side::new(dsig), Gc2Side::new(dsig));
@@ -8299,8 +8359,8 @@ mod image {
                 }
                 log!(
                     "  GC2 {way} {label}: {right} of {} kinds right with everything held; their controls: {controls} of {} right",
-                    gc2::KINDS.len(),
-                    gc2::KINDS.len()
+                    GC2_KINDS.len(),
+                    GC2_KINDS.len()
                 );
             }
         }
@@ -8308,7 +8368,7 @@ mod image {
         if refs_ok {
             soak_label(g, ["RUN GC2", "REFERENCES", "AGAIN"], SOAK_BLUE);
             let mut same = 0;
-            for k in 0..gc2::KINDS.len() {
+            for k in GC2_KINDS {
                 gc2_scene(g, &mut r, k, tex);
                 let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
                 let mut side = Gc2Side::new(dsig);
@@ -8323,7 +8383,7 @@ mod image {
             }
             log!(
                 "  GC2 references at the end: {same} of {} as at the start",
-                gc2::KINDS.len()
+                GC2_KINDS.len()
             );
         }
         soak_label(
@@ -8651,6 +8711,8 @@ mod image {
                 "Q (what ends the slow state: 108.33 MHz CL2, the memory restarted at Windows Mobile's clock, then G4c's 108.33 MHz CL3 with the restart, Windows Mobile's clock measured around each)"
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
+            } else if GC2_D {
+                "GC2D (idea (d) by GC2's rules: Gouraud drawn as a bilinear texture, against real Gouraud, the cores at divide 1 to 133.25 MHz)"
             } else if GC2 {
                 "GC2 (the content map by the owner's robustness rules: nine kinds, twelve settings rising then falling, controls interleaved)"
             } else if CMAP {

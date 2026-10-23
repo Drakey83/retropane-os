@@ -13,7 +13,7 @@ use super::*;
 
 /// Every kind rendered through the model of the 3D core: its band
 /// hashes, as the image takes them from its references.
-fn model_hashes() -> [[u32; BANDS]; 9] {
+fn model_hashes() -> [[u32; BANDS]; 13] {
     let m = memory();
     let mut clock = SimClock::default();
     let mut pool = Pool::new(POOL);
@@ -30,9 +30,10 @@ fn model_hashes() -> [[u32; BANDS]; 9] {
         t565: place(0, &mut mem),
         t4444: place(1, &mut mem),
         t8888: place(2, &mut mem),
+        plane: place(3, &mut mem),
     };
     let at = pool.alloc(W * H * 4, 128).expect("target memory");
-    let mut out = [[0; BANDS]; 9];
+    let mut out = [[0; BANDS]; 13];
     for (k, bands) in out.iter_mut().enumerate() {
         let (bg, slots) = scene(k, tex);
         r.set_background(Some(bg)).expect("background");
@@ -102,6 +103,7 @@ fn the_capped_scenes_keep_every_channel_below_its_top() {
         t565: TEXTURES[0],
         t4444: TEXTURES[1],
         t8888: TEXTURES[2],
+        plane: TEXTURES[3],
     };
     for k in [7, 8] {
         let (_, slots) = scene(k, tex);
@@ -224,4 +226,35 @@ fn the_textures_are_written_whole_in_order() {
             );
         }
     });
+}
+
+#[test]
+fn the_plane_is_one_plane_and_its_texture_holds_its_corners() {
+    for sh in [0, 8, 16, 24] {
+        let ch = |c: u32| (c >> sh & 0xFF) as i32;
+        assert_eq!(
+            ch(PLANE[3]),
+            ch(PLANE[1]) + ch(PLANE[2]) - ch(PLANE[0]),
+            "channel at {sh}"
+        );
+    }
+    let mut corners = [0u32; 4];
+    texture_words(3, |i, w| {
+        let (x, y) = untwiddle(i);
+        if x < 2 && y < 2 {
+            corners[(2 * y + x) as usize] = w;
+        }
+    });
+    assert_eq!(corners, PLANE);
+    assert!(TEXTURES[3].linear, "drawn bilinear");
+    // The two runs' kinds: every kind in one of them, none in both.
+    assert_eq!(
+        (RUN.start, RUN.end, RUN_D.end),
+        (0, RUN_D.start, KINDS.len())
+    );
+    // Both targets: the Gouraud kind and its texture twin.
+    for (g, t) in PAIRS_D {
+        assert_eq!(KINDS[g].1, KINDS[t].1);
+        assert!(RUN_D.contains(&g) && RUN_D.contains(&t));
+    }
 }

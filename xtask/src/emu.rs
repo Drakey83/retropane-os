@@ -3527,6 +3527,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         Some(("RP_GPUBENCH_SOAK_SECS", "70")),
     )?;
     let run_gv = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_MEMCLOCK", "1"))?;
+    let run_gc2d = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_D", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_CMAP", "1"))?;
     let run_gc2 = variant_image_with(
         root,
@@ -3565,7 +3571,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 38] = [
+    let runs: [GpubenchRun; 39] = [
         (
             "run A",
             &run_a,
@@ -3703,6 +3709,18 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2,
             &[
                 "GC2: run GC by the owner's robustness rules",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2D (idea (d), Gouraud as a texture, by GC2's rules, one
+        // render a kind a setting): checked below.
+        (
+            "run GC2D",
+            &run_gc2d,
+            &[
+                "GC2: idea (d), Gouraud drawn as a bilinear texture",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -4371,6 +4389,34 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             if !(refused || mapped) {
                 return Err(format!(
                     "gpubench run GC2: neither refused cleanly nor mapped every setting:
+{log}"
+                ));
+            }
+        }
+        // Run GC2D refuses where Windows Mobile's clocks aren't modelled;
+        // stepping, as run GC2: every reference proven, every kind right
+        // with everything held at every setting both ways, the references
+        // the same at the end, and the texture way measured against
+        // Gouraud for both targets.
+        if name == "run GC2D" {
+            let refused =
+                log.contains("not Windows Mobile's clock and bus timing: nothing changed");
+            let mapped = log.matches("  GC2 reference ").count() == 8
+                && log.contains("  references: every one repeatable")
+                && log.matches("  (d) at Windows Mobile's clock: ").count() == 2
+                && log
+                    .matches(
+                        "4 of 4 kinds right with everything held; their controls: 4 of 4 right",
+                    )
+                    .count()
+                    == 10
+                && !log.contains("WRONG")
+                && !log.contains("the clock didn't take")
+                && log.contains("  GC2 references at the end: 4 of 4 as at the start")
+                && log.contains("  put back: COREPLL 0xbb1");
+            if !(refused || mapped) {
+                return Err(format!(
+                    "gpubench run GC2D: neither refused cleanly nor mapped every setting:
 {log}"
                 ));
             }

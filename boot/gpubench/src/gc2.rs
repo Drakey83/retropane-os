@@ -16,7 +16,7 @@ pub const BAND_ROWS: u32 = 16;
 pub const BANDS: usize = (H / BAND_ROWS) as usize;
 
 /// The kinds of drawing: (name, the target's format).
-pub const KINDS: [(&str, PixelFormat); 9] = [
+pub const KINDS: [(&str, PixelFormat); 13] = [
     ("RGB565 Gouraud", PixelFormat::Rgb565),
     ("RGB565 dithered Gouraud", PixelFormat::Rgb565Dithered),
     ("ARGB8888 Gouraud", PixelFormat::Argb8888),
@@ -26,7 +26,26 @@ pub const KINDS: [(&str, PixelFormat); 9] = [
     ("RGB565 Gouraud + blended 4444", PixelFormat::Rgb565),
     ("RGB565 Gouraud capped", PixelFormat::Rgb565),
     ("ARGB8888 Gouraud capped", PixelFormat::Argb8888),
+    ("RGB565 planar Gouraud", PixelFormat::Rgb565),
+    (
+        "RGB565 planar Gouraud as a texture (d)",
+        PixelFormat::Rgb565,
+    ),
+    ("ARGB8888 planar Gouraud", PixelFormat::Argb8888),
+    (
+        "ARGB8888 planar Gouraud as a texture (d)",
+        PixelFormat::Argb8888,
+    ),
 ];
+
+/// Run GC2's kinds: the content map's nine.
+pub const RUN: core::ops::Range<usize> = 0..9;
+/// Run GC2D's kinds (the roadmap's idea (d): Gouraud drawn as a texture,
+/// since textures were right at every clock): the planar Gouraud quad and
+/// the same drawn as a bilinear texture, on each target.
+pub const RUN_D: core::ops::Range<usize> = 9..13;
+/// GC2D's pairs: (the Gouraud kind, the same drawn as a texture).
+pub const PAIRS_D: [(usize, usize); 2] = [(9, 10), (11, 12)];
 
 const GREY: u32 = 0xFF20_2020;
 const WHITE: u32 = 0xFFFF_FFFF;
@@ -43,13 +62,23 @@ const CORNERS_565_CAPPED: [u32; 4] = [BLACK, 0xFFF7_FBF7, BLUE, 0xFFF7_E000];
 /// The same for ARGB8888: every channel, alpha too, at most `0xFE`.
 const CORNERS_8888_CAPPED: [u32; 4] = [0xFE00_0000, 0xFEFE_FEFE, 0xFE10_20A0, 0xFEFE_E000];
 
+/// A plane's corners: top left, top right, bottom left free, bottom
+/// right their sum less the top left (`c1 + c2 - c0` in every channel,
+/// none past its top), so the colour is one plane across the quad: what
+/// two Gouraud triangles draw and what bilinear filtering between four
+/// texels draws alike (idea (d)).
+const PLANE: [u32; 4] = [0xFF00_0000, 0xFFF0_0000, 0xFF00_E0F0, 0xFFF0_E0F0];
+
 /// The textures the scenes use: RGB565 (side 128, drawn nearest and
-/// bilinear), ARGB4444 (side 128), ARGB8888 (side 32, clamped).
+/// bilinear), ARGB4444 (side 128), ARGB8888 (side 32, clamped), and the
+/// plane's corners as an ARGB8888 texture (side 8, the least: the corners
+/// in its top left 2 x 2, bilinear, clamped).
 #[derive(Clone, Copy)]
 pub struct Tex {
     pub t565: Texture,
     pub t4444: Texture,
     pub t8888: Texture,
+    pub plane: Texture,
 }
 
 const fn texture(code: u8, f: u32, mode: u32) -> Texture {
@@ -66,10 +95,14 @@ const fn texture(code: u8, f: u32, mode: u32) -> Texture {
 
 /// [`Tex`]'s textures as described, not yet placed (`at` 0): the caller
 /// takes memory for each and writes [`texture_words`] there.
-pub const TEXTURES: [Texture; 3] = [
+pub const TEXTURES: [Texture; 4] = [
     texture(4, format::RGB565, address::WRAP),
     texture(4, format::ARGB4444, address::WRAP),
     texture(2, format::ARGB8888, address::CLAMP),
+    Texture {
+        linear: true,
+        ..texture(0, format::ARGB8888, address::CLAMP)
+    },
 ];
 
 /// Texture `n` of [`TEXTURES`] word by word in its twiddled order:
@@ -77,6 +110,15 @@ pub const TEXTURES: [Texture; 3] = [
 pub fn texture_words(n: usize, mut put: impl FnMut(u32, u32)) {
     let t = TEXTURES[n];
     let texels = t.side() * t.side();
+    if n == 3 {
+        // The plane's corners at (0, 0)-(1, 1); the rest each its nearest
+        // corner (only texels 0-1 are sampled).
+        for i in 0..texels {
+            let (x, y) = untwiddle(i);
+            put(i, PLANE[(2 * y.min(1) + x.min(1)) as usize]);
+        }
+        return;
+    }
     if n == 2 {
         for i in 0..texels {
             let (x, y) = untwiddle(i);
@@ -163,7 +205,34 @@ pub fn scene(k: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
         5 => (GREY, [Some(cover(lin, 11, false)), None, None]),
         6 => (BLACK, [Some(gouraud), Some(cover(t.t4444, 16, true)), None]),
         7 => (BLACK, [Some(shade(CORNERS_565_CAPPED)), None, None]),
-        _ => (BLACK, [Some(shade(CORNERS_8888_CAPPED)), None, None]),
+        8 => (BLACK, [Some(shade(CORNERS_8888_CAPPED)), None, None]),
+        9 | 11 => (
+            BLACK,
+            [
+                Some(shade([PLANE[0], PLANE[1], PLANE[3], PLANE[2]])),
+                None,
+                None,
+            ],
+        ),
+        _ => {
+            // From texel 0's centre to texel 1's (an eighth of the side
+            // apart), so the filter blends the four corners across the
+            // whole quad.
+            let (a, b) = (UV_ONE / 16, 3 * UV_ONE / 16);
+            let paint = Paint::Texture {
+                tex: t.plane,
+                uv: [(a, a), (b, a), (b, b), (a, b)],
+                tint: WHITE,
+            };
+            (
+                BLACK,
+                [
+                    Some(Draw::rect(0, 0, W as i32, H as i32, paint)),
+                    None,
+                    None,
+                ],
+            )
+        }
     }
 }
 
@@ -189,7 +258,7 @@ pub const HASH_START: u32 = 0x811C_9DC5;
 
 /// Each kind's band hashes as the model renders it (the host test holds
 /// this table to the model; regenerate it from the test's message).
-pub const MODEL: [[u32; BANDS]; 9] = include!("gc2_model.in");
+pub const MODEL: [[u32; BANDS]; 13] = include!("gc2_model.in");
 
 /// How a wrong pixel differs from the reference (rule 7). Channel by
 /// channel (alpha too, on ARGB8888): a channel that held its top value or

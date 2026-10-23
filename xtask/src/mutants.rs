@@ -2401,6 +2401,41 @@ fn compress_k<const K: u32>(",
             "the_capped_scenes_keep_every_channel_below_its_top",
         ]),
     },
+    Mutant {
+        name: "GC2D (d): the plane's fourth corner not the others' sum less the first",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "const PLANE: [u32; 4] = [0xFF00_0000, 0xFFF0_0000, 0xFF00_E0F0, 0xFFF0_E0F0];",
+        to: "const PLANE: [u32; 4] = [0xFF00_0000, 0xFFF0_0000, 0xFF00_E0F0, 0xFFF0_E0E0];",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_plane_is_one_plane_and_its_texture_holds_its_corners",
+        ]),
+    },
+    Mutant {
+        name: "GC2D (d): the plane's texture drawn nearest, not bilinear",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        linear: true,
+        ..texture(0, format::ARGB8888, address::CLAMP)",
+        to: "        linear: false,
+        ..texture(0, format::ARGB8888, address::CLAMP)",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_plane_is_one_plane_and_its_texture_holds_its_corners",
+        ]),
+    },
+    Mutant {
+        name: "GC2D (d): the coordinates run past texel 1's centre",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            let (a, b) = (UV_ONE / 16, 3 * UV_ONE / 16);",
+        to: "            let (a, b) = (UV_ONE / 16, 5 * UV_ONE / 16);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_model_table_is_what_the_model_renders",
+        ]),
+    },
 ];
 /// Puts a file back when dropped.
 struct Restore {
