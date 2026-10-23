@@ -20,3 +20,7 @@ rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
 
 [lints]
 workspace = true
+
+# Test G's words held to the driver's own (src/main.rs `g_tests`).
+[target.'cfg(not(target_os = "none"))'.dev-dependencies]
+rp-drv-mbx3d = { path = "../../drivers/mbx3d" }

@@ -521,9 +521,13 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 32 -> 40 KiB on 2026-10-22 (test image): test M, the second
     // texture unit through the tile accelerator (the gate's P5); 35.1 KiB
     // measured, + ~10%.
+    // Ratcheted 40 -> 46 KiB on 2026-10-23 (test image): the on-screen
+    // label (every device program shows its step) and test G, Gouraud at
+    // the cores' divide 1 through the TA (the G variant, the larger build,
+    // 41.6 KiB measured, + ~10%).
     Budget {
         image: "rp-glesfeat",
-        max_load: 40 * 1024,
+        max_load: 46 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

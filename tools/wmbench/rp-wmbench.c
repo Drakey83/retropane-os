@@ -511,10 +511,28 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (slash)
         *slash = 0;
     wsprintfW(logpath, L"%s\\rp-wm-baseline.txt", dir);
-    logf_ = CreateFileW(logpath, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, 0, NULL);
+    /* A second copy holds the log (2026-10-23: one started by hand before
+     * rp-wmprobe's suite started another, whose error box then sat hidden
+     * behind the probe's topmost window): tried for 10 s. Run by the
+     * suite, a failure is its exit code (the probe logs it), never a box. */
+    {
+        int tries;
+        for (tries = 0; tries < 10; tries++) {
+            logf_ = CreateFileW(logpath, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, 0, NULL);
+            if (logf_ != INVALID_HANDLE_VALUE)
+                break;
+            Sleep(1000);
+        }
+    }
     if (logf_ == INVALID_HANDLE_VALUE) {
-        MessageBoxW(NULL, L"Can't write the log next to the program.", L"rp-wmbench", MB_OK);
-        return 1;
+        DWORD err = GetLastError();
+        if (!suite) {
+            WCHAR msg[96];
+            wsprintfW(msg, L"Can't write the log next to the program (error %lu): is another copy running?",
+                      (unsigned long)err);
+            MessageBoxW(NULL, msg, L"rp-wmbench", MB_OK | MB_TOPMOST);
+        }
+        return err ? (int)err : 1;
     }
     SetFilePointer(logf_, 0, NULL, FILE_END);
 
@@ -535,7 +553,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
         MessageBoxW(NULL,
                     L"RetroPane baseline: about two minutes. The screen will flash; don't touch "
                     L"the device until the 'Done' message.",
-                    L"rp-wmbench", MB_OK);
+                    L"rp-wmbench", MB_OK | MB_TOPMOST);
 
     /* Backlight held fully on for the run (as video players do); the idle
      * timer reset covers devices whose backlight driver has another name. */

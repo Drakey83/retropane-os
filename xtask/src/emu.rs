@@ -3049,9 +3049,110 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
             }
         }
         eprintln!("    glesfeat OK: every case drew as on the X51v, back at the loader");
-        return Ok(());
+        return boot_loader_glesfeat_g(root);
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
+    boot_loader_glesfeat_g(root)
+}
+
+/// Test G (`RP_GLESFEAT_G`, the give-up audit's item 1): Gouraud through
+/// the TA against our objects at the cores' divide 1. Every way runs with
+/// a repeatable reference and is logged, the clock is put back, and the
+/// image returns; a release that doesn't model Windows Mobile's 2700G
+/// clocks refuses the change, which the image logs and the check accepts.
+fn boot_loader_glesfeat_g(root: &Path) -> Result<(), String> {
+    let loader = raw_image(root, "rp-loader")?;
+    let bin = variant_image_with(root, "rp-glesfeat", ("RP_GLESFEAT_G", "1"), None)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "G: right at 74.75 / 1")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("glesfeat G: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("glesfeat G: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "test G, Gouraud at the cores' divide 1",
+        "parameter memory ready: true",
+        "G way 1 (through the TA):",
+        "G way 2 (our objects, our layout 4):",
+        "G way 4 (through the TA, one strip of four):",
+        "G: right at 74.75 / 1 of 20:",
+        "RETROPANE-GLESFEAT: DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("glesfeat G: the run log has no `{want}`:{log}"));
+        }
+    }
+    // Every way that drew: its reference rendered twice the same, then the
+    // clock refused or a right control after it. The fork doesn't model
+    // the tile accelerator (docs/hw/emulator.md: its TA never says done),
+    // so a TA way may stop at its reference, safely, and way 3 is skipped
+    // for want of the TA's object; our own way (2) must always draw.
+    let ways = log
+        .lines()
+        .filter(|l| l.contains("G way ") && l.trim_end().ends_with("):"))
+        .count();
+    let refs = log
+        .matches("rendered true then true, the second 0 words off the first")
+        .count();
+    let no_ta = log.matches("no repeatable reference").count();
+    if no_ta > 0 && !log.contains("the TA never said done") {
+        return Err(format!(
+            "glesfeat G: a reference that didn't repeat, not for want of the TA:{log}"
+        ));
+    }
+    let drew = ways - no_ta.min(ways);
+    let refused = log.matches("the clock change was refused").count();
+    let controls = log
+        .matches("control at Windows Mobile's clock after: right")
+        .count();
+    if refs != drew {
+        return Err(format!(
+            "glesfeat G: {refs} repeatable references for {drew} ways that drew:{log}"
+        ));
+    }
+    if drew == 0 || refused + controls != drew {
+        return Err(format!(
+            "glesfeat G: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
+        ));
+    }
+    let ours = log
+        .split("G way 2 (")
+        .nth(1)
+        .and_then(|s| s.split("G way 3").next())
+        .unwrap_or("");
+    if !ours.contains("rendered true then true, the second 0 words off the first") {
+        return Err(format!("glesfeat G: our own way didn't draw:{log}"));
+    }
+    // The control after divide 1 proves the clock was put back; the same
+    // read back as Windows Mobile's.
+    if controls > 0 && !log.contains("read back: COREPLL 0xbb1 MBXCLK 0x6") {
+        return Err(format!("glesfeat G: Windows Mobile's clock not read back:{log}"));
+    }
+    eprintln!(
+        "    glesfeat G OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"
+    );
     Ok(())
 }
 

@@ -408,6 +408,43 @@ static void draws(unsigned long *first, unsigned long *pic, const unsigned long 
 
 /* ---- env: Windows Mobile itself ------------------------------------- */
 
+/* toolhelp.dll looked up, not linked: a Windows Mobile build without it
+ * refused to start v2 at all (the owner, 2026-10-23: "it isn't doing
+ * anything when it's clicked on"). */
+static HANDLE (*th_snapshot)(DWORD, DWORD);
+static BOOL (*th_first)(HANDLE, PROCESSENTRY32 *);
+static BOOL (*th_next)(HANDLE, PROCESSENTRY32 *);
+static BOOL (*th_close)(HANDLE);
+static const char *th_why = "toolhelp.dll not looked up";
+
+/* The process functions, once; false (and `th_why`) without them. */
+static int toolhelp_load(void)
+{
+    static HMODULE th;
+    FARPROC a;
+    if (th_snapshot && th_first && th_next)
+        return 1;
+    if (!th)
+        th = LoadLibraryW(L"toolhelp.dll");
+    if (!th) {
+        th_why = "no toolhelp.dll";
+        return 0;
+    }
+    a = GetProcAddressW(th, L"CreateToolhelp32Snapshot");
+    memcpy(&th_snapshot, &a, sizeof a);
+    a = GetProcAddressW(th, L"Process32First");
+    memcpy(&th_first, &a, sizeof a);
+    a = GetProcAddressW(th, L"Process32Next");
+    memcpy(&th_next, &a, sizeof a);
+    a = GetProcAddressW(th, L"CloseToolhelp32Snapshot");
+    memcpy(&th_close, &a, sizeof a);
+    if (!th_snapshot || !th_first || !th_next) {
+        th_why = "toolhelp.dll lacks the process functions";
+        return 0;
+    }
+    return 1;
+}
+
 static void module_env(void)
 {
     OSVERSIONINFO ver;
@@ -426,50 +463,58 @@ static void module_env(void)
         (unsigned long)ver.dwMinorVersion, (unsigned long)ver.dwBuildNumber);
     out("env: memory %lu KB, %lu KB free; uptime %lu ms", (unsigned long)(ms.dwTotalPhys / 1024),
         (unsigned long)(ms.dwAvailPhys / 1024), (unsigned long)GetTickCount());
-    /* toolhelp.dll looked up, not linked: a Windows Mobile build without it
-     * refused to start v2 at all (the owner, 2026-10-23: "it isn't doing
-     * anything when it's clicked on"). */
-    {
-        HMODULE th = LoadLibraryW(L"toolhelp.dll");
-        HANDLE (*snapshot)(DWORD, DWORD) = NULL;
-        BOOL (*first)(HANDLE, PROCESSENTRY32 *) = NULL;
-        BOOL (*next)(HANDLE, PROCESSENTRY32 *) = NULL;
-        BOOL (*close_snap)(HANDLE) = NULL;
-        FARPROC a;
-        if (!th) {
-            out("env: no toolhelp.dll: no process list");
-            return;
-        }
-        a = GetProcAddressW(th, L"CreateToolhelp32Snapshot");
-        memcpy(&snapshot, &a, sizeof a);
-        a = GetProcAddressW(th, L"Process32First");
-        memcpy(&first, &a, sizeof a);
-        a = GetProcAddressW(th, L"Process32Next");
-        memcpy(&next, &a, sizeof a);
-        a = GetProcAddressW(th, L"CloseToolhelp32Snapshot");
-        memcpy(&close_snap, &a, sizeof a);
-        if (!snapshot || !first || !next) {
-            out("env: toolhelp.dll lacks the process functions: no process list");
-            return;
-        }
-        snap = snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
-        if (snap == INVALID_HANDLE_VALUE) {
-            out("env: no process list, error %lu", (unsigned long)GetLastError());
-            return;
-        }
-        pe.dwSize = sizeof pe;
-        if (first(snap, &pe))
-            do {
-                char name[64];
-                int k;
-                for (k = 0; pe.szExeFile[k] && k < 63; k++)
-                    name[k] = (char)pe.szExeFile[k];
-                name[k] = 0;
-                out("env: process %s (%lu threads)", name, (unsigned long)pe.cntThreads);
-            } while (next(snap, &pe));
-        if (close_snap)
-            close_snap(snap);
+    if (!toolhelp_load()) {
+        out("env: %s: no process list", th_why);
+        return;
     }
+    snap = th_snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        out("env: no process list, error %lu", (unsigned long)GetLastError());
+        return;
+    }
+    pe.dwSize = sizeof pe;
+    if (th_first(snap, &pe))
+        do {
+            char name[64];
+            int k;
+            for (k = 0; pe.szExeFile[k] && k < 63; k++)
+                name[k] = (char)pe.szExeFile[k];
+            name[k] = 0;
+            out("env: process %s (%lu threads)", name, (unsigned long)pe.cntThreads);
+        } while (th_next(snap, &pe));
+    if (th_close)
+        th_close(snap);
+}
+
+/* Another rp-wmprobe or rp-wmbench running (not this process): its name,
+ * or NULL. 2026-10-23: a copy of rp-wmbench started by hand held its log,
+ * and the suite's own copy then failed behind the probe's window. */
+static const WCHAR *another_copy(void)
+{
+    static WCHAR found[MAX_PATH];
+    HANDLE snap;
+    PROCESSENTRY32 pe;
+    const WCHAR *hit = NULL;
+    if (!toolhelp_load())
+        return NULL;
+    snap = th_snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPNOHEAPS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return NULL;
+    pe.dwSize = sizeof pe;
+    if (th_first(snap, &pe))
+        do {
+            if (pe.th32ProcessID != GetCurrentProcessId() &&
+                (_wcsicmp(pe.szExeFile, L"rp-wmbench.exe") == 0 ||
+                 _wcsicmp(pe.szExeFile, L"rp-wmprobe.exe") == 0)) {
+                wcsncpy(found, pe.szExeFile, MAX_PATH - 1);
+                found[MAX_PATH - 1] = 0;
+                hit = found;
+                break;
+            }
+        } while (th_next(snap, &pe));
+    if (th_close)
+        th_close(snap);
+    return hit;
 }
 
 /* ---- pxa: the processor's registers as Windows Mobile leaves them ---- */
@@ -821,7 +866,17 @@ static void module_bench(void)
             (unsigned long)GetLastError());
         return;
     }
-    WaitForSingleObject(pi.hProcess, 15 * 60 * 1000);
+    if (WaitForSingleObject(pi.hProcess, 15 * 60 * 1000) == WAIT_TIMEOUT) {
+        out("bench: rp-wmbench still running after 15 minutes: left running, its rows (if any) "
+            "read as they are");
+    } else {
+        DWORD code = 0;
+        GetExitCodeProcess(pi.hProcess, &code);
+        if (code)
+            out("bench: rp-wmbench stopped with code %lu (a Windows error number: its log not "
+                "opened, likely held by another copy)",
+                (unsigned long)code);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
     f = CreateFileW(logp, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
@@ -1002,6 +1057,27 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (!win) {
         out("no window, error %lu", (unsigned long)GetLastError());
         return 1;
+    }
+    {
+        const WCHAR *other = another_copy();
+        if (other) {
+            WCHAR msg[MAX_PATH + 96];
+            char name[64];
+            int k;
+            for (k = 0; other[k] && k < 63; k++)
+                name[k] = (char)other[k];
+            name[k] = 0;
+            out("not run: %s is already running (two at once spoil each other's timings and logs)",
+                name);
+            _snwprintf(msg, MAX_PATH + 96,
+                       L"Not started: %s is already running. Close it (or soft-reset), then "
+                       L"start rp-wmprobe again.",
+                       other);
+            status(msg);
+            Sleep(20000);
+            CloseHandle(logf_);
+            return 1;
+        }
     }
     out("== probes and baselines");
     status(L"1 of 9: Windows Mobile itself");
