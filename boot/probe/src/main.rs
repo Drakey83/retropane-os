@@ -38,6 +38,11 @@ mod report;
 /// Printed once the report is complete.
 pub const MARKER: &str = "RETROPANE-PROBE-DONE";
 
+/// `RP_PROBE_PAGES`: the CPU gate's C4 and V7 alone (the random hop by
+/// page size and page-table placement, `suite::pages`) instead of the
+/// benchmark list; the ratchet's rows are untouched.
+pub const PAGES_ONLY: bool = option_env!("RP_PROBE_PAGES").is_some();
+
 /// Which build produced a photo: set by `cargo xtask sdkit` (`RP_BUILD_ID`).
 pub const BUILD: &str = match option_env!("RP_BUILD_ID") {
     Some(b) => b,
@@ -348,65 +353,69 @@ mod image {
 
             let _ = writeln!(log, "benchmarks...");
             let mut r = suite::Runner::new(&mut results);
-            suite::timer(&mut r);
-            suite::frames(&mut r);
-            suite::memory(&mut r, bench_ram);
-            suite::lz4(&mut r, &mut bench_ram[256 * 1024..]);
-            suite::chase(&mut r, "chase_sdram_256k", &mut bench_ram[..256 * 1024]);
-            // The performance gate's CPU lines V1, C5 and C7.
-            suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
-            suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
-            suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
-            // C6: the media unit (iWMMXt) against plain code.
-            if let Some((id, was)) = suite::wmmx(&mut r, &mut bench_ram[..512 * 1024]) {
-                let _ = writeln!(
-                    log,
-                    "iWMMXt: wCID 0x{id:08x}, access was {}",
-                    if was { "on" } else { "off" }
-                );
-            }
-            suite::wmmx_dot(&mut r);
-            suite::mul_sizes(&mut r);
-            suite::pmu(&mut r, &mut bench_ram[..256 * 1024]);
-            // C11: DMA as a copy engine, on the CompactFlash channel (the
-            // probe reads no CF card).
-            if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {
-                suite::dma_copy(&mut r, &mut dma, &mut bench_ram[..256 * 1024]);
-            }
-            suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
-            if let Some(sram) = diag::take_sram() {
-                suite::sram_patterns(&mut r, sram);
-                suite::chase(&mut r, "chase_sram_256k", sram);
-                // V2 and C3: before the page table moves into the SRAM.
-                suite::sram_bandwidth(&mut r, sram, &mut bench_ram[..64 * 1024]);
-                // ADR-0006 rule 1: the same TLB test with the page table in
-                // on-chip SRAM. If the numbers match, table walks are served
-                // from the cache anyway.
-                diag::move_l1_table(&mut sram[..16 * 1024]);
-                suite::tlb(&mut r, "tlb_fit_16_l1sram", "tlb_spill_60_l1sram");
-            }
-            if offscreen.len() >= screen_end - plane.offset {
-                // Off screen, like the fills: the log stays readable.
-                let fb = &mut offscreen[..screen_end - plane.offset];
-                suite::gfx(&mut r, bench_ram, Some((&mut *fb, &plane)));
-                suite::framebuffer(&mut r, fb, &plane);
+            if super::PAGES_ONLY {
+                pages(&mut r);
             } else {
-                suite::gfx(&mut r, bench_ram, None);
-            }
-            if let Some(k) = card.as_mut() {
-                // Programmed I/O first: the device baseline DMA is judged
-                // against. Then the bulk rows by DMA (item 58: where the
-                // card's read time goes), checked against single reads.
-                suite::sd(&mut r, k, &mut bench_ram[..128 * 1024]);
-                k.host_mut().set_dma(true, false);
-                suite::sd_bulk(
-                    &mut r,
-                    k,
-                    &mut bench_ram[..128 * 1024],
-                    ["sd_read_64_blocks_dma", "sd_read_256_blocks_dma"],
-                    "sd_dma_matches",
-                );
-                k.host_mut().set_dma(false, false);
+                suite::timer(&mut r);
+                suite::frames(&mut r);
+                suite::memory(&mut r, bench_ram);
+                suite::lz4(&mut r, &mut bench_ram[256 * 1024..]);
+                suite::chase(&mut r, "chase_sdram_256k", &mut bench_ram[..256 * 1024]);
+                // The performance gate's CPU lines V1, C5 and C7.
+                suite::cache_walk(&mut r, &mut bench_ram[..256 * 1024]);
+                suite::copy_sweep(&mut r, &mut bench_ram[..2 << 20]);
+                suite::copy_pld(&mut r, &mut bench_ram[..512 * 1024]);
+                // C6: the media unit (iWMMXt) against plain code.
+                if let Some((id, was)) = suite::wmmx(&mut r, &mut bench_ram[..512 * 1024]) {
+                    let _ = writeln!(
+                        log,
+                        "iWMMXt: wCID 0x{id:08x}, access was {}",
+                        if was { "on" } else { "off" }
+                    );
+                }
+                suite::wmmx_dot(&mut r);
+                suite::mul_sizes(&mut r);
+                suite::pmu(&mut r, &mut bench_ram[..256 * 1024]);
+                // C11: DMA as a copy engine, on the CompactFlash channel (the
+                // probe reads no CF card).
+                if let Some(mut dma) = rt::take_dma(rp_hal_pxa27x::dma_map::CF) {
+                    suite::dma_copy(&mut r, &mut dma, &mut bench_ram[..256 * 1024]);
+                }
+                suite::tlb(&mut r, "tlb_fit_16", "tlb_spill_60");
+                if let Some(sram) = diag::take_sram() {
+                    suite::sram_patterns(&mut r, sram);
+                    suite::chase(&mut r, "chase_sram_256k", sram);
+                    // V2 and C3: before the page table moves into the SRAM.
+                    suite::sram_bandwidth(&mut r, sram, &mut bench_ram[..64 * 1024]);
+                    // ADR-0006 rule 1: the same TLB test with the page table in
+                    // on-chip SRAM. If the numbers match, table walks are served
+                    // from the cache anyway.
+                    diag::move_l1_table(&mut sram[..16 * 1024]);
+                    suite::tlb(&mut r, "tlb_fit_16_l1sram", "tlb_spill_60_l1sram");
+                }
+                if offscreen.len() >= screen_end - plane.offset {
+                    // Off screen, like the fills: the log stays readable.
+                    let fb = &mut offscreen[..screen_end - plane.offset];
+                    suite::gfx(&mut r, bench_ram, Some((&mut *fb, &plane)));
+                    suite::framebuffer(&mut r, fb, &plane);
+                } else {
+                    suite::gfx(&mut r, bench_ram, None);
+                }
+                if let Some(k) = card.as_mut() {
+                    // Programmed I/O first: the device baseline DMA is judged
+                    // against. Then the bulk rows by DMA (item 58: where the
+                    // card's read time goes), checked against single reads.
+                    suite::sd(&mut r, k, &mut bench_ram[..128 * 1024]);
+                    k.host_mut().set_dma(true, false);
+                    suite::sd_bulk(
+                        &mut r,
+                        k,
+                        &mut bench_ram[..128 * 1024],
+                        ["sd_read_64_blocks_dma", "sd_read_256_blocks_dma"],
+                        "sd_dma_matches",
+                    );
+                    k.host_mut().set_dma(false, false);
+                }
             }
             let _ = writeln!(log, "done");
         }
@@ -660,6 +669,107 @@ mod image {
 
     /// Formats into a fixed line buffer (cut if too long).
     /// The snapshot value of the whitelisted register `name` (0 if absent).
+    /// [`super::PAGES_ONLY`]: the random hop over 8 MiB of the RAM pool by
+    /// page size, the second-level tables in SDRAM, then in the internal
+    /// SRAM, then with the first-level table moved into the SRAM too
+    /// (ADR-0006 rule 1). 8 MiB is past the D-TLB's reach at every size (32
+    /// entries: 32 MiB of sections fit, 2 MiB of 64 KiB pages, 128 KiB of
+    /// 4 KiB ones), so the sections are the reference with no misses.
+    fn pages(r: &mut suite::Runner) {
+        use rp_hal_pxa27x::mmu::Pages;
+        use suite::PageRow;
+        const WINDOW: usize = 8 << 20;
+        let row = |name, tlb, pages, l2_sram| PageRow {
+            name,
+            tlb,
+            pages,
+            l2_sram,
+        };
+        let Some(pool) = rp_hal_x51v::devices::take_ram_pool_bytes() else {
+            r.check("pages", false, "no RAM pool");
+            return;
+        };
+        let (backing, rest) = pool.split_at_mut(WINDOW);
+        let l2_sdram = &mut rest[..8 * 1024];
+        let Some(sram) = diag::take_sram() else {
+            suite::pages(
+                r,
+                backing,
+                l2_sdram,
+                None,
+                &[
+                    row(
+                        "pages_8m_sections",
+                        "pages_8m_sections_dtlb",
+                        Pages::Sections,
+                        false,
+                    ),
+                    row("pages_8m_64k", "pages_8m_64k_dtlb", Pages::Large, false),
+                    row("pages_8m_4k", "pages_8m_4k_dtlb", Pages::Small, false),
+                ],
+            );
+            r.check("pages_sram", false, "no SRAM");
+            return;
+        };
+        let (l1_sram, rest) = sram.split_at_mut(16 * 1024);
+        let l2_sram = &mut rest[..8 * 1024];
+        suite::pages(
+            r,
+            backing,
+            l2_sdram,
+            Some(&mut *l2_sram),
+            &[
+                row(
+                    "pages_8m_sections",
+                    "pages_8m_sections_dtlb",
+                    Pages::Sections,
+                    false,
+                ),
+                row("pages_8m_64k", "pages_8m_64k_dtlb", Pages::Large, false),
+                row("pages_8m_4k", "pages_8m_4k_dtlb", Pages::Small, false),
+                row(
+                    "pages_8m_4k_l2sram",
+                    "pages_8m_4k_l2sram_dtlb",
+                    Pages::Small,
+                    true,
+                ),
+                row(
+                    "pages_8m_64k_l2sram",
+                    "pages_8m_64k_l2sram_dtlb",
+                    Pages::Large,
+                    true,
+                ),
+            ],
+        );
+        diag::move_l1_table(l1_sram);
+        suite::pages(
+            r,
+            backing,
+            l2_sdram,
+            Some(l2_sram),
+            &[
+                row(
+                    "pages_8m_sections_l1sram",
+                    "pages_8m_sections_l1sram_dtlb",
+                    Pages::Sections,
+                    false,
+                ),
+                row(
+                    "pages_8m_4k_l1sram",
+                    "pages_8m_4k_l1sram_dtlb",
+                    Pages::Small,
+                    false,
+                ),
+                row(
+                    "pages_8m_4k_l1l2sram",
+                    "pages_8m_4k_l1l2sram_dtlb",
+                    Pages::Small,
+                    true,
+                ),
+            ],
+        );
+    }
+
     fn reg_value(soc: &[u32; diag::COUNT], name: &str) -> u32 {
         diag::GROUPS
             .iter()

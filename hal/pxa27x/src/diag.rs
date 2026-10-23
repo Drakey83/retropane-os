@@ -396,6 +396,93 @@ mod target {
         }
     }
 
+    /// Maps `backing` (identity-mapped SDRAM, 1 MiB aligned, a whole number
+    /// of MiB, at most 16) a second time at `virt` (1 MiB aligned, in the
+    /// native slots `0xC0000000`-`0xFDFFFFFF`, mapping nothing yet) as
+    /// `pages`, its second-level tables in `l2` (1 KiB aligned,
+    /// identity-mapped: SDRAM or the internal SRAM; unused for sections),
+    /// and runs `f` on the window; then the window is written back and
+    /// unmapped. The CPU gate's C4 and V7 (the random hop by page size and
+    /// table placement). `backing`'s own address isn't used meanwhile (it
+    /// is borrowed), so the VIVT cache never holds the two aliases at once.
+    /// False if refused (nothing mapped).
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn with_window(
+        virt: u32,
+        backing: &mut [u8],
+        pages: crate::mmu::Pages,
+        l2: &mut [u8],
+        f: &mut dyn FnMut(&mut [u8]),
+    ) -> bool {
+        const MIB: u32 = 1 << 20;
+        let (phys, len) = (backing.as_ptr() as u32, backing.len() as u32);
+        let mib = len / MIB;
+        let fits = len.is_multiple_of(MIB)
+            && (1..=16).contains(&mib)
+            && phys.is_multiple_of(MIB)
+            && crate::mmu::SDRAM.contains(&phys)
+            && phys + len <= crate::mmu::SDRAM.end
+            && virt.is_multiple_of(MIB)
+            && virt >= 0xC000_0000
+            && virt + len <= 0xFE00_0000
+            && (pages == crate::mmu::Pages::Sections
+                || (l2.len() >= 1024 * mib as usize
+                    && (l2.as_ptr() as usize).is_multiple_of(1024)));
+        // Physical addresses are virtual ones only under the bring-up map.
+        if !fits || crate::devmap::kernel_map() {
+            return false;
+        }
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let l1 = (ttb & !0x3FFF) as *mut u32;
+        let first = (virt >> 20) as usize;
+        // SAFETY: the live first-level table, identity-mapped (bring-up
+        // map, checked); reads of the window's entries.
+        if (0..mib as usize).any(|i| unsafe { l1.add(first + i).read_volatile() } != 0) {
+            return false;
+        }
+        // Nothing of `backing` left in the cache under its own address.
+        crate::cpu::clean_invalidate_range(phys, len);
+        let l2_phys = l2.as_ptr() as u32;
+        // SAFETY: `l2` is caller-owned, 1 KiB aligned (so word aligned) and
+        // at least 1 KiB a MiB long (checked); reborrowed as words for this
+        // call only.
+        let words = unsafe {
+            core::slice::from_raw_parts_mut(l2.as_mut_ptr().cast::<u32>(), 256 * mib as usize)
+        };
+        crate::mmu::window_tables(words, phys, mib, pages);
+        crate::cpu::clean_range(l2_phys, 1024 * mib);
+        for i in 0..mib {
+            let d = match pages {
+                crate::mmu::Pages::Sections => {
+                    crate::mmu::section(phys + i * MIB, crate::mmu::Memory::Normal)
+                }
+                _ => crate::mmu::coarse(l2_phys + i * 1024),
+            };
+            // SAFETY: entries for the window's unmapped MiBs (checked
+            // above), in the live table; nothing running uses them.
+            unsafe { l1.add(first + i as usize).write_volatile(d) };
+        }
+        crate::cpu::clean_range(l1 as u32 + 4 * first as u32, 4 * mib);
+        crate::cpu::invalidate_tlb_all();
+        // SAFETY: `virt..virt + len` now maps `backing`'s frames, which are
+        // borrowed mutably for this call and not touched through their own
+        // address until it returns; the slice lives only inside `f`.
+        let window = unsafe { core::slice::from_raw_parts_mut(virt as *mut u8, len as usize) };
+        f(window);
+        crate::cpu::clean_invalidate_range(virt, len);
+        for i in 0..mib as usize {
+            // SAFETY: the entries written above, back to faulting.
+            unsafe { l1.add(first + i).write_volatile(0) };
+        }
+        crate::cpu::clean_range(l1 as u32 + 4 * first as u32, 4 * mib);
+        crate::cpu::invalidate_tlb_all();
+        true
+    }
+
     /// Moves the live first-level page table to `to` (16 KiB aligned, 16 KiB
     /// of memory owned by the caller, e.g. from [`take_sram`]) and makes the
     /// MMU use it: the ADR-0006 rule 1 experiment. The table's contents are
@@ -448,7 +535,7 @@ mod target {
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
     coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs3_timing, set_cs3_vlio, snapshot,
-    take_sram, take_sram_words,
+    take_sram, take_sram_words, with_window,
 };
 
 #[cfg(test)]

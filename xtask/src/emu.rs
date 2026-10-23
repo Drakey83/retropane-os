@@ -9821,6 +9821,88 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");
+    probe_pages(root)
+}
+
+/// The probe's `RP_PROBE_PAGES` variant (the CPU gate's C4 and V7): the
+/// same 8 MiB window mapped as sections, 64 KiB and 4 KiB pages, its
+/// tables in SDRAM and the internal SRAM, then the first-level table moved
+/// into the SRAM. The emulator's MMU walks every one (the times and TLB
+/// counts are the device's: emulator.md), so this checks each mapping
+/// reads the chain back (no fault, no failed check) and every row is in
+/// the checksummed report.
+fn probe_pages(root: &Path) -> Result<(), String> {
+    let image = variant_image(root, "rp-probe", ("RP_PROBE_PAGES", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    // Under the loader, as on the device (`cargo xtask load`).
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let output = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l.to_string())
+        .ok_or("probe pages: never came back to the loader")?;
+    let mut lines = 0;
+    for l in output
+        .lines()
+        .filter(|l| l.starts_with('P') && l.contains('|'))
+    {
+        check_report_line(l)?;
+        lines += 1;
+        let text = l.split_once('|').map_or("", |(_, t)| t);
+        let mut words = text.split_whitespace();
+        if words.next() == Some("check") && words.nth(1) == Some("FAIL") {
+            return Err(format!("probe pages: a check failed: {}", text.trim()));
+        }
+    }
+    for row in [
+        "pages_8m_sections",
+        "pages_8m_64k",
+        "pages_8m_4k",
+        "pages_8m_4k_l2sram",
+        "pages_8m_64k_l2sram",
+        "pages_8m_sections_l1sram",
+        "pages_8m_4k_l1sram",
+        "pages_8m_4k_l1l2sram",
+    ] {
+        let dtlb = format!("{row}_dtlb");
+        let named = |n: &str| {
+            output
+                .lines()
+                .filter_map(|l| l.split_once('|').map(|(_, t)| t))
+                .any(|t| t.split_whitespace().any(|w| w == n))
+        };
+        if !named(row) || !named(&dtlb) {
+            return Err(format!(
+                "probe pages: `{row}` or `{dtlb}` missing:
+{output}"
+            ));
+        }
+    }
+    if crashed(&output) || output.matches("check pages_mapping OK").count() != 2 {
+        return Err(format!(
+            "probe pages: crashed, or a window wasn't the backing's frames:
+{output}"
+        ));
+    }
+    eprintln!("    probe pages OK: {lines} report lines, every mapping chased");
     Ok(())
 }
 

@@ -103,6 +103,48 @@ pub const fn small_page(phys: u32, ap: u32) -> u32 {
     (phys & 0xFFFF_F000) | ap4 | (1 << 3) | (1 << 2) | 0b10
 }
 
+/// A second-level large-page (64 KiB) descriptor, write-back cacheable,
+/// `ap` for all four subpages; the table holds it in 16 consecutive
+/// entries (one per 4 KiB of the page).
+#[must_use]
+pub const fn large_page(phys: u32, ap: u32) -> u32 {
+    let ap4 = (ap << 10) | (ap << 8) | (ap << 6) | (ap << 4);
+    (phys & 0xFFFF_0000) | ap4 | (1 << 3) | (1 << 2) | 0b01
+}
+
+/// How a test window's memory is mapped (the CPU gate's C4 and V7: the
+/// random hop by page size).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pages {
+    /// 1 MiB sections (the bring-up map's way).
+    Sections,
+    /// 64 KiB large pages.
+    Large,
+    /// 4 KiB small pages (the kernel's map).
+    Small,
+}
+
+/// The second-level tables mapping `mib` MiB of physical memory from
+/// `phys` (1 MiB aligned) as `pages`, kernel read/write, write-back: 256
+/// words a MiB into `l2`. Nothing to do for [`Pages::Sections`].
+///
+/// # Panics
+/// If `l2` holds fewer than 256 words a MiB.
+pub fn window_tables(l2: &mut [u32], phys: u32, mib: u32, pages: Pages) {
+    assert!(
+        l2.len() >= 256 * mib as usize,
+        "second-level tables too small"
+    );
+    for (k, d) in l2[..256 * mib as usize].iter_mut().enumerate() {
+        let at = phys + (k as u32) * 4096;
+        *d = match pages {
+            Pages::Sections => 0,
+            Pages::Large => large_page(at & !0xFFFF, 0b01),
+            Pages::Small => small_page(at, 0b01),
+        };
+    }
+}
+
 /// The top MiB as pages instead of a section: the vector page (kernel
 /// only: the section left it, and the rest of SDRAM's first MiB,
 /// user-writable) and the KData page (user read-only, kernel read/write);
@@ -222,6 +264,39 @@ mod tests {
         }
         assert_eq!(HIGH_L2 % 1024, 0);
         assert_eq!(HIGH_L1_INDEX, (KDATA_VIRT >> 20) as usize);
+    }
+
+    #[test]
+    fn window_tables_map_every_4k_of_each_page_size() {
+        let phys = 0xA900_0000;
+        let mut l2 = [0xFFFF_FFFFu32; 512];
+        window_tables(&mut l2, phys, 2, Pages::Small);
+        // Each entry its own 4 KiB, kernel read/write (AP 01), write-back,
+        // type small (0b10); the second MiB's table follows the first's.
+        assert_eq!(l2[0], 0xA900_055E);
+        assert_eq!(l2[1], 0xA900_155E);
+        assert_eq!(l2[256], 0xA910_055E);
+        assert_eq!(l2[511], 0xA91F_F55E);
+        window_tables(&mut l2, phys, 2, Pages::Large);
+        // Sixteen entries a 64 KiB page, each naming the page's base, type
+        // large (0b01).
+        assert!(l2[..16].iter().all(|&d| d == 0xA900_055D));
+        assert_eq!(l2[16], 0xA901_055D);
+        assert_eq!(l2[511], 0xA91F_055D);
+        // What a walk would make of a virtual offset, both ways: the same
+        // physical address.
+        for off in [0u32, 0x1234, 0xF_FFFC, 0x10_0000, 0x1F_FFFC] {
+            let d = l2[(off >> 12) as usize];
+            assert_eq!((d & 0xFFFF_0000) | (off & 0xFFFF), phys + off);
+        }
+        window_tables(&mut l2, phys, 2, Pages::Sections);
+        assert!(l2.iter().all(|&d| d == 0));
+    }
+
+    #[test]
+    #[should_panic(expected = "too small")]
+    fn window_tables_refuse_a_short_table() {
+        window_tables(&mut [0; 255], 0xA900_0000, 1, Pages::Small);
     }
 
     #[test]

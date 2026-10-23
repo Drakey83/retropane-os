@@ -1202,6 +1202,84 @@ mod target {
         });
     }
 
+    /// One row of [`pages`]: the chase's name, its D-TLB miss count's, the
+    /// page size, and whether the second-level tables sit in the internal
+    /// SRAM.
+    pub struct PageRow {
+        /// The chase's result name.
+        pub name: &'static str,
+        /// The D-TLB miss count's name.
+        pub tlb: &'static str,
+        /// How the window is mapped.
+        pub pages: rp_hal_pxa27x::mmu::Pages,
+        /// The second-level tables in the internal SRAM (else SDRAM).
+        pub l2_sram: bool,
+    }
+
+    /// The CPU gate's C4 and V7: [`chase`] over `backing` (SDRAM, 1 MiB
+    /// aligned, whole MiBs: past the 32-entry D-TLB's reach at every page
+    /// size used) mapped a second time at `0xC0000000` as each row says,
+    /// then one more pass of 4,096 hops with the D-TLB misses counted.
+    /// `l2_sdram` and `l2_sram`: second-level tables, 1 KiB aligned, 1 KiB
+    /// a MiB.
+    pub fn pages(
+        r: &mut Runner,
+        backing: &mut [u8],
+        l2_sdram: &mut [u8],
+        mut l2_sram: Option<&mut [u8]>,
+        rows: &[PageRow],
+    ) {
+        use rp_hal_pxa27x::pmu::{self, Event};
+        let mut all_same = true;
+        for row in rows {
+            let l2 = if row.l2_sram {
+                match l2_sram.as_deref_mut() {
+                    Some(t) => t,
+                    None => {
+                        r.check(row.name, false, "no SRAM");
+                        continue;
+                    }
+                }
+            } else {
+                &mut *l2_sdram
+            };
+            let mut misses = 0;
+            let mapped =
+                rp_hal_pxa27x::diag::with_window(0xC000_0000, backing, row.pages, l2, &mut |w| {
+                    chase(r, row.name, w);
+                    // `chase` left its chain in the window: one more pass,
+                    // counted.
+                    let s = pmu::start([Event::DtlbMiss, Event::DcacheMiss, Event::Instruction]);
+                    let mut at = 0usize;
+                    for _ in 0..CHASE_HOPS {
+                        let b = &w[at * 32..at * 32 + 4];
+                        at = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+                    }
+                    black_box(at);
+                    misses = pmu::read(s).events[0];
+                });
+            if !mapped {
+                r.check(row.name, false, "not mapped");
+                continue;
+            }
+            r.count(row.tlb, misses);
+            // The window must have been `backing`'s own frames: the chain
+            // `chase` wrote through it, read back at `backing`'s address
+            // (the window was written back as it closed).
+            let lines = (backing.len() / 32).next_power_of_two() / 2;
+            let step = lines * 5 / 8 + 1;
+            let same = (0..lines).all(|i| {
+                let b = &backing[i * 32..i * 32 + 4];
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]]) == ((i + step) % lines) as u32
+            });
+            if !same {
+                all_same = false;
+                r.check(row.name, false, "other frames");
+            }
+        }
+        r.check("pages_mapping", all_same, "");
+    }
+
     /// TLB-miss cost: one read per 1 MiB section of SDRAM, over
     /// [`TLB_FIT`] sections (all fit the 32-entry D-TLB) and [`TLB_SPILL`]
     /// (every read misses). The reads stay in cache (each section's address is
