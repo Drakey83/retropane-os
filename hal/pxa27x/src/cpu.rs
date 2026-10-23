@@ -158,10 +158,10 @@ pub fn invalidate_tlb_entry(mva: u32) {
 /// (the CPU gate's C4: TLB lock-down). The entry is discarded first, as a
 /// lock of an address the TLB already holds would hold it twice. Locked
 /// entries leave fewer for the rest; [`unlock_dtlb`] frees them all.
-/// **The encoding (`c10, c8, 0`) is from Intel's XScale core manual as
-/// recalled, not checked against the manual in this repository: an
-/// unverified claim until a device run shows the locked addresses no longer
-/// missing** (rp-probe's pages run; Dell's kernel never uses lock-down).
+/// The encoding (`c10, c8, 0`), recalled from Intel's XScale core manual,
+/// is **verified on the X51v** (rp-probe pages run 3, 2026-10-22,
+/// `probe-0070`: 16 of 64 thrashing pages locked, the D-TLB's misses fell
+/// from 4,224 to 3,264 a pass; docs/hw/cpu.md). Dell's kernel never locks.
 #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
 pub fn lock_dtlb(mva: u32) {
     // SAFETY: TLB maintenance only: the locked entry is a translation of

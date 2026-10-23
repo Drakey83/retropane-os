@@ -105,3 +105,24 @@ worst case for 4 KiB pages is 5% over sections (473 against 449 ns),
 where with the tables in SDRAM it is 2.26x. Run 1's own chase (a few
 pages at a time) repeated its numbers within 0.1%.
 
+**Run 3 (2026-10-22, `local/rp-probe-pages3.txt`, `probe-0070`): TLB
+lock-down works.** `cpu::lock_dtlb` (`mcr p15, 0, va, c10, c8, 0`,
+recalled from Intel's XScale manual and verified here; Dell's kernel never
+locks) and `unlock_dtlb` (`c10, c8, 1`). `suite::tlb_lock`: a chain
+through one line of each of 64 pages in turn (twice the D-TLB's 32
+entries, every line in the cache, so each hop's cost is the TLB's), 4 KiB
+pages, then the first 16 pages locked:
+
+| Page tables | Nothing locked | 16 of 64 locked |
+|---|---|---|
+| In SDRAM | 568.5 ns a hop, 4,224 misses a pass | 440.9 ns, 3,264 misses |
+| Both levels in the SRAM | 117.1 ns, 4,224 misses | 95.1 ns, 3,264 misses |
+
+The locked pages stopped missing (960 fewer misses a pass: 15 of every 64
+hops). A walk costs ~544 ns with the tables in SDRAM and ~94 ns with both
+levels in the SRAM when the data itself is in the cache (the walk is then
+the whole wait; run 2's ~24 ns was the walk's extra over a hop that also
+missed the cache). Each locked entry leaves one fewer of the 32 for
+everything else: locking pays for pages that are hot but would be evicted
+(the vectors, the kernel's stacks, KData), a choice for the memory ADR.
+

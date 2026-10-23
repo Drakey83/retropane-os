@@ -199,7 +199,9 @@ watching.
   pages (tables in SDRAM), 450.2 with both tables in the SRAM. **Worst
   case** (run 2, a new 4 KiB page every hop): 1,016 ns a hop with the
   tables in SDRAM, 473 with both levels in the SRAM (sections 449); a
-  miss ~550 / ~24 ns. Details: cpu.md.
+  miss ~550 / ~24 ns. **D-TLB lock-down works** (`c10, c8, 0`, run 3):
+  a locked page stops missing; a walk with the data cached costs ~544 ns
+  (tables in SDRAM) or ~94 ns (both levels in the SRAM). Details: cpu.md.
   `memcpy` with its prefetch 128 bytes ahead copies 109 MB/s from memory
   (96 at 64 bytes, 47 with none); DMA copies SDRAM to SDRAM at 45 MB/s,
   the CPU keeping 86% of its speed meanwhile. SD multi-block reads by DMA
