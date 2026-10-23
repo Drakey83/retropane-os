@@ -233,6 +233,12 @@ each to be measured on the X51v before it is used):**
 - **Find the floats that matter:** the event counters and the cross
   build's float-helper check (perf.md) show which calls are hot.
 
+**Every one of these is implemented** (the owner's directive,
+2026-10-23), in the shared libraries the ports build on (layers 2 and 3
+above), each with its own benchmark on the X51v and an exactness check
+against a float build (Q3CE's method), not only the ones a first port
+happens to need.
+
 **The Doom family means the 3D (GLES) versions** (owner, 2026-10-23):
 DOOM, DOOM II, Heretic and Hexen as hardware-rendered 3D ports, like
 DoomGLES, HereticGLES and HexenGLES, not the 2.5D software renderer. Their
