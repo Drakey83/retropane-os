@@ -3545,7 +3545,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2_R", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
-    let run_gc2x = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_GC2_X", "1"))?;
+    // Every 37th flip: the render table, MBXCLK, the system registers and
+    // COREPLL all sampled.
+    let run_gc2x = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_GC2X_STEP", "37"))?;
+    let run_gc2h2 = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_GC2_H2", "1"),
+        Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
+    )?;
     let run_gc2d = variant_image_with(
         root,
         "rp-gpubench",
@@ -3590,7 +3598,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 43] = [
+    let runs: [GpubenchRun; 44] = [
         (
             "run A",
             &run_a,
@@ -3773,11 +3781,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
+        // Run GC2H2 (GC2H to 169 MHz): checked below.
+        (
+            "run GC2H2",
+            &run_gc2h2,
+            &["GC2: run GC to 169 MHz", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
         // Run GC2X (MBXCLK's reserved bits at divide 1): checked below.
         (
             "run GC2X",
             &run_gc2x,
-            &["GC2X: MBXCLK's reserved bits", "RETROPANE-GPUBENCH: done"],
+            &[
+                "GC2X: every undocumented bit near the cores",
+                "RETROPANE-GPUBENCH: done",
+            ],
             false,
             (0, 0, 0),
         ),
@@ -4491,6 +4510,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 7 * 3,
             ),
             (
+                "run GC2H2",
+                18,
+                "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
+                18,
+                ("  GC2 references at the end: 9 of 9 as at the start", 1),
+                0,
+            ),
+            (
                 "run GC2H",
                 18,
                 "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
@@ -4551,9 +4578,9 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             }
         }
         // GC2X refuses where Windows Mobile's clocks aren't modelled;
-        // stepping, the divide-1 result and every one of the 28 bits tried
-        // (the models draw right whatever the bits), each control right,
-        // and MBXCLK put back clean.
+        // stepping, divide 1's own result and every flip tried (the
+        // models draw right whatever the bits), each control right, and
+        // the clock put back clean.
         if name == "run GC2X" {
             let refused =
                 log.contains("not Windows Mobile's clock and bus timing: nothing changed");
@@ -4561,15 +4588,20 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 .lines()
                 .filter(|l| l.starts_with("  GC2X ") && l.contains(": reads 0x"))
                 .collect::<Vec<_>>();
-            let mapped = tried.len() == 29
-                && tried.iter().all(|l| {
-                    l.contains("; B wrong in 0 of 3 (0 not drawn)")
-                        && l.ends_with("| A wrong in 0 of 1")
-                })
+            let mapped = tried.len() == 13
+                && tried
+                    .iter()
+                    .all(|l| l.contains(": RIGHT AT DIVIDE 1") || l.starts_with("  GC2X NO FLIP"))
+                && tried.iter().all(|l| l.ends_with("| control right"))
+                && log.contains(&format!(
+                    "  GC2X: {} flips tried; {} drew right",
+                    tried.len() - 1,
+                    tried.len() - 1
+                ))
                 && log.contains("  put back: COREPLL 0xbb1, MBXCLK 0x6,");
             if !(refused || mapped) {
                 return Err(format!(
-                    "gpubench run GC2X: neither refused cleanly nor tried every bit:
+                    "gpubench run GC2X: neither refused cleanly nor tried every flip:
 {log}"
                 ));
             }

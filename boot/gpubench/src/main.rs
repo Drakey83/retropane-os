@@ -171,7 +171,14 @@ mod image {
     /// so a failure can't be the test's fault: two more kinds (Gouraud
     /// with its colours capped), twelve settings (dividers 1-4, a second
     /// PLL setting), rising then falling, controls interleaved. Unattended.
-    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H;
+    const GC2: bool = option_env!("RP_GPUBENCH_GC2").is_some() || GC2_D || GC2_F || GC2_H || GC2_H2;
+    /// Run GC2H2: run GC2H further (the owner, 2026-10-23: "can we build
+    /// something to make it run at that ratio?": divide 1 can't be made
+    /// to, so the cores' speed comes from the system clock through divide
+    /// 2): 156.00, 162.50 and 169.00 MHz, the memory alone at divide 4 and
+    /// 3, the cores at 78, 81 and 84.5 MHz at divide 2. 169 MHz is as far
+    /// as `LMTIM`'s 4-bit row-cycle field reaches (15 cycles of 85 ns).
+    const GC2_H2: bool = option_env!("RP_GPUBENCH_GC2_H2").is_some();
     /// Run GC2H: GC2's kinds and rules with the system clock past 133 MHz
     /// (run GC2D: divide 1 fails at every speed, so the cores' speed comes
     /// through divide 2, and the memory runs at twice it): 143.00 and
@@ -184,10 +191,12 @@ mod image {
     /// 58.50 / 1 against 117.00 / 2 (the cores at 58.5 MHz both ways),
     /// then 58.50 / 1 entered five ways. Unattended.
     const GC2_R: bool = option_env!("RP_GPUBENCH_GC2_R").is_some();
-    /// Run GC2X: `MBXCLK`'s reserved bits 31-4 at divide 1, each alone
-    /// (the owner's brute force, point 3; the owner nearby: a bit can hang
-    /// the bus).
-    const GC2_X: bool = option_env!("RP_GPUBENCH_GC2_X").is_some();
+    /// Run GC2X: every undocumented bit near the cores, each alone at
+    /// divide 1 (the owner's brute force, point 3: the render table's
+    /// words, the clock registers' reserved bits; the owner nearby: a bit
+    /// can hang the bus).
+    const GC2_X: bool = option_env!("RP_GPUBENCH_GC2_X").is_some()
+        || option_env!("RP_GPUBENCH_GC2X_STEP").is_some();
     /// Run GC2F: the roadmap's idea (f) by GC2's rules (the owner,
     /// 2026-10-23: "exhaust every idea"): Gouraud where it fails, with the
     /// render table as ours (Dell's 2D driver's) and with each word Dell's
@@ -501,7 +510,35 @@ mod image {
         pressed: bool,
         /// 3D registers [`Rig::frame`] sets to the run's values (run GC2F,
         /// idea (f)): written as each render starts, over the renderer's.
-        over: &'static [(usize, u32)],
+        over: Over,
+    }
+
+    /// Up to eight 3D registers and their values, for [`Rig::over`].
+    #[derive(Clone, Copy)]
+    struct Over {
+        regs: [(usize, u32); 8],
+        n: usize,
+    }
+
+    impl Over {
+        const NONE: Self = Self {
+            regs: [(0, 0); 8],
+            n: 0,
+        };
+
+        /// `regs` (at most eight; the rest dropped).
+        fn of(regs: &[(usize, u32)]) -> Self {
+            let mut o = Self::NONE;
+            for (d, &r) in o.regs.iter_mut().zip(regs) {
+                *d = r;
+                o.n += 1;
+            }
+            o
+        }
+
+        fn as_slice(&self) -> &[(usize, u32)] {
+            &self.regs[..self.n]
+        }
     }
 
     /// The renderer's register writes with [`Rig::over`]'s values in
@@ -583,6 +620,7 @@ mod image {
         fn frame(&mut self, r: &mut Renderer, t: Target) -> Option<u32> {
             rt::check_in();
             let over = self.over;
+            let over = over.as_slice();
             let res = r.render(
                 &mut OverBus {
                     bus: &mut self.e.regs,
@@ -7918,9 +7956,24 @@ mod image {
         (gc2_step(23, 2, 0, 2), "149.50 / 2"),
     ];
 
+    /// GC2H2's settings, rising, as GC2H's.
+    const GC2_H2_STEPS: [(ClockStep, &str); 9] = [
+        (gc2_step(24, 2, 0, 4), "156.00 / 4"),
+        (gc2_step(24, 2, 0, 3), "156.00 / 3"),
+        (gc2_step(24, 2, 0, 2), "156.00 / 2"),
+        (gc2_step(25, 2, 0, 4), "162.50 / 4"),
+        (gc2_step(25, 2, 0, 3), "162.50 / 3"),
+        (gc2_step(25, 2, 0, 2), "162.50 / 2"),
+        (gc2_step(26, 2, 0, 4), "169.00 / 4"),
+        (gc2_step(26, 2, 0, 3), "169.00 / 3"),
+        (gc2_step(26, 2, 0, 2), "169.00 / 2"),
+    ];
+
     /// The settings this build runs (rule 8 for GC2), rising.
     const GC2_STEPS: &[(ClockStep, &str)] = if GC2_D {
         &GC2_D_STEPS
+    } else if GC2_H2 {
+        &GC2_H2_STEPS
     } else if GC2_H {
         &GC2_H_STEPS
     } else if GC2_F {
@@ -8214,6 +8267,8 @@ mod image {
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
             if GC2_D {
                 "idea (d), Gouraud drawn as a bilinear texture of a plane's corners against real Gouraud, the cores at divide 1,"
+            } else if GC2_H2 {
+                "run GC to 169 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 84.5 MHz),"
             } else if GC2_H {
                 "run GC past 133 MHz (the memory alone at divide 4 and 3, the cores at divide 2 to 74.75 MHz),"
             } else if GC2_F {
@@ -8332,7 +8387,7 @@ mod image {
         for (vi, &(vname, over)) in GC2_VARIANTS.iter().enumerate() {
             // Each table from a clean start: the core reset, every register
             // written, the table's own words with them.
-            g.over = over;
+            g.over = Over::of(over);
             r.start_clean();
             if GC2_VARIANTS.len() > 1 {
                 log!(
@@ -8598,7 +8653,7 @@ mod image {
                 );
             }
         }
-        g.over = &[];
+        g.over = Over::NONE;
         soak_label(
             g,
             ["RUN GC2 DONE", "BACK TO NORMAL", "LOG SENT"],
@@ -8927,15 +8982,119 @@ mod image {
         clock_rig_free(g, c);
     }
 
-    // ---- Run GC2X: MBXCLK's reserved bits at divide 1 (2026-10-23) ----
+    // ---- Run GC2X: every undocumented bit near the cores, at divide 1 (2026-10-23) ----
 
-    /// Renders a GC2X bit gets at 58.50 / 1.
+    /// Renders a GC2X flip gets at 58.50 / 1.
     const GC2X_RENDERS: u32 = 3;
+    /// The flip GC2X starts from (`RP_GPUBENCH_GC2X_FROM`): a run stopped
+    /// by a hang is taken up after the bit that hung.
+    const GC2X_FROM: u32 = match option_env!("RP_GPUBENCH_GC2X_FROM") {
+        Some(s) => parse_decimal(s, 0),
+        None => 0,
+    };
+
+    /// Every how many flips GC2X tries (`RP_GPUBENCH_GC2X_STEP`, 1: all;
+    /// the emulator's check samples every kind of register).
+    const GC2X_STEP: u32 = match option_env!("RP_GPUBENCH_GC2X_STEP") {
+        Some(s) => parse_decimal(s, 1),
+        None => 1,
+    };
+
+    /// Where a GC2X flip goes.
+    #[derive(Clone, Copy)]
+    enum Gc2xAt {
+        /// A render-table word, its value as the renderer writes it (put in
+        /// by [`OverBus`] at every render, the clock's changes or not).
+        Table(usize, u32),
+        /// `MBXCLK` (through `clock::restore`, its one writer).
+        MbxClk,
+        /// A system-block register, read and written back with the bit.
+        System(usize),
+    }
+
+    /// GC2X's registers: (name, where, the bits flipped). The render
+    /// table's words first (every bit: run P2d flipped them only at
+    /// Windows Mobile's clock), then the clock registers' reserved bits
+    /// (Intel's datasheet, 4.5; `MBXCLK`, `M24CLK` not in it: above their
+    /// known fields), `COREPLL` last (a write takes effect at once).
+    /// `CLKSLEEP` (deep sleep: only a hard reset wakes the chip) and
+    /// `DISPPLL` (the panel's clock) left out.
+    const GC2X_REGS: [(&str, Gc2xAt, u32); 15] = [
+        ("0x61C", Gc2xAt::Table(0x61C, 0x0002_0004), u32::MAX),
+        ("0x644", Gc2xAt::Table(0x644, 0), u32::MAX),
+        ("0x648", Gc2xAt::Table(0x648, 0), u32::MAX),
+        ("0x64C", Gc2xAt::Table(0x64C, 0), u32::MAX),
+        ("0x6D0", Gc2xAt::Table(0x6D0, 0), u32::MAX),
+        ("0x6D8", Gc2xAt::Table(0x6D8, 0x0100_0000), u32::MAX),
+        ("MBXCLK", Gc2xAt::MbxClk, !0xF),
+        ("SYSCFG", Gc2xAt::System(0x000), 0xF0),
+        ("SYSCLKSRC", Gc2xAt::System(0x02C), !0x3),
+        ("VOVRCLK", Gc2xAt::System(0x044), !0x1),
+        ("PIXCLK", Gc2xAt::System(0x048), !0x1),
+        ("MEMCLK", Gc2xAt::System(0x04C), !0x1),
+        ("M24CLK", Gc2xAt::System(0x050), !0x7),
+        ("SDCLK", Gc2xAt::System(0x058), !0x1),
+        ("COREPLL", Gc2xAt::System(0x038), !0x1FFF),
+    ];
+
+    /// Every flip GC2X makes, in order: (register, bit).
+    fn gc2x_flips() -> impl Iterator<Item = (usize, u32)> {
+        GC2X_REGS.iter().enumerate().flat_map(|(i, &(_, _, bits))| {
+            (0..32)
+                .filter(move |b| bits >> b & 1 != 0)
+                .map(move |b| (i, b))
+        })
+    }
+
+    /// Flip (`i`, `bit`) put in place (`on`) or taken out; the value a
+    /// `System` or `MbxClk` register held before is `was`.
+    fn gc2x_set(g: &mut Rig, i: usize, bit: u32, on: bool, was: u32) {
+        match GC2X_REGS[i].1 {
+            Gc2xAt::Table(off, v) => {
+                g.over = if on {
+                    Over::of(&[(off, v ^ 1 << bit)])
+                } else {
+                    Over::NONE
+                };
+            }
+            Gc2xAt::MbxClk => {
+                let now = g.e.regs.read32(MBXCLK);
+                let v = if on {
+                    now | 1 << bit
+                } else {
+                    now & !(1 << bit)
+                };
+                clock::restore(&mut g.e.regs, v);
+                rt::delay_us(1_000);
+            }
+            Gc2xAt::System(off) => {
+                let v = if on {
+                    g.e.regs.read32(off) | 1 << bit
+                } else {
+                    was
+                };
+                g.e.regs.write32(off, v);
+                rt::delay_us(1_000);
+            }
+        }
+    }
+
+    /// The register a flip touches, read (the render table's from its
+    /// MBX offset; `0x6D0` never read: 0).
+    fn gc2x_read(g: &mut Rig, i: usize) -> u32 {
+        match GC2X_REGS[i].1 {
+            Gc2xAt::Table(0x6D0, _) => 0,
+            Gc2xAt::Table(off, _) => g.e.regs.read32(MBX + off),
+            Gc2xAt::MbxClk => g.e.regs.read32(MBXCLK),
+            Gc2xAt::System(off) => g.e.regs.read32(off),
+        }
+    }
 
     #[inline(never)]
     fn reserved_bits(g: &mut Rig) {
+        let total = gc2x_flips().count();
         log!(
-            "GC2X: MBXCLK's reserved bits 31-4 at divide 1 (the owner's brute force, point 3): 58.50 / 1, each bit set alone over the divider and the enable, read back, {GC2X_RENDERS} RGB565 Gouraud renders checked against the reference, the bit cleared, a control at Windows Mobile's clock; the line before each bit is in the log first (a bit that hangs the bus is named by it)"
+            "GC2X: every undocumented bit near the cores at divide 1 (the owner's brute force, point 3, 2026-10-23: \"make sure we aren't missing anything\"): {total} flips from {GC2X_FROM}: every bit of the render table's 0x61C, 0x644, 0x648, 0x64C, 0x6D0, 0x6D8, then the reserved bits of MBXCLK, SYSCFG, SYSCLKSRC, VOVRCLK, PIXCLK, MEMCLK, M24CLK, SDCLK and COREPLL (CLKSLEEP and DISPPLL left out); each flip alone: its own reference at Windows Mobile's clock, then {GC2X_RENDERS} RGB565 Gouraud renders at 58.50 / 1 against it, the flip taken out, a control; the line before each flip is in the log first (a flip that hangs the bus is named by it; RP_GPUBENCH_GC2X_FROM takes a run up after it)"
         );
         let found = (
             g.e.regs.read32(clock::COREPLL),
@@ -8966,32 +9125,27 @@ mod image {
             clock_rig_free(g, c);
             return;
         };
-        soak_label(
-            g,
-            ["RUN GC2X: MBXCLK", "RESERVED BITS", "REFERENCE"],
-            SOAK_BLUE,
-        );
+        soak_label(g, ["RUN GC2X: EVERY", "HIDDEN BIT", "REFERENCE"], SOAK_BLUE);
         p2w_show(&mut g.e.regs, SOAK_LABEL, 960, PlaneFormat::Rgb565 as u32);
         let _ = underrun_take(&mut g.e.regs);
         let words = gc2::words(0) as usize;
-        if c.spare.len() < 2 * words {
-            log!("  not enough SDRAM for the reference");
+        if c.spare.len() < 3 * words {
+            log!("  not enough SDRAM for the references");
             let _ = r.release(&mut g.pool);
             clock_rig_free(g, c);
             return;
         }
         let (want, rest) = c.spare.split_at_mut(words);
+        let (flip_ref, rest) = rest.split_at_mut(words);
         let first = &mut rest[..words];
+        let target = Target {
+            picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
+            x: 0,
+            y: 0,
+        };
         gc2_scene(g, &mut r, 0, tex);
         r.invalidate_all();
-        let t0 = g.frame(
-            &mut r,
-            Target {
-                picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
-                x: 0,
-                y: 0,
-            },
-        );
+        let t0 = g.frame(&mut r, target);
         gc2_take(g, want);
         gc2_wait();
         let settled = gc2_still(g, 0, want);
@@ -9005,67 +9159,111 @@ mod image {
         log!(
             "  GC2X reference RGB565 Gouraud: {t0:?} us, second read differs in {settled} words, renders 2-5 in {again:?}"
         );
+        let s = GC2R_STATES[2].0;
+        let want_regs = gc2_clock_want(s.speed(), 1);
+        let (mut fixes, mut changes, mut tried) = (0u32, 0u32, 0u32);
         if t0.is_none() || settled != 0 || again != [0; 4] {
             log!("  the reference isn't repeatable: stopped");
         } else {
-            let s = GC2R_STATES[2].0;
-            let want_regs = gc2_clock_want(s.speed(), 1);
-            // No bit first: the divide-1 result to compare each bit with.
-            for bit in core::iter::once(None).chain((4..32).map(Some)) {
-                let mut l2 = heapless_name();
-                match bit {
-                    Some(b) => {
-                        let _ = write!(l2, "BIT {b}");
+            // No flip first: divide 1's own result, each flip's to compare
+            // with. Then every flip from GC2X_FROM.
+            let flips = core::iter::once(None).chain(
+                gc2x_flips()
+                    .map(Some)
+                    .skip(GC2X_FROM as usize)
+                    .step_by(GC2X_STEP as usize),
+            );
+            for (n, flip) in flips.enumerate() {
+                let mut name = heapless_name();
+                match flip {
+                    Some((i, b)) => {
+                        let _ = write!(name, "{} BIT {b}", GC2X_REGS[i].0);
                     }
                     None => {
-                        let _ = write!(l2, "NO BIT");
+                        let _ = write!(name, "NO FLIP");
                     }
                 }
-                soak_label(g, ["RUN GC2X", l2.as_str(), "58.50 / 1"], SOAK_BLUE);
-                if clock_apply(g, s).is_none() {
-                    clock_restore(&mut g.e.regs);
-                    log!("  GC2X {}: the clock didn't take", l2.as_str());
-                    continue;
+                if n % 8 == 0 || flip.is_none() {
+                    let mut l2 = heapless_name();
+                    let _ = write!(l2, "{} OF {total}", GC2X_FROM as usize + n);
+                    soak_label(g, ["RUN GC2X", l2.as_str(), name.as_str()], SOAK_BLUE);
                 }
-                let clk = g.e.regs.read32(MBXCLK);
-                let set = clk | bit.map_or(0, |b| 1 << b);
-                log!("  GC2X {}: MBXCLK 0x{clk:x} written 0x{set:x}", l2.as_str());
-                clock::restore(&mut g.e.regs, set);
-                rt::delay_us(1_000);
-                let back = g.e.regs.read32(MBXCLK);
+                log!("  GC2X flip {}: {}", GC2X_FROM as usize + n, name.as_str());
+                let was = flip.map_or(0, |(i, _)| gc2x_read(g, i));
+                // Its own reference at Windows Mobile's clock.
+                if let Some((i, b)) = flip {
+                    gc2x_set(g, i, b, true, was);
+                }
+                r.start_clean();
+                r.invalidate_all();
+                let drawn = g.frame(&mut r, target).is_some();
+                gc2_take(g, flip_ref);
+                let changed = flip_ref
+                    .iter()
+                    .zip(want.iter())
+                    .filter(|(a, b)| a != b)
+                    .count();
+                // 58.50 / 1, the flip put back after the clock's writes.
+                let took = clock_apply(g, s).is_some();
+                if let Some((i, b)) = flip {
+                    gc2x_set(g, i, b, true, was);
+                }
+                let back = flip.map_or(0, |(i, _)| gc2x_read(g, i));
                 r.start_clean();
                 let (mut b_side, mut b_base) = (Gc2Side::new(false), Gc2Baseline(None));
                 for _ in 0..GC2X_RENDERS {
+                    if !took {
+                        break;
+                    }
                     let _ = gc2_render(
                         g,
                         &mut r,
                         0,
-                        want,
+                        flip_ref,
                         first,
                         want_regs,
                         &mut b_base,
                         &mut b_side,
                     );
                 }
-                // The bit cleared before anything else touches the clock.
-                clock::restore(&mut g.e.regs, clk);
-                rt::delay_us(1_000);
+                // Out again, Windows Mobile's clock, a control.
+                if let Some((i, b)) = flip {
+                    gc2x_set(g, i, b, false, was);
+                }
                 clock_restore(&mut g.e.regs);
                 r.start_clean();
                 let (mut a_side, mut a_base) = (Gc2Side::new(false), Gc2Baseline(None));
                 let _ = gc2_render(g, &mut r, 0, want, first, wm, &mut a_base, &mut a_side);
+                let fixed = took && drawn && b_side.renders == GC2X_RENDERS && b_side.wrong == 0;
+                tried += u32::from(flip.is_some());
+                fixes += u32::from(fixed && flip.is_some());
+                changes += u32::from(changed != 0);
                 log!(
-                    "  GC2X {}: reads 0x{back:x}; B wrong in {} of {} ({} not drawn), {} | A wrong in {} of {}",
-                    l2.as_str(),
+                    "  GC2X {}: reads 0x{back:x}; at Windows Mobile's clock the picture {}; 58.50 / 1 {} wrong in {} of {} ({} pixels){} | control {}",
+                    name.as_str(),
+                    if !drawn {
+                        "NOT DRAWN"
+                    } else if changed == 0 {
+                        "as without"
+                    } else {
+                        "CHANGED"
+                    },
+                    if took { "" } else { "(the clock didn't take)" },
                     b_side.wrong,
                     b_side.renders,
-                    b_side.undrawn,
-                    Gc2Pixels(&b_side.tally),
-                    a_side.wrong,
-                    a_side.renders
+                    b_side.tally.pixels(),
+                    if fixed { ": RIGHT AT DIVIDE 1" } else { "" },
+                    if a_side.wrong == 0 && a_side.undrawn == 0 {
+                        "right"
+                    } else {
+                        "WRONG"
+                    }
                 );
             }
         }
+        log!(
+            "  GC2X: {tried} flips tried; {fixes} drew right at divide 1; {changes} changed the picture at Windows Mobile's clock"
+        );
         soak_label(
             g,
             ["RUN GC2X DONE", "BACK TO NORMAL", "LOG SENT"],
@@ -9075,6 +9273,7 @@ mod image {
             rt::delay_us(100_000);
             rt::check_in();
         }
+        g.over = Over::NONE;
         for k in 0..3 {
             g.set(&mut r, k, None);
         }
@@ -9391,9 +9590,11 @@ mod image {
             } else if START {
                 "N (the start-up watched: the display read after every stage, then G5's opening, cards to report)"
             } else if GC2_X {
-                "GC2X (MBXCLK's reserved bits 31-4 at divide 1, each alone)"
+                "GC2X (every undocumented bit near the cores, each alone at divide 1)"
             } else if GC2_R {
                 "GC2R (what divide 1 changes in every named register, and 58.50 / 1 entered five ways)"
+            } else if GC2_H2 {
+                "GC2H2 (GC2's kinds and rules, the system clock at 156.00, 162.50 and 169.00 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_H {
                 "GC2H (GC2's kinds and rules, the system clock at 143.00 and 149.50 MHz, the cores at divide 4, 3 and 2)"
             } else if GC2_F {
@@ -9434,7 +9635,7 @@ mod image {
             measured: 0,
             keypad,
             pressed: false,
-            over: &[],
+            over: Over::NONE,
         };
         if START {
             start_watch(&mut g.e.regs, "N4 the keypad taken, the fence written");
