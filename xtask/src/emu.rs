@@ -6281,8 +6281,8 @@ fn mbx_blend_b12(root: &Path) -> Result<(), String> {
         "B12c 4 bpp source through the source palette: ran ",
         "B12d 2 bpp source through the source palette: ran ",
         "B12e header bits 0x01800000 rect (8,4)-(16,8): ran ",
-        "B12f copy onto itself one pixel right, header bits 0x01000000: ran ",
-        "B12f copy onto itself one row down, header bits 0x00800000: ran ",
+        "B12f copy onto itself one pixel right, rows of 256, header bits 0x01000000: ran ",
+        "B12f copy onto itself one row down, rows of 256, header bits 0x00800000: ran ",
         "B12 scale, key and blend put back: yes",
         "B12 done",
     ] {

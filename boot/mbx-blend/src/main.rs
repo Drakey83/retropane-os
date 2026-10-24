@@ -2532,52 +2532,64 @@ mod image {
         }
 
         // (f) The direction bits where they matter: an overlapping copy.
-        // A 32 x 16 block whose pixels name their own (x, y), copied onto
-        // itself one pixel right (needs right-to-left), then one row down
-        // (needs bottom-up), with each bit pattern; right when every
-        // pixel holds its left (upper) neighbour's original, smeared when
-        // copied the wrong way.
-        for (dx, dy, what) in [(1u16, 0u16, "one pixel right"), (0, 1, "one row down")] {
-            for bits in [0u32, 1 << 23, 1 << 24, 1 << 23 | 1 << 24] {
-                let mut blk = [0u32; 512];
-                for (k, v) in blk.iter_mut().enumerate() {
-                    *v = 0xFF00_0000 | ((k / 32) as u32) << 8 | (k % 32) as u32;
-                }
-                set(vram, B12_DST, &blk);
-                let (w, n) = rp_image::need(
-                    cmd::blit(
-                        (Format::BPP32, B12_DST, 128),
-                        (Format::BPP32, B12_DST, 128),
-                        (0, 0),
-                        (dx, dy, 16 + dx, 8 + dy),
-                        cmd::ROP_SRCCOPY,
-                        bits,
-                        0,
-                    ),
-                    "a 2D rectangle",
-                );
-                let ran = go(e, vram, &w[..n], "B12f overlapping copy");
-                ok &= ran;
-                let got = read(vram);
-                let (mut right, mut wrong) = (0u32, 0u32);
-                for y in 0..8u32 {
-                    for x in 0..16u32 {
-                        let (tx, ty) = (x + u32::from(dx), y + u32::from(dy));
-                        let v = got[(32 * ty + tx) as usize];
-                        if v == 0xFF00_0000 | y << 8 | x {
-                            right += 1;
-                        } else {
-                            wrong += 1;
+        // A block whose pixels name their own (x, y), copied onto itself
+        // one pixel right (needs right-to-left), then one row down (needs
+        // bottom-up), with each bit pattern, in rows of 16 and of 256
+        // pixels (an engine that reads a short row whole before writing it
+        // would hide a smear only long rows show); right when every pixel
+        // holds its left (upper) neighbour's original.
+        const B12_LONG: usize = 0x00DA_0000;
+        for width in [16u32, 256] {
+            let stride = 4 * (width + 16);
+            for (dx, dy, what) in [(1u32, 0u32, "one pixel right"), (0, 1, "one row down")] {
+                for bits in [0u32, 1 << 23, 1 << 24, 1 << 23 | 1 << 24] {
+                    let mut row = [0u32; 272];
+                    for y in 0..10u32 {
+                        for (x, v) in row[..(width + 16) as usize].iter_mut().enumerate() {
+                            *v = 0xFF00_0000 | y << 16 | x as u32;
+                        }
+                        set(
+                            vram,
+                            B12_LONG + (y * stride) as usize,
+                            &row[..(width + 16) as usize],
+                        );
+                    }
+                    let (w, n) = rp_image::need(
+                        cmd::blit(
+                            (Format::BPP32, B12_LONG, stride as i32),
+                            (Format::BPP32, B12_LONG, stride as i32),
+                            (0, 0),
+                            (dx as u16, dy as u16, (width + dx) as u16, (8 + dy) as u16),
+                            cmd::ROP_SRCCOPY,
+                            bits,
+                            0,
+                        ),
+                        "a 2D rectangle",
+                    );
+                    let ran = go(e, vram, &w[..n], "B12f overlapping copy");
+                    ok &= ran;
+                    let (mut right, mut wrong) = (0u32, 0u32);
+                    let mut first_wrong = None;
+                    for y in 0..8u32 {
+                        for x in 0..width {
+                            let (tx, ty) = (x + dx, y + dy);
+                            let v =
+                                load32_volatile(vram, B12_LONG + (ty * stride + 4 * tx) as usize)
+                                    .unwrap_or(0);
+                            if v == 0xFF00_0000 | y << 16 | x {
+                                right += 1;
+                            } else {
+                                wrong += 1;
+                                first_wrong.get_or_insert((tx, ty, v));
+                            }
                         }
                     }
+                    log!(
+                        "B12f copy onto itself {what}, rows of {width}, header bits 0x{bits:08x}: ran {ran}; of {} pixels {right} right, {wrong} not (a smear when the direction is wrong); first wrong (x, y, word) {first_wrong:?}",
+                        8 * width
+                    );
+                    rt::check_in();
                 }
-                log!(
-                    "B12f copy onto itself {what}, header bits 0x{bits:08x}: ran {ran}; of 128 pixels {right} right, {wrong} not (a smear when the direction is wrong); the target's first words 0x{:08x} 0x{:08x} 0x{:08x}",
-                    got[(32 * u32::from(dy) + u32::from(dx)) as usize],
-                    got[(32 * u32::from(dy) + u32::from(dx) + 1) as usize],
-                    got[(32 * (u32::from(dy) + 1) + u32::from(dx)) as usize]
-                );
-                rt::check_in();
             }
         }
 
