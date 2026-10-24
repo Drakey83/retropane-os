@@ -1147,6 +1147,34 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
             "  CH C71 the same scene rendered whole 20 times: {renders_differ} renders differ from the first, {words_differ} words in all {:?}",
             &first[..nf]
         );
+        // The same picture read 20 times with no render between, each read
+        // held to the first: the CPU's reads of 2700G memory, apart from
+        // the render.
+        keep_picture(g, sc.at[0], &mut keep[..KEPT]);
+        let (mut reads_differ, mut rwords) = (0u32, 0u32);
+        let mut rfirst = [(0u32, 0u32, 0u32, 0u32); 4];
+        let mut rf = 0usize;
+        for _ in 0..20 {
+            let mut n = 0u32;
+            for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
+                let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
+                let b = g.mem.load(sc.at[0] as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+                if a != b {
+                    n += 1;
+                    if rf < rfirst.len() {
+                        rfirst[rf] = ((2 * k % 480) as u32, (2 * k / 480) as u32, a, b);
+                        rf += 1;
+                    }
+                }
+            }
+            reads_differ += u32::from(n > 0);
+            rwords += n;
+            rt::check_in();
+        }
+        log!(
+            "  CH C71 the same picture read 20 times, no render between: {reads_differ} reads differ from the first, {rwords} words in all {:?}",
+            &rfirst[..rf]
+        );
         for slot in 0..=6 {
             g.set(&mut r, slot, None);
         }
