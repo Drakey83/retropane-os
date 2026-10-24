@@ -2833,6 +2833,13 @@ mod image {
                 let render = RENDER_US.with(|u| *u);
                 let copy = (done && super::G21_WAYS[k as usize % super::G21_WAYS.len()].2)
                     .then(|| {
+                        // The screen filled with the sentinel first: a copy
+                        // that silently did nothing can't pass on the last
+                        // copy's picture.
+                        for k in 0..target_words() {
+                            let _ = store32_volatile(vram, SAFE_SCREEN + 4 * k, SENTINEL);
+                        }
+                        cpu::drain_write_buffer();
                         let t = rt::ticks();
                         let ok = copy_2d(e, vram, lay().target, SAFE_SCREEN);
                         (ok, us_since(t), if ok { screen_off(vram) } else { 0 })

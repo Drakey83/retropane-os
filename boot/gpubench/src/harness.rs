@@ -897,6 +897,7 @@ fn g21_scenes(
         let off = sc.target(0);
         let mut times = [None; 2];
         for t in &mut times {
+            g21_blank(g, sc.at[0]);
             r.invalidate_all();
             *t = quiet_frame(g, r, off, Fetch::Paused);
             if t.is_none() {
@@ -906,6 +907,7 @@ fn g21_scenes(
         for (k, w) in reference.chunks_exact_mut(4).enumerate() {
             w.copy_from_slice(&load(g, sc.at[0], k).to_le_bytes());
         }
+        g21_blank(g, sc.at[0]);
         r.invalidate_all();
         let again = quiet_frame(g, r, off, Fetch::Paused);
         let word = |k: usize| {
@@ -937,10 +939,12 @@ fn g21_scenes(
             };
             let mut t = g21::Tally::default();
             for _ in 0..20 {
+                g21_blank(g, at);
                 r.invalidate_all();
                 let us = quiet_frame(g, r, target, fetch);
                 t.render(us, g21::diff(word, |k| load(g, at, k)));
                 if way.copies() && us.is_some() {
+                    g21_blank(g, g21::SCREEN_AT);
                     let (done, copy_us) = g21_copy_in(g, sc.at[0]);
                     let words = if done {
                         g21::diff(|k| load(g, sc.at[0], k), |k| load(g, g21::SCREEN_AT, k)).0
@@ -969,6 +973,16 @@ fn g21_scenes(
             );
         }
     }
+}
+
+/// The 480 x 640 RGB565 picture at `at` filled with [`g21::SENTINEL`] by
+/// the CPU (not the engines under test).
+fn g21_blank(g: &mut Rig, at: u32) {
+    let row = [g21::SENTINEL; 240];
+    for y in 0..g21::H {
+        g.mem.store((at + y * 960) as usize, &row);
+    }
+    g.mem.sync();
 }
 
 /// One 2D copy of the 480 x 640 RGB565 picture at `from` onto run G21's

@@ -25,6 +25,10 @@ pub const SCREEN_AT: u32 = 0;
 pub const SCREEN_BYTES: u32 = W * H * 2;
 const _: () = assert!(SCREEN_AT + SCREEN_BYTES <= SAFE_END);
 
+/// What the CPU fills a picture with before each render or copy into it,
+/// so one that silently doesn't happen can't pass on an earlier picture.
+pub const SENTINEL: u32 = 0x5A5A_5A5A;
+
 /// How a way renders. The screen is at [`SCREEN_AT`] in every way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Way {
