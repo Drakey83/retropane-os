@@ -42,6 +42,10 @@ pub const MARKER: &str = "RETROPANE-PROBE-DONE";
 /// page size and page-table placement, `suite::pages`) instead of the
 /// benchmark list; the ratchet's rows are untouched.
 pub const PAGES_ONLY: bool = option_env!("RP_PROBE_PAGES").is_some();
+/// `RP_PROBE_MINI`: the CPU gate's V1 and C5 alone: the mini data cache's
+/// size and whether streaming through it keeps a hot set in the main one
+/// (`suite::mini_cache`).
+pub const MINI_ONLY: bool = option_env!("RP_PROBE_MINI").is_some();
 
 /// Which build produced a photo: set by `cargo xtask sdkit` (`RP_BUILD_ID`).
 pub const BUILD: &str = match option_env!("RP_BUILD_ID") {
@@ -353,7 +357,9 @@ mod image {
 
             let _ = writeln!(log, "benchmarks...");
             let mut r = suite::Runner::new(&mut results);
-            if super::PAGES_ONLY {
+            if super::MINI_ONLY {
+                mini(&mut r);
+            } else if super::PAGES_ONLY {
                 pages(&mut r);
             } else {
                 suite::timer(&mut r);
@@ -792,6 +798,17 @@ mod image {
                 "tlblock_16_sram_dtlb",
             ],
         );
+    }
+
+    /// [`super::MINI_ONLY`]: the first MiB of the RAM pool as the window,
+    /// the next 64 KiB the hot set.
+    fn mini(r: &mut suite::Runner) {
+        let Some(pool) = rp_hal_x51v::devices::take_ram_pool_bytes() else {
+            r.check("mini_cache", false, "no RAM pool");
+            return;
+        };
+        let (backing, rest) = pool.split_at_mut(1 << 20);
+        suite::mini_cache(r, backing, &mut rest[..64 << 10]);
     }
 
     /// `suite::tlb_lock` in the first MiB of `backing`, mapped with 4 KiB

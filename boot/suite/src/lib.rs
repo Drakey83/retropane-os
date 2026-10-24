@@ -497,6 +497,95 @@ mod target {
         }
     }
 
+    /// The mini data cache (the CPU gate's V1 and C5): `backing` (1 MiB,
+    /// 1 MiB aligned) mapped a second time, once as ordinary sections and
+    /// once into the mini data cache, line walks of 512 bytes to 8 KiB
+    /// through each (where the mini cache stops holding a walk: Intel says
+    /// 2 KiB), then the streaming test: a 24 KiB hot set in `hot` re-walked
+    /// after 1 MiB streams through the window; with the stream in the mini
+    /// cache the hot set should survive in the main one. Each window is
+    /// checked to be `backing`'s own frames.
+    pub fn mini_cache(r: &mut Runner, backing: &mut [u8], hot: &mut [u8]) {
+        use rp_hal_pxa27x::mmu::Pages;
+        const WALKS: [(usize, &str, &str); 6] = [
+            (512, "walk_normal_512", "walk_mini_512"),
+            (1 << 10, "walk_normal_1k", "walk_mini_1k"),
+            (2 << 10, "walk_normal_2k", "walk_mini_2k"),
+            (3 << 10, "walk_normal_3k", "walk_mini_3k"),
+            (4 << 10, "walk_normal_4k", "walk_mini_4k"),
+            (8 << 10, "walk_normal_8k", "walk_mini_8k"),
+        ];
+        const HOT: usize = 24 << 10;
+        let Some(hot) = hot.get_mut(..HOT) else {
+            r.check("mini_cache", false, "hot buffer too small");
+            return;
+        };
+        for (i, b) in hot.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        let mut all_same = true;
+        for (k, pages) in [Pages::Sections, Pages::MiniSections]
+            .into_iter()
+            .enumerate()
+        {
+            let mut l2 = [0u8; 0];
+            let stream_name = ["hot_after_stream_normal", "hot_after_stream_mini"][k];
+            let mapped =
+                rp_hal_pxa27x::diag::with_window(0xC000_0000, backing, pages, &mut l2, &mut |w| {
+                    for (i, b) in w.iter_mut().enumerate() {
+                        *b = (i / 32) as u8 ^ k as u8;
+                    }
+                    for &(size, normal, mini) in &WALKS {
+                        let area = &w[..size];
+                        let iters = ((1 << 20) / size) as u32;
+                        r.run([normal, mini][k], iters, &mut || {
+                            let mut sum = 0u32;
+                            for line in area.chunks_exact(32) {
+                                sum = sum.wrapping_add(u32::from(black_box(line)[0]));
+                            }
+                            black_box(sum);
+                        });
+                    }
+                    // The hot set warmed, 1 MiB streamed through the window,
+                    // then the hot set walked once, timed: 16 times.
+                    let walk = |h: &[u8]| {
+                        let mut sum = 0u32;
+                        for line in h.chunks_exact(32) {
+                            sum = sum.wrapping_add(u32::from(black_box(line)[0]));
+                        }
+                        black_box(sum);
+                    };
+                    let mut ticks = 0u32;
+                    for _ in 0..16 {
+                        walk(hot);
+                        walk(hot);
+                        walk(w);
+                        let t0 = rt::ticks();
+                        walk(hot);
+                        ticks = ticks.wrapping_add(rt::ticks().wrapping_sub(t0));
+                        rt::check_in();
+                    }
+                    r.result(stream_name, ticks, 16);
+                });
+            if !mapped {
+                r.check(stream_name, false, "not mapped");
+                all_same = false;
+                continue;
+            }
+            // Written through the window, read back at `backing`'s address.
+            let same = backing
+                .iter()
+                .enumerate()
+                .step_by(97)
+                .all(|(i, &b)| b == (i / 32) as u8 ^ k as u8);
+            if !same {
+                r.check(stream_name, false, "other frames");
+                all_same = false;
+            }
+        }
+        r.check("mini_mapping", all_same, "");
+    }
+
     /// The data cache's real size (the performance gate's CPU lines V1 and
     /// C5): the first byte of every 32-byte line of a buffer read, again
     /// and again, for buffers of 4 KiB to 256 KiB. While the buffer fits the

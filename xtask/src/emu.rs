@@ -11336,7 +11336,71 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
         ));
     }
     eprintln!("    probe OK: {lines} report lines, all checksums valid, report on screen");
-    probe_pages(root)
+    probe_pages(root)?;
+    probe_mini(root)
+}
+
+/// The probe's `RP_PROBE_MINI` variant (the CPU gate's V1 and C5): the
+/// window mapped as sections and into the mini data cache; the emulator
+/// models no cache (times are the device's: emulator.md), so this checks
+/// both windows map `backing`'s frames and every row is reported.
+fn probe_mini(root: &Path) -> Result<(), String> {
+    let image = variant_image(root, "rp-probe", ("RP_PROBE_MINI", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    crate::sdkit::raw_binary(
+        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &loader,
+    )?;
+    let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let output = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l.to_string())
+        .ok_or("probe mini: never came back to the loader")?;
+    for l in output
+        .lines()
+        .filter(|l| l.starts_with('P') && l.contains('|'))
+    {
+        check_report_line(l)?;
+    }
+    for n in [
+        "walk_normal_512",
+        "walk_mini_512",
+        "walk_normal_2k",
+        "walk_mini_2k",
+        "walk_mini_8k",
+        "hot_after_stream_normal",
+        "hot_after_stream_mini",
+    ] {
+        let named = output
+            .lines()
+            .filter_map(|l| l.split_once('|').map(|(_, t)| t))
+            .any(|t| t.split_whitespace().any(|w| w == n));
+        if !named {
+            return Err(format!("probe mini: `{n}` missing:\n{output}"));
+        }
+    }
+    if crashed(&output) || !output.contains("check mini_mapping OK") {
+        return Err(format!(
+            "probe mini: crashed, or a window wasn't the backing's frames:\n{output}"
+        ));
+    }
+    eprintln!("    probe mini OK: both windows mapped, every row reported");
+    Ok(())
 }
 
 /// The probe's `RP_PROBE_PAGES` variant (the CPU gate's C4 and V7): the

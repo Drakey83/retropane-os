@@ -454,6 +454,7 @@ mod target {
             && virt >= 0xC000_0000
             && virt + len <= 0xFE00_0000
             && (pages == crate::mmu::Pages::Sections
+                || pages == crate::mmu::Pages::MiniSections
                 || (l2.len() >= 1024 * mib as usize
                     && (l2.as_ptr() as usize).is_multiple_of(1024)));
         // Physical addresses are virtual ones only under the bring-up map.
@@ -487,6 +488,9 @@ mod target {
             let d = match pages {
                 crate::mmu::Pages::Sections => {
                     crate::mmu::section(phys + i * MIB, crate::mmu::Memory::Normal)
+                }
+                crate::mmu::Pages::MiniSections => {
+                    crate::mmu::section(phys + i * MIB, crate::mmu::Memory::Mini)
                 }
                 _ => crate::mmu::coarse(l2_phys + i * 1024),
             };

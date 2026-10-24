@@ -16,6 +16,11 @@ pub enum Memory {
     WriteCombine,
     /// Uncached, unbuffered: device registers, accessed exactly as written.
     Device,
+    /// Cached in the XScale's mini data cache, not the main one: the X bit
+    /// (bit 12, TEX[0]) with C 1, B 0 (Intel's XScale core developer's
+    /// manual, the X bit's table; unproven on the X51v until the CPU gate's
+    /// V1/C5 probe run). For streaming data that would evict hot data.
+    Mini,
 }
 
 /// One region of the map: `len` bytes (a multiple of 1 MiB) from `virt` to
@@ -38,12 +43,13 @@ const MIB: u32 = 1 << 20;
 /// and user, bring-up only), cache bits per `memory`.
 #[must_use]
 pub const fn section(phys: u32, memory: Memory) -> u32 {
-    let (c, b) = match memory {
-        Memory::Normal => (1, 1),
-        Memory::WriteCombine => (0, 1),
-        Memory::Device => (0, 0),
+    let (c, b, x) = match memory {
+        Memory::Normal => (1, 1, 0),
+        Memory::WriteCombine => (0, 1, 0),
+        Memory::Device => (0, 0, 0),
+        Memory::Mini => (1, 0, 1),
     };
-    (phys & 0xFFF0_0000) | (0b11 << 10) | (c << 3) | (b << 2) | 0b10
+    (phys & 0xFFF0_0000) | (x << 12) | (0b11 << 10) | (c << 3) | (b << 2) | 0b10
 }
 
 /// Fills a 4096-entry first-level table: every listed region mapped, the rest
@@ -122,6 +128,8 @@ pub enum Pages {
     Large,
     /// 4 KiB small pages (the kernel's map).
     Small,
+    /// 1 MiB sections cached in the mini data cache ([`Memory::Mini`]).
+    MiniSections,
 }
 
 /// The second-level tables mapping `mib` MiB of physical memory from
@@ -138,7 +146,7 @@ pub fn window_tables(l2: &mut [u32], phys: u32, mib: u32, pages: Pages) {
     for (k, d) in l2[..256 * mib as usize].iter_mut().enumerate() {
         let at = phys + (k as u32) * 4096;
         *d = match pages {
-            Pages::Sections => 0,
+            Pages::Sections | Pages::MiniSections => 0,
             Pages::Large => large_page(at & !0xFFFF, 0b01),
             Pages::Small => small_page(at, 0b01),
         };
@@ -291,6 +299,20 @@ mod tests {
         }
         window_tables(&mut l2, phys, 2, Pages::Sections);
         assert!(l2.iter().all(|&d| d == 0));
+    }
+
+    #[test]
+    fn a_mini_cached_section_sets_x_with_c_and_not_b() {
+        let d = section(0xA950_1234, Memory::Mini);
+        assert_eq!(d, 0xA950_0000 | (1 << 12) | (0b11 << 10) | (1 << 3) | 0b10);
+        // The other types leave the X bit clear (no section of ours moved
+        // into the mini cache by this change).
+        for m in [Memory::Normal, Memory::WriteCombine, Memory::Device] {
+            assert_eq!(section(0xA950_0000, m) & (1 << 12), 0, "{m:?}");
+        }
+        let mut l2 = [0xFFFF_FFFFu32; 256];
+        window_tables(&mut l2, 0xA900_0000, 1, Pages::MiniSections);
+        assert!(l2.iter().all(|&d| d == 0), "sections need no tables");
     }
 
     #[test]
