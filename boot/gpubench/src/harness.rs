@@ -28,6 +28,11 @@
 
 use super::*;
 
+/// Run CH's C71 diagnostic alone (`RP_GPUBENCH_C71`): W5's partial
+/// frames three times over the renderer's background object, three times
+/// over a full-screen flat quad in slot 0 instead (quality audit C71).
+const C71: bool = option_env!("RP_GPUBENCH_C71").is_some();
+
 /// The page's and the glass's lines.
 const VSTRIDE: u32 = 960;
 const GSTRIDE: u32 = 480 * 4;
@@ -312,7 +317,9 @@ pub(super) fn run(g: &mut Rig) {
         return;
     };
     let p = Planes { page, glass, atlas };
-    plane_frames(g, &p, &mut dma, scratch);
+    if !C71 {
+        plane_frames(g, &p, &mut dma, scratch);
+    }
     let _ = g.pool.free(page, VSTRIDE * PAGE_ROWS);
     let _ = g.pool.free(glass, GSTRIDE * GLASS_ROWS);
     let _ = g.pool.free(atlas, ROW_BYTES as u32);
@@ -1039,9 +1046,90 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     )
     .over();
     let mut step = 11;
+    let cards = [c0, c1, c2, c3];
+
+    if C71 {
+        // C71: the stale pixels after partial frames, over the renderer's
+        // background object (one giant flat triangle) and over a flat
+        // full-screen quad in slot 0 with no background object.
+        for quad in [false, true] {
+            for rep in 0..3u32 {
+                let mut w = |g: &mut Rig, r: &mut Renderer, k: u32| {
+                    if k == 0 {
+                        if quad {
+                            let _ = r.set_background(None);
+                            g.set(
+                                r,
+                                0,
+                                Some(Draw::rect(0, 0, 480, 640, Paint::Flat(0xFF20_2830))),
+                            );
+                        } else {
+                            g.set(r, 0, None);
+                            let _ = r.set_background(Some(0xFF20_2830));
+                        }
+                        for (j, &t) in cards.iter().enumerate().take(3) {
+                            let (x, y) = (20 + (j as i32 % 2) * 240, 40 + (j as i32 / 2) * 300);
+                            g.set(r, 1 + j, Some(textured(x, y, 200, 260, t, full_uv())));
+                        }
+                        g.set(r, 6, Some(caption));
+                    }
+                    let x = 40 + ((k * 8) % 240) as i32;
+                    g.set(r, 4, Some(textured(x, 320, 200, 260, cards[3], full_uv())));
+                };
+                let label = if quad { "C71 QUAD BG" } else { "C71 BG OBJECT" };
+                let q = sequence(
+                    g,
+                    &mut r,
+                    &sc,
+                    cap,
+                    buf,
+                    (step, label),
+                    FRAMES_3D,
+                    (false, false),
+                    &mut w,
+                );
+                keep_picture(g, sc.at[((FRAMES_3D - 1) % 2) as usize], &mut keep[..KEPT]);
+                r.invalidate_all();
+                let us = g.frame(&mut r, sc.target(0));
+                let (mut n, mut first, mut nf) = (0u32, [(0u32, 0u32, 0u32, 0u32); 3], 0usize);
+                for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
+                    let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
+                    let b = g.mem.load(sc.at[0] as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+                    if a != b {
+                        n += 1;
+                        if nf < first.len() {
+                            first[nf] = ((2 * k % 480) as u32, (2 * k / 480) as u32, a, b);
+                            nf += 1;
+                        }
+                    }
+                }
+                log!(
+                    "  CH C71 {} run {}: render median {} us; the last picture against a fresh full render ({us:?} us): {n} words differ {:?}",
+                    if quad {
+                        "a flat quad in slot 0"
+                    } else {
+                        "the background object"
+                    },
+                    rep + 1,
+                    q.render.median(),
+                    &first[..nf]
+                );
+            }
+        }
+        for slot in 0..=6 {
+            g.set(&mut r, slot, None);
+        }
+        for t in [c0, c1, c2, c3, sky, cl1, cl2, app, cap] {
+            let _ = rp_mbx3d_render::release(&mut g.pool, t);
+        }
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(a, PIC);
+        let _ = g.pool.free(b, PIC);
+        log!("  CH C71: done");
+        return;
+    }
 
     // W5: four cards, one dragged 8 pixels a frame.
-    let cards = [c0, c1, c2, c3];
     let mut w5 = |g: &mut Rig, r: &mut Renderer, k: u32| {
         if k == 0 {
             let _ = r.set_background(Some(0xFF20_2830));

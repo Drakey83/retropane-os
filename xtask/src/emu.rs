@@ -4445,6 +4445,12 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     let run_fi = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_IRQ_BITS", "1"))?;
     let run_fd = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_DMA_FEED", "1"))?;
     let run_ch = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_HARNESS", "1"))?;
+    let run_c71 = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_HARNESS", "1"),
+        Some(("RP_GPUBENCH_C71", "1")),
+    )?;
     let run_lim = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LIMITS", "1"))?;
     let run_fi2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_STATUS2", "1"))?;
     // Run GS (the clocks' soak) with 70 s a setting: one minute's line and
@@ -4545,7 +4551,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 50] = [
+    let runs: [GpubenchRun; 51] = [
         (
             "run A",
             &run_a,
@@ -5220,6 +5226,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "  FI2 2D: 420 words sent true, done true",
                 "  FI2 a 3D render:",
                 "FI2: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            true,
+            (0, 0, 0),
+        ),
+        // Run CH's C71 diagnostic: six W5 sequences, each held to a fresh
+        // render (the emulator's are exact: the device's are the finding).
+        (
+            "run C71",
+            &run_c71,
+            &[
+                "  CH C71 the background object run 3:",
+                "  CH C71 a flat quad in slot 0 run 3:",
+                "  CH C71: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
             ],
