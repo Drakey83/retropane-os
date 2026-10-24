@@ -200,18 +200,28 @@ fn gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target() {
     let rows_at = SWEEP_ROWS_AT..SWEEP_ROWS_AT + 16;
     let rows: std::vec::Vec<i32> = rows_at.clone().map(|w| SWEEP[w].corner().1).collect();
     assert_eq!(rows, (592..608).collect::<std::vec::Vec<_>>());
-    assert!(rows_at.clone().all(|w| SWEEP[w].corner().0 == 43 && SWEEP[w].shift == (0, 0)));
+    assert!(
+        rows_at
+            .clone()
+            .all(|w| SWEEP[w].corner().0 == 43 && SWEEP[w].shift == (0, 0))
+    );
     // The tile sweep: 16 different tiles, the corner where GC2K's worst
     // way had it in its tile (3 across, 13 down) in each, every quad on the
     // screen; GC2K's tile among them.
-    assert_eq!(SWEEP_IN_TILE, (SWEEP[0].corner().0 % 8, SWEEP[0].corner().1 % 16));
+    assert_eq!(
+        SWEEP_IN_TILE,
+        (SWEEP[0].corner().0 % 8, SWEEP[0].corner().1 % 16)
+    );
     let mut tiles = std::vec::Vec::new();
     assert_eq!(SWEEP_TILES_AT + 16, SWEEP.len());
     for (w, way) in SWEEP.iter().enumerate().skip(SWEEP_TILES_AT) {
         let (cx, cy) = way.corner();
         assert_eq!((cx % 8, cy % 16), SWEEP_IN_TILE, "way {w}");
         let (x, y, qw, qh) = way.quad;
-        assert!(x >= 0 && y >= 0 && x + qw <= W as i32 && y + qh <= H as i32, "way {w}");
+        assert!(
+            x >= 0 && y >= 0 && x + qw <= W as i32 && y + qh <= H as i32,
+            "way {w}"
+        );
         tiles.push((cx / 8, cy / 16));
     }
     tiles.sort_unstable();

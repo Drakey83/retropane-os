@@ -7658,10 +7658,8 @@ mod image {
     /// them (the run's control for the placement); then a soak of the
     /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
     /// the first wrong render. Test-only, as GC2S. Unattended.
-    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some()
-        || GC2_SOAK2
-        || GC2_PATCH
-        || GC2_SWEEP;
+    const GC2_INSIDE: bool =
+        option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_SOAK2 || GC2_PATCH || GC2_SWEEP;
 
     /// Run GC2L (`RP_GPUBENCH_GC2_SWEEP`, the owner's ask after GC2K,
     /// 2026-10-24): GC2K's patch mapped at [`GC2L_STEPS`] over
@@ -10063,22 +10061,34 @@ mod image {
                     c.0,
                     c.1,
                     at_of(w),
-                    if gc2::SWEEP[w].reverse { "reversed" } else { "in row order" },
+                    if gc2::SWEEP[w].reverse {
+                        "reversed"
+                    } else {
+                        "in row order"
+                    },
                     Gc2Held(&side)
                 );
             }
         }
         // Ways 0-3: one scene at three places and in either order: one
         // picture (a reversed list the core draws differently shows here).
-        let same = (1..gc2::SWEEP_ROWS_AT)
-            .all(|w| rest[..words] == rest[w * words..(w + 1) * words]);
+        let same =
+            (1..gc2::SWEEP_ROWS_AT).all(|w| rest[..words] == rest[w * words..(w + 1) * words]);
         log!(
             "  GC2L references: {}; ways 0-3 (one scene at 0x{:x}, 0x{:x}, 0x{:x}, and with the tiles reversed) {}",
-            if refs_ok { "all repeatable and held" } else { "NOT all repeatable" },
+            if refs_ok {
+                "all repeatable and held"
+            } else {
+                "NOT all repeatable"
+            },
             at_of(0),
             at_of(1),
             at_of(2),
-            if same { "the same picture" } else { "DIFFERENT pictures" }
+            if same {
+                "the same picture"
+            } else {
+                "DIFFERENT pictures"
+            }
         );
         r.set_tiles_reversed(false);
         if !refs_ok || !same {
@@ -10089,7 +10099,14 @@ mod image {
         for (si, &(s, label)) in GC2L_STEPS.iter().enumerate() {
             let mut l1 = heapless_name();
             let _ = write!(l1, "GC2L SWEEP {} OF {}", si + 1, GC2L_STEPS.len());
-            if !gc2_sweep_at(g, r, (s, label, l1.as_str()), (&*rest, first), minutes, (tex, dsig)) {
+            if !gc2_sweep_at(
+                g,
+                r,
+                (s, label, l1.as_str()),
+                (&*rest, first),
+                minutes,
+                (tex, dsig),
+            ) {
                 return;
             }
         }
@@ -10183,7 +10200,9 @@ mod image {
                     [l1, label, l3.as_str()],
                     if all == 0 { SOAK_BLUE } else { SOAK_RED },
                 );
-                log!("  GC2L {label}, minute {lines}: {rounds} rounds, wrong renders by way {wrong_by:?}");
+                log!(
+                    "  GC2L {label}, minute {lines}: {rounds} rounds, wrong renders by way {wrong_by:?}"
+                );
                 if lines % 10 == 0 {
                     let mut when = heapless_name();
                     let _ = write!(when, "{label} at minute {lines}");

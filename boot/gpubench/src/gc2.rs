@@ -482,7 +482,13 @@ pub const SWEEP: [SweepWay; 36] = {
 #[must_use]
 pub fn sweep_scene(way: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
     let s = SWEEP[way];
-    let gouraud = Draw::rect(s.shift.0, s.shift.1, W as i32, H as i32, Paint::Gouraud(CORNERS));
+    let gouraud = Draw::rect(
+        s.shift.0,
+        s.shift.1,
+        W as i32,
+        H as i32,
+        Paint::Gouraud(CORNERS),
+    );
     let (x, y, w, h) = s.quad;
     (
         BLACK,

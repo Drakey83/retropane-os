@@ -18,3 +18,11 @@
 3. A plan written down is a plan to follow: when a session's work is
    decided, the roadmap's step list is where it goes, and where the next
    session picks it up.
+4. **Nothing parked is lost:** anything set aside, whether the owner
+   raised it or you found it, goes on [docs/reminders.md](docs/reminders.md)
+   in the same reply, with a trigger (`device-run`, `image:rp-<name>`,
+   `after:<what>`, `date:`, `session`). The hooks print the open ones at
+   session start and before every device run or test-image build: fold the
+   due ones into that run, or say why not. Every summary names the
+   reminders that came due; a row closes only with its commit or run
+   (`done <ref>`), or the owner's reason (`dropped <reason>`).

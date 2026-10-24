@@ -16,6 +16,7 @@ mod mutants;
 mod perf;
 mod policy;
 mod profile;
+mod reminders;
 mod screen;
 mod sdkit;
 mod serve;
@@ -72,8 +73,9 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
-  ci        everything CI runs: eol, fmt, clippy, lint, gate, adrs, test, cross
+  ci        everything CI runs: eol, fmt, clippy, lint, gate, reminders, adrs, test, cross
   eol       no tracked file with CRLF line endings in the working tree
+  reminders the reminders list (docs/reminders.md) checked, the open count printed
   fmt       check formatting
   clippy    lint all crates (warnings are errors)
   lint      architecture policy: layering and unsafe rules (DESIGN.md §3.1)
@@ -298,15 +300,23 @@ fn main() -> ExitCode {
     let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
         "ci" => [
-            "eol", "fmt", "clippy", "lint", "gate", "adrs", "test", "cross",
+            "eol",
+            "fmt",
+            "clippy",
+            "lint",
+            "gate",
+            "reminders",
+            "adrs",
+            "test",
+            "cross",
         ]
         .iter()
         .try_for_each(|c| run_step(c)),
-        "eol" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross" | "coverage"
-        | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx" | "emu-mbx-blend"
-        | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus"
-        | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe"
-        | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
+        "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
+        | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx"
+        | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench"
+        | "emu-cs3bus" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash"
+        | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
         | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
         | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
         | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
@@ -628,6 +638,7 @@ fn run_step(step: &str) -> Result {
             "warnings",
         ]),
         "eol" => eol::check(&workspace_root()),
+        "reminders" => reminders::run(&workspace_root()),
         "lint" => lint(),
         "gate" => gate::run(&workspace_root()),
         "adrs" => adrs::check(&workspace_root()),
