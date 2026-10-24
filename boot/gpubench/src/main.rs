@@ -316,7 +316,11 @@ mod image {
         || SLOW
         || START
         || FINGERPRINT
-        || UNDERRUN;
+        || UNDERRUN
+        || HARNESS
+        || LIMITS
+        || STATUS2
+        || TEXT;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
     const KEPT: bool = option_env!("RP_GPUBENCH_KEPT").is_some();
@@ -6099,6 +6103,7 @@ mod image {
         log!(
             "F: a screen of text (37 x 38 glyphs) as 4 bpp coverage strips the 2D engine colours, against RGB565 pixels"
         );
+        wm_clock_first(g);
         let Some(ram) = rp_hal_x51v::devices::take_ram_pool() else {
             log!("  no RAM pool");
             return;
@@ -6785,6 +6790,37 @@ mod image {
             );
         }
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
+    }
+
+    /// The gate's measurement runs (CH, LIM, FI2, F) at Windows Mobile's
+    /// clock (ADR-0035 rule 2): a loader started from a Windows Mobile that
+    /// booted with Dell's `CoreClock` inherits his divide 1 (test G14), so a
+    /// clock found other than Windows Mobile's is put back first
+    /// ([`clock_restore`]) and the underrun flag cleared after (rule 8);
+    /// logged either way. The registry's `CoreClock` isn't touched.
+    fn wm_clock_first(g: &mut Rig) {
+        let now = clock_now(&mut g.e.regs);
+        let clk = g.e.regs.read32(MBXCLK);
+        let wm = now == ClockSpeed::WM && (clk >> 2) & 3 == 1;
+        log!(
+            "  clock as found: COREPLL {:08X} MBXCLK {clk:08X}: {}",
+            now.pll,
+            if wm {
+                "Windows Mobile's"
+            } else {
+                "not Windows Mobile's: put back first"
+            }
+        );
+        if !wm {
+            clock_restore(&mut g.e.regs);
+            let under = underrun_take(&mut g.e.regs);
+            log!(
+                "  now COREPLL {:08X} MBXCLK {:08X}; the underrun flag was {} (cleared)",
+                g.e.regs.read32(clock::COREPLL),
+                g.e.regs.read32(MBXCLK),
+                if under { "set" } else { "clear" }
+            );
+        }
     }
 
     /// Puts `s` in place: the long bus timing first (safe at any clock),

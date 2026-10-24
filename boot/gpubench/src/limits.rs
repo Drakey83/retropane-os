@@ -50,6 +50,7 @@ pub(super) fn run(g: &mut Rig) {
         g.e.regs.read32(clock::COREPLL),
         g.e.regs.read32(MBXCLK)
     );
+    wm_clock_first(g);
     clock_card(
         g,
         ["RUN LIM", "THE 3D CORE'S", "LIMITS (P14)"],

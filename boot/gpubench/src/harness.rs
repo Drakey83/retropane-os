@@ -294,6 +294,7 @@ pub(super) fn run(g: &mut Rig) {
         g.e.regs.read32(clock::COREPLL),
         g.e.regs.read32(MBXCLK)
     );
+    wm_clock_first(g);
     let Some(scratch) = rp_hal_x51v::devices::take_scratch() else {
         log!("  H: no scratch SDRAM");
         return;

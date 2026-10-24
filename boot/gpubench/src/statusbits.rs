@@ -77,6 +77,7 @@ pub(super) fn run(g: &mut Rig) {
         g.e.regs.read32(dreg::DINTRE),
         g.e.regs.read32(MBX + reg::ENABLE)
     );
+    wm_clock_first(g);
     clock_card(g, ["RUN FI2", "STATUS BITS", "(P18)"], 0xFF20_2040, 2);
 
     // (1) Idle, 20 ms.
