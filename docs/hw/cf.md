@@ -28,7 +28,7 @@ with no USB work.
 | Item | Value | Confidence | Evidence |
 |---|---|---|---|
 | Socket | PXA27x PC Card socket 1 | confirmed (code) | (C) |
-| Card detect | GPIO13, **active low: 0 = card present** | confirmed | (C); reads 0 with the owner's CF card in the slot (P, owner, 2026-10-12); WM arms only the rising edge (removal) |
+| Card detect | GPIO13, **active low: 0 = card present** (2026-10-24: more likely the CPLD's latched interrupt line, HTC's EGPIO design: cpld.md "HTC's EGPIO CPLD"; the loader detects by CPLD `0x04` bit 1) | confirmed | (C); reads 0 with the owner's CF card in the slot (P, owner, 2026-10-12); WM arms only the rising edge (removal) |
 | Card present (second source) | CPLD `0x04` bit 1, **clear = card in** | likely | (D); (P) `0x00a0` with the card in |
 | Slot powered / ready | GPIO84, high while the slot is powered | confirmed | (D) read with the presence bit as the socket's status; (W) "1 when CF Card is on"; (P) 0 with the slot off, 1 after the power-up below, stayed high while RESET was held |
 | **Slot power** | CPLD `0x16` bit 1 (stage 1) and CPLD `0x10` bit 12 (stage 2) | confirmed | (D); (P) the slot comes up from off and stays up |

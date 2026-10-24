@@ -117,6 +117,34 @@ from its users.
 | `0x1E` | `0x0008` | write 1 to enable the LCD-type readout | `AximSDK`, `Backlight`, `battdrvr`, `ddi` | likely | C; D |
 | `0x1E` (read) | `0x0003` | **LCD type**: 0 = 3.7" Sharp, 1 = 3.5" Sharp, 2 = 3.7" Samsung, 3 = 3.5" Sharp. Even = VGA (X50v/X51v), odd = QVGA | `AximSDK` | confirmed | C; A; P (reads 3.7" Sharp VGA on the owner's X51v) |
 
+## HTC's "EGPIO" CPLD: the likely design (2026-10-24, a lead, not yet checked on the X51v)
+
+PhoneDB lists HTC as the X51v's designer and maker (source W), and HTC code
+is already known in Dell's drivers (clocks.md). HTC's PXA27x boards use a
+Xilinx CPLD as a GPIO and interrupt expander that Linux drives as
+`htc-egpio` (`drivers/mfd/htc-egpio.c`, Linux 4.4; the HTC Magician's board,
+`arch/arm/mach-pxa/magician.c` and `mach/magician.h`). What that design
+does, against what we found here:
+
+| HTC EGPIO (Linux, the Magician) | The X51v's CPLD (ours) |
+|---|---|
+| A Xilinx CPLD on a static chip select, a 0x20-byte window | CS4, a 0x20-byte window (the X50's: an XC2C128 CoolRunner-II, Xilinx) |
+| Output registers don't read back: the driver keeps a cached copy and writes whole registers | **The same** (writes don't read back; Windows Mobile's shared shadow) |
+| Input registers read the board's status lines | `0x00`, `0x04`, `0x06`, `0x14` read status (`0x04` bit 1: CF card) |
+| **The CPLD's interrupt goes to PXA GPIO13, rising edge**; one register reads the pending lines and is acknowledged by writing `0xFFFF` to it (or 0, `invert_acks`); the line stays up until then | **GPIO13 rising is the CPLD's interrupt in Dell's kernel** (interrupts.md: CPLD bits 1, 8, 9 via GPIO13; bit 1 = CF socket status). And GPIO13 is **sticky** here: a card pull set it, a push back in didn't clear it, only Windows Mobile did (cf.md 2026-10-16) |
+| The board ID read at offset `0x14` | `0x14` reads `0x0002` before any write (it also holds the speaker amplifier bit as an output) |
+| After suspend the driver rewrites the cached outputs (the CPLD may have lost power) | Not yet looked at (RetroPane's suspend) |
+
+**What it suggests (results, not decisions):** GPIO13 isn't a card-detect
+line but the CPLD's "something changed" interrupt, latched until software
+acknowledges it, which explains its stickiness and why the CPLD's `0x04`
+bit 1 worked as the detect (the loader's fix). If so, the loader and the OS
+could take card, dock and button changes as interrupts from the CPLD
+instead of polling. Unknown: which register is the acknowledge and what
+value (the candidates are the offsets with no shadow slot: `0x00`,
+`0x04`-`0x06`, `0x0A`-`0x0E`), and whether `0x14` is a board ID (the owner's
+X50v would read a different one). Reminder R24 holds the checks.
+
 ## Sequences
 
 **LCD type detection:** set `0x1E` bit 3 → wait ~1 ms → read `0x1E & 3` →
