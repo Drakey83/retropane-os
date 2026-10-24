@@ -165,14 +165,22 @@ pub const MUTANTS: &[Mutant] = &[
         file: "boot/glesfeat/src/main.rs",
         from: "        Some(end) => end <= SAFE_END,",
         to: "        Some(end) => end < SAFE_END,",
-        check: Check::Host(&["-p", "rp-glesfeat", "the_safe_region_is_g19s_last_right_end"]),
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "the_safe_region_is_g19s_last_right_end",
+        ]),
     },
     Mutant {
         name: "glesfeat G21: the safe region stretched to G19's first wrong end",
         file: "boot/glesfeat/src/main.rs",
         from: "pub const SAFE_END: usize = 0xA_E000;",
         to: "pub const SAFE_END: usize = 0xB_6000;",
-        check: Check::Host(&["-p", "rp-glesfeat", "the_safe_region_is_g19s_last_right_end"]),
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "the_safe_region_is_g19s_last_right_end",
+        ]),
     },
     Mutant {
         name: "glesfeat G21: way 1 (A) never copies onto the screen",
@@ -181,7 +189,11 @@ pub const MUTANTS: &[Mutant] = &[
     (true, false, false),",
         to: "    (false, false, false),
     (true, false, false),",
-        check: Check::Host(&["-p", "rp-glesfeat", "a_copies_from_off_screen_and_c_draws_on_it"]),
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "a_copies_from_off_screen_and_c_draws_on_it",
+        ]),
     },
     Mutant {
         name: "gpubench G21: a word's place a row off",
@@ -270,6 +282,24 @@ pub const MUTANTS: &[Mutant] = &[
             "rp-glesfeat",
             "dells_layout_is_read_from_his_registers",
         ]),
+    },
+    Mutant {
+        name: "scaler: the filter never loaded (P9's flat picture)",
+        file: "drivers/mbx-display/src/lib.rs",
+        from: "    if video.scales(scale) {",
+        to: "    if false {",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "the_scaler_filter_loads_only_when_the_plane_scales",
+        ]),
+    },
+    Mutant {
+        name: "scaler: a plane scaled only vertically taken as 1:1",
+        file: "drivers/mbx-display/src/layers.rs",
+        from: "            || (scale.out_h != 0 && scale.out_h != self.height)",
+        to: "            || false",
+        check: Check::Host(&["-p", "rp-drv-mbx-display", "scales_only_when_a_size_differs"]),
     },
     Mutant {
         name: "eol: a mixed-endings working copy let through",

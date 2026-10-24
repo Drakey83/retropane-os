@@ -236,7 +236,13 @@ pub fn synthetic(rgb565: bool) -> Vec<u8> {
     let mut regs: Vec<(usize, u32)> = m3::start_table(regions, pm, 480, 640, 480 * bytes)
         .into_iter()
         .filter(|p| p.0 != m3::START)
-        .map(|p| if rgb565 && p.0 == 0x650 { (0x650, 1) } else { p })
+        .map(|p| {
+            if rgb565 && p.0 == 0x650 {
+                (0x650, 1)
+            } else {
+                p
+            }
+        })
         .collect();
     regs.push((0x65C, target));
     regs.extend(

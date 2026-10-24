@@ -7697,7 +7697,8 @@ mod image {
     const SOAK_SCALE: u32 = if GC2_INSIDE { 2 } else { 4 };
     const SOAK_TOP: u32 = if GC2_INSIDE { 4 } else { 200 };
     const SOAK_PITCH: u32 = if GC2_INSIDE { 20 } else { 80 };
-    const _: () = assert!(SOAK_TOP + 2 * SOAK_PITCH + font::HEIGHT as u32 * SOAK_SCALE <= SOAK_ROWS);
+    const _: () =
+        assert!(SOAK_TOP + 2 * SOAK_PITCH + font::HEIGHT as u32 * SOAK_SCALE <= SOAK_ROWS);
 
     /// The label: `bg` over the 16-bit screen ([`SOAK_ROWS`] of it) and
     /// three lines of up to 19 characters in white, drawn by the CPU.
@@ -9363,16 +9364,8 @@ mod image {
                     gc2_scene(g, r, k, tex);
                     let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
                     let mut side = Gc2Side::new(dsig);
-                    let wrong = gc2_render(
-                        g,
-                        r,
-                        k,
-                        want,
-                        first,
-                        want_regs,
-                        &mut bases[k],
-                        &mut side,
-                    );
+                    let wrong =
+                        gc2_render(g, r, k, want, first, want_regs, &mut bases[k], &mut side);
                     best = best.min(side.best_us);
                     worst = worst.max(side.worst_us);
                     if wrong != Some(0) || !side.held() {
@@ -9532,7 +9525,9 @@ mod image {
         let slots: &[(usize, bool)] = if copy_off == 0 && proven == Some(0) && side.held() {
             &gc2::SOAK2
         } else {
-            log!("  GC2J: the inside texture isn't proven: FT2 soaks with its texture outside only");
+            log!(
+                "  GC2J: the inside texture isn't proven: FT2 soaks with its texture outside only"
+            );
             &gc2::SOAK2[..3]
         };
         log!(
@@ -9758,7 +9753,8 @@ mod image {
             ];
             let ft2 = &refs[offs[k]..offs[k] + words];
             let as_ft2 = want.iter().zip(ft2).filter(|(a, b)| a != b).count();
-            let ok = t0.is_some() && again == [Some(0); 2] && side.held() && (way != 0 || as_ft2 == 0);
+            let ok =
+                t0.is_some() && again == [Some(0); 2] && side.held() && (way != 0 || as_ft2 == 0);
             refs_ok &= ok;
             log!(
                 "  GC2K reference {way} ({}): {t0:?} us, renders 2-3 {again:?} words off it; {}; {as_ft2} words differ from FT2's GC2 reference{}",

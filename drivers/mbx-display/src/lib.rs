@@ -270,6 +270,11 @@ pub fn video_show<B: RegisterBus>(
     let gamma = regs.read_field(reg::GSCTRL, GSCTRL_GAMMA_EN) != 0;
     regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
     layers::video_clock(regs, true);
+    if video.scales(scale) {
+        for (offset, value) in layers::SCALER_FILTER {
+            regs.write32(offset, value);
+        }
+    }
     for (offset, value) in video.registers_scaled(layer, gamma, scale) {
         regs.write32(offset, value);
     }
@@ -705,6 +710,50 @@ pub const SAVED_REGS: &[(&str, usize)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_scaler_filter_loads_only_when_the_plane_scales_and_before_it_does() {
+        let v = layers::VideoPlane::new(layers::VideoFormat::Uyvy, 240, 320, 0x40_0000);
+        let filter = |w: &[(usize, u32)]| {
+            w.iter()
+                .filter(|a| layers::SCALER_FILTER.contains(a))
+                .count()
+        };
+        // 1:1, and an explicit size equal to the source's: no filter.
+        for scale in [
+            layers::Scale::NONE,
+            layers::Scale {
+                out_w: 240,
+                out_h: 320,
+                ..layers::Scale::NONE
+            },
+        ] {
+            let mut bus = rp_hal_mock::MockBus::new();
+            video_show(&mut bus, &v, layers::Layer::SOLO, scale);
+            assert_eq!(filter(&bus.writes()), 0, "{scale:?}");
+        }
+        // Up 2x, or one direction alone: all fifteen, before SPOCTRL.
+        for (w, h) in [(480, 640), (480, 0), (0, 640)] {
+            let mut bus = rp_hal_mock::MockBus::new();
+            let scale = layers::Scale {
+                out_w: w,
+                out_h: h,
+                ..layers::Scale::NONE
+            };
+            video_show(&mut bus, &v, layers::Layer::SOLO, scale);
+            let writes = bus.writes();
+            assert_eq!(filter(&writes), 15, "{scale:?}");
+            let last_filter = writes
+                .iter()
+                .rposition(|a| layers::SCALER_FILTER.contains(a))
+                .unwrap();
+            let spoctrl = writes
+                .iter()
+                .position(|(o, _)| *o == layers::reg::SPOCTRL)
+                .unwrap();
+            assert!(last_filter < spoctrl, "{scale:?}");
+        }
+    }
 
     #[test]
     fn ack_writes_back_only_the_rest() {

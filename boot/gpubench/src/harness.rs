@@ -930,8 +930,16 @@ fn g21_scenes(
         // The kind and its step on the screen before its ways.
         let _ = g21_copy_in(g, sc.at[0]);
         for way in &g21::WAYS[1..] {
-            let target = if way.on_screen() { screen.target(0) } else { off };
-            let at = if way.on_screen() { g21::SCREEN_AT } else { sc.at[0] };
+            let target = if way.on_screen() {
+                screen.target(0)
+            } else {
+                off
+            };
+            let at = if way.on_screen() {
+                g21::SCREEN_AT
+            } else {
+                sc.at[0]
+            };
             let fetch = if way.paused() {
                 Fetch::Paused
             } else {

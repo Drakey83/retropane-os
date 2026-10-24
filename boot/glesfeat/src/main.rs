@@ -2831,8 +2831,8 @@ mod image {
             Way::G21(k) => {
                 let done = replay(e, vram);
                 let render = RENDER_US.with(|u| *u);
-                let copy = (done && super::G21_WAYS[k as usize % super::G21_WAYS.len()].2)
-                    .then(|| {
+                let copy =
+                    (done && super::G21_WAYS[k as usize % super::G21_WAYS.len()].2).then(|| {
                         // The screen filled with the sentinel first: a copy
                         // that silently did nothing can't pass on the last
                         // copy's picture.
@@ -3342,7 +3342,10 @@ mod image {
             }
             if let Way::G21(_) = w {
                 let mut when = [0u8; 48];
-                let when = fmt(&mut when, format_args!("at {mhz} / 1, the {G_DRAWS} renders"));
+                let when = fmt(
+                    &mut when,
+                    format_args!("at {mhz} / 1, the {G_DRAWS} renders"),
+                );
                 g21_report(when);
             }
             let (g10, changes, dark) = G10_PLL.with(|p| core::mem::replace(p, (0, 0, 0)));
@@ -5135,8 +5138,7 @@ mod image {
         let target = lay().target;
         (0..target_words())
             .filter(|&k| {
-                load32_volatile(vram, SAFE_SCREEN + 4 * k)
-                    != load32_volatile(vram, target + 4 * k)
+                load32_volatile(vram, SAFE_SCREEN + 4 * k) != load32_volatile(vram, target + 4 * k)
             })
             .count() as u32
     }
@@ -6681,7 +6683,8 @@ mod g21_tests {
     fn dells_frame_moved_onto_the_screen_keeps_his_shape_and_misses_his_buffers() {
         // His registers with 0x65C retargeted, as the image replays them.
         let moved = DELL_G21.map(|(off, v)| (off, if off == 0x65C { retarget(v, 0) } else { v }));
-        let l = frame_layout(&frame::parse(&frame::write(&DELL_G21, &[], (0, 0))).unwrap()).unwrap();
+        let l =
+            frame_layout(&frame::parse(&frame::write(&DELL_G21, &[], (0, 0))).unwrap()).unwrap();
         let m = frame_layout(&frame::parse(&frame::write(&moved, &[], (0, 0))).unwrap()).unwrap();
         assert_eq!(m, Layout { target: 0, ..l });
         assert!(m.rgb565);

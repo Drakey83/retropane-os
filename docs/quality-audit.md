@@ -120,6 +120,8 @@ depends on them proves less than it looks):
 
 | C72 | A 2D copy down over itself smears: the chip copies bottom-up only with header bit 24 (B12f, X51v 2026-10-24), which `blit2d` named "right to left" (`OP_RIGHT_LEFT`) and left to the caller; `rp-mbx` worked around it with strips, and nothing in the OS copied down over itself yet (the compositor's list window re-base, compositor.md §5, would) | A list or page scrolled down by a 2D copy over itself shows a smear | **Fixed 2026-10-24 (the class):** `blit2d::copy` sets bit 24 itself whenever a copy moves rows down over themselves on one surface (`overlaps_down`: same address and stride, the destination lower, the row ranges overlapping); the constant renamed `OP_BOTTOM_UP` with its evidence; host test at the edges (by the height, one less, up, in place, another surface or stride, the top of the range); two mutants. Left: the fork's model (emulator.md) | **fixed** 2026-10-24 (OS side) |
 
+| C73 | The video plane's scaler filter (`layers::SCALER_FILTER`: `SVCTRL` and `VSCOEFF0-4`, `HSCOEFF0-8`) is Linux mbxfb's start-up set, "good for scaling up; for scaling down, the application has to calculate them". Windows Mobile leaves all fifteen at 0 with the scaler bypassed (run S1), and Dell's `ddi_2700g` and `pvrvadd` never write them (read 2026-10-24), so there's no vendor set to compare; the gate's P9 runs scaled with them at 0 and showed one flat colour (the likely cause, untested). Tagged `inherited: C73` | The coefficients' format and meaning understood (the taps' weights per phase), measured on the X51v up and down, and a set computed for scaling down | open |
+
 ## E. Built smaller than the design, waiting on a measurement or a later step
 
 | # | Shortcut | Proper fix | State |

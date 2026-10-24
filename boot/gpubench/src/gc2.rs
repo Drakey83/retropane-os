@@ -360,7 +360,10 @@ pub fn patch_scene(way: usize, t: Tex, t565: Texture) -> (u32, [Option<Draw>; 3]
         4 => Paint::texture(t565),
         _ => Paint::texture(t.t8888),
     };
-    (BLACK, [Some(gouraud), Some(Draw::rect(x, y, w, h, paint)), None])
+    (
+        BLACK,
+        [Some(gouraud), Some(Draw::rect(x, y, w, h, paint)), None],
+    )
 }
 
 /// GC2J's patch as seen (x 21-37 by y 604-607), its columns widened by 2

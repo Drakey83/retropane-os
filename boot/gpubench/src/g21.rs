@@ -191,7 +191,11 @@ impl Tally {
     /// A copy onto the screen: whether it finished, its time, the screen's
     /// words not the picture's.
     pub fn copy(&mut self, done: bool, us: u32, words: u32) {
-        self.copy_min = if self.copies == 0 { us } else { self.copy_min.min(us) };
+        self.copy_min = if self.copies == 0 {
+            us
+        } else {
+            self.copy_min.min(us)
+        };
         self.copies += 1;
         self.copy_sum = self.copy_sum.saturating_add(us);
         self.copies_off += u32::from(!done || words > 0);

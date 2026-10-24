@@ -5,7 +5,9 @@
 extern crate std;
 
 use rp_mbx3d_render::model::{Gpu, Mem, SimClock, memory};
-use rp_mbx3d_render::{LocalMem as _, Picture, PixelFormat, Poll, Renderer, Target, address, format};
+use rp_mbx3d_render::{
+    LocalMem as _, Picture, PixelFormat, Poll, Renderer, Target, address, format,
+};
 use rp_vram_map::{POOL, Pool};
 
 use super::*;
@@ -35,12 +37,16 @@ fn rendered(at_screen: bool) -> std::vec::Vec<std::vec::Vec<u32>> {
     }
     let off = pool.alloc(SCREEN_BYTES, 0x1000).expect("target memory");
     let at = if at_screen { SCREEN_AT } else { off };
-    assert!(at_screen || off >= SAFE_END, "the pool lies outside the safe region");
+    assert!(
+        at_screen || off >= SAFE_END,
+        "the pool lies outside the safe region"
+    );
     r.set_background(Some(BACKGROUND)).expect("background");
     let mut out = std::vec::Vec::new();
     for kind in 0..KINDS.len() {
         for j in 0..PLACES.len() {
-            r.set(&mut mem, 1 + j, Some(&card(kind, j, tex))).expect("slot");
+            r.set(&mut mem, 1 + j, Some(&card(kind, j, tex)))
+                .expect("slot");
         }
         r.invalidate_all();
         let t = Target {
@@ -105,7 +111,13 @@ fn diff_counts_every_word_and_places_the_first_four() {
     // Words 0, 1, 240 (row 1), the last, and two more: six off, the first
     // four placed at their first pixel.
     let off = [0usize, 1, 240, 300, 301, WORDS - 1];
-    let b = |k: usize| if off.contains(&k) { !(k as u32) } else { k as u32 };
+    let b = |k: usize| {
+        if off.contains(&k) {
+            !(k as u32)
+        } else {
+            k as u32
+        }
+    };
     let (n, first, nf) = diff(a, b);
     assert_eq!((n, nf), (6, 4));
     assert_eq!(first[0], (0, 0, 0, !0));

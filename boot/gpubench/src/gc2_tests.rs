@@ -112,7 +112,11 @@ fn gc2j_puts_ft2s_texture_inside_after_the_target_and_soaks_every_inside_kind() 
     }
     assert!(SOAK2.contains(&(FT2, true)));
     assert_eq!(SOAK2.len(), RUN.filter(|&k| fits_inside(k)).count() + 1);
-    assert!(SOAK2.iter().all(|&(k, inside)| fits_inside(k) && (!inside || k == FT2)));
+    assert!(
+        SOAK2
+            .iter()
+            .all(|&(k, inside)| fits_inside(k) && (!inside || k == FT2))
+    );
 }
 
 #[test]
@@ -150,7 +154,10 @@ fn gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart() {
         let (cx, cy) = patch_corner(way);
         for y in 590..620 {
             for x in 0..80 {
-                assert!(patch_spot(way, x, y) != (true, true), "way {way} ({x}, {y})");
+                assert!(
+                    patch_spot(way, x, y) != (true, true),
+                    "way {way} ({x}, {y})"
+                );
             }
         }
         // A pixel where FT2's patch was relative to the corner is found.

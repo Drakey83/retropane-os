@@ -4845,9 +4845,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             g21_wants.push(format!(
                 "  CH G21 {k}: {way}: 20 renders (0 unfinished), 0 differ from the reference, 0 words in all []; render fastest "
             ));
-            g21_wants.push(format!(
-                "us; {copies} 2D copies onto the screen, fastest "
-            ));
+            g21_wants.push(format!("us; {copies} 2D copies onto the screen, fastest "));
         }
     }
     g21_wants.extend(

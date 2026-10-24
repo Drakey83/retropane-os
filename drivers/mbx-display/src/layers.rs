@@ -32,8 +32,14 @@ pub mod reg {
     pub const BGCOLOR: usize = 0x2174;
     /// Scaler: pitch and order control.
     pub const SPOCTRL: usize = 0x2190;
+    /// Scaler: the vertical filter's two initial phases.
+    pub const SVCTRL: usize = 0x2194;
+    /// Scaler: the vertical filter's coefficients, five words from here.
+    pub const VSCOEFF0: usize = 0x2198;
     /// Scaler: horizontal control.
     pub const SHCTRL: usize = 0x21B0;
+    /// Scaler: the horizontal filter's coefficients, nine words from here.
+    pub const HSCOEFF0: usize = 0x21B4;
     /// Scaler: output size.
     pub const SSSIZE: usize = 0x21D8;
 }
@@ -63,6 +69,33 @@ const SPOCTRL_V_BYPASS: u32 = 1 << 30;
 /// without it when scaling down.
 // inherited: C70, Windows Mobile (SPOCTRL 0xC8030000, probe 2026-10-11)
 const SPOCTRL_VS_UR_C: u32 = 1 << 27;
+/// The scaler's filter as Linux mbxfb loads it at start-up (`mbxfb_setup`:
+/// `SVCTRL`'s two initial phases `1 << 10`, then `VSCOEFF0-4` and
+/// `HSCOEFF0-8`, "good for scaling up; for scaling down, the application
+/// has to calculate them"). Windows Mobile leaves all fifteen at 0 with the
+/// scaler bypassed (`SPOCTRL` `0xC8030000`, run S1), and Dell's drivers
+/// never write them (`ddi_2700g` read 2026-10-24): the gate's P9 runs
+/// scaled with them at 0 and showed one flat colour. Loaded only when the
+/// plane scales ([`VideoPlane::scales`]).
+// inherited: C73, Linux mbxfb (drivers/video/fbdev/mbx/mbxfb.c, mbxfb_setup)
+pub const SCALER_FILTER: [(usize, u32); 15] = [
+    (reg::SVCTRL, (1 << 10) << 16 | 1 << 10),
+    (reg::VSCOEFF0, 0xFF00_0100),
+    (reg::VSCOEFF0 + 4, 0xFDFC_FDFE),
+    (reg::VSCOEFF0 + 8, 0x170D_0500),
+    (reg::VSCOEFF0 + 12, 0x3D37_2D22),
+    (reg::VSCOEFF0 + 16, 0x0000_0040),
+    (reg::HSCOEFF0, 0xFF01_0100),
+    (reg::HSCOEFF0 + 4, 0x0000_0000),
+    (reg::HSCOEFF0 + 8, 0x0201_0000),
+    (reg::HSCOEFF0 + 12, 0x0102_0302),
+    (reg::HSCOEFF0 + 16, 0xF9FB_FE00),
+    (reg::HSCOEFF0 + 20, 0xFBF7_F6F7),
+    (reg::HSCOEFF0 + 24, 0x1C11_0700),
+    (reg::HSCOEFF0 + 28, 0x3E39_3127),
+    (reg::HSCOEFF0 + 32, 0x0000_0040),
+];
+
 /// Scaler pitch for 1:1 (source / output in 5.11 fixed point).
 const PITCH_1_TO_1: u32 = 1 << 11;
 /// `VSADR`'s screen position (mbxfb's `VSADR_XSTART`/`YSTART`; as the
@@ -268,6 +301,14 @@ impl VideoPlane {
         self.registers_scaled(layer, gamma, Scale::NONE)
     }
 
+    /// Whether `scale` makes the scaler change the picture's size (either
+    /// direction), so its filter ([`SCALER_FILTER`]) is in use.
+    #[must_use]
+    pub fn scales(&self, scale: Scale) -> bool {
+        (scale.out_w != 0 && scale.out_w != self.width)
+            || (scale.out_h != 0 && scale.out_h != self.height)
+    }
+
     /// As [`Self::registers`], shown through the scaler at `scale`'s size
     /// and place (mbxfb's overlay set-up: the output size in `SSSIZE`, each
     /// pitch source / output in 5.11, a direction bypassed when 1:1).
@@ -405,7 +446,7 @@ pub(crate) fn video_clock<B: RegisterBus>(regs: &mut B, on: bool) {
 
 /// Every register the layer code may change, in the order to put them
 /// back: the video stream off first, the graphics plane last.
-pub const TOUCHED: [usize; 17] = [
+pub const TOUCHED: [usize; 32] = [
     reg::VSCADR,
     reg::VOVRCLK,
     reg::VUBASE,
@@ -416,6 +457,21 @@ pub const TOUCHED: [usize; 17] = [
     reg::SSSIZE,
     reg::SPOCTRL,
     reg::SHCTRL,
+    reg::SVCTRL,
+    reg::VSCOEFF0,
+    reg::VSCOEFF0 + 4,
+    reg::VSCOEFF0 + 8,
+    reg::VSCOEFF0 + 12,
+    reg::VSCOEFF0 + 16,
+    reg::HSCOEFF0,
+    reg::HSCOEFF0 + 4,
+    reg::HSCOEFF0 + 8,
+    reg::HSCOEFF0 + 12,
+    reg::HSCOEFF0 + 16,
+    reg::HSCOEFF0 + 20,
+    reg::HSCOEFF0 + 24,
+    reg::HSCOEFF0 + 28,
+    reg::HSCOEFF0 + 32,
     reg::HCCTRL,
     reg::BGCOLOR,
     crate::reg::GSCTRL,
@@ -627,6 +683,66 @@ mod tests {
         ] {
             assert!(bad(v, sc), "{sc:?}");
         }
+    }
+
+    #[test]
+    fn the_scaler_filter_is_mbxfbs_and_is_put_back() {
+        // mbxfb_setup's words, register by register.
+        assert_eq!(SCALER_FILTER[0], (0x2194, 0x0400_0400));
+        let v: Vec<u32> = SCALER_FILTER[1..6].iter().map(|r| r.1).collect();
+        assert_eq!(
+            v,
+            [0xFF00_0100, 0xFDFC_FDFE, 0x170D_0500, 0x3D37_2D22, 0x40]
+        );
+        let h: Vec<u32> = SCALER_FILTER[6..].iter().map(|r| r.1).collect();
+        assert_eq!(
+            h,
+            [
+                0xFF01_0100,
+                0,
+                0x0201_0000,
+                0x0102_0302,
+                0xF9FB_FE00,
+                0xFBF7_F6F7,
+                0x1C11_0700,
+                0x3E39_3127,
+                0x40
+            ]
+        );
+        let offsets: Vec<usize> = SCALER_FILTER.iter().map(|r| r.0).collect();
+        let want: Vec<usize> = (0x2194..=0x21A8)
+            .step_by(4)
+            .chain((0x21B4..=0x21D4).step_by(4))
+            .collect();
+        assert_eq!(offsets, want);
+        // Every register the filter writes is snapshotted and put back.
+        for (o, _) in SCALER_FILTER {
+            assert!(TOUCHED.contains(&o), "{o:#x}");
+        }
+    }
+
+    #[test]
+    fn scales_only_when_a_size_differs() {
+        let v = VideoPlane::new(VideoFormat::Uyvy, 240, 320, 0x40_0000);
+        let s = |out_w, out_h| Scale {
+            out_w,
+            out_h,
+            ..Scale::NONE
+        };
+        assert!(!v.scales(Scale::NONE));
+        assert!(!v.scales(s(240, 320)));
+        assert!(!v.scales(s(240, 0)));
+        assert!(!v.scales(s(0, 320)));
+        assert!(v.scales(s(241, 320)));
+        assert!(v.scales(s(240, 319)));
+        assert!(v.scales(s(480, 0)));
+        assert!(v.scales(s(0, 160)));
+        // A placed 1:1 plane doesn't scale.
+        assert!(!v.scales(Scale {
+            x: 100,
+            y: 100,
+            ..Scale::NONE
+        }));
     }
 
     #[test]
