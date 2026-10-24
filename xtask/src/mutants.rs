@@ -48,6 +48,28 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "glesfeat G6: Dell's parameter memory 1 MiB, not his 8",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    pm_size: 0x0080_0000,
+",
+        to: "    pm_size: 0x0010_0000,
+",
+        check: Check::Host(&["-p", "rp-glesfeat", "dells_places_are_the_probes_reading"]),
+    },
+    Mutant {
+        name: "glesfeat G6: way 2's TA buffers left inside Dell's parameter memory",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    tail: 0x00CA_0000,
+",
+        to: "    tail: 0x00A0_0000,
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "no_buffer_overlaps_another_or_the_images_own",
+        ]),
+    },
+    Mutant {
         name: "glesfeat G5: NINTPW off Dell's rule by one cycle",
         file: "boot/glesfeat/src/main.rs",
         from: "    29_000 / (100_000_000 / khz)

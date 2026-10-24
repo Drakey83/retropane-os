@@ -391,6 +391,103 @@ pub const DELL_ALL: u32 = (1 << DELL_ITEMS.len()) - 1;
 /// reference and 20 renders at one setting, about a minute).
 pub const NARROW_CHECKS: u32 = 30;
 
+/// Where one render's buffers sit in the 2700G's 16 MiB (test G6: the
+/// owner's leads after G5, 2026-10-23: placement, the parameter memory's
+/// set-up, the render's flow).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Layout {
+    /// The render target.
+    pub target: usize,
+    /// The target is RGB565 (`0x650` 1, its stride 2 bytes a pixel), not
+    /// ARGB8888.
+    pub rgb565: bool,
+    /// The parameter memory (objects at its start).
+    pub pm: usize,
+    /// Its size in bytes.
+    pub pm_size: u32,
+    /// The parameter memory manager's page table (16 KiB cleared).
+    pub pm_table: usize,
+    /// The region array the 3D stage reads.
+    pub regions: usize,
+    /// The TA's tail buffer (64 KiB).
+    pub tail: usize,
+    /// The region array the TA writes.
+    pub ta_regions: usize,
+}
+
+/// Ours, as every test before G6 (`rp-mbx3d`'s, proven there).
+pub const OURS_LAYOUT: Layout = Layout {
+    target: 0x0020_0000,
+    rgb565: false,
+    pm: 0x0060_0000,
+    pm_size: 0x0010_0000,
+    pm_table: 0x0070_0000,
+    regions: 0x00D1_0000,
+    tail: 0x00A0_0000,
+    ta_regions: 0x00A2_0000,
+};
+
+/// Dell's parameter memory as his driver set it at 74.75 MHz / 1
+/// (`rp-wmprobe` v3, run 2: `0x83C` `0x22B000` the base, `0x828` `0x22C`
+/// the first page, `0x82C` `0xA2A` the last, so 2,048 pages, **8 MiB**;
+/// `0x824` `0x1F8000` the page table), the rest ours, the target moved out
+/// of its way (to Dell's run-1 target place), and the TA's buffers too
+/// (128 KiB aligned; this way draws without the TA).
+pub const DELL_PM_LAYOUT: Layout = Layout {
+    target: 0x00B6_9000,
+    pm: 0x0022_B000,
+    pm_size: 0x0080_0000,
+    pm_table: 0x001F_8000,
+    tail: 0x00CA_0000,
+    ta_regions: 0x00CC_0000,
+    ..OURS_LAYOUT
+};
+
+/// Dell's places, all of them (the same reading): his parameter memory,
+/// his RGB565 target at `0x65C` `0xE9D000`, his region array at `0x608` /
+/// `0x844` `0xF35000`, his TA tail at `0x840` `0xF40000`.
+pub const DELL_LAYOUT: Layout = Layout {
+    target: 0x00E9_D000,
+    rgb565: true,
+    regions: 0x00F3_5000,
+    tail: 0x00F4_0000,
+    ta_regions: 0x00F3_5000,
+    ..DELL_PM_LAYOUT
+};
+
+/// Test G6's layouts in way order: ours, Dell's parameter memory, Dell's
+/// places (the direct path), Dell's places through the TA (his flow).
+pub const G6_LAYOUTS: [Layout; 4] = [OURS_LAYOUT, DELL_PM_LAYOUT, DELL_LAYOUT, DELL_LAYOUT];
+
+/// Test G6 moves the label (scanned out from the first moment, RGB565 480 x
+/// 640) out of Dell's 8 MiB parameter memory.
+pub const G6_LABEL: usize = 0x0010_0000;
+/// And the reference picture (ARGB8888 480 x 640, or RGB565).
+pub const G6_REF: usize = 0x00A3_0000;
+
+impl Layout {
+    /// The target's size in bytes for `w` x `h`.
+    #[must_use]
+    pub const fn target_bytes(&self, w: u32, h: u32) -> usize {
+        (w * h) as usize * if self.rgb565 { 2 } else { 4 }
+    }
+
+    /// Every buffer as `(start, bytes, name)` for a `w` x `h` target and a
+    /// region array of `tiles` tiles (8 bytes each and the last).
+    #[must_use]
+    pub const fn spans(&self, w: u32, h: u32, tiles: u32) -> [(usize, usize, &'static str); 6] {
+        let regions = 8 * (tiles as usize + 1);
+        [
+            (self.target, self.target_bytes(w, h), "target"),
+            (self.pm, self.pm_size as usize, "parameter memory"),
+            (self.pm_table, 0x4000, "page table"),
+            (self.regions, regions, "region array"),
+            (self.tail, 0x1_0000, "TA tail"),
+            (self.ta_regions, regions, "TA region array"),
+        ]
+    }
+}
+
 /// The fewest of `full`'s items that still draw right, by halving (Zeller's
 /// delta debugging, complements only): the items split into `n` parts;
 /// a part whose removal leaves the picture right is dropped and the split
@@ -605,25 +702,24 @@ mod image {
 
     // 2700G local memory, as rp-mbx3d (proven there): target, parameter
     // memory and its manager's block, region array, a texture, the fence.
-    const TARGET: usize = 0x0020_0000;
+    const TARGET: usize = super::OURS_LAYOUT.target;
     const W: u32 = 480;
     const H: u32 = 640;
     const STRIDE: usize = 480 * 4;
-    const PM: usize = 0x0060_0000;
-    const PM_SIZE: u32 = 0x0010_0000;
-    const PM_TABLE: usize = 0x0070_0000;
+    const PM: usize = super::OURS_LAYOUT.pm;
+    const PM_SIZE: u32 = super::OURS_LAYOUT.pm_size;
     const _: () = assert!(PM + PM_SIZE as usize <= m3::PM_REACH);
     const PARAMS: usize = PM;
     const OBJECT: usize = PARAMS + 64;
-    const REGIONS: usize = 0x00D1_0000;
+    const REGIONS: usize = super::OURS_LAYOUT.regions;
     const TEX: usize = 0x00E0_0000;
     /// Test M's second texture (8 x 8, one byte a texel).
     const TEX_B: usize = TEX + 0x1_0000;
     /// The TA's tail buffer (128 KiB aligned, 4 bytes a tile) and the
     /// region array it writes (as `rp-mbx3d` versions 14-18).
-    const TAIL: usize = 0x00A0_0000;
+    const TAIL: usize = super::OURS_LAYOUT.tail;
     const TAIL_SIZE: usize = 0x1_0000;
-    const TA_REGIONS: usize = 0x00A2_0000;
+    const TA_REGIONS: usize = super::OURS_LAYOUT.ta_regions;
     const FENCE: usize = 0x00FF_F000;
     const COLS: u32 = W / m3::TILE_W;
     const ROWS: u32 = H / m3::TILE_H;
@@ -639,8 +735,12 @@ mod image {
 
     /// Test G alone instead of A, D, L and M (`RP_GLESFEAT_G=1`; device
     /// build `RP_GLESFEAT_G=1 cargo xtask codegen-variant rp-glesfeat g`).
-    const TEST_G: bool =
-        option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3 || TEST_G4 || TEST_G5;
+    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some()
+        || TEST_G2
+        || TEST_G3
+        || TEST_G4
+        || TEST_G5
+        || TEST_G6;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -653,6 +753,9 @@ mod image {
     /// Test G5 instead of G (`RP_GLESFEAT_G5=1`; device build
     /// `RP_GLESFEAT_G5=1 cargo xtask codegen-variant rp-glesfeat g5`).
     const TEST_G5: bool = option_env!("RP_GLESFEAT_G5").is_some();
+    /// Test G6 instead of G (`RP_GLESFEAT_G6=1`; device build
+    /// `RP_GLESFEAT_G6=1 cargo xtask codegen-variant rp-glesfeat g6`).
+    const TEST_G6: bool = option_env!("RP_GLESFEAT_G6").is_some();
     /// The emulator's check only (`RP_GLESFEAT_G5_CULPRIT=<item>`): the
     /// fork draws right at every clock, so with this a G5 check counts as
     /// right only when its mask holds that item, and the halving must end
@@ -660,7 +763,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G5 {
+    const G_TITLE: &str = if TEST_G6 {
+        "RP-GLESFEAT TEST G6"
+    } else if TEST_G5 {
         "RP-GLESFEAT TEST G5"
     } else if TEST_G4 {
         "RP-GLESFEAT TEST G4"
@@ -671,7 +776,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G5 {
+    const G_NAME: &str = if TEST_G6 {
+        "G6"
+    } else if TEST_G5 {
         "G5"
     } else if TEST_G4 {
         "G4"
@@ -685,14 +792,18 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = 0x0080_0000;
-    const _: () = assert!(REF + STRIDE * H as usize <= TAIL);
+    const REF: usize = if TEST_G6 { super::G6_REF } else { 0x0080_0000 };
+    const _: () = assert!(TEST_G6 || REF + STRIDE * H as usize <= TAIL);
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = 0x0040_0000;
+    const LABEL: usize = if TEST_G6 {
+        super::G6_LABEL
+    } else {
+        0x0040_0000
+    };
     const LABEL_STRIDE: usize = 480 * 2;
-    const _: () = assert!(TARGET + STRIDE * H as usize <= LABEL);
-    const _: () = assert!(LABEL + LABEL_STRIDE * H as usize <= PM);
+    const _: () = assert!(TEST_G6 || TARGET + STRIDE * H as usize <= LABEL);
+    const _: () = assert!(TEST_G6 || LABEL + LABEL_STRIDE * H as usize <= PM);
     /// The label's text: lines, the font's scale, colours (RGB565).
     const LABEL_LINES: usize = 16;
     const LABEL_SCALE: usize = 3;
@@ -705,6 +816,28 @@ mod image {
     const CS3_WM: (u32, u32, u32) = (8, 4, 2);
     const CS3_LONG: (u32, u32, u32) = (13, 9, 7);
 
+    /// The layout the current way draws in (an index into
+    /// [`super::G6_LAYOUTS`]; 0, ours, for every test but G6).
+    static LAY: rt::Global<usize> = rt::Global::new(0);
+
+    fn lay() -> super::Layout {
+        super::G6_LAYOUTS[LAY.with(|k| *k) % super::G6_LAYOUTS.len()]
+    }
+
+    fn set_lay(k: usize) {
+        LAY.with(|v| *v = k);
+    }
+
+    /// The target's words (two RGB565 pixels a word).
+    fn target_words() -> usize {
+        lay().target_bytes(W, H) / 4
+    }
+
+    /// Pixels a target word holds.
+    fn per_word() -> u32 {
+        if lay().rgb565 { 2 } else { 1 }
+    }
+
     fn store(vram: &mut [u8], at: usize, words: &[u32]) {
         for (k, &w) in words.iter().enumerate() {
             let _ = store32_volatile(vram, at + 4 * k, w);
@@ -712,7 +845,8 @@ mod image {
     }
 
     fn px(vram: &[u8], x: u32, y: u32) -> u32 {
-        load32_volatile(vram, TARGET + y as usize * STRIDE + 4 * x as usize).unwrap_or(0xDEAD_BEEF)
+        load32_volatile(vram, lay().target + y as usize * STRIDE + 4 * x as usize)
+            .unwrap_or(0xDEAD_BEEF)
     }
 
     /// Writes `pairs` with `bit` enabled; true if the bit set in time.
@@ -737,11 +871,12 @@ mod image {
     }
 
     fn pm_init(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let l = lay();
         for k in 0..4096 {
-            let _ = store32_volatile(vram, PM_TABLE + 4 * k, 0);
+            let _ = store32_volatile(vram, l.pm_table + 4 * k, 0);
         }
         cpu::drain_write_buffer();
-        let t = m3::pm_init_table(PM as u32, PM_SIZE, PM_TABLE as u32);
+        let t = m3::pm_init_table(l.pm as u32, l.pm_size, l.pm_table as u32);
         run(e, &t, PM_READY, 100_000)
     }
 
@@ -750,18 +885,28 @@ mod image {
     fn regions(vram: &mut [u8]) {
         let total = COLS * ROWS;
         for k in 0..total {
-            let entry = m3::region_entry(k % COLS, k / COLS, PARAMS as u32, k + 1 == total);
-            store(vram, REGIONS + 8 * k as usize, &entry);
+            let l = lay();
+            let entry = m3::region_entry(k % COLS, k / COLS, l.pm as u32, k + 1 == total);
+            store(vram, l.regions + 8 * k as usize, &entry);
         }
         cpu::drain_write_buffer();
     }
 
     /// Dell's start table with the target register (rp-mbx3d's level 1).
     fn table() -> ([(usize, u32); 16], usize) {
-        let dell = m3::start_table(REGIONS as u32, PARAMS as u32, W, H, STRIDE as u32);
+        let l = lay();
+        let stride = if l.rgb565 { W * 2 } else { STRIDE as u32 };
+        let mut dell = m3::start_table(l.regions as u32, l.pm as u32, W, H, stride);
+        if l.rgb565 {
+            for p in &mut dell {
+                if p.0 == 0x650 {
+                    p.1 = 1;
+                }
+            }
+        }
         let mut t = [(0usize, 0u32); 16];
         t[..14].copy_from_slice(&dell[..14]);
-        t[14] = (0x65C, TARGET as u32);
+        t[14] = (0x65C, l.target as u32);
         t[15] = dell[14];
         (t, 16)
     }
@@ -783,15 +928,16 @@ mod image {
         objs: &[(&[u32], u32)],
         over: &[(usize, u32)],
     ) -> bool {
-        let mut at = OBJECT;
+        let params = lay().pm;
+        let mut at = params + 64;
         let mut list = [m3::END; 16];
         let n = objs.len().min(15);
         for (k, (w, flags)) in objs[..n].iter().enumerate() {
             store(vram, at, w);
-            list[k] = flags | ((at - PARAMS) / 4) as u32;
+            list[k] = flags | ((at - params) / 4) as u32;
             at += 4 * w.len();
         }
-        store(vram, PARAMS, &list[..=n]);
+        store(vram, params, &list[..=n]);
         regions(vram);
         let (mut t, len) = table();
         for &(off, v) in over {
@@ -1016,20 +1162,27 @@ mod image {
     /// `words`, logs the first tile's list and each object the TA wrote
     /// (`words` of each).
     #[inline(never)]
-    fn through_ta(e: &mut Engine<Mmio>, vram: &mut [u8], draws: &[&[u32]], words: usize) -> TaOut {
+    fn through_ta(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        draws: &[&[u32]],
+        words: usize,
+        over: &[(usize, u32)],
+    ) -> TaOut {
+        let l = lay();
         let mut out = TaOut {
             ta: false,
             done: false,
             list: [m3::END; TA_LIST],
         };
         for k in 0..TAIL_SIZE / 4 {
-            let _ = store32_volatile(vram, TAIL + 4 * k, 0);
+            let _ = store32_volatile(vram, l.tail + 4 * k, 0);
         }
         for k in 0..2 * (COLS * ROWS + 1) as usize {
-            let _ = store32_volatile(vram, TA_REGIONS + 4 * k, 0);
+            let _ = store32_volatile(vram, l.ta_regions + 4 * k, 0);
         }
         cpu::drain_write_buffer();
-        let t = m3::ta::start_table(TAIL as u32, TA_REGIONS as u32, W, H, COLS, ROWS);
+        let t = m3::ta::start_table(l.tail as u32, l.ta_regions as u32, W, H, COLS, ROWS);
         let mut w = [(0usize, 0u32); 9 + TA_WORDS + TA_DRAWS + 2];
         w[..9].copy_from_slice(&t);
         let (mut at, mut n, mut ends) = (9, 0, 0);
@@ -1058,9 +1211,9 @@ mod image {
         }
         // The first tile the TA put something in, its list, its objects.
         let tile = (0..(COLS * ROWS) as usize)
-            .map(|k| TA_REGIONS + 8 * k)
+            .map(|k| l.ta_regions + 8 * k)
             .find(|&a| load32_volatile(vram, a + 4).unwrap_or(0) != 0)
-            .unwrap_or(TA_REGIONS);
+            .unwrap_or(l.ta_regions);
         let list = load32_volatile(vram, tile + 4).unwrap_or(0) as usize & m3::ADDR_MASK as usize;
         for (k, slot) in out.list.iter_mut().enumerate() {
             let ptr = load32_volatile(vram, list + 4 * k).unwrap_or(m3::END);
@@ -1071,7 +1224,7 @@ mod image {
             if words == 0 {
                 continue;
             }
-            let obj = PARAMS + 4 * (ptr & 0x001F_FFFF) as usize;
+            let obj = l.pm + 4 * (ptr & 0x001F_FFFF) as usize;
             let _ = write!(
                 RunLog,
                 "    TA list word 0x{ptr:08x} (layout {}), object at 0x{obj:x}:",
@@ -1089,7 +1242,12 @@ mod image {
         let (mut t3, len) = table();
         for p in &mut t3[..len] {
             if p.0 == 0x608 {
-                p.1 = TA_REGIONS as u32;
+                p.1 = l.ta_regions as u32;
+            }
+        }
+        for &(off, v) in over {
+            if let Some(p) = t3[..len - 1].iter_mut().find(|p| p.0 == off) {
+                p.1 = v;
             }
         }
         out.done = run(e, &t3[..len], RENDER_DONE, 200_000);
@@ -1204,7 +1362,7 @@ mod image {
                     put(v.to_bits());
                 }
             }
-            let TaOut { ta, done, .. } = through_ta(e, vram, &[&st[..n]], 32);
+            let TaOut { ta, done, .. } = through_ta(e, vram, &[&st[..n]], 32, &[]);
             log!(
                 "  M {name} (TSP 0x{tsp:08x}): {n} words, TA done {ta}, render done {done}; inside (150,200) 0x{:08x}, outside (400,600) 0x{:08x}",
                 px(vram, 150, 200),
@@ -1421,8 +1579,9 @@ mod image {
     /// The target filled with [`SENTINEL`] by the CPU (not the 2D engine,
     /// which runs on the clock under test).
     fn blank(vram: &mut [u8]) {
-        for k in 0..(W * H) as usize {
-            let _ = store32_volatile(vram, TARGET + 4 * k, SENTINEL);
+        let target = lay().target;
+        for k in 0..target_words() {
+            let _ = store32_volatile(vram, target + 4 * k, SENTINEL);
         }
         cpu::drain_write_buffer();
     }
@@ -1430,13 +1589,17 @@ mod image {
     /// The target held to the picture at `reference`.
     fn compare(vram: &[u8], reference: usize) -> Tally {
         let mut t = Tally::default();
-        for i in 0..W * H {
+        let (target, per) = (lay().target, per_word());
+        // RGB565 (G6): a word is two pixels, placed at its first; a step
+        // read as ARGB8888's means nothing there.
+        for i in 0..target_words() as u32 {
             let at = 4 * i as usize;
+            let p = i * per;
             t.add_px(
-                (i % W, i / W),
+                (p % W, p / W),
                 (W, H),
                 load32_volatile(vram, reference + at).unwrap_or(0),
-                load32_volatile(vram, TARGET + at).unwrap_or(0xDEAD_BEEF),
+                load32_volatile(vram, target + at).unwrap_or(0xDEAD_BEEF),
             );
         }
         t
@@ -1445,7 +1608,7 @@ mod image {
     /// The picture at `at` hashed (FNV-1a over its words).
     fn picture_hash(vram: &[u8], at: usize) -> u32 {
         let mut hash = 0x811C_9DC5u32;
-        for k in 0..(W * H) as usize {
+        for k in 0..target_words() {
             let v = load32_volatile(vram, at + 4 * k).unwrap_or(0);
             hash = (hash ^ v).wrapping_mul(0x0100_0193);
         }
@@ -1454,8 +1617,9 @@ mod image {
 
     /// The target copied to [`REF`].
     fn keep_reference(vram: &mut [u8]) {
-        for k in 0..(W * H) as usize {
-            let v = load32_volatile(vram, TARGET + 4 * k).unwrap_or(0);
+        let target = lay().target;
+        for k in 0..target_words() {
+            let v = load32_volatile(vram, target + 4 * k).unwrap_or(0);
             let _ = store32_volatile(vram, REF + 4 * k, v);
         }
         cpu::drain_write_buffer();
@@ -1486,6 +1650,9 @@ mod image {
         /// background) with the items of [`super::DELL_ITEMS`] in the mask
         /// copied from Dell's set-up.
         Dell(u32),
+        /// Test G6: ours in [`super::G6_LAYOUTS`]'s layout k (k 0-3), Dell's
+        /// whole state with it from k 2, through the TA at k 3.
+        G6(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1541,6 +1708,10 @@ mod image {
                 Self::TaDell => "Dell's clear and strip, through the TA",
                 Self::Dell(super::DELL_ALL) => "ours with Dell's whole state",
                 Self::Dell(_) => "ours with part of Dell's state",
+                Self::G6(0) => "ours, our places",
+                Self::G6(1) => "Dell's parameter memory (8 MiB at 0x22b000)",
+                Self::G6(2) => "Dell's places and state (RGB565 target)",
+                Self::G6(_) => "Dell's places and state, through the TA",
             }
         }
     }
@@ -1749,9 +1920,9 @@ mod image {
                 let (b, nb) = ta_draw(TSP_SMOOTH, ISP_ALWAYS, clip, &TRIS[1]);
                 let (q, nq) = ta_draw(TSP_SMOOTH, ISP_ALWAYS, clip, &[0, 1, 3, 2]);
                 let out = if let Way::Ta = way {
-                    through_ta(e, vram, &[&clear[..], &a[..na], &b[..nb]], words)
+                    through_ta(e, vram, &[&clear[..], &a[..na], &b[..nb]], words, &[])
                 } else {
-                    through_ta(e, vram, &[&clear[..], &q[..nq]], words)
+                    through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[])
                 };
                 (out.ta && out.done, us_since(t0), out.list)
             }
@@ -1804,8 +1975,28 @@ mod image {
             Way::TaDell => {
                 let clear = super::dell_clear_draw(ISP_ALWAYS, W, H, 1.0, 0xFF00_0000);
                 let (q, nq) = ta_draw(TSP_SMOOTH, ISP_ALWAYS, clip, &[0, 1, 3, 2]);
-                let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words);
+                let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
+            }
+            // G6: ours in the way's layout; ways 3 and 4 with Dell's whole
+            // state (G5's items), way 4 through the TA as Dell's driver
+            // sends it (his colour clear, then the quad as one strip).
+            Way::G6(k) => {
+                let mut over = [(0usize, 0u32); 16];
+                let n = if k >= 2 {
+                    dell_words(e, super::DELL_ALL, &mut over)
+                } else {
+                    0
+                };
+                if k == 3 {
+                    let clear = super::dell_clear_draw(ISP_ALWAYS, W, H, 1.0, 0xFF00_0000);
+                    let (q, nq) = ta_draw(TSP_SMOOTH, ISP_ALWAYS, clip, &[0, 1, 3, 2]);
+                    let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &over[..n]);
+                    (out.ta && out.done, us_since(t0), out.list)
+                } else {
+                    let done = draw_direct(e, vram, G5_OURS, words, true, &over[..n]);
+                    (done, us_since(t0), [m3::END; TA_LIST])
+                }
             }
         }
     }
@@ -1884,6 +2075,7 @@ mod image {
         let mut name = [0u8; 32];
         let name = fmt(&mut name, format_args!("WAY {}: {}", step - 1, w.name()));
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
+        set_lay(if let Way::G6(k) = w { k as usize } else { 0 });
         log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
         let _ = display_check(&mut e.regs, "before the reference");
@@ -1898,7 +2090,7 @@ mod image {
         {
             blank(vram);
             let done = draw_direct(e, vram, f, 0, false, &[]);
-            let h = picture_hash(vram, TARGET);
+            let h = picture_hash(vram, lay().target);
             bg_hash = Some(h);
             log!("  background alone: rendered {done}, hash 0x{h:08x}");
         }
@@ -1917,7 +2109,22 @@ mod image {
         // G5: Dell's MBX words read back from the core after the render
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
-        if let Way::Dell(m) = w {
+        // G6: the layout's addresses as the core holds them.
+        if let Way::G6(_) = w {
+            let _ = write!(RunLog, "  layout read back after the render:");
+            for off in [
+                0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
+            ] {
+                let _ = write!(RunLog, " 0x{off:x} 0x{:08x}", e.regs.read32(MBX + off));
+            }
+            log!("");
+        }
+        let dell_mask = match w {
+            Way::Dell(m) => Some(m),
+            Way::G6(k) if k >= 2 => Some(super::DELL_ALL),
+            _ => None,
+        };
+        if let Some(m) = dell_mask {
             let _ = write!(RunLog, "  read back after the render:");
             for (k, (_, it)) in super::DELL_ITEMS.iter().enumerate() {
                 if m >> k & 1 == 1
@@ -1938,10 +2145,14 @@ mod image {
         // clear drawn alone first left the next renders all white, and white
         // against white read as "20 of 20 right"): not its background alone,
         // and the quad'"'"'s black and white corners told apart.
-        let corner =
-            |x: u32, y: u32| load32_volatile(vram, REF + 4 * (y * W + x) as usize).unwrap_or(0);
+        let corner = |x: u32, y: u32| {
+            load32_volatile(vram, REF + 4 * ((y * W + x) / per_word()) as usize).unwrap_or(0)
+        };
         let quad_shown = bg_hash != Some(ref_hash) && corner(2, 2) != corner(477, 2);
-        if !quad_shown {
+        // Judged only on a picture that rendered: a reference that never
+        // drew (the TA silent) is the no-render case, not this one (G6's
+        // TA way in the emulator, 2026-10-23).
+        if d1 && !quad_shown {
             log!(
                 "  the reference holds no quad (its background alone, or the corners 0x{:08x} and 0x{:08x} alike): not a reference",
                 corner(2, 2),
@@ -1962,12 +2173,12 @@ mod image {
             // places, the first render's word then the second's.
             let _ = write!(RunLog, "    samples (first, second):");
             for (x, y) in [(2, 2), (240, 320), (477, 2), (2, 637), (477, 637)] {
-                let at = 4 * (y * W + x) as usize;
+                let at = 4 * ((y * W + x) / per_word()) as usize;
                 let _ = write!(
                     RunLog,
                     " ({x}, {y}) 0x{:08x} 0x{:08x};",
                     load32_volatile(vram, REF + at).unwrap_or(0),
-                    load32_volatile(vram, TARGET + at).unwrap_or(0)
+                    load32_volatile(vram, lay().target + at).unwrap_or(0)
                 );
             }
             log!("");
@@ -1979,7 +2190,11 @@ mod image {
             let mut line = [0u8; 32];
             let line = fmt(&mut line, format_args!("{mhz} MHZ / 1: SETTING"));
             say(vram, &[G_TITLE, head, name, line]);
-            let dell = if let Way::Dell(m) = w { m } else { 0 };
+            let dell = match w {
+                Way::Dell(m) => m,
+                Way::G6(k) if k >= 2 => super::DELL_ALL,
+                _ => 0,
+            };
             s.clocked = to_divide_1(
                 &mut e.regs,
                 Speed::ladder(pll),
@@ -2688,6 +2903,21 @@ mod image {
         say(vram, &lines);
     }
 
+    /// Test G6's ways (each layout of [`super::G6_LAYOUTS`]).
+    const G6_WAYS: [Way; 4] = [Way::G6(0), Way::G6(1), Way::G6(2), Way::G6(3)];
+
+    /// Test G6: where things sit in local memory, the parameter memory's
+    /// set-up and the render's flow, Dell's against ours (the leads G5 left).
+    fn test_g6(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G6: Dell's places in local memory, his parameter memory and his flow, against ours, at 74.75, 99.67 and 133.25 MHz (TSP 0x{TSP_SMOOTH:08x}, GC2's quad over our flat background; Dell's places read by rp-wmprobe v3)"
+        );
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G6_WAYS);
+        set_lay(0);
+        e.regs.write32(ENABLE, enable0);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -2720,7 +2950,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G5 {
+        let first = if TEST_G6 {
+            "STEP 1 OF 5"
+        } else if TEST_G5 {
             "STEP 1 OF 6"
         } else if TEST_G4 {
             "STEP 1 OF 11"
@@ -2771,7 +3003,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G5 {
+        if ready && TEST_G6 {
+            test_g6(&mut e, vram);
+        } else if ready && TEST_G5 {
             test_g5(&mut e, vram, inherited);
         } else if ready && TEST_G4 {
             test_g4(&mut e, vram);
@@ -3488,5 +3722,114 @@ mod g5_tests {
         assert_eq!(few, 3);
         // A single item is its own answer, with no check.
         assert_eq!(narrow(1 << 5, NARROW_CHECKS, |_| true), (1 << 5, 0));
+    }
+}
+
+/// Test G6's pure parts: the layouts.
+#[cfg(test)]
+mod g6_tests {
+    use super::*;
+    use rp_drv_mbx3d as m3;
+
+    const TILES: u32 = (480 / m3::TILE_W) * (640 / m3::TILE_H);
+
+    fn overlap(a: (usize, usize), b: (usize, usize)) -> bool {
+        a.0 < b.0 + b.1 && b.0 < a.0 + a.1
+    }
+
+    #[test]
+    fn no_buffer_overlaps_another_or_the_images_own() {
+        // The image's own areas in G6: the label, the reference (ARGB8888
+        // size, the larger), the fence.
+        let fixed = [
+            (G6_LABEL, 480 * 640 * 2, "label"),
+            (G6_REF, 480 * 640 * 4, "reference"),
+            (0x00FF_F000, 0x1000, "fence"),
+        ];
+        for (k, l) in G6_LAYOUTS.iter().enumerate() {
+            let spans = l.spans(480, 640, TILES);
+            for (i, a) in spans.iter().enumerate() {
+                assert!(a.0 + a.1 <= 16 << 20, "layout {k}: {} past 16 MiB", a.2);
+                for b in &spans[i + 1..] {
+                    // Dell's TA writes the region array the render reads:
+                    // the same place by design, never another buffer's.
+                    let same = a.2.contains("region") && b.2.contains("region") && a.0 == b.0;
+                    assert!(
+                        same || !overlap((a.0, a.1), (b.0, b.1)),
+                        "layout {k}: {} over {}",
+                        a.2,
+                        b.2
+                    );
+                }
+                for f in &fixed {
+                    assert!(
+                        !overlap((a.0, a.1), (f.0, f.1)),
+                        "layout {k}: {} over the {}",
+                        a.2,
+                        f.2
+                    );
+                }
+            }
+        }
+        assert!(!overlap((G6_LABEL, 480 * 640 * 2), (G6_REF, 480 * 640 * 4)));
+    }
+
+    #[test]
+    fn ours_is_every_earlier_tests_layout() {
+        assert_eq!(OURS_LAYOUT.target, 0x0020_0000);
+        assert_eq!(
+            (OURS_LAYOUT.pm, OURS_LAYOUT.pm_size),
+            (0x0060_0000, 0x0010_0000)
+        );
+        assert_eq!(OURS_LAYOUT.pm_table, 0x0070_0000);
+        assert_eq!(OURS_LAYOUT.regions, 0x00D1_0000);
+        assert!(!OURS_LAYOUT.rgb565);
+        assert_eq!(G6_LAYOUTS[0], OURS_LAYOUT);
+        // Ways 3 and 4 differ only in the flow.
+        assert_eq!(G6_LAYOUTS[2], G6_LAYOUTS[3]);
+    }
+
+    #[test]
+    fn dells_places_are_the_probes_reading() {
+        // rp-wmprobe v3 run 2 (local/rp-wmprobe-6.txt), Dell's driver at
+        // 74.75 / 1: "run 2 after: MBX 0x824 0x001f8000" and so on.
+        let probe: [(usize, u32); 7] = [
+            (0x824, 0x001f_8000),
+            (0x828, 0x0000_022c),
+            (0x82c, 0x0000_0a2a),
+            (0x83c, 0x0022_b000),
+            (0x840, 0x00f4_0000),
+            (0x844, 0x00f3_5000),
+            (0x65c, 0x00e9_d000),
+        ];
+        let l = DELL_LAYOUT;
+        // His parameter memory as our set-up writes it: the same four words.
+        let ours = m3::pm_init_table(l.pm as u32, l.pm_size, l.pm_table as u32);
+        for &(off, v) in &probe[..4] {
+            assert_eq!(
+                ours.iter().find(|p| p.0 == off).map(|p| p.1),
+                Some(v),
+                "0x{off:x}"
+            );
+        }
+        assert_eq!(l.tail as u32, probe[4].1);
+        assert_eq!(l.ta_regions as u32, probe[5].1);
+        assert_eq!(
+            l.regions as u32, probe[5].1,
+            "0x608 holds the same (run 2: 0x00f35000)"
+        );
+        assert_eq!(l.target as u32, probe[6].1);
+        assert!(l.rgb565, "0x650 1");
+        // Way 2 takes only the parameter memory.
+        assert_eq!(
+            (
+                DELL_PM_LAYOUT.pm,
+                DELL_PM_LAYOUT.pm_size,
+                DELL_PM_LAYOUT.pm_table
+            ),
+            (l.pm, l.pm_size, l.pm_table)
+        );
+        assert_eq!(DELL_PM_LAYOUT.regions, OURS_LAYOUT.regions);
+        assert!(!DELL_PM_LAYOUT.rgb565);
     }
 }

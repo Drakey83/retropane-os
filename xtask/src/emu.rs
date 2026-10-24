@@ -2992,9 +2992,10 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g3") => return boot_loader_glesfeat_g(root, 3),
         Ok("g4") => return boot_loader_glesfeat_g(root, 4),
         Ok("g5") => return boot_loader_glesfeat_g5(root),
+        Ok("g6") => return boot_loader_glesfeat_g(root, 6),
         Ok(other) => {
             return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4 or g5"
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5 or g6"
             ));
         }
         Err(_) => {}
@@ -3220,7 +3221,9 @@ fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 4 {
+    let (env, name, ours, after) = if test == 6 {
+        ("RP_GLESFEAT_G6", "G6", "G6 way 1 (", "G6 way 2 (")
+    } else if test == 4 {
         ("RP_GLESFEAT_G4", "G4", "G4 way 1 (", "G4 way 2 (")
     } else if test == 3 {
         ("RP_GLESFEAT_G3", "G3", "G3 way 1 (", "G3 way 2 (")
@@ -3260,7 +3263,31 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 4 {
+    let wants: &[&str] = if test == 6 {
+        &[
+            "test G6, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G6 way 1 (ours, our places):",
+            "G6 way 2 (Dell's parameter memory (8 MiB at 0x22b000)):",
+            "G6 way 3 (Dell's places and state (RGB565 target)):",
+            "G6 way 4 (Dell's places and state, through the TA):",
+            // Each layout reached the core: our addresses, then Dell's
+            // parameter memory (its table, first and last page, base), then
+            // all his places with his RGB565 target (`0x650` 1, stride
+            // 0xf0 words).
+            "  layout read back after the render: 0x608 0x00d10000 0x60c 0x00600000 0x650 0x00000006 0x65c 0x00200000 0x660 0x000001e0 0x824 0x00700000",
+            "  layout read back after the render: 0x608 0x00d10000 0x60c 0x0022b000 0x650 0x00000006 0x65c 0x00b69000 0x660 0x000001e0 0x824 0x001f8000 0x828 0x0000022c 0x82c 0x00000a2a 0x83c 0x0022b000",
+            "  layout read back after the render: 0x608 0x00f35000 0x60c 0x0022b000 0x650 0x00000001 0x65c 0x00e9d000 0x660 0x000000f0 0x824 0x001f8000 0x828 0x0000022c 0x82c 0x00000a2a 0x83c 0x0022b000",
+            // Dell's state with his places (way 3).
+            "  read back after the render: 0x130 0x000087f5 0x610 0x00030001",
+            "G6: right at 74.75 / 1 of 20:",
+            "G6: right at 99.67 / 1 of 20:",
+            "G6: right at 133.25 / 1 of 20:",
+            "    display after the change: underrun ",
+            "; the screen on throughout: ",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 4 {
         &[
             "test G4, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3402,6 +3429,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     let same: &[u32] = match test {
         2 => &[3, 5],
         3 => &[4, 5, 6],
+        6 => &[2],
         _ => &[],
     };
     if !same.is_empty() {
@@ -3430,7 +3458,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // 1.0, the giant black Gouraud one) the same picture. A background that
     // didn't draw, or drew the wrong colour, is caught here: the reference
     // can't show it.
-    if test >= 3 {
+    if test == 3 || test == 4 {
         let (same, alone_want): (&[u32], usize) = if test == 3 { (&[5, 6], 6) } else { (&[], 10) };
         let bg = |way: u32| {
             log.split(&format!("{name} way {way} ("))
