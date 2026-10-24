@@ -210,7 +210,8 @@ mod tests {
         for (b, why) in cases {
             assert_eq!(parse(&b).err(), Some(why));
         }
-        for off in NEVER.iter().copied().chain([0x1000, 0x602]) {
+        // Written out, not taken from `NEVER`: the list itself is under test.
+        for off in [0x080, 0x12C, 0x134, 0x680, 0x800, 0x1000, 0x602] {
             let b = write(&[(off, 1)], &[], (0, 0));
             assert!(parse(&b).is_err(), "register 0x{off:x}");
         }
