@@ -2531,6 +2531,56 @@ mod image {
             rt::check_in();
         }
 
+        // (f) The direction bits where they matter: an overlapping copy.
+        // A 32 x 16 block whose pixels name their own (x, y), copied onto
+        // itself one pixel right (needs right-to-left), then one row down
+        // (needs bottom-up), with each bit pattern; right when every
+        // pixel holds its left (upper) neighbour's original, smeared when
+        // copied the wrong way.
+        for (dx, dy, what) in [(1u16, 0u16, "one pixel right"), (0, 1, "one row down")] {
+            for bits in [0u32, 1 << 23, 1 << 24, 1 << 23 | 1 << 24] {
+                let mut blk = [0u32; 512];
+                for (k, v) in blk.iter_mut().enumerate() {
+                    *v = 0xFF00_0000 | ((k / 32) as u32) << 8 | (k % 32) as u32;
+                }
+                set(vram, B12_DST, &blk);
+                let (w, n) = rp_image::need(
+                    cmd::blit(
+                        (Format::BPP32, B12_DST, 128),
+                        (Format::BPP32, B12_DST, 128),
+                        (0, 0),
+                        (dx, dy, 16 + dx, 8 + dy),
+                        cmd::ROP_SRCCOPY,
+                        bits,
+                        0,
+                    ),
+                    "a 2D rectangle",
+                );
+                let ran = go(e, vram, &w[..n], "B12f overlapping copy");
+                ok &= ran;
+                let got = read(vram);
+                let (mut right, mut wrong) = (0u32, 0u32);
+                for y in 0..8u32 {
+                    for x in 0..16u32 {
+                        let (tx, ty) = (x + u32::from(dx), y + u32::from(dy));
+                        let v = got[(32 * ty + tx) as usize];
+                        if v == 0xFF00_0000 | y << 8 | x {
+                            right += 1;
+                        } else {
+                            wrong += 1;
+                        }
+                    }
+                }
+                log!(
+                    "B12f copy onto itself {what}, header bits 0x{bits:08x}: ran {ran}; of 128 pixels {right} right, {wrong} not (a smear when the direction is wrong); the target's first words 0x{:08x} 0x{:08x} 0x{:08x}",
+                    got[(32 * u32::from(dy) + u32::from(dx)) as usize],
+                    got[(32 * u32::from(dy) + u32::from(dx) + 1) as usize],
+                    got[(32 * (u32::from(dy) + 1) + u32::from(dx)) as usize]
+                );
+                rt::check_in();
+            }
+        }
+
         let back = go(e, vram, &base, "B12 state back");
         log!(
             "B12 scale, key and blend put back: {}",
