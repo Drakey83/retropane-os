@@ -855,14 +855,14 @@ mod image {
     use rp_drv_mbx_display::font::{self, WIDTH};
     use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
     use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, PM_READY, RENDER_DONE, TSP_DELL, Vertex};
+    use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
-    use rp_drv_pxa_gpio::Gpio;
     use rp_hal_pxa27x::clocks::{self as cpu_clock, POINTS};
     use rp_hal_pxa27x::{Mmio, cpu, diag, rt};
-    use rp_hal_x51v::vcore::{self, Code};
     use rp_hal_x51v::devices::RunLog;
+    use rp_hal_x51v::vcore::{self, Code};
 
     use super::{
         DellItem, MARKER, QUAD, SENTINEL, TRIS, TSP_ALPHA_TEST, TSP_SMOOTH, Tally, adopt_flags,
@@ -1136,21 +1136,20 @@ mod image {
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize =
-        if TEST_G6
-            || TEST_G7
-            || TEST_G8
-            || TEST_G10
-            || TEST_G11
-            || TEST_G12
-            || TEST_G13
-            || TEST_G14
-            || TEST_G15
-        {
-            super::G6_LABEL
-        } else {
-            0x0040_0000
-        };
+    const LABEL: usize = if TEST_G6
+        || TEST_G7
+        || TEST_G8
+        || TEST_G10
+        || TEST_G11
+        || TEST_G12
+        || TEST_G13
+        || TEST_G14
+        || TEST_G15
+    {
+        super::G6_LABEL
+    } else {
+        0x0040_0000
+    };
     const LABEL_STRIDE: usize = 480 * 2;
     const _: () = assert!(
         TEST_G6
@@ -5531,7 +5530,10 @@ mod g14_tests {
         // Windows Mobile's divide 2 (0x5, 0x6), the emulator's start (every
         // clock off), and a PLL not locked: not his.
         for (clk, pll) in [(0x5, 0x4), (0x6, 0x4), (0x0, 0x4), (0x2, 0x0), (0x1, 0x3)] {
-            assert!(!dells_divide_1(clk, pll), "MBXCLK 0x{clk:x} PLLSTAT 0x{pll:x}");
+            assert!(
+                !dells_divide_1(clk, pll),
+                "MBXCLK 0x{clk:x} PLLSTAT 0x{pll:x}"
+            );
         }
         // Divide 4 or more (bits 3-2 not zero), a clock running: not divide 1.
         assert!(!dells_divide_1(0x9, 0x4));

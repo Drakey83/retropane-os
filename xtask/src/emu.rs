@@ -3770,7 +3770,11 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         for (way, want, code) in [
             (1, None, None),
             (2, Some("core counted 208"), None),
-            (3, Some("core counted 208"), Some("voltage code 0b100 (Dell's label Some(1163) mV)")),
+            (
+                3,
+                Some("core counted 208"),
+                Some("voltage code 0b100 (Dell's label Some(1163) mV)"),
+            ),
         ] {
             let line = cpu(way);
             if line.is_empty() {
