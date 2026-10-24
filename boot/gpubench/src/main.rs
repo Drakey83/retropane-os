@@ -137,6 +137,9 @@ mod image {
         ($($t:tt)*) => {{ let _ = writeln!(KeptRunLog, $($t)*); }};
     }
 
+    /// Run BX, DMA bursts into local memory and status bit 10 (backlog).
+    #[path = "../busx.rs"]
+    mod busx;
     /// Run CH, the compositor harness (docs/design/compositor-harness.md).
     #[path = "../harness.rs"]
     mod harness;
@@ -157,6 +160,9 @@ mod image {
     const LIMITS: bool = option_env!("RP_GPUBENCH_LIMITS").is_some();
     /// Run FI2: the status bits run FI left (the gate's P18; reads only).
     const STATUS2: bool = option_env!("RP_GPUBENCH_STATUS2").is_some();
+    /// Run BX: the backlog's P12 (DMA bursts into local memory) and V17
+    /// (status bit 10).
+    const BX: bool = option_env!("RP_GPUBENCH_BX").is_some();
     /// Run D: the video plane's undocumented format codes (the owner
     /// watches).
     const VFMT: bool = option_env!("RP_GPUBENCH_VFMT").is_some();
@@ -320,6 +326,7 @@ mod image {
         || HARNESS
         || LIMITS
         || STATUS2
+        || BX
         || TEXT;
     /// Run K: only report a log kept in SRAM by an earlier run that didn't
     /// return (every run reports one; this one does nothing else).
@@ -10178,6 +10185,8 @@ mod image {
             limits::run(&mut g);
         } else if STATUS2 {
             statusbits::run(&mut g);
+        } else if BX {
+            busx::run(&mut g);
         } else if TARGETS2 {
             target_formats2(&mut g);
         } else if TARGETS_WATCH {

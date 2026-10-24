@@ -4453,6 +4453,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     )?;
     let run_lim = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LIMITS", "1"))?;
     let run_fi2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_STATUS2", "1"))?;
+    let run_bx = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_BX", "1"))?;
     // Run GS (the clocks' soak) with 70 s a setting: one minute's line and
     // the closing line each.
     let run_gs = variant_image_with(
@@ -4551,7 +4552,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 51] = [
+    let runs: [GpubenchRun; 52] = [
         (
             "run A",
             &run_a,
@@ -5212,6 +5213,23 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 "RETROPANE-GPUBENCH: done",
             ],
             true,
+            (0, 0, 0),
+        ),
+        // The backlog's P12 and V17: every burst and width moves the copy
+        // right (the emulator's DMA ignores the burst), every phase read.
+        (
+            "run BX",
+            &run_bx,
+            &[
+                "  BX P12 burst 8 width 0: 960 KiB in",
+                "  BX P12 burst 32 width word: 960 KiB in",
+                "the copy right: true",
+                "  BX V17 a DMA into local memory each frame:",
+                "BX: done",
+                "everything given back: true",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
             (0, 0, 0),
         ),
         // The status bits run FI left (P18): every phase is read and the

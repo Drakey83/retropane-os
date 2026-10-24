@@ -61,6 +61,17 @@ const DCMD_FLOWTRG: u32 = 1 << 28;
 /// 32-byte bursts (a FIFO request's worth).
 const DCMD_SIZE32: u32 = 3 << 16;
 
+/// DCMD's SIZE field for a burst of `burst` bytes (8, 16 or 32), shared
+/// by every shaped copy.
+const fn dcmd_size(burst: u32) -> Option<u32> {
+    match burst {
+        8 => Some(1 << 16),
+        16 => Some(2 << 16),
+        32 => Some(DCMD_SIZE32),
+        _ => None,
+    }
+}
+
 /// The DCMD width field for a port.
 fn width(w: Width) -> u32 {
     match w {
@@ -293,6 +304,22 @@ impl Dma {
     /// `false` if refused (busy, not whole lines, or `dst` not word
     /// aligned).
     pub fn arm_copy_to_device_memory(&mut self, src: &[u8], dst: u32) -> bool {
+        self.arm_copy_to_device_memory_shaped(src, dst, 32, Some(Width::Word))
+    }
+
+    /// [`Self::arm_copy_to_device_memory`] with the burst size (`8`, `16`
+    /// or `32` bytes) and the width field (`None`: 0) chosen: the gate's
+    /// P12 sweep into 2700G memory. `false` also for any other burst.
+    pub fn arm_copy_to_device_memory_shaped(
+        &mut self,
+        src: &[u8],
+        dst: u32,
+        burst: u32,
+        w: Option<Width>,
+    ) -> bool {
+        let Some(size) = dcmd_size(burst) else {
+            return false;
+        };
         let addr = src.as_ptr() as u32;
         let Ok(len) = u32::try_from(src.len()) else {
             return false;
@@ -314,7 +341,7 @@ impl Dma {
             dst_step: CHUNK,
             chunk: CHUNK,
             len,
-            cmd: DCMD_INCSRC | DCMD_INCTRG | DCMD_SIZE32 | width(Width::Word),
+            cmd: DCMD_INCSRC | DCMD_INCTRG | size | w.map_or(0, width),
         };
         if !self.begin(shape, None) {
             return false;
@@ -343,11 +370,8 @@ impl Dma {
         burst: u32,
         w: Option<Width>,
     ) -> bool {
-        let size = match burst {
-            8 => 1 << 16,
-            16 => 2 << 16,
-            32 => DCMD_SIZE32,
-            _ => return false,
+        let Some(size) = dcmd_size(burst) else {
+            return false;
         };
         let (s, d) = (src.as_ptr() as u32, dst.as_mut_ptr() as u32);
         let Ok(len) = u32::try_from(src.len()) else {
