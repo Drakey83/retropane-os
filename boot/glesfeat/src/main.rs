@@ -2983,14 +2983,21 @@ mod image {
             // (every clock off, the emulator's start) isn't Dell's chip.
             if clk0 >> 2 & 3 == 0 && clk0 & 3 != 0 {
                 inherited = inherit(&mut e, vram, clk0);
-                clock_back(&mut e.regs);
-                let _ = display_check(&mut e.regs, "back at Windows Mobile's clock");
-                clock_readback(&mut e.regs);
             } else {
                 log!(
                     "G5: started with MBXCLK 0x{clk0:x} (not divide 1 with a clock running): no inherited way (Windows Mobile booted without Dell's CoreClock)"
                 );
             }
+        }
+        // Every G test: Windows Mobile's clock set here, not assumed. The
+        // references are drawn at it; G6's first run (2026-10-23) found the
+        // chip at Dell's divide 1 (Windows Mobile booted with his
+        // CoreClock), drew them there, and none repeated.
+        if TEST_G && e.regs.read32(PLLSTAT) & 4 != 0 {
+            log!("started with MBXCLK 0x{clk0:x}: Windows Mobile's clock set");
+            clock_back(&mut e.regs);
+            let _ = display_check(&mut e.regs, "at Windows Mobile's clock");
+            clock_readback(&mut e.regs);
         }
         let clk0 = e.regs.read32(MBXCLK);
         if e.regs.read32(PLLSTAT) & 4 != 0 {
