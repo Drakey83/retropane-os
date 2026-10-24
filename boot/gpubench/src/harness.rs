@@ -38,7 +38,7 @@ const GLASS_ROWS: u32 = 1280;
 /// Frames a sequence at most.
 const MAXF: usize = 160;
 /// Sequences, for the label.
-const STEPS: u32 = 16;
+const STEPS: u32 = 18;
 /// W2's row: a list row, 480 x 48 UYVY, 46,080 bytes (whole cache lines).
 const ROW_H: u32 = 48;
 const ROW_BYTES: usize = (480 * 2 * ROW_H) as usize;
@@ -764,6 +764,69 @@ fn render_split(
     }
 }
 
+/// The ways a 3D sequence runs: ((pipeline, full), the caption's label
+/// for W5 and W6, the report's name).
+const WAYS: [((bool, bool), [&str; 2], &str); 3] = [
+    ((false, false), ["W5 TURNS", "W6 TURNS"], "turns"),
+    ((true, false), ["W5 PIPELINE", "W6 PIPELINE"], "pipeline"),
+    (
+        (false, true),
+        ["W5 FULL", "W6 FULL"],
+        "turns, every tile every frame",
+    ),
+];
+
+/// A kept picture's bytes: the rows above the caption.
+const KEPT: usize = 480 * 560 * 2;
+
+/// The rows above the caption of the picture at `at`, read into `out`.
+fn keep_picture(g: &Rig, at: u32, out: &mut [u8]) {
+    for (k, w) in out.chunks_exact_mut(4).enumerate() {
+        let v = g.mem.load(at as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+        w.copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// The scene as it stands rendered whole into screen 0 (every tile
+/// redrawn: the truth for the scene), then each way's kept last picture
+/// held to it word for word: how many words differ, the first three
+/// (pixel x, y, kept, fresh) and the box they fall in.
+fn fresh_against(g: &mut Rig, r: &mut Renderer, sc: &Screens, keep: &[u8], what: &str) {
+    r.invalidate_all();
+    let us = g.frame(r, sc.target(0));
+    for (i, (_, _, way)) in WAYS.iter().enumerate() {
+        let kept = &keep[i * KEPT..(i + 1) * KEPT];
+        let (mut n, mut first, mut nf) = (0u32, [(0u32, 0u32, 0u32, 0u32); 3], 0usize);
+        let mut bx = (u32::MAX, u32::MAX, 0u32, 0u32);
+        for (k, w) in kept.chunks_exact(4).enumerate() {
+            let a = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            let b = g.mem.load(sc.at[0] as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+            if a != b {
+                let (x, y) = ((2 * k % 480) as u32, (2 * k / 480) as u32);
+                n += 1;
+                if nf < first.len() {
+                    first[nf] = (x, y, a, b);
+                    nf += 1;
+                }
+                bx = (bx.0.min(x), bx.1.min(y), bx.2.max(x + 1), bx.3.max(y));
+            }
+        }
+        log!(
+            "  CH {what} {way}: the last picture against a fresh full render ({us:?} us): {n} words differ"
+        );
+        if n > 0 {
+            log!(
+                "    first {:?} (x, y, kept, fresh); box x {}-{} y {}-{}",
+                &first[..nf],
+                bx.0,
+                bx.2,
+                bx.1,
+                bx.3
+            );
+        }
+    }
+}
+
 /// Two RGB565 screens for the 3D frames, flipped at the frame event.
 struct Screens {
     at: [u32; 2],
@@ -820,6 +883,7 @@ struct Seq3 {
 /// A 3D sequence of `n` frames: `scene(g, r, k)` sets frame `k`'s slots;
 /// the caption (the CPU's work) prepared before the render (`pipeline`
 /// false: turns) or during it (true), uploaded after it, then the flip.
+/// `full`: every tile redrawn every frame (the dirty tiles' control).
 #[allow(clippy::too_many_arguments)]
 fn sequence(
     g: &mut Rig,
@@ -829,7 +893,7 @@ fn sequence(
     buf: &mut [u8],
     label: (u32, &str),
     n: u32,
-    pipeline: bool,
+    (pipeline, full): (bool, bool),
     scene: &mut dyn FnMut(&mut Rig, &mut Renderer, u32),
 ) -> Seq3 {
     let mut out = Seq3 {
@@ -851,6 +915,9 @@ fn sequence(
             prepare_caption(buf, l1.as_str(), l2.as_str());
         }
         scene(g, r, k);
+        if full {
+            r.invalidate_all();
+        }
         let mut prep = |_: &mut Rig| {
             if pipeline {
                 prepare_caption(buf, l1.as_str(), l2.as_str());
@@ -930,7 +997,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     let cloud2 = tex16(g, 5, format::ARGB4444, 1, &cloud(90));
     let app = tex16(g, 6, format::RGB565, 1, &pattern565);
     let cap = tex16(g, CAP_CODE, format::ARGB4444, 1, &|_, _| 0);
-    let buf = &mut scratch[..2 * (8 << CAP_CODE) * (8 << CAP_CODE)];
+    let (buf, keep) = scratch.split_at_mut(2 * (8 << CAP_CODE) * (8 << CAP_CODE));
     let (
         Some(c0),
         Some(c1),
@@ -987,27 +1054,26 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
         let x = 40 + ((k * 8) % 240) as i32;
         g.set(r, 4, Some(textured(x, 320, 200, 260, cards[3], full_uv())));
     };
-    let mut hashes = [0u32; 2];
-    for (i, pipeline) in [false, true].into_iter().enumerate() {
-        let name = (step, if pipeline { "W5 PIPELINE" } else { "W5 TURNS" });
-        let q = sequence(g, &mut r, &sc, cap, buf, name, FRAMES_3D, pipeline, &mut w5);
-        report3(
-            if pipeline {
-                "W5 task switcher, pipeline"
-            } else {
-                "W5 task switcher, turns"
-            },
-            &q,
-            2 * FRAME_US,
-            FRAMES_3D,
-        );
+    let mut hashes = [0u32; 3];
+    for (i, (way, label, title)) in WAYS.into_iter().enumerate() {
+        let name = (step, label[0]);
+        let q = sequence(g, &mut r, &sc, cap, buf, name, FRAMES_3D, way, &mut w5);
+        let mut what = heapless_name();
+        let _ = write!(what, "W5 task switcher, {title}");
+        report3(what.as_str(), &q, 2 * FRAME_US, FRAMES_3D);
         hashes[i] = q.hash;
+        keep_picture(
+            g,
+            sc.at[((FRAMES_3D - 1) % 2) as usize],
+            &mut keep[i * KEPT..(i + 1) * KEPT],
+        );
         step += 1;
     }
     log!(
         "  CH W5 turns and pipeline end on the same picture: {}",
         hashes[0] == hashes[1]
     );
+    fresh_against(g, &mut r, &sc, keep, "W5");
     for slot in 1..=6 {
         g.set(&mut r, slot, None);
     }
@@ -1033,26 +1099,25 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
             Some(textured(x2, 260, 260, 160, cl2, full_uv()).over()),
         );
     };
-    for (i, pipeline) in [false, true].into_iter().enumerate() {
-        let name = (step, if pipeline { "W6 PIPELINE" } else { "W6 TURNS" });
-        let q = sequence(g, &mut r, &sc, cap, buf, name, FRAMES_3D, pipeline, &mut w6);
-        report3(
-            if pipeline {
-                "W6 living sky, pipeline"
-            } else {
-                "W6 living sky, turns"
-            },
-            &q,
-            2 * FRAME_US,
-            FRAMES_3D,
-        );
+    for (i, (way, label, title)) in WAYS.into_iter().enumerate() {
+        let name = (step, label[1]);
+        let q = sequence(g, &mut r, &sc, cap, buf, name, FRAMES_3D, way, &mut w6);
+        let mut what = heapless_name();
+        let _ = write!(what, "W6 living sky, {title}");
+        report3(what.as_str(), &q, 2 * FRAME_US, FRAMES_3D);
         hashes[i] = q.hash;
+        keep_picture(
+            g,
+            sc.at[((FRAMES_3D - 1) % 2) as usize],
+            &mut keep[i * KEPT..(i + 1) * KEPT],
+        );
         step += 1;
     }
     log!(
         "  CH W6 turns and pipeline end on the same picture: {}",
         hashes[0] == hashes[1]
     );
+    fresh_against(g, &mut r, &sc, keep, "W6");
     for slot in 1..=6 {
         g.set(&mut r, slot, None);
     }
@@ -1070,7 +1135,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
         g.set(r, 1, Some(textured(x, y, w, h, app, full_uv())));
     };
     let name = (step, "W3 APP OPENS");
-    let q = sequence(g, &mut r, &sc, cap, buf, name, 15, true, &mut w3);
+    let q = sequence(g, &mut r, &sc, cap, buf, name, 15, (true, false), &mut w3);
     report3(
         "W3 app opening (completion: 250 ms target)",
         &q,
@@ -1099,7 +1164,7 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
         g.set(r, 1, Some(textured(0, 0, 480, 640, app, turned)));
     };
     let name = (step, "W7 ROTATION");
-    let q = sequence(g, &mut r, &sc, cap, buf, name, 2, true, &mut w7);
+    let q = sequence(g, &mut r, &sc, cap, buf, name, 2, (true, false), &mut w7);
     report3(
         "W7 rotation by the 3D core (completion: 300 ms target)",
         &q,

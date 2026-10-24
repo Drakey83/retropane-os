@@ -66,6 +66,24 @@ table at the end.
 until the work is done (a calibrated loop: its count over a quiet 16.6 ms
 first), so "the CPU left" is measured, not assumed.
 
+## Run on the X51v (2026-10-24, unattended, three times)
+
+`rp-gpubench` run CH (`RP_GPUBENCH_HARNESS=1 cargo xtask codegen-variant
+rp-gpubench h`; `emu-gpubench` run CH). Every result, and what it says for
+T1, T3 and T4, is in docs/hw/2700g.md "The compositor harness, fewer text
+operations, the 3D core's limits, the status bits". In short: the plane
+frames (W1, W4, W9, toast, wake) cost nothing and are never late; a W2 row
+by the 2D engine 0.62 ms with the CPU free (2.3 ms by CPU stores); the
+pipeline 9-10% shorter frames than turns, the render ~1.5 ms slower beside
+the CPU; the sky (W6) 34-38 fps against its 30; the app opening 355 ms
+against 250; a turned screen 26 ms by the 3D core, 42 by the 2D engine.
+**Found: single stale pixels after partial frames (quality audit C71)**;
+a third way, every tile every frame, is exact and stays in the run as
+the control.
+
+Results, not decisions: whether the compositor pipelines, the routing
+table, and what W3 and W6 do about their targets are the owner's.
+
 ## What it can't answer
 
 - Touch-driven latency on real touches: the motion is scripted (the brief
