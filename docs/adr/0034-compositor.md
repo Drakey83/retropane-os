@@ -116,3 +116,25 @@ the frame loop with still and pan (device-proven, emulator-modelled), pan
 under glass, the price table and partial mode, the upload path, then the
 first showpiece. Each step: a design note, a host test, an emulator
 check, a device run on the owner's go.
+
+## Ruled since (the owner, 2026-10-24, on the compositor harness's runs)
+
+From `rp-gpubench` run CH (docs/design/compositor-harness.md; the gate's
+T1, T3, T4, ticked):
+
+- **T1: the pipeline.** The CPU prepares the next frame while the 3D core
+  draws this one (frames 9-10% shorter; the worst task-switcher frame 29
+  to 22 ms). The 2D engine and the 3D core still take turns (ADR-0030 G2:
+  P8 open). Measured with the scan-out contention of quality audit C71
+  still present, so the render's ~1.5 ms slowdown beside the CPU may
+  shrink when that is fixed.
+- **T4: the routing table as measured.** The planes for pans, sheets and
+  fades (free); the 2D engine for fills, copies, list rows, keys and text;
+  the 3D core for layered effects, scaling and turning the screen (26 ms
+  against the 2D engine's 42); the CPU draws content once, into caches.
+- **T3: the split.** The CPU writes small 2D command batches; DMA moves
+  pixels and long batches. DMA for everything rejected (no gain).
+- **The video plane's scaler (C70, P9):** Windows Mobile's `SPOCTRL` bit
+  27 is kept for scaling **if the owner's look at P9 shows the picture
+  right**, dropped if it tears; free scaling is then the app-opening
+  animation's way (W3 missed its 250 ms by 105 ms in 3D).

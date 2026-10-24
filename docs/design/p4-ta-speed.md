@@ -1,6 +1,8 @@
-# P4: the tile accelerator against CPU-built lists (a plan for the owner's vote)
+# P4: the tile accelerator against CPU-built lists (decided 2026-10-24)
 
-**Status: proposed 2026-10-24, not built.** The gate's P4 (phase 5):
+**Status: decided by the owner 2026-10-24 (Q1 A, Q2 A, Q3 the synthetic
+quads); not built: it waits for the divide-1 work to finish with
+`rp-glesfeat` (Q1).** The gate's P4 (phase 5):
 "the TA's speed against the CPU-built lists at 100 / 1,000 / 5,000 quads".
 ADR-0026 D1 already chose **both** (C): the interface on our CPU-built
 objects and lists, games on the tile accelerator. P4 measures where the
@@ -59,6 +61,15 @@ stay as far as they got).
 
 **Q3. Content.** 16 x 16 and 64 x 64 textured quads, as above. Or your
 game's real mix, once a port (Doom, Heretic: apps-and-packs §6) gives one.
+
+## The owner's votes (2026-10-24)
+
+- **Q1: A.** Move the TA code into `rp-mbx3d` once, after the divide-1
+  work: two copies would drift.
+- **Q2: A.** No C53 fix first: measure; a hang that ends the numbers early
+  is the evidence that C53 matters, and then it's fixed with that evidence.
+- **Q3: the synthetic quads** (16 x 16 and 64 x 64 textured): no port
+  exists yet; the two sizes bracket real work.
 
 ## What it decides
 

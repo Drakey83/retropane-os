@@ -469,3 +469,13 @@ reference").
 1. ~~Owner: A or B?~~ B (2026-10-14).
 2. Stride 0 (B6 measures it).
 3. 32 bpp scan-out bandwidth with the engine busy (B6).
+
+## Ruled since: the text path (the owner, 2026-10-24, the gate's F6)
+
+**Cached lines, with the mix.** Text is drawn once, a line at a time, into
+a line cache in 2700G memory, and shown as one 2D copy a line; glyph by
+glyph only for the line being typed. Measured (`rp-gpubench` F7, X51v
+2026-10-24): a screen of text in 9.9 ms against 12.5 glyph by glyph, the
+CPU's part 0.07 ms against 12; about 600 KB of 2700G memory for a screen
+of cached lines (affordable). Copies down over themselves (a scrolled
+list) set header bit 24 by themselves (quality audit C72).
