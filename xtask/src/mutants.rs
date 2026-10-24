@@ -2572,8 +2572,10 @@ fn compress_k<const K: u32>(",
     Mutant {
         name: "a 2D copy down over itself left top-down: the row overlap ignored (C72)",
         file: "drivers/blit2d/src/lib.rs",
-        from: "&& y0 > sy && y0 < sy.saturating_add(y1.saturating_sub(y0))",
-        to: "&& y0 > sy",
+        from: "        && y0 < sy.saturating_add(y1.saturating_sub(y0))
+}",
+        to: "
+}",
         check: Check::Host(&[
             "-p",
             "rp-drv-blit2d",
@@ -2583,8 +2585,9 @@ fn compress_k<const K: u32>(",
     Mutant {
         name: "a 2D copy down over itself left top-down: another stride taken as the same surface (C72)",
         file: "drivers/blit2d/src/lib.rs",
-        from: "dst == src && dst_stride == src_stride && y0 > sy",
-        to: "dst == src && y0 > sy",
+        from: "        && dst_stride == src_stride
+",
+        to: "",
         check: Check::Host(&[
             "-p",
             "rp-drv-blit2d",
