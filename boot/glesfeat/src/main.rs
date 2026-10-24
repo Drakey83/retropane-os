@@ -142,11 +142,23 @@ pub const CLEAR_WORDS: usize = 10;
 /// `z` (the TA's: the z it was sent; 1/w 1.0).
 #[must_use]
 pub fn quad_object(isp: u32, tsp: u32, z: f32) -> [u32; QUAD_WORDS] {
+    four_corner_object(isp, tsp, z, STRIP_ORDER.map(|k| QUAD[k]))
+}
+
+/// A four-corner object (the TA's form for a strip of four, list flags
+/// [`QUAD_FLAGS`]) of `corners` `(x, y, colour)` in strip order, at depth
+/// `z`, 1/w 1.0.
+#[must_use]
+pub fn four_corner_object(
+    isp: u32,
+    tsp: u32,
+    z: f32,
+    corners: [(f32, f32, u32); 4],
+) -> [u32; QUAD_WORDS] {
     let mut w = [0u32; QUAD_WORDS];
     w[0] = isp;
     w[1] = tsp;
-    for (n, &k) in STRIP_ORDER.iter().enumerate() {
-        let (x, y, c) = QUAD[k];
+    for (n, &(x, y, c)) in corners.iter().enumerate() {
         w[2 + 2 * n] = x.to_bits();
         w[3 + 2 * n] = y.to_bits();
         w[10 + n] = z.to_bits();
@@ -155,6 +167,76 @@ pub fn quad_object(isp: u32, tsp: u32, z: f32) -> [u32; QUAD_WORDS] {
     }
     w
 }
+
+/// Test G3 (2026-10-23, after G2): the colour clear as Dell's GLES driver
+/// draws it (static reading, `libGLES_CL.dll` A08): `glClearColorx`
+/// (`0x0225E380`) packs the colour as ARGB8888 into context `+0x5F4`;
+/// `glClear(GL_COLOR_BUFFER_BIT)` (`0x0225F064`) only marks a clear
+/// pending (`+0x6D8` bit 0, the colour copied to `+0x6EC`); the next draw
+/// sends it (`0x0226E744`): this state block (TSP, ISP, the bit-6 word: no
+/// clip word), then one strip of four over the viewport.
+pub const DELL_CLEAR_STATE: u32 = 0x1000_0043;
+/// The clear's TSP: Dell's flat opaque TSP with a colour per vertex
+/// (`0x22200E00` when a depth clear goes with it; bit 8 set when the colour
+/// isn't cleared).
+pub const DELL_CLEAR_TSP: u32 = 0x2220_0E80;
+/// The clear's corners, in the order Dell's driver sends them: top left,
+/// bottom left, top right, bottom right (x from `+0x6DC`/`+0x6E4`, y from
+/// `+0x6E0`/`+0x6E8`).
+#[must_use]
+pub fn dell_clear_corners(width: u32, height: u32, argb: u32) -> [(f32, f32, u32); 4] {
+    let (w, h) = (width as f32, height as f32);
+    [
+        (0.0, 0.0, argb),
+        (0.0, h, argb),
+        (w, 0.0, argb),
+        (w, h, argb),
+    ]
+}
+
+/// Words in [`dell_clear_draw`].
+pub const DELL_CLEAR_WORDS: usize = 5 + 4 * TA_VERTEX_WORDS;
+
+/// The colour clear as Dell's driver streams it to the TA: the state block
+/// (`isp`, the bit-6 word 0), the strip word, four 5-word vertices (x, y,
+/// the clear depth `z`, 1/w 1.0, the colour). Then a `1` goes to the end
+/// window.
+#[must_use]
+pub fn dell_clear_draw(
+    isp: u32,
+    width: u32,
+    height: u32,
+    z: f32,
+    argb: u32,
+) -> [u32; DELL_CLEAR_WORDS] {
+    let mut s = [0u32; DELL_CLEAR_WORDS];
+    s[..5].copy_from_slice(&[DELL_CLEAR_STATE, DELL_CLEAR_TSP, isp, 0, TA_STRIP]);
+    for (n, (x, y, c)) in dell_clear_corners(width, height, argb)
+        .into_iter()
+        .enumerate()
+    {
+        let at = 5 + n * TA_VERTEX_WORDS;
+        s[at..at + TA_VERTEX_WORDS].copy_from_slice(&[
+            x.to_bits(),
+            y.to_bits(),
+            z.to_bits(),
+            1.0f32.to_bits(),
+            c,
+        ]);
+    }
+    s
+}
+
+/// Test G3's settings, rising: the core PLL (13 MHz x M / (N x 2^P)) with
+/// the cores at divide 1: 74.75 MHz (Dell's `CoreClock` threshold, where
+/// Dell's driver draws right), 99.67 (Windows Mobile's system clock) and
+/// 133.25 (the aim; the memory right there, GC2). Each with the memory
+/// timing Dell's rule gives it.
+pub const G3_PLLS: [(u32, &str); 3] = [
+    (23 << 7 | 4 << 4 | 1, "74.75"),
+    (23 << 7 | 3 << 4 | 1, "99.67"),
+    (41 << 7 | 4 << 4 | 1, "133.25"),
+];
 
 /// The GLES clear of a `width` x `height` target as the TA writes its
 /// object: one triangle covering the target twice over, z 1.0.
@@ -347,17 +429,28 @@ mod image {
 
     /// Test G alone instead of A, D, L and M (`RP_GLESFEAT_G=1`; device
     /// build `RP_GLESFEAT_G=1 cargo xtask codegen-variant rp-glesfeat g`).
-    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2;
+    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
+    /// Test G3 instead of G (`RP_GLESFEAT_G3=1`; device build
+    /// `RP_GLESFEAT_G3=1 cargo xtask codegen-variant rp-glesfeat g3`).
+    const TEST_G3: bool = option_env!("RP_GLESFEAT_G3").is_some();
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G2 {
+    const G_TITLE: &str = if TEST_G3 {
+        "RP-GLESFEAT TEST G3"
+    } else if TEST_G2 {
         "RP-GLESFEAT TEST G2"
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G2 { "G2" } else { "G" };
+    const G_NAME: &str = if TEST_G3 {
+        "G3"
+    } else if TEST_G2 {
+        "G2"
+    } else {
+        "G"
+    };
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
@@ -942,18 +1035,18 @@ mod image {
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
     }
 
-    /// 74.75 MHz with the cores at divide 1 (`Speed::A75`: `COREPLL`
-    /// `0xBC1`, the memory's timing for it), as `rp-gpubench`'s
-    /// `clock_apply` steps to it: the long bus timing, the cores at divide
-    /// 2, the PLL and its memory timing, then divide 1. False if the PLL
-    /// didn't lock or a memory-controller write never held (Windows
-    /// Mobile's clock is then back).
-    fn to_divide_1<B: RegisterBus>(regs: &mut B) -> bool {
+    /// `speed` (a core PLL and its memory timing) with the cores at divide
+    /// 1, as `rp-gpubench`'s `clock_apply` steps to it: the long bus timing,
+    /// the cores at divide 2, the PLL and its memory timing, then divide 1
+    /// and the bus timing of the clock's tier (Dell's: the long one below
+    /// 99 MHz). False if the PLL didn't lock or a memory-controller write
+    /// never held (Windows Mobile's clock is then back).
+    fn to_divide_1<B: RegisterBus>(regs: &mut B, speed: Speed) -> bool {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = regs.read32(MBXCLK);
         clock::restore(regs, (clk & 3) | 1 << 2);
         rt::delay_us(1_000);
-        let ok = match clock::set_speed(regs, Speed::A75, rt::delay_us) {
+        let ok = match clock::set_speed(regs, speed, rt::delay_us) {
             Some(a) => {
                 if a.rewrites + a.unwritten > 0 {
                     log!(
@@ -973,6 +1066,12 @@ mod image {
         let clk = regs.read32(MBXCLK);
         clock::restore(regs, clk & 3);
         rt::delay_us(1_000);
+        let cs3 = if speed.khz() < 99_000 {
+            CS3_LONG
+        } else {
+            CS3_WM
+        };
+        let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
         true
     }
 
@@ -1026,6 +1125,16 @@ mod image {
         t
     }
 
+    /// The picture at `at` hashed (FNV-1a over its words).
+    fn picture_hash(vram: &[u8], at: usize) -> u32 {
+        let mut hash = 0x811C_9DC5u32;
+        for k in 0..(W * H) as usize {
+            let v = load32_volatile(vram, at + 4 * k).unwrap_or(0);
+            hash = (hash ^ v).wrapping_mul(0x0100_0193);
+        }
+        hash
+    }
+
     /// The target copied to [`REF`].
     fn keep_reference(vram: &mut [u8]) {
         for k in 0..(W * H) as usize {
@@ -1052,6 +1161,10 @@ mod image {
         /// Test G2: our direct path with the TA's choices taken one at a
         /// time.
         Direct(Form),
+        /// Test G3: Dell's sequence through the TA as `glClear` then
+        /// `glDrawArrays(GL_TRIANGLE_STRIP)` send it: the colour clear
+        /// ([`super::dell_clear_draw`]), then the quad as one strip of four.
+        TaDell,
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1063,11 +1176,34 @@ mod image {
         quad: bool,
         /// z 1.0 (the TA's), not 0.
         z1: bool,
-        /// The clear's object underneath (layout 0), not our flat triangle.
-        clear: bool,
+        /// What lies under the quad.
+        bg: Bg,
         /// Each tile lists only the objects that touch it (the TA's lists),
         /// not every object.
         tiled: bool,
+    }
+
+    /// Backgrounds (all black and opaque but the clear's, which has no
+    /// colour): G2 found ours behind the divide-1 errors and the clear's
+    /// colourless object free of them; G3 finds which of ours's traits it
+    /// is.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Bg {
+        /// Ours: one flat triangle (Dell's TSP) to (2048, 2048), z 0.
+        Giant,
+        /// The same at z 1.0.
+        GiantZ1,
+        /// The GLES clear's colourless object (layout 0; G2's way 4).
+        Clear,
+        /// Dell's colour clear by hand: one flat four-corner object over
+        /// the screen exactly, z 1.0 ([`super::dell_clear_corners`]).
+        DellQuad,
+        /// Two flat triangles over the screen exactly, z 0 (the size alone).
+        ScreenTris,
+        /// One Gouraud triangle to (2048, 2048), every corner black.
+        Gouraud,
+        /// None.
+        Nothing,
     }
 
     impl Way {
@@ -1078,15 +1214,16 @@ mod image {
                 Self::OursTaFlags(_) => "our objects, the TA's list flags",
                 Self::TaStrip4 => "through the TA, one strip of four",
                 Self::Direct(f) => f.name,
+                Self::TaDell => "Dell's clear and strip, through the TA",
             }
         }
     }
 
     /// Where test G2's per-tile lists go: after the objects, in the
-    /// parameter memory (16 bytes a tile: up to three objects and the end).
+    /// parameter memory (32 bytes a tile: up to seven objects and the end).
     const LISTS: usize = PARAMS + 0x1000;
-    const LIST_WORDS: usize = 4;
-    const _: () = assert!(LISTS + 16 * (COLS * ROWS) as usize <= PM + PM_SIZE as usize);
+    const LIST_WORDS: usize = 8;
+    const _: () = assert!(LISTS + 4 * LIST_WORDS * (COLS * ROWS) as usize <= PM + PM_SIZE as usize);
 
     /// Which of [`TRIS`] an object covers (bit k: triangle k); every
     /// tile for [`ALL`].
@@ -1126,7 +1263,7 @@ mod image {
                     len += 1;
                 }
             }
-            let addr = LISTS + 16 * t as usize;
+            let addr = LISTS + 4 * LIST_WORDS * t as usize;
             store(vram, addr, &list);
             let entry = m3::region_entry(c, r, addr as u32, t + 1 == total);
             store(vram, REGIONS + 8 * t as usize, &entry);
@@ -1142,25 +1279,69 @@ mod image {
         done
     }
 
-    /// Test G2's direct form `f` drawn (the target already blanked). With
-    /// `words`, the quad's first object and its list word logged.
-    fn draw_direct(e: &mut Engine<Mmio>, vram: &mut [u8], f: Form, words: usize) -> bool {
+    /// Test G2's and G3's direct form `f` drawn (the target already
+    /// blanked); with `quad` false, its background alone. With `words`, the
+    /// quad's first object, its list word and
+    /// the background's logged.
+    fn draw_direct(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        f: Form,
+        words: usize,
+        quad_too: bool,
+    ) -> bool {
         let z = if f.z1 { 1.0 } else { 0.0 };
-        let flat_bg = m3::triangle(
-            ISP_ALWAYS,
-            TSP_DELL,
-            &[
-                Vertex::flat(0.0, 0.0, 0xFF00_0000),
-                Vertex::flat(2048.0, 0.0, 0xFF00_0000),
-                Vertex::flat(0.0, 2048.0, 0xFF00_0000),
-            ],
-        );
-        let clear_bg = super::clear_object(W, H);
-        let (bg, bg_flags): (&[u32], u32) = if f.clear {
-            (&clear_bg, super::CLEAR_FLAGS)
-        } else {
-            (&flat_bg, STRIP)
+        const BLACK: u32 = 0xFF00_0000;
+        let giant = |tsp: u32, z: f32| {
+            m3::triangle(
+                ISP_ALWAYS,
+                tsp,
+                &[(0.0, 0.0), (2048.0, 0.0), (0.0, 2048.0)].map(|(x, y)| Vertex {
+                    x,
+                    y,
+                    z,
+                    rhw: 1.0,
+                    argb: BLACK,
+                }),
+            )
         };
+        let screen = |t: [usize; 3]| {
+            m3::triangle(
+                ISP_ALWAYS,
+                TSP_DELL,
+                &t.map(|k| Vertex::flat(QUAD[k].0, QUAD[k].1, BLACK)),
+            )
+        };
+        let (flat0, flat1, smooth) = (
+            giant(TSP_DELL, 0.0),
+            giant(TSP_DELL, 1.0),
+            giant(TSP_SMOOTH, 0.0),
+        );
+        let (half0, half1) = (screen(TRIS[0]), screen(TRIS[1]));
+        let clear_bg = super::clear_object(W, H);
+        let dell_bg = super::four_corner_object(
+            ISP_ALWAYS,
+            super::DELL_CLEAR_TSP,
+            1.0,
+            super::dell_clear_corners(W, H, BLACK),
+        );
+        let mut objs: [(&[u32], u32, u8); 4] = [(&[], 0, 0); 4];
+        let mut n = 0;
+        let bgs: [(&[u32], u32, u8); 2] = match f.bg {
+            Bg::Giant => [(&flat0, STRIP, ALL), (&[], 0, 0)],
+            Bg::GiantZ1 => [(&flat1, STRIP, ALL), (&[], 0, 0)],
+            Bg::Clear => [(&clear_bg, super::CLEAR_FLAGS, ALL), (&[], 0, 0)],
+            Bg::DellQuad => [(&dell_bg, super::QUAD_FLAGS, ALL), (&[], 0, 0)],
+            Bg::ScreenTris => [(&half0, STRIP, 1), (&half1, STRIP, 2)],
+            Bg::Gouraud => [(&smooth, STRIP, ALL), (&[], 0, 0)],
+            Bg::Nothing => [(&[], 0, 0), (&[], 0, 0)],
+        };
+        for o in bgs {
+            if !o.0.is_empty() {
+                objs[n] = o;
+                n += 1;
+            }
+        }
         let tri = |t: [usize; 3]| {
             m3::triangle(
                 ISP_ALWAYS,
@@ -1176,33 +1357,40 @@ mod image {
         };
         let (a, b) = (tri(TRIS[0]), tri(TRIS[1]));
         let quad = super::quad_object(ISP_ALWAYS, TSP_SMOOTH, z);
-        let mut objs: [(&[u32], u32, u8); 3] =
-            [(bg, bg_flags, ALL), (&a, STRIP, 1), (&b, STRIP, 2)];
-        let n = if f.quad {
-            objs[1] = (&quad, super::QUAD_FLAGS, 3);
-            2
+        let first = n;
+        if !quad_too {
+        } else if f.quad {
+            objs[n] = (&quad, super::QUAD_FLAGS, 3);
+            n += 1;
         } else {
-            3
-        };
-        if words > 0 {
+            objs[n] = (&a, STRIP, 1);
+            objs[n + 1] = (&b, STRIP, 2);
+            n += 2;
+        }
+        if words > 0 && first < n {
             let _ = write!(
                 RunLog,
                 "    list word 0x{:08x} (layout {}), object:",
-                objs[1].1,
-                (objs[1].1 & super::LAYOUT) >> 21
+                objs[first].1,
+                (objs[first].1 & super::LAYOUT) >> 21
             );
-            for w in objs[1].0 {
+            for w in objs[first].0 {
                 let _ = write!(RunLog, " {w:08x}");
             }
-            log!(
-                "; background list word 0x{bg_flags:08x}, {} words",
-                bg.len()
-            );
+            let _ = write!(RunLog, "; background:");
+            for o in &objs[..first] {
+                let _ = write!(RunLog, " list word 0x{:08x}, {} words", o.1, o.0.len());
+                for w in o.0.iter().take(2) {
+                    let _ = write!(RunLog, " {w:08x}");
+                }
+                let _ = write!(RunLog, ";");
+            }
+            log!("");
         }
         if f.tiled {
             scene_tiled(e, vram, &objs[..n])
         } else {
-            let mut plain = [(&[][..], 0u32); 3];
+            let mut plain = [(&[][..], 0u32); 4];
             for (k, o) in objs[..n].iter().enumerate() {
                 plain[k] = (o.0, o.1);
             }
@@ -1272,8 +1460,14 @@ mod image {
                 (done, us_since(t0), [m3::END; TA_LIST])
             }
             Way::Direct(f) => {
-                let done = draw_direct(e, vram, f, words);
+                let done = draw_direct(e, vram, f, words, true);
                 (done, us_since(t0), [m3::END; TA_LIST])
+            }
+            Way::TaDell => {
+                let clear = super::dell_clear_draw(ISP_ALWAYS, W, H, 1.0, 0xFF00_0000);
+                let (q, nq) = ta_draw(TSP_SMOOTH, ISP_ALWAYS, clip, &[0, 1, 3, 2]);
+                let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words);
+                (out.ta && out.done, us_since(t0), out.list)
             }
         }
     }
@@ -1290,12 +1484,10 @@ mod image {
             })
     }
 
-    /// What one way gave.
+    /// What one way gave at one setting.
     #[derive(Default)]
-    struct WayResult {
-        /// The reference rendered twice the same.
-        repeatable: bool,
-        /// The clock reached 74.75 / 1.
+    struct Setting {
+        /// The clock reached it.
         clocked: bool,
         /// Renders at divide 1 equal to the reference.
         right: u32,
@@ -1305,22 +1497,43 @@ mod image {
         tally: Tally,
         /// Wrong renders whose second read (50 ms later) differed.
         unsettled: u32,
-        /// Renders' times at Windows Mobile's clock and at divide 1 (the
-        /// fastest), microseconds.
-        us_wm: u32,
-        us_d1: u32,
+        /// The fastest render at divide 1, microseconds.
+        us: u32,
         /// The control at Windows Mobile's clock after: equal.
         control: bool,
     }
 
+    /// The most settings a way runs at.
+    const SETTINGS: usize = 3;
+
+    /// What one way gave.
+    #[derive(Default)]
+    struct WayResult {
+        /// The reference rendered twice the same.
+        repeatable: bool,
+        /// The reference's fastest render, microseconds.
+        us_wm: u32,
+        /// Each setting's result, in the order run.
+        at: [Setting; SETTINGS],
+    }
+
+    impl WayResult {
+        /// Renders right at setting `k`, if it ran.
+        fn right(&self, k: usize) -> Option<u32> {
+            (self.repeatable && self.at[k].clocked).then_some(self.at[k].right)
+        }
+    }
+
     /// One way: its reference at Windows Mobile's clock (rendered twice,
-    /// equal; kept), 20 renders at 74.75 / 1 held to it, then a control at
-    /// Windows Mobile's clock. `step` and `steps` label the screen.
+    /// equal; kept), then at each of `settings` (a core PLL with the cores
+    /// at divide 1, and its name in MHz) 20 renders held to it and a control
+    /// at Windows Mobile's clock. `step` and `steps` label the screen.
     #[inline(never)]
     fn way(
         e: &mut Engine<Mmio>,
         vram: &mut [u8],
         w: Way,
+        settings: &[(u32, &str)],
         step: u32,
         steps: u32,
     ) -> (WayResult, [u32; TA_LIST]) {
@@ -1333,17 +1546,26 @@ mod image {
         log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
         let ready = clean(e, vram);
+        // G3: the background alone first. The quad covers the whole target,
+        // so a background never shows in the reference; its own picture
+        // proves it drew (and ways whose backgrounds must look alike are
+        // held to each other).
+        if let (true, Way::Direct(f)) = (TEST_G3, w)
+            && f.bg != Bg::Nothing
+        {
+            blank(vram);
+            let done = draw_direct(e, vram, f, 0, false);
+            log!(
+                "  background alone: rendered {done}, hash 0x{:08x}",
+                picture_hash(vram, TARGET)
+            );
+        }
         let (d1, us1, list) = draw(e, vram, w, 24);
         keep_reference(vram);
         // The reference's hash: ways that must draw the same picture (G2's
         // forms of one quad over one background) are held to each other,
         // not only each to itself.
-        let mut hash = 0x811C_9DC5u32;
-        for k in 0..(W * H) as usize {
-            let v = load32_volatile(vram, REF + 4 * k).unwrap_or(0);
-            hash = (hash ^ v).wrapping_mul(0x0100_0193);
-        }
-        log!("  reference hash 0x{hash:08x}");
+        log!("  reference hash 0x{:08x}", picture_hash(vram, REF));
         let (d2, us2, _) = draw(e, vram, w, 0);
         let again = compare(vram, REF);
         r.repeatable = d1 && d2 && again.wrong == 0;
@@ -1370,76 +1592,81 @@ mod image {
             log!("  no repeatable reference: nothing at divide 1");
             return (r, list);
         }
-        say(vram, &[G_TITLE, head, name, "74.75 MHZ / 1: SETTING"]);
-        r.clocked = to_divide_1(&mut e.regs);
-        clock_readback(&mut e.regs);
-        if !r.clocked {
-            log!(
-                "  the clock change was refused (Windows Mobile's clock kept): nothing at divide 1"
-            );
-            return (r, list);
-        }
-        let ready = clean(e, vram);
-        log!("  at 74.75 / 1: memory manager ready {ready}");
-        r.us_d1 = u32::MAX;
-        for n in 1..=G_DRAWS {
-            rt::check_in();
+        for (k, &(pll, mhz)) in settings.iter().take(SETTINGS).enumerate() {
+            let s = &mut r.at[k];
             let mut line = [0u8; 32];
-            let line = fmt(&mut line, format_args!("74.75 MHZ / 1: {n} OF {G_DRAWS}"));
+            let line = fmt(&mut line, format_args!("{mhz} MHZ / 1: SETTING"));
             say(vram, &[G_TITLE, head, name, line]);
-            let (done, us, _) = draw(e, vram, w, 0);
-            r.us_d1 = r.us_d1.min(us);
-            if !done {
-                r.unfinished += 1;
-                let _ = clean(e, vram);
+            s.clocked = to_divide_1(&mut e.regs, Speed::rated(pll));
+            clock_readback(&mut e.regs);
+            if !s.clocked {
+                log!(
+                    "  the clock change was refused (Windows Mobile's clock kept): nothing at divide 1"
+                );
+                continue;
             }
-            let t = compare(vram, REF);
-            if t.wrong == 0 {
-                r.right += 1;
-            } else {
-                rt::delay_us(50_000);
-                if compare(vram, REF) != t {
-                    r.unsettled += 1;
+            let ready = clean(e, vram);
+            log!("  at {mhz} / 1: memory manager ready {ready}");
+            s.us = u32::MAX;
+            for n in 1..=G_DRAWS {
+                rt::check_in();
+                let mut line = [0u8; 32];
+                let line = fmt(&mut line, format_args!("{mhz} MHZ / 1: {n} OF {G_DRAWS}"));
+                say(vram, &[G_TITLE, head, name, line]);
+                let (done, us, _) = draw(e, vram, w, 0);
+                s.us = s.us.min(us);
+                if !done {
+                    s.unfinished += 1;
+                    let _ = clean(e, vram);
                 }
+                let t = compare(vram, REF);
+                if t.wrong == 0 {
+                    s.right += 1;
+                } else {
+                    rt::delay_us(50_000);
+                    if compare(vram, REF) != t {
+                        s.unsettled += 1;
+                    }
+                }
+                s.tally.merge(&t);
             }
-            r.tally.merge(&t);
-        }
-        clock_back(&mut e.regs);
-        clock_readback(&mut e.regs);
-        let _ = clean(e, vram);
-        let (done, _, _) = draw(e, vram, w, 0);
-        r.control = done && compare(vram, REF).wrong == 0;
-        let t = &r.tally;
-        let _ = write!(
-            RunLog,
-            "  at 74.75 / 1: {} of {G_DRAWS} right ({} unfinished, {} read differently 50 ms later); wrong words {} ({} one step, {} never written, worst step {})",
-            r.right, r.unfinished, r.unsettled, t.wrong, t.one_step, t.unwritten, t.max_step
-        );
-        if let Some((i, want, got)) = t.first {
+            clock_back(&mut e.regs);
+            clock_readback(&mut e.regs);
+            let _ = clean(e, vram);
+            let (done, _, _) = draw(e, vram, w, 0);
+            s.control = done && compare(vram, REF).wrong == 0;
+            let t = &s.tally;
             let _ = write!(
                 RunLog,
-                ", first at ({}, {}) 0x{got:08x} for 0x{want:08x}",
-                i % W,
-                i / W
+                "  at {mhz} / 1: {} of {G_DRAWS} right ({} unfinished, {} read differently 50 ms later); wrong words {} ({} one step, {} never written, worst step {})",
+                s.right, s.unfinished, s.unsettled, t.wrong, t.one_step, t.unwritten, t.max_step
             );
-        }
-        if TEST_G2 && t.wrong > 0 {
-            let _ = write!(RunLog, "; on the picture's edge {}", t.edge);
-            if let Some((i, want, got)) = t.first_inner {
+            if let Some((i, want, got)) = t.first {
                 let _ = write!(
                     RunLog,
-                    ", first inside at ({}, {}) 0x{got:08x} for 0x{want:08x}",
+                    ", first at ({}, {}) 0x{got:08x} for 0x{want:08x}",
                     i % W,
                     i / W
                 );
             }
+            if (TEST_G2 || TEST_G3) && t.wrong > 0 {
+                let _ = write!(RunLog, "; on the picture's edge {}", t.edge);
+                if let Some((i, want, got)) = t.first_inner {
+                    let _ = write!(
+                        RunLog,
+                        ", first inside at ({}, {}) 0x{got:08x} for 0x{want:08x}",
+                        i % W,
+                        i / W
+                    );
+                }
+            }
+            log!(
+                "; fastest {} us (Windows Mobile's {} us); control at Windows Mobile's clock after: {}",
+                s.us,
+                r.us_wm,
+                if s.control { "right" } else { "WRONG" }
+            );
         }
-        log!(
-            "; fastest {} us (Windows Mobile's {} us); control at Windows Mobile's clock after: {}",
-            r.us_d1,
-            r.us_wm,
-            if r.control { "right" } else { "WRONG" }
-        );
         (r, list)
     }
 
@@ -1471,8 +1698,9 @@ mod image {
             "G: Gouraud at 74.75 MHz / 1, through the TA against our objects (TSP 0x{TSP_SMOOTH:08x}, GC2's ARGB8888 quad)"
         );
         rp_image::on_crash(put_back);
-        let (ta, list) = way(e, vram, Way::Ta, 2, 5);
-        let (ours, _) = way(e, vram, Way::Ours, 3, 5);
+        let at = &super::G3_PLLS[..1];
+        let (ta, list) = way(e, vram, Way::Ta, at, 2, 5);
+        let (ours, _) = way(e, vram, Way::Ours, at, 3, 5);
         let flags = gouraud_word(vram, &list);
         let mixed = match flags {
             Some(p) => {
@@ -1486,15 +1714,15 @@ mod image {
                         "its layout only (its triangle mask differs from ours)"
                     }
                 );
-                Some(way(e, vram, Way::OursTaFlags(f), 4, 5).0)
+                Some(way(e, vram, Way::OursTaFlags(f), at, 4, 5).0)
             }
             None => {
                 log!("G way 3: skipped (the TA wrote no Gouraud object in the first tile)");
                 None
             }
         };
-        let (strip4, _) = way(e, vram, Way::TaStrip4, 5, 5);
-        let count = |r: &WayResult| if r.clocked { r.right } else { 0 };
+        let (strip4, _) = way(e, vram, Way::TaStrip4, at, 5, 5);
+        let count = |r: &WayResult| r.right(0).unwrap_or(0);
         log!(
             "G: right at 74.75 / 1 of {G_DRAWS}: through the TA {}, ours {}, ours with the TA's flags {}, the TA's strip of four {}",
             count(&ta),
@@ -1528,7 +1756,7 @@ mod image {
             name: "ours (G's way 2)",
             quad: false,
             z1: false,
-            clear: false,
+            bg: Bg::Giant,
             tiled: false,
         };
         [
@@ -1545,7 +1773,7 @@ mod image {
             }),
             Way::Direct(Form {
                 name: "the clear underneath",
-                clear: true,
+                bg: Bg::Clear,
                 ..OURS
             }),
             Way::Direct(Form {
@@ -1557,7 +1785,7 @@ mod image {
                 name: "all four: the TA's form",
                 quad: true,
                 z1: true,
-                clear: true,
+                bg: Bg::Clear,
                 tiled: true,
             }),
             Way::TaStrip4,
@@ -1576,8 +1804,8 @@ mod image {
         let steps = G2_WAYS.len() as u32 + 1;
         let mut right = [None; G2_WAYS.len()];
         for (k, &w) in G2_WAYS.iter().enumerate() {
-            let (r, _) = way(e, vram, w, k as u32 + 2, steps);
-            right[k] = (r.repeatable && r.clocked).then_some(r.right);
+            let (r, _) = way(e, vram, w, &super::G3_PLLS[..1], k as u32 + 2, steps);
+            right[k] = r.right(0);
         }
         let _ = write!(RunLog, "G2: right at 74.75 / 1 of {G_DRAWS}:");
         for (k, w) in G2_WAYS.iter().enumerate() {
@@ -1605,6 +1833,102 @@ mod image {
         say(vram, &lines);
     }
 
+    /// Test G3's ways (the quad our two Gouraud triangles unless named):
+    /// our background (G2's way 1, the control), Dell's colour clear by
+    /// hand, Dell's whole sequence by hand, our background's traits one at a
+    /// time against Dell's (its size, its depth), the other backgrounds a
+    /// renderer might use (Gouraud, none), then Dell's sequence through the
+    /// TA (last: a TA hang isn't recovered within a run, C53).
+    const G3_WAYS: [Way; 8] = {
+        const OURS: Form = Form {
+            name: "our giant flat triangle",
+            quad: false,
+            z1: false,
+            bg: Bg::Giant,
+            tiled: false,
+        };
+        [
+            Way::Direct(OURS),
+            Way::Direct(Form {
+                name: "Dell's clear (a flat quad)",
+                bg: Bg::DellQuad,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "Dell's clear and 4-corner quad",
+                bg: Bg::DellQuad,
+                quad: true,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "flat, screen-sized triangles",
+                bg: Bg::ScreenTris,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "our giant triangle at z 1.0",
+                bg: Bg::GiantZ1,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "a Gouraud giant triangle",
+                bg: Bg::Gouraud,
+                ..OURS
+            }),
+            Way::Direct(Form {
+                name: "no background",
+                bg: Bg::Nothing,
+                ..OURS
+            }),
+            Way::TaDell,
+        ]
+    };
+
+    /// Test G3: each of [`G3_WAYS`] at each of [`super::G3_PLLS`], against
+    /// its own reference; the summary on the label.
+    #[inline(never)]
+    fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G3: which background lets Gouraud draw right at the cores' divide 1, at 74.75, 99.67 and 133.25 MHz (TSP 0x{TSP_SMOOTH:08x}, GC2's ARGB8888 quad; Dell's clear as libGLES_CL draws it)"
+        );
+        rp_image::on_crash(put_back);
+        let steps = G3_WAYS.len() as u32 + 1;
+        let mut right = [[None; SETTINGS]; G3_WAYS.len()];
+        for (k, &w) in G3_WAYS.iter().enumerate() {
+            let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2, steps);
+            for (s, slot) in right[k].iter_mut().enumerate() {
+                *slot = r.right(s);
+            }
+        }
+        for (s, (_, mhz)) in super::G3_PLLS.iter().enumerate() {
+            let _ = write!(RunLog, "G3: right at {mhz} / 1 of {G_DRAWS}:");
+            for (k, w) in G3_WAYS.iter().enumerate() {
+                match right[k][s] {
+                    Some(n) => {
+                        let _ = write!(RunLog, " {} {n};", w.name());
+                    }
+                    None => {
+                        let _ = write!(RunLog, " {} not run;", w.name());
+                    }
+                }
+            }
+            log!("");
+        }
+        let mut l = [[0u8; 32]; 8];
+        let mut lines: [&str; 11] = [""; 11];
+        lines[0] = G_TITLE;
+        lines[1] = "DONE: PRESS A BUTTON";
+        lines[2] = "RIGHT OF 20 AT 74/99/133";
+        for (k, buf) in l.iter_mut().enumerate() {
+            let n = |s: usize| right[k][s].map_or(-1, |v| v as i32);
+            lines[3 + k] = fmt(
+                buf,
+                format_args!("WAY {}: {} {} {}", k + 1, n(0), n(1), n(2)),
+            );
+        }
+        say(vram, &lines);
+    }
+
     fn main() -> ! {
         rt::init_mmu();
         let Some((regs, vram)) = rp_image::take_mbx() else {
@@ -1621,7 +1945,7 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G2 {
+        let first = if TEST_G2 || TEST_G3 {
             "STEP 1 OF 9"
         } else {
             "STEP 1 OF 5"
@@ -1648,7 +1972,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G2 {
+        if ready && TEST_G3 {
+            test_g3(&mut e, vram);
+        } else if ready && TEST_G2 {
             test_g2(&mut e, vram);
         } else if ready && TEST_G {
             test_g(&mut e, vram);
@@ -2077,5 +2403,78 @@ mod g2_tests {
         u.merge(&t);
         u.merge(&t);
         assert_eq!((u.edge, u.first_inner), (8, t.first_inner));
+    }
+}
+
+/// Test G3's pure parts: Dell's colour clear as read from `libGLES_CL.dll`
+/// (A08) and the settings.
+#[cfg(test)]
+mod g3_tests {
+    use super::*;
+    use rp_drv_mbx_display::clock::Speed;
+    use rp_drv_mbx3d as m3;
+
+    #[test]
+    fn dells_clear_is_an_opaque_flat_quad_over_the_viewport() {
+        // The clear's TSP is Dell's flat one, the same as our background's;
+        // its state block names TSP, ISP and the bit-6 word (no clip).
+        assert_eq!(DELL_CLEAR_TSP, m3::TSP_DELL);
+        assert_eq!(DELL_CLEAR_STATE & !TA_STATE, 0);
+        assert_eq!(TA_STATE & !DELL_CLEAR_STATE, 1 << 4);
+        let s = dell_clear_draw(m3::ISP_ALWAYS, 480, 640, 1.0, 0xFF00_0000);
+        assert_eq!(s[..5], [0x1000_0043, 0x2220_0E80, 0xE000_0000, 0, TA_STRIP]);
+        let one = 1.0f32.to_bits();
+        let (w, h) = (480.0f32.to_bits(), 640.0f32.to_bits());
+        // Top left, bottom left, top right, bottom right.
+        assert_eq!(s[5..10], [0, 0, one, one, 0xFF00_0000]);
+        assert_eq!(s[10..15], [0, h, one, one, 0xFF00_0000]);
+        assert_eq!(s[15..20], [w, 0, one, one, 0xFF00_0000]);
+        assert_eq!(s[20..25], [w, h, one, one, 0xFF00_0000]);
+        // Depth and colour go to every vertex.
+        let t = dell_clear_draw(m3::ISP_ALWAYS, 480, 640, 0.25, 0x1234_5678);
+        for v in 0..4 {
+            assert_eq!(t[5 + 5 * v + 2], 0.25f32.to_bits());
+            assert_eq!(t[5 + 5 * v + 4], 0x1234_5678);
+        }
+    }
+
+    #[test]
+    fn a_four_corner_object_takes_its_corners_in_the_order_given() {
+        let c = dell_clear_corners(480, 640, 0xFF00_0000);
+        let o = four_corner_object(m3::ISP_ALWAYS, DELL_CLEAR_TSP, 1.0, c);
+        let f = |v: f32| v.to_bits();
+        assert_eq!(
+            o[2..10],
+            [0, 0, 0, f(640.0), f(480.0), 0, f(480.0), f(640.0)]
+        );
+        assert!(o[10..18].iter().all(|&w| w == f(1.0)));
+        assert!(o[18..22].iter().all(|&w| w == 0xFF00_0000));
+        // The quad's object is the same builder in the strip's order.
+        assert_eq!(
+            quad_object(m3::ISP_ALWAYS, TSP_SMOOTH, 0.0),
+            four_corner_object(
+                m3::ISP_ALWAYS,
+                TSP_SMOOTH,
+                0.0,
+                STRIP_ORDER.map(|k| QUAD[k])
+            )
+        );
+    }
+
+    #[test]
+    fn the_settings_are_the_clocks_named_with_dells_memory_timing() {
+        let khz: [u32; 3] = G3_PLLS.map(|(p, _)| Speed::rated(p).khz());
+        assert_eq!(khz, [74_750, 99_666, 133_250]);
+        // 74.75 is the A75 setting test G ran; 99.67 Windows Mobile's own
+        // timing (only the cores' divider differs from Windows Mobile).
+        assert_eq!(Speed::rated(G3_PLLS[0].0), Speed::A75);
+        assert_eq!(Speed::rated(G3_PLLS[1].0), Speed::WM);
+        // 133.25 with Dell's CL3 above 100 MHz.
+        assert_eq!(Speed::rated(G3_PLLS[2].0).lmtype, 0xEC8);
+        assert!(
+            G3_PLLS
+                .windows(2)
+                .all(|p| Speed::rated(p[0].0).khz() < Speed::rated(p[1].0).khz())
+        );
     }
 }

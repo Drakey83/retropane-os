@@ -521,6 +521,9 @@ pub const BUDGETS: &[Budget] = &[
     // Ratcheted 32 -> 40 KiB on 2026-10-22 (test image): test M, the second
     // texture unit through the tile accelerator (the gate's P5); 35.1 KiB
     // measured, + ~10%.
+    // Ratcheted 53 -> 61 KiB on 2026-10-23 (test image): test G3, Dell's
+    // colour clear and the backgrounds at three divide-1 clocks; the G3
+    // variant 55.4 KiB, + ~10%.
     // Ratcheted 46 -> 53 KiB on 2026-10-23 (test image): test G2, the TA's
     // choices one at a time through the direct path (per-tile lists, the
     // four-corner and clear objects); the G2 variant 48.1 KiB, + ~10%.
@@ -530,7 +533,7 @@ pub const BUDGETS: &[Budget] = &[
     // 41.6 KiB measured, + ~10%).
     Budget {
         image: "rp-glesfeat",
-        max_load: 53 * 1024,
+        max_load: 61 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

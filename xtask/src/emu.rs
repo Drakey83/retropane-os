@@ -3049,23 +3049,29 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
             }
         }
         eprintln!("    glesfeat OK: every case drew as on the X51v, back at the loader");
-        boot_loader_glesfeat_g(root, false)?;
-        return boot_loader_glesfeat_g(root, true);
+        boot_loader_glesfeat_g(root, 1)?;
+        boot_loader_glesfeat_g(root, 2)?;
+        return boot_loader_glesfeat_g(root, 3);
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
-    boot_loader_glesfeat_g(root, false)?;
-    boot_loader_glesfeat_g(root, true)
+    boot_loader_glesfeat_g(root, 1)?;
+    boot_loader_glesfeat_g(root, 2)?;
+    boot_loader_glesfeat_g(root, 3)
 }
 
 /// Test G (`RP_GLESFEAT_G`, the give-up audit's item 1): Gouraud through
-/// the TA against our objects at the cores' divide 1; with `g2`, test G2
+/// the TA against our objects at the cores' divide 1; `test` 2, test G2
 /// (`RP_GLESFEAT_G2`): the TA's choices one at a time through our direct
-/// path, then the TA. Every way that draws has a repeatable reference and a
-/// right control after divide 1 (the clock put back), and the image
+/// path, then the TA; 3, test G3 (`RP_GLESFEAT_G3`): the backgrounds,
+/// Dell's colour clear among them, at three divide-1 clocks. Every way that
+/// draws has a repeatable reference and a
+/// right control after each divide-1 setting (the clock put back), and the image
 /// returns; a release that doesn't model Windows Mobile's 2700G clocks
 /// refuses the change, which the image logs and the check accepts.
-fn boot_loader_glesfeat_g(root: &Path, g2: bool) -> Result<(), String> {
-    let (env, name, ours, after) = if g2 {
+fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
+    let (env, name, ours, after) = if test == 3 {
+        ("RP_GLESFEAT_G3", "G3", "G3 way 1 (", "G3 way 2 (")
+    } else if test == 2 {
         ("RP_GLESFEAT_G2", "G2", "G2 way 1 (", "G2 way 2 (")
     } else {
         ("RP_GLESFEAT_G", "G", "G way 2 (", "G way 3")
@@ -3101,7 +3107,24 @@ fn boot_loader_glesfeat_g(root: &Path, g2: bool) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if g2 {
+    let wants: &[&str] = if test == 3 {
+        &[
+            "test G3, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G3 way 1 (our giant flat triangle):",
+            "G3 way 2 (Dell's clear (a flat quad)):",
+            "G3 way 3 (Dell's clear and 4-corner quad):",
+            "G3 way 4 (flat, screen-sized triangles):",
+            "G3 way 5 (our giant triangle at z 1.0):",
+            "G3 way 6 (a Gouraud giant triangle):",
+            "G3 way 7 (no background):",
+            "G3 way 8 (Dell's clear and strip, through the TA):",
+            "G3: right at 74.75 / 1 of 20:",
+            "G3: right at 99.67 / 1 of 20:",
+            "G3: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 2 {
         &[
             "test G2, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3165,7 +3188,9 @@ fn boot_loader_glesfeat_g(root: &Path, g2: bool) -> Result<(), String> {
             "glesfeat {name}: {refs} repeatable references for {drew} ways that drew:{log}"
         ));
     }
-    if drew == 0 || refused + controls != drew {
+    // Each way that drew runs every setting: G3 three, G and G2 one.
+    let settings = if test == 3 { 3 } else { 1 };
+    if drew == 0 || refused + controls != drew * settings {
         return Err(format!(
             "glesfeat {name}: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
         ));
@@ -3178,25 +3203,77 @@ fn boot_loader_glesfeat_g(root: &Path, g2: bool) -> Result<(), String> {
     if !own.contains("rendered true then true, the second 0 words off the first") {
         return Err(format!("glesfeat {name}: our own way didn't draw:{log}"));
     }
-    // G2's two-triangle forms over our flat background (ways 1, 3 and 5:
-    // ours, z 1.0, per-tile lists) draw one picture: their references'
-    // hashes equal, so a way that drew a wrong picture the same way twice
-    // (a broken region array, an empty list) is caught too.
-    if g2 {
+    // Ways that must draw one picture, in the forms the fork models (list
+    // layout 4): G2's two-triangle forms over our flat background (ways 1,
+    // 3 and 5: ours, z 1.0, per-tile lists); G3's black layout-4
+    // backgrounds under the same quad (ways 1, 4, 5 and 6: giant, screen
+    // triangles, z 1.0, Gouraud). Their references' hashes equal, so a way
+    // that drew a wrong picture the same way twice (a broken region array,
+    // an empty list) is caught too.
+    let same: &[u32] = match test {
+        2 => &[3, 5],
+        3 => &[4, 5, 6],
+        _ => &[],
+    };
+    if !same.is_empty() {
         let hash = |way: u32| {
-            log.split(&format!("G2 way {way} ("))
+            log.split(&format!("{name} way {way} ("))
                 .nth(1)
                 .and_then(|s| s.split("reference hash ").nth(1))
                 .map(|s| s.chars().take(10).collect::<String>())
         };
-        let first = hash(1).ok_or(format!("glesfeat G2: way 1 has no reference hash:{log}"))?;
-        for way in [3, 5] {
+        let first = hash(1).ok_or(format!(
+            "glesfeat {name}: way 1 has no reference hash:{log}"
+        ))?;
+        for &way in same {
             if hash(way).as_deref() != Some(first.as_str()) {
                 return Err(format!(
-                    "glesfeat G2: way {way}'s reference isn't way 1's picture ({:?} against {first}):{log}",
+                    "glesfeat {name}: way {way}'s reference isn't way 1's picture ({:?} against {first}):{log}",
                     hash(way)
                 ));
             }
+        }
+    }
+    // G3: every background drawn alone first (the quad hides it in the
+    // reference), and the three that cover the whole target black in the
+    // fork's modelled form (ways 1, 5 and 6: the giant flat triangle at z 0
+    // and 1.0, the giant black Gouraud one) one picture. A background that
+    // didn't draw, or drew the wrong colour, is caught here: the reference
+    // can't show it.
+    if test == 3 {
+        let bg = |way: u32| {
+            log.split(&format!("G3 way {way} ("))
+                .nth(1)
+                .and_then(|s| s.split("  background alone: ").nth(1))
+                .map(|s| s.lines().next().unwrap_or("").trim().to_string())
+        };
+        let first = bg(1).ok_or(format!("glesfeat G3: way 1 has no background alone:{log}"))?;
+        // The anchor: the giant triangle covers every pixel, so its picture
+        // alone is 480 x 640 words of opaque black, hashed as the image
+        // hashes (FNV-1a over words). Without it the group could agree on a
+        // wrong picture (all three drawn white, say).
+        let black = (0..480 * 640).fold(0x811C_9DC5u32, |h, _| {
+            (h ^ 0xFF00_0000).wrapping_mul(0x0100_0193)
+        });
+        let want = format!("rendered true, hash 0x{black:08x}");
+        if first != want {
+            return Err(format!(
+                "glesfeat G3: way 1's background alone is {first:?}, want {want:?} (all opaque black):{log}"
+            ));
+        }
+        for way in [5, 6] {
+            if bg(way).as_deref() != Some(first.as_str()) {
+                return Err(format!(
+                    "glesfeat G3: way {way}'s background isn't way 1's ({:?} against {first}):{log}",
+                    bg(way)
+                ));
+            }
+        }
+        let alone = log.matches("  background alone: rendered true").count();
+        if alone != 6 {
+            return Err(format!(
+                "glesfeat G3: {alone} backgrounds rendered alone, want 6 (every direct way but 'no background'):{log}"
+            ));
         }
     }
     // The control after divide 1 proves the clock was put back; the same
