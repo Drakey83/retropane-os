@@ -2998,10 +2998,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g9") => return boot_loader_glesfeat_g9(root),
         Ok("g10") => return boot_loader_glesfeat_g(root, 10),
         Ok("g11") => return boot_loader_glesfeat_g(root, 11),
+        Ok("g12") => return boot_loader_glesfeat_g(root, 12),
         Ok(other) => {
-            return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7, g8, g9, g10 or g11"
-            ));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g12"));
         }
         Err(_) => {}
     }
@@ -3305,7 +3304,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 11 {
+    let (env, name, ours, after) = if test == 12 {
+        ("RP_GLESFEAT_G12", "G12", "G12 way 1 (", "G12 way 2 (")
+    } else if test == 11 {
         ("RP_GLESFEAT_G11", "G11", "G11 way 1 (", "G11 way 2 (")
     } else if test == 10 {
         ("RP_GLESFEAT_G10", "G10", "G10 way 1 (", "G10 way 2 (")
@@ -3329,7 +3330,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if test == 7 || test == 8 || test == 10 || test == 11 {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3366,7 +3367,19 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 11 {
+    let wants: &[&str] = if test == 12 {
+        &[
+            "test G12, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G12 way 1 (ours as before):",
+            "G12 way 3 (Dell's frame, the CPU silent while it renders):",
+            "G12 way 5 (Dell's frame, the CPU silent and the loader-only clocks off):",
+            "G12: right at 74.75 / 1 of 20:",
+            "G12: right at 133.25 / 1 of 20:",
+            "G12: CKEN at the end ",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 11 {
         &[
             "test G11, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3606,6 +3619,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         10 => &[2, 3, 4],
         // CS2's timing, and the replays of our own scene: one picture.
         11 => &[2, 3, 4],
+        // The replays of our own scene, silent or clocks off: one picture.
+        12 => &[2, 3, 4, 5],
         _ => &[],
     };
     if !same.is_empty() {

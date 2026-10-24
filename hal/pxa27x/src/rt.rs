@@ -535,6 +535,16 @@ pub fn enable_clock(bit: u32) {
     unsafe { cken.write_volatile(cken.read_volatile() | (1 << bit)) }
 }
 
+/// The peripheral clock enables (`CKEN`) set to `value` whole: to put back
+/// what [`clock_enables`] read, after a measurement turned some off
+/// (`rp-glesfeat` test G12: Windows Mobile's set during a render).
+pub fn set_clock_enables(value: u32) {
+    // SAFETY: CKEN is the clock manager's clock enable register, identity-
+    // mapped; the caller writes back a value read from it, or one with
+    // clocks of peripherals it doesn't use cleared.
+    unsafe { (va(CKEN) as *mut u32).write_volatile(value) }
+}
+
 /// Hands out the keypad controller once, with its clock enabled.
 pub fn take_keypad() -> Option<Mmio> {
     // SAFETY: single core, IRQs masked by `_start` and not yet re-enabled.

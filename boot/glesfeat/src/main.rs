@@ -487,7 +487,32 @@ pub enum Wait {
     Quiet,
     /// The status read once a millisecond.
     EveryMs,
+    /// Test G12: the CPU kept off the bus while the chip renders (a count
+    /// down in registers and the cache, [`SILENT_SPINS`] of them, not the
+    /// OS timer read through the bus as `delay_us` does: Windows Mobile
+    /// sleeps meanwhile), then the status once.
+    Silent,
 }
+
+/// [`Wait::Silent`]'s count: past the slowest render (19.9 ms) at any
+/// speed the XScale runs (12 million turns of a decrement loop: about 60 ms
+/// at 624 MHz, 175 ms at 208), under the 200 ms every render is allowed.
+pub const SILENT_SPINS: u32 = 12_000_000;
+
+/// Test G12: the PXA27x's peripheral clocks the loader leaves on and
+/// Windows Mobile has off (G9's `CKEN`, `0x01D91EE3` against `0x00D91AA3`):
+/// the FFUART (bit 6), the USB host (bit 10) and bit 24.
+pub const LOADER_ONLY_CLOCKS: u32 = 1 << 6 | 1 << 10 | 1 << 24;
+
+/// Test G12's ways: (Dell's frame, not ours; the CPU silent while the
+/// chip renders; [`LOADER_ONLY_CLOCKS`] off during each render).
+pub const G12_WAYS: [(bool, bool, bool); 5] = [
+    (false, false, false),
+    (true, false, false),
+    (true, true, false),
+    (true, false, true),
+    (true, true, true),
+];
 
 /// Test G9: the system block's offsets that froze Windows Mobile when read
 /// there (`rp-wmgpu` v3-v6, docs/hw/2700g.md: MBX offsets read on the
@@ -874,7 +899,8 @@ mod image {
         || TEST_G8
         || TEST_G9
         || TEST_G10
-        || TEST_G11;
+        || TEST_G11
+        || TEST_G12;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -914,6 +940,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g11`).
     const TEST_G11: bool = option_env!("RP_GLESFEAT_G11").is_some();
+    /// Test G12 instead of G (`RP_GLESFEAT_G12=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G12=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g12`).
+    const TEST_G12: bool = option_env!("RP_GLESFEAT_G12").is_some();
+    const _: () = assert!(
+        !TEST_G12 || cfg!(rp_g7),
+        "test G12 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G11 || cfg!(rp_g7),
         "test G11 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -941,7 +976,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G11 {
+    const G_TITLE: &str = if TEST_G12 {
+        "RP-GLESFEAT TEST G12"
+    } else if TEST_G11 {
         "RP-GLESFEAT TEST G11"
     } else if TEST_G10 {
         "RP-GLESFEAT TEST G10"
@@ -964,7 +1001,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G11 {
+    const G_NAME: &str = if TEST_G12 {
+        "G12"
+    } else if TEST_G11 {
         "G11"
     } else if TEST_G10 {
         "G10"
@@ -990,7 +1029,7 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 {
+    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
@@ -998,11 +1037,17 @@ mod image {
         0x0080_0000
     };
     const _: () = assert!(
-        TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || REF + STRIDE * H as usize <= TAIL
+        TEST_G6
+            || TEST_G7
+            || TEST_G8
+            || TEST_G10
+            || TEST_G11
+            || TEST_G12
+            || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 {
+    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || TEST_G12 {
         super::G6_LABEL
     } else {
         0x0040_0000
@@ -1014,6 +1059,7 @@ mod image {
             || TEST_G8
             || TEST_G10
             || TEST_G11
+            || TEST_G12
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1022,6 +1068,7 @@ mod image {
             || TEST_G8
             || TEST_G10
             || TEST_G11
+            || TEST_G12
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1055,6 +1102,10 @@ mod image {
     /// PLL; 0 when none), and the clock changes made and those after which
     /// the display wasn't sending.
     static G10_PLL: rt::Global<(u32, u32, u32)> = rt::Global::new((0, 0, 0));
+
+    /// Test G12: the current way turns the loader-only clocks off during
+    /// each render.
+    static G12_CLOCKS: rt::Global<bool> = rt::Global::new(false);
 
     /// Test G11: the current way changes CS2's timing to Dell's at divide 1.
     static G11_CS2: rt::Global<bool> = rt::Global::new(false);
@@ -1090,6 +1141,12 @@ mod image {
         let en = e.regs.read32(ENABLE);
         e.regs.write32(CLEAR, bit);
         e.regs.write32(ENABLE, en | bit);
+        // G12: the loader-only clocks off while the chip works.
+        let clocks = G12_CLOCKS.with(|c| *c).then(|| {
+            let was = rt::clock_enables();
+            rt::set_clock_enables(was & !super::LOADER_ONLY_CLOCKS);
+            was
+        });
         let t0 = rt::ticks();
         for &(off, v) in pairs {
             e.regs.write32(MBX + off, v);
@@ -1109,6 +1166,13 @@ mod image {
                 rt::delay_us(super::QUIET_US.min(limit_us));
                 set = e.regs.read32(STATUS) & bit != 0;
             }
+            super::Wait::Silent => {
+                let mut n = super::SILENT_SPINS;
+                while n != 0 {
+                    n = core::hint::black_box(n) - 1;
+                }
+                set = e.regs.read32(STATUS) & bit != 0;
+            }
             super::Wait::EveryMs => {
                 while us_since(t0) < limit_us {
                     if e.regs.read32(STATUS) & bit != 0 {
@@ -1118,6 +1182,9 @@ mod image {
                     rt::delay_us(1_000);
                 }
             }
+        }
+        if let Some(was) = clocks {
+            rt::set_clock_enables(was);
         }
         e.regs.write32(CLEAR, bit);
         e.regs.write32(ENABLE, en);
@@ -1925,6 +1992,8 @@ mod image {
         G10(u8),
         /// Test G11: [`super::G11_WAYS`]'s way k.
         G11(u8),
+        /// Test G12: [`super::G12_WAYS`]'s way k.
+        G12(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2005,6 +2074,11 @@ mod image {
                 Self::G11(1) => "ours, CS2 Dell's at divide 1",
                 Self::G11(2) => "Dell's frame, CS2 Dell's at divide 1",
                 Self::G11(_) => "Dell's frame, CS2, NINTPW and clock order Dell's",
+                Self::G12(0) => "ours as before",
+                Self::G12(1) => "Dell's frame as before",
+                Self::G12(2) => "Dell's frame, the CPU silent while it renders",
+                Self::G12(3) => "Dell's frame, the loader-only clocks off while it renders",
+                Self::G12(_) => "Dell's frame, the CPU silent and the loader-only clocks off",
             }
         }
     }
@@ -2272,6 +2346,14 @@ mod image {
                 (out.ta && out.done, us_since(t0), out.list)
             }
             Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::G12(k) => {
+                let done = if super::G12_WAYS[k as usize % super::G12_WAYS.len()].0 {
+                    replay(e, vram)
+                } else {
+                    draw_direct(e, vram, G5_OURS, words, true, &[])
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G11(k) => {
                 let done = if super::G11_WAYS[k as usize % super::G11_WAYS.len()].0 {
                     replay(e, vram)
@@ -2422,6 +2504,10 @@ mod image {
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
+            Way::G12(k) if super::G12_WAYS[k as usize % super::G12_WAYS.len()].0 => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
             Way::G11(k) if super::G11_WAYS[k as usize % super::G11_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2436,6 +2522,11 @@ mod image {
                 .unwrap_or(super::OURS_LAYOUT),
             _ => super::OURS_LAYOUT,
         });
+        let g12 = match w {
+            Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()],
+            _ => (false, false, false),
+        };
+        G12_CLOCKS.with(|c| *c = g12.2);
         G11_CS2.with(|c| {
             *c = match w {
                 Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].1,
@@ -2445,6 +2536,7 @@ mod image {
         WAIT.with(|v| {
             *v = match w {
                 Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].1,
+                Way::G12(_) if g12.1 => super::Wait::Silent,
                 _ => super::Wait::Tight,
             }
         });
@@ -2514,6 +2606,7 @@ mod image {
             Way::Frame(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
+            Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
             Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].0,
             _ => false,
         };
@@ -3707,6 +3800,38 @@ mod image {
         log!("G11: MSC1 at the end 0x{:08x}", diag::msc1());
     }
 
+    /// Test G12's ways.
+    const G12_WAYS: [Way; 5] = [
+        Way::G12(0),
+        Way::G12(1),
+        Way::G12(2),
+        Way::G12(3),
+        Way::G12(4),
+    ];
+
+    /// Test G12: the loader's environment while the chip renders made
+    /// Windows Mobile's (W2's lead): the CPU silent, the loader-only clocks
+    /// off.
+    fn test_g12(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G12: the CPU kept off the bus while the chip renders ({} turns of a count down, then one status read) and the loader-only clocks (CKEN 0x{:08x} as found, 0x{:x} off) off during each render, Dell's frame and ours, at 74.75, 99.67 and 133.25 MHz",
+            super::SILENT_SPINS,
+            rt::clock_enables(),
+            super::LOADER_ONLY_CLOCKS
+        );
+        if frame().as_ref().and_then(super::frame_layout).is_none() {
+            log!("G12: no frame, or one without its layout: nothing run");
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G12_WAYS);
+        G12_CLOCKS.with(|c| *c = false);
+        WAIT.with(|v| *v = super::Wait::Tight);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+        log!("G12: CKEN at the end 0x{:08x}", rt::clock_enables());
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3739,7 +3864,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G11 {
+        let first = if TEST_G12 {
+            "STEP 1 OF 6"
+        } else if TEST_G11 {
             "STEP 1 OF 5"
         } else if TEST_G10 {
             "STEP 1 OF 5"
@@ -3809,7 +3936,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G11 {
+        if ready && TEST_G12 {
+            test_g12(&mut e, vram);
+        } else if ready && TEST_G11 {
             test_g11(&mut e, vram);
         } else if ready && TEST_G10 {
             test_g10(&mut e, vram);
@@ -4812,5 +4941,40 @@ mod g9_tests {
         ] {
             assert!(SYS_WORDS.contains(&w), "0x{w:x}");
         }
+    }
+}
+
+/// Test G12's pure parts.
+#[cfg(test)]
+mod g12_tests {
+    use super::*;
+
+    #[test]
+    fn the_loader_only_clocks_are_g9s_difference_exactly() {
+        // CKEN under the loader and under Windows Mobile (G9: the loader's
+        // dump and rp-wmprobe v5's, 2026-10-23).
+        let (loader, wm) = (0x01D9_1EE3u32, 0x00D9_1AA3u32);
+        assert_eq!(loader ^ wm, LOADER_ONLY_CLOCKS);
+        assert_eq!(
+            loader & !LOADER_ONLY_CLOCKS,
+            wm,
+            "off, the loader's is Windows Mobile's"
+        );
+        // Never the USB client's (bit 11: the loader's link) or the
+        // internal memory's (bit 20).
+        assert_eq!(LOADER_ONLY_CLOCKS & (1 << 11 | 1 << 20), 0);
+    }
+
+    #[test]
+    fn the_silent_wait_outlasts_a_render_at_any_cpu_speed_and_ends_in_time() {
+        // At least one cycle a turn at 624 MHz, at most four at 208 MHz:
+        // past the slowest render (19.94 ms), inside the 200 ms allowed
+        // after the check, nearly.
+        let fastest_ms = SILENT_SPINS as u64 / 624_000;
+        let slowest_ms = 4 * SILENT_SPINS as u64 / 208_000;
+        assert!(fastest_ms >= 19, "{fastest_ms} ms");
+        assert!(slowest_ms <= 250, "{slowest_ms} ms");
+        assert!(G12_WAYS.iter().filter(|w| w.0).count() == 4);
+        assert_eq!(G12_WAYS[0], (false, false, false), "ours as before first");
     }
 }
