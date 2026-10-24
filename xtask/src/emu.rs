@@ -3171,8 +3171,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g13") => return boot_loader_glesfeat_g(root, 13),
         Ok("g14") => return boot_loader_glesfeat_g(root, 14),
         Ok("g15") => return boot_loader_glesfeat_g(root, 15),
+        Ok("g16") => return boot_loader_glesfeat_g(root, 16),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g15"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g16"));
         }
         Err(_) => {}
     }
@@ -3476,7 +3477,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 15 {
+    let (env, name, ours, after) = if test == 16 {
+        ("RP_GLESFEAT_G16", "G16", "G16 way 1 (", "G16 way 2 (")
+    } else if test == 15 {
         ("RP_GLESFEAT_G15", "G15", "G15 way 1 (", "G15 way 2 (")
     } else if test == 14 {
         ("RP_GLESFEAT_G14", "G14", "G14 way 2 (", "G14 way 3 (")
@@ -3508,7 +3511,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15) {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3549,7 +3552,21 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 15 {
+    let wants: &[&str] = if test == 16 {
+        &[
+            "test G16, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G16 way 1 (Dell's frame, as before):",
+            "G16 way 2 (Dell's frame, local memory uncached and unbuffered):",
+            "G16 way 3 (Dell's frame, the display's fetch off during each render):",
+            "G16 way 4 (Dell's frame, both):",
+            "    local memory mapped Device (was Some(WriteCombine), reads back Some(Device))",
+            "    local memory mapped WriteCombine (was Some(Device), reads back Some(WriteCombine))",
+            "G16: right at 74.75 / 1 of 20:",
+            "G16: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 15 {
         &[
             "test G15, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3853,6 +3870,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         14 => &[2, 3],
         // The replay of our scene at every CPU speed and voltage.
         15 => &[2, 3],
+        // The replay of our scene however mapped, the display on or off.
+        16 => &[2, 3, 4],
         _ => &[],
     };
     if !same.is_empty() {
@@ -3926,6 +3945,53 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         return Err(format!(
             "glesfeat {name}: Windows Mobile's clock not read back:{log}"
         ));
+    }
+    // G16: each way's mapping and the display's fetch as set, and renders
+    // made with the fetch read back off in ways 3 and 4 only (each count is
+    // logged at the next way's set-up, the last at the end).
+    if test == 16 {
+        let counts: Vec<u32> = log
+            .lines()
+            .filter_map(|l| {
+                l.strip_prefix(
+                    "    the chip's runs with the display's fetch off since the last way: ",
+                )
+                .and_then(|n| n.trim().parse().ok())
+            })
+            .collect();
+        // The first is the set-up before way 1 (nothing before it).
+        let ok = counts.len() == 5
+            && counts[0] == 0
+            && counts[1] == 0
+            && counts[2] == 0
+            && counts[3] > 0
+            && counts[4] > 0;
+        if !ok {
+            return Err(format!(
+                "glesfeat {name}: renders with the display's fetch off {counts:?}, want [0, 0, 0, >0, >0]:{log}"
+            ));
+        }
+        let set = |way: u32| {
+            log.split(&format!("{name} way {way} ("))
+                .next()
+                .and_then(|before| before.rsplit("    local memory mapped ").next())
+                .map(|s| s.lines().next().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        for (way, map, dark) in [
+            (1, "WriteCombine", false),
+            (2, "Device", false),
+            (3, "WriteCombine", true),
+            (4, "Device", true),
+        ] {
+            let line = set(way);
+            let want_dark = format!("fetch off during each render: {dark}");
+            if !line.starts_with(map) || !line.contains(&want_dark) {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s set-up isn't {map}, {want_dark}: {line}:{log}"
+                ));
+            }
+        }
     }
     if test == 15 {
         let cpu = |way: u32| {

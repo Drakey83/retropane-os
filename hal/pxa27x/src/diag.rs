@@ -513,6 +513,65 @@ mod target {
         true
     }
 
+    /// Changes the memory type of `len` bytes from `virt` (both 1 MiB
+    /// aligned), already mapped by the bring-up map as identity sections,
+    /// to `memory`: their first-level entries rewritten in place, the
+    /// range written back and dropped from the D-cache first, the TLBs
+    /// invalidated after. Returns the type the first section had (to put
+    /// back), or `None`, changing nothing, if a section isn't an identity
+    /// section or the kernel's map is in use. Test G16: the 2700G's local
+    /// memory as Windows Mobile maps it for its probe (uncached and
+    /// unbuffered) against the bring-up map's write-combining.
+    #[cfg_attr(target_arch = "arm", instruction_set(arm::a32))]
+    pub fn set_section_memory(
+        virt: u32,
+        len: u32,
+        memory: crate::mmu::Memory,
+    ) -> Option<crate::mmu::Memory> {
+        const MIB: u32 = 1 << 20;
+        if !virt.is_multiple_of(MIB)
+            || !len.is_multiple_of(MIB)
+            || len == 0
+            || crate::devmap::kernel_map()
+        {
+            return None;
+        }
+        let ttb: u32;
+        // SAFETY: reading TTB has no side effects.
+        unsafe {
+            core::arch::asm!("mrc p15, 0, {}, c2, c0, 0", out(reg) ttb, options(nostack, nomem))
+        };
+        let l1 = (ttb & !0x3FFF) as *mut u32;
+        let (first, count) = ((virt >> 20) as usize, (len / MIB) as usize);
+        // SAFETY: the live first-level table, identity-mapped under the
+        // bring-up map (checked); reads of its entries.
+        let entry = |i: usize| unsafe { l1.add(first + i).read_volatile() };
+        let identity = (0..count).all(|i| {
+            let d = entry(i);
+            d & 3 == 0b10 && d & 0xFFF0_0000 == virt + i as u32 * MIB
+        });
+        if !identity {
+            return None;
+        }
+        let was = match (entry(0) >> 2) & 3 {
+            0b11 => crate::mmu::Memory::Normal,
+            0b01 => crate::mmu::Memory::WriteCombine,
+            _ => crate::mmu::Memory::Device,
+        };
+        crate::cpu::clean_invalidate_range(virt, len);
+        crate::cpu::drain_write_buffer();
+        for i in 0..count {
+            let d = crate::mmu::section(virt + i as u32 * MIB, memory);
+            // SAFETY: an identity section of the live table (checked)
+            // rewritten to the same frames with another cache type; nothing
+            // of the range is in the cache (written back above).
+            unsafe { l1.add(first + i).write_volatile(d) };
+        }
+        crate::cpu::clean_range(l1 as u32 + 4 * first as u32, 4 * count as u32);
+        crate::cpu::invalidate_tlb_all();
+        Some(was)
+    }
+
     /// Moves the live first-level page table to `to` (16 KiB aligned, 16 KiB
     /// of memory owned by the caller, e.g. from [`take_sram`]) and makes the
     /// MMU use it: the ADR-0006 rule 1 experiment. The table's contents are
@@ -565,7 +624,7 @@ mod target {
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
     coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs2_half, set_cs3_timing,
-    set_cs3_vlio, snapshot, take_sram, take_sram_words, with_window,
+    set_cs3_vlio, set_section_memory, snapshot, take_sram, take_sram_words, with_window,
 };
 
 #[cfg(test)]

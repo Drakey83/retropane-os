@@ -95,6 +95,16 @@ pub mod event {
     pub const UNDER_OVERRUN: u32 = 0x0007_0070;
 }
 
+/// The graphics plane's fetch from local memory on or off (`GSCADR` bit
+/// 31, its stream enable; the panel's timing runs on, so the screen shows
+/// no picture while off). Returns whether it was on. Test G16: the display
+/// kept off local memory while the 3D core renders.
+pub fn graphics_stream<B: RegisterBus>(regs: &mut B, on: bool) -> bool {
+    let was = GSCADR_STR_EN.extract(regs.read32(reg::GSCADR)) != 0;
+    regs.modify(reg::GSCADR, GSCADR_STR_EN, u32::from(on));
+    was
+}
+
 /// Clears the `handled` bits of `DINTRS` the only safe way: read the
 /// status, write it back without them (Dell's way). Writing anything else
 /// sets every bit written as 1, which made an earlier probe see events
@@ -535,6 +545,17 @@ mod tests {
         assert_eq!(ack_events(&mut bus, event::VEVENT0), 0x15);
         // Never a 1 the status didn't already hold: a 1 would set it.
         assert_eq!(bus.writes(), [(reg::DINTRS, event::HBLNK0 | 0x10)]);
+    }
+
+    #[test]
+    fn the_graphics_stream_switches_bit_31_alone() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        // A plane at 0x40000 / 16 scanning out (stream on).
+        bus.preset(reg::GSCADR, 1 << 31 | 0x4000);
+        assert!(graphics_stream(&mut bus, false), "it was on");
+        assert_eq!(bus.read32(reg::GSCADR), 0x4000, "the address kept");
+        assert!(!graphics_stream(&mut bus, true), "then off");
+        assert_eq!(bus.read32(reg::GSCADR), 1 << 31 | 0x4000);
     }
 
     #[test]

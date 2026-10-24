@@ -514,6 +514,13 @@ pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
     pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
 }
 
+/// Test G16's ways: (local memory mapped uncached and unbuffered, as
+/// Windows Mobile's probe maps it, not write-combining; the display's
+/// fetch from local memory off during each render). Dell's frame in
+/// every way: G15 left the CPU's side, where these two differ.
+pub const G16_WAYS: [(bool, bool); 4] =
+    [(false, false), (true, false), (false, true), (true, true)];
+
 /// Test G15's ways: (the CPU at Windows Mobile's 208 MHz, not the
 /// loader's 624; its voltage lowered to Dell's code for 208 MHz). G14:
 /// the chip draws Dell's frame right under Windows Mobile, its CPU at 208
@@ -860,7 +867,7 @@ mod image {
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
     use rp_hal_pxa27x::clocks::{self as cpu_clock, POINTS};
-    use rp_hal_pxa27x::{Mmio, cpu, diag, rt};
+    use rp_hal_pxa27x::{Mmio, cpu, diag, mmu, rt};
     use rp_hal_x51v::devices::RunLog;
     use rp_hal_x51v::vcore::{self, Code};
 
@@ -930,7 +937,8 @@ mod image {
         || TEST_G12
         || TEST_G13
         || TEST_G14
-        || TEST_G15;
+        || TEST_G15
+        || TEST_G16;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -990,6 +998,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g15`).
     const TEST_G15: bool = option_env!("RP_GLESFEAT_G15").is_some();
+    /// Test G16 instead of G (`RP_GLESFEAT_G16=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G16=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g16`).
+    const TEST_G16: bool = option_env!("RP_GLESFEAT_G16").is_some();
+    const _: () = assert!(
+        !TEST_G16 || cfg!(rp_g7),
+        "test G16 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G15 || cfg!(rp_g7),
         "test G15 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1042,7 +1059,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G15 {
+    const G_TITLE: &str = if TEST_G16 {
+        "RP-GLESFEAT TEST G16"
+    } else if TEST_G15 {
         "RP-GLESFEAT TEST G15"
     } else if TEST_G14 {
         "RP-GLESFEAT TEST G14"
@@ -1073,7 +1092,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G15 {
+    const G_NAME: &str = if TEST_G16 {
+        "G16"
+    } else if TEST_G15 {
         "G15"
     } else if TEST_G14 {
         "G14"
@@ -1115,6 +1136,7 @@ mod image {
         || TEST_G13
         || TEST_G14
         || TEST_G15
+        || TEST_G16
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1132,6 +1154,7 @@ mod image {
             || TEST_G13
             || TEST_G14
             || TEST_G15
+            || TEST_G16
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1145,6 +1168,7 @@ mod image {
         || TEST_G13
         || TEST_G14
         || TEST_G15
+        || TEST_G16
     {
         super::G6_LABEL
     } else {
@@ -1161,6 +1185,7 @@ mod image {
             || TEST_G13
             || TEST_G14
             || TEST_G15
+            || TEST_G16
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1173,6 +1198,7 @@ mod image {
             || TEST_G13
             || TEST_G14
             || TEST_G15
+            || TEST_G16
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1213,6 +1239,14 @@ mod image {
 
     /// Test G11: the current way changes CS2's timing to Dell's at divide 1.
     static G11_CS2: rt::Global<bool> = rt::Global::new(false);
+
+    /// Test G16: the current way turns the display's fetch off during each
+    /// render.
+    static G16_DARK: rt::Global<bool> = rt::Global::new(false);
+
+    /// Test G16: the chip's runs started with the display's fetch read back
+    /// off, since the last way's set-up.
+    static G16_DARKENED: rt::Global<u32> = rt::Global::new(0);
 
     /// Ways a test ran before [`test_settings`]'s (G14's first, at Dell's
     /// own clock): its ways and steps numbered after them.
@@ -1263,6 +1297,15 @@ mod image {
             rt::set_clock_enables(was & !super::LOADER_ONLY_CLOCKS);
             was
         });
+        // G16: the display off local memory while the chip works.
+        let dark = G16_DARK.with(|d| *d);
+        if dark {
+            let _ = rp_drv_mbx_display::graphics_stream(&mut e.regs, false);
+            // Counted only when the fetch reads back off.
+            if !rp_drv_mbx_display::graphics_stream(&mut e.regs, false) {
+                G16_DARKENED.with(|n| *n += 1);
+            }
+        }
         let t0 = rt::ticks();
         for &(off, v) in pairs {
             e.regs.write32(MBX + off, v);
@@ -1301,6 +1344,9 @@ mod image {
         }
         if let Some(was) = clocks {
             rt::set_clock_enables(was);
+        }
+        if dark {
+            let _ = rp_drv_mbx_display::graphics_stream(&mut e.regs, true);
         }
         e.regs.write32(CLEAR, bit);
         e.regs.write32(ENABLE, en);
@@ -2021,6 +2067,9 @@ mod image {
             }
         }
         if let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
+            if TEST_G16 {
+                let _ = rp_drv_mbx_display::graphics_stream(&mut regs, true);
+            }
             clock_back(&mut regs);
         }
     }
@@ -2125,6 +2174,8 @@ mod image {
         G13(u8),
         /// Test G15: [`super::G15_WAYS`]'s way k.
         G15(u8),
+        /// Test G16: [`super::G16_WAYS`]'s way k.
+        G16(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2217,6 +2268,10 @@ mod image {
                 Self::G15(0) => "Dell's frame, the CPU as found",
                 Self::G15(1) => "Dell's frame, the CPU at 208 MHz, its voltage as found",
                 Self::G15(_) => "Dell's frame, the CPU at 208 MHz and Dell's voltage for it",
+                Self::G16(0) => "Dell's frame, as before",
+                Self::G16(1) => "Dell's frame, local memory uncached and unbuffered",
+                Self::G16(2) => "Dell's frame, the display's fetch off during each render",
+                Self::G16(_) => "Dell's frame, both",
             }
         }
     }
@@ -2483,7 +2538,9 @@ mod image {
                 let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
             }
-            Way::Frame(_) | Way::G15(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) => {
+                (replay(e, vram), us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G13(k) => {
                 let done = if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 {
                     replay(e, vram)
@@ -2646,7 +2703,7 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         set_lay(match w {
             Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
-            Way::Frame(_) | Way::G15(_) => frame()
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
@@ -2682,6 +2739,11 @@ mod image {
             };
             set_display_pll(&mut e.regs, want);
         }
+        // G16: local memory's mapping and the display's fetch for this way.
+        g16_way(match w {
+            Way::G16(k) => super::G16_WAYS[k as usize % super::G16_WAYS.len()],
+            _ => (false, false),
+        });
         let g12 = match w {
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()],
             _ => (false, false, false),
@@ -2734,7 +2796,7 @@ mod image {
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
         // G6-G8: the layout's addresses as the core holds them.
-        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) = w {
+        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) | Way::G16(_) = w {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
                 0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
@@ -2763,7 +2825,7 @@ mod image {
         // G7: the replay at Windows Mobile's clock against Dell's own
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
-            Way::Frame(_) | Way::G15(_) => true,
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -4354,6 +4416,56 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
+    /// The 2700G's local memory as the bring-up map holds it below its
+    /// register MiB (`mmu::X51V_BRINGUP`: write-combining, 63 MiB from
+    /// `0x0C000000`), for test G16's mapping.
+    const LOCAL_SECTIONS: (u32, u32) = (0x0C00_0000, 0x03F0_0000);
+
+    /// Test G16's way set-up: local memory mapped uncached and unbuffered
+    /// (as Windows Mobile's probe maps it, `PAGE_NOCACHE`: W1-W3 wrote and
+    /// read Dell's frame that way) or write-combining (the bring-up map's),
+    /// and whether the display's fetch is off during each render. Logged
+    /// with the mapping read back.
+    fn g16_way((device, dark): (bool, bool)) {
+        if !TEST_G16 {
+            return;
+        }
+        let want = if device {
+            mmu::Memory::Device
+        } else {
+            mmu::Memory::WriteCombine
+        };
+        let was = diag::set_section_memory(LOCAL_SECTIONS.0, LOCAL_SECTIONS.1, want);
+        let now = diag::set_section_memory(LOCAL_SECTIONS.0, LOCAL_SECTIONS.1, want);
+        G16_DARK.with(|d| *d = dark);
+        let darkened = G16_DARKENED.with(|n| core::mem::replace(n, 0));
+        log!("    the chip's runs with the display's fetch off since the last way: {darkened}");
+        log!(
+            "    local memory mapped {want:?} (was {was:?}, reads back {now:?}); the display's fetch off during each render: {dark}"
+        );
+    }
+
+    /// Test G16: Dell's frame at the cores' divide 1 with local memory
+    /// mapped as Windows Mobile maps it and the display's fetch off while
+    /// the chip renders, alone and together (G15's lead: what is left
+    /// between the loader and Windows Mobile is on the CPU's side).
+    fn test_g16(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G16: Dell's frame at 74.75, 99.67 and 133.25 MHz / 1 with local memory uncached and unbuffered (Windows Mobile's PAGE_NOCACHE) or write-combining (ours), the display's fetch off during each render or on"
+        );
+        if usable_frame().is_none() {
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G16_WAYS);
+        g16_way((false, false));
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G16's ways.
+    const G16_WAYS: [Way; 4] = [Way::G16(0), Way::G16(1), Way::G16(2), Way::G16(3)];
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -4386,7 +4498,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G15 {
+        let first = if TEST_G16 {
+            "STEP 1 OF 5"
+        } else if TEST_G15 {
             "STEP 1 OF 4"
         } else if TEST_G14 {
             "STEP 1 OF 4"
@@ -4469,7 +4583,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G15 {
+        if ready && TEST_G16 {
+            test_g16(&mut e, vram);
+        } else if ready && TEST_G15 {
             test_g15(&mut e, vram);
         } else if ready && TEST_G14 {
             test_g14(&mut e, vram);
@@ -5557,5 +5673,19 @@ mod g15_tests {
         assert!(G15_WAYS.iter().all(|&(slow, lower)| slow || !lower));
         assert_eq!(G15_WAYS.iter().filter(|w| w.0).count(), 2);
         assert_eq!(G15_WAYS[2], (true, true), "the lowered voltage last");
+    }
+}
+
+/// Test G16's ways.
+#[cfg(test)]
+mod g16_tests {
+    use super::*;
+
+    #[test]
+    fn the_ways_are_the_control_then_each_alone_then_both() {
+        assert_eq!(G16_WAYS[0], (false, false), "as before first");
+        assert!(G16_WAYS.contains(&(true, false)));
+        assert!(G16_WAYS.contains(&(false, true)));
+        assert_eq!(G16_WAYS[3], (true, true), "both last");
     }
 }
