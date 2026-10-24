@@ -3384,6 +3384,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
             "  not at Dell's divide 1: run anyway (RP_GLESFEAT_G14=any-start, the emulator's build)",
             "    display after the 3D clock on: ",
             "  at Dell's clock, before ours: ",
+            "  the clock as found throughout: true",
             "G14: right at Dell's own clock of 20: Dell's frame 20",
             "parameter memory ready: true",
             "G14 way 2 (ours, our places):",

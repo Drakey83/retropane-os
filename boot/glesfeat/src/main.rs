@@ -4061,6 +4061,7 @@ mod image {
         rp_image::on_crash(put_back);
         let _ = display_check(&mut e.regs, "as found");
         set_lay(l);
+        let pll0 = e.regs.read32(clock::COREPLL);
         clock::restore(&mut e.regs, with_3d(clk0));
         rt::delay_us(1_000);
         let mut screen = display_check(&mut e.regs, "after the 3D clock on");
@@ -4115,6 +4116,13 @@ mod image {
             tally.merge(&t);
         }
         screen &= display_check(&mut e.regs, "after the draws");
+        // The way's premise, checked: the core PLL as found and the cores'
+        // divider his, only the 3D clock turned on.
+        let (pll, clk) = (e.regs.read32(clock::COREPLL), e.regs.read32(MBXCLK));
+        log!(
+            "  the clock as found throughout: {} (COREPLL 0x{pll0:x} -> 0x{pll:x}, MBXCLK 0x{clk0:x} -> 0x{clk:x})",
+            pll == pll0 && clk == with_3d(clk0)
+        );
         let t = &tally;
         log!(
             "  at Dell's clock: {right} of {G_DRAWS} right (held to {}); {unfinished} unfinished; against the first render {} words differ ({} one step, {} never written, worst step {}); fastest {us} us; the screen on throughout: {}",
