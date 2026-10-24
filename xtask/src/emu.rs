@@ -2991,8 +2991,11 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g2") => return boot_loader_glesfeat_g(root, 2),
         Ok("g3") => return boot_loader_glesfeat_g(root, 3),
         Ok("g4") => return boot_loader_glesfeat_g(root, 4),
+        Ok("g5") => return boot_loader_glesfeat_g5(root),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g, g2 or g3"));
+            return Err(format!(
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4 or g5"
+            ));
         }
         Err(_) => {}
     }
@@ -3083,6 +3086,139 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
 /// right control after each divide-1 setting (the clock put back), and the image
 /// returns; a release that doesn't model Windows Mobile's 2700G clocks
 /// refuses the change, which the image logs and the check accepts.
+/// Test G5 (`RP_GLESFEAT_G5`, the owner's method step 3): Dell's chip
+/// state copied under the loader, then halved. The fork draws Gouraud
+/// right at every clock, so the image is built with
+/// `RP_GLESFEAT_G5_CULPRIT` naming one item (0x6d0, [`G5_CULPRIT`]) a
+/// check needs to count as right: the halving must run and end on exactly
+/// that item, and the item verified at all three settings. Also held: our
+/// way and Dell's whole state draw with repeatable references, every
+/// divide-1 setting's control right after it (or the clock refused),
+/// Dell's MBX words read back from the core as written, the chip compared
+/// with Dell's at 74.75 / 1, no inherited way (the fork starts at Windows
+/// Mobile's divide 2: the inherited way isn't exercised here,
+/// docs/hw/emulator.md), and the image back at the loader.
+fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
+    const G5_CULPRIT: &str = "6";
+    let loader = raw_image(root, "rp-loader")?;
+    let bin = variant_image_with(
+        root,
+        "rp-glesfeat",
+        ("RP_GLESFEAT_G5", "1"),
+        Some(("RP_GLESFEAT_G5_CULPRIT", G5_CULPRIT)),
+    )?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let check = || -> Result<(), String> {
+        let mut mon = crate::screen::Monitor::connect(monitor_port())?;
+        mon.query("sendkey ret 200")?;
+        Ok(())
+    };
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "G5: right at 133.25 / 1")),
+            during: Some(&check),
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(1800),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("glesfeat G5: never came back to the loader")?;
+    if crashed(log) || log.contains("did not return") {
+        return Err(format!("glesfeat G5: didn't return cleanly:{log}"));
+    }
+    for want in [
+        "test G5, Gouraud at the cores' divide 1",
+        "parameter memory ready: true",
+        "(not divide 1 with a clock running): no inherited way",
+        "G5: the emulator's check: a check is right only with item 6 in its mask",
+        "G5 way 1 (ours):",
+        "G5 state: ours at 74.75 / 1 against Dell's",
+        "  ours at 74.75 / 1 after a render: the chip against Dell's",
+        "G5 way 2 (ours with Dell's whole state):",
+        "G5: ours wrong and Dell's whole state right at 74.75 / 1: halving there",
+        "G5: found in ",
+        ", mask 0x00040: [0x6d0]",
+        "G5: right at 74.75 / 1 of 20: ours 20; Dell's whole state 20; the items found 20",
+        "G5: right at 99.67 / 1 of 20: ours 20; Dell's whole state 20; the items found 20",
+        "G5: right at 133.25 / 1 of 20: ours 20; Dell's whole state 20; the items found 20",
+        "    display after the change: underrun ",
+        "RETROPANE-GLESFEAT: DONE",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("glesfeat G5: the run log has no `{want}`:{log}"));
+        }
+    }
+    // Dell's whole state reached the core: way 2's read-back holds every
+    // MBX word of the image's list, as written (the fork keeps written
+    // words; a test that forgot to write them would pass otherwise).
+    let way2 = log
+        .split("G5 way 2 (")
+        .nth(1)
+        .and_then(|s| s.split("read back after the render:").nth(1))
+        .and_then(|s| s.lines().next())
+        .ok_or(format!("glesfeat G5: way 2 read nothing back:{log}"))?;
+    for word in [
+        "0x130 0x000087f5",
+        "0x610 0x00030001",
+        "0x61c 0x00020007",
+        "0x6d0 0x00000001",
+        "0x6dc 0x3f800001",
+        "0x85c 0x01d49ce1",
+    ] {
+        if !way2.contains(word) {
+            return Err(format!(
+                "glesfeat G5: way 2's read-back lacks `{word}`: `{way2}`"
+            ));
+        }
+    }
+    // Dell's NINTPW at each divide-1 setting of a way that holds it.
+    for v in ["0x15", "0x1c", "0x26"] {
+        if !log.contains(&format!("    NINTPW {v} by Dell's rule (read back {v})")) {
+            return Err(format!(
+                "glesfeat G5: no NINTPW {v} by Dell's rule, read back:{log}"
+            ));
+        }
+    }
+    // Every check of the halving at one setting; their count as logged.
+    let checks = log.matches("G5 check 0x").count();
+    let said: usize = log
+        .split("G5: found in ")
+        .nth(1)
+        .and_then(|s| s.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or(format!("glesfeat G5: no check count:{log}"))?;
+    if checks == 0 || checks != said || checks > 30 {
+        return Err(format!(
+            "glesfeat G5: {checks} checks logged, {said} said:{log}"
+        ));
+    }
+    // Every way-setting: a repeatable reference and a right control (none
+    // refused: the release models Windows Mobile's clocks). Ways 1, 2 and
+    // the verification three settings each, every check one.
+    let refs = log
+        .matches("rendered true then true, the second 0 words off the first")
+        .count();
+    let controls = log
+        .matches("control at Windows Mobile's clock after: right")
+        .count();
+    let refused = log.matches("the clock change was refused").count();
+    if refused != 0 || refs != 3 + checks || controls != 9 + checks {
+        return Err(format!(
+            "glesfeat G5: {refs} references, {controls} right controls and {refused} refusals for {checks} checks:{log}"
+        ));
+    }
+    Ok(())
+}
+
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     let (env, name, ours, after) = if test == 4 {
         ("RP_GLESFEAT_G4", "G4", "G4 way 1 (", "G4 way 2 (")

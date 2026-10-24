@@ -264,6 +264,188 @@ pub const DELL_TABLE: [(usize, u32); 7] = [
 /// pixels x 2 bytes / 4).
 pub const DELL_TARGET16: [(usize, u32); 2] = [(0x650, 1), (0x660, 480 * 2 / 4)];
 
+/// Test G5 (2026-10-23, the owner's method, step 3): the MBX core's words
+/// as Dell's driver leaves them after his draws at 74.75 MHz / 1
+/// (`rp-wmprobe` v3, run 2, `local/rp-wmprobe-6.txt`; docs/hw/2700g.md
+/// "Dell's chip state after his divide-1 draws"), the non-zero ones but
+/// the frame's buffer addresses ([`DELL_ADDRESSES`]); every other word of
+/// `0x080`, `0x130`, `0x600`-`0x6FC` and `0x800`-`0x87C` read 0. Sorted.
+pub const DELL_MBX: [(usize, u32); 20] = [
+    (0x130, 0x0000_87F5),
+    (0x610, 0x0003_0001),
+    (0x614, 0x1E3C_E500),
+    (0x618, 0x1E3C_E500),
+    (0x61C, 0x0002_0007),
+    (0x648, 1),
+    (0x650, 1),
+    (0x654, 0x01DF_0000),
+    (0x658, 0x027F_0000),
+    (0x660, 0x0000_00F0),
+    (0x6D0, 1),
+    (0x6D8, 0x0900_0000),
+    (0x6DC, 0x3F80_0001),
+    (0x848, 0x00FF_0004),
+    (0x84C, 0x01E0_0000),
+    (0x850, 0x0280_0000),
+    (0x854, 0x3727_C5A0),
+    (0x858, 0x3727_C5AC),
+    (0x85C, 0x01D4_9CE1),
+    (0x860, 0x0020_0030),
+];
+
+/// The MBX words that held that frame's buffer addresses under Dell (they
+/// differed between his two runs and point into his own memory): never
+/// copied, never compared.
+pub const DELL_ADDRESSES: [usize; 9] = [
+    0x608, 0x60C, 0x65C, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
+];
+
+/// The system block as Dell leaves it at 74.75 MHz / 1 (the same reading),
+/// the registers Dell's driver writes (docs/hw/2700g.md "Dell's register
+/// writes on the 3D path"): compared with ours at the same clock, logged.
+/// Status and read-only words (`PLLSTAT`, `SINTSTAT`, `ODFBSTAT`, `ID`)
+/// left out.
+pub const DELL_SYS: [(usize, u32); 24] = [
+    (0x008, 0x03FD_FFE0),
+    (0x014, 0x15),
+    (0x018, 0x800F),
+    (0x02C, 2),
+    (0x030, 1),
+    (0x038, 0xBC1),
+    (0x03C, 0xEC5),
+    (0x048, 1),
+    (0x04C, 1),
+    (0x050, 0),
+    (0x054, 2),
+    (0x058, 1),
+    (0x05C, 1),
+    (0x060, 0x2EFA_0000),
+    (0x064, 0),
+    (0x06C, 1),
+    (0x0C0, 0),
+    (0x0C4, 0),
+    (0x0C8, 0),
+    (0x300, 3),
+    (0x304, 3),
+    (0x1004, 0x27),
+    (0x1014, 0xAC8),
+    (0x1024, 0x03FD_FFFC),
+];
+
+/// `NINTPW` (`0x014`), the system block's word Dell sets at every clock
+/// change: the clock's cycles in 290 ns (`0x0211FB98`: the period in 10 ps
+/// units, `10^8 / kHz`, then `29000 / period`, both truncated). 28 at
+/// Windows Mobile's 99.67 MHz, 21 at 74.75 (both read under Dell).
+#[must_use]
+pub const fn nintpw(khz: u32) -> u32 {
+    29_000 / (100_000_000 / khz)
+}
+
+/// `NINTPW`'s offset.
+pub const NINTPW: usize = 0x014;
+
+/// One thing G5 copies from Dell's set-up.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DellItem {
+    /// An MBX word written before every render (one the start table
+    /// writes replaced in it; others written just before it).
+    Mbx(usize, u32),
+    /// `NINTPW` set by [`nintpw`] after every clock change (Dell's rule),
+    /// put back to Windows Mobile's after.
+    Nintpw,
+    /// The clock change Dell's way: both MBX clocks off (`MBXCLK` 0) just
+    /// before the divider is written (`0x02120370`), where ours writes the
+    /// new divider over the running clocks.
+    ClockOrder,
+}
+
+/// G5's items, one bit each in a mask: every MBX word of [`DELL_MBX`] but
+/// the target's format and shape (`0x650`-`0x660`: ours draws ARGB8888 at
+/// its own stride; Dell's RGB565 target was G4's way 4, wrong), then the
+/// system word and the clock order.
+pub const DELL_ITEMS: [(&str, DellItem); 18] = [
+    ("0x130 enables", DellItem::Mbx(0x130, 0x0000_87F5)),
+    ("0x610", DellItem::Mbx(0x610, 0x0003_0001)),
+    ("0x614", DellItem::Mbx(0x614, 0x1E3C_E500)),
+    ("0x618", DellItem::Mbx(0x618, 0x1E3C_E500)),
+    ("0x61c", DellItem::Mbx(0x61C, 0x0002_0007)),
+    ("0x648", DellItem::Mbx(0x648, 1)),
+    ("0x6d0", DellItem::Mbx(0x6D0, 1)),
+    ("0x6d8", DellItem::Mbx(0x6D8, 0x0900_0000)),
+    ("0x6dc", DellItem::Mbx(0x6DC, 0x3F80_0001)),
+    ("0x848", DellItem::Mbx(0x848, 0x00FF_0004)),
+    ("0x84c", DellItem::Mbx(0x84C, 0x01E0_0000)),
+    ("0x850", DellItem::Mbx(0x850, 0x0280_0000)),
+    ("0x854", DellItem::Mbx(0x854, 0x3727_C5A0)),
+    ("0x858", DellItem::Mbx(0x858, 0x3727_C5AC)),
+    ("0x85c", DellItem::Mbx(0x85C, 0x01D4_9CE1)),
+    ("0x860", DellItem::Mbx(0x860, 0x0020_0030)),
+    ("NINTPW by Dell's rule", DellItem::Nintpw),
+    ("Dell's clock order", DellItem::ClockOrder),
+];
+
+/// Every item.
+pub const DELL_ALL: u32 = (1 << DELL_ITEMS.len()) - 1;
+
+/// The most checks [`narrow`] makes (a bound on the run's time: each is a
+/// reference and 20 renders at one setting, about a minute).
+pub const NARROW_CHECKS: u32 = 30;
+
+/// The fewest of `full`'s items that still draw right, by halving (Zeller's
+/// delta debugging, complements only): the items split into `n` parts;
+/// a part whose removal leaves the picture right is dropped and the split
+/// coarsened, else the split refined, until single items stand and none
+/// can go. `right(mask)` is one check; at most `limit` are made. Returns
+/// the mask left and the checks made; the empty mask is never checked
+/// (that is our own set-up, known wrong).
+pub fn narrow(full: u32, limit: u32, mut right: impl FnMut(u32) -> bool) -> (u32, u32) {
+    let mut s = full;
+    let mut n = 2u32;
+    let mut checks = 0;
+    loop {
+        let items: u32 = s.count_ones();
+        if items <= 1 || checks >= limit {
+            return (s, checks);
+        }
+        let n_now = n.min(items);
+        let size = items.div_ceil(n_now);
+        let mut reduced = false;
+        for part in 0..n_now {
+            // The part: the set bits of `s` from index part*size, size of them.
+            let mut c = 0u32;
+            let mut seen = 0;
+            for bit in 0..32 {
+                if s >> bit & 1 == 1 {
+                    if seen >= part * size && seen < (part + 1) * size {
+                        c |= 1 << bit;
+                    }
+                    seen += 1;
+                }
+            }
+            let t = s & !c;
+            if c == 0 || t == 0 {
+                continue;
+            }
+            if checks >= limit {
+                return (s, checks);
+            }
+            checks += 1;
+            if right(t) {
+                s = t;
+                n = if n_now > 2 { n_now - 1 } else { 2 };
+                reduced = true;
+                break;
+            }
+        }
+        if !reduced {
+            if n_now >= items {
+                return (s, checks);
+            }
+            n = (2 * n_now).min(items);
+        }
+    }
+}
+
 /// The GLES clear of a `width` x `height` target as the TA writes its
 /// object: one triangle covering the target twice over, z 1.0.
 #[must_use]
@@ -403,8 +585,8 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        MARKER, QUAD, SENTINEL, TRIS, TSP_ALPHA_TEST, TSP_SMOOTH, Tally, adopt_flags, alpha_word,
-        ta_draw,
+        DellItem, MARKER, QUAD, SENTINEL, TRIS, TSP_ALPHA_TEST, TSP_SMOOTH, Tally, adopt_flags,
+        alpha_word, ta_draw,
     };
 
     use rp_image::crash;
@@ -455,7 +637,8 @@ mod image {
 
     /// Test G alone instead of A, D, L and M (`RP_GLESFEAT_G=1`; device
     /// build `RP_GLESFEAT_G=1 cargo xtask codegen-variant rp-glesfeat g`).
-    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3 || TEST_G4;
+    const TEST_G: bool =
+        option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3 || TEST_G4 || TEST_G5;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -465,8 +648,19 @@ mod image {
     /// Test G4 instead of G (`RP_GLESFEAT_G4=1`; device build
     /// `RP_GLESFEAT_G4=1 cargo xtask codegen-variant rp-glesfeat g4`).
     const TEST_G4: bool = option_env!("RP_GLESFEAT_G4").is_some();
+    /// Test G5 instead of G (`RP_GLESFEAT_G5=1`; device build
+    /// `RP_GLESFEAT_G5=1 cargo xtask codegen-variant rp-glesfeat g5`).
+    const TEST_G5: bool = option_env!("RP_GLESFEAT_G5").is_some();
+    /// The emulator's check only (`RP_GLESFEAT_G5_CULPRIT=<item>`): the
+    /// fork draws right at every clock, so with this a G5 check counts as
+    /// right only when its mask holds that item, and the halving must end
+    /// on it (that the search runs and reports what it found). Never in a
+    /// device build.
+    const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G4 {
+    const G_TITLE: &str = if TEST_G5 {
+        "RP-GLESFEAT TEST G5"
+    } else if TEST_G4 {
         "RP-GLESFEAT TEST G4"
     } else if TEST_G3 {
         "RP-GLESFEAT TEST G3"
@@ -475,7 +669,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G4 {
+    const G_NAME: &str = if TEST_G5 {
+        "G5"
+    } else if TEST_G4 {
         "G4"
     } else if TEST_G3 {
         "G3"
@@ -1133,6 +1329,11 @@ mod image {
             );
         }
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
+        // G5 may have set NINTPW by Dell's rule: Windows Mobile's back
+        // (the same rule at its clock: 28, as read under Dell).
+        if TEST_G5 {
+            regs.write32(super::NINTPW, super::nintpw(Speed::WM.khz()));
+        }
     }
 
     /// `speed` (a core PLL and its memory timing) with the cores at divide
@@ -1148,7 +1349,11 @@ mod image {
     /// step failed if one never holds (`clock::set_speed`); 8, every change
     /// followed by the underrun check and Dell's clear (the callers'
     /// `display_check`, quality audit C69).
-    fn to_divide_1<B: RegisterBus>(regs: &mut B, speed: Speed) -> bool {
+    ///
+    /// With `dell_order` (test G5), the last divider write Dell's way: both
+    /// MBX clocks off (`MBXCLK` 0) just before it (`ddi_2700g`
+    /// `0x02120370`; docs/hw/2700g.md "Dell's register writes").
+    fn to_divide_1<B: RegisterBus>(regs: &mut B, speed: Speed, dell_order: bool) -> bool {
         let _ = diag::set_cs3_vlio(CS3_LONG.0, CS3_LONG.1, CS3_LONG.2);
         let clk = regs.read32(MBXCLK);
         clock::restore(regs, (clk & 3) | 1 << 2);
@@ -1171,6 +1376,9 @@ mod image {
             return false;
         }
         let clk = regs.read32(MBXCLK);
+        if dell_order {
+            regs.write32(MBXCLK, 0);
+        }
         clock::restore(regs, clk & 3);
         rt::delay_us(1_000);
         let cs3 = if speed.khz() < 99_000 {
@@ -1272,6 +1480,10 @@ mod image {
         /// `glDrawArrays(GL_TRIANGLE_STRIP)` send it: the colour clear
         /// ([`super::dell_clear_draw`]), then the quad as one strip of four.
         TaDell,
+        /// Test G5: our form (two Gouraud triangles over our giant flat
+        /// background) with the items of [`super::DELL_ITEMS`] in the mask
+        /// copied from Dell's set-up.
+        Dell(u32),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1325,6 +1537,8 @@ mod image {
                 Self::TaStrip4 => "through the TA, one strip of four",
                 Self::Direct(f) => f.name,
                 Self::TaDell => "Dell's clear and strip, through the TA",
+                Self::Dell(super::DELL_ALL) => "ours with Dell's whole state",
+                Self::Dell(_) => "ours with part of Dell's state",
             }
         }
     }
@@ -1399,6 +1613,7 @@ mod image {
         f: Form,
         words: usize,
         quad_too: bool,
+        over: &[(usize, u32)],
     ) -> bool {
         let z = if f.z1 { 1.0 } else { 0.0 };
         const BLACK: u32 = 0xFF00_0000;
@@ -1504,7 +1719,12 @@ mod image {
             for (k, o) in objs[..n].iter().enumerate() {
                 plain[k] = (o.0, o.1);
             }
-            scene_with(e, vram, &plain[..n], f.regs)
+            scene_with(
+                e,
+                vram,
+                &plain[..n],
+                if over.is_empty() { f.regs } else { over },
+            )
         }
     }
 
@@ -1570,7 +1790,13 @@ mod image {
                 (done, us_since(t0), [m3::END; TA_LIST])
             }
             Way::Direct(f) => {
-                let done = draw_direct(e, vram, f, words, true);
+                let done = draw_direct(e, vram, f, words, true, &[]);
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
+            Way::Dell(mask) => {
+                let mut over = [(0usize, 0u32); 16];
+                let n = dell_words(e, mask, &mut over);
+                let done = draw_direct(e, vram, G5_OURS, words, true, &over[..n]);
                 (done, us_since(t0), [m3::END; TA_LIST])
             }
             Way::TaDell => {
@@ -1669,7 +1895,7 @@ mod image {
             && f.bg != Bg::Nothing
         {
             blank(vram);
-            let done = draw_direct(e, vram, f, 0, false);
+            let done = draw_direct(e, vram, f, 0, false, &[]);
             let h = picture_hash(vram, TARGET);
             bg_hash = Some(h);
             log!("  background alone: rendered {done}, hash 0x{h:08x}");
@@ -1683,6 +1909,20 @@ mod image {
             let _ = write!(RunLog, "  read back after the render:");
             for &(off, _) in f.regs {
                 let _ = write!(RunLog, " 0x{off:x} 0x{:08x}", e.regs.read32(MBX + off));
+            }
+            log!("");
+        }
+        // G5: Dell's MBX words read back from the core after the render
+        // (that they reached it; 0x6D0 and the TA's words read safely
+        // under Windows Mobile, rp-wmprobe v3).
+        if let Way::Dell(m) = w {
+            let _ = write!(RunLog, "  read back after the render:");
+            for (k, (_, it)) in super::DELL_ITEMS.iter().enumerate() {
+                if m >> k & 1 == 1
+                    && let DellItem::Mbx(off, _) = *it
+                {
+                    let _ = write!(RunLog, " 0x{off:x} 0x{:08x}", e.regs.read32(MBX + off));
+                }
             }
             log!("");
         }
@@ -1737,7 +1977,21 @@ mod image {
             let mut line = [0u8; 32];
             let line = fmt(&mut line, format_args!("{mhz} MHZ / 1: SETTING"));
             say(vram, &[G_TITLE, head, name, line]);
-            s.clocked = to_divide_1(&mut e.regs, Speed::ladder(pll));
+            let dell = if let Way::Dell(m) = w { m } else { 0 };
+            s.clocked = to_divide_1(
+                &mut e.regs,
+                Speed::ladder(pll),
+                has(dell, DellItem::ClockOrder),
+            );
+            if s.clocked && has(dell, DellItem::Nintpw) {
+                let v = super::nintpw(Speed::ladder(pll).khz());
+                e.regs.write32(super::NINTPW, v);
+                log!(
+                    "    NINTPW 0x{:x} by Dell's rule (read back 0x{:x})",
+                    v,
+                    e.regs.read32(super::NINTPW)
+                );
+            }
             clock_readback(&mut e.regs);
             if !s.clocked {
                 log!(
@@ -2142,6 +2396,296 @@ mod image {
         say(vram, &lines[..4 + ways.len()]);
     }
 
+    /// Test G5's form: ours exactly (two Gouraud triangles over our giant
+    /// flat background, z 0), every list word and table word ours unless
+    /// a Dell item says otherwise.
+    const G5_OURS: Form = Form {
+        name: "ours",
+        quad: false,
+        z1: false,
+        bg: Bg::Giant,
+        tiled: false,
+        regs: &[],
+    };
+
+    /// Where test G5 keeps the picture drawn on the chip as Dell's driver
+    /// left it (after the TA's region array, before ours).
+    const INHERIT: usize = 0x00B0_0000;
+    const _: () = assert!(INHERIT >= TA_REGIONS + 0x1_0000);
+    const _: () = assert!(INHERIT + STRIDE * H as usize <= REGIONS);
+
+    /// Whether `mask` holds `item`.
+    fn has(mask: u32, item: DellItem) -> bool {
+        super::DELL_ITEMS
+            .iter()
+            .enumerate()
+            .any(|(k, (_, it))| *it == item && mask >> k & 1 == 1)
+    }
+
+    /// `mask`'s MBX words for one render: the start table's own words into
+    /// `over` (replaced there), the others written to the core now, just
+    /// before it. The count put in `over`.
+    fn dell_words(e: &mut Engine<Mmio>, mask: u32, over: &mut [(usize, u32); 16]) -> usize {
+        let (t, len) = table();
+        let mut n = 0;
+        for (k, (_, it)) in super::DELL_ITEMS.iter().enumerate() {
+            if mask >> k & 1 == 1
+                && let DellItem::Mbx(off, v) = *it
+            {
+                if t[..len - 1].iter().any(|p| p.0 == off) {
+                    if n < over.len() {
+                        over[n] = (off, v);
+                        n += 1;
+                    }
+                } else {
+                    e.regs.write32(MBX + off, v);
+                }
+            }
+        }
+        n
+    }
+
+    /// `mask`'s items by name, into the log line being written.
+    fn log_items(mask: u32) {
+        for (k, (name, _)) in super::DELL_ITEMS.iter().enumerate() {
+            if mask >> k & 1 == 1 {
+                let _ = write!(RunLog, " [{name}]");
+            }
+        }
+    }
+
+    /// The MBX words [`state_diff`] reads: the reset, the enables, the
+    /// render block and the tile accelerator's (all read safely under
+    /// Windows Mobile on this X51v, `rp-wmprobe` v3).
+    fn state_words() -> impl Iterator<Item = usize> {
+        [0x080usize, 0x130]
+            .into_iter()
+            .chain((0x600..=0x6FC).step_by(4))
+            .chain((0x800..=0x87C).step_by(4))
+    }
+
+    /// The chip's state against Dell's after his draws at 74.75 MHz / 1
+    /// (`rp-wmprobe` v3): every word that differs logged, ours then his;
+    /// the frame's buffer addresses and status words left out. The count
+    /// that differ. Each block's line is started before its reads.
+    fn state_diff(regs: &mut Mmio, when: &str) -> u32 {
+        let mut n = 0;
+        log!("  {when}: the chip against Dell's at 74.75 / 1 (system block, then the MBX core's)");
+        let _ = write!(RunLog, "   ");
+        let sys = super::DELL_SYS
+            .iter()
+            .copied()
+            .chain([(super::NINTPW, super::nintpw(74_750))]);
+        for (off, dell) in sys {
+            let v = regs.read32(off);
+            if v != dell {
+                n += 1;
+                let _ = write!(RunLog, " SYS 0x{off:x} 0x{v:x} (Dell 0x{dell:x});");
+            }
+        }
+        log!("");
+        let _ = write!(RunLog, "   ");
+        for o in state_words() {
+            if super::DELL_ADDRESSES.contains(&o) {
+                continue;
+            }
+            let dell = super::DELL_MBX.iter().find(|p| p.0 == o).map_or(0, |p| p.1);
+            let v = regs.read32(MBX + o);
+            if v != dell {
+                n += 1;
+                let _ = write!(RunLog, " MBX 0x{o:x} 0x{v:x} (Dell 0x{dell:x});");
+            }
+        }
+        log!("");
+        log!("  {when}: {n} words differ from Dell's");
+        n
+    }
+
+    /// Test G5, first when the image starts at the cores' divide 1
+    /// (Windows Mobile booted with Dell's `CoreClock`, the loader started
+    /// after): our quad drawn on the chip as Dell's driver left it, before
+    /// anything of ours resets or rewrites it (only our memory manager set
+    /// up: Dell's points into his memory). Kept at [`INHERIT`]; how many
+    /// words two such renders differ in, if both drew.
+    fn inherit(e: &mut Engine<Mmio>, vram: &mut [u8], clk0: u32) -> Option<u32> {
+        say(vram, &[G_TITLE, "STEP 1 OF 6", "DELL'S CHIP AS FOUND"]);
+        log!(
+            "G5 inherited: the image started at the cores' divide 1 (MBXCLK 0x{clk0:x}): our quad on Dell's chip as found"
+        );
+        clock_readback(&mut e.regs);
+        let _ = state_diff(&mut e.regs, "as found");
+        clock::restore(&mut e.regs, with_3d(clk0));
+        rt::delay_us(1_000);
+        let ready = pm_init(e, vram);
+        let (d1, us, _) = draw(e, vram, Way::Direct(G5_OURS), 24);
+        for k in 0..(W * H) as usize {
+            let v = load32_volatile(vram, TARGET + 4 * k).unwrap_or(0);
+            let _ = store32_volatile(vram, INHERIT + 4 * k, v);
+        }
+        cpu::drain_write_buffer();
+        let (d2, _, _) = draw(e, vram, Way::Direct(G5_OURS), 0);
+        let again = compare(vram, INHERIT);
+        log!(
+            "G5 inherited: memory manager ready {ready}, rendered {d1} then {d2} ({us} us), the second {} words off the first, hash 0x{:08x}",
+            again.wrong,
+            picture_hash(vram, INHERIT)
+        );
+        (ready && d1 && d2).then_some(again.wrong)
+    }
+
+    /// Test G5: Dell's whole state copied under the loader, then halved.
+    /// Way 1 ours (the control), way 2 ours with every item of
+    /// [`super::DELL_ITEMS`], at 74.75, 99.67 and 133.25 MHz / 1; the chip
+    /// against Dell's at 74.75 / 1 after ours drew; then, at the first
+    /// setting where ours is wrong and Dell's whole state right in every
+    /// render, the items halved (checks of one setting each, at most
+    /// [`super::NARROW_CHECKS`]) to the fewest still right, and those
+    /// verified at all three settings.
+    #[inline(never)]
+    fn test_g5(e: &mut Engine<Mmio>, vram: &mut [u8], inherited: Option<u32>) {
+        log!(
+            "G5: Dell's chip state (rp-wmprobe v3, after his draws at 74.75 / 1) copied under the loader, at 74.75, 99.67 and 133.25 MHz, then halved to what matters (TSP 0x{TSP_SMOOTH:08x}, GC2's quad over our flat background)"
+        );
+        rp_image::on_crash(put_back);
+        let enable0 = e.regs.read32(ENABLE);
+        let culprit = G5_CULPRIT.and_then(|c| c.parse::<u32>().ok());
+        if let Some(c) = culprit {
+            log!("G5: the emulator's check: a check is right only with item {c} in its mask");
+        }
+        let plls = &super::G3_PLLS;
+        let (ours, _) = way(e, vram, Way::Direct(G5_OURS), plls, 2, 6);
+        // The inherited picture against ours's reference (REF holds it).
+        let inherited_wrong = inherited.map(|again| {
+            for k in 0..(W * H) as usize {
+                let v = load32_volatile(vram, INHERIT + 4 * k).unwrap_or(0);
+                let _ = store32_volatile(vram, TARGET + 4 * k, v);
+            }
+            cpu::drain_write_buffer();
+            let t = compare(vram, REF);
+            let _ = write!(
+                RunLog,
+                "G5 inherited against our reference at Windows Mobile's clock: {} words differ ({} one step, worst step {})",
+                t.wrong,
+                t.one_step,
+                t.max_step
+            );
+            if let Some((i, want, got)) = t.first_inner {
+                let _ = write!(
+                    RunLog,
+                    ", first inside at ({}, {}) 0x{got:08x} for 0x{want:08x}",
+                    i % W,
+                    i / W
+                );
+            }
+            log!("; its two renders {again} words apart");
+            t.wrong
+        });
+        // The chip against Dell's where he drew right: ours at 74.75 / 1
+        // after one render.
+        say(vram, &[G_TITLE, "STEP 2 OF 6", "OURS AGAINST DELL'S STATE"]);
+        log!("G5 state: ours at {} / 1 against Dell's", plls[0].1);
+        if to_divide_1(&mut e.regs, Speed::ladder(plls[0].0), false) {
+            let _ = display_check(&mut e.regs, "after the change");
+            let _ = clean(e, vram);
+            let _ = draw(e, vram, Way::Direct(G5_OURS), 0);
+            let _ = state_diff(&mut e.regs, "ours at 74.75 / 1 after a render");
+            clock_back(&mut e.regs);
+            let _ = display_check(&mut e.regs, "back at Windows Mobile's clock");
+        } else {
+            log!("  the clock change was refused: the state not compared at divide 1");
+        }
+        let (full, _) = way(e, vram, Way::Dell(super::DELL_ALL), plls, 3, 6);
+        let right = |r: &WayResult, k: usize| r.right(k) == Some(G_DRAWS);
+        let at =
+            (0..SETTINGS).find(|&k| (!right(&ours, k) || culprit.is_some()) && right(&full, k));
+        let mut found = None;
+        match at {
+            Some(k) => {
+                log!(
+                    "G5: ours wrong and Dell's whole state right at {} / 1: halving there",
+                    plls[k].1
+                );
+                let one = [plls[k]];
+                let (m, checks) = super::narrow(super::DELL_ALL, super::NARROW_CHECKS, |m| {
+                    let (r, _) = way(e, vram, Way::Dell(m), &one, 4, 6);
+                    let ok = r.right(0) == Some(G_DRAWS) && culprit.is_none_or(|c| m >> c & 1 == 1);
+                    let _ = write!(
+                        RunLog,
+                        "G5 check 0x{m:05x} {}:",
+                        if ok { "right" } else { "wrong" }
+                    );
+                    log_items(m);
+                    log!("");
+                    ok
+                });
+                let _ = write!(RunLog, "G5: found in {checks} checks, mask 0x{m:05x}:");
+                log_items(m);
+                log!("");
+                found = Some(m);
+            }
+            None if (0..SETTINGS).all(|k| right(&ours, k)) => {
+                log!("G5: ours is right at every setting here: nothing to halve");
+            }
+            None => {
+                log!(
+                    "G5: Dell's whole state copied doesn't draw right where ours is wrong: what differs isn't in the state copied (an order, or a word not readable)"
+                );
+            }
+        }
+        let verified = found.map(|m| way(e, vram, Way::Dell(m), plls, 5, 6).0);
+        e.regs.write32(ENABLE, enable0);
+        // The summary.
+        let row = |r: &WayResult, k: usize| r.right(k).map_or(-1, |v| v as i32);
+        for (k, (_, mhz)) in plls.iter().enumerate() {
+            let _ = write!(
+                RunLog,
+                "G5: right at {mhz} / 1 of {G_DRAWS}: ours {}; Dell's whole state {}",
+                row(&ours, k),
+                row(&full, k)
+            );
+            if let Some(v) = &verified {
+                let _ = write!(RunLog, "; the items found {}", row(v, k));
+            }
+            log!("");
+        }
+        let [l0, l1, l2, l3] = &mut [[0u8; 32]; 4];
+        let lines = [
+            G_TITLE,
+            "DONE: PRESS A BUTTON",
+            "RIGHT OF 20 AT 74/99/133",
+            fmt(
+                l0,
+                format_args!(
+                    "OURS: {} {} {}",
+                    row(&ours, 0),
+                    row(&ours, 1),
+                    row(&ours, 2)
+                ),
+            ),
+            fmt(
+                l1,
+                format_args!(
+                    "DELL'S: {} {} {}",
+                    row(&full, 0),
+                    row(&full, 1),
+                    row(&full, 2)
+                ),
+            ),
+            match (&verified, found) {
+                (Some(v), Some(m)) => fmt(
+                    l2,
+                    format_args!("FOUND {m:05X}: {} {} {}", row(v, 0), row(v, 1), row(v, 2)),
+                ),
+                _ => "NOTHING HALVED",
+            },
+            match inherited_wrong {
+                Some(n) => fmt(l3, format_args!("ON DELL'S CHIP: {n} WRONG")),
+                None => "NOT STARTED ON DELL'S CHIP",
+            },
+        ];
+        say(vram, &lines);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -2174,7 +2718,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G4 {
+        let first = if TEST_G5 {
+            "STEP 1 OF 6"
+        } else if TEST_G4 {
             "STEP 1 OF 11"
         } else if TEST_G2 || TEST_G3 {
             "STEP 1 OF 9"
@@ -2193,6 +2739,26 @@ mod image {
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
         let mut ready = false;
+        // G5: started at the cores' divide 1 (Windows Mobile booted with
+        // Dell's CoreClock): our quad on Dell's chip first, then Windows
+        // Mobile's clock back for everything else.
+        let mut inherited = None;
+        if TEST_G5 && e.regs.read32(PLLSTAT) & 4 != 0 {
+            // Divide 1 with a clock running, as Windows Mobile leaves it
+            // under Dell's CoreClock (`0x1`: 2D on, rp-wmprobe run 2); `0x0`
+            // (every clock off, the emulator's start) isn't Dell's chip.
+            if clk0 >> 2 & 3 == 0 && clk0 & 3 != 0 {
+                inherited = inherit(&mut e, vram, clk0);
+                clock_back(&mut e.regs);
+                let _ = display_check(&mut e.regs, "back at Windows Mobile's clock");
+                clock_readback(&mut e.regs);
+            } else {
+                log!(
+                    "G5: started with MBXCLK 0x{clk0:x} (not divide 1 with a clock running): no inherited way (Windows Mobile booted without Dell's CoreClock)"
+                );
+            }
+        }
+        let clk0 = e.regs.read32(MBXCLK);
         if e.regs.read32(PLLSTAT) & 4 != 0 {
             rp_drv_mbx_display::clock::restore(&mut e.regs, with_3d(clk0));
             rt::delay_us(1_000);
@@ -2203,7 +2769,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G4 {
+        if ready && TEST_G5 {
+            test_g5(&mut e, vram, inherited);
+        } else if ready && TEST_G4 {
             test_g4(&mut e, vram);
         } else if ready && TEST_G3 {
             test_g3(&mut e, vram);
@@ -2759,5 +3327,164 @@ mod g4_tests {
         }
         // Never the start register.
         assert!(!DELL_TABLE.iter().any(|p| p.0 == m3::START));
+    }
+}
+
+/// Test G5's pure parts: Dell's state as `rp-wmprobe` v3 read it, his
+/// `NINTPW` rule, and the halving.
+#[cfg(test)]
+mod g5_tests {
+    use super::*;
+    use rp_drv_mbx_display::clock::Speed;
+    use rp_drv_mbx3d as m3;
+
+    /// Run 2's state in the probe's log, if this checkout has it (traces
+    /// stay local: docs/CLEANROOM.md): `(block, offset) -> value`.
+    fn probe_state() -> Option<Vec<(String, usize, u32)>> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../local/rp-wmprobe-6.txt");
+        let log = std::fs::read_to_string(path).ok()?;
+        // Present but unreadable is a failure, never a skip.
+        let from = log
+            .rfind("run 2 after: state follows")
+            .expect("no run 2 state in the log");
+        let mut out = Vec::new();
+        for l in log[from..].lines().skip(1) {
+            if l.ends_with("state end") {
+                break;
+            }
+            let rest = l.strip_prefix("run 2 after: ").expect(l);
+            let block = rest[..3].to_string();
+            let words: Vec<&str> = rest.split_whitespace().collect();
+            let hex = |s: &str| {
+                u32::from_str_radix(
+                    s.trim_matches(|c| c == '(' || c == ')')
+                        .trim_start_matches("0x"),
+                    16,
+                )
+                .ok()
+            };
+            let v = hex(words[words.len() - 1]).expect(l);
+            let off = hex(words[words.len() - 2]).expect(l) as usize;
+            out.push((block, off, v));
+        }
+        assert_eq!(out.len(), 153, "run 2's state: 153 words");
+        Some(out)
+    }
+
+    #[test]
+    fn dells_state_is_the_probes_reading() {
+        let Some(state) = probe_state() else {
+            eprintln!("local/rp-wmprobe-6.txt not here: the reading not re-checked");
+            return;
+        };
+        let get = |b: &str, off: usize| {
+            state
+                .iter()
+                .find(|(bb, o, _)| bb == b && *o == off)
+                .map(|e| e.2)
+        };
+        // Every MBX word: Dell's listed value, or 0, or an address.
+        let mut nonzero = 0;
+        for (b, off, v) in &state {
+            if b != "MBX" || DELL_ADDRESSES.contains(off) {
+                continue;
+            }
+            let listed = DELL_MBX.iter().find(|p| p.0 == *off).map_or(0, |p| p.1);
+            assert_eq!(*v, listed, "MBX 0x{off:x}");
+            nonzero += usize::from(*v != 0);
+        }
+        assert_eq!(nonzero, DELL_MBX.len(), "every listed word read non-zero");
+        for &(off, v) in &DELL_SYS {
+            assert_eq!(get("SYS", off), Some(v), "SYS 0x{off:x}");
+        }
+        assert_eq!(get("SYS", NINTPW), Some(nintpw(74_750)));
+    }
+
+    #[test]
+    fn the_lists_are_sorted_and_apart() {
+        assert!(DELL_MBX.windows(2).all(|p| p[0].0 < p[1].0));
+        assert!(DELL_SYS.windows(2).all(|p| p[0].0 < p[1].0));
+        for a in DELL_ADDRESSES {
+            assert!(!DELL_MBX.iter().any(|p| p.0 == a), "0x{a:x}");
+        }
+        // Never the starts: the render's (0x680) and the TA's (0x800).
+        assert!(!DELL_MBX.iter().any(|p| p.0 == m3::START || p.0 == 0x800));
+    }
+
+    #[test]
+    fn the_items_are_dells_words_but_the_targets() {
+        for (name, it) in DELL_ITEMS {
+            if let DellItem::Mbx(off, v) = it {
+                assert!(DELL_MBX.contains(&(off, v)), "{name}");
+                assert!(!(0x650..=0x660).contains(&off), "{name}: the target's");
+            }
+        }
+        let mbx = DELL_ITEMS
+            .iter()
+            .filter(|i| matches!(i.1, DellItem::Mbx(..)))
+            .count();
+        assert_eq!(mbx, DELL_MBX.len() - 4, "all but 0x650-0x660");
+        assert_eq!(DELL_ALL.count_ones() as usize, DELL_ITEMS.len());
+        // The words G4 couldn't send: not in our start table.
+        let ours = m3::start_table(0, 0, 480, 640, 480 * 4);
+        for off in [0x130, 0x6D0, 0x848, 0x85C, 0x860] {
+            assert!(!ours.iter().any(|p| p.0 == off), "0x{off:x}");
+        }
+    }
+
+    #[test]
+    fn nintpw_is_dells_rule_at_both_clocks_read() {
+        // Read under Dell: 0x1C at Windows Mobile's 99.67 MHz (run 1),
+        // 0x15 at 74.75 (run 2).
+        assert_eq!(nintpw(Speed::WM.khz()), 0x1C);
+        assert_eq!(nintpw(74_750), 0x15);
+        assert_eq!(nintpw(133_250), 38);
+        // Both directions: a faster clock never fewer cycles.
+        for k in (13_000..150_000).step_by(997) {
+            assert!(nintpw(k) <= nintpw(k + 997));
+        }
+    }
+
+    /// A check that's right when `need` is all in the mask.
+    fn needs(need: u32) -> impl FnMut(u32) -> bool {
+        move |m| m & need == need
+    }
+
+    #[test]
+    fn narrow_finds_one_item_anywhere() {
+        for bit in 0..DELL_ITEMS.len() {
+            let (m, checks) = narrow(DELL_ALL, NARROW_CHECKS, needs(1 << bit));
+            assert_eq!(m, 1 << bit, "item {bit}");
+            assert!(checks <= 12, "item {bit}: {checks} checks");
+        }
+    }
+
+    #[test]
+    fn narrow_finds_a_pair_apart() {
+        for (a, b) in [(0, 17), (6, 16), (3, 4), (9, 14)] {
+            let need = 1 << a | 1 << b;
+            let (m, checks) = narrow(DELL_ALL, NARROW_CHECKS, needs(need));
+            assert_eq!(m, need, "items {a}, {b}");
+            assert!(checks <= NARROW_CHECKS);
+        }
+    }
+
+    #[test]
+    fn narrow_never_checks_the_empty_mask_and_keeps_the_limit() {
+        let mut seen = Vec::new();
+        let (m, checks) = narrow(DELL_ALL, NARROW_CHECKS, |t| {
+            seen.push(t);
+            false
+        });
+        // Nothing can go: all of it is needed.
+        assert_eq!(m, DELL_ALL);
+        assert!(!seen.contains(&0));
+        assert!(seen.iter().all(|&t| t & !DELL_ALL == 0));
+        assert_eq!(checks as usize, seen.len());
+        assert!(checks <= NARROW_CHECKS);
+        let (_, few) = narrow(DELL_ALL, 3, |_| false);
+        assert_eq!(few, 3);
+        // A single item is its own answer, with no check.
+        assert_eq!(narrow(1 << 5, NARROW_CHECKS, |_| true), (1 << 5, 0));
     }
 }

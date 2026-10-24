@@ -48,6 +48,50 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "glesfeat G5: NINTPW off Dell's rule by one cycle",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    29_000 / (100_000_000 / khz)
+",
+        to: "    29_000 / (100_000_000 / khz) + 1
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "nintpw_is_dells_rule_at_both_clocks_read",
+        ]),
+    },
+    Mutant {
+        name: "glesfeat G5: the halving checks the empty mask (our own set-up, known wrong)",
+        file: "boot/glesfeat/src/main.rs",
+        from: "            if c == 0 || t == 0 {",
+        to: "            if c == 0 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "narrow_never_checks_the_empty_mask_and_keeps_the_limit",
+        ]),
+    },
+    Mutant {
+        name: "glesfeat G5: an item's value not the one Dell left (0x6d0)",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    (\"0x6d0\", DellItem::Mbx(0x6D0, 1)),",
+        to: "    (\"0x6d0\", DellItem::Mbx(0x6D0, 0)),",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "the_items_are_dells_words_but_the_targets",
+        ]),
+    },
+    Mutant {
+        name: "glesfeat G5: the halving keeps a part it could drop",
+        file: "boot/glesfeat/src/main.rs",
+        from: "            if right(t) {
+                s = t;",
+        to: "            if right(t) && false {
+                s = t;",
+        check: Check::Host(&["-p", "rp-glesfeat", "narrow_finds_one_item_anywhere"]),
+    },
+    Mutant {
         name: "I2C: address-only writes let through (the X51v's controller can't finish them)",
         file: "drivers/pxa-i2c/src/lib.rs",
         from: "        if last == 0 {
