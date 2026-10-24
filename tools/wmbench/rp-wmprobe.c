@@ -56,6 +56,10 @@
  * v8 (2026-10-24, test H1): then HaRET's hardware writes before its jump
  * applied one at a time the same way (haret_steps).
  *
+ * v9 (2026-10-24, test W3): H1 done (right after every HaRET write); then
+ * every page of local memory Dell's render doesn't read overwritten, zeros
+ * then 0x5A5A5A5A, before the re-render (w3).
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -544,7 +548,7 @@ static unsigned long w_status_right;
 
 static void w_show(const WCHAR *what);
 
-static void haret_steps(const char *tag, volatile unsigned long *m, volatile unsigned long *t,
+static void __attribute__((unused)) haret_steps(const char *tag, volatile unsigned long *m, volatile unsigned long *t,
                         unsigned long words, const unsigned long *want)
 {
     volatile unsigned long *udc = map_phys_rw(0x40600000UL, 0x1000);
@@ -593,6 +597,134 @@ static void haret_steps(const char *tag, volatile unsigned long *m, volatile uns
     VirtualFree((void *)udc, 0, MEM_RELEASE);
 }
 
+/* v9 (2026-10-24, test W3): the rest of local memory replaced. Under the
+ * loader, Dell's frame replayed (its 44 pages) draws wrong at divide 1;
+ * under Windows Mobile, re-rendered in place with everything else of local
+ * memory Dell's, right (W1-H1). Here every 4 KiB page of the 2700G's 16 MiB
+ * that his render doesn't read is overwritten (zeros, then 0x5A5A5A5A),
+ * keeping only the pages a render of his frame touches: the region array
+ * (0x608, to its last entry), every list it points to, every object those
+ * point to (from 0x60C) with the page after, the target (0x65C), his page
+ * table (0x824, 16 KiB): the same walk `cargo xtask g7-frame` makes. Then
+ * the re-render, held to his picture. Windows Mobile's screen is among the
+ * pages overwritten: it shows garbage until a soft reset. */
+static unsigned char w3_keep[4096 / 8];
+
+static void w3_mark(unsigned long addr)
+{
+    unsigned long pg = (addr & 0x00FFFFFFUL) >> 12;
+    w3_keep[pg / 8] |= (unsigned char)(1u << (pg % 8));
+}
+
+static int w3_kept(unsigned long pg)
+{
+    return w3_keep[pg / 8] >> (pg % 8) & 1;
+}
+
+/* One word of local memory, through a 1 MiB read-only mapping kept until
+ * the next slice is needed (a 16 MiB one may not fit the process). */
+static volatile unsigned long *w3_slice;
+static unsigned long w3_slice_mb = 0xFFFFFFFFUL;
+
+static unsigned long w3_rd(unsigned long addr)
+{
+    unsigned long mb = addr >> 20;
+    if (mb != w3_slice_mb) {
+        if (w3_slice)
+            VirtualFree((void *)w3_slice, 0, MEM_RELEASE);
+        w3_slice = map_phys(0x0C000000UL + (mb << 20), 1UL << 20);
+        w3_slice_mb = w3_slice ? mb : 0xFFFFFFFFUL;
+        if (!w3_slice)
+            return 0;
+    }
+    return w3_slice[(addr & 0xFFFFFUL) / 4];
+}
+
+/* The pages Dell's render reads, marked from the live registers and memory
+ * (read-only mappings); the count marked, or 0 if the walk failed. */
+static unsigned long w3_walk(const char *tag)
+{
+    unsigned long r, p, t, k, j, n = 0, lists = 0, objs = 0, words;
+    memset(w3_keep, 0, sizeof w3_keep);
+    r = mbx[0x608 / 4] & 0x01FFFFFCUL;
+    p = mbx[0x60C / 4] & 0x01FFF000UL;
+    t = mbx[0x65C / 4] & 0x01FFFFFCUL;
+    for (k = 0; k < 8192; k++) {
+        unsigned long w0 = w3_rd(r + 8 * k), w1 = w3_rd(r + 8 * k + 4);
+        unsigned long l = w1 & 0x01FFFFFCUL;
+        w3_mark(r + 8 * k);
+        w3_mark(r + 8 * k + 4);
+        if (l && l < (16UL << 20)) {
+            lists++;
+            for (j = 0; j < 256; j++) {
+                unsigned long a = l + 4 * j, w;
+                if (a >= (16UL << 20))
+                    break;
+                w3_mark(a);
+                w = w3_rd(a);
+                if (w == 0xF0000000UL)
+                    break;
+                {
+                    unsigned long o = p + 4 * (w & 0x001FFFFFUL);
+                    if (o < (16UL << 20)) {
+                        w3_mark(o);
+                        if (o + 4096 < (16UL << 20))
+                            w3_mark(o + 4096);
+                        objs++;
+                    }
+                }
+            }
+        }
+        if (w0 & 0x80000000UL)
+            break;
+    }
+    words = (((mbx[0x654 / 4] >> 16) + 1) * ((mbx[0x658 / 4] >> 16) + 1)) / (mbx[0x650 / 4] == 1 ? 2 : 1);
+    for (j = 0; j < words * 4; j += 4096)
+        w3_mark(t + j);
+    for (j = 0; j < 0x4000; j += 4096)
+        w3_mark((mbx[0x824 / 4] & 0x01FFFFFCUL) + j);
+    for (j = 0; j < 4096; j++)
+        n += w3_kept(j);
+    out("w3 %s: Dell's render reads %lu pages: region array 0x%lx (%lu entries), %lu list words with objects, target 0x%lx, page table 0x%lx",
+        tag, n, r, k + 1, objs, t, mbx[0x824 / 4]);
+    if (w3_slice)
+        VirtualFree((void *)w3_slice, 0, MEM_RELEASE);
+    w3_slice = NULL;
+    w3_slice_mb = 0xFFFFFFFFUL;
+    return lists ? n : 0;
+}
+
+/* Every page not kept, written with `fill`, a 1 MiB mapping at a time. */
+static void w3_fill(unsigned long fill)
+{
+    unsigned long mb, pg, i;
+    for (mb = 0; mb < 16; mb++) {
+        volatile unsigned long *v = map_phys_rw(0x0C000000UL + (mb << 20), 1UL << 20);
+        if (!v)
+            continue;
+        for (pg = 0; pg < 256; pg++)
+            if (!w3_kept(mb * 256 + pg))
+                for (i = 0; i < 1024; i++)
+                    v[pg * 1024 + i] = fill;
+        VirtualFree((void *)v, 0, MEM_RELEASE);
+    }
+}
+
+static void w3(const char *tag, volatile unsigned long *m, volatile unsigned long *t,
+               unsigned long words, const unsigned long *want)
+{
+    if (w3_walk(tag) == 0) {
+        out("w3 %s: the walk failed: not run", tag);
+        return;
+    }
+    out("w3 %s: every other page of local memory zeroed (Windows Mobile's screen too)", tag);
+    w3_fill(0);
+    w_renders(tag, "w3", "the rest of local memory zero", m, t, words, want);
+    out("w3 %s: every other page written 0x5a5a5a5a", tag);
+    w3_fill(0x5A5A5A5AUL);
+    w_renders(tag, "w3", "the rest of local memory 0x5a5a5a5a", m, t, words, want);
+}
+
 static void rerender(const char *tag)
 {
     volatile unsigned long *m, *t;
@@ -627,7 +759,8 @@ static void rerender(const char *tag)
         want[i] = t[i];
     w_renders(tag, "w1", "as Dell left it", m, t, words, want);
     w2(tag, m, t, words, want);
-    haret_steps(tag, m, t, words, want);
+    /* v9: H1 done (2026-10-24: every HaRET write right); W3 instead. */
+    w3(tag, m, t, words, want);
     /* His picture back, whatever the steps did. */
     for (i = 0; i < words; i++)
         t[i] = want[i];
@@ -1516,7 +1649,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v8 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way, after our set-up steps and after HaRET's writes), tick %lu",
+    out("rp-wmprobe v9 (Windows Mobile probe and baseline suite; the chip's registers, state and memory after Dell's draws; his frame again our way, after our set-up steps and with the rest of local memory replaced), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
