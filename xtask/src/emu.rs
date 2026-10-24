@@ -2997,9 +2997,10 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g8") => return boot_loader_glesfeat_g(root, 8),
         Ok("g9") => return boot_loader_glesfeat_g9(root),
         Ok("g10") => return boot_loader_glesfeat_g(root, 10),
+        Ok("g11") => return boot_loader_glesfeat_g(root, 11),
         Ok(other) => {
             return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7, g8, g9 or g10"
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6, g7, g8, g9, g10 or g11"
             ));
         }
         Err(_) => {}
@@ -3304,7 +3305,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 10 {
+    let (env, name, ours, after) = if test == 11 {
+        ("RP_GLESFEAT_G11", "G11", "G11 way 1 (", "G11 way 2 (")
+    } else if test == 10 {
         ("RP_GLESFEAT_G10", "G10", "G10 way 1 (", "G10 way 2 (")
     } else if test == 8 {
         ("RP_GLESFEAT_G8", "G8", "G8 way 1 (", "G8 way 2 (")
@@ -3326,7 +3329,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if test == 7 || test == 8 || test == 10 {
+    let also = if test == 7 || test == 8 || test == 10 || test == 11 {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3363,7 +3366,23 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 10 {
+    let wants: &[&str] = if test == 11 {
+        &[
+            "test G11, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G11 way 1 (ours, CS2 as found):",
+            "G11 way 2 (ours, CS2 Dell's at divide 1):",
+            "G11 way 3 (Dell's frame, CS2 Dell's at divide 1):",
+            "G11 way 4 (Dell's frame, CS2, NINTPW and clock order Dell's):",
+            // Dell's CS2 half reached MSC1 at divide 1, and Windows
+            // Mobile's is back at the end.
+            "(CS2's half Dell's at divide 1)",
+            "    NINTPW 0x15 by Dell's rule (read back 0x15)",
+            "G11: right at 74.75 / 1 of 20:",
+            "G11: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 10 {
         &[
             "test G10, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3585,6 +3604,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         8 => &[2, 3, 4, 5],
         // Every mode, and the replay of our own scene: one picture.
         10 => &[2, 3, 4],
+        // CS2's timing, and the replays of our own scene: one picture.
+        11 => &[2, 3, 4],
         _ => &[],
     };
     if !same.is_empty() {

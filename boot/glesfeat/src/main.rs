@@ -534,6 +534,23 @@ pub const G10_WAYS: [(bool, G10Mode); 4] = [
     (false, G10Mode::ReadAtWm),
 ];
 
+/// Test G11: chip select 2's half of `MSC1` (the 2700G's second interface,
+/// Dell's `SRAMChipSelect` 2) as Dell's driver sets it at 74.75 MHz / 1
+/// (`rp-wmprobe` v5 run 2), and as Windows Mobile leaves it at its clock
+/// (run 1; the loader's too, G9). The loader never changed it at divide 1.
+pub const DELL_CS2_DIV1: u32 = 0x7DF1;
+/// See [`DELL_CS2_DIV1`].
+pub const WM_CS2: u32 = 0x2481;
+
+/// Test G11's ways: (Dell's frame, not ours; Dell's CS2 timing at divide
+/// 1; with his NINTPW rule and clock order too).
+pub const G11_WAYS: [(bool, bool, bool); 4] = [
+    (false, false, false),
+    (false, true, false),
+    (true, true, false),
+    (true, true, true),
+];
+
 /// [`Wait::Quiet`]'s wait: past the slowest render seen (Dell's frame,
 /// 19.9 ms at 74.75 / 1; G3's quad at 12.6) with room to spare.
 pub const QUIET_US: u32 = 60_000;
@@ -856,7 +873,8 @@ mod image {
         || TEST_G7
         || TEST_G8
         || TEST_G9
-        || TEST_G10;
+        || TEST_G10
+        || TEST_G11;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -891,6 +909,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g10`).
     const TEST_G10: bool = option_env!("RP_GLESFEAT_G10").is_some();
+    /// Test G11 instead of G (`RP_GLESFEAT_G11=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G11=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g11`).
+    const TEST_G11: bool = option_env!("RP_GLESFEAT_G11").is_some();
+    const _: () = assert!(
+        !TEST_G11 || cfg!(rp_g7),
+        "test G11 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G10 || cfg!(rp_g7),
         "test G10 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -914,7 +941,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G10 {
+    const G_TITLE: &str = if TEST_G11 {
+        "RP-GLESFEAT TEST G11"
+    } else if TEST_G10 {
         "RP-GLESFEAT TEST G10"
     } else if TEST_G9 {
         "RP-GLESFEAT TEST G9"
@@ -935,7 +964,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G10 {
+    const G_NAME: &str = if TEST_G11 {
+        "G11"
+    } else if TEST_G10 {
         "G10"
     } else if TEST_G9 {
         "G9"
@@ -959,27 +990,39 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 {
+    const REF: usize = if TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 {
         super::G7_REF
     } else if TEST_G6 {
         super::G6_REF
     } else {
         0x0080_0000
     };
-    const _: () =
-        assert!(TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || REF + STRIDE * H as usize <= TAIL);
+    const _: () = assert!(
+        TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 || REF + STRIDE * H as usize <= TAIL
+    );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 {
+    const LABEL: usize = if TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TEST_G11 {
         super::G6_LABEL
     } else {
         0x0040_0000
     };
     const LABEL_STRIDE: usize = 480 * 2;
-    const _: () =
-        assert!(TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || TARGET + STRIDE * H as usize <= LABEL);
     const _: () = assert!(
-        TEST_G6 || TEST_G7 || TEST_G8 || TEST_G10 || LABEL + LABEL_STRIDE * H as usize <= PM
+        TEST_G6
+            || TEST_G7
+            || TEST_G8
+            || TEST_G10
+            || TEST_G11
+            || TARGET + STRIDE * H as usize <= LABEL
+    );
+    const _: () = assert!(
+        TEST_G6
+            || TEST_G7
+            || TEST_G8
+            || TEST_G10
+            || TEST_G11
+            || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
     const LABEL_LINES: usize = 16;
@@ -1012,6 +1055,9 @@ mod image {
     /// PLL; 0 when none), and the clock changes made and those after which
     /// the display wasn't sending.
     static G10_PLL: rt::Global<(u32, u32, u32)> = rt::Global::new((0, 0, 0));
+
+    /// Test G11: the current way changes CS2's timing to Dell's at divide 1.
+    static G11_CS2: rt::Global<bool> = rt::Global::new(false);
 
     /// Test G7's frame, if the image carries one that parses.
     fn frame() -> Option<super::frame::Frame<'static>> {
@@ -1699,8 +1745,12 @@ mod image {
         let _ = diag::set_cs3_vlio(CS3_WM.0, CS3_WM.1, CS3_WM.2);
         // G5 may have set NINTPW by Dell's rule: Windows Mobile's back
         // (the same rule at its clock: 28, as read under Dell).
-        if TEST_G5 {
+        if TEST_G5 || TEST_G11 {
             regs.write32(super::NINTPW, super::nintpw(Speed::WM.khz()));
+        }
+        // G11: CS2's half Windows Mobile's again.
+        if TEST_G11 {
+            let _ = diag::set_cs2_half(super::WM_CS2);
         }
     }
 
@@ -1755,6 +1805,10 @@ mod image {
             CS3_WM
         };
         let _ = diag::set_cs3_vlio(cs3.0, cs3.1, cs3.2);
+        // G11: CS2's half as Dell's driver sets it at divide 1.
+        if G11_CS2.with(|c| *c) {
+            let _ = diag::set_cs2_half(super::DELL_CS2_DIV1);
+        }
         true
     }
 
@@ -1869,6 +1923,8 @@ mod image {
         G8(u8),
         /// Test G10: [`super::G10_WAYS`]'s way k.
         G10(u8),
+        /// Test G11: [`super::G11_WAYS`]'s way k.
+        G11(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1945,6 +2001,10 @@ mod image {
                 Self::G10(_) => {
                     "ours: written and rendered at divide 1, read at Windows Mobile's clock"
                 }
+                Self::G11(0) => "ours, CS2 as found",
+                Self::G11(1) => "ours, CS2 Dell's at divide 1",
+                Self::G11(2) => "Dell's frame, CS2 Dell's at divide 1",
+                Self::G11(_) => "Dell's frame, CS2, NINTPW and clock order Dell's",
             }
         }
     }
@@ -2212,6 +2272,14 @@ mod image {
                 (out.ta && out.done, us_since(t0), out.list)
             }
             Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::G11(k) => {
+                let done = if super::G11_WAYS[k as usize % super::G11_WAYS.len()].0 {
+                    replay(e, vram)
+                } else {
+                    draw_direct(e, vram, G5_OURS, words, true, &[])
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G10(k) => {
                 let (dell, mode) = super::G10_WAYS[k as usize % super::G10_WAYS.len()];
                 let pll = G10_PLL.with(|p| p.0);
@@ -2354,6 +2422,10 @@ mod image {
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
+            Way::G11(k) if super::G11_WAYS[k as usize % super::G11_WAYS.len()].0 => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
             Way::G10(k) if super::G10_WAYS[k as usize % super::G10_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2363,6 +2435,12 @@ mod image {
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
             _ => super::OURS_LAYOUT,
+        });
+        G11_CS2.with(|c| {
+            *c = match w {
+                Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].1,
+                _ => false,
+            }
         });
         WAIT.with(|v| {
             *v = match w {
@@ -2435,6 +2513,7 @@ mod image {
         let replay_way = match w {
             Way::Frame(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
+            Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G8(k) => super::G8_WAYS[k as usize % super::G8_WAYS.len()].0,
             _ => false,
         };
@@ -2514,6 +2593,9 @@ mod image {
                 Way::Dell(m) => m,
                 Way::G6(k) if k >= 2 => super::DELL_ALL,
                 Way::Frame(true) => super::DELL_ALL,
+                Way::G11(k) if super::G11_WAYS[k as usize % super::G11_WAYS.len()].2 => {
+                    super::DELL_ALL
+                }
                 _ => 0,
             };
             s.clocked = to_divide_1(
@@ -2528,6 +2610,12 @@ mod image {
             {
                 clock_back(&mut e.regs);
                 G10_PLL.with(|p| *p = (pll, 0, 0));
+            }
+            if s.clocked && G11_CS2.with(|c| *c) {
+                log!(
+                    "    MSC1 0x{:08x} (CS2's half Dell's at divide 1)",
+                    diag::msc1()
+                );
             }
             if s.clocked && has(dell, DellItem::Nintpw) {
                 let v = super::nintpw(Speed::ladder(pll).khz());
@@ -3586,6 +3674,39 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
+    /// Test G11's ways.
+    const G11_WAYS: [Way; 4] = [Way::G11(0), Way::G11(1), Way::G11(2), Way::G11(3)];
+
+    /// Test G11: CS2's timing as Dell's driver sets it at divide 1 (G10's
+    /// lead), ours and Dell's frame.
+    fn test_g11(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        let found = diag::msc1();
+        log!(
+            "G11: chip select 2's timing (the 2700G's second interface, Dell's SRAMChipSelect 2) as Dell's driver sets it at divide 1 (0x{:04x}), ours and Dell's frame, at 74.75, 99.67 and 133.25 MHz; MSC1 as found 0x{found:08x}",
+            super::DELL_CS2_DIV1
+        );
+        // Put back to Windows Mobile's after every change: only if that is
+        // what was found (no silent change of the loader's own).
+        if found & 0xFFFF != super::WM_CS2 {
+            log!(
+                "G11: CS2's half found 0x{:04x}, not Windows Mobile's 0x{:04x}: nothing run",
+                found & 0xFFFF,
+                super::WM_CS2
+            );
+            return;
+        }
+        if frame().as_ref().and_then(super::frame_layout).is_none() {
+            log!("G11: no frame, or one without its layout: nothing run");
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G11_WAYS);
+        G11_CS2.with(|c| *c = false);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+        log!("G11: MSC1 at the end 0x{:08x}", diag::msc1());
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -3618,7 +3739,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G10 {
+        let first = if TEST_G11 {
+            "STEP 1 OF 5"
+        } else if TEST_G10 {
             "STEP 1 OF 5"
         } else if TEST_G9 {
             "STEP 1 OF 3"
@@ -3686,7 +3809,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G10 {
+        if ready && TEST_G11 {
+            test_g11(&mut e, vram);
+        } else if ready && TEST_G10 {
             test_g10(&mut e, vram);
         } else if ready && TEST_G9 {
             test_g9(&mut e, vram);

@@ -188,6 +188,21 @@ pub const fn cs3_vlio(msc1: u32, rdf: u32, rdn: u32, rrr: u32) -> Option<u32> {
     Some(msc1 & !(0x7FF << 20) | rdf << 20 | rdn << 24 | rrr << 28)
 }
 
+/// `MSC1` with chip select 2's half (bits 15-0) replaced by `half`, CS3's
+/// half kept: the 2700G's second interface on the X51v (Dell's
+/// `SRAMChipSelect` 2), whose timing Dell's driver rewrites at every clock
+/// change (`ddi_2700g` `0x0211FFC8`: `0x7DF1` at 74.75 MHz / 1, `0x2481` at
+/// Windows Mobile's 99.67 / 2, docs/hw/2700g.md "Test G10"). `None` if
+/// `half` has bits above 15 or would change CS2's type and width (its low
+/// nibble: RT and RBW), so only the timing fields move.
+#[must_use]
+pub const fn cs2_half(msc1: u32, half: u32) -> Option<u32> {
+    if half > 0xFFFF || half & 0xF != msc1 & 0xF {
+        return None;
+    }
+    Some(msc1 & !0xFFFF | half)
+}
+
 /// A VLIO `RDF` or `RDN` code's clocks (codes 12-15 are a table).
 #[must_use]
 pub const fn vlio_clocks(code: u32) -> u32 {
@@ -312,6 +327,19 @@ mod target {
         // SAFETY: only CS3's RDF/RDN/RRR fields change, within the PXA27x's
         // legal VLIO range (checked above); the register is the memory
         // controller's, mapped as device memory.
+        unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
+        Some(msc1())
+    }
+
+    /// CS2's half of `MSC1` replaced by `half` ([`super::cs2_half`]): the
+    /// new `MSC1` as read back, or `None` (nothing written). The write
+    /// buffer drained first; the caller keeps the 2700G idle meanwhile.
+    pub fn set_cs2_half(half: u32) -> Option<u32> {
+        let new = super::cs2_half(msc1(), half)?;
+        crate::cpu::drain_write_buffer();
+        // SAFETY: only CS2's timing fields change (its type and width are
+        // held by `cs2_half`); the register is the memory controller's,
+        // mapped as device memory.
         unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
         Some(msc1())
     }
@@ -534,13 +562,26 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs3_timing, set_cs3_vlio, snapshot,
-    take_sram, take_sram_words, with_window,
+    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs2_half, set_cs3_timing,
+    set_cs3_vlio, snapshot, take_sram, take_sram_words, with_window,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cs2s_half_moves_only_its_timing() {
+        // Dell's two values on the X51v (rp-wmprobe v5): Windows Mobile's
+        // clock and 74.75 / 1; CS3's half kept either way.
+        assert_eq!(cs2_half(0x2484_2481, 0x7DF1), Some(0x2484_7DF1));
+        assert_eq!(cs2_half(0x79D4_7DF1, 0x2481), Some(0x79D4_2481));
+        assert_eq!(cs2_half(0x79D4_2481, 0x2481), Some(0x79D4_2481));
+        // Its type or width changed, or a bit of CS3's: refused.
+        assert_eq!(cs2_half(0x2484_2481, 0x7DF0), None);
+        assert_eq!(cs2_half(0x2484_2481, 0x7DF9), None);
+        assert_eq!(cs2_half(0x2484_2481, 0x1_7DF1), None);
+    }
 
     #[test]
     fn cs3_timing_changes_only_the_strobes() {
