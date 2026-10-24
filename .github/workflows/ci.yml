@@ -17,6 +17,7 @@ jobs:
       - name: Install pinned toolchain (rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask eol
       - run: cargo xtask fmt
       - run: cargo xtask clippy
       - run: cargo xtask lint
