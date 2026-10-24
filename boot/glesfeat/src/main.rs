@@ -514,6 +514,20 @@ pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
     pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
 }
 
+/// The display's memory control (mbxfb's `DMCTRL`).
+pub const DMCTRL: usize = 0x2188;
+
+/// `DMCTRL` as Linux's mbxfb sets it; Windows Mobile leaves `0x10303010`
+/// (docs/hw/2700g.md, run Z): bits 31 and 30 more. Their meaning is
+/// unread (a finding to work): test G17's way 3.
+pub const LINUX_DMCTRL: u32 = 0xD030_3010;
+
+/// Test G17's ways: (the screen at Windows Mobile's place, the plane the
+/// image found scanning out, not ours at `G6_LABEL`; `DMCTRL` Linux's).
+/// Dell's frame in every way. G16: the display's fetch during the render
+/// turns it wrong under the loader, not under Windows Mobile.
+pub const G17_WAYS: [(bool, bool); 3] = [(false, false), (true, false), (false, true)];
+
 /// Test G16's ways: (local memory mapped uncached and unbuffered, as
 /// Windows Mobile's probe maps it, not write-combining; the display's
 /// fetch from local memory off during each render). Dell's frame in
@@ -938,7 +952,8 @@ mod image {
         || TEST_G13
         || TEST_G14
         || TEST_G15
-        || TEST_G16;
+        || TEST_G16
+        || TEST_G17;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -1003,6 +1018,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g16`).
     const TEST_G16: bool = option_env!("RP_GLESFEAT_G16").is_some();
+    /// Test G17 instead of G (`RP_GLESFEAT_G17=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G17=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g17`).
+    const TEST_G17: bool = option_env!("RP_GLESFEAT_G17").is_some();
+    const _: () = assert!(
+        !TEST_G17 || cfg!(rp_g7),
+        "test G17 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G16 || cfg!(rp_g7),
         "test G16 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1059,7 +1083,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G16 {
+    const G_TITLE: &str = if TEST_G17 {
+        "RP-GLESFEAT TEST G17"
+    } else if TEST_G16 {
         "RP-GLESFEAT TEST G16"
     } else if TEST_G15 {
         "RP-GLESFEAT TEST G15"
@@ -1092,7 +1118,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G16 {
+    const G_NAME: &str = if TEST_G17 {
+        "G17"
+    } else if TEST_G16 {
         "G16"
     } else if TEST_G15 {
         "G15"
@@ -1137,6 +1165,7 @@ mod image {
         || TEST_G14
         || TEST_G15
         || TEST_G16
+        || TEST_G17
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1155,6 +1184,7 @@ mod image {
             || TEST_G14
             || TEST_G15
             || TEST_G16
+            || TEST_G17
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1169,6 +1199,7 @@ mod image {
         || TEST_G14
         || TEST_G15
         || TEST_G16
+        || TEST_G17
     {
         super::G6_LABEL
     } else {
@@ -1186,6 +1217,7 @@ mod image {
             || TEST_G14
             || TEST_G15
             || TEST_G16
+            || TEST_G17
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1199,6 +1231,7 @@ mod image {
             || TEST_G14
             || TEST_G15
             || TEST_G16
+            || TEST_G17
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1881,7 +1914,7 @@ mod image {
                     }
                 }
                 let y = LABEL_TOP + l * LABEL_LINE_H + py;
-                store(vram, LABEL + y * LABEL_STRIDE, &row);
+                store(vram, label_at() + y * LABEL_STRIDE, &row);
             }
         }
         cpu::drain_write_buffer();
@@ -1891,19 +1924,29 @@ mod image {
     /// were.
     fn show_label(regs: &mut Mmio, vram: &mut [u8]) -> [(usize, u32); 5] {
         for k in 0..LABEL_STRIDE * H as usize / 4 {
-            let _ = store32_volatile(vram, LABEL + 4 * k, PAPER | PAPER << 16);
+            let _ = store32_volatile(vram, label_at() + 4 * k, PAPER | PAPER << 16);
         }
         cpu::drain_write_buffer();
-        show(
-            regs,
-            Plane {
-                format: PixelFormat::Rgb565,
-                width: W as u16,
-                height: H as u16,
-                offset: LABEL,
-                stride: LABEL_STRIDE,
-            },
-        )
+        show(regs, label_plane())
+    }
+
+    /// Where the label is scanned out from: [`LABEL`], or Windows Mobile's
+    /// place in test G17's way 2.
+    static LABEL_AT: rt::Global<usize> = rt::Global::new(LABEL);
+
+    fn label_at() -> usize {
+        LABEL_AT.with(|a| *a)
+    }
+
+    /// The label's plane at [`label_at`].
+    fn label_plane() -> Plane {
+        Plane {
+            format: PixelFormat::Rgb565,
+            width: W as u16,
+            height: H as u16,
+            offset: label_at(),
+            stride: LABEL_STRIDE,
+        }
     }
 
     /// The display's output signature (mbxfb's `DSIG`): 0 when nothing is
@@ -1933,16 +1976,7 @@ mod image {
             s & GFX_UNDERRUN != 0
         );
         if !sending {
-            let _ = show(
-                regs,
-                Plane {
-                    format: PixelFormat::Rgb565,
-                    width: W as u16,
-                    height: H as u16,
-                    offset: LABEL,
-                    stride: LABEL_STRIDE,
-                },
-            );
+            let _ = show(regs, label_plane());
             let _ = rp_drv_mbx_display::ack_events(regs, GFX_UNDERRUN);
             rt::delay_us(2 * FRAME_US);
             let c = regs.read32(DSIG);
@@ -2070,6 +2104,9 @@ mod image {
             if TEST_G16 {
                 let _ = rp_drv_mbx_display::graphics_stream(&mut regs, true);
             }
+            if let Some((_, dmctrl)) = G17_FOUND.with(|f| *f) {
+                regs.write32(super::DMCTRL, dmctrl);
+            }
             clock_back(&mut regs);
         }
     }
@@ -2176,6 +2213,8 @@ mod image {
         G15(u8),
         /// Test G16: [`super::G16_WAYS`]'s way k.
         G16(u8),
+        /// Test G17: [`super::G17_WAYS`]'s way k.
+        G17(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2272,6 +2311,9 @@ mod image {
                 Self::G16(1) => "Dell's frame, local memory uncached and unbuffered",
                 Self::G16(2) => "Dell's frame, the display's fetch off during each render",
                 Self::G16(_) => "Dell's frame, both",
+                Self::G17(0) => "Dell's frame, the screen at our place",
+                Self::G17(1) => "Dell's frame, the screen at Windows Mobile's place",
+                Self::G17(_) => "Dell's frame, the screen at our place, Linux's DMCTRL",
             }
         }
     }
@@ -2538,7 +2580,7 @@ mod image {
                 let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
             }
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) => {
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => {
                 (replay(e, vram), us_since(t0), [m3::END; TA_LIST])
             }
             Way::G13(k) => {
@@ -2703,7 +2745,7 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         set_lay(match w {
             Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) => frame()
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
@@ -2738,6 +2780,10 @@ mod image {
                 rp_drv_mbx_display::pll::SIXTY
             };
             set_display_pll(&mut e.regs, want);
+        }
+        // G17: the screen's place and the display's memory control.
+        if let Way::G17(k) = w {
+            g17_way(&mut e.regs, vram, k);
         }
         // G16: local memory's mapping and the display's fetch for this way.
         g16_way(match w {
@@ -2796,7 +2842,8 @@ mod image {
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
         // G6-G8: the layout's addresses as the core holds them.
-        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) | Way::G16(_) = w {
+        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) = w
+        {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
                 0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
@@ -2825,7 +2872,7 @@ mod image {
         // G7: the replay at Windows Mobile's clock against Dell's own
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) => true,
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -4466,6 +4513,126 @@ mod image {
     /// Test G16's ways.
     const G16_WAYS: [Way; 4] = [Way::G16(0), Way::G16(1), Way::G16(2), Way::G16(3)];
 
+    /// Test G17: the screen's offset and `DMCTRL` as the image found them.
+    static G17_FOUND: rt::Global<Option<(usize, u32)>> = rt::Global::new(None);
+
+    /// Test G17: [`rp_drv_mbx_display::SNAPSHOT_REGS`] as found.
+    static G17_DUMP: rt::Global<[u32; 146]> = rt::Global::new([0; 146]);
+
+    /// Every register of [`rp_drv_mbx_display::SNAPSHOT_REGS`] (each read
+    /// safely under the loader, runs S and Z), its line started before its
+    /// read so a read that freezes names itself. With `against`, only the
+    /// ones that differ from it are logged. The values read.
+    fn display_dump(regs: &mut Mmio, when: &str, against: Option<&[u32; 146]>) -> [u32; 146] {
+        let mut v = [0u32; 146];
+        log!("  {when}: the 2700G's registers below the MBX block");
+        let mut differ = 0;
+        for (k, &(name, off)) in rp_drv_mbx_display::SNAPSHOT_REGS.iter().enumerate() {
+            if against.is_none() {
+                let _ = write!(RunLog, "    {name} (0x{off:04x})");
+            }
+            v[k] = regs.read32(off);
+            match against {
+                None => log!(" 0x{:08x}", v[k]),
+                Some(a) if a[k] != v[k] => {
+                    differ += 1;
+                    log!(
+                        "    {name} (0x{off:04x}) 0x{:08x} (found 0x{:08x})",
+                        v[k],
+                        a[k]
+                    );
+                }
+                Some(_) => {}
+            }
+        }
+        if against.is_none() {
+            G17_DUMP.with(|d| *d = v);
+        } else {
+            log!("  {when}: {differ} registers differ from as found");
+        }
+        v
+    }
+
+    /// Test G17's way `k` ([`super::G17_WAYS`]): the label moved (copied,
+    /// then scanned out) to Windows Mobile's place or back to ours, and
+    /// `DMCTRL` as found or Linux's ([`super::LINUX_DMCTRL`]); the display
+    /// checked, the registers that differ from as found logged.
+    fn g17_way(regs: &mut Mmio, vram: &mut [u8], k: u8) {
+        let Some((place, dmctrl)) = G17_FOUND.with(|f| *f) else {
+            return;
+        };
+        let (wm, linux) = super::G17_WAYS[k as usize % super::G17_WAYS.len()];
+        let to = if wm { place } else { LABEL };
+        let from = label_at();
+        if to != from {
+            for i in 0..LABEL_STRIDE * H as usize / 4 {
+                let w = load32_volatile(vram, from + 4 * i).unwrap_or(0);
+                let _ = store32_volatile(vram, to + 4 * i, w);
+            }
+            cpu::drain_write_buffer();
+            LABEL_AT.with(|a| *a = to);
+            let _ = show(regs, label_plane());
+        }
+        regs.write32(
+            super::DMCTRL,
+            if linux { super::LINUX_DMCTRL } else { dmctrl },
+        );
+        log!(
+            "    the screen at 0x{:x} ({}), GSCADR 0x{:08x}; DMCTRL 0x{:08x} ({})",
+            label_at(),
+            if wm { "Windows Mobile's place" } else { "ours" },
+            regs.read32(dreg::GSCADR),
+            regs.read32(super::DMCTRL),
+            if linux { "Linux's" } else { "as found" }
+        );
+        let _ = display_check(regs, "after the way's set-up");
+        let found = G17_DUMP.with(|d| *d);
+        let _ = display_dump(regs, "the way's set-up", Some(&found));
+    }
+
+    /// Test G17: the screen's place in local memory and the display's
+    /// memory control, Dell's frame at the cores' divide 1 (G16's lead: the
+    /// display's fetch, contending with the 3D core, turns the render
+    /// wrong under the loader; under Windows Mobile it doesn't).
+    fn test_g17(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G17: Dell's frame at 74.75, 99.67 and 133.25 MHz / 1 with the screen at our place (0x{LABEL:x}) and at Windows Mobile's, and with Linux's DMCTRL (0x{:08x})",
+            super::LINUX_DMCTRL
+        );
+        let Some(l) = usable_frame() else {
+            return;
+        };
+        let Some((place, _)) = G17_FOUND.with(|f| *f) else {
+            log!("G17: the screen wasn't read at start: nothing run");
+            return;
+        };
+        // Windows Mobile's place must lie over nothing of the frame's or
+        // the image's own (the reference, the fence).
+        let bytes = LABEL_STRIDE * H as usize;
+        let spans = l.spans(W, H, COLS * ROWS);
+        let clash = frame().is_some_and(|f| f.touches(place, bytes))
+            || spans[..4]
+                .iter()
+                .any(|s| s.0 < place + bytes && place < s.0 + s.1)
+            || [(REF, STRIDE * H as usize), (FENCE, 0x1000)]
+                .iter()
+                .any(|&(a, n)| a < place + bytes && place < a + n);
+        if clash {
+            log!(
+                "G17: Windows Mobile's place 0x{place:x} lies over the frame or the image's own: nothing run"
+            );
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G17_WAYS);
+        g17_way(&mut e.regs, vram, 0);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G17's ways.
+    const G17_WAYS: [Way; 3] = [Way::G17(0), Way::G17(1), Way::G17(2)];
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -4488,17 +4655,39 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
+        // G17: the display as the loader left it (its plane where Windows
+        // Mobile put it), before the image adopts it or shows its label.
+        if TEST_G17 {
+            let found = display.on_screen(vram.len());
+            let dmctrl = display.regs().read32(super::DMCTRL);
+            G17_FOUND.with(|f| *f = Some((found.offset, dmctrl)));
+            log!(
+                "G17: the screen as found: offset 0x{:x}, {:?} {} x {}, stride {}; DMCTRL 0x{dmctrl:08x}",
+                found.offset,
+                found.format,
+                found.width,
+                found.height,
+                found.stride
+            );
+            let _ = display_dump(display.regs(), "as found", None);
+        }
         let _ = display.adopt(vram.len());
         let regs = display.into_inner();
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         // The label first: the screen says what runs from the first moment.
         let saved = show_label(&mut e.regs, vram);
+        if TEST_G17 {
+            let found = G17_DUMP.with(|d| *d);
+            let _ = display_dump(&mut e.regs, "ours (the image's label shown)", Some(&found));
+        }
         let title = if TEST_G {
             G_TITLE
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G16 {
+        let first = if TEST_G17 {
+            "STEP 1 OF 4"
+        } else if TEST_G16 {
             "STEP 1 OF 5"
         } else if TEST_G15 {
             "STEP 1 OF 4"
@@ -4583,7 +4772,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G16 {
+        if ready && TEST_G17 {
+            test_g17(&mut e, vram);
+        } else if ready && TEST_G16 {
             test_g16(&mut e, vram);
         } else if ready && TEST_G15 {
             test_g15(&mut e, vram);
@@ -5687,5 +5878,26 @@ mod g16_tests {
         assert!(G16_WAYS.contains(&(true, false)));
         assert!(G16_WAYS.contains(&(false, true)));
         assert_eq!(G16_WAYS[3], (true, true), "both last");
+    }
+}
+
+/// Test G17's ways.
+#[cfg(test)]
+mod g17_tests {
+    use super::*;
+
+    #[test]
+    fn the_ways_are_ours_then_windows_mobiles_place_then_linuxs_dmctrl() {
+        assert_eq!(G17_WAYS, [(false, false), (true, false), (false, true)]);
+        // Linux's DMCTRL is Windows Mobile's with bits 31 and 30 more.
+        assert_eq!(LINUX_DMCTRL & !(3 << 30), 0x1030_3010);
+        assert_eq!(
+            DMCTRL,
+            rp_drv_mbx_display::SNAPSHOT_REGS
+                .iter()
+                .find(|r| r.0 == "DMCTRL")
+                .unwrap()
+                .1
+        );
     }
 }

@@ -3172,8 +3172,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g14") => return boot_loader_glesfeat_g(root, 14),
         Ok("g15") => return boot_loader_glesfeat_g(root, 15),
         Ok("g16") => return boot_loader_glesfeat_g(root, 16),
+        Ok("g17") => return boot_loader_glesfeat_g(root, 17),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g16"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g17"));
         }
         Err(_) => {}
     }
@@ -3477,7 +3478,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 16 {
+    let (env, name, ours, after) = if test == 17 {
+        ("RP_GLESFEAT_G17", "G17", "G17 way 1 (", "G17 way 2 (")
+    } else if test == 16 {
         ("RP_GLESFEAT_G16", "G16", "G16 way 1 (", "G16 way 2 (")
     } else if test == 15 {
         ("RP_GLESFEAT_G15", "G15", "G15 way 1 (", "G15 way 2 (")
@@ -3511,7 +3514,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3552,7 +3555,22 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 16 {
+    let wants: &[&str] = if test == 17 {
+        &[
+            "G17: the screen as found: offset 0x",
+            "  as found: the 2700G's registers below the MBX block",
+            "    DMCTRL (0x2188) 0x",
+            "  ours (the image's label shown): ",
+            "test G17, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G17 way 1 (Dell's frame, the screen at our place):",
+            "G17 way 2 (Dell's frame, the screen at Windows Mobile's place):",
+            "G17 way 3 (Dell's frame, the screen at our place, Linux's DMCTRL):",
+            "G17: right at 74.75 / 1 of 20:",
+            "G17: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 16 {
         &[
             "test G16, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3872,6 +3890,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         15 => &[2, 3],
         // The replay of our scene however mapped, the display on or off.
         16 => &[2, 3, 4],
+        // The replay of our scene wherever the screen is, either DMCTRL.
+        17 => &[2, 3],
         _ => &[],
     };
     if !same.is_empty() {
@@ -3949,6 +3969,57 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // G16: each way's mapping and the display's fetch as set, and renders
     // made with the fetch read back off in ways 3 and 4 only (each count is
     // logged at the next way's set-up, the last at the end).
+    // G17: each way's screen place and DMCTRL as set and read back: way 2
+    // at the place found at start (not ours), way 3 with Linux's DMCTRL.
+    if test == 17 {
+        let found = log
+            .split("G17: the screen as found: offset 0x")
+            .nth(1)
+            .and_then(|s| s.split(',').next())
+            .and_then(|h| usize::from_str_radix(h, 16).ok())
+            .ok_or(format!("glesfeat {name}: no screen as found:{log}"))?;
+        // Each way's set-up is logged just before its header.
+        let set = |way: u32| {
+            log.split(&format!("{name} way {way} ("))
+                .next()
+                .and_then(|before| before.rsplit("    the screen at 0x").next())
+                .map(|s| s.lines().next().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        let ours = 0x0010_0000usize;
+        for (way, at, gscadr_ok, dmctrl) in [
+            (1, ours, true, None),
+            (2, found, true, None),
+            (3, ours, true, Some("DMCTRL 0xd0303010 (Linux's)")),
+        ] {
+            let line = set(way);
+            let want_at = format!("{at:x} (");
+            // GSCADR holds the plane's place / 16 with the stream on.
+            let want_g = format!("GSCADR 0x{:08x}", 1u32 << 31 | (at / 16) as u32);
+            if !line.starts_with(&want_at) || (gscadr_ok && !line.contains(&want_g)) {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s screen isn't at 0x{at:x} ({want_g}): {line}:{log}"
+                ));
+            }
+            if let Some(d) = dmctrl
+                && !line.contains(d)
+            {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s DMCTRL isn't Linux's: {line}:{log}"
+                ));
+            }
+            if dmctrl.is_none() && line.contains("(Linux's)") {
+                return Err(format!(
+                    "glesfeat {name}: way {way} has Linux's DMCTRL: {line}:{log}"
+                ));
+            }
+        }
+        if found == ours {
+            return Err(format!(
+                "glesfeat {name}: the screen found at start is the label's own place, so way 2 tests nothing:{log}"
+            ));
+        }
+    }
     if test == 16 {
         let counts: Vec<u32> = log
             .lines()
