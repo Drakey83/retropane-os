@@ -263,7 +263,9 @@ watching.
   133.25 MHz right but one word in two of three ARGB8888 Gouraud
   renders. The cores' clock limits Gouraud; Dell's 75 MHz cap may hold
   for it.** **Run GC2S (2026-10-24, `gpubench-0082`): with the scan-out
-  buffer inside the safe region (offset 0, C71), every kind is right at
+  buffer inside the safe region (offset 0, C71; the safe region's ~704 KiB
+  matches the 2700G5's on-die memory as Wikipedia gives it, 384 kB on the
+  2700G3: 2700g.md, source W), every kind is right at
   133.25 and 149.50 MHz / 2 (7 of 9 with the screen outside) and renders
   4-5% faster; at divide 1 only Dell's 74.75 MHz gains (7 of 9 against
   3), and above it Gouraud stays wrong as before (3 of 9 to 133.25):
