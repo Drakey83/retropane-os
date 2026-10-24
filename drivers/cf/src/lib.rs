@@ -21,7 +21,10 @@
 //! for the end (docs/research/storage-speed.md). IDENTIFY is read through
 //! the 16-bit port and again through each faster path; a path is used only
 //! if its bytes match, so a card or socket that doesn't alias the window
-//! keeps the 16-bit port. No socket timing is changed.
+//! keeps the 16-bit port. The socket's timing is the caller's to tune:
+//! [`CfCard::tune`] moves it to the card's own rated speed (its CIS) once a
+//! read at the new timing matches the same read at the old one (the
+//! owner's ruling A, reminder R7; [`timing`]).
 //!
 //! Security (docs/security.md): everything the card says is checked before
 //! use (CIS walks are bounded, IDENTIFY fields validated, transfers kept
@@ -74,6 +77,10 @@ const FEATURE_WRITE_CACHE_OFF: u8 = 0x82;
 
 /// CIS tuple codes (CF specification).
 const CISTPL_NULL: u8 = 0x00;
+/// The card's speed at 5 V, and under other conditions (3.3 V, the X51v's
+/// socket: preferred).
+const CISTPL_DEVICE: u8 = 0x01;
+const CISTPL_DEVICE_OC: u8 = 0x1C;
 const CISTPL_CONFIG: u8 = 0x1A;
 const CISTPL_FUNCID: u8 = 0x21;
 const CISTPL_END: u8 = 0xFF;
@@ -242,13 +249,71 @@ pub struct CfCard<A, C, D = NoDma> {
     /// The card stopped answering (a wait ran out): every later transfer
     /// fails at once, so a dead card costs one timeout, not one per retry.
     dead: bool,
+    /// The common memory's speed its CIS rates, ns (`None`: no rating).
+    rated_ns: Option<u32>,
 }
 
-/// What the CIS says: the configuration registers' base, if a fixed disk.
-fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<u32, CfError> {
+/// What the CIS walk found: the configuration registers' base, and the
+/// card's rated speed ([`timing::cis_speed_ns`]: the 3.3 V tuple
+/// `CISTPL_DEVICE_OC` first, else `CISTPL_DEVICE`).
+struct Cis {
+    config: u32,
+    rated_ns: Option<u32>,
+}
+
+/// The socket's common-memory timing register (`MCMEM` for the CF socket),
+/// for [`CfCard::tune`]: the driver reads and writes it, and learns the
+/// memory clock's cycle.
+pub trait SocketTiming {
+    /// The register as it is.
+    fn read(&mut self) -> u32;
+    /// Sets the register.
+    fn write(&mut self, value: u32);
+    /// The memory clock's cycle, picoseconds.
+    fn clk_ps(&mut self) -> u32;
+}
+
+/// `MCMEM`'s timing fields (SET, ASST, HOLD: bits 19-0); the rest is kept.
+const MCMEM_FIELDS: u32 = (1 << 20) - 1;
+
+/// What [`CfCard::tune`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tuned {
+    /// The card's own timing, proven by the read-back check.
+    Applied {
+        /// The register before.
+        was: u32,
+        /// The register now.
+        now: u32,
+        /// The card's rated speed, ns.
+        rated_ns: u32,
+        /// The card is slower than the socket can wait for: its slowest.
+        clamped: bool,
+    },
+    /// The card's timing read differently from the old one: the old one is
+    /// back. `card_ok`: the card reads as before at it (else it's marked
+    /// dead, to be taken anew).
+    Refused {
+        /// The register kept.
+        was: u32,
+        /// The timing tried.
+        tried: u32,
+        /// The card's rated speed, ns.
+        rated_ns: u32,
+        /// The card reads as it did at the old timing.
+        card_ok: bool,
+    },
+    /// Nothing changed, and why.
+    Kept(&'static str),
+}
+
+/// What the CIS says: the configuration registers' base, if a fixed disk,
+/// and the card's rated speed.
+fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<Cis, CfError> {
     let mut at = 0usize;
     let mut fixed_disk = false;
     let mut config = None;
+    let (mut speed_5v, mut speed_oc) = (None, None);
     // Every tuple takes at least one byte pair: the walk ends by CIS_LIMIT.
     while at < CIS_LIMIT {
         let code = attr.read8(at);
@@ -264,7 +329,24 @@ fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<u32, CfError> {
             break;
         }
         let data = at + 4;
+        // A tuple's first bytes (at most four), for the speed tuples.
+        let mut body = [0u8; 4];
+        let n = usize::from(link).min(body.len());
+        if matches!(code, CISTPL_DEVICE | CISTPL_DEVICE_OC) {
+            for (k, b) in body[..n].iter_mut().enumerate() {
+                *b = attr.read8(data + 2 * k);
+            }
+        }
         match code {
+            CISTPL_DEVICE => speed_5v = timing::cis_speed_ns(&body[..n]),
+            // Its condition bytes first (bit 7: another follows).
+            CISTPL_DEVICE_OC => {
+                let skip = body[..n]
+                    .iter()
+                    .position(|b| b & 0x80 == 0)
+                    .map_or(n, |k| k + 1);
+                speed_oc = timing::cis_speed_ns(&body[skip..n]);
+            }
             CISTPL_FUNCID if link >= 1 => {
                 fixed_disk = attr.read8(data) == FUNC_FIXED_DISK;
             }
@@ -284,7 +366,10 @@ fn walk_cis(attr: &mut dyn RegisterBus8) -> Result<u32, CfError> {
         at = data + 2 * usize::from(link);
     }
     match config {
-        Some(base) if fixed_disk && base < CONFIG_LIMIT && base % 2 == 0 => Ok(base),
+        Some(base) if fixed_disk && base < CONFIG_LIMIT && base % 2 == 0 => Ok(Cis {
+            config: base,
+            rated_ns: speed_oc.or(speed_5v),
+        }),
         _ => Err(CfError::NotStorage),
     }
 }
@@ -310,6 +395,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             cache_off: false,
             last_error: 0,
             dead: false,
+            rated_ns: None,
         }
     }
 
@@ -348,6 +434,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus> CfCard<A, C
             cache_off: self.cache_off,
             last_error: self.last_error,
             dead: self.dead,
+            rated_ns: self.rated_ns,
         };
         card.try_dma();
         card
@@ -373,7 +460,7 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             Ok(s) => s,
             Err(e) => return Err((e, attr, common, dma)),
         };
-        let config = match walk_cis(&mut attr) {
+        let cis = match walk_cis(&mut attr) {
             Ok(c) => c,
             Err(e) => return Err((e, attr, common, dma)),
         };
@@ -391,8 +478,9 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
             cache_off: false,
             last_error: 0,
             dead: false,
+            rated_ns: cis.rated_ns,
         };
-        if let Err(e) = card.start(config as usize, delay_us) {
+        if let Err(e) = card.start(cis.config as usize, delay_us) {
             return Err((e, card.attr, card.common, card.dma));
         }
         if let Some(phys) = common_phys {
@@ -487,6 +575,90 @@ impl<A: RegisterBus8, C: RegisterBus8 + RegisterBus16 + RegisterBus, D: WindowDm
     #[must_use]
     pub fn sectors(&self) -> u32 {
         self.sectors
+    }
+
+    /// The common memory's speed the card's CIS rates, ns (`None`: no
+    /// rating, or a card taken by [`CfCard::adopt`]).
+    #[must_use]
+    pub fn rated_ns(&self) -> Option<u32> {
+        self.rated_ns
+    }
+
+    /// Moves the socket's common-memory timing to the card's own rated speed
+    /// ([`timing::for_card`]: the CF specification's minimums with a 1.5x
+    /// margin; faster than Windows Mobile's one table for a fast card,
+    /// slower for a slow one), kept only if the card reads the same at it:
+    /// IDENTIFY and its first, middle and last sectors, read at the old
+    /// timing, then twice at the new one, all alike. Otherwise the old
+    /// timing is put back and the card read again at it. The attribute
+    /// memory's timing (read a few hundred bytes per attach) is left alone.
+    pub fn tune(&mut self, socket: &mut dyn SocketTiming) -> Tuned {
+        let Some(rated_ns) = self.rated_ns else {
+            return Tuned::Kept("the card's CIS gives no speed");
+        };
+        if self.dead {
+            return Tuned::Kept("the card isn't answering");
+        }
+        let was = socket.read();
+        let (t, clamped) = timing::for_card(rated_ns, socket.clk_ps());
+        let now = (was & !MCMEM_FIELDS) | t.mcmem();
+        if now == was {
+            return Tuned::Kept("already at the card's timing");
+        }
+        let Ok(reference) = self.fingerprint() else {
+            return Tuned::Kept("the card couldn't be read at the timing it had");
+        };
+        socket.write(now);
+        let first = self.fingerprint();
+        let second = self.fingerprint();
+        if first == Ok(reference) && second == Ok(reference) {
+            return Tuned::Applied {
+                was,
+                now,
+                rated_ns,
+                clamped,
+            };
+        }
+        socket.write(was);
+        // A wait that ran out at the new timing marked the card dead; at
+        // the old one it gets its chance again.
+        self.dead = false;
+        let card_ok = self.fingerprint() == Ok(reference);
+        self.dead = !card_ok;
+        Tuned::Refused {
+            was,
+            tried: now,
+            rated_ns,
+            card_ok,
+        }
+    }
+
+    /// A 64-bit FNV-1a hash of IDENTIFY (through the 16-bit port) and the
+    /// first, middle and last sectors (through the read path), for
+    /// [`CfCard::tune`]'s comparisons without holding the sectors.
+    fn fingerprint(&mut self) -> Result<u64, BlockError> {
+        let mut hash: u64 = 0xCBF2_9CE4_8422_2325;
+        let mut mix = |bytes: &[u8]| {
+            for &b in bytes {
+                hash = (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3);
+            }
+        };
+        let mut sector = Sector([0; SECTOR]);
+        self.command(CMD_IDENTIFY, 0, 0)
+            .map_err(|e| self.failed(e))?;
+        self.wait_drq().map_err(|e| self.failed(e))?;
+        self.read_sector(&mut sector.0, ReadPath::Port16)
+            .map_err(|e| self.failed(e))?;
+        if !self.finish_read().map_err(|e| self.failed(e))? {
+            return Err(BlockError::Device);
+        }
+        mix(&sector.0);
+        let last = self.sectors.saturating_sub(1);
+        for lba in [0, self.sectors / 2, last] {
+            self.read_blocks(lba, &mut sector.0)?;
+            mix(&sector.0);
+        }
+        Ok(hash)
     }
 
     /// The card's model string (trailing spaces trimmed).

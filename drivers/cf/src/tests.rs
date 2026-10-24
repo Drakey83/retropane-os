@@ -53,6 +53,13 @@ struct Card {
     now_us: u64,
     /// When RESET was asserted and released.
     reset_at: Option<(u64, u64)>,
+    /// The socket's common-memory timing (`MCMEM`), set by [`Socket`].
+    mcmem: u32,
+    /// A cycle shorter than this many memory-clock cycles is too fast for
+    /// the card: its data reads come back wrong, or (`too_fast_hangs`) it
+    /// stays busy.
+    too_fast_below: u32,
+    too_fast_hangs: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -123,7 +130,15 @@ impl Card {
             window_reads: 0,
             now_us: 0,
             reset_at: None,
+            mcmem: 0xA5A0_0000 | timing::Timing::WINDOWS_MOBILE.mcmem(),
+            too_fast_below: 0,
+            too_fast_hangs: false,
         }
+    }
+
+    /// The socket's timing is shorter than the card can follow.
+    fn too_fast(&self) -> bool {
+        timing::Timing::from_mcmem(self.mcmem).cycle_cycles() < self.too_fast_below
     }
 
     /// A hardware reset: back to the power-on state (memory mode, idle).
@@ -138,7 +153,7 @@ impl Card {
     }
 
     fn status(&mut self) -> u8 {
-        if self.never_ready || self.wedged {
+        if self.never_ready || self.wedged || self.too_fast() && self.too_fast_hangs {
             return ST_BSY;
         }
         if self.busy_reads > 0 {
@@ -228,7 +243,10 @@ impl Card {
         if self.phase != Phase::ReadOut {
             return 0xFFFF;
         }
-        let w = u16::from_le_bytes([self.buf[self.pos], self.buf[self.pos + 1]]);
+        let mut w = u16::from_le_bytes([self.buf[self.pos], self.buf[self.pos + 1]]);
+        if self.too_fast() {
+            w ^= 0x0101;
+        }
         self.pos += 2;
         if self.pos == self.buf.len() {
             self.left -= 1;
@@ -899,4 +917,213 @@ fn hostile_cards_never_panic_or_hang() {
             let _ = cf.read_blocks(cf.sectors().saturating_sub(1), &mut buf);
         }
     }
+}
+
+/// The socket's timing register as the loader hands it to
+/// [`CfCard::tune`]: kept in the simulated card, every write recorded.
+struct Socket {
+    card: Rc<RefCell<Card>>,
+    writes: Vec<u32>,
+    /// The card stops answering at the first write (a card that dies).
+    kills: bool,
+}
+
+impl SocketTiming for Socket {
+    fn read(&mut self) -> u32 {
+        self.card.borrow().mcmem
+    }
+    fn write(&mut self, value: u32) {
+        let mut c = self.card.borrow_mut();
+        c.mcmem = value;
+        c.never_ready |= self.kills;
+        self.writes.push(value);
+    }
+    fn clk_ps(&mut self) -> u32 {
+        4808 // CLK_MEM at 208 MHz
+    }
+}
+
+fn socket(c: &Rc<RefCell<Card>>) -> Socket {
+    Socket {
+        card: c.clone(),
+        writes: Vec::new(),
+        kills: false,
+    }
+}
+
+/// A CIS whose DEVICE tuple rates 250 ns and, when given, a DEVICE_OC tuple
+/// (its condition bytes, then the device ID and speed bytes) after it.
+fn cis_rated(oc: Option<&[u8]>) -> Vec<u8> {
+    let mut tuples: Vec<Vec<u8>> = vec![vec![0x01, 0x03, 0xD9, 0x01, 0xFF]];
+    if let Some(body) = oc {
+        let mut t = vec![0x1C, body.len() as u8];
+        t.extend_from_slice(body);
+        tuples.push(t);
+    }
+    tuples.push(vec![0x21, 0x02, 0x04, 0x01]);
+    tuples.push(vec![0x1A, 0x05, 0x01, 0x03, 0x00, 0x02, 0x0F]);
+    tuples.push(vec![0xFF]);
+    let mut cis = vec![0u8; 0x200];
+    let mut at = 0;
+    for b in tuples.iter().flatten() {
+        cis[at] = *b;
+        at += 2;
+    }
+    cis
+}
+
+/// The owner's card's 3.3 V rating: 80 ns (its CIS read on the X51v,
+/// storage-speed.md A1).
+const OC_80NS: &[u8] = &[0x02, 0xDF, 0x79, 0x01, 0xFF];
+
+fn rated_card(oc: Option<&[u8]>) -> (Rc<RefCell<Card>>, CfCard<Attr, Common>) {
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().cis = cis_rated(oc);
+    let cf = init(&c, attr, common).ok().unwrap();
+    (c, cf)
+}
+
+/// Every sector the card holds, read through the driver, matches the disk.
+fn reads_right(c: &Rc<RefCell<Card>>, cf: &mut CfCard<Attr, Common>) {
+    let mut buf = vec![0u8; 64 * SECTOR];
+    for lba in (0..SECTORS).step_by(64) {
+        cf.read_blocks(lba, &mut buf).unwrap();
+        let o = lba as usize * SECTOR;
+        assert!(
+            buf == c.borrow().disk[o..o + buf.len()],
+            "sectors at {lba} misread"
+        );
+    }
+}
+
+#[test]
+fn the_cis_rating_prefers_the_3v3_tuple() {
+    assert_eq!(rated_card(None).1.rated_ns(), Some(250));
+    assert_eq!(rated_card(Some(OC_80NS)).1.rated_ns(), Some(80));
+    // Two condition bytes (bit 7: another follows), then the speed.
+    let two = [0x82, 0x02, 0xDF, 0x79];
+    assert_eq!(rated_card(Some(&two)).1.rated_ns(), Some(80));
+    // A 3.3 V tuple with no speed leaves the 5 V one.
+    assert_eq!(rated_card(Some(&[0x02, 0xD0])).1.rated_ns(), Some(250));
+    // No speed tuple at all: nothing to tune to, and nothing written.
+    let (c, attr, common) = card_with_data();
+    c.borrow_mut().cis = cis_for(0x04);
+    c.borrow_mut().cis[0] = 0x00; // the DEVICE tuple's code turned to NULL
+    c.borrow_mut().cis[2] = 0x00;
+    let mut cf = init(&c, attr, common).ok().unwrap();
+    assert_eq!(cf.rated_ns(), None);
+    let mut s = socket(&c);
+    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
+    assert!(s.writes.is_empty());
+    // An adopted card has no CIS read.
+    let (_, attr, common) = card_with_data();
+    assert_eq!(CfCard::adopt(attr, common, SECTORS).rated_ns(), None);
+}
+
+/// The owner's card: its own 80 ns timing (29 cycles, 1.87x Windows
+/// Mobile's 54), the register's other bits kept, the data the same.
+#[test]
+fn a_card_is_tuned_to_its_rating_when_it_reads_the_same() {
+    let (c, mut cf) = rated_card(Some(OC_80NS));
+    let was = c.borrow().mcmem;
+    let mut s = socket(&c);
+    let now = 0xA5A0_0000 | timing::Timing::from_mcmem(0x0001_0282).mcmem();
+    assert_eq!(timing::Timing::from_mcmem(now).cycle_cycles(), 29);
+    assert_eq!(
+        cf.tune(&mut s),
+        Tuned::Applied {
+            was,
+            now,
+            rated_ns: 80,
+            clamped: false
+        }
+    );
+    assert_eq!(s.writes, [now]);
+    reads_right(&c, &mut cf);
+    // Tuned again: already there, nothing written.
+    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
+    assert_eq!(s.writes, [now]);
+}
+
+/// A card slower than the socket can wait for gets the socket's slowest.
+#[test]
+fn a_card_slower_than_the_socket_gets_its_slowest() {
+    let (c, mut cf) = rated_card(Some(&[0x02, 0xD7, 0x0B])); // 1.0 us
+    let mut s = socket(&c);
+    let Tuned::Applied { now, clamped, .. } = cf.tune(&mut s) else {
+        panic!("not applied");
+    };
+    assert!(clamped);
+    assert_eq!(now & 0xF_FFFF, timing::Timing::SLOWEST.mcmem());
+    assert_eq!(now >> 20, 0xA5A);
+}
+
+/// A card that misreads at its rated timing: the old timing is put back
+/// and the card reads right at it.
+#[test]
+fn a_timing_the_card_misreads_is_refused_and_the_old_one_put_back() {
+    let (c, mut cf) = rated_card(Some(OC_80NS));
+    let was = c.borrow().mcmem;
+    c.borrow_mut().too_fast_below = 40;
+    let mut s = socket(&c);
+    let Tuned::Refused {
+        was: kept,
+        tried,
+        card_ok,
+        ..
+    } = cf.tune(&mut s)
+    else {
+        panic!("not refused");
+    };
+    assert_eq!((kept, card_ok), (was, true));
+    assert_eq!(s.writes, [tried, was]);
+    assert_eq!(c.borrow().mcmem, was);
+    assert!(!cf.is_dead());
+    reads_right(&c, &mut cf);
+}
+
+/// A card that stops answering at its rated timing (a wait runs out, which
+/// marks it dead) answers again at the old one: it isn't left dead.
+#[test]
+fn a_card_that_hangs_at_the_new_timing_is_given_its_old_one_back() {
+    let (c, mut cf) = rated_card(Some(OC_80NS));
+    let was = c.borrow().mcmem;
+    c.borrow_mut().too_fast_below = 40;
+    c.borrow_mut().too_fast_hangs = true;
+    let mut s = socket(&c);
+    assert!(matches!(
+        cf.tune(&mut s),
+        Tuned::Refused { card_ok: true, .. }
+    ));
+    assert_eq!(c.borrow().mcmem, was);
+    assert!(!cf.is_dead());
+    reads_right(&c, &mut cf);
+}
+
+/// A card that dies during the check: the old timing back, the card dead
+/// (one timeout, then left for the loader to take anew).
+#[test]
+fn a_card_that_dies_during_the_check_is_left_dead_at_the_old_timing() {
+    let (c, mut cf) = rated_card(Some(OC_80NS));
+    let was = c.borrow().mcmem;
+    let mut s = socket(&c);
+    s.kills = true;
+    assert!(matches!(
+        cf.tune(&mut s),
+        Tuned::Refused { card_ok: false, .. }
+    ));
+    assert_eq!(c.borrow().mcmem, was);
+    assert!(cf.is_dead());
+    // A dead card isn't tuned again.
+    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
+}
+
+/// A card that can't be read at the timing it has is never retimed.
+#[test]
+fn a_card_unreadable_before_is_not_retimed() {
+    let (c, mut cf) = rated_card(Some(OC_80NS));
+    c.borrow_mut().never_ready = true;
+    let mut s = socket(&c);
+    assert!(matches!(cf.tune(&mut s), Tuned::Kept(_)));
+    assert!(s.writes.is_empty());
 }

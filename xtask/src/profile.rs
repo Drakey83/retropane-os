@@ -224,10 +224,7 @@ fn image_with(
     let out = root.join("target/load");
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let plain = out.join("rp-screen-measure.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-screen-measure"),
-        &plain,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-screen-measure"), &plain)?;
     let mut bin = std::fs::read(&plain).map_err(|e| format!("{}: {e}", plain.display()))?;
     let at = find_room(&bin)?;
     encode(steps, tables, LEAD_MS, &mut bin[at..at + PROGRAM_BYTES])

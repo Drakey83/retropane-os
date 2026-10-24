@@ -621,9 +621,7 @@ fn image_frame(root: &Path, what: &str) -> Result<(Vec<u8>, std::path::PathBuf, 
         let out = root.join("target/load");
         std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
         let bin = out.join(format!("{what}.bin"));
-        let elf = root
-            .join("target/armv5te-x51v-none-eabi/release")
-            .join(what);
+        let elf = crate::arm_release(root).join(what);
         if !elf.exists() {
             return Err(format!("no image `{what}` (looked for {})", elf.display()));
         }

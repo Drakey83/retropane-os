@@ -401,6 +401,14 @@ pub const BUDGETS: &[Budget] = &[
     // every run the loader starts (rp_hal_x51v::cardsink, quality audit C24:
     // each line onto the SD or CF card the loader set up, ~4.5 KiB of sector
     // writes and the sync); 26.3 KiB measured, + ~10%.
+    // Test image (reminder R8): the CPLD's bus timing, reads stepped and a
+    // watched backlight blink. 30.1 KiB measured (2026-10-24), + ~13%.
+    Budget {
+        image: "rp-cpldbus",
+        max_load: 34 * 1024,
+        max_zero: 20 * 1024,
+        device: OnDevice::Returns,
+    },
     Budget {
         image: "rp-cs3bus",
         // Ratcheted 29 -> 32 KiB on 2026-10-22 (test image): rp-image's
@@ -658,7 +666,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 96 -> 108 KiB on 2026-10-21 (test image): quality
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 98.1 KiB measured, +~10%.
-        max_load: 108 * 1024,
+        // Ratcheted 108 -> 120 KiB on 2026-10-24 (test image): C4-C5, the
+        // CF card's own timing and its margin (reminder R7); 111.8 KiB
+        // measured once the size check read the real build (arm_release).
+        max_load: 120 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

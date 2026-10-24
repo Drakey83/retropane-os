@@ -497,6 +497,26 @@ compared with Dell's timing: reading changes nothing); then writes with the
 owner watching, one step at a time, on a switch whose effect is visible and
 harmless (the backlight enable), Dell's timing put back after each.
 
+**Built 2026-10-24: `rp-cpldbus`** (`boot/cpldbus`). It refuses to start
+unless `MSC2` is Windows Mobile's `0x7FF47FFC`; only CS4's three timing
+fields change (`diag::set_cs4_vlio`, host-tested at its range edges), and
+`MSC2` goes back at the end and from the crash path. **Reads:** CPLD offsets
+`0x00`, `0x02`, `0x04`, `0x06`, `0x14`, `0x16` (the four non-zero status
+inputs and two zero neighbours, so a read landing on the wrong register
+shows) read 1,000 times each at Windows Mobile's timing (an offset that
+changes by itself isn't compared), then at each step: `RDF` 15 down to 3,
+`RDN` 15 down to 2, `RRR` 7 down to 0, one code at a time (106 memory
+clocks an access down to 9), each step's 10,000 reads timed; a field stops
+at its first wrong read (Windows Mobile's timing back, the CPLD read again
+there) and the next starts from the last clean step. **Writes**, only in
+the watched build (`RP_CPLDBUS_WRITES=1`): at Windows Mobile's timing (the
+control) and then at each step the reads proved clean (so the CPLD decodes
+its addresses right there), the backlight off for a second and on again,
+Windows Mobile's timing back and the backlight on again at it; the owner
+says which steps blinked. Every step is labelled on screen. Emulator:
+`emu-cpldbus` (all 32 read steps clean, `MSC2` put back; timing not
+modelled, so the device's answer is its own).
+
 ## Open questions
 
 1. The X51v's SDRAM chip markings (the owner can read them).

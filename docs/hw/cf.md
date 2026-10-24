@@ -191,6 +191,14 @@ checked every loop pass, so every way of letting go is covered). Power
 Windows Mobile left on in an empty socket is left alone.
 `cf log` shows it as `power off`.
 
+**The card's own timing (2026-10-24, the owner's ruling A, reminder R7):**
+`CfCard::tune` sets the socket's common-memory timing (`MCMEM1`) from the
+card's CIS rating with a 1.5x margin on the CF specification's minimums,
+kept only if the card reads the same at it (docs/research/storage-speed.md
+"The owner's decision"). Built and emulator-checked; not yet run on the
+X51v, and the loader doesn't call it yet (it will once `rp-storfast` C4-C5
+prove it on the owner's cards).
+
 Not yet: the card's interrupt, I/O-mode cards (Wi-Fi, modem, Bluetooth
 CF cards).
 

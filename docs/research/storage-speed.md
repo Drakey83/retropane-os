@@ -448,8 +448,29 @@ slow CF cards used with this."** Each card runs at its own rated speed, so
 A works both ways: a fast card runs faster than Windows Mobile's one table,
 and a card rated slower than that table (the CF standard's slowest memory
 mode is a 250 ns cycle; old cards and Microdrives sit there) gets a slower,
-safe timing that Windows Mobile never gave it. Being built; proven only by
-a device run on the owner's cards.
+safe timing that Windows Mobile never gave it. Proven only by a device run
+on the owner's cards.
+
+**Built 2026-10-24.** `drivers/cf/src/timing.rs` turns the card's CIS rating
+into the socket's fastest timing meeting the CF specification's minimums
+with a 1.5x margin (`for_card`; the owner's 80 ns card: 29 memory clocks a
+cycle against Windows Mobile's 54, 1.87x; a card rated above ~630 ns gets
+the socket's slowest, the longest strobe it has). `CfCard::tune` reads the
+rating at attach (`CISTPL_DEVICE_OC`, the 3.3 V tuple, before
+`CISTPL_DEVICE`), hashes IDENTIFY and the first, middle and last sectors at
+the timing it has, sets the card's timing, and keeps it only if both
+re-reads hash the same; otherwise the old timing goes back and the card is
+read again there (a card that ran out a wait at the new timing isn't left
+dead if it answers at the old one). Host tests: a card that misreads or
+hangs when too fast, one that dies mid-check, one unreadable before, the
+clamp, the register's other bits kept. The device test is `rp-storfast`
+C4-C5 (reads only): each read path at the card's timing, three passes, every
+sector against the port's at Windows Mobile's, the speed before and after;
+then, for the record and never kept, each field shortened a code at a time
+to the first misread: the card's real margin against the 1.5x one. On the
+emulator (a 150 ns card, timing not modelled) everything reads right and
+Windows Mobile's `MCMEM1` comes back. The loader tunes each card at attach
+once the device run proves it.
 
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:

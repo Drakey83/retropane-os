@@ -1,0 +1,20 @@
+[package]
+name = "rp-cpldbus"
+description = "Test image: steps the board CPLD's chip-select timing (MSC2, CS4) from Windows Mobile's slowest setting toward the PXA's VLIO minimum, reading the CPLD's status registers at each step against Windows Mobile's timing (unattended); a watched build also blinks the backlight at each clean step; Windows Mobile's value put back at the end and by the crash path (reminder R8)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+rp-hal-pxa27x = { path = "../../hal/pxa27x" }
+
+[target.'cfg(target_os = "none")'.dependencies]
+rp-image = { path = "../../boot/image" }
+rp-hal-x51v = { path = "../../hal/x51v" }
+rp-drv-cpld = { path = "../../drivers/cpld" }
+rp-drv-mbx-display = { path = "../../drivers/mbx-display" }
+
+[lints]
+workspace = true

@@ -125,8 +125,8 @@ In order (the gate's own steps; the backlog runs alongside, top first):
       | 6 | Zeroing by cache-line allocate (hung once) | never isolated | the combined run's last step, one row a step, the owner nearby |
       | 7 | The CPU's overclock past 624 MHz (C2) | never started | its own watched run, with the self-test |
       | +a | The internal flash's timing (`MSC0`: where RetroPane is installed) | test designed 2026-10-24 (memory-timing.md section 9) | build it, then a watched run |
-      | +b | CF socket timings (storage-speed.md: ~2x possible) | **ruled A by the owner 2026-10-24**: each card at its own rated speed, slow cards slower and safer than WM's table | build it, prove it on the owner's cards |
-      | +c | The CPLD's bus timing (buttons, power) | **the owner, 2026-10-24: test and verify** (every gain counts): reads unattended, writes watched (memory-timing.md section 9) | build the test |
+      | +b | CF socket timings (storage-speed.md: ~2x possible) | **ruled A by the owner 2026-10-24**: each card at its own rated speed, slow cards slower and safer than WM's table; **built 2026-10-24** (`CfCard::tune`, `rp-storfast` C4-C5, emulator-checked) | the device run, then the loader tunes at attach |
+      | +c | The CPLD's bus timing (buttons, power) | **the owner, 2026-10-24: test and verify** (every gain counts): reads unattended, writes watched (memory-timing.md section 9); **built 2026-10-24** (`rp-cpldbus`, emulator-checked; the watched writes build) | the two device runs |
       | +d | One checklist of every Dell, Windows Mobile and Linux value the code uses (2026-10-20 plan, step 3) | first sweep 2026-10-24: docs/research/inherited-values.md (11 copied and untested, A1-A11) | the tags in the code, then each row's test |
       | +e | Dell's GLES register writes traced (`tools/mmiotrace`, `rp-wmprobe`'s missing module) | "still to add" since 2026-10-23 | after the combined run |
       | +f | Windows Mobile baselines: DoomGLES fps and boot time | "still to do" since 2026-10-13 | a frame counter run by the owner, with Q3CE's settings tests |

@@ -107,7 +107,7 @@ pub fn build(root: &Path) -> Result<(), String> {
     let kit = root.join("target").join("sdkit");
     std::fs::create_dir_all(&kit).map_err(|e| format!("{}: {e}", kit.display()))?;
 
-    let elf = root.join("target/armv5te-x51v-none-eabi/release/rp-probe");
+    let elf = crate::arm_release(root).join("rp-probe");
     let bin = kit.join("retropane.bin");
     crate::emu::run(
         Command::new(objcopy())
@@ -131,10 +131,7 @@ pub fn build(root: &Path) -> Result<(), String> {
         crate::emu::run(
             Command::new(objcopy())
                 .args(["-O", "binary"])
-                .arg(
-                    root.join("target/armv5te-x51v-none-eabi/release")
-                        .join(image),
-                )
+                .arg(crate::arm_release(root).join(image))
                 .arg(out.join("retropane.bin")),
         )?;
     }

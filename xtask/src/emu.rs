@@ -452,12 +452,7 @@ fn emu_dir(root: &Path) -> Result<PathBuf, String> {
 /// every check stands alone, never relying on a file an earlier check left.
 fn raw_image(root: &Path, image: &str) -> Result<PathBuf, String> {
     let out = emu_dir(root)?.join(format!("{image}.bin"));
-    crate::sdkit::raw_binary(
-        &root
-            .join("target/armv5te-x51v-none-eabi/release")
-            .join(image),
-        &out,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join(image), &out)?;
     Ok(out)
 }
 
@@ -468,7 +463,7 @@ const SCREEN: (u32, u32) = (480, 640);
 /// screenshots the emulated display and verifies the test pattern, then
 /// presses buttons and checks the image reports them.
 pub fn boot_hello(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-hello");
+    let image = crate::arm_release(root).join("rp-hello");
     let shot = scratch(root, "hello-screen.ppm")?;
     let sd = write_sd_test_image(&scratch(root, "sd-test.img")?)?;
     let output = boot(
@@ -576,7 +571,7 @@ const KERNEL_STEPS: &[Step] = &[
 /// Boots the kernel image: the VM layer live on the CPU, with real page
 /// faults resolved by demand paging and copy-on-write.
 pub fn boot_kernel(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-kernel");
+    let image = crate::arm_release(root).join("rp-kernel");
     let output = boot(
         root,
         &Boot {
@@ -631,7 +626,7 @@ const THREADS_EXPECT: &[&str] = &[
 /// Boots the threads image: scheduler, context switch, events, sleeping and
 /// the tickless idle alarm, live on the CPU.
 pub fn boot_threads(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-threads");
+    let image = crate::arm_release(root).join("rp-threads");
     let output = boot(
         root,
         &Boot {
@@ -674,7 +669,7 @@ const QUANTUM_MARKER: &str = "RETROPANE-QUANTUM-OK";
 /// timing isn't the device's, so only that each ran is checked; the numbers
 /// are printed (the device's come from `cargo xtask load rp-quantum`).
 pub fn boot_quantum(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-quantum");
+    let image = crate::arm_release(root).join("rp-quantum");
     let output = boot(
         root,
         &Boot {
@@ -716,7 +711,7 @@ const LIGHT_MARKER: &str = "RETROPANE-LIGHT-OK";
 
 /// Boots the first-light image: every startup step must pass.
 pub fn boot_light(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-light");
+    let image = crate::arm_release(root).join("rp-light");
     let output = boot(
         root,
         &Boot {
@@ -788,7 +783,7 @@ fn check_boot(output: &str, names: &[&str]) -> Result<(), String> {
 /// serial port, and checks that image runs: relocation, the protocol, the
 /// CRC check and the hand-off, end to end.
 pub fn boot_loader(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let light = dir.join("rp-light.bin");
@@ -839,7 +834,7 @@ pub fn boot_loader(root: &Path) -> Result<(), String> {
 /// shows no DMA left running (the loader stops its own) and the 2700G
 /// handed out with no fixed wait.
 pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -898,7 +893,7 @@ pub fn boot_loader_handover(root: &Path) -> Result<(), String> {
 /// emulator's slot is empty and its GPIO13 works unpowered, so this checks
 /// the image's run, not the device's answer: docs/hw/emulator.md.)
 pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -952,7 +947,7 @@ pub fn boot_loader_cfdetect(root: &Path) -> Result<(), String> {
 /// `scale_gamma`).
 pub fn boot_loader_nightlight(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::scanout::{WM_GAMMA, gamma, scale_gamma};
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -1060,7 +1055,7 @@ pub fn boot_loader_display_cal(root: &Path) -> Result<(), String> {
         CAPTION_H, Dials, H, PRESET_START, PRESETS, W, look_table, pixel_sat, table,
     };
     use rp_drv_mbx_display::scanout::{GAMMA_ENTRIES, WM_GAMMA, gamma};
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -1271,7 +1266,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
         CAPTION_H, H, PHOTOS, Page, START, W, YUV_BYTES, dial_table, page_pixel, shown, straight,
         unpack,
     };
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -1425,7 +1420,7 @@ fn looks_run(root: &Path, card: Option<&Path>) -> Result<(), String> {
 /// schedule is the same code path (its steps are host-tested).
 pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
     use rp_screen_measure::program::{PROGRAM_BYTES, Step, StepLight, encode};
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -1597,7 +1592,7 @@ pub fn boot_loader_screen_measure(root: &Path) -> Result<(), String> {
 /// the counted rate must come out within 1 Hz of 60.36 Hz, twice (at the
 /// start, then after D-pad centre); Home puts everything back.
 pub fn boot_loader_refresh(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -1735,7 +1730,7 @@ fn refresh_ladder_log(log: &str) -> Result<(), String> {
 /// panic must come back to the loader (no watchdog reset), reach the PC as
 /// a crash report, and be kept on the card as `crashlog.txt`.
 pub fn boot_loader_crash(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let crash = dir.join("rp-crash.bin");
@@ -2180,7 +2175,7 @@ pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
         eprintln!("    keep-fed: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -2235,7 +2230,7 @@ pub fn boot_loader_keeps_feeding(root: &Path) -> Result<(), String> {
 /// crash report saying so, with no reset (on the X51v a reset lands on
 /// Dell's factory-restore prompt). A 2 s limit keeps the test short.
 pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let hang = dir.join("rp-hang.bin");
@@ -2308,7 +2303,7 @@ pub fn boot_loader_run_limit(root: &Path) -> Result<(), String> {
 /// normal return: no run-limit crash, no reset. Only then may it go to the
 /// device.
 pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-picture.bin");
@@ -2421,7 +2416,7 @@ pub fn boot_loader_picture(root: &Path) -> Result<(), String> {
 /// is right is the owner's eye on the X51v.
 pub fn boot_loader_blend_scale(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::layers::{Layer, Scale, VideoFormat, VideoPlane, reg};
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -2525,7 +2520,7 @@ fn rp_blend_steps() -> [(BlendSrc, BlendOut); 9] {
 
 pub fn boot_loader_blend(root: &Path) -> Result<(), String> {
     use rp_drv_mbx_display::blendtest::{self, Stage};
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-blend.bin");
@@ -2654,7 +2649,7 @@ pub fn boot_loader_mbx(root: &Path) -> Result<(), String> {
         eprintln!("    mbx: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx.bin");
@@ -2922,7 +2917,7 @@ fn noise_timer_ways(log: &str) -> Result<(), String> {
 }
 
 pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -3095,7 +3090,7 @@ pub fn boot_loader_noise(root: &Path) -> Result<(), String> {
 /// disconnects on the device (its pull-up isn't modelled): this only proves
 /// the image is safe to send.
 pub fn boot_loader_unplug(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -4352,7 +4347,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
         eprintln!("    mbx3d: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx3d.bin");
@@ -4526,7 +4521,7 @@ pub fn boot_loader_mbx3d(root: &Path) -> Result<(), String> {
 /// on what the fork models (docs/hw/emulator.md, "PXA270 clocks"): the
 /// log is shown for reading, and a fault, a panic or no verdict fail.
 pub fn boot_loader_clocks(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -4696,7 +4691,7 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
         eprintln!("    cs3bus: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-cs3bus.bin");
@@ -4745,6 +4740,71 @@ pub fn boot_loader_cs3bus(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The CPLD bus-timing test (rp-cpldbus, reminder R8): started by the
+/// loader, it must walk every read step to the PXA27x's VLIO minimum (the
+/// emulator's CPLD is never misread: timing isn't modelled), every step
+/// clean, and put Windows Mobile's `MSC2` back; with any other `MSC2` it
+/// refuses and changes nothing.
+pub fn boot_loader_cpldbus(root: &Path) -> Result<(), String> {
+    let release = crate::arm_release(root);
+    let dir = emu_dir(root)?;
+    let loader = dir.join("rp-loader.bin");
+    let bin = dir.join("rp-cpldbus.bin");
+    crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
+    crate::sdkit::raw_binary(&release.join("rp-cpldbus"), &bin)?;
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RPL OK sha256")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(600),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("cpldbus: never came back to the loader")?;
+    if crashed(log) || !log.contains("RETROPANE-CPLDBUS-DONE") {
+        return Err(format!("cpldbus: didn't finish cleanly:{log}"));
+    }
+    if log.contains("MSC2 not as expected: nothing changed") {
+        eprintln!(
+            "    cpldbus OK: the emulator's MSC2 isn't Windows Mobile's, and it refused to change anything"
+        );
+        return Ok(());
+    }
+    let steps = log
+        .lines()
+        .filter(|l| l.starts_with('A') && l.contains(" RRR ") && l.contains(" wrong of "))
+        .count();
+    if steps != 32 {
+        return Err(format!("cpldbus: {steps} read steps, not 32:{log}"));
+    }
+    for line in log.lines().filter(|l| l.contains(" wrong of ")) {
+        if !line.contains(", 0 wrong of ") {
+            return Err(format!("cpldbus: {line}"));
+        }
+    }
+    for want in [
+        "A done: the shortest clean RDF 3 RDN 2 RRR 0 (9 clocks against 106)",
+        "cpldbus done; MSC2 restored 7FF47FFC",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("cpldbus: the run log has no `{want}`:{log}"));
+        }
+    }
+    eprintln!("    cpldbus OK: all 32 read steps clean, MSC2 put back");
+    Ok(())
+}
+
 /// One `rp-gpubench` run for [`boot_loader_gpubench`]: its name, image,
 /// wanted log lines, whether they need the 3D model, and its key presses
 /// (guest ms before the first, between them, how many).
@@ -4772,7 +4832,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         eprintln!("    gpubench: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     crate::sdkit::raw_binary(&release.join("rp-loader"), &loader)?;
@@ -6440,7 +6500,7 @@ pub fn boot_loader_mbx3d_api(root: &Path) -> Result<(), String> {
         eprintln!("    mbx3d-api: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx3d-api.bin");
@@ -6525,7 +6585,7 @@ pub fn boot_loader_mved(root: &Path) -> Result<(), String> {
         eprintln!("    mved: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -6596,7 +6656,7 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
         eprintln!("    mbx-blend: skipped (this emulator release doesn't model the MBX 2D engine)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-mbx-blend.bin");
@@ -7325,7 +7385,7 @@ const TAP_GUEST_MS: u32 = 150;
 /// the touch-to-flush latencies in the run log.
 pub fn boot_loader_today(root: &Path) -> Result<(), String> {
     use rp_shell::Input;
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
     let bin = dir.join("rp-today.bin");
@@ -7928,7 +7988,7 @@ pub fn boot_usb_link(root: &Path) -> Result<(), String> {
         eprintln!("    usb link: skipped (this emulator has no USB controller model)");
         return Ok(());
     }
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-usb");
+    let image = crate::arm_release(root).join("rp-usb");
     let args = usb_args(0);
     let extra: Vec<&str> = args.iter().map(String::as_str).collect();
     let check = || -> Result<(), String> {
@@ -7977,7 +8037,7 @@ pub fn boot_loader_drive_alone(root: &Path) -> Result<(), String> {
 fn usb_images(root: &Path) -> Result<(), String> {
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     for image in ["rp-loader", "rp-light"] {
         crate::sdkit::raw_binary(&release.join(image), &dir.join(format!("{image}.bin")))?;
     }
@@ -8072,7 +8132,7 @@ pub fn boot_loader_trace(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     let dir = emu_dir(root)?;
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     crate::sdkit::raw_binary(&release.join("rp-loader"), &dir.join("rp-loader.bin"))?;
     let threads = dir.join("rp-threads.bin");
     crate::sdkit::raw_binary(&release.join("rp-threads"), &threads)?;
@@ -8188,10 +8248,7 @@ pub fn boot_loader_full_size(root: &Path) -> Result<(), String> {
     }
     let dir = emu_dir(root)?;
     let loader = dir.join("rp-loader.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
-        &loader,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
     let note: Vec<u8> = (0..20_000u32).map(|i| (i * 7 + 1) as u8).collect();
     let put = rp_loadproto::file_frame("full-size.txt", &note);
     for (label, gib, spc) in [("4 GB", 4u64, 8u32), ("32 GB", 32, 32)] {
@@ -8723,7 +8780,7 @@ fn drive_arg(root: &Path, interface: &str, path: &Path) -> Result<String, String
 /// cycles, SD reads of every size class by one DMA transfer, the DMA write
 /// soak exact, the test files removed.
 pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let loader = dir.join("rp-loader.bin");
@@ -8783,6 +8840,9 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
     let mut want = vec![
         "storfast-quick.txt found",
         "C3 3 attach cycles: all good",
+        "C4 tune: Applied",
+        "C5 shortest read right: ",
+        "C6 Windows Mobile's timing put back: MCMEM1 0x00020508",
         "KiB): all right, one transfer each",
         "S2 the speed writes read back: 0 blocks differ",
         "of the last writes read back, 0 blocks differ",
@@ -8805,12 +8865,12 @@ pub fn boot_loader_storfast(root: &Path) -> Result<(), String> {
             return Err(format!("storfast: {line}"));
         }
     }
-    for line in log
-        .lines()
-        .filter(|l| l.starts_with("S2 soak") || l.starts_with("C2 read"))
-    {
+    for line in log.lines().filter(|l| {
+        l.starts_with("S2 soak") || l.starts_with("C2 read") || l.starts_with("C4 own timing")
+    }) {
         let clean = line.contains(" 0 write errors, 0 read errors, 0 blocks differ")
-            || (line.contains("0 commands failed, 0 sectors differ"));
+            || line.contains("0 commands failed, 0 sectors differ")
+            || line.ends_with(", 0 failed, 0 sectors differ");
         if !clean {
             return Err(format!("storfast: {line}"));
         }
@@ -8826,7 +8886,7 @@ pub fn boot_loader_cf_alone(root: &Path) -> Result<(), String> {
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &crate::arm_release(root).join("rp-loader"),
         &dir.join("rp-loader.bin"),
     )?;
     boot_loader_cf(root)
@@ -11124,7 +11184,7 @@ pub fn boot_loader_stale_view_alone(root: &Path) -> Result<(), String> {
     let dir = emu_dir(root)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
+        &crate::arm_release(root).join("rp-loader"),
         &dir.join("rp-loader.bin"),
     )?;
     boot_loader_stale_view(root)
@@ -11145,7 +11205,7 @@ pub fn boot_loader_stale_view(root: &Path) -> Result<(), String> {
         eprintln!("    stale view: skipped (this emulator's USB model has no mass storage bridge)");
         return Ok(());
     }
-    let release = root.join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(root);
     let dir = emu_dir(root)?;
     let crash = dir.join("rp-crash.bin");
     crate::sdkit::raw_binary(&release.join("rp-crash"), &crash)?;
@@ -11815,7 +11875,7 @@ const USB_MARKER: &str = "RETROPANE-USB-READY";
 /// so this only proves the image starts, enables the controller and connects
 /// without faulting; the driver itself is tested against a simulated host.
 pub fn boot_usb(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-usb");
+    let image = crate::arm_release(root).join("rp-usb");
     let output = boot(
         root,
         &Boot {
@@ -11894,7 +11954,7 @@ const PROBE_EMULATOR_LIMITS: &[(&str, &str)] = &[
 /// Boots the probe image (the real-device report), then checks every page
 /// line's checksum, that the report is complete, and that it's on screen.
 pub fn boot_probe(root: &Path) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-probe");
+    let image = crate::arm_release(root).join("rp-probe");
     let shot = scratch(root, "probe-screen.ppm")?;
     let bin: Vec<u8> = (0..1500u32).map(|i| i as u8).collect();
     let exfat = rp_fat::exfat::format::build(
@@ -11968,10 +12028,7 @@ pub fn boot_probe(root: &Path) -> Result<(), String> {
 fn probe_mini(root: &Path) -> Result<(), String> {
     let image = variant_image(root, "rp-probe", ("RP_PROBE_MINI", "1"))?;
     let loader = emu_dir(root)?.join("rp-loader.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
-        &loader,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let output = boot(
         root,
@@ -12032,10 +12089,7 @@ fn probe_mini(root: &Path) -> Result<(), String> {
 fn probe_wmhop(root: &Path) -> Result<(), String> {
     let image = variant_image(root, "rp-probe", ("RP_PROBE_WMHOP", "1"))?;
     let loader = emu_dir(root)?.join("rp-loader.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
-        &loader,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     let output = boot(
         root,
@@ -12112,10 +12166,7 @@ fn probe_wmhop(root: &Path) -> Result<(), String> {
 fn probe_pages(root: &Path) -> Result<(), String> {
     let image = variant_image(root, "rp-probe", ("RP_PROBE_PAGES", "1"))?;
     let loader = emu_dir(root)?.join("rp-loader.bin");
-    crate::sdkit::raw_binary(
-        &root.join("target/armv5te-x51v-none-eabi/release/rp-loader"),
-        &loader,
-    )?;
+    crate::sdkit::raw_binary(&crate::arm_release(root).join("rp-loader"), &loader)?;
     let payload = std::fs::read(&image).map_err(|e| format!("{}: {e}", image.display()))?;
     // Under the loader, as on the device (`cargo xtask load`).
     let output = boot(
@@ -12332,7 +12383,7 @@ pub fn parse_bench(output: &str) -> Vec<BenchResult> {
 /// `cargo xtask bench [--update]`: deterministic micro-benchmarks in the
 /// emulator, compared with `bench/baseline-emulator.json`.
 pub fn bench(root: &Path, update: bool) -> Result<(), String> {
-    let image = root.join("target/armv5te-x51v-none-eabi/release/rp-bench");
+    let image = crate::arm_release(root).join("rp-bench");
     let sd = write_sd_test_image(&scratch(root, "sd-bench.img")?)?;
     let output = boot(
         root,

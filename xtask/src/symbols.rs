@@ -130,8 +130,7 @@ fn elf_for(root: &Path, image: &str) -> PathBuf {
     if p.is_file() {
         p.to_path_buf()
     } else {
-        root.join("target/armv5te-x51v-none-eabi/release")
-            .join(image)
+        crate::arm_release(root).join(image)
     }
 }
 

@@ -6,6 +6,14 @@
 //!   picked; 4 MiB from LBA 0 by the 16-bit port, 32-bit window loads and
 //!   DMA from the window, each sector compared with the port's; 20 power
 //!   and reset cycles, each attach timed and 64 sectors compared.
+//! - **C4-C5, the card's own timing** (reminder R7, the owner's ruling A;
+//!   reads only): `CfCard::tune` to the card's CIS rating (the CF
+//!   specification's minimums with a 1.5x margin), each read path's speed
+//!   and every sector against the port's at Windows Mobile's timing; then,
+//!   for the record and never kept, the timing stepped shorter one field at
+//!   a time, 64 sectors three times a step, to the first that misreads (the
+//!   card's real margin). Windows Mobile's timing is put back at the end
+//!   and by the crash path.
 //! - **S1, SD reads by size** (item 1): every size class 2 blocks to 4 MiB
 //!   by DMA, each one DMA transfer and every byte checked; 1 MiB and 4 MiB
 //!   commands timed by DMA and by the FIFO.
@@ -36,7 +44,8 @@ pub const MARKER: &str = "RETROPANE-STORFAST";
 mod image {
     use core::fmt::Write;
 
-    use rp_drv_cf::{CfCard, ReadPath};
+    use rp_drv_cf::timing::Timing;
+    use rp_drv_cf::{CfCard, ReadPath, SocketTiming, Tuned};
     use rp_drv_cpld::{Cpld, Delay, handover};
     use rp_drv_mbx_display::Display;
     use rp_drv_mbx_display::console::Console;
@@ -45,6 +54,7 @@ mod image {
     use rp_drv_sdcard::{BLOCK, SdCard, mbr_partitions};
     use rp_fat::Volume;
     use rp_hal_api::BlockDevice;
+    use rp_hal_pxa27x::clocks;
     use rp_hal_pxa27x::{Mmio, dma::Dma, dma_map, rt};
     use rp_hal_x51v::MBX_VRAM_SIZE;
     use rp_hal_x51v::devices::{self, RunLog};
@@ -298,6 +308,7 @@ mod image {
             "C0 DMA channel 2 {}",
             if dma.is_some() { "taken" } else { "MISSING" }
         );
+        rp_image::on_crash(put_back_cf_timing);
         let (mut cf, t) = match attach(gpio, cpld, attr, common, dma) {
             Ok(c) => c,
             Err(_) => return,
@@ -391,6 +402,176 @@ mod image {
                 "SOME FAILED"
             },
             total / cycles
+        );
+        own_timing(&mut cf, buf, reference);
+        put_back_cf_timing();
+        log!(
+            "C6 Windows Mobile's timing put back: MCMEM1 {:#010x}",
+            devices::cf_mem_timing().unwrap_or(0)
+        );
+    }
+
+    /// The image's put-back step: the socket at Windows Mobile's timing.
+    fn put_back_cf_timing() {
+        let _ = devices::set_cf_mem_timing(devices::CF_MEM_TIMING_WM);
+    }
+
+    /// The socket's timing register for `CfCard::tune`.
+    struct Socket;
+
+    impl SocketTiming for Socket {
+        fn read(&mut self) -> u32 {
+            devices::cf_mem_timing().unwrap_or(devices::CF_MEM_TIMING_WM)
+        }
+        fn write(&mut self, value: u32) {
+            let _ = devices::set_cf_mem_timing(value);
+        }
+        fn clk_ps(&mut self) -> u32 {
+            // Rounded down: a cycle taken as shorter only lengthens the
+            // timing computed from it.
+            1_000_000_000 / clocks::read().point().mem_khz().max(1)
+        }
+    }
+
+    /// Reads `buf.len()` bytes from LBA 0 by the card's path: the time,
+    /// failed commands, and sectors unlike `reference`.
+    fn read_all(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) -> (u32, u32, usize) {
+        buf.fill(0xA5);
+        let t0 = rt::ticks();
+        let mut failed = 0;
+        for (i, run) in buf.chunks_mut(64 * 1024).enumerate() {
+            rt::check_in();
+            if cf.read_blocks((i * 128) as u32, run).is_err() {
+                failed += 1;
+            }
+        }
+        let t = rt::ticks().wrapping_sub(t0);
+        let bad = buf
+            .as_chunks::<512>()
+            .0
+            .iter()
+            .zip(reference.as_chunks::<512>().0)
+            .filter(|(a, b)| a != b)
+            .count();
+        (t, failed, bad)
+    }
+
+    /// C4-C5: the card's own timing, then its real margin (reads only).
+    fn own_timing(cf: &mut Cf, buf: &mut [u8], reference: &[u8]) {
+        let mut socket = Socket;
+        let was = socket.read();
+        let clk_ps = socket.clk_ps();
+        log!(
+            "C4 rated {} ns (CIS); memory clock {} ps; MCMEM1 {was:#010x} ({} cycles)",
+            cf.rated_ns().unwrap_or(0),
+            clk_ps,
+            Timing::from_mcmem(was).cycle_cycles()
+        );
+        let proven = cf.read_path();
+        let (t, failed, bad) = read_all(cf, buf, reference);
+        let before = kib_s(buf.len(), t);
+        log!(
+            "C4 before, by {}: {before} KiB/s, {failed} failed, {bad} sectors differ",
+            proven.name()
+        );
+        let now = match cf.tune(&mut socket) {
+            Tuned::Applied {
+                was,
+                now,
+                rated_ns,
+                clamped,
+            } => {
+                log!(
+                    "C4 tune: Applied, {was:#010x} -> {now:#010x} for {rated_ns} ns (clamped {clamped})"
+                );
+                now
+            }
+            Tuned::Refused {
+                was,
+                tried,
+                rated_ns,
+                card_ok,
+            } => {
+                log!(
+                    "C4 tune: Refused, {tried:#010x} read differently for {rated_ns} ns; {was:#010x} kept, card reads as before {card_ok}"
+                );
+                return;
+            }
+            Tuned::Kept(why) => {
+                log!("C4 tune: Kept ({why})");
+                return;
+            }
+        };
+        log!("C4 now {} cycles", Timing::from_mcmem(now).cycle_cycles());
+        for path in [ReadPath::Port16, ReadPath::Window32, ReadPath::Dma] {
+            if !cf.set_read_path(path) {
+                log!("C4 {}: not proven on this card, skipped", path.name());
+                continue;
+            }
+            for pass in 1..=3 {
+                let (t, failed, bad) = read_all(cf, buf, reference);
+                log!(
+                    "C4 own timing, {} pass {pass}: {} KiB/s ({before} before), {failed} failed, {bad} sectors differ",
+                    path.name(),
+                    kib_s(buf.len(), t)
+                );
+            }
+        }
+        let _ = cf.set_read_path(proven);
+        margin(cf, &mut socket, now, buf, reference);
+        socket.write(now);
+    }
+
+    /// C5: from the tuned timing, each field shortened a step at a time
+    /// (strobe, then hold, then set-up), 64 sectors read three times a
+    /// step, to the first that misreads or fails: the card's real margin,
+    /// for the record (never kept: the ruling keeps the 1.5x margin).
+    fn margin(cf: &mut Cf, socket: &mut Socket, tuned: u32, buf: &mut [u8], reference: &[u8]) {
+        let high = tuned & !0xF_FFFF;
+        let mut t = Timing::from_mcmem(tuned);
+        let run = 64 * 512;
+        let fields: [fn(&mut Timing) -> bool; 3] = [
+            |t| t.asst.checked_sub(1).map(|v| t.asst = v).is_some(),
+            |t| t.hold.checked_sub(1).map(|v| t.hold = v).is_some(),
+            |t| t.set.checked_sub(1).map(|v| t.set = v).is_some(),
+        ];
+        let mut last_good = t;
+        'fields: for shorten in fields {
+            while shorten(&mut t) {
+                socket.write(high | t.mcmem());
+                let mut bad = 0;
+                let mut failed = 0;
+                for _ in 0..3 {
+                    let (_, f, b) = read_all(cf, &mut buf[..run], &reference[..run]);
+                    failed += f;
+                    bad += b;
+                }
+                let ns = t.cycle_cycles() * socket.clk_ps() / 1000;
+                log!(
+                    "C5 set {} strobe {} hold {}: {} cycles ({ns} ns), {failed} failed, {bad} sectors differ",
+                    t.set,
+                    t.asst,
+                    t.hold,
+                    t.cycle_cycles()
+                );
+                if failed + bad as u32 > 0 || cf.is_dead() {
+                    break 'fields;
+                }
+                last_good = t;
+            }
+            t = last_good;
+        }
+        socket.write(tuned);
+        if cf.is_dead() {
+            log!(
+                "C5 the card stopped answering at the step above (the loader takes it anew on return)"
+            );
+        }
+        log!(
+            "C5 shortest read right: {} cycles ({} ns) against the tuned {}",
+            last_good.cycle_cycles(),
+            last_good.cycle_cycles() * socket.clk_ps() / 1000,
+            Timing::from_mcmem(tuned).cycle_cycles()
         );
     }
 

@@ -203,6 +203,26 @@ pub const fn cs2_half(msc1: u32, half: u32) -> Option<u32> {
     Some(msc1 & !0xFFFF | half)
 }
 
+/// Physical address of `MSC2` (static chip selects 4 and 5; CS4 is the
+/// board's CPLD on the X51v).
+pub const MSC2: u32 = 0x4800_0010;
+
+/// `MSC2` with chip select 4's VLIO timing replaced (its low half: `rdf`
+/// bits 7-4, `rdn` bits 11-8, `rrr` bits 14-12), for the CPLD bus test
+/// (reminder R8, docs/research/memory-timing.md section 9). Codes as
+/// [`cs3_vlio`]: `rdf` 3-15, `rdn` 2-15 (12-15 table-encoded, longer),
+/// `rrr` 0-7. CS5's half, CS4's type, width and buffering are kept; `None`
+/// unless CS4 is a 16-bit VLIO device (`RT4` VLIO, `RBW4` 16 bits, as
+/// Windows Mobile's `0x7FFC`) and the values are in range.
+#[must_use]
+pub const fn cs4_vlio(msc2: u32, rdf: u32, rdn: u32, rrr: u32) -> Option<u32> {
+    let vlio_16 = msc2 & 0xF == 0b1100;
+    if !vlio_16 || rdf < 3 || rdf > 15 || rdn < 2 || rdn > 15 || rrr > 7 {
+        return None;
+    }
+    Some(msc2 & !0x7FF0 | rdf << 4 | rdn << 8 | rrr << 12)
+}
+
 /// A VLIO `RDF` or `RDN` code's clocks (codes 12-15 are a table).
 #[must_use]
 pub const fn vlio_clocks(code: u32) -> u32 {
@@ -358,6 +378,29 @@ mod target {
         // mapped as device memory.
         unsafe { (crate::devmap::va(super::MSC1 as usize) as *mut u32).write_volatile(new) };
         Some(msc1())
+    }
+
+    /// The live `MSC2`.
+    #[must_use]
+    pub fn msc2() -> u32 {
+        // SAFETY: MSC2 is a memory-controller configuration register with no
+        // read side effects, mapped as device memory under either map.
+        unsafe { (crate::devmap::va(super::MSC2 as usize) as *const u32).read_volatile() }
+    }
+
+    /// Sets CS4's VLIO timing ([`super::cs4_vlio`]) and returns `MSC2` as
+    /// read back, or `None` (nothing written) out of range. The write
+    /// buffer is drained first, so every CPLD write already issued
+    /// completes under the old timing; the read-back latches the new value
+    /// before the next access. The caller keeps the CPLD otherwise idle.
+    pub fn set_cs4_vlio(rdf: u32, rdn: u32, rrr: u32) -> Option<u32> {
+        let new = super::cs4_vlio(msc2(), rdf, rdn, rrr)?;
+        crate::cpu::drain_write_buffer();
+        // SAFETY: only CS4's RDF/RDN/RRR fields change, within the PXA27x's
+        // legal VLIO range (checked above); the register is the memory
+        // controller's, mapped as device memory.
+        unsafe { (crate::devmap::va(super::MSC2 as usize) as *mut u32).write_volatile(new) };
+        Some(msc2())
     }
 
     static mut SRAM_TAKEN: bool = false;
@@ -639,8 +682,9 @@ mod target {
 
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 pub use target::{
-    coprocessors, move_l1_table, move_l1_table_at, msc1, set_cs2_half, set_cs3_timing,
-    set_cs3_vlio, set_section_memory, snapshot, take_sram, take_sram_words, with_window,
+    coprocessors, move_l1_table, move_l1_table_at, msc1, msc2, set_cs2_half, set_cs3_timing,
+    set_cs3_vlio, set_cs4_vlio, set_section_memory, snapshot, take_sram, take_sram_words,
+    with_window,
 };
 
 #[cfg(test)]
@@ -717,6 +761,26 @@ mod tests {
         // CS3 not a 32-bit VLIO device (SRAM type, or 16 bits): refused.
         assert_eq!(cs3_timing(0x2481_2481, 8, 4), None);
         assert_eq!(cs3_timing(0x248C_2481, 8, 4), None);
+    }
+
+    #[test]
+    fn cs4_vlio_changes_only_chip_select_4s_timing() {
+        // Windows Mobile's MSC2 (probe 2026-10-11): CS4 0x7FFC, the slowest.
+        let wm = 0x7FF4_7FFC;
+        assert_eq!(cs4_vlio(wm, 15, 15, 7), Some(wm));
+        assert_eq!(cs4_vlio(wm, 3, 2, 0), Some(0x7FF4_023C));
+        assert_eq!(cs4_vlio(wm, 11, 15, 7), Some(0x7FF4_7FBC));
+        // Range edges, both sides.
+        assert_eq!(cs4_vlio(wm, 2, 15, 7), None);
+        assert_eq!(cs4_vlio(wm, 16, 15, 7), None);
+        assert_eq!(cs4_vlio(wm, 15, 1, 7), None);
+        assert_eq!(cs4_vlio(wm, 15, 16, 7), None);
+        assert_eq!(cs4_vlio(wm, 15, 15, 8), None);
+        // Not a 16-bit VLIO chip select: nothing changes.
+        assert_eq!(cs4_vlio(0x7FF4_7FF4, 15, 15, 7), None);
+        assert_eq!(cs4_vlio(0x7FF4_7FF8, 15, 15, 7), None);
+        // CS5's half and RBUFF4 kept.
+        assert_eq!(cs4_vlio(0x1234_FFFC, 3, 2, 0), Some(0x1234_823C));
     }
 
     #[test]

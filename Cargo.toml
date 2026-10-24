@@ -69,6 +69,7 @@ members = [
     "boot/picture",
     "boot/blend",
     "boot/cs3bus",
+    "boot/cpldbus",
     "boot/usb",
     "boot/reconnect",
     "boot/unplug",

@@ -170,6 +170,10 @@ const MECR: usize = 0x14;
 const MCMEM1: usize = 0x2C;
 const MCATT1: usize = 0x34;
 const MCIO1: usize = 0x3C;
+/// Windows Mobile's common-memory timing for the socket, what [`take_cf`]
+/// sets (`MCMEM1`; docs/research/storage-speed.md A1).
+// inherited: R7, Windows Mobile's MCMEM1 read by the probe (storage-speed.md A1)
+pub const CF_MEM_TIMING_WM: u32 = 0x0002_0508;
 
 /// The physical address of the CompactFlash socket's common memory (what
 /// a DMA engine reads the card's data window from).
@@ -196,7 +200,7 @@ pub fn take_cf() -> Option<(Mmio, Mmio)> {
     }
     let mc = va(region("memory_ctrl")?.base as usize) as *mut u32;
     for (reg, value) in [
-        (MCMEM1, 0x0002_0508),
+        (MCMEM1, CF_MEM_TIMING_WM),
         (MCATT1, 0x0002_0E08),
         (MCIO1, 0x0002_0510),
         (MECR, 0x0000_0003),
@@ -213,6 +217,41 @@ pub fn take_cf() -> Option<(Mmio, Mmio)> {
     // each; 4 KiB handed out), identity-mapped device memory; the flag
     // guarantees one owner.
     Some(unsafe { (Mmio::new(attr, 0x1000), Mmio::new(common, 0x1000)) })
+}
+
+/// The CompactFlash socket's common-memory timing (`MCMEM1`), once this
+/// program has taken the socket ([`take_cf`]): what `rp_drv_cf`'s
+/// `CfCard::tune` reads.
+#[must_use]
+pub fn cf_mem_timing() -> Option<u32> {
+    let mc = cf_timing_reg()?;
+    // SAFETY: `MCMEM1`, a memory controller register (identity-mapped
+    // device memory); reading it has no effect.
+    Some(unsafe { mc.read_volatile() })
+}
+
+/// Sets the CompactFlash socket's common-memory timing (`MCMEM1`, its
+/// timing fields and the rest as given), once this program has taken the
+/// socket ([`take_cf`]): for `CfCard::tune`, and an image's put-back step
+/// ([`CF_MEM_TIMING_WM`]). The attribute and I/O timings are left alone.
+pub fn set_cf_mem_timing(value: u32) -> Option<()> {
+    let mc = cf_timing_reg()?;
+    // SAFETY: `MCMEM1`, written only by the socket's owner (the flag
+    // checked in `cf_timing_reg`), on a single core; the socket's own
+    // timing, which no other device uses.
+    unsafe { mc.write_volatile(value) };
+    Some(())
+}
+
+/// `MCMEM1`'s address, only after [`take_cf`].
+fn cf_timing_reg() -> Option<*mut u32> {
+    // SAFETY: a plain read of the flag; single core.
+    if !unsafe { core::ptr::addr_of!(CF_TAKEN).read() } {
+        return None;
+    }
+    let mc = va(region("memory_ctrl")?.base as usize) as *mut u32;
+    // SAFETY: an offset inside the memory controller's register block.
+    Some(unsafe { mc.byte_add(MCMEM1) })
 }
 
 /// The CompactFlash socket's common memory (the task file) for the card log

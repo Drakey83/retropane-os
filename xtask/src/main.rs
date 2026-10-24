@@ -35,6 +35,18 @@ use policy::{DepKind, Placement};
 use serde_json::Value;
 
 pub(crate) const TARGET_SPEC: &str = "targets/armv5te-x51v-none-eabi.json";
+
+/// Where cargo puts the X51v's release builds: under `CARGO_TARGET_DIR` when
+/// it is set (relative to the workspace, as cargo takes it), else the
+/// workspace's `target`. Every image path goes through here: one built
+/// elsewhere and read from `target` is a stale image, measured and run
+/// without a word (2026-10-24: `emu-storfast` ran an old `rp-storfast`).
+pub(crate) fn arm_release(root: &Path) -> PathBuf {
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|d| !d.is_empty())
+        .map_or_else(|| root.join("target"), |d| root.join(d));
+    base.join("armv5te-x51v-none-eabi/release")
+}
 /// The Thumb variant of the target (ADR-0015: cold code as Thumb).
 const THUMB_TARGET_SPEC: &str = "targets/thumbv5te-x51v-none-eabi.json";
 /// Images built as Thumb (ADR-0015); empty it to go back to all-ARM.
@@ -202,6 +214,8 @@ commands:
             run it before `load rp-mbx3d-api`
   emu-cs3bus the 2700G bus-timing experiment (rp-cs3bus: every step and
             the soak run, MSC1 put back): run it before `load rp-cs3bus`
+  emu-cpldbus the CPLD bus-timing test (rp-cpldbus: every read step run,
+            MSC2 put back): run it before `load rp-cpldbus`
   emu-gpubench  the GPU measuring run for the 3D compositor proposal
             (rp-gpubench run A and every RP_GPUBENCH_* run, run P's target
             formats included: every stage runs, memory given back, each
@@ -315,14 +329,14 @@ fn main() -> ExitCode {
         "eol" | "reminders" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross"
         | "coverage" | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx"
         | "emu-mbx-blend" | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench"
-        | "emu-cs3bus" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash"
-        | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
-        | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive" | "emu-usb-suite"
-        | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight" | "emu-cfdetect"
-        | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1" | "emu-audio-sleep"
-        | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3" | "emu-silent-pc" | "emu-refresh"
-        | "emu-screen-measure" | "emu-unplug" | "emu-keepfed" | "emu-cardlog" | "mutants"
-        | "qemu" => run_step(&cmd),
+        | "emu-cs3bus" | "emu-cpldbus" | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today"
+        | "emu-crash" | "emu-probe" | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads"
+        | "emu-trace" | "emu-fullsize" | "emu-usb" | "emu-stale" | "emu-drive"
+        | "emu-usb-suite" | "emu-storfast" | "emu-loader" | "emu-handover" | "emu-nightlight"
+        | "emu-cfdetect" | "emu-display-cal" | "emu-looks" | "emu-tone" | "emu-audio-s1"
+        | "emu-audio-sleep" | "emu-dma-restart" | "emu-audio-s2" | "emu-audio-e3"
+        | "emu-silent-pc" | "emu-refresh" | "emu-screen-measure" | "emu-unplug" | "emu-keepfed"
+        | "emu-cardlog" | "mutants" | "qemu" => run_step(&cmd),
         "sdkit" => {
             eprintln!("==> sdkit");
             cross()
@@ -655,6 +669,7 @@ fn run_step(step: &str) -> Result {
         "emu-mbx3d-api" => cross().and_then(|()| emu::boot_loader_mbx3d_api(&workspace_root())),
         "emu-gpubench" => cross().and_then(|()| emu::boot_loader_gpubench(&workspace_root())),
         "emu-cs3bus" => cross().and_then(|()| emu::boot_loader_cs3bus(&workspace_root())),
+        "emu-cpldbus" => cross().and_then(|()| emu::boot_loader_cpldbus(&workspace_root())),
         "emu-mved" => cross().and_then(|()| emu::boot_loader_mved(&workspace_root())),
         "emu-clocks" => cross().and_then(|()| emu::boot_loader_clocks(&workspace_root())),
         "emu-noise" => cross().and_then(|()| emu::boot_loader_noise(&workspace_root())),
@@ -732,6 +747,7 @@ fn run_step(step: &str) -> Result {
                 ("boot_loader_mbx3d_api", emu::boot_loader_mbx3d_api),
                 ("boot_loader_gpubench", emu::boot_loader_gpubench),
                 ("boot_loader_cs3bus", emu::boot_loader_cs3bus),
+                ("boot_loader_cpldbus", emu::boot_loader_cpldbus),
                 ("boot_loader_mved", emu::boot_loader_mved),
                 ("boot_loader_clocks", emu::boot_loader_clocks),
                 ("boot_loader_noise", emu::boot_loader_noise),
@@ -1196,7 +1212,7 @@ fn cross() -> Result {
         user.extend(["-p", name]);
     }
     cargo(&user)?;
-    userimg::package_all(&workspace_root().join("target/armv5te-x51v-none-eabi/release"))?;
+    userimg::package_all(&crate::arm_release(&workspace_root()))?;
     let mut args = vec![
         "build".to_string(),
         "--release".into(),
@@ -1235,9 +1251,7 @@ fn cross() -> Result {
         let from = workspace_root()
             .join("target/thumbv5te-x51v-none-eabi/release")
             .join(image);
-        let to = workspace_root()
-            .join("target/armv5te-x51v-none-eabi/release")
-            .join(image);
+        let to = crate::arm_release(&workspace_root()).join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
     // ADR-0001: these images are built with frame pointers (their crash
@@ -1276,9 +1290,7 @@ fn cross() -> Result {
             .join(&dir)
             .join("armv5te-x51v-none-eabi/release")
             .join(image);
-        let to = workspace_root()
-            .join("target/armv5te-x51v-none-eabi/release")
-            .join(image);
+        let to = crate::arm_release(&workspace_root()).join(image);
         std::fs::copy(&from, &to).map_err(|e| format!("{}: {e}", from.display()))?;
     }
     // Bare-metal images: OS crates that are binaries only.
@@ -1287,7 +1299,48 @@ fn cross() -> Result {
         .filter(|c| matches!(c.place, Placement::Os(_)) && c.lib_root.is_none())
         .map(|c| c.name.as_str())
         .collect();
-    let release = workspace_root().join("target/armv5te-x51v-none-eabi/release");
+    let release = crate::arm_release(&workspace_root());
     size::check(&release, &images)?;
     frames::check(&release, &images)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    /// Class guard for stale images: no xtask source names the X51v's build
+    /// folder under `target` itself; every path comes from `arm_release`.
+    #[test]
+    fn image_paths_come_from_arm_release() {
+        let folder = ["target/", "armv5te-x51v-none-eabi/release"].concat();
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(&src).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                if line.contains(&folder) {
+                    found.push(format!("{}:{}", path.display(), n + 1));
+                }
+            }
+        }
+        assert!(
+            found.is_empty(),
+            "image paths outside arm_release: {found:?}"
+        );
+    }
+
+    #[test]
+    fn arm_release_follows_cargo_target_dir() {
+        let root = Path::new("/w");
+        // The variable is the process's; this test only reads it.
+        let want = match std::env::var_os("CARGO_TARGET_DIR").filter(|d| !d.is_empty()) {
+            Some(d) => root.join(d),
+            None => root.join("target"),
+        };
+        assert_eq!(
+            super::arm_release(root),
+            want.join("armv5te-x51v-none-eabi/release")
+        );
+    }
 }

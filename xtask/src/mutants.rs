@@ -350,6 +350,20 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "CF tune: a timing the card misreads left in place (no put-back)",
+        file: "drivers/cf/src/lib.rs",
+        from: "        socket.write(was);\n        // A wait",
+        to: "        // A wait",
+        check: Check::Host(&["-p", "rp-drv-cf", "the_old_one_put_back"]),
+    },
+    Mutant {
+        name: "CF tune: a card that hung at the new timing left dead at the old one",
+        file: "drivers/cf/src/lib.rs",
+        from: "        self.dead = false;\n        let card_ok",
+        to: "        let card_ok",
+        check: Check::Host(&["-p", "rp-drv-cf", "hangs_at_the_new_timing"]),
+    },
+    Mutant {
         name: "CF timing: a slow card's speed code read as faster (250 ns as 200)",
         file: "drivers/cf/src/timing.rs",
         from: "        1 => 250,",
