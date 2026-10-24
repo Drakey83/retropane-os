@@ -514,6 +514,13 @@ pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
     pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
 }
 
+/// Test G15's ways: (the CPU at Windows Mobile's 208 MHz, not the
+/// loader's 624; its voltage lowered to Dell's code for 208 MHz). G14:
+/// the chip draws Dell's frame right under Windows Mobile, its CPU at 208
+/// MHz, and wrong under the loader at 624, the same chip at the same
+/// clock. The voltage is lowered only at 208 MHz.
+pub const G15_WAYS: [(bool, bool); 3] = [(false, false), (true, false), (true, true)];
+
 /// Test G13's ways: (Dell's frame, not ours; the display at Windows
 /// Mobile's pixel clock, `DISPPLL` `0xEC5` (56.4 Hz), not the loader's
 /// `0xFC5` (60.3 Hz): G9's last 2700G difference outside the MBX block; the
@@ -851,7 +858,10 @@ mod image {
     use rp_drv_pxa_keypad::{Keypad, Pressed};
     use rp_hal_api::RegisterBus;
     use rp_hal_mem::{load32_volatile, store32_volatile};
+    use rp_drv_pxa_gpio::Gpio;
+    use rp_hal_pxa27x::clocks::{self as cpu_clock, POINTS};
     use rp_hal_pxa27x::{Mmio, cpu, diag, rt};
+    use rp_hal_x51v::vcore::{self, Code};
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
@@ -919,7 +929,8 @@ mod image {
         || TEST_G11
         || TEST_G12
         || TEST_G13
-        || TEST_G14;
+        || TEST_G14
+        || TEST_G15;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -974,6 +985,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g14`).
     const TEST_G14: bool = option_env!("RP_GLESFEAT_G14").is_some();
+    /// Test G15 instead of G (`RP_GLESFEAT_G15=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G15=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g15`).
+    const TEST_G15: bool = option_env!("RP_GLESFEAT_G15").is_some();
+    const _: () = assert!(
+        !TEST_G15 || cfg!(rp_g7),
+        "test G15 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     /// Test G14's first way run whatever clock the image starts at
     /// (`RP_GLESFEAT_G14=any-start`): the emulator starts with every 2700G
     /// clock off, never at Dell's divide 1, so its check builds this to
@@ -1022,7 +1042,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G14 {
+    const G_TITLE: &str = if TEST_G15 {
+        "RP-GLESFEAT TEST G15"
+    } else if TEST_G14 {
         "RP-GLESFEAT TEST G14"
     } else if TEST_G13 {
         "RP-GLESFEAT TEST G13"
@@ -1051,7 +1073,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G14 {
+    const G_NAME: &str = if TEST_G15 {
+        "G15"
+    } else if TEST_G14 {
         "G14"
     } else if TEST_G13 {
         "G13"
@@ -1090,6 +1114,7 @@ mod image {
         || TEST_G12
         || TEST_G13
         || TEST_G14
+        || TEST_G15
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1106,6 +1131,7 @@ mod image {
             || TEST_G12
             || TEST_G13
             || TEST_G14
+            || TEST_G15
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1119,6 +1145,7 @@ mod image {
             || TEST_G12
             || TEST_G13
             || TEST_G14
+            || TEST_G15
         {
             super::G6_LABEL
         } else {
@@ -1134,6 +1161,7 @@ mod image {
             || TEST_G12
             || TEST_G13
             || TEST_G14
+            || TEST_G15
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1145,6 +1173,7 @@ mod image {
             || TEST_G12
             || TEST_G13
             || TEST_G14
+            || TEST_G15
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1189,6 +1218,10 @@ mod image {
     /// Ways a test ran before [`test_settings`]'s (G14's first, at Dell's
     /// own clock): its ways and steps numbered after them.
     static WAYS_BEFORE: rt::Global<u32> = rt::Global::new(0);
+
+    /// All the ways a test runs when it calls [`test_settings`] one way at
+    /// a time (G15), for the screen's step count; 0 otherwise.
+    static LAST_WAYS: rt::Global<u32> = rt::Global::new(0);
 
     /// G14's first way for the summary: not run (`Some(None)`), or the
     /// renders right of [`G_DRAWS`]; `None` in every other test.
@@ -1977,6 +2010,13 @@ mod image {
 
     /// On a crash, first: Windows Mobile's clock and bus timing back.
     fn put_back() {
+        // G15 first: the voltage up again, then the CPU's clock as found.
+        if TEST_G15 {
+            let pins = rt::emergency_gpio().map(Gpio::new);
+            if let Some(mut gpio) = pins {
+                g15_found(&mut gpio);
+            }
+        }
         if let Some((mut regs, _)) = rp_hal_x51v::devices::emergency_mbx() {
             clock_back(&mut regs);
         }
@@ -2080,6 +2120,8 @@ mod image {
         G12(u8),
         /// Test G13: [`super::G13_WAYS`]'s way k.
         G13(u8),
+        /// Test G15: [`super::G15_WAYS`]'s way k.
+        G15(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2169,6 +2211,9 @@ mod image {
                 Self::G13(1) => "Dell's frame, the display at the loader's 60 Hz",
                 Self::G13(2) => "ours, the display at Windows Mobile's 56 Hz",
                 Self::G13(_) => "Dell's frame, the display at Windows Mobile's 56 Hz",
+                Self::G15(0) => "Dell's frame, the CPU as found",
+                Self::G15(1) => "Dell's frame, the CPU at 208 MHz, its voltage as found",
+                Self::G15(_) => "Dell's frame, the CPU at 208 MHz and Dell's voltage for it",
             }
         }
     }
@@ -2435,7 +2480,7 @@ mod image {
                 let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
             }
-            Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
+            Way::Frame(_) | Way::G15(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
             Way::G13(k) => {
                 let done = if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 {
                     replay(e, vram)
@@ -2598,7 +2643,7 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         set_lay(match w {
             Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
-            Way::Frame(_) => frame()
+            Way::Frame(_) | Way::G15(_) => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
@@ -2686,7 +2731,7 @@ mod image {
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
         // G6-G8: the layout's addresses as the core holds them.
-        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) = w {
+        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) = w {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
                 0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
@@ -2715,7 +2760,7 @@ mod image {
         // G7: the replay at Windows Mobile's clock against Dell's own
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
-            Way::Frame(_) => true,
+            Way::Frame(_) | Way::G15(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -3189,11 +3234,19 @@ mod image {
     /// its own reference; the summary in the log (each screen-off result
     /// marked) and on the label.
     #[inline(never)]
-    fn test_settings(e: &mut Engine<Mmio>, vram: &mut [u8], ways: &[Way]) {
+    fn test_settings(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        ways: &[Way],
+    ) -> [[Option<u32>; SETTINGS]; MAX_WAYS] {
         rp_image::on_crash(put_back);
         let ways = &ways[..ways.len().min(MAX_WAYS)];
         let before = WAYS_BEFORE.with(|b| *b);
-        let steps = ways.len() as u32 + 1 + before;
+        // G15 runs its ways one call each: the steps are all of them.
+        let steps = match LAST_WAYS.with(|n| *n) {
+            0 => ways.len() as u32 + 1 + before,
+            n => n + 1,
+        };
         let mut right = [[None; SETTINGS]; MAX_WAYS];
         let mut dark = [[false; SETTINGS]; MAX_WAYS];
         for (k, &w) in ways.iter().enumerate() {
@@ -3255,6 +3308,7 @@ mod image {
             );
         }
         say(vram, &lines[..top + ways.len()]);
+        right
     }
 
     /// Test G5's form: ours exactly (two Gouraud triangles over our giant
@@ -4166,6 +4220,137 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
+    /// Test G15: the voltage code the image found on the pins and whether
+    /// they are plain GPIO outputs (only then RetroPane drives them); kept
+    /// for the crash path.
+    static G15_PINS: rt::Global<Option<(Code, bool)>> = rt::Global::new(None);
+
+    /// The voltage pins set to `code`.
+    fn set_vcode(gpio: &mut Gpio<Mmio>, code: Code) {
+        for (pin, high) in vcore::PINS.into_iter().zip(code.levels()) {
+            gpio.write(pin, high);
+        }
+    }
+
+    /// Test G15: the CPU and its voltage as the image found them (the
+    /// loader's 624 MHz): the voltage up first, as before any speed-up,
+    /// then the clock. Also the crash path's.
+    fn g15_found(gpio: &mut Gpio<Mmio>) {
+        if let Some((found, true)) = G15_PINS.with(|p| *p) {
+            set_vcode(gpio, found);
+            rt::delay_us(vcore::RAISE_SETTLE_US);
+        }
+        let _ = cpu_clock::restore_saved();
+    }
+
+    /// Test G15's way `k` ([`super::G15_WAYS`]): the CPU as found, or at
+    /// Windows Mobile's 208 MHz (`POINTS`' 208: L 16, 2N 2, the bus and the
+    /// memory clock unchanged; `CCCR` `0x02000110`, as W1-W3 ran under),
+    /// its voltage as found or lowered to Dell's code for 208 MHz (0b100,
+    /// his 1163 mV label: the pins Windows Mobile showed at idle). Slower
+    /// first, then lower; every way starts from the point found. Logged
+    /// with the core clock counted.
+    fn g15_cpu(gpio: &mut Gpio<Mmio>, k: u8) {
+        let (slow, lower) = super::G15_WAYS[k as usize % super::G15_WAYS.len()];
+        g15_found(gpio);
+        let p208 = POINTS[2].1;
+        if slow && !cpu_clock::change(p208) {
+            log!("    the change to 208 MHz was refused: the CPU as found");
+        }
+        if slow && lower {
+            match G15_PINS.with(|p| *p) {
+                Some((_, true)) => set_vcode(gpio, Code::for_turbo_khz(p208.turbo_khz())),
+                _ => log!("    the voltage pins aren't plain outputs: the code kept"),
+            }
+        }
+        let now = cpu_clock::read();
+        let [a, b, c] = vcore::PINS.map(|pin| gpio.read(pin));
+        let code = Code::from_levels(a, b, c);
+        let khz = cpu_clock::measure_core_khz(20);
+        log!(
+            "    CPU: CCCR 0x{:08x} CCSR 0x{:08x} CLKCFG 0x{:x}, core counted {khz} kHz (decoded {}), bus {} kHz, memory {} kHz; voltage code 0b{:03b} (Dell's label {:?} mV)",
+            now.cccr,
+            now.ccsr,
+            now.clkcfg,
+            now.point().core_khz(),
+            now.point().bus_khz(),
+            now.point().mem_khz(),
+            code.0,
+            code.dell_label_mv()
+        );
+    }
+
+    /// Test G15: Dell's frame at the cores' divide 1 with the CPU at
+    /// Windows Mobile's 208 MHz (G14's lead: the CPU ran at 208 MHz in
+    /// every right run under Windows Mobile, at 624 MHz under the loader),
+    /// its voltage as found and Dell's for 208 MHz. One way at a time, the
+    /// CPU set before each (the GPIO stays here, not in a global).
+    fn test_g15(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        let found = cpu_clock::save();
+        let Some(gpio) = rt::take_gpio() else {
+            log!("G15: no GPIO: nothing run");
+            return;
+        };
+        let mut gpio = Gpio::new(gpio);
+        let [a, b, c] = vcore::PINS.map(|pin| gpio.read(pin));
+        let code = Code::from_levels(a, b, c);
+        let ours = vcore::PINS
+            .iter()
+            .all(|&pin| gpio.function(pin) == 0 && gpio.is_output(pin));
+        log!(
+            "G15: Dell's frame at 74.75, 99.67 and 133.25 MHz / 1 with the CPU as found (CCCR 0x{:08x}, core {} kHz), at 208 MHz, and at 208 MHz with Dell's voltage for it; the voltage code found 0b{:03b} (Dell's label {:?} mV), the pins plain outputs: {ours}",
+            found.cccr,
+            found.point().core_khz(),
+            code.0,
+            code.dell_label_mv()
+        );
+        G15_PINS.with(|p| *p = Some((code, ours)));
+        if usable_frame().is_none() {
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        let mut right = [[None; SETTINGS]; 3];
+        for (k, row) in right.iter_mut().enumerate() {
+            WAYS_BEFORE.with(|b| *b = k as u32);
+            LAST_WAYS.with(|n| *n = 3);
+            g15_cpu(&mut gpio, k as u8);
+            *row = test_settings(e, vram, &[Way::G15(k as u8)])[0];
+        }
+        WAYS_BEFORE.with(|b| *b = 0);
+        LAST_WAYS.with(|n| *n = 0);
+        g15_found(&mut gpio);
+        let now = cpu_clock::read();
+        log!(
+            "G15: the CPU at the end: CCCR 0x{:08x} CCSR 0x{:08x} CLKCFG 0x{:x} (found 0x{:08x} 0x{:08x} 0x{:x}): {}",
+            now.cccr,
+            now.ccsr,
+            now.clkcfg,
+            found.cccr,
+            found.ccsr,
+            found.clkcfg,
+            if now.point() == found.point() {
+                "as found"
+            } else {
+                "DIFFERENT"
+            }
+        );
+        let mut l = [[0u8; 32]; 3];
+        let mut lines: [&str; 6] = [""; 6];
+        lines[0] = G_TITLE;
+        lines[1] = "DONE: PRESS A BUTTON";
+        lines[2] = "RIGHT OF 20 AT 74/99/133";
+        for (k, buf) in l.iter_mut().enumerate() {
+            let n = |s: usize| right[k][s].map_or(-1, |v| v as i32);
+            lines[3 + k] = fmt(
+                buf,
+                format_args!("WAY {}: {} {} {}", k + 1, n(0), n(1), n(2)),
+            );
+        }
+        say(vram, &lines);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
         log!(
@@ -4198,7 +4383,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G14 {
+        let first = if TEST_G15 {
+            "STEP 1 OF 4"
+        } else if TEST_G14 {
             "STEP 1 OF 4"
         } else if TEST_G13 {
             "STEP 1 OF 5"
@@ -4279,7 +4466,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G14 {
+        if ready && TEST_G15 {
+            test_g15(&mut e, vram);
+        } else if ready && TEST_G14 {
             test_g14(&mut e, vram);
         } else if ready && TEST_G13 {
             test_g13(&mut e, vram);
@@ -5347,5 +5536,20 @@ mod g14_tests {
         // Divide 4 or more (bits 3-2 not zero), a clock running: not divide 1.
         assert!(!dells_divide_1(0x9, 0x4));
         assert!(!dells_divide_1(0xE, 0x4));
+    }
+}
+
+/// Test G15's ways.
+#[cfg(test)]
+mod g15_tests {
+    use super::*;
+
+    #[test]
+    fn the_cpu_ways_are_the_control_then_slower_then_lower() {
+        assert_eq!(G15_WAYS[0], (false, false), "the CPU as found first");
+        // The voltage is never lowered at the loader's 624 MHz.
+        assert!(G15_WAYS.iter().all(|&(slow, lower)| slow || !lower));
+        assert_eq!(G15_WAYS.iter().filter(|w| w.0).count(), 2);
+        assert_eq!(G15_WAYS[2], (true, true), "the lowered voltage last");
     }
 }

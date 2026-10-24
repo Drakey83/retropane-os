@@ -575,6 +575,23 @@ pub fn take_gpio() -> Option<Mmio> {
     Some(unsafe { Mmio::new(base, 0x200) })
 }
 
+/// The GPIO controller for a crash path only, once [`take_gpio`] has handed
+/// it out (so its owner set the pins up): a crash's put-back that must
+/// drive pins the owner drove (the core voltage's, before the clock is put
+/// back), like [`emergency_uart`]. `None` if no one took it.
+#[must_use]
+pub fn emergency_gpio() -> Option<Mmio> {
+    // SAFETY: a plain read of the flag; single core.
+    if !unsafe { core::ptr::addr_of!(GPIO_TAKEN).read() } {
+        return None;
+    }
+    let base = NonNull::new(va(0x40E0_0000) as *mut u32)?;
+    // SAFETY: the same window as `take_gpio`'s. This second handle aliases
+    // the owner's, acceptable only on paths that never return to the owner
+    // (fault and panic handlers), as `emergency_uart`.
+    Some(unsafe { Mmio::new(base, 0x200) })
+}
+
 /// Single-use guards for the I2C and I2S controllers.
 static mut I2C_TAKEN: bool = false;
 static mut I2S_TAKEN: bool = false;
