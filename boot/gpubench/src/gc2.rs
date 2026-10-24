@@ -276,6 +276,32 @@ pub const fn target_at(k: usize, outside: u32) -> u32 {
     if fits_inside(k) { INSIDE_AT } else { outside }
 }
 
+/// Run GC2J: where the 32-bit texture FT2 reads ([`TEXTURES`] 2, 4 KiB)
+/// is copied inside the safe region, to test whether its reads from
+/// outside are a second constraint at divide 1: a page after the 16-bit
+/// target's end, never at it (the emulator writes the dithered target,
+/// `0x650` 9, as 32-bit pixels at the 16-bit stride, one row past the
+/// end: docs/hw/emulator.md; the image also checks the copy after every
+/// render).
+pub const TEX_INSIDE: u32 = INSIDE_AT + 2 * W * H + 0x1000;
+
+/// Kind 3, RGB565 Gouraud with the 8888 texture: the kind GC2I's soak
+/// found one wrong pixel in at 133.25 / 1.
+pub const FT2: usize = 3;
+
+/// Run GC2J's soak rotation: (kind, its 8888 texture inside the safe
+/// region): every 16-bit kind with its textures where they are (outside),
+/// and FT2 again with its texture inside.
+pub const SOAK2: [(usize, bool); 7] = [
+    (0, false),
+    (1, false),
+    (FT2, false),
+    (FT2, true),
+    (5, false),
+    (6, false),
+    (7, false),
+];
+
 /// Words in one band of kind `k`'s picture.
 #[must_use]
 pub const fn band_words(k: usize) -> u32 {

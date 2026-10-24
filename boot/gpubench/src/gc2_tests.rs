@@ -94,6 +94,28 @@ fn gc2i_puts_every_16_bit_kind_inside_and_keeps_the_32_bit_ones_out() {
 }
 
 #[test]
+fn gc2j_puts_ft2s_texture_inside_after_the_target_and_soaks_every_inside_kind() {
+    let t = TEXTURES[2];
+    // FT2 reads the 8888 texture; a 32 x 32 one, 4 KiB.
+    assert!(KINDS[FT2].0.contains("8888 texture"));
+    assert_eq!(t.bytes(), 4 * 32 * 32);
+    // A page after the 16-bit target's end (a row written past it, as the
+    // emulator writes the dithered target, can't reach it), inside the
+    // safe region, aligned for a texture and on a page.
+    assert!(TEX_INSIDE >= target_at(0, 0) + 4 * words(0) + 960);
+    assert!(TEX_INSIDE + t.bytes() <= SAFE_END);
+    assert!(TEX_INSIDE.is_multiple_of(0x1000));
+    // Every kind inside once with its textures where they are, FT2 once
+    // more with its texture inside; nothing else.
+    for k in RUN.filter(|&k| fits_inside(k)) {
+        assert!(SOAK2.contains(&(k, false)), "{}", KINDS[k].0);
+    }
+    assert!(SOAK2.contains(&(FT2, true)));
+    assert_eq!(SOAK2.len(), RUN.filter(|&k| fits_inside(k)).count() + 1);
+    assert!(SOAK2.iter().all(|&(k, inside)| fits_inside(k) && (!inside || k == FT2)));
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {

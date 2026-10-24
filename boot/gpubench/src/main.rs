@@ -7658,7 +7658,16 @@ mod image {
     /// them (the run's control for the placement); then a soak of the
     /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
     /// the first wrong render. Test-only, as GC2S. Unattended.
-    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some();
+    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_SOAK2;
+
+    /// Run GC2J (`RP_GPUBENCH_GC2_SOAK2`, the owner's ask after GC2I,
+    /// 2026-10-24): GC2I's references, no map, then [`SOAK_SECS`] at each of
+    /// [`GC2J_SOAK`] over [`gc2::SOAK2`] (FT2 with its 8888 texture inside the
+    /// safe region beside FT2 with it outside: a second constraint behind
+    /// the target's?), every wrong render counted and the first ones
+    /// described, not stopping at one; a setting stops only if the clock,
+    /// registers or display don't hold. Unattended.
+    const GC2_SOAK2: bool = option_env!("RP_GPUBENCH_GC2_SOAK2").is_some();
 
     /// Run GS's label: the second screen picture as RGB565 (960-byte rows),
     /// scanned out at 16 bits through the whole soak (the shell's screen,
@@ -8430,7 +8439,9 @@ mod image {
     ];
 
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SAFE {
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 {
+        &[]
+    } else if GC2_SAFE {
         &GC2_S_STEPS
     } else if GC2_D {
         &GC2_D_STEPS
@@ -8805,7 +8816,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_INSIDE {
+            if GC2_SOAK2 {
+                "the 16-bit kinds' targets inside the safe region (GC2J: no map; a soak at 108.33, 117.00 and 133.25 / 1, FT2's texture inside and outside),"
+            } else if GC2_INSIDE {
                 "run GC with every 16-bit kind's target inside the safe region, the 32-bit kinds outside (GC2I), then a soak,"
             } else if GC2M {
                 "divide 1 with M24CLK as Dell's driver sets it (as found, 0, 1),"
@@ -9238,7 +9251,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_INSIDE {
+                if GC2_SOAK2 {
+                    gc2_soak2(g, &mut r, tex, (&*refs, &offs), first, dsig);
+                } else if GC2_INSIDE {
                     gc2_inside_soak(g, &mut r, tex, (&*refs, &offs), first, dsig);
                 }
             }
@@ -9403,6 +9418,243 @@ mod image {
             if bad.is_some() {
                 return;
             }
+        }
+    }
+
+    /// Run GC2J's soak settings, rising.
+    const GC2J_SOAK: [(ClockStep, &str); 3] = [
+        (gc2_step(25, 3, 0, 1), "108.33 / 1"),
+        (gc2_step(27, 3, 0, 1), "117.00 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+
+    /// Wrong renders GC2J describes a setting; the rest are counted.
+    const GC2J_DESCRIBED: u32 = 20;
+
+    /// A [`gc2::SOAK2`] slot for the log.
+    fn soak2_name(slot: (usize, bool)) -> (&'static str, &'static str) {
+        (
+            gc2::KINDS[slot.0].0,
+            match slot {
+                (gc2::FT2, true) => ", its texture inside",
+                (gc2::FT2, false) => ", its texture outside",
+                _ => "",
+            },
+        )
+    }
+
+    /// Run GC2J's soak: FT2's 8888 texture copied inside the safe region
+    /// (read back, and FT2 drawn with it at Windows Mobile's clock held to
+    /// FT2's reference: the copy proven), then at each of [`GC2J_SOAK`] for
+    /// [`SOAK_SECS`], the clock held, [`gc2::SOAK2`]'s slots in turn, every
+    /// render held to its kind's reference as every GC2 render; each wrong
+    /// render counted by slot, the first [`GC2J_DESCRIBED`] described (slot,
+    /// round, time, words, where); a render whose clock, registers or
+    /// display don't hold stops the setting (another kind of fault). A line
+    /// a minute; each setting's controls at Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_soak2(
+        g: &mut Rig,
+        r: &mut Renderer,
+        tex: gc2::Tex,
+        (refs, offs): (&[u32], &[usize; gc2::KINDS.len()]),
+        first: &mut [u32],
+        dsig: bool,
+    ) {
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let minutes = SOAK_SECS.div_ceil(60);
+        // FT2's texture inside: copied word by word, read back.
+        let t = tex.t8888;
+        let mut copy_off = 0u32;
+        for i in 0..t.bytes() / 4 {
+            let w = g.mem.load((t.at + 4 * i) as usize).unwrap_or(0xDEAD_BEEF);
+            g.mem.store((gc2::TEX_INSIDE + 4 * i) as usize, &[w]);
+        }
+        g.mem.sync();
+        for i in 0..t.bytes() / 4 {
+            copy_off += u32::from(
+                g.mem.load((gc2::TEX_INSIDE + 4 * i) as usize)
+                    != g.mem.load((t.at + 4 * i) as usize),
+            );
+        }
+        let inside = gc2::Tex {
+            t8888: Texture {
+                at: gc2::TEX_INSIDE,
+                ..t
+            },
+            ..tex
+        };
+        let tex_of = |slot: (usize, bool)| if slot.1 { inside } else { tex };
+        // The inside copy's words differing from the original now (a guard:
+        // anything that writes over it shows here, named by what ran last).
+        let copy_changed = |g: &Rig| {
+            (0..t.bytes() / 4)
+                .filter(|&i| {
+                    g.mem.load((gc2::TEX_INSIDE + 4 * i) as usize)
+                        != g.mem.load((t.at + 4 * i) as usize)
+                })
+                .count()
+        };
+        r.start_clean();
+        gc2_scene(g, r, gc2::FT2, inside);
+        let want = &refs[offs[gc2::FT2]..offs[gc2::FT2] + gc2::words(gc2::FT2) as usize];
+        let mut side = Gc2Side::new(dsig);
+        let mut base = Gc2Baseline(None);
+        let proven = gc2_render(g, r, gc2::FT2, want, first, wm, &mut base, &mut side);
+        log!(
+            "  GC2J: FT2's 8888 texture (0x{:x}, {} bytes) copied inside to 0x{:x}: {copy_off} words read back wrong; FT2 drawn with it at Windows Mobile's clock: {proven:?} words off FT2's reference; {}",
+            t.at,
+            t.bytes(),
+            gc2::TEX_INSIDE,
+            Gc2Held(&side)
+        );
+        log!(
+            "  GC2J: the inside copy after that render: {} words differ",
+            copy_changed(g)
+        );
+        let slots: &[(usize, bool)] = if copy_off == 0 && proven == Some(0) && side.held() {
+            &gc2::SOAK2
+        } else {
+            log!("  GC2J: the inside texture isn't proven: FT2 soaks with its texture outside only");
+            &gc2::SOAK2[..3]
+        };
+        log!(
+            "  GC2J soak: {} slots at {} settings, {minutes} min each, every wrong render counted (the first {GC2J_DESCRIBED} a setting described)",
+            slots.len(),
+            GC2J_SOAK.len()
+        );
+        for (i, &(s, label)) in GC2J_SOAK.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "GC2J SOAK {} OF {}", i + 1, GC2J_SOAK.len());
+            soak_label(g, [l1.as_str(), label, "STARTING"], SOAK_BLUE);
+            let want_regs = gc2_clock_want(s.speed(), s.div);
+            let lock = clock_apply(g, s);
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2J soak {label}: the clock didn't take; Windows Mobile's put back");
+                soak_label(g, [l1.as_str(), label, "CLOCK NOT TAKEN"], SOAK_RED);
+                continue;
+            }
+            log!("  GC2J soak {label}: lock {lock:?}");
+            clock_readback(g);
+            r.start_clean();
+            // Each slot's 3D registers after its first render here, which
+            // its later renders must leave; a fresh side a render (GC2I's
+            // soak: the kinds take turns).
+            let mut bases: [Gc2Baseline; gc2::SOAK2.len()] =
+                core::array::from_fn(|_| Gc2Baseline(None));
+            let mut wrong_by = [0u32; gc2::SOAK2.len()];
+            let mut words_by = [0u32; gc2::SOAK2.len()];
+            let (mut best, mut worst) = (u32::MAX, 0u32);
+            let (mut elapsed_us, mut lines, mut rounds, mut described) = (0u64, 0u32, 0u32, 0u32);
+            let end_us = u64::from(SOAK_SECS) * 1_000_000;
+            let mut unheld = None;
+            'soak: while elapsed_us < end_us {
+                let t0 = rt::ticks();
+                for (j, &slot) in slots.iter().enumerate() {
+                    let k = slot.0;
+                    gc2_scene(g, r, k, tex_of(slot));
+                    let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                    let mut side = Gc2Side::new(dsig);
+                    let wrong =
+                        gc2_render(g, r, k, want, first, want_regs, &mut bases[j], &mut side);
+                    best = best.min(side.best_us);
+                    worst = worst.max(side.worst_us);
+                    let changed = copy_changed(g);
+                    if changed != 0 {
+                        let (name, place) = soak2_name(slot);
+                        log!(
+                            "  GC2J soak {label}: the inside texture copy changed in {changed} words after {name}{place}, round {}: the soak stops (the test's own fault, not the chip's)",
+                            rounds + 1
+                        );
+                        unheld = Some((slot, wrong, side));
+                        elapsed_us += u64::from(us_since(t0));
+                        break 'soak;
+                    }
+                    if !side.held() || wrong.is_none() {
+                        unheld = Some((slot, wrong, side));
+                        elapsed_us += u64::from(us_since(t0));
+                        break 'soak;
+                    }
+                    if let Some(n) = wrong.filter(|&n| n > 0) {
+                        wrong_by[j] += 1;
+                        words_by[j] += n;
+                        if described < GC2J_DESCRIBED {
+                            described += 1;
+                            let (name, place) = soak2_name(slot);
+                            log!(
+                                "    GC2J soak {label}: WRONG {name}{place}, round {}, {} s in: {n} words; {}",
+                                rounds + 1,
+                                (elapsed_us + u64::from(us_since(t0))) / 1_000_000,
+                                Gc2Pixels(&side.tally)
+                            );
+                        }
+                    }
+                }
+                rounds += 1;
+                elapsed_us += u64::from(us_since(t0));
+                if elapsed_us >= u64::from(lines + 1) * 60_000_000 || elapsed_us >= end_us {
+                    lines += 1;
+                    let all: u32 = wrong_by.iter().sum();
+                    let mut l3 = heapless_name();
+                    let _ = write!(l3, "MIN {lines} OF {minutes} WRONG {all}");
+                    soak_label(
+                        g,
+                        [l1.as_str(), label, l3.as_str()],
+                        if all == 0 { SOAK_BLUE } else { SOAK_RED },
+                    );
+                    log!(
+                        "  GC2J soak {label}, minute {lines}: {rounds} rounds, {all} wrong renders so far {wrong_by:?} | render best {best} us, worst {worst} us | LMTYPE 0x{:x} LMREFRESH 0x{:x}",
+                        g.e.regs.read32(clock::LMTYPE),
+                        g.e.regs.read32(clock::LMREFRESH)
+                    );
+                }
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+            if let Some((slot, wrong, side)) = &unheld {
+                let (name, place) = soak2_name(*slot);
+                log!(
+                    "  GC2J soak {label}: STOPPED at {name}{place}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
+                    rounds + 1,
+                    elapsed_us / 1_000_000,
+                    Gc2Held(side)
+                );
+                soak_label(g, [l1.as_str(), label, "STOPPED: NOT HELD"], SOAK_RED);
+            }
+            let renders = rounds * slots.len() as u32;
+            log!(
+                "  GC2J soak {label}: {rounds} rounds ({renders} renders) in {} s; wrong renders by slot {wrong_by:?}, words {words_by:?}",
+                elapsed_us / 1_000_000
+            );
+            for (j, &slot) in slots.iter().enumerate() {
+                let (name, place) = soak2_name(slot);
+                log!(
+                    "    GC2J soak {label} | {name}{place}: {} of {rounds} renders wrong, {} words",
+                    wrong_by[j],
+                    words_by[j]
+                );
+            }
+            // The controls: each slot once at Windows Mobile's clock.
+            r.start_clean();
+            let mut controls = 0;
+            for &slot in slots {
+                let k = slot.0;
+                gc2_scene(g, r, k, tex_of(slot));
+                let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                let mut side = Gc2Side::new(dsig);
+                let mut base = Gc2Baseline(None);
+                let wrong = gc2_render(g, r, k, want, first, wm, &mut base, &mut side);
+                controls += usize::from(wrong == Some(0) && side.held());
+            }
+            log!(
+                "  GC2J soak {label}: controls at Windows Mobile's clock after: {controls} of {} right",
+                slots.len()
+            );
+            let all: u32 = wrong_by.iter().sum();
+            let mut l3 = heapless_name();
+            let _ = write!(l3, "DONE: {all} WRONG");
+            soak_label(g, [l1.as_str(), label, l3.as_str()], SOAK_BLUE);
         }
     }
 

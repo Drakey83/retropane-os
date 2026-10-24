@@ -4944,6 +4944,14 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             ("RP_GPUBENCH_SOAK_SECS", "10"),
         ],
     )?;
+    let run_gc2j = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_SOAK2", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft2f = variant_image_with(
         root,
@@ -4975,7 +4983,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 55] = [
+    let runs: [GpubenchRun; 56] = [
         (
             "run A",
             &run_a,
@@ -5146,6 +5154,19 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2i,
             &[
                 "GC2: run GC with every 16-bit kind's target inside the safe region, the 32-bit kinds outside (GC2I), then a soak,",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2J: GC2I's references, then its soak (10 s a setting
+        // here): runs to its end and returns (the pinned release doesn't
+        // model Windows Mobile's clock; stepped on the wm-clocks build).
+        (
+            "run GC2J",
+            &run_gc2j,
+            &[
+                "GC2: the 16-bit kinds' targets inside the safe region (GC2J: no map;",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,

@@ -48,6 +48,30 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "gpubench GC2J: FT2's inside texture right at the target's end",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const TEX_INSIDE: u32 = INSIDE_AT + 2 * W * H + 0x1000;",
+        to: "pub const TEX_INSIDE: u32 = INSIDE_AT + 2 * W * H;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2j_puts_ft2s_texture_inside_after_the_target_and_soaks_every_inside_kind",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2J: the soak without FT2's inside twin",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    (FT2, true),
+",
+        to: "    (FT2, false),
+",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2j_puts_ft2s_texture_inside_after_the_target_and_soaks_every_inside_kind",
+        ]),
+    },
+    Mutant {
         name: "gpubench GC2I: every kind inside, the 32-bit ones too",
         file: "boot/gpubench/src/gc2.rs",
         from: "    if fits_inside(k) { INSIDE_AT } else { outside }",
