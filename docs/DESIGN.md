@@ -602,7 +602,7 @@ Stock baselines (user's X51v on the LennySh WM6.1 ROM, 2026-10-10):
 | App | Stock behaviour | First improvement targets |
 |---|---|---|
 | DoomGLES (Doom, Doom II) | Full VGA resolution, **~50–60 fps** (estimated, no FPS counter) | Hold a locked 60 fps at VGA, then add effects. Add an FPS overlay so we can measure precisely |
-| Quake 3 (Q3CE) | **Very slow loading** (~5 minutes, the owner's estimate, not yet timed; 15-30 s is the target); roughly full speed once running | Load time: SD 4-bit mode at max clock, DMA, read-ahead, a better file cache, and faster texture upload to the 2700G |
+| Quake 3 (Q3CE) | **Very slow loading** (~5 minutes, the owner's estimate, not yet timed; 15-30 s is the target). **Measured 2026-10-24: 13 fps (one reading) at 320x240, vertex lighting, Sync Every Frame on, the 2008 build, its memory partly swapped to the CF card**; the 2005 claim was "up to 25 fps" (research/quake3-on-the-x51v.md) | Load time: SD 4-bit mode at max clock, DMA, read-ahead, a better file cache, and faster texture upload to the 2700G |
 
 ---
 

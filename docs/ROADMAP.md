@@ -161,7 +161,7 @@ months (late January to February 2027); with Wi-Fi about 4-6.
 - [x] ADR-0005 memory and storage architecture *(accepted 2026-10-10)*; code-size budgets enforced in `cargo xtask cross`; whole-device memory budget (`docs/memory-budget.md`: OS at most 12 MiB, apps at least 52 MiB) checked there too since 2026-10-12
 - [x] **RE:** `tools/romdump`: unpacks X51v `.nb0` ROM images (IMGFS + LZX) and rebuilds driver DLLs as PE files. No device access needed
 - [ ] *(Optional)* UART serial adapter for deep debugging. Not required: the cradle's USB is the main console from Phase 2
-- [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory, game load times), which become the floor to beat (DESIGN.md §1.0) *(CPU, memory, threads, timers, drawing and card speeds measured by `tools/wmbench`, 2026-10-13: docs/perf.md; DoomGLES fps and boot time still to do)*
+- [ ] **RE:** baseline benchmarks of stock Windows Mobile (current WM6.1 ROM) on your device (DoomGLES fps, boot time, memory, game load times), which become the floor to beat (DESIGN.md §1.0) *(CPU, memory, threads, timers, drawing and card speeds measured by `tools/wmbench`, 2026-10-13: docs/perf.md; DoomGLES fps and boot time still to do; Q3CE measured 2026-10-24, kept for the port: research/quake3-on-the-x51v.md)*
 
 **Exit:** `cargo xtask test` passes in CI on an empty skeleton; ROM dump in hand.
 

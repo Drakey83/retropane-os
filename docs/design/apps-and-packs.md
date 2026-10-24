@@ -118,7 +118,7 @@ direct path is faster), downloadable from the same location as the pack:
 | Hexen | Raven's source: as Heretic's, **GPL since 2008-09-04** (survey 2026-10-23) | Added 2026-10-22 (owner): HexenGLES (the Pocket PC GLES version) is the legacy reference, as HereticGLES is for Heretic; Heretic's engine with hubs, ACS scripts and three classes, so about a week once Heretic is ported; game data (`hexen.wad`) stays the user's own |
 | Quake | id's Quake 1 source (GPL-2.0) | New addition |
 | Quake 2 | id's 2001 source release (GPL-2.0) | Added 2026-10-16 (owner): lighter than Quake 3 (built for 1997-98 PCs, 16-32 MB); software and OpenGL 1.x renderers to start from; game data (`pak0.pak`) stays the user's own |
-| Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one |
+| Quake 3 | id's 2005 release or ioquake3 (GPL-2.0) | Already on the ROADMAP: start-up time a goal from day one. Today's Q3CE measured, the CPU / 3D-core split and projections: [research/quake3-on-the-x51v.md](../research/quake3-on-the-x51v.md) |
 
 **Frame rate, every port (owner, 2026-10-23): a solid 30 fps at the very
 least, 60 fps the target** (the workload brief's "games: 60 fps, full

@@ -44,7 +44,7 @@ this repository.
 | Field Kit: the network and utility tools pack | [ADR-0020](../adr/0020-field-kit-pack.md) |
 | The shell library and the first Today screen | [ADR-0021](../adr/0021-shell-library-and-first-today-screen.md) |
 | The graphics stack and service: compositor, GDI, the 2D and 3D renderers | [ADR-0022](../adr/0022-graphics-stack.md), [ADR-0030](../adr/0030-graphics-service.md) |
-| GLES for games: our own 3D renderer, the binary GLES layer for closed games, native ports for open engines | [ADR-0026](../adr/0026-own-mbx-3d-renderer.md), [research/gles-games.md](../research/gles-games.md), the whole 2700G 3D library: [research/3d-games-catalogue.md](../research/3d-games-catalogue.md) |
+| GLES for games: our own 3D renderer, the binary GLES layer for closed games, native ports for open engines | [ADR-0026](../adr/0026-own-mbx-3d-renderer.md), [research/gles-games.md](../research/gles-games.md), the whole 2700G 3D library: [research/3d-games-catalogue.md](../research/3d-games-catalogue.md), Quake 3 measured and projected: [research/quake3-on-the-x51v.md](../research/quake3-on-the-x51v.md) |
 | Sound: the audio service (mixing, volumes per output and kind, headphones unplugged, tone controls, the microphone's permission); **decided 2026-10-18** | [ADR-0032](../adr/0032-audio-service.md) |
 | Keyboards, mice and headsets over USB and Bluetooth; **decided 2026-10-18** (P1-P5 all A) | [ADR-0033](../adr/0033-keyboards-mice-headsets.md), [peripherals.md](peripherals.md) |
 | Legacy apps: unmodified WM5/WM6 programs, CAB installs | [DESIGN.md](../DESIGN.md) §6 CE Personality, [ROADMAP](../ROADMAP.md) Phase 4 |
