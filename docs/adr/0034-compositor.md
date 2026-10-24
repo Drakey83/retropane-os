@@ -6,6 +6,8 @@
   below and in [docs/design/compositor.md](../design/compositor.md).
   **Amends ADR-0023** (C2: 16-bit opaque pictures) **and ADR-0030 G1**
   (C5: layers replace areas). Implements ADR-0022 point 3 as amended.
+  **Proposed amendment P (screen placement, 2026-10-24): awaiting the
+  owner's vote** (below).
 - **Date:** 2026-10-19
 
 ## In plain words
@@ -138,3 +140,94 @@ T1, T3, T4, ticked):
   27 is kept for scaling **if the owner's look at P9 shows the picture
   right**, dropped if it tears; free scaling is then the app-opening
   animation's way (W3 missed its 250 ms by 105 ms in 3D).
+
+## Proposed amendment P: where the display may read while the 3D core draws (2026-10-24, awaiting the owner's vote)
+
+### In plain words
+
+The display and the 3D core share the 2700G's memory. On this X51v, while
+the 3D core is drawing, **any display plane reading memory past roughly the
+first 700 KiB corrupts what the 3D core draws**: badly at the cores'
+divide 1, now and then at Windows Mobile's own clock. Reading the first
+~700 KiB is harmless. The 2D engine isn't affected. Windows Mobile never
+showed it because its screen sits at the start of memory. The proposal:
+**our one visible screen moves to the start of memory, the 3D core draws
+off screen, and the 2D engine copies its results onto the screen.**
+
+### The evidence (docs/hw/2700g.md, tests G16-G20; quality audit C71)
+
+| Run | Finding |
+|---|---|
+| G16 | Dell's frame at 74.75 MHz / 1: 0 of 20 right with the display reading, **20 of 20 with its fetch off during each render** |
+| G17 | The screen at Windows Mobile's place (`0x0`): **20 of 20** with the display reading normally; at ours (`0x100000`) 0 of 20; Linux's `DMCTRL` no help |
+| G18, G19 | Right while the screen ends by **`0xAE000`**, wrong from one ending at `0xB6000`; the wrong words scale with the share past ~`0xB0000` (~704 KiB): likely the 2700G's on-die frame buffer (a hypothesis, not proven) |
+| G20 | **The video plane obeys the same rule**: reading outside, Dell's frame wasn't even repeatable at Windows Mobile's clock (89 words full screen, 27 a 96-row band); a band inside harmless. **The 2D engine is unaffected**: a 600 KiB copy exact with the screen outside, ~0.8 ms slower |
+| C71 (the other session) | At Windows Mobile's 99.67 / 2, five multi-quad scenes: up to 20 of 20 renders differ with the screen at `0x9D6000`; **0 of 100 with it at `0x0`**, and each render ~2 ms faster |
+| GC2S (the other session) | The screen at `0x0`: every kind right at 133.25 and 149.50 / 2 (9 of 9, were 7), 4-5% faster; divide 1 above 74.75 still wrong in 6 of 9 kinds: **a second, separate problem** (the divide-1 hunt continues) |
+
+What the current design does that this rule hits: C4 puts the panned page
+(1.2 MiB) on the video plane; the glass layer and chrome on the graphics
+plane (600 KiB, or 1.2 MiB at 32 bits); mode 4 renders "into the visible
+picture in bands behind the scan line or into a second picture flipped in
+the blanking"; `rp-vram-map` keeps two screens at `0x200000` and
+`0x296000`, both outside.
+
+### The rules proposed (option A)
+
+1. **The safe region** is local memory `0x0`-`0xAE000` (696 KiB: the
+   largest measured harmless; G19). It holds **the visible screen**, one
+   480 x 640 RGB565 picture (600 KiB) at `0x0`, and at most ~96 KiB more
+   for a small video-plane band (G20's way 3).
+2. **While the 3D core draws, the display reads only the safe region**:
+   the graphics plane shows the screen at `0x0`; the video plane is off or
+   inside the safe region. This holds at every clock (G20, C71).
+3. **The 3D core draws off screen**, into targets in ordinary local
+   memory, and **the 2D engine copies** the finished tiles or bands onto
+   the screen (exact under any display reads, G20; ~5 ms for a whole
+   screen, a band or a few tiles in proportion). The copy replaces mode
+   4's flip and its bands behind the scan line keep their timing, now as
+   copies.
+4. **Planes reading outside the safe region** (C4's panned page on the
+   video plane, a tall glass picture, a 32-bit screen) **are used only in
+   frames where the 3D core is idle** (modes 1-3: still, pan, pan under
+   glass). Gap 1 already keeps the 3D core from drawing over a panned
+   page; the compositor now also holds any 3D work (an animation
+   elsewhere) until the pan ends, or shows that frame's 3D result in the
+   safe screen.
+5. **`rp-vram-map`** (after the vote): `SCREENS` becomes one screen at
+   `0x0`; the second becomes the 3D core's off-screen target in ordinary
+   memory; the loader already keeps Windows Mobile's screen at `0x0`. A
+   build-time check refuses any plane picture in the safe region's place
+   or any region overlapping it but the screen and the band.
+6. **The divide-1 problem above 74.75 MHz** is separate (GC2S) and stays
+   with the divide-1 hunt; this amendment doesn't depend on it.
+
+### Pros and cons
+
+| | Pros | Cons |
+|---|---|---|
+| **A, as above (my recommendation)** | Fixes C71 at every clock and Dell's frame at 74.75 / 1 (G17-G19); renders ~2 ms faster (C71); keeps every plane trick (pans, glass) for frames without 3D; the 2D engine is already the screen's writer (ADR-0023), so the copy fits | One visible screen only: no flip between two screens (a copy instead, ~5 ms worst case for a whole screen); 3D frames can't show the video plane's panned page at the same time; the safe region's size is measured on one X51v (the any-Axim rule: verify on another unit, and the X50v) |
+| B: the display's fetch paused during each render (G16) | No placement rule at all; any layout | The screen goes blank while the 3D core draws (up to ~20 ms a frame): visible flicker at 60 fps: not usable for the shell |
+| C: A, but the 3D core draws straight into the screen at `0x0` (no copy) | Saves the copy (~5 ms full screen) | **Unmeasured**: whether the 3D core's target inside the safe region is itself sound; tearing unless it draws behind the scan line. Needs a test before a vote |
+| D: keep the design, avoid the content that shows it | No change | Corrupted renders at divide 2 on ordinary scenes (C71): not acceptable |
+
+### Measurements still owed (before or after the vote, the owner's call)
+
+- **C's test:** the 3D core rendering into a target inside the safe region
+  (Dell's frame and C71's scenes), right and how fast.
+- **The copy's real cost** on the shell's frames: tiles and bands into the
+  screen (the full screen measured: 5.0 ms with the display reading the
+  safe region, G20 way 5).
+- **The region:** whether it is on-die memory (it behaves so), its exact
+  end between `0xAE000` and `0xB6000`, and the same on a second X51v and
+  the X50v (the any-Axim rule), with `ODFBPWR`'s modes (Dell sleeps it
+  across clock changes).
+
+### Votes needed
+
+- **P1:** option A (my recommendation), B, C (after its test) or D.
+- **P2:** if A: run C's test anyway, to see whether the copy can be
+  skipped later (yes / no).
+- **P3:** whether the safe region's size goes into the per-device
+  self-test (ADR-0035) or stays a fixed constant from these runs.
+
