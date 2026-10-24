@@ -424,6 +424,7 @@ dependencies = [
  "rp-drv-blit2d",
  "rp-drv-mbx-display",
  "rp-drv-mbx3d",
+ "rp-drv-pxa-gpio",
  "rp-drv-pxa-keypad",
  "rp-hal-api",
  "rp-hal-mem",

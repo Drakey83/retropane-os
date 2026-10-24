@@ -3170,8 +3170,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g12") => return boot_loader_glesfeat_g(root, 12),
         Ok("g13") => return boot_loader_glesfeat_g(root, 13),
         Ok("g14") => return boot_loader_glesfeat_g(root, 14),
+        Ok("g15") => return boot_loader_glesfeat_g(root, 15),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g14"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g15"));
         }
         Err(_) => {}
     }
@@ -3475,7 +3476,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 14 {
+    let (env, name, ours, after) = if test == 15 {
+        ("RP_GLESFEAT_G15", "G15", "G15 way 1 (", "G15 way 2 (")
+    } else if test == 14 {
         ("RP_GLESFEAT_G14", "G14", "G14 way 2 (", "G14 way 3 (")
     } else if test == 13 {
         ("RP_GLESFEAT_G13", "G13", "G13 way 1 (", "G13 way 2 (")
@@ -3505,7 +3508,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14) {
+    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3546,7 +3549,20 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 14 {
+    let wants: &[&str] = if test == 15 {
+        &[
+            "test G15, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G15: Dell's frame at 74.75, 99.67 and 133.25 MHz / 1 with the CPU as found",
+            "G15 way 1 (Dell's frame, the CPU as found):",
+            "G15 way 2 (Dell's frame, the CPU at 208 MHz, its voltage as found):",
+            "G15 way 3 (Dell's frame, the CPU at 208 MHz and Dell's voltage for it):",
+            "G15: right at 74.75 / 1 of 20:",
+            "G15: right at 133.25 / 1 of 20:",
+            "): as found",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 14 {
         &[
             "test G14, Gouraud at the cores' divide 1",
             "G14 way 1 (Dell's frame at the clock his driver set at boot, no clock of ours changed):",
@@ -3835,6 +3851,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         // The replay of our scene at the clock found (way 1, the anchor),
         // ours and the replay after our clock change: one picture.
         14 => &[2, 3],
+        // The replay of our scene at every CPU speed and voltage.
+        15 => &[2, 3],
         _ => &[],
     };
     if !same.is_empty() {
@@ -3908,6 +3926,54 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         return Err(format!(
             "glesfeat {name}: Windows Mobile's clock not read back:{log}"
         ));
+    }
+    if test == 15 {
+        let cpu = |way: u32| {
+            log.split(&format!("{name} way {way} ("))
+                .next()
+                .and_then(|before| before.rsplit("    CPU: ").next())
+                .map(|s| s.lines().next().unwrap_or("").to_string())
+                .unwrap_or_default()
+        };
+        let ours_pins = log.contains("the pins plain outputs: true");
+        for (way, want, code) in [
+            (1, None, None),
+            (2, Some("core counted 208"), None),
+            (
+                3,
+                Some("core counted 208"),
+                Some("voltage code 0b100 (Dell's label Some(1163) mV)"),
+            ),
+        ] {
+            let line = cpu(way);
+            if line.is_empty() {
+                return Err(format!("glesfeat {name}: way {way} has no CPU line:{log}"));
+            }
+            if let Some(w) = want
+                && !line.contains("CCCR 0x02000110")
+            {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s CPU isn't at 208 MHz ({w}): {line}:{log}"
+                ));
+            }
+            if way == 1 && line.contains("CCCR 0x02000110") {
+                return Err(format!(
+                    "glesfeat {name}: way 1's CPU isn't as found: {line}:{log}"
+                ));
+            }
+            if let (true, Some(c)) = (ours_pins, code)
+                && !line.contains(c)
+            {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s voltage isn't Dell's for 208 MHz: {line}:{log}"
+                ));
+            }
+            if way == 2 && ours_pins && line.contains("voltage code 0b100") {
+                return Err(format!(
+                    "glesfeat {name}: way 2's voltage was lowered: {line}:{log}"
+                ));
+            }
+        }
     }
     eprintln!(
         "    glesfeat {name} OK: {ways} ways, {drew} drew (references repeatable; the TA not modelled: {no_ta}), the clock refused in {refused}, put back in {controls}, back at the loader"

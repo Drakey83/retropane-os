@@ -17,6 +17,7 @@ rp-hal-mem = { path = "../../hal/mem" }
 rp-drv-blit2d = { path = "../../drivers/blit2d" }
 rp-drv-mbx3d = { path = "../../drivers/mbx3d" }
 rp-drv-pxa-keypad = { path = "../../drivers/pxa-keypad" }
+rp-drv-pxa-gpio = { path = "../../drivers/pxa-gpio" }
 
 [lints]
 workspace = true

@@ -539,9 +539,13 @@ pub const BUDGETS: &[Budget] = &[
     // chip state copied under the loader, then halved (the state compared
     // word by word, the inherited way); the G5 variant with the emulator's
     // culprit 67.8 KiB, + ~10%.
+    // Ratcheted 112 -> 128 KiB on 2026-10-24 (test image): test G15, the
+    // CPU's operating point and core voltage per way (rp-hal-pxa27x's
+    // clocks, the GPIO driver, the voltage codes) beside G14; the G15
+    // variant with the emulator's frame 113.2 KiB, + ~10%.
     Budget {
         image: "rp-glesfeat",
-        max_load: 112 * 1024,
+        max_load: 128 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
