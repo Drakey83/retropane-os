@@ -301,7 +301,9 @@ watching.
   drivers never write it (`SPOCTRL` `0xC8030000`, both directions bypassed;
   `SVCTRL` and the 14 coefficient words 0 under Windows Mobile); scaling
   needs a filter loaded first (Linux mbxfb's set, `layers::SCALER_FILTER`,
-  C73; unproven on the X51v). Dell's own 2x for 320 x 240 programs is
+  C73): **proven on the X51v 2026-10-24 (`p9c`): up 2x and down to 1/2
+  and 3/4 right; `SPOCTRL` bit 27 needed when shrinking** (underrun and
+  streaks without it). Dell's own 2x for 320 x 240 programs is
   `GDRCTRL`'s pixel and line doubling (bits 31, 29), untested by us.
 - **2D FIFO (2026-10-21, `rp-gpubench` run FF):** its level reads full on
   the device (8 bytes of room in 2,040 at the lowest); a full-screen 32-bit
