@@ -90,7 +90,7 @@ Details: [the design area](docs/design/README.md).
 You need [rustup](https://rustup.rs). The pinned toolchain installs itself.
 
 ```bash
-cargo xtask ci      # fmt, clippy, architecture lint, unit tests, X51v cross-build
+cargo xtask ci      # line endings, fmt, clippy, architecture lint, unit tests, X51v cross-build
 cargo xtask emu     # boot every image in the X51v emulator and check it
 cargo xtask bench   # deterministic benchmarks vs the committed baseline (docs/perf.md)
 cargo xtask qemu    # (optional) build the emulator locally in WSL for emulator development

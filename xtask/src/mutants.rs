@@ -70,6 +70,24 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "eol: a mixed-endings working copy let through",
+        file: "xtask/src/eol.rs",
+        from: "field == \"w/crlf\" || field == \"w/mixed\"",
+        to: "field == \"w/crlf\"",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "crlf_and_mixed_files_are_named_with_their_whole_paths",
+        ]),
+    },
+    Mutant {
+        name: "eol: the index's endings judged instead of the working copy's",
+        file: "xtask/src/eol.rs",
+        from: "field == \"w/crlf\" || field == \"w/mixed\"",
+        to: "field == \"i/crlf\" || field == \"w/mixed\"",
+        check: Check::Host(&["-p", "xtask", "eol::tests"]),
+    },
+    Mutant {
         name: "g7-frame: an object's next page left out (an object across a page cut short)",
         file: "xtask/src/g7.rs",
         from: "            page(o + PAGE, &mut pages);",

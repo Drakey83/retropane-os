@@ -7,6 +7,7 @@ mod adrs;
 mod calib;
 mod devlock;
 mod emu;
+mod eol;
 mod frames;
 mod g7;
 mod gate;
@@ -71,7 +72,8 @@ const USAGE: &str = "\
 usage: cargo xtask <command>
 
 commands:
-  ci        everything CI runs: fmt, clippy, lint, gate, adrs, test, cross
+  ci        everything CI runs: eol, fmt, clippy, lint, gate, adrs, test, cross
+  eol       no tracked file with CRLF line endings in the working tree
   fmt       check formatting
   clippy    lint all crates (warnings are errors)
   lint      architecture policy: layering and unsafe rules (DESIGN.md §3.1)
@@ -295,11 +297,13 @@ fn main() -> ExitCode {
     let cmd = args().nth(1).unwrap_or_default();
     let flag = args().nth(2).unwrap_or_default();
     let result = match cmd.as_str() {
-        "ci" => ["fmt", "clippy", "lint", "gate", "adrs", "test", "cross"]
-            .iter()
-            .try_for_each(|c| run_step(c)),
-        "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross" | "coverage" | "emu"
-        | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx" | "emu-mbx-blend"
+        "ci" => [
+            "eol", "fmt", "clippy", "lint", "gate", "adrs", "test", "cross",
+        ]
+        .iter()
+        .try_for_each(|c| run_step(c)),
+        "eol" | "fmt" | "clippy" | "lint" | "gate" | "adrs" | "test" | "cross" | "coverage"
+        | "emu" | "emu-picture" | "emu-blend" | "emu-blend-scale" | "emu-mbx" | "emu-mbx-blend"
         | "emu-mbx3d" | "emu-glesfeat" | "emu-mbx3d-api" | "emu-gpubench" | "emu-cs3bus"
         | "emu-mved" | "emu-clocks" | "emu-noise" | "emu-today" | "emu-crash" | "emu-probe"
         | "emu-cf" | "emu-kernel" | "emu-quantum" | "emu-threads" | "emu-trace"
@@ -623,6 +627,7 @@ fn run_step(step: &str) -> Result {
             "-D",
             "warnings",
         ]),
+        "eol" => eol::check(&workspace_root()),
         "lint" => lint(),
         "gate" => gate::run(&workspace_root()),
         "adrs" => adrs::check(&workspace_root()),

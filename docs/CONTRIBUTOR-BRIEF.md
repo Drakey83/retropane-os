@@ -159,7 +159,7 @@ that run at 624 MHz.
 
 ## Definition of done
 
-`cargo xtask ci` is green (fmt, clippy, architecture lint, unit tests, X51v
-cross-build), docs updated (a hardware fact: its `docs/hw` page and the
+`cargo xtask ci` is green (line endings, fmt, clippy, architecture lint, unit
+tests, X51v cross-build), docs updated (a hardware fact: its `docs/hw` page and the
 datasheet), benchmarks not regressed, and the change advances
 at least one lens without setting back any other.
