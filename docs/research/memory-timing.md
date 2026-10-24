@@ -452,6 +452,47 @@ access, 16-bit) also limits how fast the OS image loads from flash. Its
 headroom needs the DiskOnChip's datasheet and is an open item for the
 flash-boot design.
 
+## 9. Test designs for the flash's and the CPLD's timing (reminders R6, R8; 2026-10-24)
+
+Dell's values for both were decoded in section 1 (2026-10-15); the tests
+that would show whether ours could be faster were never designed until now.
+
+**The internal flash (CS0, DiskOnChip G3; reminder R6).** `MSC0`'s low half
+`0x38D8`: non-burst flash, 16 bits, RDF code 13 (20 clocks), RDN 8, RRR 3:
+**106 ns for a first read**. Dell's OAL keeps that time constant across
+clocks (`0x1898` at its 104 MHz points, `0x38D8` at 208: clocks.md), so the
+value is a time Dell chose, not one the chip was shown to need.
+- **What it limits:** the DiskOnChip has its own controller; a 512-byte
+  page costs its internal flash read plus 256 bus reads (~27 us at 106 ns,
+  a ~19 MB/s bus ceiling). Which of the two dominates isn't measured; if
+  the internal read does, bus timing gains little.
+- **The safety rule:** the DiskOnChip holds Windows Mobile and Dell's
+  bootloader. Only the **read** strobe (RDF) is ever stepped; the write and
+  recovery fields (RDN, RRR) stay Dell's, so every command the chip
+  receives is latched at Dell's timing, and no erase or program command is
+  ever sent. Each step first reads the chip's ID registers; a wrong ID ends
+  the run with Dell's value put back.
+- **The test (to build, the owner watching):** (1) at Dell's timing, time
+  one page read and its parts (commands, the chip's busy time, the 256
+  reads) to learn whether the bus matters at all; (2) if it does, read the
+  boot block's directly mapped window (no command needed) 1,000 times at
+  each RDF code from 12 down, compared with Dell's reading, stopping at the
+  first difference; (3) the fastest clean code, then a page-read soak at
+  it. One step labelled on screen at a time; the log on the card.
+- **What it would decide:** the flash-boot design's read path (boot and
+  program loading from flash, ADR-0005), not a gate line.
+
+**The CPLD (CS4; reminder R8).** `MSC2`'s low half `0x7FFC`: the slowest
+setting there is (~0.44 us an access). The CPLD (an XC2C128 CoolRunner-II
+on the X50, likely the same on the X51v) switches in nanoseconds, so a far
+shorter strobe is plausible. **But:** its registers don't read back
+(cpld.md), so a faster write can only be checked by its effect on the board,
+which the no-blind-board-bits rule forbids testing unattended; and the
+CPLD is touched a few times per power or backlight change (buttons are on
+GPIOs), so even a 10x faster access saves microseconds a day. **Proposed:
+decline R8 for no payoff and no safe way to verify** (the owner's call:
+only he drops a reminder).
+
 ## Open questions
 
 1. The X51v's SDRAM chip markings (the owner can read them).

@@ -112,14 +112,45 @@ fn parse(text: &str) -> Result<Vec<Status>, String> {
     Ok(out)
 }
 
-/// CI's step: the table checked, the open count printed.
+/// The owner's standing rules (2026-10-24), each a bullet under
+/// `## Standing rules` that must open with its bold title: the hooks print
+/// them first, so a section lost or renamed fails CI.
+const STANDING: [&str; 2] = [
+    "**Iterate, don't imitate.**",
+    "**Nothing is impossible or a limit without proof.**",
+];
+
+/// Checks the standing rules' section: present, first, and holding each of
+/// [`STANDING`] as a bullet.
+fn standing(text: &str) -> Result<(), String> {
+    let mut section = text
+        .split("\n## ")
+        .skip(1)
+        .map(|s| s.split_once('\n').unwrap_or((s, "")));
+    let Some(("Standing rules", body)) = section.next() else {
+        return Err(format!(
+            "{LIST}: the first section must be `## Standing rules` (the owner's rules the hooks print first)"
+        ));
+    };
+    for rule in STANDING {
+        if !body.lines().any(|l| l.starts_with(&format!("- {rule}"))) {
+            return Err(format!("{LIST}: standing rule `{rule}` missing"));
+        }
+    }
+    Ok(())
+}
+
+/// CI's step: the standing rules and the table checked, the open count
+/// printed.
 pub fn run(root: &Path) -> Result<(), String> {
     let path = root.join(LIST);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    standing(&text)?;
     let rows = parse(&text)?;
     let open = rows.iter().filter(|s| **s == Status::Open).count();
     eprintln!(
-        "    reminders: {open} open of {} (docs/reminders.md; the hooks print them at session start and before device runs)",
+        "    reminders: {} standing rules, {open} open of {} (docs/reminders.md; the hooks print them at session start and before device runs)",
+        STANDING.len(),
         rows.len()
     );
     Ok(())
@@ -152,7 +183,26 @@ mod tests {
     fn the_real_list_parses() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let text = std::fs::read_to_string(root.join(LIST)).unwrap();
+        standing(&text).unwrap();
         assert!(!parse(&text).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_standing_rules_must_lead_and_be_whole() {
+        let good = format!(
+            "# R\n\n## Standing rules\n\n- {} a\n- {} b\n\n## The reminders\n",
+            STANDING[0], STANDING[1]
+        );
+        assert!(standing(&good).is_ok());
+        // Missing, not first, or a rule gone: refused.
+        assert!(standing("# R\n\n## The reminders\n").is_err());
+        let late = format!(
+            "# R\n\n## The reminders\n\n## Standing rules\n\n- {} a\n- {} b\n",
+            STANDING[0], STANDING[1]
+        );
+        assert!(standing(&late).is_err());
+        let one = format!("# R\n\n## Standing rules\n\n- {} a\n", STANDING[0]);
+        assert!(standing(&one).unwrap_err().contains("missing"));
     }
 
     #[test]

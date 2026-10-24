@@ -441,6 +441,33 @@ one run; nothing failed, nothing differed.
 - Only the test's own folder was written and it was removed; every root file
   of the shared card hashed the same before and after.
 
+# The owner's decision: the CF socket's timings (reminder R7, 2026-10-24)
+
+The free wins are in the driver since this report (32-bit loads, DMA:
+`drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
+Windows Mobile programs one table for every card (a 260 ns strobe), and the
+owner's card rates itself at 80 ns (its CIS and IDENTIFY agree).
+
+- **A (recommended): each card at its own rated speed.** At insertion the
+  driver reads the card's own timing from its CIS, programs the socket for
+  it with a margin (say 1.5x the rating), and checks it: a sector read twice
+  at the new timing must match its read at Windows Mobile's; if anything
+  disagrees, or the CIS is unreadable, it falls back to the generic table and
+  logs why. Plus: every card runs as fast as it says it can (this one ~2x:
+  9-12 MB/s raw against 4.1 measured, estimate); an old slow card keeps a
+  slow, safe timing; nothing depends on the owner's unit (the any-Axim
+  rule). Minus: a card that lies about its speed could read wrong; the check
+  at insertion and a write-verify soak in the device test cover that; one
+  watched device run to prove it on the owner's two cards.
+- **B: keep Windows Mobile's table.** Plus: nothing to test. Minus: every
+  card at a third of what it can do.
+- **C: one faster table for every card.** Plus: simple. Minus: an older
+  card rated slower than the table would read wrong: the reason Windows
+  Mobile picked a slow one.
+
+The gain matters for the OS reading programs and media from the CF card,
+not for the PC's copy over USB (full speed caps that near 1 MB/s).
+
 # Copied values (the audit's tag)
 
 | Value | From | Status after this report |

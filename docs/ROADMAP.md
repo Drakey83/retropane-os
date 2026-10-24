@@ -118,16 +118,16 @@ In order (the gate's own steps; the backlog runs alongside, top first):
       | # | Item | Status | Next |
       |---|---|---|---|
       | 1 | Divide 1 | largely solved: 108.33 / 1 soaked clean (GC2J), 2.17x Gouraud with the picture in the safe region (ADR-0034 P1 = C) | the corner sweep at 117-133.25 (the divide-1 session) |
-      | 2 | 2D and 3D at once; the 32-bit screen | `LocalMemoryPriority`/`Timeout` aren't registers; FT/FT2 ran with the screen outside the safe region (C71) | GC3 rebuilt inside the region (FT2's test with the screen and 3D target in it), with `LMCFG` and `DMCTRL` |
+      | 2 | 2D and 3D at once; the 32-bit screen | `LocalMemoryPriority`/`Timeout` aren't registers; FT/FT2 ran with the screen outside the safe region (C71); **FT3 built 2026-10-24** (the 3D target the scanned-out screen at 0, three clocks) and GC3 rewired to run it under `LMCFG` and `DMCTRL` | a device run of FT3 (or GC3) |
       | 3 | ARGB8888 errors at 125-149.50 / 2 | **answered** by GC2S: 9 of 9 right with the screen in the safe region | none |
       | 4 | Render-to-texture | GC3T built, never run | into the combined run |
       | 5 | The CPU bus to the 2700G (`MSC1`): RDN, RRR and the combinations | never built | into the combined run (near its end: a bad combination can hang the bus) |
       | 6 | Zeroing by cache-line allocate (hung once) | never isolated | the combined run's last step, one row a step, the owner nearby |
       | 7 | The CPU's overclock past 624 MHz (C2) | never started | its own watched run, with the self-test |
-      | +a | The internal flash's timing (`MSC0`: where RetroPane is installed) | never started (2026-10-20 list) | Dell's value read, then a watched step test |
-      | +b | CF socket timings (storage-speed.md: ~2x possible) | report 2026-10-15, the owner's decision never asked again | the owner's decision |
-      | +c | The CPLD's bus timing (buttons, power) | never started (2026-10-20 list) | Dell's value read, then a step test |
-      | +d | One checklist of every Dell, Windows Mobile and Linux value the code uses (2026-10-20 plan, step 3) | never done: 7 values tagged `// inherited:` in the code, far more used | the sweep, each value tagged and listed with its test |
+      | +a | The internal flash's timing (`MSC0`: where RetroPane is installed) | test designed 2026-10-24 (memory-timing.md section 9) | build it, then a watched run |
+      | +b | CF socket timings (storage-speed.md: ~2x possible) | decision brief written 2026-10-24 (storage-speed.md: A, each card at its own rated speed) | the owner's decision |
+      | +c | The CPLD's bus timing (buttons, power) | read 2026-10-24: proposed for decline (write-only latches, microseconds a day; memory-timing.md section 9) | the owner's call |
+      | +d | One checklist of every Dell, Windows Mobile and Linux value the code uses (2026-10-20 plan, step 3) | first sweep 2026-10-24: docs/research/inherited-values.md (11 copied and untested, A1-A11) | the tags in the code, then each row's test |
       | +e | Dell's GLES register writes traced (`tools/mmiotrace`, `rp-wmprobe`'s missing module) | "still to add" since 2026-10-23 | after the combined run |
       | +f | Windows Mobile baselines: DoomGLES fps and boot time | "still to do" since 2026-10-13 | a frame counter run by the owner, with Q3CE's settings tests |
       | +g | C39: what each image changes on the board, and the crash put-backs (step 1) | open since 2026-10-21 | its own step |

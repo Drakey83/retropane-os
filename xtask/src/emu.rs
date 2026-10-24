@@ -4967,6 +4967,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ],
     )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
+    let run_ft3 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_FT3", "1"))?;
     let run_ft2f = variant_image_with(
         root,
         "rp-gpubench",
@@ -4997,7 +4998,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 58] = [
+    let runs: [GpubenchRun; 59] = [
         (
             "run A",
             &run_a,
@@ -5271,13 +5272,22 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             false,
             (0, 0, 0),
         ),
-        // Run GC3 (the memory interface and the display's refresh window):
-        // checked below.
+        // Run GC3 (the memory interface and the display's refresh window,
+        // run FT3 under each): checked below.
         (
             "run GC3",
             &run_gc3,
+            &["GC3 FT3 under ", "RETROPANE-GPUBENCH: done"],
+            false,
+            (0, 0, 0),
+        ),
+        // Run FT3 (2D and 3D at once in option C's layout, three clocks):
+        // checked below.
+        (
+            "run FT3",
+            &run_ft3,
             &[
-                "GC2: the memory interface's drive strength",
+                "FT3: the 2D engine and the 3D core at once",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -6120,14 +6130,6 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 2 * 9,
             ),
             (
-                "run GC3",
-                56,
-                "7 of 7 kinds right with everything held; their controls: 7 of 7 right",
-                40,
-                ("  GC2 references at the end: 7 of 7 as at the start", 4),
-                3 * 7,
-            ),
-            (
                 "run GC2W",
                 72,
                 "9 of 9 kinds right with everything held; their controls: 9 of 9 right",
@@ -6203,16 +6205,34 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
                 ));
             }
         }
-        // GC3's first part: run FT2 under each of the four settings, each
-        // clean (the models have no contention) and each put back.
-        if name == "run GC3"
-            && !log.contains("not Windows Mobile's clock and bus timing: nothing changed")
-            && (log.matches("FT2: 6 of 6 settings clean").count() != 4
-                || log.matches("  put back: LMCFG ").count() != 4)
-        {
-            return Err(format!(
-                "gpubench run GC3: run FT2 not clean under every memory setting:\n{log}"
-            ));
+        // FT3 (alone, and four times in GC3): every setting run and clean
+        // (the models have no contention), the target at 0. With Windows
+        // Mobile's clock modelled, three clocks (12 settings) and the clock
+        // put back after each step; without it, the as-found clock only (4),
+        // never nothing. GC3 also puts each memory setting back.
+        if name == "run FT3" || name == "run GC3" {
+            let stepped = !log.contains("the clock steps skipped, the clock as found only");
+            let (settings, put_backs) = if stepped { (12, 2) } else { (4, 0) };
+            let runs = if name == "run GC3" { 4 } else { 1 };
+            let summary = format!("FT3: {settings} of {settings} settings clean");
+            if log.matches(summary.as_str()).count() != runs
+                || log.matches(" | CLEAN").count() != settings * runs
+                || log.matches(" | ERRORS").count() != 0
+                || log.matches("  put back: COREPLL 0xbb1,").count() != put_backs * runs
+                || (name == "run GC3" && log.matches("  put back: LMCFG ").count() != 4)
+            {
+                return Err(format!(
+                    "gpubench {name}: FT3 not run clean at every setting (want {runs} x {settings}), or a clock or memory setting not put back:\n{log}"
+                ));
+            }
+            eprintln!(
+                "    {name}: FT3 {runs} x {settings} settings clean{}",
+                if stepped {
+                    " at all three clocks, the clock put back"
+                } else {
+                    " at the clock as found (this release doesn't model Windows Mobile's clock)"
+                }
+            );
         }
         // GC2X refuses where Windows Mobile's clocks aren't modelled;
         // stepping, divide 1's own result and every flip tried (the

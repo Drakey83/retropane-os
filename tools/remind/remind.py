@@ -40,7 +40,41 @@ def line(row):
     return f"- {row[0]} [{'; '.join(row[3])}] {row[1]}"
 
 
+def standing():
+    """The list's "Standing rules" bullets (the owner's rules that never
+    close), joined into one line each."""
+    rules, inside, current = [], False, None
+    with open(LIST, encoding="utf-8") as f:
+        for raw in f:
+            text = raw.rstrip("\n")
+            if text.startswith("## "):
+                inside = text.strip() == "## Standing rules"
+                continue
+            if not inside:
+                continue
+            if text.startswith("- "):
+                current = text[2:].strip()
+                rules.append(current)
+            elif text.strip() and rules and current is not None and text.startswith("  "):
+                rules[-1] += " " + text.strip()
+            elif not text.strip():
+                current = None
+    return rules
+
+
+def standing_text():
+    rules = standing()
+    if not rules:
+        return ""
+    return "STANDING RULES (the owner's most important; docs/reminders.md):\n" + "\n".join(
+        f"- {r}" for r in rules
+    )
+
+
 def session():
+    rules = standing_text()
+    if rules:
+        print(rules)
     open_rows = [r for r in rows() if is_open(r)]
     if not open_rows:
         return
@@ -70,12 +104,21 @@ def pretool():
         if is_open(r)
         and any(t == "device-run" or t[len("image:"):] in images for t in r[3] if t == "device-run" or t.startswith("image:"))
     ]
-    if not due:
+    parts = []
+    rules = standing_text()
+    if rules:
+        parts.append(
+            rules
+            + "\nFor this run: does it test our own better way, not only Dell's? Is any limit it assumes proven?"
+        )
+    if due:
+        parts.append(
+            "Reminders due for this device run or image build (docs/reminders.md): "
+            "fold any that fit into this run, or say why not.\n" + "\n".join(line(r) for r in due)
+        )
+    if not parts:
         return
-    text = (
-        "Reminders due for this device run or image build (docs/reminders.md): "
-        "fold any that fit into this run, or say why not.\n" + "\n".join(line(r) for r in due)
-    )
+    text = "\n\n".join(parts)
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}}))
 
 

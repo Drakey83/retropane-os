@@ -425,6 +425,17 @@ mod image {
     /// fastest setting): does the extra memory bandwidth change P8's
     /// errors? `RP_GPUBENCH_FT2_FAST` beside `RP_GPUBENCH_TOGETHER2`.
     const FT2_FAST: bool = option_env!("RP_GPUBENCH_FT2_FAST").is_some();
+    /// Run FT3 (`RP_GPUBENCH_FT3`, the gate's P8 under ADR-0034 amendment
+    /// P's C, 2026-10-24): FT2's test (a full-screen RGB565 render, ten
+    /// full-screen 2D copies queued straight after it) with the 3D core
+    /// drawing straight into the scanned-out screen at local memory 0, inside
+    /// the safe region (C71, G16-G21), as option C runs; FT and FT2 ran with
+    /// the screen at `0x200000`-`0x296000`, outside it, and their errors
+    /// needed the display fetching (FT2, stopped: exact). At Windows
+    /// Mobile's clock, 149.50 / 2 and 108.33 / 1 (GC2J's clean divide-1
+    /// step), the screen scanning out or stopped, the copies in two places.
+    /// Unattended.
+    const FT3: bool = option_env!("RP_GPUBENCH_FT3").is_some();
     /// Run FI (the performance gate's P18 / V17): the MBX core's status
     /// word (`0x12c`), its enables (`0x130`) and clear (`0x134`) around a 2D
     /// fill and a 3D render, idle, busy, done and after a clear, with the
@@ -4050,6 +4061,173 @@ mod image {
         let _ = r.release(&mut g.pool);
         p_texture_free(g, tex);
         clock_card(g, ["RUN FT2", "DONE", ""], 0xFF10_6020, 3);
+    }
+
+    /// FT3's target: the screen at local memory 0, inside the safe region
+    /// (600 KiB, ending at `0x96000`; option C's layout).
+    const FT3_PIC: u32 = 0;
+    /// FT3's clocks: Windows Mobile's (as found), then each step; Windows
+    /// Mobile's put back after.
+    const FT3_STEPS: [(Option<ClockStep>, &str); 3] = [
+        (None, "Windows Mobile's clock"),
+        (Some(gc2_step(23, 2, 0, 2)), "149.50 / 2"),
+        (Some(gc2_step(25, 3, 0, 1)), "108.33 / 1"),
+    ];
+
+    /// Run FT3 ([`FT3`]): FT2's rounds with the target scanned out at 0.
+    #[inline(never)]
+    fn together3(g: &mut Rig) {
+        log!(
+            "FT3: the 2D engine and the 3D core at once (P8) as option C runs (ADR-0034 amendment P): FT2's test (a full-screen RGB565 render, a Gouraud background and a textured quad, ten full-screen 16-bit 2D copies queued straight after it) with the 3D target the 16-bit screen at local memory 0, inside the safe region, scanning out (or stopped, the control), the copies apart or beside; at Windows Mobile's clock, 149.50 / 2 and 108.33 / 1; per setting two renders alone (the first the reference), then {FT2_ROUNDS} together, each compared word for word"
+        );
+        // The clock steps only from Windows Mobile's clock and bus timing
+        // (ADR-0035); elsewhere (an emulator release without them) the
+        // as-found step alone, so the test itself still runs.
+        let found = (g.e.regs.read32(clock::COREPLL), diag::msc1());
+        let steps = if found.0 == ClockSpeed::WM.pll && found.1 == 0x2484_2481 {
+            &FT3_STEPS[..]
+        } else {
+            log!(
+                "  not Windows Mobile's clock and bus timing: the clock steps skipped, the clock as found only"
+            );
+            &FT3_STEPS[..1]
+        };
+        let Some(tex) = p_texture(g, 2, p_texel) else {
+            log!("  no memory for the texture");
+            return;
+        };
+        let Some(mut r) = Renderer::new(&mut g.pool, 480, 640) else {
+            log!("  no renderer");
+            p_texture_free(g, tex);
+            return;
+        };
+        let _ = r.set_background(Some(BLACK));
+        g.set(
+            &mut r,
+            0,
+            Some(Draw::rect(
+                0,
+                0,
+                480,
+                640,
+                Paint::Gouraud([BLACK, WHITE, BLUE, YELLOW]),
+            )),
+        );
+        g.set(
+            &mut r,
+            1,
+            Some(Draw::rect(40, 40, 400, 560, Paint::texture(tex))),
+        );
+        const WORDS: u32 = 480 * 640 * 2 / 4;
+        let total = steps.len() * 4;
+        let mut clean = 0;
+        let mut settings = 0;
+        for &(step, clock_name) in steps {
+            if let Some(s) = step {
+                let lock = clock_apply(g, s);
+                clock_readback(g);
+                let under = underrun_take(&mut g.e.regs);
+                log!("  FT3 at {clock_name}: lock {lock:?} us, the underrun flag {under}");
+                if lock.is_none() {
+                    clock_restore(&mut g.e.regs);
+                    log!("  the clock didn't take: Windows Mobile's put back, this step skipped");
+                    continue;
+                }
+            }
+            for (scan, shown) in [("scanning out", true), ("scan-out stopped", false)] {
+                for (place, bufs) in [("apart", FT2_APART), ("beside", FT2_NEAR)] {
+                    settings += 1;
+                    let mut l2 = heapless_name();
+                    let _ = write!(l2, "STEP {settings} OF {total}");
+                    label_at(
+                        g,
+                        FT3_PIC,
+                        ["RUN FT3 (P8, C)", l2.as_str(), clock_name],
+                        SOAK_BLUE,
+                    );
+                    p2w_show(&mut g.e.regs, FT3_PIC, 960, PlaneFormat::Rgb565 as u32);
+                    rt::delay_us(300_000);
+                    if !shown {
+                        let v = g.e.regs.read32(dreg::GSCADR);
+                        g.e.regs.write32(dreg::GSCADR, v & !(1 << 31));
+                        rt::delay_us(50_000);
+                    }
+                    for k in 0..8u16 {
+                        let w = rp_image::need(
+                            cmd::fill(
+                                Format::RGB565,
+                                bufs.0 as usize,
+                                960,
+                                (0, 80 * k, 480, 80 * k + 80),
+                                0x1111 * u32::from(k),
+                            ),
+                            "a 2D rectangle",
+                        );
+                        let _ = g.e.submit(&w);
+                    }
+                    let _ = g.e.finish(g.mem.0, 2_000_000);
+                    // Alone, twice: the reference, then its repeat.
+                    let (alone, _) = ft2_round(g, &mut r, FT3_PIC, bufs, false);
+                    let (w, n) = rp_image::need(
+                        cmd::copy(
+                            Format::RGB565,
+                            (FT2_REF as usize, 960),
+                            (FT3_PIC as usize, 960),
+                            (0, 0),
+                            (0, 0, 480, 640),
+                            0,
+                        ),
+                        "a 2D rectangle",
+                    );
+                    let _ = g.e.submit(&w[..n]);
+                    let _ = g.e.finish(g.mem.0, 2_000_000);
+                    let _ = ft2_round(g, &mut r, FT3_PIC, bufs, false);
+                    let (again, _) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
+                    let mut diffs = [0u32; FT2_ROUNDS];
+                    let mut first = None;
+                    let mut worst_3d = 0;
+                    let mut all_done = true;
+                    for d in &mut diffs {
+                        let (t3d, ok2) = ft2_round(g, &mut r, FT3_PIC, bufs, true);
+                        all_done &= ok2 && t3d.is_some();
+                        worst_3d = worst_3d.max(t3d.unwrap_or(0));
+                        let (n, f) = ft_diff(g, FT3_PIC, FT2_REF, WORDS);
+                        *d = n;
+                        if n != 0 && first.is_none() {
+                            first = Some(f);
+                        }
+                    }
+                    let under = underrun_take(&mut g.e.regs);
+                    let ok = again == 0 && diffs.iter().all(|&d| d == 0) && all_done;
+                    clean += u32::from(ok);
+                    log!(
+                        "  FT3 {clock_name}, {scan}, copies {place}: alone {alone:?} us, a second alone differs in {again} words; together {diffs:?} words differ (of {WORDS}), 3D at most {worst_3d} us, every job finished {all_done}, underrun {under} | {}",
+                        if ok { "CLEAN" } else { "ERRORS" }
+                    );
+                    if let Some(f) = first {
+                        log!("    the first difference (pixel, together, alone): {f:08x?}");
+                    }
+                }
+            }
+            if step.is_some() {
+                clock_restore(&mut g.e.regs);
+                let under = underrun_take(&mut g.e.regs);
+                log!(
+                    "  put back: COREPLL 0x{:x}, MBXCLK 0x{:x}, MSC1 0x{:08x}, the underrun flag {under} (cleared)",
+                    g.e.regs.read32(clock::COREPLL),
+                    g.e.regs.read32(MBXCLK),
+                    diag::msc1()
+                );
+            }
+        }
+        log!("FT3: {clean} of {settings} settings clean");
+        let _ = show_screen(&mut g.e.regs);
+        for k in 0..2 {
+            g.set(&mut r, k, None);
+        }
+        let _ = r.release(&mut g.pool);
+        p_texture_free(g, tex);
+        clock_card(g, ["RUN FT3", "DONE", ""], 0xFF10_6020, 3);
     }
 
     fn resolve(g: &mut Rig) {
@@ -7711,9 +7889,14 @@ mod image {
     /// The label: `bg` over the 16-bit screen ([`SOAK_ROWS`] of it) and
     /// three lines of up to 19 characters in white, drawn by the CPU.
     fn soak_label(g: &mut Rig, lines: [&str; 3], bg: u16) {
+        label_at(g, SOAK_LABEL, lines, bg);
+    }
+
+    /// [`soak_label`] drawn at `at` (a 16-bit screen, 960-byte rows).
+    fn label_at(g: &mut Rig, at: u32, lines: [&str; 3], bg: u16) {
         let row = [u32::from(bg) << 16 | u32::from(bg); 240];
         for y in 0..SOAK_ROWS {
-            g.mem.store((SOAK_LABEL + y * 960) as usize, &row);
+            g.mem.store((at + y * 960) as usize, &row);
         }
         for (k, l) in lines.iter().enumerate() {
             let y0 = SOAK_TOP + SOAK_PITCH * k as u32;
@@ -7730,9 +7913,9 @@ mod image {
                         }
                         for dy in 0..SOAK_SCALE {
                             let y = y0 + gy as u32 * SOAK_SCALE + dy;
-                            let at = SOAK_LABEL + y * 960 + 2 * (x0 + gx * SOAK_SCALE);
+                            let px_at = at + y * 960 + 2 * (x0 + gx * SOAK_SCALE);
                             let px = [u32::MAX; 2];
-                            g.mem.store(at as usize, &px[..SOAK_SCALE as usize / 2]);
+                            g.mem.store(px_at as usize, &px[..SOAK_SCALE as usize / 2]);
                         }
                     }
                 }
@@ -8820,12 +9003,15 @@ mod image {
         }
     }
 
-    /// Run GC3's first part: run FT2 (2D, 3D and scan-out at once) under
-    /// each of [`GC3_SETS`], each put back after.
+    /// Run GC3 (rebuilt 2026-10-24, the give-up audit's item 2): run FT3
+    /// (2D, 3D and scan-out at once in option C's layout) under each of
+    /// [`GC3_SETS`], each put back after. Item 3 (GC2 under the same sets)
+    /// was answered by GC2S (the screen in the safe region: 9 of 9 right at
+    /// 133.25 and 149.50 / 2), so GC2 no longer runs here.
     #[inline(never)]
     fn gc3_together(g: &mut Rig) {
         for (name, sets) in GC3_SETS {
-            log!("GC3 FT2 under {name}");
+            log!("GC3 FT3 under {name}");
             let mut was = [(0usize, 0u32); 4];
             for (w, &(off, v)) in was.iter_mut().zip(sets) {
                 *w = (off, g.e.regs.read32(off));
@@ -8836,7 +9022,7 @@ mod image {
                     g.e.regs.read32(off)
                 );
             }
-            together2(g);
+            together3(g);
             for &(off, v) in &was[..sets.len()] {
                 g.e.regs.write32(off, v);
                 rt::delay_us(1_000);
@@ -11173,7 +11359,9 @@ mod image {
             } else if GC3T {
                 "GC3T (render-to-texture: every other render-block word's bits flipped alone)"
             } else if GC3 {
-                "GC3 (the memory interface's drive strength and the display's refresh window: run FT2 and GC2's rules under each)"
+                "GC3 (the memory interface's drive strength and the display's refresh window: run FT3, option C's layout, under each)"
+            } else if FT3 {
+                "FT3 (2D and 3D at once as option C runs: the 3D target the scanned-out screen at 0, three clocks)"
             } else if GC2_W {
                 "GC2W (the write-out downsample at divide 1: nine kinds, four write-outs, 58.50 to 133.25 MHz)"
             } else if GC2_F {
@@ -11305,7 +11493,9 @@ mod image {
             gc3t(&mut g);
         } else if GC3 {
             gc3_together(&mut g);
-            content_map2(&mut g);
+            rp_hal_x51v::devices::kept_stop();
+        } else if FT3 {
+            together3(&mut g);
             rp_hal_x51v::devices::kept_stop();
         } else if GC2 {
             content_map2(&mut g);
