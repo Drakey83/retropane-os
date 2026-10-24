@@ -15,3 +15,4 @@ lcov.info
 
 # Worktrees the desktop app makes for worker agents
 .claude/worktrees/
+__pycache__/
