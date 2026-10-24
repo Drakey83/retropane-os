@@ -303,6 +303,14 @@ impl<B: RegisterBus> Stopped<'_, B> {
 
     /// The clocks back on as found.
     pub fn resume(self) {}
+
+    /// The clocks back on as `mbxclk` (its divider and enable, an enable of
+    /// 0 written as 1, as [`restore`]): a divider changed while the clocks
+    /// are off, Dell's order for the cores' divider (`ddi_2700g`
+    /// `0x02120370`, docs/hw/2700g.md "Dell's register writes").
+    pub fn resume_as(mut self, mbxclk: u32) {
+        self.was = never_off(mbxclk);
+    }
 }
 
 impl<B: RegisterBus> Drop for Stopped<'_, B> {
@@ -454,6 +462,21 @@ mod tests {
         bus.preset(MBXCLK, 0xA);
         stop(&mut bus).resume();
         assert_eq!(&bus.writes()[2..], [(MBXCLK, 0x8), (MBXCLK, 0xA)]);
+    }
+
+    #[test]
+    fn resume_as_changes_the_divider_with_the_clocks_off() {
+        let mut bus = rp_hal_mock::MockBus::new();
+        // Divide 2 with both clocks, to divide 1 with the 2D clock (G5's
+        // clock order): off, then the new value; never left off.
+        bus.preset(MBXCLK, 0x6);
+        stop(&mut bus).resume_as(0x2);
+        bus.preset(MBXCLK, 0x6);
+        stop(&mut bus).resume_as(0x0);
+        assert_eq!(
+            bus.writes(),
+            [(MBXCLK, 0x4), (MBXCLK, 0x2), (MBXCLK, 0x4), (MBXCLK, 0x1)]
+        );
     }
 
     #[test]

@@ -1977,10 +1977,14 @@ mod image {
             return false;
         }
         let clk = regs.read32(MBXCLK);
+        // Dell's order: the divider written with both clocks off (through
+        // the guard, quality audit C43; G5's device runs wrote 0, the
+        // divider bits too, before it: here the divider is kept while off).
         if dell_order {
-            regs.write32(MBXCLK, 0);
+            clock::stop(regs).resume_as(clk & 3);
+        } else {
+            clock::restore(regs, clk & 3);
         }
-        clock::restore(regs, clk & 3);
         rt::delay_us(1_000);
         let cs3 = if speed.khz() < 99_000 {
             CS3_LONG
