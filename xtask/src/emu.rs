@@ -3250,7 +3250,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
             input: Some((&rp_loadproto::frame(&payload), "full loader div1: ends")),
             during: Some(&check),
             then: Some("RPL END"),
-            timeout: Duration::from_secs(900),
+            // The emulator writes the ~2,300 lines a dump slowly: 900 s saw
+            // one dump and two thirds of the next (2026-10-23).
+            timeout: Duration::from_secs(2700),
         },
     )?;
     let log = output
