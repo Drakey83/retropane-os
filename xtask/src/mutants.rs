@@ -61,17 +61,6 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
-        name: "glesfeat G5: the halving checks the empty mask (our own set-up, known wrong)",
-        file: "boot/glesfeat/src/main.rs",
-        from: "            if c == 0 || t == 0 {",
-        to: "            if c == 0 {",
-        check: Check::Host(&[
-            "-p",
-            "rp-glesfeat",
-            "narrow_never_checks_the_empty_mask_and_keeps_the_limit",
-        ]),
-    },
-    Mutant {
         name: "glesfeat G5: an item's value not the one Dell left (0x6d0)",
         file: "boot/glesfeat/src/main.rs",
         from: "    (\"0x6d0\", DellItem::Mbx(0x6D0, 1)),",

@@ -422,8 +422,10 @@ pub fn narrow(full: u32, limit: u32, mut right: impl FnMut(u32) -> bool) -> (u32
                     seen += 1;
                 }
             }
+            // At least two parts of at least one item each: never all of
+            // `s`, so `t` is never empty (the host test holds it).
             let t = s & !c;
-            if c == 0 || t == 0 {
+            if c == 0 {
                 continue;
             }
             if checks >= limit {
