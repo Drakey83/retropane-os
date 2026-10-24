@@ -140,6 +140,21 @@ impl Tiles {
         self.bits.iter().all(|&w| w == 0)
     }
 
+    /// The tile numbers in, descending (the reverse of [`Self::iter`]).
+    pub fn iter_rev(&self) -> impl Iterator<Item = usize> + '_ {
+        self.bits.iter().enumerate().rev().flat_map(|(i, &w)| {
+            let mut w = w;
+            core::iter::from_fn(move || {
+                if w == 0 {
+                    return None;
+                }
+                let b = 31 - w.leading_zeros() as usize;
+                w &= !(1 << b);
+                Some(i * 32 + b)
+            })
+        })
+    }
+
     /// The tile numbers in, ascending (row order).
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.bits.iter().enumerate().flat_map(|(i, &w)| {
@@ -159,6 +174,23 @@ impl Tiles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_reverse_order_is_every_tile_once_descending() {
+        // Each end of a word, the words' seams, a middle one, the last.
+        let set = [0, 1, 31, 32, 33, 63, 64, 500, 2399];
+        let mut t = Tiles::new();
+        for k in set {
+            t.bits[k / 32] |= 1 << (k % 32);
+        }
+        assert!(t.iter().eq(set.iter().copied()));
+        assert!(t.iter_rev().eq(set.iter().rev().copied()));
+        assert_eq!(Tiles::new().iter_rev().count(), 0);
+        // Every tile of a full grid, once each, in reverse.
+        let mut all = Tiles::new();
+        all.add_first(2400);
+        assert!(all.iter_rev().eq((0..2400).rev()));
+    }
 
     #[test]
     fn pixels_to_tiles() {

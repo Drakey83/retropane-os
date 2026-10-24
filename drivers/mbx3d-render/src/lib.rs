@@ -1038,6 +1038,10 @@ pub struct Renderer {
     irq: bool,
     /// `irq` changed since the enables were last written.
     irq_stale: bool,
+    /// The region array lists the tiles in reverse (the core draws them in
+    /// the array's order): a measurement's choice (`rp-gpubench` run GC2L),
+    /// row order otherwise.
+    reverse_tiles: bool,
 }
 
 impl Renderer {
@@ -1101,7 +1105,15 @@ impl Renderer {
             clock_policy: ClockPolicy::KeepAll,
             irq: false,
             irq_stale: false,
+            reverse_tiles: false,
         })
+    }
+
+    /// The tiles listed for the core in reverse order (last tile first), or
+    /// in row order (the default). The picture is the same either way; the
+    /// order the core draws its tiles in is what changes.
+    pub fn set_tiles_reversed(&mut self, on: bool) {
+        self.reverse_tiles = on;
     }
 
     /// Gives the region array back to `pool`.
@@ -1544,10 +1556,20 @@ impl Renderer {
         let (mut nb, mut flushed, mut n, mut lists) = (0usize, 0u32, 0u32, 0u32);
         let (mut quads, mut cost) = (0, 0);
         let (mut row, mut row_mask) = (u32::MAX, 0u64);
-        for k in todo.iter() {
+        let (mut fwd, mut rev) = if self.reverse_tiles {
+            (None, Some(todo.iter_rev()))
+        } else {
+            (Some(todo.iter()), None)
+        };
+        let mut next = || match (&mut fwd, &mut rev) {
+            (Some(f), _) => f.next(),
+            (_, Some(r)) => r.next(),
+            _ => None,
+        };
+        while let Some(k) = next() {
             let (x, y) = (k as u32 % self.cols, k as u32 / self.cols);
             if y >= self.rows {
-                break;
+                continue;
             }
             if y != row {
                 row = y;

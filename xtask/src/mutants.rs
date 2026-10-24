@@ -48,6 +48,72 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "gpubench GC2L: the second target a whole number of rows on",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const SWEEP_AT_OFFSET: u32 = 0x8000;",
+        to: "pub const SWEEP_AT_OFFSET: u32 = 0x7800;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2L: option C's arm off the screen's 0x0",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    w[2].at = SWEEP_AT_SCREEN;",
+        to: "    w[2].at = INSIDE_AT;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2L: no arm with the tiles reversed",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    w[3].reverse = true;",
+        to: "    w[3].reverse = false;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target",
+        ]),
+    },
+    Mutant {
+        name: "mbx3d-render: the reversed tiles in row order after all",
+        file: "drivers/mbx3d-render/src/tiles.rs",
+        from: "                let b = 31 - w.leading_zeros() as usize;",
+        to: "                let b = w.trailing_zeros() as usize;",
+        check: Check::Host(&[
+            "-p",
+            "rp-mbx3d-render",
+            "the_reverse_order_is_every_tile_once_descending",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2L: the row sweep one row short",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "            quad: (43, 45, 400, 547 + r as i32),",
+        to: "            quad: (43, 45, 400, 546 + r as i32),",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2L: the tile sweep's corner at the tile's start",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const SWEEP_IN_TILE: (i32, i32) = (3, 13);",
+        to: "pub const SWEEP_IN_TILE: (i32, i32) = (0, 0);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target",
+        ]),
+    },
+    Mutant {
         name: "gpubench GC2K: the shift on a tile seam",
         file: "boot/gpubench/src/gc2.rs",
         from: "pub const PATCH_SHIFT: (i32, i32) = (3, 5);",

@@ -322,6 +322,35 @@ fn gouraud_corners_and_middle() {
     assert_eq!(g.px(300, 300), c[1]);
 }
 
+#[test]
+fn reversed_tiles_draw_the_same_picture_and_list_every_tile() {
+    // Gouraud under a textured quad whose corner sits mid-tile (run GC2K's
+    // scene, smaller): rendered whole in row order, then reversed.
+    let mut g = rig(480, 640);
+    let tex = columns(&mut g);
+    let c = [0xFF00_0000, 0xFFFF_FFFF, 0xFF10_20A0, 0xFFFF_E000];
+    g.set(0, Some(Draw::rect(0, 0, 480, 640, Paint::Gouraud(c))));
+    g.set(1, Some(Draw::rect(43, 45, 400, 560, Paint::texture(tex))));
+    let fwd = g.frame();
+    let words = |g: &Rig| -> Vec<u32> {
+        (0..480 * 640)
+            .map(|i| g.mem.px(SCREEN.at, SCREEN.stride, i % 480, i / 480))
+            .collect()
+    };
+    let a = words(&g);
+    g.r.set_tiles_reversed(true);
+    g.r.invalidate_all();
+    let rev = g.frame();
+    assert_eq!(words(&g), a);
+    assert_eq!(rev.tiles, fwd.tiles);
+    assert_eq!(rev.tiles, 60 * 40);
+    // Back to row order: the same again.
+    g.r.set_tiles_reversed(false);
+    g.r.invalidate_all();
+    g.frame();
+    assert_eq!(words(&g), a);
+}
+
 /// An 8 x 8 RGB565 texture whose column `x` is colour `x`.
 fn columns(g: &mut Rig) -> Texture {
     let texels: Vec<u16> = (0..64).map(|i| ((i % 8) as u16 + 1) * 0x0841).collect();

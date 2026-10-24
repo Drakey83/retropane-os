@@ -386,6 +386,114 @@ pub const fn patch_spot(way: usize, x: i32, y: i32) -> (bool, bool) {
     )
 }
 
+/// One of run GC2L's ways: the textured quad (x, y, width, height), the
+/// Gouraud background's shift, where the target is, and whether the
+/// renderer lists the tiles in reverse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SweepWay {
+    pub quad: (i32, i32, i32, i32),
+    pub shift: (i32, i32),
+    pub at: u32,
+    pub reverse: bool,
+}
+
+impl SweepWay {
+    /// The quad's bottom-left corner.
+    #[must_use]
+    pub const fn corner(&self) -> (i32, i32) {
+        (self.quad.0, self.quad.1 + self.quad.3)
+    }
+}
+
+/// Run GC2L's second target place: 32 KiB past [`INSIDE_AT`], still inside
+/// the safe region (the screen's picture moves 34 rows and 128 pixels in
+/// memory, so a fault tied to the memory address moves on the screen and
+/// one tied to the screen's tiles doesn't).
+pub const SWEEP_AT_OFFSET: u32 = 0x8000;
+
+/// Run GC2L's third: `0x0`, where option C draws (ADR-0034 amendment P:
+/// the screen itself).
+pub const SWEEP_AT_SCREEN: u32 = 0;
+
+/// The tile sweep's quad (width, height) and its corner's place inside its
+/// 8 x 16 tile: GC2K's worst (corner (43, 605): 3 across, 13 down).
+pub const SWEEP_SMALL: (i32, i32) = (120, 120);
+pub const SWEEP_IN_TILE: (i32, i32) = (3, 13);
+
+/// The tile sweep's tile columns and rows (4 x 4 over the screen; tile
+/// column 5 and row 37 are GC2K's).
+pub const SWEEP_COLS: [i32; 4] = [5, 20, 35, 42];
+pub const SWEEP_ROWS: [i32; 4] = [9, 19, 29, 37];
+
+/// Where GC2L's row and tile sweeps go: 4 and 20 (after the four
+/// controls).
+pub const SWEEP_ROWS_AT: usize = 4;
+pub const SWEEP_TILES_AT: usize = 20;
+
+/// Run GC2L's ways: 0 GC2K's worst way (the whole scene shifted, corner
+/// (43, 605)) at [`INSIDE_AT`]; 1 the same at [`SWEEP_AT_OFFSET`] past it;
+/// 2 the same at [`SWEEP_AT_SCREEN`] (option C's place); 3 the same at
+/// [`INSIDE_AT`] with the tiles listed in reverse; 4-19 the row sweep
+/// (FT2's quad at x 43, its bottom edge on each row 592-607 of the tile
+/// row, the background unshifted); 20-35 the tile sweep ([`SWEEP_SMALL`]
+/// quads, the corner at [`SWEEP_IN_TILE`] in each of [`SWEEP_COLS`] x
+/// [`SWEEP_ROWS`]).
+pub const SWEEP: [SweepWay; 36] = {
+    let shifted = SweepWay {
+        quad: (43, 45, 400, 560),
+        shift: PATCH_SHIFT,
+        at: INSIDE_AT,
+        reverse: false,
+    };
+    let mut w = [shifted; 36];
+    w[1].at = INSIDE_AT + SWEEP_AT_OFFSET;
+    w[2].at = SWEEP_AT_SCREEN;
+    w[3].reverse = true;
+    let mut r = 0;
+    while r < 16 {
+        // (x, y, width, height): the bottom edge on row 592 + r.
+        w[SWEEP_ROWS_AT + r] = SweepWay {
+            quad: (43, 45, 400, 547 + r as i32),
+            shift: (0, 0),
+            at: INSIDE_AT,
+            reverse: false,
+        };
+        r += 1;
+    }
+    let mut i = 0;
+    while i < 16 {
+        let (cx, cy) = (
+            8 * SWEEP_COLS[i % 4] + SWEEP_IN_TILE.0,
+            16 * SWEEP_ROWS[i / 4] + SWEEP_IN_TILE.1,
+        );
+        w[SWEEP_TILES_AT + i] = SweepWay {
+            quad: (cx, cy - SWEEP_SMALL.1, SWEEP_SMALL.0, SWEEP_SMALL.1),
+            shift: (0, 0),
+            at: INSIDE_AT,
+            reverse: false,
+        };
+        i += 1;
+    }
+    w
+};
+
+/// Way `way`'s scene: FT2's Gouraud background (shifted as the way says)
+/// and its 8888 texture on the way's quad.
+#[must_use]
+pub fn sweep_scene(way: usize, t: Tex) -> (u32, [Option<Draw>; 3]) {
+    let s = SWEEP[way];
+    let gouraud = Draw::rect(s.shift.0, s.shift.1, W as i32, H as i32, Paint::Gouraud(CORNERS));
+    let (x, y, w, h) = s.quad;
+    (
+        BLACK,
+        [
+            Some(gouraud),
+            Some(Draw::rect(x, y, w, h, Paint::texture(t.t8888))),
+            None,
+        ],
+    )
+}
+
 /// Words in one band of kind `k`'s picture.
 #[must_use]
 pub const fn band_words(k: usize) -> u32 {

@@ -171,6 +171,62 @@ fn gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart() {
 }
 
 #[test]
+fn gc2l_sweeps_the_corner_over_rows_and_tiles_and_moves_the_target() {
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    // Ways 0-3 are GC2K's worst way: at INSIDE_AT, 32 KiB on, at the
+    // screen's 0x0 (option C), and with the tiles reversed; every target
+    // inside the safe region; only way 3 reversed.
+    let unused = TEXTURES[0];
+    assert_eq!(sweep_scene(0, t), patch_scene(1, t, unused));
+    for w in 1..4 {
+        assert_eq!(sweep_scene(w, t), sweep_scene(0, t), "way {w}");
+    }
+    assert_eq!(SWEEP[0].corner(), (43, 605));
+    assert_eq!(
+        [SWEEP[0].at, SWEEP[1].at, SWEEP[2].at, SWEEP[3].at],
+        [INSIDE_AT, INSIDE_AT + SWEEP_AT_OFFSET, 0, INSIDE_AT]
+    );
+    assert!(SWEEP.iter().all(|w| w.at + 2 * W * H <= SAFE_END));
+    assert!(SWEEP.iter().enumerate().all(|(i, w)| w.reverse == (i == 3)));
+    // The moved target shifts the picture in memory by whole words, and
+    // not by whole rows: an address-tied fault moves on the screen.
+    assert!(SWEEP_AT_OFFSET.is_multiple_of(4) && !SWEEP_AT_OFFSET.is_multiple_of(2 * W));
+    // The row sweep: x 43, the bottom edge on every row of 592-607 once.
+    let rows_at = SWEEP_ROWS_AT..SWEEP_ROWS_AT + 16;
+    let rows: std::vec::Vec<i32> = rows_at.clone().map(|w| SWEEP[w].corner().1).collect();
+    assert_eq!(rows, (592..608).collect::<std::vec::Vec<_>>());
+    assert!(rows_at.clone().all(|w| SWEEP[w].corner().0 == 43 && SWEEP[w].shift == (0, 0)));
+    // The tile sweep: 16 different tiles, the corner where GC2K's worst
+    // way had it in its tile (3 across, 13 down) in each, every quad on the
+    // screen; GC2K's tile among them.
+    assert_eq!(SWEEP_IN_TILE, (SWEEP[0].corner().0 % 8, SWEEP[0].corner().1 % 16));
+    let mut tiles = std::vec::Vec::new();
+    assert_eq!(SWEEP_TILES_AT + 16, SWEEP.len());
+    for (w, way) in SWEEP.iter().enumerate().skip(SWEEP_TILES_AT) {
+        let (cx, cy) = way.corner();
+        assert_eq!((cx % 8, cy % 16), SWEEP_IN_TILE, "way {w}");
+        let (x, y, qw, qh) = way.quad;
+        assert!(x >= 0 && y >= 0 && x + qw <= W as i32 && y + qh <= H as i32, "way {w}");
+        tiles.push((cx / 8, cy / 16));
+    }
+    tiles.sort_unstable();
+    tiles.dedup();
+    assert_eq!(tiles.len(), 16);
+    assert!(tiles.contains(&(5, 37)));
+    // Every way a different scene, place or order.
+    for (a, wa) in SWEEP.iter().enumerate() {
+        for (b, wb) in SWEEP.iter().enumerate().skip(a + 1) {
+            assert!(wa != wb, "{a} {b}");
+        }
+    }
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {

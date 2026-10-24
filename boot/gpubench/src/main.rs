@@ -7658,8 +7658,18 @@ mod image {
     /// them (the run's control for the placement); then a soak of the
     /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
     /// the first wrong render. Test-only, as GC2S. Unattended.
-    const GC2_INSIDE: bool =
-        option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_SOAK2 || GC2_PATCH;
+    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some()
+        || GC2_SOAK2
+        || GC2_PATCH
+        || GC2_SWEEP;
+
+    /// Run GC2L (`RP_GPUBENCH_GC2_SWEEP`, the owner's ask after GC2K,
+    /// 2026-10-24): GC2K's patch mapped at [`GC2L_STEPS`] over
+    /// [`gc2::SWEEP`]'s ways (the textured quad's corner over every row of a
+    /// tile row and over 16 tiles; GC2K's worst way at three addresses,
+    /// option C's `0x0` among them, and with the tiles reversed), each
+    /// wrong pixel placed. Unattended.
+    const GC2_SWEEP: bool = option_env!("RP_GPUBENCH_GC2_SWEEP").is_some();
 
     /// Run GC2K (`RP_GPUBENCH_GC2_PATCH`, the owner's ask after GC2J,
     /// 2026-10-24): GC2J's patch isolated at 133.25 / 1 over
@@ -8447,7 +8457,7 @@ mod image {
     ];
 
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 || GC2_PATCH {
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 || GC2_PATCH || GC2_SWEEP {
         &[]
     } else if GC2_SAFE {
         &GC2_S_STEPS
@@ -8639,8 +8649,13 @@ mod image {
 
     /// Kind `k`'s picture read into `into` (the first read), checking in.
     fn gc2_take(g: &mut Rig, k: usize, into: &mut [u32]) {
+        gc2_take_at(g, gc_at(k), into);
+    }
+
+    /// The picture at `at` read into `into`, checking in.
+    fn gc2_take_at(g: &mut Rig, at: u32, into: &mut [u32]) {
         for (i, w) in into.iter_mut().enumerate() {
-            *w = g.mem.load(gc_at(k) as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            *w = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
             if i % 16_384 == 16_383 {
                 rt::check_in();
             }
@@ -8670,13 +8685,29 @@ mod image {
         base: &mut Gc2Baseline,
         side: &mut Gc2Side,
     ) -> Option<u32> {
+        gc2_render_at(g, r, (k, gc_at(k)), want, first, clock_want, base, side)
+    }
+
+    /// [`gc2_render`] with kind `k`'s target at `at` (run GC2L's second
+    /// place).
+    #[expect(clippy::too_many_arguments, reason = "one render's whole context")]
+    fn gc2_render_at(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (k, at): (usize, u32),
+        want: &[u32],
+        first: &mut [u32],
+        clock_want: [u32; 5],
+        base: &mut Gc2Baseline,
+        side: &mut Gc2Side,
+    ) -> Option<u32> {
         side.renders += 1;
         side.underrun += u32::from(underrun_take(&mut g.e.regs));
         side.dark += u32::from(side.watch_dsig && g.e.regs.read32(DSIG) == 0);
         let before = gc2_regs(g);
         r.invalidate_all();
         let target = Target {
-            picture: Picture::packed(gc_at(k), 480, 640, gc2::KINDS[k].1),
+            picture: Picture::packed(at, 480, 640, gc2::KINDS[k].1),
             x: 0,
             y: 0,
         };
@@ -8704,13 +8735,13 @@ mod image {
         side.best_us = side.best_us.min(us);
         side.worst_us = side.worst_us.max(us);
         let words = gc2::words(k) as usize;
-        gc2_take(g, k, &mut first[..words]);
+        gc2_take_at(g, at, &mut first[..words]);
         gc2_wait();
         let f = gc2::KINDS[k].1;
         let mut t = gc2::Tally::default();
         let mut wrong = 0;
         for i in 0..words {
-            let got = g.mem.load(gc_at(k) as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            let got = g.mem.load(at as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
             side.unsettled += u32::from(got != first[i]);
             if got != want[i] {
                 wrong += 1;
@@ -8824,7 +8855,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_PATCH {
+            if GC2_SWEEP {
+                "the 16-bit kinds' targets inside the safe region (GC2L: no map; GC2K's patch mapped at 117.00 and 133.25 / 1: the textured quad's corner over every row of a tile row and 16 tiles, GC2K's worst way at three addresses (0x0 among them) and with the tiles reversed),"
+            } else if GC2_PATCH {
                 "the 16-bit kinds' targets inside the safe region (GC2K: no map; GC2J's patch isolated at 133.25 / 1: FT2 as is, shifted, its quad moved, untextured, 16-bit textured),"
             } else if GC2_SOAK2 {
                 "the 16-bit kinds' targets inside the safe region (GC2J: no map; a soak at 108.33, 117.00 and 133.25 / 1, FT2's texture inside and outside),"
@@ -8943,7 +8976,9 @@ mod image {
         }
         let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
         // GC2K: its ways' references after the first read's buffer.
-        let patch = if GC2_PATCH {
+        let patch = if GC2_SWEEP {
+            gc2::SWEEP.len() * gc2::words(gc2::FT2) as usize
+        } else if GC2_PATCH {
             gc2::PATCH_WAYS.len() * gc2::words(gc2::FT2) as usize
         } else {
             0
@@ -9267,7 +9302,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_PATCH {
+                if GC2_SWEEP {
+                    gc2_sweep(g, &mut r, tex, first, dsig);
+                } else if GC2_PATCH {
                     gc2_patch(g, &mut r, tex, (&*refs, &offs), first, dsig);
                 } else if GC2_SOAK2 {
                     gc2_soak2(g, &mut r, tex, (&*refs, &offs), first, dsig);
@@ -9896,6 +9933,300 @@ mod image {
         let _ = write!(l3, "DONE: {all} WRONG");
         soak_label(g, ["GC2K PATCH", label, l3.as_str()], SOAK_BLUE);
         let _ = rp_mbx3d_render::release(&mut g.pool, t565);
+    }
+
+    /// Run GC2L's settings (the owner: 117.00 as well as 133.25, to learn
+    /// whether 117.00 is clean apart from the patch), and each one's length:
+    /// three times [`SOAK_SECS`] (60 minutes: about 330 renders a way).
+    const GC2L_STEPS: [(ClockStep, &str); 2] = [
+        (gc2_step(27, 3, 0, 1), "117.00 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+    const GC2L_SECS: u32 = 3 * SOAK_SECS;
+
+    /// GC2L's wrong pixels of one way: how many, and their box on the
+    /// screen and against the way's quad corner.
+    #[derive(Clone, Copy)]
+    struct SweepSpots {
+        pixels: u32,
+        abs: (i32, i32, i32, i32),
+        rel: (i32, i32, i32, i32),
+    }
+
+    impl SweepSpots {
+        const NONE: Self = Self {
+            pixels: 0,
+            abs: (i32::MAX, i32::MAX, i32::MIN, i32::MIN),
+            rel: (i32::MAX, i32::MAX, i32::MIN, i32::MIN),
+        };
+
+        fn add(&mut self, (x, y): (i32, i32), (cx, cy): (i32, i32)) {
+            let grow = |b: &mut (i32, i32, i32, i32), x: i32, y: i32| {
+                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            };
+            self.pixels += 1;
+            grow(&mut self.abs, x, y);
+            grow(&mut self.rel, x - cx, y - cy);
+        }
+    }
+
+    /// GC2L's place report: every way with wrong pixels, its count and
+    /// boxes (`when` names the moment).
+    fn sweep_report(when: &str, rounds: u32, wrong: &[u32], spots: &[SweepSpots]) {
+        log!("  GC2L places {when} ({rounds} rounds):");
+        for (w, s) in spots.iter().enumerate() {
+            if s.pixels == 0 {
+                continue;
+            }
+            let c = gc2::SWEEP[w].corner();
+            log!(
+                "    GC2L way {w} (corner ({}, {}), target 0x{:x}{}): {} renders wrong, {} pixels placed; on the screen x {}-{} y {}-{}; from the corner x {}..{} y {}..{}",
+                c.0,
+                c.1,
+                gc2::SWEEP[w].at,
+                if gc2::SWEEP[w].reverse {
+                    ", tiles reversed"
+                } else {
+                    ""
+                },
+                wrong[w],
+                s.pixels,
+                s.abs.0,
+                s.abs.2,
+                s.abs.1,
+                s.abs.3,
+                s.rel.0,
+                s.rel.2,
+                s.rel.1,
+                s.rel.3
+            );
+        }
+    }
+
+    /// Run GC2L: each of [`gc2::SWEEP`]'s ways given its reference at
+    /// Windows Mobile's clock (three renders alike; ways 0 and 1, one scene
+    /// at two places, the same picture), then at 133.25 / 1 for
+    /// [`GC2L_SECS`] the ways in turn, every render held to its way's
+    /// reference as every GC2 render; each wrong render's pixels (up to
+    /// three, and its box's corners) placed on the screen and against the
+    /// way's quad corner; a line of counts a minute and the places every
+    /// ten minutes and at the end (a stop loses little); a render whose
+    /// clock, registers or display don't hold stops it; the controls at
+    /// Windows Mobile's clock after.
+    #[inline(never)]
+    fn gc2_sweep(g: &mut Rig, r: &mut Renderer, tex: gc2::Tex, first: &mut [u32], dsig: bool) {
+        const N: usize = gc2::SWEEP.len();
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < N * words {
+            log!("  GC2L: not enough SDRAM for the references: nothing run");
+            return;
+        }
+        let at_of = |w: usize| gc2::SWEEP[w].at;
+        let set = |g: &mut Rig, r: &mut Renderer, w: usize| {
+            r.set_tiles_reversed(gc2::SWEEP[w].reverse);
+            let (bg, slots) = gc2::sweep_scene(w, tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        r.start_clean();
+        let mut refs_ok = true;
+        for w in 0..N {
+            set(g, r, w);
+            let want = &mut rest[w * words..(w + 1) * words];
+            r.invalidate_all();
+            let t0 = g.frame(
+                r,
+                Target {
+                    picture: Picture::packed(at_of(w), 480, 640, gc2::KINDS[k].1),
+                    x: 0,
+                    y: 0,
+                },
+            );
+            gc2_take_at(g, at_of(w), want);
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            let again = [
+                gc2_render_at(g, r, (k, at_of(w)), want, first, wm, &mut base, &mut side),
+                gc2_render_at(g, r, (k, at_of(w)), want, first, wm, &mut base, &mut side),
+            ];
+            let ok = t0.is_some() && again == [Some(0); 2] && side.held();
+            refs_ok &= ok;
+            if !ok || w < gc2::SWEEP_ROWS_AT {
+                let c = gc2::SWEEP[w].corner();
+                log!(
+                    "  GC2L reference {w} (corner ({}, {}), target 0x{:x}, tiles {}): {t0:?} us, renders 2-3 {again:?} words off it; {}",
+                    c.0,
+                    c.1,
+                    at_of(w),
+                    if gc2::SWEEP[w].reverse { "reversed" } else { "in row order" },
+                    Gc2Held(&side)
+                );
+            }
+        }
+        // Ways 0-3: one scene at three places and in either order: one
+        // picture (a reversed list the core draws differently shows here).
+        let same = (1..gc2::SWEEP_ROWS_AT)
+            .all(|w| rest[..words] == rest[w * words..(w + 1) * words]);
+        log!(
+            "  GC2L references: {}; ways 0-3 (one scene at 0x{:x}, 0x{:x}, 0x{:x}, and with the tiles reversed) {}",
+            if refs_ok { "all repeatable and held" } else { "NOT all repeatable" },
+            at_of(0),
+            at_of(1),
+            at_of(2),
+            if same { "the same picture" } else { "DIFFERENT pictures" }
+        );
+        r.set_tiles_reversed(false);
+        if !refs_ok || !same {
+            log!("  GC2L: a reference isn't proven: nothing run at divide 1");
+            return;
+        }
+        let minutes = GC2L_SECS.div_ceil(60);
+        for (si, &(s, label)) in GC2L_STEPS.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "GC2L SWEEP {} OF {}", si + 1, GC2L_STEPS.len());
+            if !gc2_sweep_at(g, r, (s, label, l1.as_str()), (&*rest, first), minutes, (tex, dsig)) {
+                return;
+            }
+        }
+    }
+
+    /// GC2L at one setting: the ways in turn for [`GC2L_SECS`] (see
+    /// [`gc2_sweep`]). False if the setting stopped (the clock or a render
+    /// not held): the run ends there.
+    fn gc2_sweep_at(
+        g: &mut Rig,
+        r: &mut Renderer,
+        (s, label, l1): (ClockStep, &str, &str),
+        (rest, first): (&[u32], &mut [u32]),
+        minutes: u32,
+        (tex, dsig): (gc2::Tex, bool),
+    ) -> bool {
+        const N: usize = gc2::SWEEP.len();
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        let at_of = |w: usize| gc2::SWEEP[w].at;
+        let set = |g: &mut Rig, r: &mut Renderer, w: usize| {
+            r.set_tiles_reversed(gc2::SWEEP[w].reverse);
+            let (bg, slots) = gc2::sweep_scene(w, tex);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        soak_label(g, [l1, label, "STARTING"], SOAK_BLUE);
+        let want_regs = gc2_clock_want(s.speed(), s.div);
+        let lock = clock_apply(g, s);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2L {label}: the clock didn't take; Windows Mobile's put back");
+            soak_label(g, [l1, label, "CLOCK NOT TAKEN"], SOAK_RED);
+            return false;
+        }
+        log!("  GC2L {label}: lock {lock:?}; {N} ways in turn for {minutes} min");
+        clock_readback(g);
+        r.start_clean();
+        let mut bases: [Gc2Baseline; N] = core::array::from_fn(|_| Gc2Baseline(None));
+        let mut wrong_by = [0u32; N];
+        let mut spots = [SweepSpots::NONE; N];
+        let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
+        let end_us = u64::from(GC2L_SECS) * 1_000_000;
+        let mut unheld = None;
+        'soak: while elapsed_us < end_us {
+            let t0 = rt::ticks();
+            for w in 0..N {
+                set(g, r, w);
+                let want = &rest[w * words..(w + 1) * words];
+                let mut side = Gc2Side::new(dsig);
+                let wrong = gc2_render_at(
+                    g,
+                    r,
+                    (k, at_of(w)),
+                    want,
+                    first,
+                    want_regs,
+                    &mut bases[w],
+                    &mut side,
+                );
+                if !side.held() || wrong.is_none() {
+                    unheld = Some((w, wrong, side));
+                    elapsed_us += u64::from(us_since(t0));
+                    break 'soak;
+                }
+                if wrong.is_some_and(|n| n > 0) {
+                    wrong_by[w] += 1;
+                    let c = gc2::SWEEP[w].corner();
+                    let t = &side.tally;
+                    for &(x, y, _, _) in &t.first[..t.n_first] {
+                        spots[w].add((i32::from(x), i32::from(y)), c);
+                    }
+                    if let Some((x0, y0, x1, y1)) = t.bbox {
+                        spots[w].add((i32::from(x0), i32::from(y0)), c);
+                        spots[w].add((i32::from(x1), i32::from(y1)), c);
+                    }
+                }
+            }
+            rounds += 1;
+            elapsed_us += u64::from(us_since(t0));
+            if elapsed_us >= u64::from(lines + 1) * 60_000_000 || elapsed_us >= end_us {
+                lines += 1;
+                let all: u32 = wrong_by.iter().sum();
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "MIN {lines} OF {minutes} WRONG {all}");
+                soak_label(
+                    g,
+                    [l1, label, l3.as_str()],
+                    if all == 0 { SOAK_BLUE } else { SOAK_RED },
+                );
+                log!("  GC2L {label}, minute {lines}: {rounds} rounds, wrong renders by way {wrong_by:?}");
+                if lines % 10 == 0 {
+                    let mut when = heapless_name();
+                    let _ = write!(when, "{label} at minute {lines}");
+                    sweep_report(when.as_str(), rounds, &wrong_by, &spots);
+                }
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if let Some((w, wrong, side)) = &unheld {
+            log!(
+                "  GC2L {label}: STOPPED at way {w}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
+                rounds + 1,
+                elapsed_us / 1_000_000,
+                Gc2Held(side)
+            );
+            soak_label(g, [l1, label, "STOPPED: NOT HELD"], SOAK_RED);
+        }
+        log!(
+            "  GC2L {label}: {rounds} rounds ({} renders) in {} s; wrong renders by way {wrong_by:?}",
+            rounds * N as u32,
+            elapsed_us / 1_000_000
+        );
+        let mut when = heapless_name();
+        let _ = write!(when, "{label} at the end");
+        sweep_report(when.as_str(), rounds, &wrong_by, &spots);
+        r.start_clean();
+        let mut controls = 0;
+        for w in 0..N {
+            set(g, r, w);
+            let want = &rest[w * words..(w + 1) * words];
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            let wrong = gc2_render_at(g, r, (k, at_of(w)), want, first, wm, &mut base, &mut side);
+            controls += usize::from(wrong == Some(0) && side.held());
+        }
+        r.set_tiles_reversed(false);
+        log!("  GC2L {label}: controls at Windows Mobile's clock after: {controls} of {N} right");
+        let all: u32 = wrong_by.iter().sum();
+        let mut l3 = heapless_name();
+        let _ = write!(l3, "DONE: {all} WRONG");
+        soak_label(g, [l1, label, l3.as_str()], SOAK_BLUE);
+        unheld.is_none()
     }
 
     // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----
