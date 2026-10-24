@@ -302,6 +302,87 @@ pub const SOAK2: [(usize, bool); 7] = [
     (7, false),
 ];
 
+/// Run GC2K's ways (the owner, 2026-10-24: isolate GC2J's patch, every
+/// wrong pixel at x 21-37, y 604-607 beside FT2's quad's bottom-left
+/// corner, in the last rows of a tile row, across tile seams 24 and 32;
+/// the 3D core's tiles are 8 x 16): FT2 as is, the whole scene shifted, the
+/// quad moved, the quad untextured, the quad with a 16-bit texture.
+pub const PATCH_WAYS: [&str; 5] = [
+    "FT2 as is",
+    "the whole scene shifted (+3, +5)",
+    "the quad moved, its corner at (61, 571)",
+    "the quad untextured (flat grey)",
+    "the quad with a 16-bit texture (the same texels, RGB565)",
+];
+
+/// Way 1's shift: off every tile seam (not a multiple of 8 across or 16
+/// down), so a patch that follows the content moves and one tied to the
+/// tiles doesn't.
+pub const PATCH_SHIFT: (i32, i32) = (3, 5);
+
+/// FT2's quad: x, y, width, height.
+pub const FT2_QUAD: (i32, i32, i32, i32) = (40, 40, 400, 560);
+
+/// Way 2's quad: its bottom-left corner at (61, 571), off every seam and
+/// away from GC2J's patch.
+pub const PATCH_MOVED: (i32, i32, i32, i32) = (61, 37, 380, 534);
+
+/// Way 3's flat grey.
+pub const PATCH_GREY: u32 = 0xFF80_8080;
+
+/// Way `way`'s quad (x, y, width, height).
+#[must_use]
+pub const fn patch_quad(way: usize) -> (i32, i32, i32, i32) {
+    let (x, y, w, h) = FT2_QUAD;
+    match way {
+        1 => (x + PATCH_SHIFT.0, y + PATCH_SHIFT.1, w, h),
+        2 => PATCH_MOVED,
+        _ => FT2_QUAD,
+    }
+}
+
+/// Way `way`'s quad's bottom-left corner.
+#[must_use]
+pub const fn patch_corner(way: usize) -> (i32, i32) {
+    let (x, y, _, h) = patch_quad(way);
+    (x, y + h)
+}
+
+/// Way `way`'s scene: FT2's (its Gouraud background and the textured
+/// quad) changed as the way says; `t565` is the 16-bit texture for way 4.
+#[must_use]
+pub fn patch_scene(way: usize, t: Tex, t565: Texture) -> (u32, [Option<Draw>; 3]) {
+    let (sx, sy) = if way == 1 { PATCH_SHIFT } else { (0, 0) };
+    let gouraud = Draw::rect(sx, sy, W as i32, H as i32, Paint::Gouraud(CORNERS));
+    let (x, y, w, h) = patch_quad(way);
+    let paint = match way {
+        3 => Paint::Flat(PATCH_GREY),
+        4 => Paint::texture(t565),
+        _ => Paint::texture(t.t8888),
+    };
+    (BLACK, [Some(gouraud), Some(Draw::rect(x, y, w, h, paint)), None])
+}
+
+/// GC2J's patch as seen (x 21-37 by y 604-607), its columns widened by 2
+/// each side.
+pub const GC2J_PATCH: (i32, i32, i32, i32) = (19, 604, 39, 607);
+
+/// Where a wrong pixel at `(x, y)` of way `way` lies: at GC2J's place on
+/// the screen, at GC2J's place relative to this way's quad corner (where
+/// FT2's corner was: the patch following the content), both (ways where
+/// the corner didn't move), or neither.
+#[must_use]
+pub const fn patch_spot(way: usize, x: i32, y: i32) -> (bool, bool) {
+    let (x0, y0, x1, y1) = GC2J_PATCH;
+    let (cx, cy) = patch_corner(way);
+    let (fx, fy) = patch_corner(0);
+    let (rx, ry) = (x - cx + fx, y - cy + fy);
+    (
+        x >= x0 && x <= x1 && y >= y0 && y <= y1,
+        rx >= x0 && rx <= x1 && ry >= y0 && ry <= y1,
+    )
+}
+
 /// Words in one band of kind `k`'s picture.
 #[must_use]
 pub const fn band_words(k: usize) -> u32 {

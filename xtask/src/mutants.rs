@@ -48,6 +48,39 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "gpubench GC2K: the shift on a tile seam",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const PATCH_SHIFT: (i32, i32) = (3, 5);",
+        to: "pub const PATCH_SHIFT: (i32, i32) = (8, 16);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2K: a pixel placed against FT2's corner, not its way's",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    let (rx, ry) = (x - cx + fx, y - cy + fy);",
+        to: "    let (rx, ry) = (x - fx + fx, y - fy + fy);\n    let _ = (cx, cy);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2K: the shifted way's quad left in place",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "        1 => (x + PATCH_SHIFT.0, y + PATCH_SHIFT.1, w, h),",
+        to: "        1 => (x, y, w, h),",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart",
+        ]),
+    },
+    Mutant {
         name: "gpubench GC2J: FT2's inside texture right at the target's end",
         file: "boot/gpubench/src/gc2.rs",
         from: "pub const TEX_INSIDE: u32 = INSIDE_AT + 2 * W * H + 0x1000;",

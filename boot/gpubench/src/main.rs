@@ -7658,7 +7658,14 @@ mod image {
     /// them (the run's control for the placement); then a soak of the
     /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
     /// the first wrong render. Test-only, as GC2S. Unattended.
-    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_SOAK2;
+    const GC2_INSIDE: bool =
+        option_env!("RP_GPUBENCH_GC2_INSIDE").is_some() || GC2_SOAK2 || GC2_PATCH;
+
+    /// Run GC2K (`RP_GPUBENCH_GC2_PATCH`, the owner's ask after GC2J,
+    /// 2026-10-24): GC2J's patch isolated at 133.25 / 1 over
+    /// [`gc2::PATCH_WAYS`], each wrong pixel placed on the screen and
+    /// against its way's quad corner. Unattended.
+    const GC2_PATCH: bool = option_env!("RP_GPUBENCH_GC2_PATCH").is_some();
 
     /// Run GC2J (`RP_GPUBENCH_GC2_SOAK2`, the owner's ask after GC2I,
     /// 2026-10-24): GC2I's references, no map, then [`SOAK_SECS`] at each of
@@ -8439,7 +8446,7 @@ mod image {
     ];
 
     /// The settings this build runs (rule 8 for GC2), rising.
-    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 {
+    const GC2_STEPS: &[(ClockStep, &str)] = if GC2_SOAK2 || GC2_PATCH {
         &[]
     } else if GC2_SAFE {
         &GC2_S_STEPS
@@ -8816,7 +8823,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2_SOAK2 {
+            if GC2_PATCH {
+                "the 16-bit kinds' targets inside the safe region (GC2K: no map; GC2J's patch isolated at 133.25 / 1: FT2 as is, shifted, its quad moved, untextured, 16-bit textured),"
+            } else if GC2_SOAK2 {
                 "the 16-bit kinds' targets inside the safe region (GC2J: no map; a soak at 108.33, 117.00 and 133.25 / 1, FT2's texture inside and outside),"
             } else if GC2_INSIDE {
                 "run GC with every 16-bit kind's target inside the safe region, the 32-bit kinds outside (GC2I), then a soak,"
@@ -8932,7 +8941,13 @@ mod image {
             used += gc2::words(k) as usize;
         }
         let largest = GC2_KINDS.map(gc2::words).max().unwrap_or(0) as usize;
-        if c.spare.len() < 2 * used + largest {
+        // GC2K: its ways' references after the first read's buffer.
+        let patch = if GC2_PATCH {
+            gc2::PATCH_WAYS.len() * gc2::words(gc2::FT2) as usize
+        } else {
+            0
+        };
+        if c.spare.len() < 2 * used + largest + patch {
             log!("  not enough SDRAM for the references");
             let _ = r.release(&mut g.pool);
             free_tex(g);
@@ -8943,7 +8958,7 @@ mod image {
         // The first render table's references, for GC2F's others to be
         // compared with at Windows Mobile's clock.
         let (table0, rest) = rest.split_at_mut(used);
-        let first = &mut rest[..largest];
+        let first = &mut rest[..largest + patch];
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
         for (vi, &(vname, over)) in GC2_VARIANTS.iter().enumerate() {
             // Each table from a clean start: the core reset, every register
@@ -9251,7 +9266,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
-                if GC2_SOAK2 {
+                if GC2_PATCH {
+                    gc2_patch(g, &mut r, tex, (&*refs, &offs), first, dsig);
+                } else if GC2_SOAK2 {
                     gc2_soak2(g, &mut r, tex, (&*refs, &offs), first, dsig);
                 } else if GC2_INSIDE {
                     gc2_inside_soak(g, &mut r, tex, (&*refs, &offs), first, dsig);
@@ -9656,6 +9673,233 @@ mod image {
             let _ = write!(l3, "DONE: {all} WRONG");
             soak_label(g, [l1.as_str(), label, l3.as_str()], SOAK_BLUE);
         }
+    }
+
+    /// Run GC2K's setting and length: 133.25 / 1, where GC2J's patch showed
+    /// most (about one FT2 render in 130), for twice [`SOAK_SECS`] (40
+    /// minutes: about ten expected a way at GC2J's rate).
+    const GC2K_STEP: (ClockStep, &str) = (gc2_step(41, 4, 0, 1), "133.25 / 1");
+    const GC2K_SECS: u32 = 2 * SOAK_SECS;
+
+    /// Wrong renders GC2K describes; the rest are counted and placed.
+    const GC2K_DESCRIBED: u32 = 40;
+
+    /// Run GC2K: each of [`gc2::PATCH_WAYS`]'s scenes given its reference at
+    /// Windows Mobile's clock (rendered three times, the last two held to
+    /// the first; way 0's also held to FT2's GC2 reference), then at
+    /// [`GC2K_STEP`] for [`GC2K_SECS`] the ways in turn, every render held
+    /// to its way's reference as every GC2 render; each wrong render's
+    /// pixels placed (on the screen, and against its way's quad corner:
+    /// [`gc2::patch_spot`]), counted by way, the first [`GC2K_DESCRIBED`]
+    /// described; a render whose clock, registers or display don't hold
+    /// stops it. A line a minute; the controls at Windows Mobile's clock
+    /// after.
+    #[inline(never)]
+    fn gc2_patch(
+        g: &mut Rig,
+        r: &mut Renderer,
+        tex: gc2::Tex,
+        (refs, offs): (&[u32], &[usize; gc2::KINDS.len()]),
+        first: &mut [u32],
+        dsig: bool,
+    ) {
+        const N: usize = gc2::PATCH_WAYS.len();
+        let k = gc2::FT2;
+        let words = gc2::words(k) as usize;
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        // Way 4's 16-bit texture: the 8888 texels as RGB565, clamped as
+        // FT2's.
+        let Some(t565) = tex16(g, tex.t8888.code, format::RGB565, 1, &|x, y| {
+            let c = gc2::texel8888(x, y);
+            ((c >> 8 & 0xF800) | (c >> 5 & 0x07E0) | (c >> 3 & 0x001F)) as u16
+        }) else {
+            log!("  GC2K: no 2700G memory for the 16-bit texture: nothing run");
+            return;
+        };
+        let t565 = Texture {
+            u_mode: tex.t8888.u_mode,
+            v_mode: tex.t8888.v_mode,
+            ..t565
+        };
+        // The ways' references, in SDRAM after the first read's buffer.
+        let (first, rest) = first.split_at_mut(words);
+        if rest.len() < N * words {
+            log!("  GC2K: not enough SDRAM for the references: nothing run");
+            let _ = rp_mbx3d_render::release(&mut g.pool, t565);
+            return;
+        }
+        let set = |g: &mut Rig, r: &mut Renderer, way: usize| {
+            let (bg, slots) = gc2::patch_scene(way, tex, t565);
+            let _ = r.set_background(Some(bg));
+            for (n, d) in slots.into_iter().enumerate() {
+                g.set(r, n, d);
+            }
+        };
+        r.start_clean();
+        let mut refs_ok = true;
+        for way in 0..N {
+            set(g, r, way);
+            let want = &mut rest[way * words..(way + 1) * words];
+            r.invalidate_all();
+            let t0 = g.frame(
+                r,
+                Target {
+                    picture: Picture::packed(gc_at(k), 480, 640, gc2::KINDS[k].1),
+                    x: 0,
+                    y: 0,
+                },
+            );
+            gc2_take(g, k, want);
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            let again = [
+                gc2_render(g, r, k, want, first, wm, &mut base, &mut side),
+                gc2_render(g, r, k, want, first, wm, &mut base, &mut side),
+            ];
+            let ft2 = &refs[offs[k]..offs[k] + words];
+            let as_ft2 = want.iter().zip(ft2).filter(|(a, b)| a != b).count();
+            let ok = t0.is_some() && again == [Some(0); 2] && side.held() && (way != 0 || as_ft2 == 0);
+            refs_ok &= ok;
+            log!(
+                "  GC2K reference {way} ({}): {t0:?} us, renders 2-3 {again:?} words off it; {}; {as_ft2} words differ from FT2's GC2 reference{}",
+                gc2::PATCH_WAYS[way],
+                Gc2Held(&side),
+                if way == 0 { " (must be 0)" } else { "" }
+            );
+        }
+        if !refs_ok {
+            log!("  GC2K: a reference isn't proven: nothing run at 133.25 / 1");
+            let _ = rp_mbx3d_render::release(&mut g.pool, t565);
+            return;
+        }
+        let (s, label) = GC2K_STEP;
+        let minutes = GC2K_SECS.div_ceil(60);
+        soak_label(g, ["GC2K PATCH", label, "STARTING"], SOAK_BLUE);
+        let want_regs = gc2_clock_want(s.speed(), s.div);
+        let lock = clock_apply(g, s);
+        if lock.is_none() {
+            clock_restore(&mut g.e.regs);
+            log!("  GC2K {label}: the clock didn't take; Windows Mobile's put back");
+            soak_label(g, ["GC2K PATCH", label, "CLOCK NOT TAKEN"], SOAK_RED);
+            let _ = rp_mbx3d_render::release(&mut g.pool, t565);
+            return;
+        }
+        log!(
+            "  GC2K {label}: lock {lock:?}; {N} ways in turn for {minutes} min, every wrong render placed (the first {GC2K_DESCRIBED} described)"
+        );
+        clock_readback(g);
+        r.start_clean();
+        let mut bases: [Gc2Baseline; N] = core::array::from_fn(|_| Gc2Baseline(None));
+        // By way: wrong renders, words, and pixels at GC2J's place on the
+        // screen, at its place against the corner, both, neither.
+        let mut wrong_by = [0u32; N];
+        let mut words_by = [0u32; N];
+        let mut spots = [[0u32; 4]; N];
+        let (mut elapsed_us, mut lines, mut rounds, mut described) = (0u64, 0u32, 0u32, 0u32);
+        let end_us = u64::from(GC2K_SECS) * 1_000_000;
+        let mut unheld = None;
+        'soak: while elapsed_us < end_us {
+            let t0 = rt::ticks();
+            for way in 0..N {
+                set(g, r, way);
+                let want = &rest[way * words..(way + 1) * words];
+                let mut side = Gc2Side::new(dsig);
+                let wrong = gc2_render(g, r, k, want, first, want_regs, &mut bases[way], &mut side);
+                if !side.held() || wrong.is_none() {
+                    unheld = Some((way, wrong, side));
+                    elapsed_us += u64::from(us_since(t0));
+                    break 'soak;
+                }
+                let Some(n) = wrong.filter(|&n| n > 0) else {
+                    continue;
+                };
+                wrong_by[way] += 1;
+                words_by[way] += n;
+                let (cx, cy) = gc2::patch_corner(way);
+                let t = &side.tally;
+                for &(x, y, _, _) in &t.first[..t.n_first] {
+                    let (at, rel) = gc2::patch_spot(way, i32::from(x), i32::from(y));
+                    spots[way][usize::from(!at) * 2 + usize::from(!rel)] += 1;
+                }
+                if described < GC2K_DESCRIBED {
+                    described += 1;
+                    let (x, y) = t.first[..t.n_first]
+                        .first()
+                        .map_or((0, 0), |p| (i32::from(p.0), i32::from(p.1)));
+                    log!(
+                        "    GC2K WRONG way {way} ({}), round {}, {} s in: {n} words; first pixel at ({x}, {y}), ({}, {}) from the quad's corner; {}",
+                        gc2::PATCH_WAYS[way],
+                        rounds + 1,
+                        (elapsed_us + u64::from(us_since(t0))) / 1_000_000,
+                        x - cx,
+                        y - cy,
+                        Gc2Pixels(t)
+                    );
+                }
+            }
+            rounds += 1;
+            elapsed_us += u64::from(us_since(t0));
+            if elapsed_us >= u64::from(lines + 1) * 60_000_000 || elapsed_us >= end_us {
+                lines += 1;
+                let all: u32 = wrong_by.iter().sum();
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "MIN {lines} OF {minutes} WRONG {all}");
+                soak_label(
+                    g,
+                    ["GC2K PATCH", label, l3.as_str()],
+                    if all == 0 { SOAK_BLUE } else { SOAK_RED },
+                );
+                log!(
+                    "  GC2K {label}, minute {lines}: {rounds} rounds, wrong renders by way {wrong_by:?} | LMTYPE 0x{:x} LMREFRESH 0x{:x}",
+                    g.e.regs.read32(clock::LMTYPE),
+                    g.e.regs.read32(clock::LMREFRESH)
+                );
+            }
+        }
+        clock_restore(&mut g.e.regs);
+        clock_readback(g);
+        if let Some((way, wrong, side)) = &unheld {
+            log!(
+                "  GC2K {label}: STOPPED at way {way}, round {}, {} s in: {wrong:?} words; {}; Windows Mobile's clock put back",
+                rounds + 1,
+                elapsed_us / 1_000_000,
+                Gc2Held(side)
+            );
+            soak_label(g, ["GC2K PATCH", label, "STOPPED: NOT HELD"], SOAK_RED);
+        }
+        log!(
+            "  GC2K {label}: {rounds} rounds ({} renders) in {} s",
+            rounds * N as u32,
+            elapsed_us / 1_000_000
+        );
+        for way in 0..N {
+            log!(
+                "    GC2K way {way} ({}): {} of {rounds} renders wrong, {} words; first pixels at GC2J's place and its place from the corner {}, at GC2J's place only {}, from the corner only {}, elsewhere {}",
+                gc2::PATCH_WAYS[way],
+                wrong_by[way],
+                words_by[way],
+                spots[way][0],
+                spots[way][1],
+                spots[way][2],
+                spots[way][3]
+            );
+        }
+        r.start_clean();
+        let mut controls = 0;
+        for way in 0..N {
+            set(g, r, way);
+            let want = &rest[way * words..(way + 1) * words];
+            let mut side = Gc2Side::new(dsig);
+            let mut base = Gc2Baseline(None);
+            let wrong = gc2_render(g, r, k, want, first, wm, &mut base, &mut side);
+            controls += usize::from(wrong == Some(0) && side.held());
+        }
+        log!("  GC2K {label}: controls at Windows Mobile's clock after: {controls} of {N} right");
+        let all: u32 = wrong_by.iter().sum();
+        let mut l3 = heapless_name();
+        let _ = write!(l3, "DONE: {all} WRONG");
+        soak_label(g, ["GC2K PATCH", label, l3.as_str()], SOAK_BLUE);
+        let _ = rp_mbx3d_render::release(&mut g.pool, t565);
     }
 
     // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----

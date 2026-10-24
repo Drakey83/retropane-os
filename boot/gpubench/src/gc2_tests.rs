@@ -116,6 +116,54 @@ fn gc2j_puts_ft2s_texture_inside_after_the_target_and_soaks_every_inside_kind() 
 }
 
 #[test]
+fn gc2k_ways_move_the_quad_off_the_seams_and_tell_the_two_places_apart() {
+    // Way 0 is FT2's own scene.
+    let t = Tex {
+        t565: TEXTURES[0],
+        t4444: TEXTURES[1],
+        t8888: TEXTURES[2],
+        plane: TEXTURES[3],
+    };
+    let t565 = Texture {
+        format: rp_mbx3d_render::format::RGB565 as u8,
+        ..TEXTURES[2]
+    };
+    assert_eq!(patch_scene(0, t, t565), scene(FT2, t));
+    // Every way a different scene.
+    for a in 0..PATCH_WAYS.len() {
+        for b in a + 1..PATCH_WAYS.len() {
+            assert_ne!(patch_scene(a, t, t565), patch_scene(b, t, t565), "{a} {b}");
+        }
+    }
+    // FT2's corner (40, 600): x on a seam (8 wide), y mid tile row (16
+    // tall). The shift and the move take it off every seam.
+    assert_eq!(patch_corner(0), (40, 600));
+    for way in [1, 2] {
+        let (x, y) = patch_corner(way);
+        assert!(x % 8 != 0 && y % 16 != 0, "way {way} at ({x}, {y})");
+    }
+    assert!(PATCH_SHIFT.0 % 8 != 0 && PATCH_SHIFT.1 % 16 != 0);
+    // GC2J's patch: at GC2J's place and at the corner's place in way 0
+    // (both), and in the ways that move the corner, never both at once.
+    assert_eq!(patch_spot(0, 30, 605), (true, true));
+    for way in [1, 2] {
+        let (cx, cy) = patch_corner(way);
+        for y in 590..620 {
+            for x in 0..80 {
+                assert!(patch_spot(way, x, y) != (true, true), "way {way} ({x}, {y})");
+            }
+        }
+        // A pixel where FT2's patch was relative to the corner is found.
+        assert_eq!(patch_spot(way, cx - 10, cy + 5), (false, true), "way {way}");
+    }
+    // The ways that keep the corner: both or neither.
+    for way in [3, 4] {
+        assert_eq!(patch_spot(way, 30, 605), (true, true));
+        assert_eq!(patch_spot(way, 200, 300), (false, false));
+    }
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {
