@@ -32,7 +32,8 @@ The rules (owner, 2026-10-22):
 - **A phase's gate lifts** when its architectural lines are ticked (used, or
   declined with the reason written down: measured, unmeasurable, or not
   worth the device time) **and the ratchet runs**; the owner lifts it. The
-  gate now holds **phases 2, 4 and 5** (kernel memory, drawing, the shell
+  gate now holds **phases 2 and 5** (**phase 4's gate lifted by the owner,
+  2026-10-24**: its one line, F6, ticked and the ratchet running) (kernel memory, drawing, the shell
   and compositor); video (phase 7) and power (phase 9) lines gate their own
   phases when those start.
 - **Work is held back only by a named line.** Work waits only if its design
@@ -50,7 +51,7 @@ The rules (owner, 2026-10-22):
 
 **Count (`cargo xtask gate`, 2026-10-24, after the owner's rulings): phases
 2, 4, 5: 21 of 30 architectural lines ticked (9 partial, 0 open); phase 4's
-only line (F6) ticked: phase 4 ready for the owner to lift**; phase 7: 0 of 2; phase 9:
+only line (F6) ticked: **phase 4's gate lifted by the owner, 2026-10-24**)**; phase 7: 0 of 2; phase 9:
 2 of 11; the backlog: 24 optimizations (7 ticked, 16 partial, 1 open).
 `cargo xtask ci` prints the count every run, and every summary quotes it.
 
@@ -215,6 +216,10 @@ months (late January to February 2027); with Wi-Fi about 4-6.
 
 ## Phase 4 — CE Personality v1
 **Goal:** simple unmodified WM5/6.x apps run.
+
+**Gate lifted (the owner, 2026-10-24):** phase 4's architectural line (F6,
+text by cached lines: ADR-0023's ruling note) is ticked and the ratchet
+runs, so phase 4's work no longer waits on the gate.
 
 - [ ] Compatibility corpus defined (the games catalogue, `docs/research/3d-games-catalogue.md`: DESIGN.md §1.0); import-table scanner produces an API backlog ranked by what the catalogue needs first *(scanner done 2026-10-12: `tools/apiscan` -> `docs/research/api-backlog.md` from the owner's ROM; today's ranking is the ROM's own 519 modules, no games: the catalogue's games still to add)*
   - [ ] Scan the catalogue's binaries on the card (they stay local; only interface facts are written: docs/CLEANROOM.md) and rank catalogue-first, as a games-ranked view beside the ROM's: `apiscan` needs a weighting or second-report option
