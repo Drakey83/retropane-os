@@ -99,6 +99,9 @@ pub const MARKER: &str = "RETROPANE-GPUBENCH";
 #[cfg(any(target_os = "none", test))]
 mod gc2;
 
+#[cfg(any(target_os = "none", test))]
+mod g21;
+
 #[cfg(target_os = "none")]
 mod image {
     use core::fmt::Write;
@@ -127,7 +130,7 @@ mod image {
     };
     use rp_vram_map::{Pool, bench32 as map};
 
-    use super::{MARKER, gc2};
+    use super::{MARKER, g21, gc2};
 
     use rp_image::crash;
 

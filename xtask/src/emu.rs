@@ -3176,8 +3176,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g18") => return boot_loader_glesfeat_g(root, 18),
         Ok("g19") => return boot_loader_glesfeat_g(root, 19),
         Ok("g20") => return boot_loader_glesfeat_g(root, 20),
+        Ok("g21") => return boot_loader_glesfeat_g(root, 21),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g20"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g21"));
         }
         Err(_) => {}
     }
@@ -3481,7 +3482,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 20 {
+    let (env, name, ours, after) = if test == 21 {
+        ("RP_GLESFEAT_G21", "G21", "G21 way 1 (", "G21 way 2 (")
+    } else if test == 20 {
         ("RP_GLESFEAT_G20", "G20", "G20 way 1 (", "G20 way 2 (")
     } else if test == 19 {
         ("RP_GLESFEAT_G19", "G19", "G19 way 1 (", "G19 way 2 (")
@@ -3521,13 +3524,14 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     let loader = raw_image(root, "rp-loader")?;
     // G7 replays a frame file: in the emulator, one of our own scene
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
-    // the very picture way 1 draws directly.
+    // the very picture way 1 draws directly. G21 puts its target on the
+    // 600 KiB screen: RGB565, as Dell's.
     let frame = root.join("target/g7-synthetic-frame.bin");
     let also = if matches!(
         test,
-        7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
+        7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21
     ) {
-        std::fs::write(&frame, crate::g7::synthetic())
+        std::fs::write(&frame, crate::g7::synthetic(test == 21))
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
     } else {
@@ -3567,7 +3571,23 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 20 {
+    let wants: &[&str] = if test == 21 {
+        &[
+            "test G21, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G21: amendment P's C against A, the screen at 0x0 (the safe region ends at 0xae000)",
+            "G21 way 1 (Dell's frame off screen, a 2D copy onto the safe screen):",
+            "G21 way 2 (Dell's frame drawn straight into the safe screen):",
+            "G21 way 3 (Dell's frame into the safe screen, the display paused):",
+            "    G21 set-up: the screen at 0x0, GSCADR 0x80000000, ",
+            "; the target at 0x200000 (Dell's place, off screen); the display's fetch paused during each render: false; a 2D copy onto the screen after each render: true",
+            "; the target at 0x0 (the screen itself); the display's fetch paused during each render: false; a 2D copy onto the screen after each render: false",
+            "; the target at 0x0 (the screen itself); the display's fetch paused during each render: true; a 2D copy onto the screen after each render: false",
+            "G21: right at 74.75 / 1 of 20:",
+            "G21: right at 133.25 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 20 {
         &[
             "G17: the screen as found: offset 0x",
             "test G20, Gouraud at the cores' divide 1",
@@ -3956,6 +3976,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         19 => &[2, 3, 4, 5, 6, 7, 8, 9, 10],
         // The replay of our scene whatever the video plane does.
         20 => &[2, 3, 4],
+        // The replay of our scene wherever its target sits: one picture.
+        21 => &[2, 3],
         _ => &[],
     };
     if !same.is_empty() {
@@ -4029,6 +4051,53 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         return Err(format!(
             "glesfeat {name}: Windows Mobile's clock not read back:{log}"
         ));
+    }
+    // G21: each way drew where it says (0x65C read back after the
+    // reference: Dell's place in way 1, the screen in ways 2 and 3), and at
+    // every setting it ran: 20 renders, way 1's 20 copies onto the screen
+    // each exact, no copy in the others, the display's fetch read back off
+    // in way 3's renders only.
+    if test == 21 {
+        for way in 1..=3u32 {
+            let seg = log
+                .split(&format!("{name} way {way} ("))
+                .nth(1)
+                .and_then(|s| s.split(&format!("{name} way {} (", way + 1)).next())
+                .unwrap_or("");
+            let target = if way == 1 { 0x0020_0000u32 } else { 0 };
+            let readback = format!(" 0x65c 0x{target:08x} ");
+            if !seg.contains("  layout read back after the render:") || !seg.contains(&readback) {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s target didn't read back at 0x{target:x}:{log}"
+                ));
+            }
+            let reports: Vec<&str> = seg
+                .lines()
+                .filter(|l| l.starts_with("    G21 at ") && l.contains(", the 20 renders: "))
+                .collect();
+            let ran = 3 - seg.matches("the clock change was refused").count();
+            if reports.len() != ran || ran == 0 {
+                return Err(format!(
+                    "glesfeat {name}: way {way} reported {} settings' renders, want {ran}:{log}",
+                    reports.len()
+                ));
+            }
+            let copies = if way == 1 {
+                "; 20 2D copies onto the screen, "
+            } else {
+                "; 0 2D copies onto the screen, "
+            };
+            for r in reports {
+                let paused = !r.ends_with("read back off: 0");
+                if !r.contains(": 20 renders, ")
+                    || !r.contains(copies)
+                    || !r.contains(", 0 not exact (0 words off in all)")
+                    || paused != (way == 3)
+                {
+                    return Err(format!("glesfeat {name}: way {way}: {r}:{log}"));
+                }
+            }
+        }
     }
     // G16: each way's mapping and the display's fetch as set, and renders
     // made with the fetch read back off in ways 3 and 4 only (each count is
@@ -4746,6 +4815,50 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_HARNESS", "1"),
         Some(("RP_GPUBENCH_C71", "1")),
     )?;
+    let run_g21 = variant_image_with(
+        root,
+        "rp-gpubench",
+        ("RP_GPUBENCH_HARNESS", "1"),
+        Some(("RP_GPUBENCH_G21", "1")),
+    )?;
+    // Run G21: every kind's reference repeatable, and every way's 20
+    // renders exact against it (the fork is exact: the device's are the
+    // finding), A's copies exact, C's none.
+    let g21_kinds = [
+        "flat cards 200 x 260",
+        "textured cards 1:1 (128 x 128)",
+        "textured cards 1.56x, point sampling",
+        "textured cards 1.56x, bilinear",
+        "textured cards shrunk 2:1 (64 x 64), point sampling",
+    ];
+    let mut g21_wants: Vec<String> = vec!["  CH G21: the screen at 0x0 (GSCADR ".into()];
+    for k in g21_kinds {
+        g21_wants.push(format!(
+            "  CH G21 {k}: the reference (the reference: off screen, the display paused): rendered Some("
+        ));
+        g21_wants.push(" the last 0 words off the one kept []; hash ".into());
+        for (way, copies) in [
+            ("A: off screen, a 2D copy onto the screen", 20),
+            ("C: drawn straight into the screen", 0),
+            ("C with the display paused", 0),
+        ] {
+            g21_wants.push(format!(
+                "  CH G21 {k}: {way}: 20 renders (0 unfinished), 0 differ from the reference, 0 words in all []; render fastest "
+            ));
+            g21_wants.push(format!(
+                "us; {copies} 2D copies onto the screen, fastest "
+            ));
+        }
+    }
+    g21_wants.extend(
+        [
+            "  CH G21: done",
+            "everything given back: true",
+            "RETROPANE-GPUBENCH: done",
+        ]
+        .map(String::from),
+    );
+    let g21_wants: Vec<&str> = g21_wants.iter().map(String::as_str).collect();
     let run_lim = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_LIMITS", "1"))?;
     let run_fi2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_STATUS2", "1"))?;
     let run_bx = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_BX", "1"))?;
@@ -4853,7 +4966,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 53] = [
+    let runs: [GpubenchRun; 54] = [
         (
             "run A",
             &run_a,
@@ -5584,6 +5697,8 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             true,
             (0, 0, 0),
         ),
+        // Run G21 on C71's scenes: the safe screen, A against C.
+        ("run G21", &run_g21, &g21_wants, true, (0, 0, 0)),
         // The 3D core's limits (P14): every measurement finishes and the
         // memory is given back; the times are the device's.
         (

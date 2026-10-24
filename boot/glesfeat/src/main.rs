@@ -548,6 +548,46 @@ pub const G20_WAYS: [(bool, bool, G20Video); 6] = [
     (true, true, G20Video::None),
 ];
 
+/// The safe region's end: while the 3D core renders, the display may read
+/// local memory below it (G19 on the owner's X51v: harmless with a screen
+/// ending at `0xAE000`, wrong from one ending at `0xB6000`; ADR-0034
+/// amendment P rule 1). Test G21's own; `rp-vram-map` takes the measured
+/// one with option A (ROADMAP step 3 (16)(b)).
+pub const SAFE_END: usize = 0xA_E000;
+
+/// The target's address in `0x65C` (as [`frame_layout`] reads it).
+pub const TARGET_ADDR: u32 = 0x01FF_FFFC;
+
+/// `0x65C`'s value `v` with the target's address moved to `to`, its other
+/// bits kept (test G21 moves Dell's target onto the screen at `0x0`).
+#[must_use]
+pub const fn retarget(v: u32, to: usize) -> u32 {
+    v & !TARGET_ADDR | (to as u32 & TARGET_ADDR)
+}
+
+/// Whether `bytes` from `at` lie wholly inside the safe region.
+#[must_use]
+pub const fn inside_safe(at: usize, bytes: usize) -> bool {
+    match at.checked_add(bytes) {
+        Some(end) => end <= SAFE_END,
+        None => false,
+    }
+}
+
+/// Test G21's ways (ADR-0034 amendment P's option C against A, the
+/// owner's P2): (the 3D core's target the screen itself at `0x0`, not
+/// Dell's place off screen; the display's fetch paused during each render,
+/// G16's way; the 2D engine copies the target onto the screen after each
+/// render). The screen at `0x0` and the video plane off in every way:
+/// 1 is A (the off-screen target and the copy-in), 2 is C (the display
+/// reading the picture the core is drawing), 3 is C with the display
+/// paused (the target's place alone).
+pub const G21_WAYS: [(bool, bool, bool); 3] = [
+    (false, false, true),
+    (true, false, false),
+    (true, true, false),
+];
+
 /// The on-die frame buffer's power control (`ODFBPWR`: bits 1-0 the mode,
 /// 0 active, 1 active low-power, 2 sleep, 3 shut down; bit 2 slow) and
 /// state (`ODFBSTAT`: bit 2 active, 1 asleep, 0 shut down), Linux mbxfb's
@@ -717,7 +757,7 @@ pub fn frame_layout(f: &frame::Frame<'_>) -> Option<Layout> {
         return None;
     }
     Some(Layout {
-        target: (f.reg(0x65C)? & 0x01FF_FFFC) as usize,
+        target: (f.reg(0x65C)? & TARGET_ADDR) as usize,
         rgb565: f.reg(0x650)? == 1,
         pm: f.reg(0x83C)? as usize,
         // `pm_init_table`'s pages: the first at `pm + 4 KiB`, the last
@@ -1022,7 +1062,8 @@ mod image {
         || TEST_G17
         || TEST_G18
         || TEST_G19
-        || TEST_G20;
+        || TEST_G20
+        || TEST_G21;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -1108,6 +1149,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g20`).
     const TEST_G20: bool = option_env!("RP_GLESFEAT_G20").is_some();
+    /// Test G21 instead of G (`RP_GLESFEAT_G21=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G21=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g21`).
+    const TEST_G21: bool = option_env!("RP_GLESFEAT_G21").is_some();
+    const _: () = assert!(
+        !TEST_G21 || cfg!(rp_g7),
+        "test G21 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G20 || cfg!(rp_g7),
         "test G20 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1180,7 +1230,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G20 {
+    const G_TITLE: &str = if TEST_G21 {
+        "RP-GLESFEAT TEST G21"
+    } else if TEST_G20 {
         "RP-GLESFEAT TEST G20"
     } else if TEST_G19 {
         "RP-GLESFEAT TEST G19"
@@ -1221,7 +1273,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G20 {
+    const G_NAME: &str = if TEST_G21 {
+        "G21"
+    } else if TEST_G20 {
         "G20"
     } else if TEST_G19 {
         "G19"
@@ -1278,6 +1332,7 @@ mod image {
         || TEST_G18
         || TEST_G19
         || TEST_G20
+        || TEST_G21
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1300,6 +1355,7 @@ mod image {
             || TEST_G18
             || TEST_G19
             || TEST_G20
+            || TEST_G21
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1318,6 +1374,7 @@ mod image {
         || TEST_G18
         || TEST_G19
         || TEST_G20
+        || TEST_G21
     {
         super::G6_LABEL
     } else {
@@ -1339,6 +1396,7 @@ mod image {
             || TEST_G18
             || TEST_G19
             || TEST_G20
+            || TEST_G21
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1356,6 +1414,7 @@ mod image {
             || TEST_G18
             || TEST_G19
             || TEST_G20
+            || TEST_G21
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -1404,6 +1463,43 @@ mod image {
     /// Test G16: the chip's runs started with the display's fetch read back
     /// off, since the last way's set-up.
     static G16_DARKENED: rt::Global<u32> = rt::Global::new(0);
+
+    /// The last [`run`]'s time from its first register write to its status
+    /// bit (0 if the bit never came): the render alone, without the CPU's
+    /// writes of a frame into local memory (test G21's speeds).
+    static RENDER_US: rt::Global<u32> = rt::Global::new(0);
+
+    /// Test G21's renders and copies since the last [`g21_report`].
+    static G21_TALLY: rt::Global<G21Tally> = rt::Global::new(G21Tally::NEW);
+
+    /// Test G21: renders (the render alone, [`RENDER_US`]) and 2D copies onto
+    /// the screen, each copy held word for word to the target it copied.
+    #[derive(Clone, Copy)]
+    struct G21Tally {
+        renders: u32,
+        render_min: u32,
+        render_sum: u32,
+        copies: u32,
+        copy_min: u32,
+        copy_sum: u32,
+        /// Copies that didn't finish, or left the screen not the target.
+        copies_off: u32,
+        /// Words of the screen not the target's, all copies.
+        copy_words_off: u32,
+    }
+
+    impl G21Tally {
+        const NEW: Self = Self {
+            renders: 0,
+            render_min: u32::MAX,
+            render_sum: 0,
+            copies: 0,
+            copy_min: u32::MAX,
+            copy_sum: 0,
+            copies_off: 0,
+            copy_words_off: 0,
+        };
+    }
 
     /// Ways a test ran before [`test_settings`]'s (G14's first, at Dell's
     /// own clock): its ways and steps numbered after them.
@@ -1499,6 +1595,7 @@ mod image {
                 }
             }
         }
+        RENDER_US.with(|u| *u = if set { us_since(t0) } else { 0 });
         if let Some(was) = clocks {
             rt::set_clock_enables(was);
         }
@@ -2343,6 +2440,8 @@ mod image {
         G18(u8),
         /// Test G20: [`super::G20_WAYS`]'s way k.
         G20(u8),
+        /// Test G21: [`super::G21_WAYS`]'s way k.
+        G21(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2449,6 +2548,9 @@ mod image {
                 Self::G20(3) => "Dell's frame, the screen safe, a small video plane outside",
                 Self::G20(4) => "a 2D copy, the screen safe",
                 Self::G20(_) => "a 2D copy, the screen outside",
+                Self::G21(0) => "Dell's frame off screen, a 2D copy onto the safe screen",
+                Self::G21(1) => "Dell's frame drawn straight into the safe screen",
+                Self::G21(_) => "Dell's frame into the safe screen, the display paused",
             }
         }
     }
@@ -2720,10 +2822,22 @@ mod image {
             }
             Way::G20(k) => {
                 let done = if super::G20_WAYS[k as usize % super::G20_WAYS.len()].0 {
-                    copy_2d(e, vram)
+                    copy_2d(e, vram, G20_SRC, lay().target)
                 } else {
                     replay(e, vram)
                 };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
+            Way::G21(k) => {
+                let done = replay(e, vram);
+                let render = RENDER_US.with(|u| *u);
+                let copy = (done && super::G21_WAYS[k as usize % super::G21_WAYS.len()].2)
+                    .then(|| {
+                        let t = rt::ticks();
+                        let ok = copy_2d(e, vram, lay().target, SAFE_SCREEN);
+                        (ok, us_since(t), if ok { screen_off(vram) } else { 0 })
+                    });
+                g21_add(done, render, copy);
                 (done, us_since(t0), [m3::END; TA_LIST])
             }
             Way::G13(k) => {
@@ -2894,6 +3008,22 @@ mod image {
                     .and_then(super::frame_layout)
                     .unwrap_or(super::OURS_LAYOUT)
             }
+            // G21: Dell's layout, his target moved onto the screen in C's
+            // ways.
+            Way::G21(k) => {
+                let l = frame()
+                    .as_ref()
+                    .and_then(super::frame_layout)
+                    .unwrap_or(super::OURS_LAYOUT);
+                if super::G21_WAYS[k as usize % super::G21_WAYS.len()].0 {
+                    super::Layout {
+                        target: SAFE_SCREEN,
+                        ..l
+                    }
+                } else {
+                    l
+                }
+            }
             Way::G13(k) if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2933,6 +3063,10 @@ mod image {
         // G20: the screen's place and the video plane.
         if let Way::G20(k) = w {
             g20_way(&mut e.regs, vram, k);
+        }
+        // G21: the screen safe, the target's place, the display's fetch.
+        if let Way::G21(k) = w {
+            g21_way(&mut e.regs, vram, k);
         }
         // G18: the screen's place.
         if let Way::G18(k) = w {
@@ -3005,7 +3139,13 @@ mod image {
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
         // G6-G8: the layout's addresses as the core holds them.
-        if let Way::G6(_) | Way::Frame(_) | Way::G8(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) = w
+        if let Way::G6(_)
+        | Way::Frame(_)
+        | Way::G8(_)
+        | Way::G15(_)
+        | Way::G16(_)
+        | Way::G17(_)
+        | Way::G21(_) = w
         {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
@@ -3037,6 +3177,7 @@ mod image {
         let replay_way = match w {
             Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => true,
             Way::G20(k) => !super::G20_WAYS[k as usize % super::G20_WAYS.len()].0,
+            Way::G21(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -3094,6 +3235,9 @@ mod image {
             again.wrong,
             r.us_wm
         );
+        if let Way::G21(_) = w {
+            g21_report("at Windows Mobile's clock, the reference's two renders");
+        }
         if !r.repeatable {
             // What differs (test G's way 1 differed in every word): five
             // places, the first render's word then the second's.
@@ -3164,6 +3308,9 @@ mod image {
             log!("  at {mhz} / 1: memory manager ready {ready}");
             s.screen = display_check(&mut e.regs, "after the change");
             s.us = u32::MAX;
+            if let Way::G21(_) = w {
+                g21_report("before the renders (the clock change's)");
+            }
             for n in 1..=G_DRAWS {
                 rt::check_in();
                 let mut line = [0u8; 32];
@@ -3185,6 +3332,11 @@ mod image {
                     }
                 }
                 s.tally.merge(&t);
+            }
+            if let Way::G21(_) = w {
+                let mut when = [0u8; 48];
+                let when = fmt(&mut when, format_args!("at {mhz} / 1, the {G_DRAWS} renders"));
+                g21_report(when);
             }
             let (g10, changes, dark) = G10_PLL.with(|p| core::mem::replace(p, (0, 0, 0)));
             if g10 != 0 {
@@ -3924,7 +4076,16 @@ mod image {
             if super::PM_BLOCK.contains(&off) || n + 1 >= pairs.len() {
                 continue;
             }
-            pairs[n] = (off, v);
+            // The target where the layout puts it (G21 moves it; for every
+            // other way the layout's is the frame's own).
+            pairs[n] = (
+                off,
+                if off == 0x65C {
+                    super::retarget(v, lay().target)
+                } else {
+                    v
+                },
+            );
             n += 1;
         }
         pairs[n] = (m3::START, 1);
@@ -4199,7 +4360,16 @@ mod image {
             if super::PM_BLOCK.contains(&off) || n + 1 >= pairs.len() {
                 continue;
             }
-            pairs[n] = (off, v);
+            // The target where the layout puts it (G21 moves it; for every
+            // other way the layout's is the frame's own).
+            pairs[n] = (
+                off,
+                if off == 0x65C {
+                    super::retarget(v, lay().target)
+                } else {
+                    v
+                },
+            );
             n += 1;
         }
         pairs[n] = (m3::START, 1);
@@ -4840,14 +5010,16 @@ mod image {
         cpu::drain_write_buffer();
     }
 
-    /// One 2D copy of [`G20_SRC`] into the target (blanked first by
-    /// [`draw`]), the engine's fence awaited. Whether it finished.
-    fn copy_2d(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+    /// One 2D copy of a 480 x 640 RGB565 picture from `from` to `to`
+    /// (G20: its pattern into the target, blanked first by [`draw`]; G21:
+    /// the target onto the screen), the engine's fence awaited. Whether it
+    /// finished.
+    fn copy_2d(e: &mut Engine<Mmio>, vram: &mut [u8], from: usize, to: usize) -> bool {
         let (words, n) = rp_image::need(
             cmd::copy(
                 Format::RGB565,
-                (lay().target, LABEL_STRIDE),
-                (G20_SRC, LABEL_STRIDE),
+                (to, LABEL_STRIDE),
+                (from, LABEL_STRIDE),
                 (0, 0),
                 (0, 0, W as u16, H as u16),
                 0,
@@ -4947,6 +5119,131 @@ mod image {
         Way::G20(5),
     ];
 
+    /// The screen's place inside the safe region (G17-G19: Windows
+    /// Mobile's; ADR-0034 amendment P rule 1).
+    const SAFE_SCREEN: usize = 0;
+
+    /// Words of the screen (at [`SAFE_SCREEN`]) that aren't the target's.
+    fn screen_off(vram: &[u8]) -> u32 {
+        let target = lay().target;
+        (0..target_words())
+            .filter(|&k| {
+                load32_volatile(vram, SAFE_SCREEN + 4 * k)
+                    != load32_volatile(vram, target + 4 * k)
+            })
+            .count() as u32
+    }
+
+    /// One G21 render into the tally: whether it finished, its time alone,
+    /// and its copy onto the screen if the way copies (whether it finished,
+    /// its time, the screen's words not the target's).
+    fn g21_add(done: bool, render_us: u32, copy: Option<(bool, u32, u32)>) {
+        G21_TALLY.with(|t| {
+            if done {
+                t.renders += 1;
+                t.render_min = t.render_min.min(render_us);
+                t.render_sum = t.render_sum.saturating_add(render_us);
+            }
+            if let Some((ok, us, off)) = copy {
+                t.copies += 1;
+                t.copy_min = t.copy_min.min(us);
+                t.copy_sum = t.copy_sum.saturating_add(us);
+                t.copies_off += u32::from(!ok || off != 0);
+                t.copy_words_off += off;
+            }
+        });
+    }
+
+    /// The tally since the last report logged (`when` names it) and
+    /// started again; the display's paused runs with it.
+    fn g21_report(when: &str) {
+        let t = G21_TALLY.with(|t| core::mem::replace(t, G21Tally::NEW));
+        let dark = G16_DARKENED.with(|n| core::mem::replace(n, 0));
+        let min = |m: u32| if m == u32::MAX { 0 } else { m };
+        log!(
+            "    G21 {when}: {} renders, the render alone fastest {} us, mean {} us; {} 2D copies onto the screen, fastest {} us, mean {} us, {} not exact ({} words off in all); the chip's runs with the display's fetch read back off: {dark}",
+            t.renders,
+            min(t.render_min),
+            t.render_sum / t.renders.max(1),
+            t.copies,
+            min(t.copy_min),
+            t.copy_sum / t.copies.max(1),
+            t.copies_off,
+            t.copy_words_off
+        );
+    }
+
+    /// Test G21's way `k` ([`super::G21_WAYS`]): the screen at
+    /// [`SAFE_SCREEN`], the video plane off, the display's fetch paused
+    /// during each render or not; the target ([`way`] set the layout) and
+    /// the planes' registers logged.
+    fn g21_way(regs: &mut Mmio, vram: &mut [u8], k: u8) {
+        let (inside, paused, copies) = super::G21_WAYS[k as usize % super::G21_WAYS.len()];
+        screen_at(regs, vram, SAFE_SCREEN);
+        rp_drv_mbx_display::video_hide(regs);
+        G16_DARK.with(|d| *d = paused);
+        log!(
+            "    G21 set-up: the screen at 0x{:x}, GSCADR 0x{:08x}, VSCTRL 0x{:08x}; the target at 0x{:x} ({}); the display's fetch paused during each render: {paused}; a 2D copy onto the screen after each render: {copies}",
+            label_at(),
+            regs.read32(dreg::GSCADR),
+            regs.read32(layers::reg::VSCTRL),
+            lay().target,
+            if inside {
+                "the screen itself"
+            } else {
+                "Dell's place, off screen"
+            }
+        );
+        let _ = display_check(regs, "after the way's set-up");
+        g21_report("before the way (its set-up's)");
+    }
+
+    /// Test G21 (ADR-0034 amendment P, the owner's P2): whether the 3D core
+    /// can draw straight into the screen inside the safe region (option C)
+    /// instead of off screen with the 2D engine copying in (option A, the
+    /// owner's P1), Dell's frame at Windows Mobile's clock and at 74.75,
+    /// 99.67 and 133.25 MHz / 1: right, and how fast.
+    fn test_g21(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G21: amendment P's C against A, the screen at 0x{SAFE_SCREEN:x} (the safe region ends at 0x{:x}) and the video plane off throughout: 1 Dell's frame off screen at his place, a 2D copy onto the screen after each render (A); 2 his target the screen itself, the display reading it while the core draws (C); 3 the same with the display's fetch paused during each render (the place alone)",
+            super::SAFE_END
+        );
+        let Some(l) = usable_frame() else {
+            return;
+        };
+        // C's target is the screen: Dell's must be its shape (RGB565 480 x
+        // 640 at 960-byte rows), and the screen inside the safe region,
+        // clear of the frame and the image's own.
+        let screen = LABEL_STRIDE * H as usize;
+        let stride = frame().and_then(|f| f.reg(0x660));
+        if !l.rgb565 || l.target_bytes(W, H) != screen || stride != Some((LABEL_STRIDE / 4) as u32)
+        {
+            log!(
+                "G21: the frame's target isn't the screen's shape (RGB565 {}, stride {stride:?} words): nothing run",
+                l.rgb565
+            );
+            return;
+        }
+        if !super::inside_safe(SAFE_SCREEN, screen)
+            || region_clashes(&l, SAFE_SCREEN, super::SAFE_END - SAFE_SCREEN)
+        {
+            log!(
+                "G21: the safe region (0x{SAFE_SCREEN:x}-0x{:x}) lies over the frame or the image's own, or the screen past it: nothing run",
+                super::SAFE_END
+            );
+            return;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G21_WAYS);
+        G16_DARK.with(|d| *d = false);
+        screen_at(&mut e.regs, vram, LABEL);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G21's ways.
+    const G21_WAYS: [Way; 3] = [Way::G21(0), Way::G21(1), Way::G21(2)];
+
     /// The screen places tests G18 and G19 visit.
     fn places() -> &'static [usize] {
         if TEST_G19 {
@@ -5043,7 +5340,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G20 {
+        let first = if TEST_G21 {
+            "STEP 1 OF 4"
+        } else if TEST_G20 {
             "STEP 1 OF 7"
         } else if TEST_G18 || TEST_G19 {
             "STEP 1 OF 11"
@@ -5134,7 +5433,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G20 {
+        if ready && TEST_G21 {
+            test_g21(&mut e, vram);
+        } else if ready && TEST_G20 {
             test_g20(&mut e, vram);
         } else if ready && (TEST_G18 || TEST_G19) {
             test_g18(&mut e, vram);
@@ -6330,5 +6631,87 @@ mod g20_tests {
         assert_eq!(G20_WAYS[5], (true, true, G20Video::None));
         // Only the 2D ways put the screen outside.
         assert!(G20_WAYS.iter().all(|w| !w.1 || w.0));
+    }
+}
+
+/// Test G21's places and ways: the target moved onto the safe screen.
+#[cfg(test)]
+mod g21_tests {
+    use super::*;
+
+    #[test]
+    fn the_target_moves_with_its_other_bits_kept() {
+        // Dell's target (G7's frame, 0x65C 0xB27000) onto the screen at 0x0.
+        assert_eq!(retarget(0x00B2_7000, 0), 0);
+        assert_eq!(retarget(0x00B2_7000, 0x9_6000), 0x9_6000);
+        // To its own place: unchanged (every way but G21's C).
+        assert_eq!(retarget(0x00B2_7000, 0xB2_7000), 0x00B2_7000);
+        // Bits outside the address (31-25, 1-0) kept, whatever they mean.
+        assert_eq!(retarget(0xC0B2_7003, 0), 0xC000_0003);
+        assert_eq!(retarget(0xFFFF_FFFF, 0), !TARGET_ADDR);
+        // An address past local memory's 32 MiB window can't leak in.
+        assert_eq!(retarget(0, 0x0200_0000), 0);
+    }
+
+    #[test]
+    fn the_safe_region_is_g19s_last_right_end() {
+        let screen = 480 * 640 * 2;
+        // The screen at 0x0, and G19's screens that drew right (the last
+        // ending at 0xAE000), inside.
+        assert!(inside_safe(0, screen));
+        for at in [0x4000, 0x8000, 0x1_0000, 0x1_8000] {
+            assert!(inside_safe(at, screen), "0x{at:x}");
+        }
+        assert!(inside_safe(0x1_8000, SAFE_END - 0x1_8000));
+        // G19's first wrong (ending at 0xB6000), one word past the end,
+        // and an end that wraps: not inside.
+        assert!(!inside_safe(0x2_0000, screen));
+        assert!(!inside_safe(0, SAFE_END + 4));
+        assert!(!inside_safe(usize::MAX, 8));
+    }
+
+    #[test]
+    fn dells_frame_moved_onto_the_screen_keeps_his_shape_and_misses_his_buffers() {
+        // His registers with 0x65C retargeted, as the image replays them.
+        let moved = DELL_G21.map(|(off, v)| (off, if off == 0x65C { retarget(v, 0) } else { v }));
+        let l = frame_layout(&frame::parse(&frame::write(&DELL_G21, &[], (0, 0))).unwrap()).unwrap();
+        let m = frame_layout(&frame::parse(&frame::write(&moved, &[], (0, 0))).unwrap()).unwrap();
+        assert_eq!(m, Layout { target: 0, ..l });
+        assert!(m.rgb565);
+        // His target is the screen's shape, so C's target is the screen.
+        assert_eq!(l.target_bytes(480, 640), 480 * 640 * 2);
+        assert!(inside_safe(m.target, m.target_bytes(480, 640)));
+        // None of his other buffers in the safe region.
+        let tiles = (480 / rp_drv_mbx3d::TILE_W) * (640 / rp_drv_mbx3d::TILE_H);
+        for (at, _, name) in l.spans(480, 640, tiles) {
+            assert!(at >= SAFE_END, "{name} at 0x{at:x}");
+        }
+    }
+
+    /// Dell's frame's layout registers (G7's capture, 2700g.md "Test G7").
+    const DELL_G21: [(usize, u32); 9] = [
+        (0x608, 0x001D_6000),
+        (0x650, 1),
+        (0x65C, 0x00B2_7000),
+        (0x660, 240),
+        (0x824, 0x001C_0000),
+        (0x828, 0x292),
+        (0x82C, 0xA90),
+        (0x83C, 0x0029_1000),
+        (0x840, 0x001E_0000),
+    ];
+
+    #[test]
+    fn a_copies_from_off_screen_and_c_draws_on_it() {
+        // Way 1 is A: Dell's place, the copy in, the display reading.
+        assert_eq!(G21_WAYS[0], (false, false, true));
+        // Way 2 is C as the owner would run it: on the screen, no copy, the
+        // display reading what is drawn.
+        assert_eq!(G21_WAYS[1], (true, false, false));
+        // Way 3 the place alone: on the screen, the display paused.
+        assert_eq!(G21_WAYS[2], (true, true, false));
+        // Only the off-screen way copies; only an on-screen way pauses.
+        assert!(G21_WAYS.iter().all(|w| w.2 == !w.0));
+        assert!(G21_WAYS.iter().all(|w| !w.1 || w.0));
     }
 }

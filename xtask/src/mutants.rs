@@ -48,6 +48,106 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "glesfeat G21: the moved target loses 0x65C's other bits",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    v & !TARGET_ADDR | (to as u32 & TARGET_ADDR)",
+        to: "    to as u32 & TARGET_ADDR",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "the_target_moves_with_its_other_bits_kept",
+        ]),
+    },
+    Mutant {
+        name: "glesfeat G21: the safe region's last right end left out",
+        file: "boot/glesfeat/src/main.rs",
+        from: "        Some(end) => end <= SAFE_END,",
+        to: "        Some(end) => end < SAFE_END,",
+        check: Check::Host(&["-p", "rp-glesfeat", "the_safe_region_is_g19s_last_right_end"]),
+    },
+    Mutant {
+        name: "glesfeat G21: the safe region stretched to G19's first wrong end",
+        file: "boot/glesfeat/src/main.rs",
+        from: "pub const SAFE_END: usize = 0xA_E000;",
+        to: "pub const SAFE_END: usize = 0xB_6000;",
+        check: Check::Host(&["-p", "rp-glesfeat", "the_safe_region_is_g19s_last_right_end"]),
+    },
+    Mutant {
+        name: "glesfeat G21: way 1 (A) never copies onto the screen",
+        file: "boot/glesfeat/src/main.rs",
+        from: "    (false, false, true),
+    (true, false, false),",
+        to: "    (false, false, false),
+    (true, false, false),",
+        check: Check::Host(&["-p", "rp-glesfeat", "a_copies_from_off_screen_and_c_draws_on_it"]),
+    },
+    Mutant {
+        name: "gpubench G21: a word's place a row off",
+        file: "boot/gpubench/src/g21.rs",
+        from: "first[nf] = ((2 * k as u32) % W, (2 * k as u32) / W, x, y);",
+        to: "first[nf] = ((2 * k as u32) % W, (2 * k as u32) / W + 1, x, y);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "diff_counts_every_word_and_places_the_first_four",
+        ]),
+    },
+    Mutant {
+        name: "gpubench G21: the last word never compared",
+        file: "boot/gpubench/src/g21.rs",
+        from: "    for k in 0..WORDS {",
+        to: "    for k in 0..WORDS - 1 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "diff_counts_every_word_and_places_the_first_four",
+        ]),
+    },
+    Mutant {
+        name: "gpubench G21: an unfinished render's zero taken as the fastest",
+        file: "boot/gpubench/src/g21.rs",
+        from: "        self.render_min = if finished == 1 {",
+        to: "        self.render_min = if self.renders == 1 {",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_tally_keeps_times_misses_and_copies_apart",
+        ]),
+    },
+    Mutant {
+        name: "gpubench G21: a copy that didn't finish counted exact",
+        file: "boot/gpubench/src/g21.rs",
+        from: "self.copies_off += u32::from(!done || words > 0);",
+        to: "self.copies_off += u32::from(words > 0);",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_tally_keeps_times_misses_and_copies_apart",
+        ]),
+    },
+    Mutant {
+        name: "gpubench G21: C's target off the screen (the place never tested)",
+        file: "boot/gpubench/src/g21.rs",
+        from: "        matches!(self, Self::Inside | Self::InsidePaused)",
+        to: "        matches!(self, Self::InsidePaused)",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "the_reference_is_off_screen_and_paused_and_only_a_copies",
+        ]),
+    },
+    Mutant {
+        name: "g7: the RGB565 synthetic frame at ARGB8888's stride",
+        file: "xtask/src/g7.rs",
+        from: "    let bytes = if rgb565 { 2 } else { 4 };",
+        to: "    let bytes = 4;",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "the_rgb565_synthetic_frame_differs_only_in_its_target_format",
+        ]),
+    },
+    Mutant {
         name: "glesfeat G8: the quiet wait shorter than a render",
         file: "boot/glesfeat/src/main.rs",
         from: "pub const QUIET_US: u32 = 60_000;",

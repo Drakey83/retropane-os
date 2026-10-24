@@ -33,6 +33,12 @@ use super::*;
 /// over a full-screen flat quad in slot 0 instead (quality audit C71).
 const C71: bool = option_env!("RP_GPUBENCH_C71").is_some();
 
+/// Run G21's half on C71's scenes alone (`RP_GPUBENCH_G21`, ADR-0034
+/// amendment P's option C against A, the owner's P2): [`g21`]'s ways
+/// with the screen inside the safe region (`rp-glesfeat` G21 is the half
+/// on Dell's frame).
+const G21: bool = option_env!("RP_GPUBENCH_G21").is_some();
+
 /// The page's and the glass's lines.
 const VSTRIDE: u32 = 960;
 const GSTRIDE: u32 = 480 * 4;
@@ -317,7 +323,7 @@ pub(super) fn run(g: &mut Rig) {
         return;
     };
     let p = Planes { page, glass, atlas };
-    if !C71 {
+    if !C71 && !G21 {
         plane_frames(g, &p, &mut dma, scratch);
     }
     let _ = g.pool.free(page, VSTRIDE * PAGE_ROWS);
@@ -829,6 +835,161 @@ fn repeat_whole(
     );
 }
 
+/// The captions of run G21's kinds (the step's second line).
+const G21_CAPTIONS: [&str; 5] = [
+    "FLAT CARDS",
+    "TEXTURED 1:1",
+    "1.56X POINT",
+    "1.56X BILINEAR",
+    "SHRUNK 2:1",
+];
+
+/// Run G21 on C71's scenes (ADR-0034 amendment P's C against A, the
+/// owner's P2): the screen at local memory `0x0`, inside the safe region,
+/// the video plane off. Each kind (C71's four cards, the caption over
+/// them naming the step) rendered off screen twice with the display
+/// paused, the second held to the first (the reference), then 20 renders
+/// each of A (off screen, the display reading the screen, a 2D copy onto
+/// it), C (drawn straight into the screen) and C with the display paused,
+/// every render held word for word to the reference and timed, every copy
+/// held to the picture it copied.
+#[inline(never)]
+fn g21_scenes(
+    g: &mut Rig,
+    r: &mut Renderer,
+    sc: &Screens,
+    keep: &mut [u8],
+    (cards, cap, caption): ([Texture; 4], Texture, Draw),
+    buf: &mut [u8],
+) {
+    let screen = Screens {
+        at: [g21::SCREEN_AT, g21::SCREEN_AT],
+    };
+    rp_drv_mbx_display::video_hide(&mut g.e.regs);
+    if !screen.flip(g, 0, true) {
+        log!("  CH G21: no frame event: nothing run");
+        return;
+    }
+    log!(
+        "  CH G21: the screen at 0x{:X} (GSCADR {:08X}; the safe region ends at 0x{:X}), the video plane off (VSCADR {:08X}); off screen at 0x{:X}",
+        g21::SCREEN_AT,
+        g.e.regs.read32(dreg::GSCADR),
+        g21::SAFE_END,
+        g.e.regs.read32(lreg::VSCADR),
+        sc.at[0]
+    );
+    let reference = &mut keep[..4 * g21::WORDS];
+    let load = |g: &Rig, at: u32, k: usize| g.mem.load(at as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+    let _ = r.set_background(Some(g21::BACKGROUND));
+    for slot in 0..=6 {
+        g.set(r, slot, None);
+    }
+    for (kind, what) in g21::KINDS.iter().enumerate() {
+        for (j, &t) in cards.iter().enumerate() {
+            g.set(r, 1 + j, Some(g21::card(kind, j, t)));
+        }
+        let mut l1 = heapless_name();
+        let _ = write!(l1, "CH G21 STEP {} OF {}", kind + 1, g21::KINDS.len());
+        prepare_caption(buf, l1.as_str(), G21_CAPTIONS[kind]);
+        upload_caption(g, cap, buf);
+        g.set(r, 6, Some(caption));
+        // The reference: off screen, the display paused, twice alike.
+        let off = sc.target(0);
+        let mut times = [None; 2];
+        for t in &mut times {
+            r.invalidate_all();
+            *t = quiet_frame(g, r, off, Fetch::Paused);
+            if t.is_none() {
+                break;
+            }
+        }
+        for (k, w) in reference.chunks_exact_mut(4).enumerate() {
+            w.copy_from_slice(&load(g, sc.at[0], k).to_le_bytes());
+        }
+        r.invalidate_all();
+        let again = quiet_frame(g, r, off, Fetch::Paused);
+        let word = |k: usize| {
+            let c = &reference[4 * k..4 * k + 4];
+            u32::from_le_bytes([c[0], c[1], c[2], c[3]])
+        };
+        let (n, first, nf) = g21::diff(word, |k| load(g, sc.at[0], k));
+        log!(
+            "  CH G21 {what}: the reference ({}): rendered {:?} {:?} then {again:?} us, the last {n} words off the one kept {:?}; hash {:08X}",
+            g21::Way::Reference.name(),
+            times[0],
+            times[1],
+            &first[..nf],
+            ft_hash(g, sc.at[0], g21::WORDS as u32)
+        );
+        if times.iter().any(Option::is_none) || again.is_none() || n > 0 {
+            log!("  CH G21 {what}: no repeatable reference: its ways not run");
+            continue;
+        }
+        // The kind and its step on the screen before its ways.
+        let _ = g21_copy_in(g, sc.at[0]);
+        for way in &g21::WAYS[1..] {
+            let target = if way.on_screen() { screen.target(0) } else { off };
+            let at = if way.on_screen() { g21::SCREEN_AT } else { sc.at[0] };
+            let fetch = if way.paused() {
+                Fetch::Paused
+            } else {
+                Fetch::Normal
+            };
+            let mut t = g21::Tally::default();
+            for _ in 0..20 {
+                r.invalidate_all();
+                let us = quiet_frame(g, r, target, fetch);
+                t.render(us, g21::diff(word, |k| load(g, at, k)));
+                if way.copies() && us.is_some() {
+                    let (done, copy_us) = g21_copy_in(g, sc.at[0]);
+                    let words = if done {
+                        g21::diff(|k| load(g, sc.at[0], k), |k| load(g, g21::SCREEN_AT, k)).0
+                    } else {
+                        0
+                    };
+                    t.copy(done, copy_us, words);
+                }
+                rt::check_in();
+            }
+            log!(
+                "  CH G21 {what}: {}: {} renders ({} unfinished), {} differ from the reference, {} words in all {:?}; render fastest {} us, mean {} us; {} 2D copies onto the screen, fastest {} us, mean {} us, {} not exact ({} words off)",
+                way.name(),
+                t.renders,
+                t.unfinished,
+                t.off,
+                t.words,
+                &t.first[..t.nfirst],
+                t.render_min,
+                t.render_mean(),
+                t.copies,
+                t.copy_min,
+                t.copy_mean(),
+                t.copies_off,
+                t.copy_words
+            );
+        }
+    }
+}
+
+/// One 2D copy of the 480 x 640 RGB565 picture at `from` onto run G21's
+/// screen, the engine awaited: whether it finished, and its time.
+fn g21_copy_in(g: &mut Rig, from: u32) -> (bool, u32) {
+    let (c, n) = rp_image::need(
+        cmd::copy(
+            Format::RGB565,
+            (g21::SCREEN_AT as usize, 960),
+            (from as usize, 960),
+            (0, 0),
+            (0, 0, 480, 640),
+            0,
+        ),
+        "a 2D copy",
+    );
+    let t0 = rt::ticks();
+    let (done, _, _) = submit_wait(g, &c[..n]);
+    (done, us_since(t0))
+}
+
 /// How the display reads during a C71 render (quality audit C71).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fetch {
@@ -1133,6 +1294,21 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
     .over();
     let mut step = 11;
     let cards = [c0, c1, c2, c3];
+
+    if G21 {
+        g21_scenes(g, &mut r, &sc, keep, (cards, cap, caption), buf);
+        for slot in 0..=6 {
+            g.set(&mut r, slot, None);
+        }
+        for t in [c0, c1, c2, c3, sky, cl1, cl2, app, cap] {
+            let _ = rp_mbx3d_render::release(&mut g.pool, t);
+        }
+        let _ = r.release(&mut g.pool);
+        let _ = g.pool.free(a, PIC);
+        let _ = g.pool.free(b, PIC);
+        log!("  CH G21: done");
+        return;
+    }
 
     if C71 {
         // C71: the stale pixels after partial frames, over the renderer's

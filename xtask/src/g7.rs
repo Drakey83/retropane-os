@@ -174,7 +174,11 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
 /// places, as `rp-glesfeat`'s way "ours" draws it), for the emulator's
 /// check of G7's replay: its replay at Windows Mobile's clock must draw
 /// the very picture way 1 draws directly. No picture hash (0).
-pub fn synthetic() -> Vec<u8> {
+///
+/// Its target ARGB8888, or RGB565 when `rgb565` (`0x650` 1, 960-byte rows,
+/// as Dell's): test G21 puts it on the 600 KiB screen inside the safe
+/// region, where an ARGB8888 one (1.2 MiB) doesn't fit.
+pub fn synthetic(rgb565: bool) -> Vec<u8> {
     use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, TSP_DELL, Vertex};
     // `rp-glesfeat`'s QUAD, TRIS and TSP_SMOOTH (src/main.rs).
     const QUAD: [(f32, f32, u32); 4] = [
@@ -228,9 +232,11 @@ pub fn synthetic() -> Vec<u8> {
     let mut ra = vec![0u32; 2 * (cols * rows) as usize];
     let n = m3::region_array(&mut ra, cols, rows, pm).expect("the grid fits");
     ra.truncate(n);
-    let mut regs: Vec<(usize, u32)> = m3::start_table(regions, pm, 480, 640, 480 * 4)
+    let bytes = if rgb565 { 2 } else { 4 };
+    let mut regs: Vec<(usize, u32)> = m3::start_table(regions, pm, 480, 640, 480 * bytes)
         .into_iter()
         .filter(|p| p.0 != m3::START)
+        .map(|p| if rgb565 && p.0 == 0x650 { (0x650, 1) } else { p })
         .collect();
     regs.push((0x65C, target));
     regs.extend(
@@ -361,7 +367,7 @@ mod tests {
 
     #[test]
     fn the_synthetic_frame_parses_and_reaches_its_objects() {
-        let b = synthetic();
+        let b = synthetic(false);
         let f = frame::parse(&b).expect("parses");
         assert_eq!(f.reg(0x60C), Some(0x0060_0000));
         assert_eq!(f.reg(0x65C), Some(0x0020_0000));
@@ -372,5 +378,25 @@ mod tests {
             u32::from_le_bytes(d[..4].try_into().unwrap()) & 0x1F_FFFF,
             16
         );
+        assert_eq!(f.reg(0x650), Some(6));
+        assert_eq!(f.reg(0x660), Some(480));
+    }
+
+    #[test]
+    fn the_rgb565_synthetic_frame_differs_only_in_its_target_format() {
+        let (a, b) = (synthetic(false), synthetic(true));
+        let (fa, fb) = (
+            frame::parse(&a).expect("parses"),
+            frame::parse(&b).expect("parses"),
+        );
+        // RGB565 at Dell's stride (240 words, two pixels a word).
+        assert_eq!(fb.reg(0x650), Some(1));
+        assert_eq!(fb.reg(0x660), Some(240));
+        assert_eq!(fb.reg(0x65C), fa.reg(0x65C));
+        let rest = |f: &frame::Frame<'_>| -> Vec<(usize, u32)> {
+            f.regs().filter(|p| p.0 != 0x650 && p.0 != 0x660).collect()
+        };
+        assert_eq!(rest(&fa), rest(&fb));
+        assert!(fa.segs().map(|s| s.1).eq(fb.segs().map(|s| s.1)));
     }
 }
