@@ -55,6 +55,21 @@ row a run, the owner present, would). The whole-cache clean's own use of
 it (a reserved region, then invalidated) is unaffected and in use. Until
 isolated: line allocate stays out of data paths.
 
+## The mini data cache (the CPU gate's V1 and C5, 2026-10-24)
+
+A section with the X bit (bit 12) and C 1, B 0 is cached in the mini data
+cache, not the main one (Intel's XScale manual; now shown on the X51v:
+`rp-probe` `RP_PROBE_MINI`, `local/rp-probe-mini.txt`, card `probe-0071`).
+**It holds 2 KiB:** line walks through a mini-cached window hit up to 2
+KiB (~24 ns a line) and miss every line from 3 KiB (~370 ns a line); the
+same walks through an ordinary window hit throughout. **Streaming through
+it keeps the main cache's hot data:** a 24 KiB hot set re-walked after 1
+MiB streamed takes 180 us when the stream went through the main cache
+(evicted: ~235 ns a line) and 19 us when it went through the mini cache
+(kept: ~25 ns a line). Use: buffers read once (uploads, audio rings,
+decoders' input) mapped mini-cached (`mmu::mini_section`, test windows
+only so far).
+
 ## Page sizes and page-table placement (the CPU gate's C4 and V7)
 
 **`rp-probe` pages run 1 (X51v, 2026-10-22, `local/rp-probe-pages1.txt`,
