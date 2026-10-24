@@ -795,17 +795,17 @@ fn repeat_whole(
     sc: &Screens,
     keep: &mut [u8],
     what: &str,
-    quiet: bool,
+    fetch: Fetch,
 ) {
     r.invalidate_all();
-    let first_us = quiet_frame(g, r, sc.target(0), quiet);
+    let first_us = quiet_frame(g, r, sc.target(0), fetch);
     keep_picture(g, sc.at[0], &mut keep[..KEPT]);
     let (mut renders, mut words) = (0u32, 0u32);
     let mut first = [(0u32, 0u32, 0u32, 0u32); 4];
     let mut nf = 0usize;
     for _ in 0..20 {
         r.invalidate_all();
-        let _ = quiet_frame(g, r, sc.target(0), quiet);
+        let _ = quiet_frame(g, r, sc.target(0), fetch);
         let mut n = 0u32;
         for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
             let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
@@ -824,26 +824,52 @@ fn repeat_whole(
     }
     log!(
         "  CH C71 {what}{}: rendered whole 20 times ({first_us:?} us): {renders} renders differ from the first, {words} words in all {:?}",
-        if quiet {
-            ", the display's fetch paused"
-        } else {
-            ""
-        },
+        fetch.note(),
         &first[..nf]
     );
 }
 
-/// One whole render; with `quiet`, the display's fetch paused around it
-/// (`graphics_stream`: test G16 found the scan-out's reads corrupting
-/// renders under the loader, quality audit C71).
-fn quiet_frame(g: &mut Rig, r: &mut Renderer, t: Target, quiet: bool) -> Option<u32> {
-    if !quiet {
-        return g.frame(r, t);
+/// How the display reads during a C71 render (quality audit C71).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fetch {
+    /// As set up: the screen shown where the harness put it.
+    Normal,
+    /// Paused around the render (`graphics_stream`: test G16).
+    Paused,
+    /// Reading normally, but pointed at local memory offset 0, where
+    /// Windows Mobile keeps its screen (test G17: Dell's frame right with
+    /// the screen there, wrong with it at 1 MiB).
+    AtZero,
+}
+
+impl Fetch {
+    const fn note(self) -> &'static str {
+        match self {
+            Self::Normal => "",
+            Self::Paused => ", the display's fetch paused",
+            Self::AtZero => ", the display reading offset 0",
+        }
     }
-    let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
-    let us = g.frame(r, t);
-    rp_drv_mbx_display::graphics_stream(&mut g.e.regs, was);
-    us
+}
+
+/// One whole render with the display reading as `fetch` says.
+fn quiet_frame(g: &mut Rig, r: &mut Renderer, t: Target, fetch: Fetch) -> Option<u32> {
+    match fetch {
+        Fetch::Normal => g.frame(r, t),
+        Fetch::Paused => {
+            let was = rp_drv_mbx_display::graphics_stream(&mut g.e.regs, false);
+            let us = g.frame(r, t);
+            rp_drv_mbx_display::graphics_stream(&mut g.e.regs, was);
+            us
+        }
+        Fetch::AtZero => {
+            let was = g.e.regs.read32(dreg::GSCADR);
+            g.e.regs.write32(dreg::GSCADR, was & !0x007F_FFFF);
+            let us = g.frame(r, t);
+            g.e.regs.write32(dreg::GSCADR, was);
+            us
+        }
+    }
 }
 
 /// The rows above the caption of the picture at `at`, read into `out`.
@@ -1262,8 +1288,15 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
                 "textured cards 1.56x, bilinear",
                 "textured cards shrunk 2:1 (64 x 64), point sampling",
             ][kind as usize];
-            for quiet in [false, true] {
-                repeat_whole(g, &mut r, &sc, keep, what, quiet);
+            if kind == 0 {
+                log!(
+                    "  CH C71 the display shows GSCADR {:08X} (its start at local memory 0x{:X}) during the renders",
+                    g.e.regs.read32(dreg::GSCADR),
+                    (g.e.regs.read32(dreg::GSCADR) & 0x007F_FFFF) * 16
+                );
+            }
+            for fetch in [Fetch::Normal, Fetch::Paused, Fetch::AtZero] {
+                repeat_whole(g, &mut r, &sc, keep, what, fetch);
             }
         }
         for slot in 0..=6 {
