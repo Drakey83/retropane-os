@@ -3174,8 +3174,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g16") => return boot_loader_glesfeat_g(root, 16),
         Ok("g17") => return boot_loader_glesfeat_g(root, 17),
         Ok("g18") => return boot_loader_glesfeat_g(root, 18),
+        Ok("g19") => return boot_loader_glesfeat_g(root, 19),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g18"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g19"));
         }
         Err(_) => {}
     }
@@ -3479,7 +3480,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 18 {
+    let (env, name, ours, after) = if test == 19 {
+        ("RP_GLESFEAT_G19", "G19", "G19 way 1 (", "G19 way 2 (")
+    } else if test == 18 {
         ("RP_GLESFEAT_G18", "G18", "G18 way 1 (", "G18 way 2 (")
     } else if test == 17 {
         ("RP_GLESFEAT_G17", "G17", "G17 way 1 (", "G17 way 2 (")
@@ -3517,7 +3520,10 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
     // the very picture way 1 draws directly.
     let frame = root.join("target/g7-synthetic-frame.bin");
-    let also = if matches!(test, 7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18) {
+    let also = if matches!(
+        test,
+        7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19
+    ) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
         Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
@@ -3558,7 +3564,17 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 18 {
+    let wants: &[&str] = if test == 19 {
+        &[
+            "G17: the screen as found: offset 0x",
+            "test G19, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G19: Dell's frame at 74.75 MHz / 1 with the screen at 10 places in local memory; the on-die frame buffer: ODFBPWR 0x",
+            "G19 way 1 (Dell's frame, the screen at the place below):",
+            "G19: right at 74.75 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 18 {
         &[
             "G17: the screen as found: offset 0x",
             "test G18, Gouraud at the cores' divide 1",
@@ -3858,7 +3874,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     }
     // Each way that drew runs every setting: G3 three, G and G2 one;
     // G14's first way none (it stays at the clock it found).
-    let settings = if test == 18 {
+    let settings = if test == 18 || test == 19 {
         1
     } else if test >= 3 {
         3
@@ -3914,6 +3930,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         // The replay of our scene at every screen place.
         // Every place drawn: the emulator's frame leaves one out (nine).
         18 => &[2, 3, 4, 5, 6, 7, 8, 9],
+        // Every place drawn (none over the emulator's frame).
+        19 => &[2, 3, 4, 5, 6, 7, 8, 9, 10],
         _ => &[],
     };
     if !same.is_empty() {
@@ -3993,16 +4011,25 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // logged at the next way's set-up, the last at the end).
     // G18: every place that wasn't left out drew, its screen set and read
     // back there (`GSCADR` its place / 16, the stream on), in order.
-    if test == 18 {
-        let places: [usize; 10] = [
-            0x0, 0x400, 0x800, 0x1000, 0x2000, 0x8_0000, 0x10_0000, 0x12_0000, 0xC8_0000, 0xF0_0000,
-        ];
+    if test == 18 || test == 19 {
+        let places: [usize; 10] = if test == 18 {
+            [
+                0x0, 0x400, 0x800, 0x1000, 0x2000, 0x8_0000, 0x10_0000, 0x12_0000, 0xC8_0000,
+                0xF0_0000,
+            ]
+        } else {
+            [
+                0x4000, 0x8000, 0x1_0000, 0x1_8000, 0x2_0000, 0x3_0000, 0x4_0000, 0x5_0000,
+                0x6_0000, 0x7_0000,
+            ]
+        };
+        let left = format!("{name}: place ");
         // Each place either set at its own address or named as left out
         // (one over the frame: the emulator's frame, our own scene, lies
         // elsewhere than Dell's), never both.
         let mut seen = Vec::new();
         for line in log.lines() {
-            if let Some(rest) = line.strip_prefix("G18: place ")
+            if let Some(rest) = line.strip_prefix(left.as_str())
                 && line.ends_with("left out")
             {
                 let k: usize = rest
@@ -4013,7 +4040,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
                 seen.push((k, false));
             }
             if let Some(rest) = line.strip_prefix("    the screen at 0x")
-                && let Some(p) = rest.split("(G18 place ").nth(1)
+                && let Some(p) = rest.split("(place ").nth(1)
             {
                 let k: usize = p
                     .split(')')
@@ -4022,7 +4049,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
                     .unwrap_or(0);
                 let at = places.get(k.wrapping_sub(1)).copied().unwrap_or(usize::MAX);
                 let want = format!(
-                    "{at:x} (G18 place {k}), GSCADR 0x{:08x}",
+                    "{at:x} (place {k}), GSCADR 0x{:08x}",
                     1u32 << 31 | (at / 16) as u32
                 );
                 if !rest.starts_with(&want) {
