@@ -7,7 +7,8 @@
   **Amends ADR-0023** (C2: 16-bit opaque pictures) **and ADR-0030 G1**
   (C5: layers replace areas). Implements ADR-0022 point 3 as amended.
   **Amendment P (screen placement): accepted (owner, 2026-10-24): P1 A,
-  P2 yes, P3 measured per device in the self-test** (below).
+  P2 yes, P3 measured per device in the self-test** (below); **P1 changed
+  to C by the owner later on 2026-10-24** (below).
 - **Date:** 2026-10-19
 
 ## In plain words
@@ -145,7 +146,20 @@ T1, T3, T4, ticked):
 
 **The owner's votes (2026-10-24):**
 
-- **P1: A.** "It's the only option that's proven, doesn't flicker, doesn't
+- **P1: C (changed by the owner, 2026-10-24, after G21, GC2I and GC2J):**
+  "I'm committed to C now." The 3D core draws straight into the screen
+  inside the safe region, which is what lets it run at divide 1 above
+  74.75 MHz (G21: A's off-screen target fails there; GC2I: every 16-bit
+  kind right to 133.25 / 1 inside the region; GC2J: 108.33 / 1 soaked
+  clean, 2.17x Windows Mobile's speed for Gouraud). Still owed before
+  anything ships on it, each proven on the X51v: the tearing design (the
+  render started as the display begins at the top, so it stays ahead of
+  the scan line; to measure first, the order the core writes its tiles
+  in), what frames longer than one refresh do (design owed, the owner's to
+  rule), every divide-1 step above 74.75 entering ADR-0035 by its own
+  rules, and P3's per-device self-test. A stays what it was proven to be:
+  tear-free at 74.75 / 1 and divide 2.
+- **P1 as first voted: A.** "It's the only option that's proven, doesn't flicker, doesn't
   tear, and doesn't corrupt." B flickers at 60 fps; D corrupts; C is
   unproven and might reintroduce the collision in a new form. A's costs
   (up to a 5 ms copy, no panned page during 3D frames) are affordable, the
