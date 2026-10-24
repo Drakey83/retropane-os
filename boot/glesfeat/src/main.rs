@@ -514,6 +514,18 @@ pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
     pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
 }
 
+/// Test G18's screen places in local memory (the label, 480 x 640
+/// RGB565, 600 KiB), Dell's frame at 74.75 / 1: Windows Mobile's (`0x0`,
+/// G17: right) and ours (`0x100000`, G17: wrong) among small offsets near
+/// 0 (in case local memory's banks follow low address bits) and big steps
+/// across the 16 MiB (in case they follow high ones). A place over Dell's
+/// frame (`0x1C0000`-`0x1DB000`, `0x291000`-`0xBBD000`) or the image's
+/// own is left out at run time.
+pub const G18_PLACES: [usize; 10] = [
+    0x00_0000, 0x00_0400, 0x00_0800, 0x00_1000, 0x00_2000, 0x08_0000, 0x10_0000, 0x12_0000,
+    0xC8_0000, 0xF0_0000,
+];
+
 /// The display's memory control (mbxfb's `DMCTRL`).
 pub const DMCTRL: usize = 0x2188;
 
@@ -953,7 +965,8 @@ mod image {
         || TEST_G14
         || TEST_G15
         || TEST_G16
-        || TEST_G17;
+        || TEST_G17
+        || TEST_G18;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -1023,6 +1036,15 @@ mod image {
     /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
     /// codegen-variant rp-glesfeat g17`).
     const TEST_G17: bool = option_env!("RP_GLESFEAT_G17").is_some();
+    /// Test G18 instead of G (`RP_GLESFEAT_G18=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G18=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g18`).
+    const TEST_G18: bool = option_env!("RP_GLESFEAT_G18").is_some();
+    const _: () = assert!(
+        !TEST_G18 || cfg!(rp_g7),
+        "test G18 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G17 || cfg!(rp_g7),
         "test G17 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1083,7 +1105,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G17 {
+    const G_TITLE: &str = if TEST_G18 {
+        "RP-GLESFEAT TEST G18"
+    } else if TEST_G17 {
         "RP-GLESFEAT TEST G17"
     } else if TEST_G16 {
         "RP-GLESFEAT TEST G16"
@@ -1118,7 +1142,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G17 {
+    const G_NAME: &str = if TEST_G18 {
+        "G18"
+    } else if TEST_G17 {
         "G17"
     } else if TEST_G16 {
         "G16"
@@ -1166,6 +1192,7 @@ mod image {
         || TEST_G15
         || TEST_G16
         || TEST_G17
+        || TEST_G18
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1185,6 +1212,7 @@ mod image {
             || TEST_G15
             || TEST_G16
             || TEST_G17
+            || TEST_G18
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1200,6 +1228,7 @@ mod image {
         || TEST_G15
         || TEST_G16
         || TEST_G17
+        || TEST_G18
     {
         super::G6_LABEL
     } else {
@@ -1218,6 +1247,7 @@ mod image {
             || TEST_G15
             || TEST_G16
             || TEST_G17
+            || TEST_G18
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1232,6 +1262,7 @@ mod image {
             || TEST_G15
             || TEST_G16
             || TEST_G17
+            || TEST_G18
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -2215,6 +2246,8 @@ mod image {
         G16(u8),
         /// Test G17: [`super::G17_WAYS`]'s way k.
         G17(u8),
+        /// Test G18: the screen at [`super::G18_PLACES`]' place k.
+        G18(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2314,6 +2347,7 @@ mod image {
                 Self::G17(0) => "Dell's frame, the screen at our place",
                 Self::G17(1) => "Dell's frame, the screen at Windows Mobile's place",
                 Self::G17(_) => "Dell's frame, the screen at our place, Linux's DMCTRL",
+                Self::G18(_) => "Dell's frame, the screen at the place below",
             }
         }
     }
@@ -2580,7 +2614,7 @@ mod image {
                 let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
             }
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => {
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => {
                 (replay(e, vram), us_since(t0), [m3::END; TA_LIST])
             }
             Way::G13(k) => {
@@ -2745,7 +2779,7 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         set_lay(match w {
             Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => frame()
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
                 .unwrap_or(super::OURS_LAYOUT),
@@ -2784,6 +2818,18 @@ mod image {
         // G17: the screen's place and the display's memory control.
         if let Way::G17(k) = w {
             g17_way(&mut e.regs, vram, k);
+        }
+        // G18: the screen's place.
+        if let Way::G18(k) = w {
+            let place = super::G18_PLACES[k as usize % super::G18_PLACES.len()];
+            screen_at(&mut e.regs, vram, place);
+            log!(
+                "    the screen at 0x{:x} (G18 place {}), GSCADR 0x{:08x}",
+                label_at(),
+                k + 1,
+                e.regs.read32(dreg::GSCADR)
+            );
+            let _ = display_check(&mut e.regs, "after the way's set-up");
         }
         // G16: local memory's mapping and the display's fetch for this way.
         g16_way(match w {
@@ -2872,7 +2918,7 @@ mod image {
         // G7: the replay at Windows Mobile's clock against Dell's own
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) => true,
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => true,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -3362,7 +3408,13 @@ mod image {
         let mut right = [[None; SETTINGS]; MAX_WAYS];
         let mut dark = [[false; SETTINGS]; MAX_WAYS];
         for (k, &w) in ways.iter().enumerate() {
-            let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2 + before, steps);
+            // G18 maps places at 74.75 / 1 alone.
+            let settings = if TEST_G18 {
+                &super::G3_PLLS[..1]
+            } else {
+                &super::G3_PLLS[..]
+            };
+            let (r, _) = way(e, vram, w, settings, k as u32 + 2 + before, steps);
             for s in 0..SETTINGS {
                 right[k][s] = r.right(s);
                 dark[k][s] = r.right(s).is_some() && !r.at[s].screen;
@@ -4562,17 +4614,7 @@ mod image {
             return;
         };
         let (wm, linux) = super::G17_WAYS[k as usize % super::G17_WAYS.len()];
-        let to = if wm { place } else { LABEL };
-        let from = label_at();
-        if to != from {
-            for i in 0..LABEL_STRIDE * H as usize / 4 {
-                let w = load32_volatile(vram, from + 4 * i).unwrap_or(0);
-                let _ = store32_volatile(vram, to + 4 * i, w);
-            }
-            cpu::drain_write_buffer();
-            LABEL_AT.with(|a| *a = to);
-            let _ = show(regs, label_plane());
-        }
+        screen_at(regs, vram, if wm { place } else { LABEL });
         regs.write32(
             super::DMCTRL,
             if linux { super::LINUX_DMCTRL } else { dmctrl },
@@ -4608,16 +4650,7 @@ mod image {
         };
         // Windows Mobile's place must lie over nothing of the frame's or
         // the image's own (the reference, the fence).
-        let bytes = LABEL_STRIDE * H as usize;
-        let spans = l.spans(W, H, COLS * ROWS);
-        let clash = frame().is_some_and(|f| f.touches(place, bytes))
-            || spans[..4]
-                .iter()
-                .any(|s| s.0 < place + bytes && place < s.0 + s.1)
-            || [(REF, STRIDE * H as usize), (FENCE, 0x1000)]
-                .iter()
-                .any(|&(a, n)| a < place + bytes && place < a + n);
-        if clash {
+        if screen_clashes(&l, place) {
             log!(
                 "G17: Windows Mobile's place 0x{place:x} lies over the frame or the image's own: nothing run"
             );
@@ -4632,6 +4665,72 @@ mod image {
 
     /// Test G17's ways.
     const G17_WAYS: [Way; 3] = [Way::G17(0), Way::G17(1), Way::G17(2)];
+
+    /// The label moved to `to`: copied there, then scanned out from there
+    /// (tests G17 and G18).
+    fn screen_at(regs: &mut Mmio, vram: &mut [u8], to: usize) {
+        let from = label_at();
+        if to == from {
+            return;
+        }
+        // Upward over itself (G18's near places overlap): from the end.
+        let words = LABEL_STRIDE * H as usize / 4;
+        for j in 0..words {
+            let i = if to > from { words - 1 - j } else { j };
+            let w = load32_volatile(vram, from + 4 * i).unwrap_or(0);
+            let _ = store32_volatile(vram, to + 4 * i, w);
+        }
+        cpu::drain_write_buffer();
+        LABEL_AT.with(|a| *a = to);
+        let _ = show(regs, label_plane());
+    }
+
+    /// Whether a screen at `place` lies over the frame's pages or layout,
+    /// or the image's reference or fence.
+    fn screen_clashes(l: &super::Layout, place: usize) -> bool {
+        let bytes = LABEL_STRIDE * H as usize;
+        let spans = l.spans(W, H, COLS * ROWS);
+        frame().is_some_and(|f| f.touches(place, bytes))
+            || spans[..4]
+                .iter()
+                .any(|s| s.0 < place + bytes && place < s.0 + s.1)
+            || [(REF, STRIDE * H as usize), (FENCE, 0x1000)]
+                .iter()
+                .any(|&(a, n)| a < place + bytes && place < a + n)
+    }
+
+    /// Test G18: Dell's frame at 74.75 / 1 with the screen at each of
+    /// [`super::G18_PLACES`] (G17: right at Windows Mobile's place, `0x0`,
+    /// wrong at ours, `0x100000`), to map which places collide with the
+    /// render's buffers. A place over the frame or the image's own is
+    /// logged and left out.
+    fn test_g18(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G18: Dell's frame at 74.75 MHz / 1 with the screen at {} places in local memory",
+            super::G18_PLACES.len()
+        );
+        let Some(l) = usable_frame() else {
+            return;
+        };
+        let mut ways = [Way::G18(0); super::G18_PLACES.len()];
+        let mut n = 0;
+        for (k, &place) in super::G18_PLACES.iter().enumerate() {
+            if screen_clashes(&l, place) {
+                log!(
+                    "G18: place {} (0x{place:x}) lies over the frame or the image's own: left out",
+                    k + 1
+                );
+                continue;
+            }
+            ways[n] = Way::G18(k as u8);
+            n += 1;
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &ways[..n]);
+        screen_at(&mut e.regs, vram, LABEL);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
 
     /// Test G3: the backgrounds.
     fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
@@ -4657,7 +4756,7 @@ mod image {
         let mut display = Display::new(regs);
         // G17: the display as the loader left it (its plane where Windows
         // Mobile put it), before the image adopts it or shows its label.
-        if TEST_G17 {
+        if TEST_G17 || TEST_G18 {
             let found = display.on_screen(vram.len());
             let dmctrl = display.regs().read32(super::DMCTRL);
             G17_FOUND.with(|f| *f = Some((found.offset, dmctrl)));
@@ -4676,7 +4775,7 @@ mod image {
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         // The label first: the screen says what runs from the first moment.
         let saved = show_label(&mut e.regs, vram);
-        if TEST_G17 {
+        if TEST_G17 || TEST_G18 {
             let found = G17_DUMP.with(|d| *d);
             let _ = display_dump(&mut e.regs, "ours (the image's label shown)", Some(&found));
         }
@@ -4685,7 +4784,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G17 {
+        let first = if TEST_G18 {
+            "STEP 1 OF 11"
+        } else if TEST_G17 {
             "STEP 1 OF 4"
         } else if TEST_G16 {
             "STEP 1 OF 5"
@@ -4772,7 +4873,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G17 {
+        if ready && TEST_G18 {
+            test_g18(&mut e, vram);
+        } else if ready && TEST_G17 {
             test_g17(&mut e, vram);
         } else if ready && TEST_G16 {
             test_g16(&mut e, vram);
@@ -5899,5 +6002,27 @@ mod g17_tests {
                 .unwrap()
                 .1
         );
+    }
+}
+
+/// Test G18's places.
+#[cfg(test)]
+mod g18_tests {
+    use super::*;
+
+    #[test]
+    fn the_places_hold_g17s_two_and_fit_the_16_mib() {
+        assert!(G18_PLACES.contains(&0x0), "Windows Mobile's (G17: right)");
+        assert!(G18_PLACES.contains(&G6_LABEL), "ours (G17: wrong)");
+        assert!(
+            G18_PLACES.windows(2).all(|w| w[0] < w[1]),
+            "sorted, each once"
+        );
+        assert!(
+            G18_PLACES.iter().all(|p| p % 16 == 0),
+            "GSCADR's 16-byte unit"
+        );
+        // The screen, 600 KiB, ends inside local memory below the fence page.
+        assert!(G18_PLACES.iter().all(|p| p + 480 * 640 * 2 <= 0xFF_F000));
     }
 }
