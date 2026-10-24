@@ -3133,6 +3133,10 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
             "G4 way 3 (Dell's table, 32-bit):",
             "G4 way 4 (Dell's table and RGB565):",
             "G4 way 10 (Dell's 0x6dc alone):",
+            // Dell's words reached the core (way 3's readback after its
+            // render; a test that forgot to write them would pass otherwise:
+            // the fork doesn't model what they do).
+            "  read back after the render: 0x610 0x00030001 0x614 0x1e3ce500 0x618 0x1e3ce500 0x61c 0x00020007 0x648 0x00000001 0x6d8 0x09000000 0x6dc 0x3f800001",
             "G4: right at 74.75 / 1 of 20:",
             "G4: right at 99.67 / 1 of 20:",
             "G4: right at 133.25 / 1 of 20:",

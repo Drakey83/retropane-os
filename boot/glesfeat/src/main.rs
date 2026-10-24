@@ -1675,6 +1675,17 @@ mod image {
             );
         }
         let (d1, us1, list) = draw(e, vram, w, 24);
+        // G4: the start table's words Dell's way, read back from the core
+        // after the render (that they were written, and held).
+        if let Way::Direct(f) = w
+            && !f.regs.is_empty()
+        {
+            let _ = write!(RunLog, "  read back after the render:");
+            for &(off, _) in f.regs {
+                let _ = write!(RunLog, " 0x{off:x} 0x{:08x}", e.regs.read32(MBX + off));
+            }
+            log!("");
+        }
         keep_reference(vram);
         // The reference's hash: ways that must draw the same picture (G2's
         // forms of one quad over one background) are held to each other,
