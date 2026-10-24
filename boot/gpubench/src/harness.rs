@@ -1116,6 +1116,37 @@ fn three_d_frames(g: &mut Rig, scratch: &mut [u8]) {
                 );
             }
         }
+        // The same scene rendered whole 20 times, each held to the first:
+        // does one scene always render to the same pixels?
+        r.invalidate_all();
+        let _ = g.frame(&mut r, sc.target(0));
+        keep_picture(g, sc.at[0], &mut keep[..KEPT]);
+        let (mut renders_differ, mut words_differ) = (0u32, 0u32);
+        let mut first = [(0u32, 0u32, 0u32, 0u32); 4];
+        let mut nf = 0usize;
+        for _ in 0..20 {
+            r.invalidate_all();
+            let _ = g.frame(&mut r, sc.target(0));
+            let mut n = 0u32;
+            for (k, wd) in keep[..KEPT].chunks_exact(4).enumerate() {
+                let a = u32::from_le_bytes([wd[0], wd[1], wd[2], wd[3]]);
+                let b = g.mem.load(sc.at[0] as usize + 4 * k).unwrap_or(0xDEAD_BEEF);
+                if a != b {
+                    n += 1;
+                    if nf < first.len() {
+                        first[nf] = ((2 * k % 480) as u32, (2 * k / 480) as u32, a, b);
+                        nf += 1;
+                    }
+                }
+            }
+            renders_differ += u32::from(n > 0);
+            words_differ += n;
+            rt::check_in();
+        }
+        log!(
+            "  CH C71 the same scene rendered whole 20 times: {renders_differ} renders differ from the first, {words_differ} words in all {:?}",
+            &first[..nf]
+        );
         for slot in 0..=6 {
             g.set(&mut r, slot, None);
         }

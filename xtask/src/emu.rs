@@ -5240,6 +5240,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &[
                 "  CH C71 the background object run 3:",
                 "  CH C71 a flat quad in slot 0 run 3:",
+                "  CH C71 the same scene rendered whole 20 times:",
                 "  CH C71: done",
                 "everything given back: true",
                 "RETROPANE-GPUBENCH: done",
