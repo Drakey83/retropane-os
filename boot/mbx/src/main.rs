@@ -255,7 +255,7 @@ mod image {
         (a, s): (usize, usize),
         px: &dyn Fn(&[u8], usize, usize) -> Option<u16>,
     ) -> bool {
-        use cmd::{OP_KEY, OP_RIGHT_LEFT};
+        use cmd::{OP_BOTTOM_UP, OP_KEY};
         for y in 0..64 {
             for x in 0..64 {
                 let at = y * TILE_STRIDE + x * 2;
@@ -317,7 +317,11 @@ mod image {
                 (a, s),
                 (40, 360),
                 (48, 360, 112, 424),
-                OP_RIGHT_LEFT,
+                // Bit 24, read in 2026-10-14 as right to left: it is
+                // bottom-up, and a copy right over itself is exact without
+                // it (`rp-mbx-blend` B12f, 2026-10-24); kept so this run's
+                // words stay what the device ran.
+                OP_BOTTOM_UP,
             ),
             "a 2D rectangle",
         );

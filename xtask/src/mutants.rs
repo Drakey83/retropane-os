@@ -2570,6 +2570,28 @@ fn compress_k<const K: u32>(",
         ]),
     },
     Mutant {
+        name: "a 2D copy down over itself left top-down: the row overlap ignored (C72)",
+        file: "drivers/blit2d/src/lib.rs",
+        from: "&& y0 > sy && y0 < sy.saturating_add(y1.saturating_sub(y0))",
+        to: "&& y0 > sy",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-blit2d",
+            "a_copy_down_over_itself_goes_bottom_up_and_no_other",
+        ]),
+    },
+    Mutant {
+        name: "a 2D copy down over itself left top-down: another stride taken as the same surface (C72)",
+        file: "drivers/blit2d/src/lib.rs",
+        from: "dst == src && dst_stride == src_stride && y0 > sy",
+        to: "dst == src && y0 > sy",
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-blit2d",
+            "a_copy_down_over_itself_goes_bottom_up_and_no_other",
+        ]),
+    },
+    Mutant {
         name: "the 3D price: a textured quad back to run 2's 1 us at 1:1 (C20)",
         file: "drivers/mbx3d-render/src/lib.rs",
         from: "        Some(r) if r < 24 => 21,",

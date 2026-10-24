@@ -84,13 +84,17 @@ pub const OP_BLEND: u32 = 1 << 17;
 /// Operation header bit: the colour key applies (with [`OP_NO_COLOUR`], as
 /// the driver sends it).
 pub const OP_KEY: u32 = 1 << 20;
-// Bit 23, the driver's "y not positive", is deliberately absent: it
-// doesn't make the chip copy bottom-up (measured 2026-10-14). A copy down
-// over itself is one copy with a negative stride on both surfaces, or
-// strips as the fallback.
-/// Operation header bit: copy right to left (for a destination right of an
-/// overlapping source).
-pub const OP_RIGHT_LEFT: u32 = 1 << 24;
+/// Operation header bit 24: copy bottom-up, for a destination below an
+/// overlapping source (Dell's "y not positive", `0x0213f7d8`; measured on
+/// the X51v, `rp-mbx-blend` B12f 2026-10-24: one row down over itself in
+/// 256-pixel rows is exact with it, smeared without it or with bit 23).
+/// [`copy`] sets it by itself; earlier docs read it as "right to left":
+/// a copy right over itself is exact with or without it (B12f), which hid
+/// what it does.
+pub const OP_BOTTOM_UP: u32 = 1 << 24;
+// Bit 23, Dell's "x not positive", is deliberately absent: a copy right
+// over itself is exact without it (B12f), and it doesn't copy bottom-up
+// (2026-10-14, B12f).
 
 /// The blend state Dell's driver sets for anti-aliased text.
 pub const BLEND_DELL_TEXT: u32 = 0x0910_0000;
@@ -237,7 +241,9 @@ pub fn blit_unchecked(
 
 /// A copy of the `[x0, x1) × [y0, y1)` destination rectangle from the
 /// source surface at `src` (`src_stride`), starting at `(sx, sy)` there.
-/// `flags`: [`OP_RIGHT_LEFT`] for a rightward overlap, or [`OP_KEY`].
+/// `flags`: [`OP_KEY`] or 0; [`OP_BOTTOM_UP`] is added here whenever the
+/// copy moves rows down over themselves on one surface ([`overlaps_down`]),
+/// so no caller can smear one.
 /// Strides as [`dest`] takes them, given as 15-bit fields. Ten words (nine
 /// keyed: no colour word); `None` for a rectangle that isn't [`drawable`].
 #[must_use]
@@ -264,6 +270,12 @@ pub fn copy_unchecked(
     flags: u32,
 ) -> ([u32; 10], usize) {
     let flags = flags | if flags & OP_KEY != 0 { OP_NO_COLOUR } else { 0 };
+    let flags = flags
+        | if overlaps_down((dst, dst_stride), (src, src_stride), origin, rect) {
+            OP_BOTTOM_UP
+        } else {
+            0
+        };
     blit_unchecked(
         (format, dst, dst_stride as i32),
         (format, src, src_stride as i32),
@@ -273,6 +285,25 @@ pub fn copy_unchecked(
         flags,
         0, // the colour word the driver always sends (ignored for a copy)
     )
+}
+
+/// Whether a copy of `rect` (destination) from `origin` (source) moves rows
+/// down over themselves: the same surface (address and stride), the
+/// destination starting lower, and the two row ranges overlapping. Columns
+/// don't matter: rows written before they're read smear whatever the x
+/// overlap, and a copy right needs no bit (B12f).
+#[must_use]
+pub const fn overlaps_down(
+    (dst, dst_stride): (usize, usize),
+    (src, src_stride): (usize, usize),
+    origin: (u16, u16),
+    rect: (u16, u16, u16, u16),
+) -> bool {
+    let (sy, (_, y0, _, y1)) = (origin.1, rect);
+    dst == src
+        && dst_stride == src_stride
+        && y0 > sy
+        && y0 < sy.saturating_add(y1.saturating_sub(y0))
 }
 
 /// The fence: writes `n` into the 32-bit word at local-memory `addr`.
@@ -523,6 +554,60 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_down_over_itself_goes_bottom_up_and_no_other() {
+        let surf = (0x10_0000, 960);
+        let header = |dst, src, origin, rect| {
+            let (w, n) = copy(Format::RGB565, dst, src, origin, rect, 0).unwrap();
+            w[..n].iter().find(|&&w| w >> 28 == 0x8).copied().unwrap()
+        };
+        // One row down, 64 rows tall: overlapping, bottom-up.
+        assert_ne!(
+            header(surf, surf, (0, 100), (0, 101, 480, 165)) & OP_BOTTOM_UP,
+            0
+        );
+        // The edges: down by exactly the height (no overlap) and by one
+        // less (overlap); up by one (none needed); in place (none).
+        assert_eq!(
+            header(surf, surf, (0, 100), (0, 164, 480, 228)) & OP_BOTTOM_UP,
+            0
+        );
+        assert_ne!(
+            header(surf, surf, (0, 100), (0, 163, 480, 227)) & OP_BOTTOM_UP,
+            0
+        );
+        assert_eq!(
+            header(surf, surf, (0, 100), (0, 99, 480, 163)) & OP_BOTTOM_UP,
+            0
+        );
+        assert_eq!(
+            header(surf, surf, (0, 100), (8, 100, 488, 164)) & OP_BOTTOM_UP,
+            0
+        );
+        // Another surface, or the same address with another stride: none.
+        assert_eq!(
+            header(surf, (0x20_0000, 960), (0, 100), (0, 101, 480, 165)) & OP_BOTTOM_UP,
+            0
+        );
+        assert_eq!(
+            header(surf, (0x10_0000, 1920), (0, 100), (0, 101, 480, 165)) & OP_BOTTOM_UP,
+            0
+        );
+        // Coordinates at the top of their range don't wrap.
+        assert!(!overlaps_down(
+            surf,
+            surf,
+            (u16::MAX, u16::MAX),
+            (0, 0, 1, 1)
+        ));
+        assert!(overlaps_down(
+            surf,
+            surf,
+            (0, u16::MAX - 3),
+            (0, u16::MAX - 2, 1, u16::MAX)
+        ));
+    }
+
+    #[test]
     fn copy_words() {
         let (w, n) = copy(
             Format::RGB565,
@@ -530,7 +615,7 @@ mod tests {
             (0x80_0000, 128),
             (3, 5),
             (40, 360, 104, 424),
-            OP_RIGHT_LEFT,
+            OP_BOTTOM_UP,
         )
         .unwrap();
         assert_eq!(
