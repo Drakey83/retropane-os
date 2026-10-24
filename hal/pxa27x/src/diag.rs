@@ -243,6 +243,22 @@ pub struct Cp {
     pub clkcfg: u32,
 }
 
+/// The 32-bit word at byte `at` of `buf`, read with one word load (a
+/// pointer chase must cost one load a hop, as Windows Mobile's C does:
+/// assembling it from four byte loads cost ~30 ns a hop and four
+/// counted D-cache misses, CPU gate V7, 2026-10-24). Panics if the word
+/// isn't inside `buf` or isn't word aligned.
+#[inline(always)]
+#[must_use]
+pub fn read_word(buf: &[u8], at: usize) -> u32 {
+    let word = &buf[at..at + 4];
+    assert!(word.as_ptr().addr().is_multiple_of(4), "unaligned word");
+    // SAFETY: the four bytes are in `buf` (sliced above, so in bounds and
+    // borrowed), the address is word aligned (asserted), and every bit
+    // pattern is a valid `u32`.
+    unsafe { word.as_ptr().cast::<u32>().read() }
+}
+
 #[cfg(all(target_arch = "arm", target_os = "none"))]
 mod target {
     use super::{CKEN_SRAM, Cp, GROUPS, SRAM_BASE, SRAM_SIZE};
@@ -629,6 +645,48 @@ pub use target::{
 
 #[cfg(test)]
 mod tests {
+    /// 16 word-aligned bytes: three words and a spare.
+    #[repr(align(4))]
+    struct Aligned([u8; 16]);
+
+    fn aligned() -> Aligned {
+        let mut a = Aligned([0; 16]);
+        for (i, w) in [0x1122_3344u32, 0xA5A5_0001, 0xDEAD_BEEF]
+            .iter()
+            .enumerate()
+        {
+            a.0[i * 4..i * 4 + 4].copy_from_slice(&w.to_le_bytes());
+        }
+        a
+    }
+
+    #[test]
+    fn read_word_reads_aligned_words() {
+        let a = aligned();
+        assert_eq!(read_word(&a.0, 0), 0x1122_3344);
+        assert_eq!(read_word(&a.0, 4), 0xA5A5_0001);
+        assert_eq!(read_word(&a.0, 8), 0xDEAD_BEEF);
+        assert_eq!(read_word(&a.0, 12), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "unaligned")]
+    fn read_word_refuses_unaligned() {
+        let _ = read_word(&aligned().0, 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn read_word_refuses_past_the_end() {
+        let _ = read_word(&aligned().0, 16);
+    }
+
+    #[test]
+    #[should_panic]
+    fn read_word_refuses_straddling_the_end() {
+        let _ = read_word(&aligned().0, 13);
+    }
+
     use super::*;
 
     #[test]
