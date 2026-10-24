@@ -27,6 +27,12 @@
  * A second launch (after module 1's soft reset) repeats everything at Dell's
  * divide-1 setting.
  *
+ * v3 (2026-10-23): after module 1's draws, in both runs, the chip's
+ * complete register state as Dell's driver leaves it (log_state: the
+ * system block's named registers, the unnamed ones Dell writes, the MBX
+ * block's reset, status, interrupt, render and tile-accelerator
+ * registers), for test G5 to copy under RetroPane's loader.
+ *
  * Module 1, divide 1 under Dell's own driver. Intel's datasheet lists the
  * 2700G's graphics clock divider as 1, 2 or 4 (graphics clock 13-75 MHz),
  * and Dell's driver picks divide 1 itself when its CoreClock setting is at
@@ -174,6 +180,45 @@ static void log_table(const char *when)
         return;
     for (i = 0; i < sizeof table_regs / sizeof table_regs[0]; i++)
         out("%s: MBX 0x%03lx 0x%08lx", when, table_regs[i], mbx[table_regs[i] / 4]);
+}
+
+/* v3 (2026-10-23, the owner's method, step 2): the chip's complete state
+ * as Dell's driver leaves it after its draws, for test G5 to copy under
+ * RetroPane's loader. Every named system-block register (the display
+ * block left out: reading it froze Windows Mobile), the system-block
+ * registers Dell's driver writes that have no Linux name (0x300, 0x304,
+ * the resets 0xC0-0xC8), and the MBX core's block: the reset 0x080, the
+ * status and interrupt registers, the whole render block 0x600-0x6FC
+ * (read under the loader by run GC3T) and the tile accelerator's
+ * 0x800-0x87C. Each line is written and flushed before the next read, so
+ * a read that freezes the device names itself in the log. The registers
+ * are read, never written. */
+static void log_state(const char *when)
+{
+    static const unsigned long sys_extra[] = {0x0C0, 0x0C4, 0x0C8, 0x300, 0x304};
+    static const unsigned long mbx_single[] = {0x080, 0x12C, 0x130, 0x134};
+    unsigned i;
+    unsigned long off;
+    if (!sys || !mbx) {
+        out("%s: state not read (registers not mapped)", when);
+        return;
+    }
+    out("%s: state follows (SYS = the system block at 0x0FFE0000, MBX = the core's at 0x0FFE4000)", when);
+    for (i = 0; i < sizeof named_2700g / sizeof named_2700g[0]; i++) {
+        if (named_2700g[i].off >= 0x2000)
+            continue;
+        out("%s: SYS %s (0x%04lx) 0x%08lx", when, named_2700g[i].name, named_2700g[i].off,
+            sys[named_2700g[i].off / 4]);
+    }
+    for (i = 0; i < sizeof sys_extra / sizeof sys_extra[0]; i++)
+        out("%s: SYS (0x%04lx) 0x%08lx", when, sys_extra[i], sys[sys_extra[i] / 4]);
+    for (i = 0; i < sizeof mbx_single / sizeof mbx_single[0]; i++)
+        out("%s: MBX 0x%03lx 0x%08lx", when, mbx_single[i], mbx[mbx_single[i] / 4]);
+    for (off = 0x600; off <= 0x6FC; off += 4)
+        out("%s: MBX 0x%03lx 0x%08lx", when, off, mbx[off / 4]);
+    for (off = 0x800; off <= 0x87C; off += 4)
+        out("%s: MBX 0x%03lx 0x%08lx", when, off, mbx[off / 4]);
+    out("%s: state end", when);
 }
 
 /* ---- Dell's OpenGL ES (libGLES_CL, by name) ------------------------- */
@@ -995,6 +1040,11 @@ static void divide1(void)
     draws(first, pic, ref);
     log_clocks(run2 ? "run 2 after" : "run 1 after");
     log_table(run2 ? "run 2 after" : "run 1 after");
+    /* v3: the whole state, with the GLES context still alive, as the
+     * core was left by the last draw. */
+    status(run2 ? L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 2)"
+                : L"9 of 9: divide 1 under Dell's driver: reading the chip's state (run 1)");
+    log_state(run2 ? "run 2 after" : "run 1 after");
     gl_stop();
     if (!run2) {
         save(L"rp-wmprobe-ref.bin", first);
@@ -1034,7 +1084,7 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPWSTR cmd, int show)
     if (logf_ == INVALID_HANDLE_VALUE)
         return 1;
     SetFilePointer(logf_, 0, NULL, FILE_END);
-    out("rp-wmprobe v2 (Windows Mobile probe and baseline suite), tick %lu",
+    out("rp-wmprobe v3 (Windows Mobile probe and baseline suite; the chip's state after Dell's draws), tick %lu",
         (unsigned long)GetTickCount());
 
     sys = map_phys(SYS_PHYS, 0x2000);
