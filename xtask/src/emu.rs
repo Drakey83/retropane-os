@@ -4935,6 +4935,15 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
         ("RP_GPUBENCH_GC2_SAFE", "1"),
         Some(("RP_GPUBENCH_GC2_RENDERS", "1")),
     )?;
+    let run_gc2i = variant_image_envs(
+        root,
+        "rp-gpubench",
+        &[
+            ("RP_GPUBENCH_GC2_INSIDE", "1"),
+            ("RP_GPUBENCH_GC2_RENDERS", "1"),
+            ("RP_GPUBENCH_SOAK_SECS", "10"),
+        ],
+    )?;
     let run_ft2 = variant_image(root, "rp-gpubench", ("RP_GPUBENCH_TOGETHER2", "1"))?;
     let run_ft2f = variant_image_with(
         root,
@@ -4966,7 +4975,7 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
     // and D draw no 3D; their presses end the watch steps early (a press
     // landing outside one is ignored by the image, which then waits its
     // cap), never more than the steps, so none reaches the loader.
-    let runs: [GpubenchRun; 54] = [
+    let runs: [GpubenchRun; 55] = [
         (
             "run A",
             &run_a,
@@ -5122,6 +5131,21 @@ pub fn boot_loader_gpubench(root: &Path) -> Result<(), String> {
             &run_gc2s,
             &[
                 "GC2: run GC by the owner's robustness rules",
+                "RETROPANE-GPUBENCH: done",
+            ],
+            false,
+            (0, 0, 0),
+        ),
+        // Run GC2I: GC2S with the 16-bit kinds' targets inside the safe
+        // region, the 32-bit ones outside, then the soak: runs to its end
+        // and returns (the pinned release doesn't model Windows Mobile's
+        // clock, so GC2 stops at its first check, as for GC2S; the whole
+        // run is stepped on the wm-clocks build: docs/hw/2700g.md).
+        (
+            "run GC2I",
+            &run_gc2i,
+            &[
+                "GC2: run GC with every 16-bit kind's target inside the safe region, the 32-bit kinds outside (GC2I), then a soak,",
                 "RETROPANE-GPUBENCH: done",
             ],
             false,
@@ -9169,15 +9193,26 @@ fn variant_image_with(
     env: (&str, &str),
     also: Option<(&str, &str)>,
 ) -> Result<PathBuf, String> {
-    let name = match also {
-        Some(a) => format!("{}-{}", env.0, a.0).to_ascii_lowercase(),
-        None => env.0.to_ascii_lowercase(),
-    };
+    match also {
+        Some(a) => variant_image_envs(root, image, &[env, a]),
+        None => variant_image_envs(root, image, &[env]),
+    }
+}
+
+/// [`variant_image`] built with every one of `envs` (named by their keys,
+/// joined: one or two keys name it as [`variant_image_with`] always did).
+fn variant_image_envs(root: &Path, image: &str, envs: &[(&str, &str)]) -> Result<PathBuf, String> {
+    let name = envs
+        .iter()
+        .map(|e| e.0)
+        .collect::<Vec<_>>()
+        .join("-")
+        .to_ascii_lowercase();
     let mut cmd = Command::new("cargo");
     let dir = crate::frame_pointer_build(&mut cmd, image, &format!("target/variants/{name}"));
     crate::with_local_inputs(&mut cmd);
-    cmd.current_dir(root).env(env.0, env.1);
-    if let Some((k, v)) = also {
+    cmd.current_dir(root);
+    for &(k, v) in envs {
         cmd.env(k, v);
     }
     run(cmd.args([

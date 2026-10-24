@@ -7649,7 +7649,16 @@ mod image {
     /// core; one past it corrupts renders: quality audit C71), and divide 1
     /// mapped to 133.25 MHz. Test-only: `rp-vram-map` is unchanged until
     /// the owner rules the placement.
-    const GC2_SAFE: bool = option_env!("RP_GPUBENCH_GC2_SAFE").is_some();
+    const GC2_SAFE: bool = option_env!("RP_GPUBENCH_GC2_SAFE").is_some() || GC2_INSIDE;
+
+    /// Run GC2I (`RP_GPUBENCH_GC2_INSIDE`, the owner's ask after test G21,
+    /// 2026-10-24): GC2S with each 16-bit kind's render target inside the
+    /// safe region too ([`gc2::INSIDE_AT`], below the label's band at the
+    /// top of the screen); the 32-bit kinds, which can't fit, where GC2S drew
+    /// them (the run's control for the placement); then a soak of the
+    /// 16-bit kinds at 99.67 and 133.25 / 1 ([`SOAK_SECS`] each), stopping at
+    /// the first wrong render. Test-only, as GC2S. Unattended.
+    const GC2_INSIDE: bool = option_env!("RP_GPUBENCH_GC2_INSIDE").is_some();
 
     /// Run GS's label: the second screen picture as RGB565 (960-byte rows),
     /// scanned out at 16 bits through the whole soak (the shell's screen,
@@ -7666,19 +7675,27 @@ mod image {
     const SOAK_RED: u16 = 0x8082;
     const SOAK_GREEN: u16 = 0x1304;
 
-    /// The label: `bg` over the whole 16-bit screen and three lines of up
-    /// to 19 characters in white at 4x, drawn by the CPU.
+    /// The label's rows, the font's scale and the lines' places: the whole
+    /// screen at 4x, or GC2I's band at the top at 2x (its targets below it).
+    const SOAK_ROWS: u32 = if GC2_INSIDE { gc2::LABEL_ROWS } else { 640 };
+    const SOAK_SCALE: u32 = if GC2_INSIDE { 2 } else { 4 };
+    const SOAK_TOP: u32 = if GC2_INSIDE { 4 } else { 200 };
+    const SOAK_PITCH: u32 = if GC2_INSIDE { 20 } else { 80 };
+    const _: () = assert!(SOAK_TOP + 2 * SOAK_PITCH + font::HEIGHT as u32 * SOAK_SCALE <= SOAK_ROWS);
+
+    /// The label: `bg` over the 16-bit screen ([`SOAK_ROWS`] of it) and
+    /// three lines of up to 19 characters in white, drawn by the CPU.
     fn soak_label(g: &mut Rig, lines: [&str; 3], bg: u16) {
         let row = [u32::from(bg) << 16 | u32::from(bg); 240];
-        for y in 0..640u32 {
+        for y in 0..SOAK_ROWS {
             g.mem.store((SOAK_LABEL + y * 960) as usize, &row);
         }
         for (k, l) in lines.iter().enumerate() {
-            let y0 = 200 + 80 * k as u32;
+            let y0 = SOAK_TOP + SOAK_PITCH * k as u32;
             for (i, ch) in l.chars().enumerate() {
-                // Even x, so each 4-pixel run is two whole words.
-                let x0 = 16 + i as u32 * (WIDTH as u32 + 1) * 4;
-                if x0 + WIDTH as u32 * 4 > 480 {
+                // Even x, so each 2- or 4-pixel run is whole words.
+                let x0 = 16 + i as u32 * (WIDTH as u32 + 1) * SOAK_SCALE;
+                if x0 + WIDTH as u32 * SOAK_SCALE > 480 {
                     break;
                 }
                 for (gy, &bits) in font::glyph(ch).iter().enumerate() {
@@ -7686,10 +7703,11 @@ mod image {
                         if bits & (1 << (WIDTH as u32 - 1 - gx)) == 0 {
                             continue;
                         }
-                        for dy in 0..4 {
-                            let y = y0 + gy as u32 * 4 + dy;
-                            let at = SOAK_LABEL + y * 960 + 2 * (x0 + gx * 4);
-                            g.mem.store(at as usize, &[u32::MAX, u32::MAX]);
+                        for dy in 0..SOAK_SCALE {
+                            let y = y0 + gy as u32 * SOAK_SCALE + dy;
+                            let at = SOAK_LABEL + y * 960 + 2 * (x0 + gx * SOAK_SCALE);
+                            let px = [u32::MAX; 2];
+                            g.mem.store(at as usize, &px[..SOAK_SCALE as usize / 2]);
                         }
                     }
                 }
@@ -8059,6 +8077,16 @@ mod image {
     const GC_KINDS: &[(&str, PixelFormat)] = gc2::KINDS.split_at(7).0;
     /// Where GC renders (not shown): the wallpaper picture.
     const GC_AT: u32 = map::WALLPAPER.at;
+
+    /// Where kind `k` of GC2 renders: [`GC_AT`], or in run GC2I a 16-bit
+    /// kind's target inside the safe region ([`gc2::target_at`]).
+    const fn gc_at(k: usize) -> u32 {
+        if GC2_INSIDE {
+            gc2::target_at(k, GC_AT)
+        } else {
+            GC_AT
+        }
+    }
 
     /// Words of [`GC_AT`] differing from `want` (or copied into it, with
     /// `take`), checking in every 16K words: the loader's run limit holds
@@ -8590,10 +8618,10 @@ mod image {
     /// rest are held to.
     struct Gc2Baseline(Option<[u32; 15]>);
 
-    /// GC's picture read into `into` (the first read), checking in.
-    fn gc2_take(g: &mut Rig, into: &mut [u32]) {
+    /// Kind `k`'s picture read into `into` (the first read), checking in.
+    fn gc2_take(g: &mut Rig, k: usize, into: &mut [u32]) {
         for (i, w) in into.iter_mut().enumerate() {
-            *w = g.mem.load(GC_AT as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            *w = g.mem.load(gc_at(k) as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
             if i % 16_384 == 16_383 {
                 rt::check_in();
             }
@@ -8629,7 +8657,7 @@ mod image {
         let before = gc2_regs(g);
         r.invalidate_all();
         let target = Target {
-            picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+            picture: Picture::packed(gc_at(k), 480, 640, gc2::KINDS[k].1),
             x: 0,
             y: 0,
         };
@@ -8657,13 +8685,13 @@ mod image {
         side.best_us = side.best_us.min(us);
         side.worst_us = side.worst_us.max(us);
         let words = gc2::words(k) as usize;
-        gc2_take(g, &mut first[..words]);
+        gc2_take(g, k, &mut first[..words]);
         gc2_wait();
         let f = gc2::KINDS[k].1;
         let mut t = gc2::Tally::default();
         let mut wrong = 0;
         for i in 0..words {
-            let got = g.mem.load(GC_AT as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
+            let got = g.mem.load(gc_at(k) as usize + 4 * i).unwrap_or(0xDEAD_BEEF);
             side.unsettled += u32::from(got != first[i]);
             if got != want[i] {
                 wrong += 1;
@@ -8688,7 +8716,7 @@ mod image {
     fn gc2_still(g: &mut Rig, k: usize, want: &[u32]) -> u32 {
         let mut n = 0;
         for (i, &w) in want[..gc2::words(k) as usize].iter().enumerate() {
-            n += u32::from(g.mem.load(GC_AT as usize + 4 * i) != Some(w));
+            n += u32::from(g.mem.load(gc_at(k) as usize + 4 * i) != Some(w));
             if i % 16_384 == 16_383 {
                 rt::check_in();
             }
@@ -8777,7 +8805,9 @@ mod image {
     fn content_map2(g: &mut Rig) {
         log!(
             "GC2: {} by the owner's robustness rules: {} kinds at {} settings rising then falling, {GC2_RENDERS} renders a kind a setting, each followed by one at Windows Mobile's clock (B, A, B, A); every picture read twice 50 ms apart; references rendered 5 times, held to the host model of the 3D core and taken again at the end; the 3D core reset and every register written again at each setting; the clock, memory and 3D registers, the underrun flag and DSIG read around every render; every wrong pixel described; a 16-bit label throughout",
-            if GC2M {
+            if GC2_INSIDE {
+                "run GC with every 16-bit kind's target inside the safe region, the 32-bit kinds outside (GC2I), then a soak,"
+            } else if GC2M {
                 "divide 1 with M24CLK as Dell's driver sets it (as found, 0, 1),"
             } else if GC2_D {
                 "idea (d), Gouraud drawn as a bilinear texture of a plane's corners against real Gouraud, the cores at divide 1,"
@@ -8943,6 +8973,21 @@ mod image {
             }
             let mut refs_ok = true;
             let mut models = 0;
+            if GC2_INSIDE {
+                for k in GC2_KINDS {
+                    log!(
+                        "  GC2I {}: its target at 0x{:x}-0x{:x} ({})",
+                        gc2::KINDS[k].0,
+                        gc_at(k),
+                        gc_at(k) + 4 * gc2::words(k),
+                        if gc2::fits_inside(k) {
+                            "inside the safe region"
+                        } else {
+                            "outside: 32 bits don't fit"
+                        }
+                    );
+                }
+            }
             for k in GC2_KINDS {
                 gc2_scene(g, &mut r, k, tex);
                 let want = &mut refs[offs[k]..offs[k] + gc2::words(k) as usize];
@@ -8957,14 +9002,14 @@ mod image {
                 let t0 = g.frame(
                     &mut r,
                     Target {
-                        picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+                        picture: Picture::packed(gc_at(k), 480, 640, gc2::KINDS[k].1),
                         x: 0,
                         y: 0,
                     },
                 );
                 side.underrun += u32::from(underrun_take(&mut g.e.regs));
                 side.dark += u32::from(dsig && g.e.regs.read32(DSIG) == 0);
-                gc2_take(g, want);
+                gc2_take(g, k, want);
                 gc2_wait();
                 let settled = gc2_still(g, k, want);
                 let mut again = [0u32; 4];
@@ -9193,6 +9238,9 @@ mod image {
                     "  GC2 references at the end: {same} of {} as at the start",
                     GC2_KINDS.len()
                 );
+                if GC2_INSIDE {
+                    gc2_inside_soak(g, &mut r, tex, (&*refs, &offs), first, dsig);
+                }
             }
             for &(off, was) in &sys_was[..n_sys] {
                 g.e.regs.write32(off, was);
@@ -9221,6 +9269,141 @@ mod image {
             diag::msc1()
         );
         clock_rig_free(g, c);
+    }
+
+    /// Run GC2I's soak settings.
+    const GC2I_SOAK: [(ClockStep, &str); 2] = [
+        (gc2_step(23, 3, 0, 1), "99.67 / 1"),
+        (gc2_step(41, 4, 0, 1), "133.25 / 1"),
+    ];
+
+    /// Run GC2I's soak: at each of [`GC2I_SOAK`] for [`SOAK_SECS`], the
+    /// clock held, the 16-bit kinds (inside the safe region) rendered in
+    /// turn, each held to its reference as every GC2 render (read twice 50
+    /// ms apart; registers, clock and display held); a line a minute; the
+    /// first wrong render stops it (a failure is the finding, never
+    /// retried). Then each kind once at Windows Mobile's clock.
+    #[inline(never)]
+    fn gc2_inside_soak(
+        g: &mut Rig,
+        r: &mut Renderer,
+        tex: gc2::Tex,
+        (refs, offs): (&[u32], &[usize; gc2::KINDS.len()]),
+        first: &mut [u32],
+        dsig: bool,
+    ) {
+        let kinds = || GC2_KINDS.filter(|&k| gc2::fits_inside(k));
+        let minutes = SOAK_SECS.div_ceil(60);
+        log!(
+            "  GC2I soak: {} kinds inside the safe region at {} settings, {minutes} min each, stopping at the first wrong render",
+            kinds().count(),
+            GC2I_SOAK.len()
+        );
+        let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
+        for (i, &(s, label)) in GC2I_SOAK.iter().enumerate() {
+            let mut l1 = heapless_name();
+            let _ = write!(l1, "GC2I SOAK {} OF {}", i + 1, GC2I_SOAK.len());
+            soak_label(g, [l1.as_str(), label, "STARTING"], SOAK_BLUE);
+            let want_regs = gc2_clock_want(s.speed(), s.div);
+            let lock = clock_apply(g, s);
+            if lock.is_none() {
+                clock_restore(&mut g.e.regs);
+                log!("  GC2I soak {label}: the clock didn't take; Windows Mobile's put back");
+                soak_label(g, ["GC2I SOAK STOPPED", label, "CLOCK NOT TAKEN"], SOAK_RED);
+                return;
+            }
+            log!("  GC2I soak {label}: lock {lock:?}");
+            clock_readback(g);
+            r.start_clean();
+            // Each kind's 3D registers after its first render here, which
+            // every later render of it must leave; a fresh side a render,
+            // as the kinds take turns (the registers a render starts from
+            // are the previous kind's, not this one's).
+            let mut bases: [Gc2Baseline; gc2::KINDS.len()] =
+                core::array::from_fn(|_| Gc2Baseline(None));
+            let (mut best, mut worst) = (u32::MAX, 0u32);
+            let (mut elapsed_us, mut lines, mut rounds) = (0u64, 0u32, 0u32);
+            let end_us = u64::from(SOAK_SECS) * 1_000_000;
+            let mut bad = None;
+            'soak: while elapsed_us < end_us {
+                let t0 = rt::ticks();
+                for k in kinds() {
+                    gc2_scene(g, r, k, tex);
+                    let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                    let mut side = Gc2Side::new(dsig);
+                    let wrong = gc2_render(
+                        g,
+                        r,
+                        k,
+                        want,
+                        first,
+                        want_regs,
+                        &mut bases[k],
+                        &mut side,
+                    );
+                    best = best.min(side.best_us);
+                    worst = worst.max(side.worst_us);
+                    if wrong != Some(0) || !side.held() {
+                        bad = Some((k, wrong, side));
+                        elapsed_us += u64::from(us_since(t0));
+                        break 'soak;
+                    }
+                }
+                rounds += 1;
+                elapsed_us += u64::from(us_since(t0));
+                if elapsed_us >= u64::from(lines + 1) * 60_000_000 || elapsed_us >= end_us {
+                    lines += 1;
+                    let mut l3 = heapless_name();
+                    let _ = write!(l3, "MIN {lines} OF {minutes} RIGHT");
+                    soak_label(g, [l1.as_str(), label, l3.as_str()], SOAK_BLUE);
+                    log!(
+                        "  GC2I soak {label}, minute {lines}: {rounds} rounds, every render right and held | render best {best} us, worst {worst} us | LMTYPE 0x{:x} LMREFRESH 0x{:x}",
+                        g.e.regs.read32(clock::LMTYPE),
+                        g.e.regs.read32(clock::LMREFRESH)
+                    );
+                }
+            }
+            clock_restore(&mut g.e.regs);
+            clock_readback(g);
+            if let Some((k, wrong, side)) = &bad {
+                let k = *k;
+                log!(
+                    "  GC2I soak {label}: STOPPED at {}, round {}, {} s in: {wrong:?} words wrong; {}; {}; Windows Mobile's clock put back",
+                    gc2::KINDS[k].0,
+                    rounds + 1,
+                    elapsed_us / 1_000_000,
+                    Gc2Pixels(&side.tally),
+                    Gc2Held(side)
+                );
+                let mut l3 = heapless_name();
+                let _ = write!(l3, "WRONG AT {} S", elapsed_us / 1_000_000);
+                soak_label(g, ["GC2I SOAK STOPPED", label, l3.as_str()], SOAK_RED);
+            } else {
+                log!(
+                    "  GC2I soak {label}: {rounds} rounds ({} renders) in {} s, every one right and held",
+                    rounds * kinds().count() as u32,
+                    elapsed_us / 1_000_000
+                );
+            }
+            // The controls: each kind once at Windows Mobile's clock.
+            r.start_clean();
+            let mut controls = 0;
+            for k in kinds() {
+                gc2_scene(g, r, k, tex);
+                let want = &refs[offs[k]..offs[k] + gc2::words(k) as usize];
+                let mut side = Gc2Side::new(dsig);
+                let mut base = Gc2Baseline(None);
+                let wrong = gc2_render(g, r, k, want, first, wm, &mut base, &mut side);
+                controls += usize::from(wrong == Some(0) && side.held());
+            }
+            log!(
+                "  GC2I soak {label}: controls at Windows Mobile's clock after: {controls} of {} right",
+                kinds().count()
+            );
+            if bad.is_some() {
+                return;
+            }
+        }
     }
 
     // ---- Run GC2R: what divide 1 changes, and how it is entered (2026-10-23) ----
@@ -9383,12 +9566,12 @@ mod image {
             let t0 = g.frame(
                 &mut r,
                 Target {
-                    picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[k].1),
+                    picture: Picture::packed(gc_at(k), 480, 640, gc2::KINDS[k].1),
                     x: 0,
                     y: 0,
                 },
             );
-            gc2_take(g, want);
+            gc2_take(g, k, want);
             gc2_wait();
             let settled = gc2_still(g, k, want);
             let (mut base, mut side) = (Gc2Baseline(None), Gc2Side::new(false));
@@ -9420,7 +9603,7 @@ mod image {
                 let _ = g.frame(
                     &mut r,
                     Target {
-                        picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
+                        picture: Picture::packed(gc_at(0), 480, 640, gc2::KINDS[0].1),
                         x: 0,
                         y: 0,
                     },
@@ -9685,14 +9868,14 @@ mod image {
         let (flip_ref, rest) = rest.split_at_mut(words);
         let first = &mut rest[..words];
         let target = Target {
-            picture: Picture::packed(GC_AT, 480, 640, gc2::KINDS[0].1),
+            picture: Picture::packed(gc_at(0), 480, 640, gc2::KINDS[0].1),
             x: 0,
             y: 0,
         };
         gc2_scene(g, &mut r, 0, tex);
         r.invalidate_all();
         let t0 = g.frame(&mut r, target);
-        gc2_take(g, want);
+        gc2_take(g, 0, want);
         gc2_wait();
         let settled = gc2_still(g, 0, want);
         let wm = gc2_clock_want(ClockSpeed::WM, WM_STEP.div);
@@ -9743,7 +9926,7 @@ mod image {
                 r.start_clean();
                 r.invalidate_all();
                 let drawn = g.frame(&mut r, target).is_some();
-                gc2_take(g, flip_ref);
+                gc2_take(g, 0, flip_ref);
                 let changed = flip_ref
                     .iter()
                     .zip(want.iter())

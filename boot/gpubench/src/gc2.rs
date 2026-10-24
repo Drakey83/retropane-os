@@ -242,6 +242,40 @@ pub const fn words(k: usize) -> u32 {
     W * H * KINDS[k].1.bytes() / 4
 }
 
+/// Run GC2I: the safe region's end. While the 3D core renders, the display
+/// may read local memory below it (`rp-glesfeat` G19 on the owner's X51v),
+/// and a target inside it drew Dell's frame right at 99.67 and 133.25 MHz
+/// / 1 where one outside didn't (G21). This run's own; `rp-vram-map` takes
+/// the measured one with option A (ROADMAP step 3 (16)(b)).
+pub const SAFE_END: u32 = 0xA_E000;
+
+/// Run GC2I's label: a band of 64 rows of the 16-bit screen at local
+/// memory `0x0` (960-byte rows), the rest of the screen showing the
+/// target below it.
+pub const LABEL_ROWS: u32 = 64;
+pub const LABEL_BAND: u32 = LABEL_ROWS * W * 2;
+
+/// Where run GC2I's targets inside the safe region start: right after the
+/// label band, on a 4 KiB boundary (as every target before), so the screen
+/// shows a 16-bit target row for row below the label.
+pub const INSIDE_AT: u32 = LABEL_BAND;
+const _: () = assert!(INSIDE_AT.is_multiple_of(0x1000));
+
+/// Whether kind `k`'s target fits inside the safe region after the label
+/// band: the 16-bit kinds (600 KiB); a 32-bit one (1.2 MiB) doesn't.
+#[must_use]
+pub const fn fits_inside(k: usize) -> bool {
+    INSIDE_AT + 4 * words(k) <= SAFE_END
+}
+
+/// Where kind `k` renders in run GC2I: inside the safe region if it fits,
+/// else at `outside` (as runs GC2 and GC2S: the 32-bit kinds, the run's own
+/// control for the placement).
+#[must_use]
+pub const fn target_at(k: usize, outside: u32) -> u32 {
+    if fits_inside(k) { INSIDE_AT } else { outside }
+}
+
 /// Words in one band of kind `k`'s picture.
 #[must_use]
 pub const fn band_words(k: usize) -> u32 {

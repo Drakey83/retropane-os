@@ -202,13 +202,19 @@ impl Tally {
     #[must_use]
     pub const fn render_mean(&self) -> u32 {
         let n = self.renders - self.unfinished;
-        if n == 0 { 0 } else { self.render_sum / n }
+        match self.render_sum.checked_div(n) {
+            Some(m) => m,
+            None => 0,
+        }
     }
 
     /// The copies' mean time.
     #[must_use]
     pub const fn copy_mean(&self) -> u32 {
-        if self.copies == 0 { 0 } else { self.copy_sum / self.copies }
+        match self.copy_sum.checked_div(self.copies) {
+            Some(m) => m,
+            None => 0,
+        }
     }
 }
 

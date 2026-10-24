@@ -69,6 +69,31 @@ fn model_hashes() -> [[u32; BANDS]; 13] {
 }
 
 #[test]
+fn gc2i_puts_every_16_bit_kind_inside_and_keeps_the_32_bit_ones_out() {
+    let outside = 0x0045_8000;
+    let mut inside = 0;
+    for k in RUN {
+        let at = target_at(k, outside);
+        let end = at + 4 * words(k);
+        if KINDS[k].1.bytes() == 2 {
+            // Below the label band, wholly inside G19's last right end.
+            assert_eq!(at, INSIDE_AT, "{}", KINDS[k].0);
+            assert!(at >= LABEL_BAND && end <= SAFE_END, "{}", KINDS[k].0);
+            inside += 1;
+        } else {
+            // 1.2 MiB can't fit in 696 KiB: where runs GC2 and GC2S drew.
+            assert!(!fits_inside(k), "{}", KINDS[k].0);
+            assert_eq!(at, outside, "{}", KINDS[k].0);
+        }
+    }
+    assert_eq!(inside, 6);
+    // The band holds the label, the safe region is G19's, the target starts
+    // on a row of the 16-bit screen (so it shows row for row).
+    assert_eq!((LABEL_BAND, SAFE_END), (64 * 960, 0xA_E000));
+    assert!(INSIDE_AT.is_multiple_of(960));
+}
+
+#[test]
 fn the_model_table_is_what_the_model_renders() {
     let got = model_hashes();
     if got != MODEL {

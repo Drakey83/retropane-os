@@ -76,12 +76,17 @@ fn every_kind_draws_the_same_on_the_screen_as_off_it() {
         let (n, first, nf) = diff(|k| off[kind][k], |k| on[kind][k]);
         assert_eq!(n, 0, "{}: {:?}", KINDS[kind], &first[..nf]);
     }
+    // The sentinel the image fills targets with is no word of any kind's
+    // picture: a render or copy that doesn't happen can't pass.
+    for kind in 0..KINDS.len() {
+        assert!(!on[kind].contains(&SENTINEL), "{}", KINDS[kind]);
+    }
     // The flat cards drawn (not the background alone): card 0's middle in
     // its colour, the corner the background's, as RGB565.
     let rgb565 = |c: u32| ((c >> 8 & 0xF800) | (c >> 5 & 0x07E0) | (c >> 3 & 0x001F)) as u16;
     let px = |x: u32, y: u32| {
         let w = on[0][((y * W + x) / 2) as usize];
-        (if x % 2 == 0 { w } else { w >> 16 }) as u16
+        (if x.is_multiple_of(2) { w } else { w >> 16 }) as u16
     };
     assert_eq!(px(120, 170), rgb565(COLOURS[0]));
     assert_eq!(px(2, 2), rgb565(BACKGROUND));
@@ -157,6 +162,7 @@ fn the_reference_is_off_screen_and_paused_and_only_a_copies() {
             assert_ne!(wa.name(), wb.name());
         }
     }
-    // The screen inside the safe region (G19's last right end, 0xAE000).
-    assert!(SCREEN_AT + SCREEN_BYTES <= SAFE_END && SAFE_END == 0xA_E000);
+    // The safe region G19's last right end (the screen inside it: a
+    // const assert in g21.rs).
+    assert_eq!(SAFE_END, 0xA_E000);
 }

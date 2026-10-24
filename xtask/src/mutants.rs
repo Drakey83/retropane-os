@@ -48,6 +48,51 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "gpubench GC2I: every kind inside, the 32-bit ones too",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "    if fits_inside(k) { INSIDE_AT } else { outside }",
+        to: "    let _ = outside;
+    INSIDE_AT",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2i_puts_every_16_bit_kind_inside_and_keeps_the_32_bit_ones_out",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2I: the targets over the label's band",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const INSIDE_AT: u32 = LABEL_BAND;",
+        to: "pub const INSIDE_AT: u32 = 0;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2i_puts_every_16_bit_kind_inside_and_keeps_the_32_bit_ones_out",
+        ]),
+    },
+    Mutant {
+        name: "gpubench GC2I: the safe region stretched past G19's first wrong end",
+        file: "boot/gpubench/src/gc2.rs",
+        from: "pub const SAFE_END: u32 = 0xA_E000;",
+        to: "pub const SAFE_END: u32 = 0x14_0000;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "gc2i_puts_every_16_bit_kind_inside_and_keeps_the_32_bit_ones_out",
+        ]),
+    },
+    Mutant {
+        name: "gpubench G21: the sentinel a word the scenes draw",
+        file: "boot/gpubench/src/g21.rs",
+        from: "pub const SENTINEL: u32 = 0x5A5A_5A5A;",
+        to: "pub const SENTINEL: u32 = 0x2146_2146;",
+        check: Check::Host(&[
+            "-p",
+            "rp-gpubench",
+            "every_kind_draws_the_same_on_the_screen_as_off_it",
+        ]),
+    },
+    Mutant {
         name: "glesfeat G21: the moved target loses 0x65C's other bits",
         file: "boot/glesfeat/src/main.rs",
         from: "    v & !TARGET_ADDR | (to as u32 & TARGET_ADDR)",
