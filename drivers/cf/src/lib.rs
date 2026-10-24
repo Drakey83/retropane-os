@@ -39,6 +39,8 @@ use rp_hal_api::{
 pub const SECTOR: usize = 512;
 
 /// Task-file registers, memory mode (byte offsets in common memory).
+pub mod timing;
+
 mod reg {
     pub const DATA: usize = 0x0;
     pub const ERROR_FEATURES: usize = 0x1;

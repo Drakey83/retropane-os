@@ -350,6 +350,20 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "CF timing: a slow card's speed code read as faster (250 ns as 200)",
+        file: "drivers/cf/src/timing.rs",
+        from: "        1 => 250,",
+        to: "        1 => 200,",
+        check: Check::Host(&["-p", "rp-drv-cf", "every_speed_code_and_bad_input"]),
+    },
+    Mutant {
+        name: "CF timing: the data taken before the card's access time (the access check dropped)",
+        file: "drivers/cf/src/timing.rs",
+        from: "    if set + 2 + 3 * asst + 6 < access {",
+        to: "    if false {",
+        check: Check::Host(&["-p", "rp-drv-cf", "timing::tests"]),
+    },
+    Mutant {
         name: "V7: the Windows Mobile chase built with RetroPane's own jumps",
         file: "boot/suite/src/lib.rs",
         from: "        let next = (((i + 4099) % LINES) * 8) as u32;",

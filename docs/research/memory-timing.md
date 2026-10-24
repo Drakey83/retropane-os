@@ -489,9 +489,13 @@ shorter strobe is plausible. **But:** its registers don't read back
 (cpld.md), so a faster write can only be checked by its effect on the board,
 which the no-blind-board-bits rule forbids testing unattended; and the
 CPLD is touched a few times per power or backlight change (buttons are on
-GPIOs), so even a 10x faster access saves microseconds a day. **Proposed:
-decline R8 for no payoff and no safe way to verify** (the owner's call:
-only he drops a reminder).
+GPIOs), so even a 10x faster access saves microseconds a day. ~~Proposed: decline~~ **The owner, 2026-10-24: test and verify it** ("any
+percentage of performance boost, when all added together, is totally worth
+it"). The way: reads first, unattended (a readable status register, such
+as the panel-type readout, read 1,000 times at each faster strobe and
+compared with Dell's timing: reading changes nothing); then writes with the
+owner watching, one step at a time, on a switch whose effect is visible and
+harmless (the backlight enable), Dell's timing put back after each.
 
 ## Open questions
 

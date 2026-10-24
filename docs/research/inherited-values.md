@@ -23,7 +23,7 @@ itself says what is unproven; then each row's test run or folded into a run
 |---|---|---|---|---|---|
 | A1 | The flash's read timing, `MSC0` CS0 `0x38D8` (kept as found; memory-timing.md) | Dell's OAL | boot and program loading from flash | memory-timing.md section 9 (read strobe only, ID checked each step) | R6 |
 | A2 | The CPU bus to the 2700G, `MSC1` CS3 `0x2484` (`CS3_WM`), only RDF stepped (`rp-cs3bus`) | Dell | 2D and upload speed (the bus caps them near 33 MB/s) | every RDF, RDN, RRR combination | R3 |
-| A3 | The CPLD's timing, `MSC2` CS4 `0x7FFC` (the slowest) | Dell | microseconds a day | none safe (write-only latches); proposed decline | R8 |
+| A3 | The CPLD's timing, `MSC2` CS4 `0x7FFC` (the slowest) | Dell | microseconds a day | reads stepped unattended, writes watched on the backlight switch (the owner: test it, every gain counts) | R8 |
 | A4 | The CF socket's timings `MCMEM`/`MCATT`/`MCIO` (WM's table, one for every card) | Windows Mobile | ~2x CF reads (the card rates 80 ns, WM programs 260) | storage-speed.md's step test, per card from its CIS | R7 (the owner's decision) |
 | A5 | `PANEL_ID_SETTLE_US` 1,000 us (`drivers/cpld`) | Dell, AxDroid | ~1 ms of boot | the shortest wait that reads the panel ID right, 100 times a step | open |
 | A6 | Audio settle times: 75 ms VMID charge (`wm8750`), 1 ms after codec power, 1 ms after I2S, 70 ms amplifier (`services/audio`) | Dell's `wavedev.dll` | ~145 ms off every audio start, if no pop | the shortest of each with no pop, the owner listening (speaker only) | tagged; open |

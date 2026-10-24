@@ -443,6 +443,14 @@ one run; nothing failed, nothing differed.
 
 # The owner's decision: the CF socket's timings (reminder R7, 2026-10-24)
 
+**Ruled: A (the owner, 2026-10-24): "there are probably going to be a lot of
+slow CF cards used with this."** Each card runs at its own rated speed, so
+A works both ways: a fast card runs faster than Windows Mobile's one table,
+and a card rated slower than that table (the CF standard's slowest memory
+mode is a 250 ns cycle; old cards and Microdrives sit there) gets a slower,
+safe timing that Windows Mobile never gave it. Being built; proven only by
+a device run on the owner's cards.
+
 The free wins are in the driver since this report (32-bit loads, DMA:
 `drivers/cf`, 5.2 MB/s). What's left is the socket's timing itself:
 Windows Mobile programs one table for every card (a 260 ns strobe), and the
