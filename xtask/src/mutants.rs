@@ -350,6 +350,13 @@ pub const MUTANTS: &[Mutant] = &[
         ]),
     },
     Mutant {
+        name: "V7: the Windows Mobile chase built with RetroPane's own jumps",
+        file: "boot/suite/src/lib.rs",
+        from: "        let next = (((i + 4099) % LINES) * 8) as u32;",
+        to: "        let next = (((i + LINES * 5 / 8 + 1) % LINES) * 8) as u32;",
+        check: Check::Host(&["-p", "rp-bench-suite", "the_chase_is_wmbenchs"]),
+    },
+    Mutant {
         name: "scaler: the filter never loaded (P9's flat picture)",
         file: "drivers/mbx-display/src/lib.rs",
         from: "    if video.scales(scale) {",
@@ -365,7 +372,11 @@ pub const MUTANTS: &[Mutant] = &[
         file: "drivers/mbx-display/src/layers.rs",
         from: "            || (scale.out_h != 0 && scale.out_h != self.height)",
         to: "            || false",
-        check: Check::Host(&["-p", "rp-drv-mbx-display", "scales_only_when_a_size_differs"]),
+        check: Check::Host(&[
+            "-p",
+            "rp-drv-mbx-display",
+            "scales_only_when_a_size_differs",
+        ]),
     },
     Mutant {
         name: "eol: a mixed-endings working copy let through",
