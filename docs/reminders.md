@@ -6,7 +6,7 @@ The owner's two most important rules (2026-10-24). They never close; the
 hooks print them first, at every session start and before every device run
 or test-image build.
 
-- **Iterate, don't imitate.** What Dell, Windows Mobile, Linux or any 2005 design does is a finding, never the answer or a ceiling. For every inherited value or behaviour: is it a hardware limit or a choice? If a choice, find the better ways (our own software, the device's parts working together), measure them, and beat the original; keep the old way only where a measurement says it wins.
+- **Iterate, don't imitate.** What Dell, Windows Mobile, Linux or any 2005 design does is a finding, never the answer or a ceiling. For every inherited value or behaviour: is it a hardware limit or a choice? If a choice, find the better ways (our own software, the device's parts working together), measure them, and beat the original; keep the old way only where a measurement says it wins. **Be clever:** we have today's technology and software, AI included, that Dell didn't have in 2005: use it to make everything as good, as fast and as efficient as it can possibly be. **Modernize** everything that can be modernized, while keeping the neo-retro look.
 - **Nothing is impossible or a limit without proof.** Never tell the owner something can't be done, or call a setting a hardware limit, until every idea and every "did we do it wrong?" check is ruled out by a measurement. Divide 1 was called unworkable, and it now runs 2.17x Windows Mobile's speed at 108.33 MHz: giving up early leaves performance on the table.
 
 ## The reminders
