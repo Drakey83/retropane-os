@@ -419,7 +419,10 @@ pub const BUDGETS: &[Budget] = &[
         // Ratcheted 40 -> 47 KiB on 2026-10-21 (test image): quality
         // audit C38, every crash through rp-image (the card-log line, the
         // crash box, the fault's word and SPSR). 42.6 KiB measured, +~10%.
-        max_load: 47 * 1024,
+        // Ratcheted 47 -> 52 KiB on 2026-10-24 (test image): the scale
+        // variant loads the scaler's filter (quality audit C73); 47.7 KiB
+        // measured, +~10%.
+        max_load: 52 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },
