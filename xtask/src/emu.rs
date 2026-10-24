@@ -6133,7 +6133,8 @@ pub fn boot_loader_mbx_blend(root: &Path) -> Result<(), String> {
     mbx_blend_b8(root)?;
     mbx_blend_b9(root)?;
     mbx_blend_b10(root)?;
-    mbx_blend_b11(root)
+    mbx_blend_b11(root)?;
+    mbx_blend_b12(root)
 }
 
 /// rp-mbx-blend B7's run on the owner's X51v (2026-10-21): the lines the
@@ -6239,6 +6240,58 @@ fn mbx_blend_b10(root: &Path) -> Result<(), String> {
         eprintln!("      {}", l.trim_end());
     }
     eprintln!("    mbx-blend B10 OK: every part ran, state put back, back at the loader");
+    Ok(())
+}
+
+/// `rp-mbx-blend` B12 (the gate's backlog 7-10: Dell's brush, palette and
+/// low-depth words, bits 23/24): the fork doesn't model the brush surface
+/// or origin words, so this checks every step ran or was reset cleanly,
+/// logged its line, and put the engine's state back; the results are the
+/// X51v's.
+fn mbx_blend_b12(root: &Path) -> Result<(), String> {
+    let bin = variant_image(root, "rp-mbx-blend", ("RP_MBX_BLEND_B12", "1"))?;
+    let loader = emu_dir(root)?.join("rp-loader.bin");
+    let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
+    let output = boot(
+        root,
+        &Boot {
+            image: &loader,
+            marker: LOADER_MARKER,
+            screenshot: None,
+            sd_image: None,
+            steps: &[],
+            extra: &[],
+            input: Some((&rp_loadproto::frame(&payload), "RETROPANE-MBX-BLEND: ")),
+            during: None,
+            then: Some("RPL END"),
+            timeout: Duration::from_secs(300),
+        },
+    )?;
+    let log = output
+        .rsplit_once("RPL LOG")
+        .map(|(_, l)| l)
+        .ok_or("mbx-blend B12: never came back to the loader")?;
+    if crashed(log) {
+        return Err(format!("mbx-blend B12: crashed:{log}"));
+    }
+    for want in [
+        "B12a brush 32 bpp origin (0,0) size field 8: ran ",
+        "B12a brush 32 bpp origin (3,5) size field 8: ran ",
+        "B12b brush 8 bpp through the brush palette: ran ",
+        "B12c 4 bpp source through the source palette: ran ",
+        "B12d 2 bpp source through the source palette: ran ",
+        "B12e header bits 0x01800000 rect (8,4)-(16,8): ran ",
+        "B12 scale, key and blend put back: yes",
+        "B12 done",
+    ] {
+        if !log.contains(want) {
+            return Err(format!("mbx-blend B12: the run log has no `{want}`:{log}"));
+        }
+    }
+    for l in log.lines().filter(|l| l.starts_with("B12")) {
+        eprintln!("      {}", l.trim_end());
+    }
+    eprintln!("    mbx-blend B12 OK: every step ran, state put back (the results are the X51v's)");
     Ok(())
 }
 

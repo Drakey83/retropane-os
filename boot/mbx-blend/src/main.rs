@@ -172,6 +172,12 @@ pub const B10_ONLY: bool = option_env!("RP_MBX_BLEND_B10").is_some();
 /// from Dell's colour-expansion path `0x0210096c`).
 pub const B11_ONLY: bool = option_env!("RP_MBX_BLEND_B11").is_some();
 
+/// Whether this build runs B12 alone (`RP_MBX_BLEND_B12`): the gate's
+/// backlog ranks 7-10 (P13, P7, V3, V15): Dell's brush surface and origin
+/// words, the brush and source palettes, 2 and 4 bpp sources, header bits
+/// 23 and 24 (read from `ddi_2700g`, 2026-10-24).
+pub const B12_ONLY: bool = option_env!("RP_MBX_BLEND_B12").is_some();
+
 /// The eight ways a copy can lay a source down, as [`orientations`] names
 /// them (bit `k` of its result).
 pub const ORIENTATIONS: [&str; 8] = [
@@ -410,8 +416,8 @@ mod image {
     use rp_hal_x51v::devices::RunLog;
 
     use super::{
-        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, B10_ONLY, B11_ONLY, FENCE, MARK16, MARKER, Narrow,
-        ORIENTATIONS, RAMP, RampStats, SRC16, SRC32, SetStats, channels, coverage_row,
+        ARGB_CODES, B7_ONLY, B8_ONLY, B9_ONLY, B10_ONLY, B11_ONLY, B12_ONLY, FENCE, MARK16, MARKER,
+        Narrow, ORIENTATIONS, RAMP, RampStats, SRC16, SRC32, SetStats, channels, coverage_row,
         dither_tries, lerp565, mask_bits, near, orientations, ramp_level, rop3, rule_counts, sweep,
     };
 
@@ -466,7 +472,7 @@ mod image {
             crash(format_args!("no 2700G"))
         };
         let mut display = Display::new(regs);
-        if B7_ONLY || B8_ONLY || B9_ONLY || B10_ONLY || B11_ONLY {
+        if B7_ONLY || B8_ONLY || B9_ONLY || B10_ONLY || B11_ONLY || B12_ONLY {
             b7_only(display.into_inner(), vram);
         }
         let (plane, _) = display.adopt(vram.len());
@@ -1307,7 +1313,11 @@ mod image {
     /// B7 alone (`RP_MBX_BLEND_B7`): no events, no B1-B6, nothing shown,
     /// no button; back to the loader.
     fn b7_only(regs: Mmio, vram: &mut [u8]) -> ! {
-        if B11_ONLY {
+        if B12_ONLY {
+            log!(
+                "{MARKER}: B12 only (the gate's backlog 7-10: brushes, palettes, 2/4 bpp sources, bits 23/24)"
+            );
+        } else if B11_ONLY {
             log!(
                 "{MARKER}: B11 only (the performance gate's V4, P13, V15: rotation bits 25-26, 1 bpp masks)"
             );
@@ -1336,7 +1346,9 @@ mod image {
         e.reset(rt::delay_us);
         let _ = store32_volatile(vram, FENCE, 0);
         cpu::drain_write_buffer();
-        let ok = if B11_ONLY {
+        let ok = if B12_ONLY {
+            b12(&mut e, vram)
+        } else if B11_ONLY {
             b11(&mut e, vram)
         } else if B10_ONLY {
             b10(&mut e, vram)
@@ -1350,7 +1362,9 @@ mod image {
         let verdict = if ok { "PASS" } else { "FAIL (see the log)" };
         log!(
             "{MARKER}: {verdict} - {} done",
-            if B11_ONLY {
+            if B12_ONLY {
+                "B12"
+            } else if B11_ONLY {
                 "B11"
             } else if B10_ONLY {
                 "B10"
@@ -2243,6 +2257,287 @@ mod image {
     // ----------------------------------------------------------------- B10
 
     const B10_DST: usize = 0x00D4_0000;
+
+    const B12_DST: usize = 0x00D7_0000;
+    const B12_BRUSH: usize = 0x00D7_4000;
+    const B12_BRUSH8: usize = 0x00D7_5000;
+    const B12_SRC4: usize = 0x00D7_6000;
+    const B12_SRC2: usize = 0x00D7_7000;
+    const B12_PAL: usize = 0x00D7_8000;
+    const B12_SRC32: usize = 0x00D7_9000;
+
+    /// B12 (measured, not judged): Dell's words read from `ddi_2700g`
+    /// (2700g.md "Dell's lines, brushes and low-depth sources"), each tried
+    /// on the X51v: (a) a 32 bpp pattern brush as a surface (`0xB4000000`)
+    /// with its origin word (`0x10000000`), the header's bit 16; (b) an
+    /// 8 bpp brush through the brush palette (`0xD0000000`); (c) a 4 bpp
+    /// and (d) a 2 bpp source through the source palette (`0xC0000000`);
+    /// (e) header bits 23 and 24 on a copy (Dell: x and y not positive; our
+    /// 2026-10-14 reading: bit 24 right-to-left). Lines aren't tried: Dell
+    /// has no line command (axial lines are fills, proven).
+    fn b12(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        const MARK: u32 = 0x5A5A_5A5A;
+        let mut base = [0u32; 6];
+        base[0] = cmd::SCALE_1_TO_1;
+        base[1..4].copy_from_slice(&cmd::key(0, 0));
+        base[4..].copy_from_slice(&cmd::blend(0));
+        let mut ok = go(e, vram, &base, "B12 baseline");
+        let [d0, d1] = cmd::dest(Format::BPP32, B12_DST, 128);
+        // A destination 32 x 16 pixels, 128-byte rows.
+        let read = |vram: &[u8]| -> [u32; 512] { words(vram, B12_DST) };
+
+        // (a) A 32 bpp brush whose pixels name their own (x, y).
+        let mut brush = [0u32; 64];
+        for (k, p) in brush.iter_mut().enumerate() {
+            *p = 0xFF00_0000 | ((k / 8) as u32) << 8 | (k % 8) as u32;
+        }
+        set(vram, B12_BRUSH, &brush);
+        for (xoff, yoff, size) in [(0u32, 0u32, 8u32), (3, 5, 8), (0, 0, 7)] {
+            fill_words(vram, B12_DST, 512, MARK);
+            let w = [
+                d0,
+                d1,
+                0xB400_0000 | 0x6_0000 | 32,
+                B12_BRUSH as u32 & 0x03FF_FFFC,
+                0x1000_0000 | xoff << 18 | yoff << 12 | size << 6 | size,
+                0x8000_0000 | cmd::OP_NO_COLOUR | cmd::ROP_PATCOPY,
+                cmd::xy(0, 0),
+                cmd::xy(16, 16),
+                cmd::FLUSH,
+            ];
+            let ran = go(e, vram, &w, "B12a brush");
+            ok &= ran;
+            let got = read(vram);
+            let (mut plus, mut minus, mut none, mut other, mut kept) =
+                (0u32, 0u32, 0u32, 0u32, 0u32);
+            for y in 0..16u32 {
+                for x in 0..16u32 {
+                    let v = got[(32 * y + x) as usize];
+                    if v == MARK {
+                        kept += 1;
+                        continue;
+                    }
+                    let (bx, by) = (v & 0xFF, v >> 8 & 0xFF);
+                    if v >> 24 != 0xFF || bx > 7 || by > 7 {
+                        other += 1;
+                        continue;
+                    }
+                    plus += u32::from(bx == (x + xoff) % 8 && by == (y + yoff) % 8);
+                    minus +=
+                        u32::from(bx == (x + 8 - xoff % 8) % 8 && by == (y + 8 - yoff % 8) % 8);
+                    none += u32::from(bx == x % 8 && by == y % 8);
+                }
+            }
+            let _ = write!(
+                RunLog,
+                "B12a brush 32 bpp origin ({xoff},{yoff}) size field {size}: ran {ran}; of 256 pixels: tiled at +offset {plus}, at -offset {minus}, unshifted {none}, other {other}, kept {kept}; row 0 (bx,by):"
+            );
+            for x in 0..10 {
+                let v = got[x];
+                let _ = write!(RunLog, " ({},{})", v & 0xFF, v >> 8 & 0xFF);
+            }
+            log!("");
+        }
+
+        // (b) An 8 bpp brush through the brush palette: entry i is
+        // 0xFF_ii_00_AB, the brush's pixel (x, y) index 8y + x.
+        let mut pal = [0u32; 256];
+        for (i, p) in pal.iter_mut().enumerate() {
+            *p = 0xFF00_00AB | (i as u32) << 16;
+        }
+        set(vram, B12_PAL, &pal);
+        let mut b8 = [0u32; 16];
+        for (k, w) in b8.iter_mut().enumerate() {
+            let i = 4 * k as u32;
+            *w = i | (i + 1) << 8 | (i + 2) << 16 | (i + 3) << 24;
+        }
+        set(vram, B12_BRUSH8, &b8);
+        fill_words(vram, B12_DST, 512, MARK);
+        let w = [
+            d0,
+            d1,
+            0xD000_0000,
+            B12_PAL as u32 & 0x03FF_FFFC,
+            0xB400_0000 | 0x1_8000 | 8,
+            B12_BRUSH8 as u32 & 0x03FF_FFFC,
+            0x1000_0000 | 8 << 6 | 8,
+            0x8000_0000 | cmd::OP_NO_COLOUR | cmd::ROP_PATCOPY,
+            cmd::xy(0, 0),
+            cmd::xy(16, 16),
+            cmd::FLUSH,
+        ];
+        let ran = go(e, vram, &w, "B12b brush palette");
+        ok &= ran;
+        let got = read(vram);
+        let (mut right, mut other) = (0u32, 0u32);
+        for y in 0..16u32 {
+            for x in 0..16u32 {
+                let v = got[(32 * y + x) as usize];
+                if v & 0xFF00_FFFF == 0xFF00_00AB && v >> 16 & 0xFF == 8 * (y % 8) + x % 8 {
+                    right += 1;
+                } else {
+                    other += 1;
+                }
+            }
+        }
+        log!(
+            "B12b brush 8 bpp through the brush palette: ran {ran}; of 256 pixels {right} the palette's entry for the brush's index, {other} other; first words 0x{:08x} 0x{:08x} 0x{:08x}",
+            got[0],
+            got[1],
+            got[33]
+        );
+
+        // (c), (d) 4 and 2 bpp sources through the source palette: entry i
+        // 0xFF_ii_00_CD; row 0's pixel x has index x (mod the depth's
+        // range), row 1's the reverse.
+        let mut spal = [0u32; 16];
+        for (i, p) in spal.iter_mut().enumerate() {
+            *p = 0xFF00_00CD | (i as u32) << 16;
+        }
+        set(vram, B12_PAL, &spal);
+        for (bpp, fmt, at, stride) in [
+            (4u32, 0x1_0000u32, B12_SRC4, 8u32),
+            (2, 0x8000, B12_SRC2, 4),
+        ] {
+            let n = 1u32 << bpp;
+            let idx = |x: u32, y: u32| if y == 0 { x % n } else { (n - 1) - x % n };
+            // Packed high bits first (the 1 bpp rule, B9).
+            let mut src = [0u32; 4];
+            for y in 0..2u32 {
+                let mut bytes = [0u8; 8];
+                for x in 0..16u32 {
+                    let bit = x * bpp;
+                    bytes[(bit / 8) as usize] |= (idx(x, y) as u8) << (8 - bpp - bit % 8);
+                }
+                for k in 0..(stride / 4) as usize {
+                    src[y as usize * (stride / 4) as usize + k] = u32::from_le_bytes([
+                        bytes[4 * k],
+                        bytes[4 * k + 1],
+                        bytes[4 * k + 2],
+                        bytes[4 * k + 3],
+                    ]);
+                }
+            }
+            set(vram, at, &src);
+            fill_words(vram, B12_DST, 512, MARK);
+            let [s0, s1] = cmd::source(Format::code(fmt >> 15), at, stride as i32);
+            let w = [
+                d0,
+                d1,
+                0xC000_0000,
+                B12_PAL as u32 & 0x03FF_FFFC,
+                s0,
+                s1,
+                cmd::origin(0, 0),
+                0x8000_0000 | cmd::ROP_SRCCOPY,
+                0,
+                cmd::xy(0, 0),
+                cmd::xy(16, 2),
+                cmd::FLUSH,
+            ];
+            let what = if bpp == 4 {
+                "B12c 4 bpp source"
+            } else {
+                "B12d 2 bpp source"
+            };
+            let ran = go(e, vram, &w, what);
+            ok &= ran;
+            let got = read(vram);
+            let (mut hi, mut lo, mut other) = (0u32, 0u32, 0u32);
+            // Low bits first: the index each pixel would have read that way.
+            let low = |x: u32, y: u32| {
+                let per = 8 / bpp;
+                let (byte, slot) = (x / per, x % per);
+                let first = byte * per;
+                idx(first + (per - 1 - slot), y)
+            };
+            for y in 0..2u32 {
+                for x in 0..16u32 {
+                    let v = got[(32 * y + x) as usize];
+                    if v & 0xFF00_FFFF != 0xFF00_00CD {
+                        other += 1;
+                        continue;
+                    }
+                    let i = v >> 16 & 0xFF;
+                    hi += u32::from(i == idx(x, y));
+                    lo += u32::from(i == low(x, y));
+                }
+            }
+            let _ = write!(
+                RunLog,
+                "{what} through the source palette: ran {ran}; of 32 pixels {hi} as high bits first, {lo} as low bits first, {other} not a palette entry; row 0 indices:"
+            );
+            for x in 0..16 {
+                let v = got[x];
+                if v & 0xFF00_FFFF == 0xFF00_00CD {
+                    let _ = write!(RunLog, " {}", v >> 16 & 0xFF);
+                } else {
+                    let _ = write!(RunLog, " ?");
+                }
+            }
+            log!("");
+        }
+
+        // (e) Bits 23 and 24 on a copy of an 8 x 4 source whose pixels
+        // hold their own (x, y), as B11a.
+        let mut src = [0u32; 32];
+        for (k, v) in src.iter_mut().enumerate() {
+            *v = 0xFF00_0000 | ((k / 8) as u32) << 8 | (k % 8) as u32;
+        }
+        set(vram, B12_SRC32, &src);
+        for bits in [0u32, 1 << 23, 1 << 24, 1 << 23 | 1 << 24] {
+            fill_words(vram, B12_DST, 512, MARK);
+            let (w, n) = rp_image::need(
+                cmd::blit(
+                    (Format::BPP32, B12_DST, 128),
+                    (Format::BPP32, B12_SRC32, 32),
+                    (0, 0),
+                    (8, 4, 16, 8),
+                    cmd::ROP_SRCCOPY,
+                    bits,
+                    0,
+                ),
+                "a 2D rectangle",
+            );
+            let ran = go(e, vram, &w[..n], "B12e direction bits");
+            ok &= ran;
+            let got = read(vram);
+            let mut pairs = [(0u32, 0u32, 0u32, 0u32); 64];
+            let (mut n, mut odd, mut x0, mut y0, mut x1, mut y1) =
+                (0usize, 0u32, 99u32, 99u32, 0u32, 0u32);
+            for (k, &v) in got.iter().enumerate() {
+                if v == MARK {
+                    continue;
+                }
+                let (dx, dy) = ((k % 32) as u32, (k / 32) as u32);
+                (x0, y0, x1, y1) = (x0.min(dx), y0.min(dy), x1.max(dx + 1), y1.max(dy + 1));
+                let (sx, sy) = (v & 0xFF, v >> 8 & 0xFF);
+                if v >> 24 == 0xFF && sx < 8 && sy < 4 && n < pairs.len() {
+                    // Relative to the rectangle's corner (8, 4).
+                    pairs[n] = (dx.wrapping_sub(8), dy.wrapping_sub(4), sx, sy);
+                    n += 1;
+                } else {
+                    odd += 1;
+                }
+            }
+            let _ = write!(
+                RunLog,
+                "B12e header bits 0x{bits:08x} rect (8,4)-(16,8): ran {ran}; {n} source pixels written in x {x0}-{x1} y {y0}-{y1}, {odd} other; first (dx,dy<-sx,sy):"
+            );
+            for &(dx, dy, sx, sy) in &pairs[..n.min(4)] {
+                let _ = write!(RunLog, " ({dx},{dy}<-{sx},{sy})");
+            }
+            log!("");
+            rt::check_in();
+        }
+
+        let back = go(e, vram, &base, "B12 state back");
+        log!(
+            "B12 scale, key and blend put back: {}",
+            if back { "yes" } else { "NO" }
+        );
+        ok && back
+    }
 
     /// B11 (measured, not judged).
     fn b11(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
