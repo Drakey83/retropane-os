@@ -32,9 +32,9 @@ The rules (owner, 2026-10-22):
 - **A phase's gate lifts** when its architectural lines are ticked (used, or
   declined with the reason written down: measured, unmeasurable, or not
   worth the device time) **and the ratchet runs**; the owner lifts it. The
-  gate now holds **phases 2 and 5** (**phase 4's gate lifted by the owner,
-  2026-10-24**: its one line, F6, ticked and the ratchet running) (kernel memory, drawing, the shell
-  and compositor); video (phase 7) and power (phase 9) lines gate their own
+  gate now holds **phases 2 and 5** (kernel memory, the shell and
+  compositor); **phase 4's (drawing) was lifted by the owner, 2026-10-24**:
+  its one line, F6, ticked and the ratchet running; video (phase 7) and power (phase 9) lines gate their own
   phases when those start.
 - **Work is held back only by a named line.** Work waits only if its design
   depends on an open architectural line, and the session names that line;
