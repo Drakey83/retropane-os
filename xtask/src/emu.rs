@@ -3175,8 +3175,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g17") => return boot_loader_glesfeat_g(root, 17),
         Ok("g18") => return boot_loader_glesfeat_g(root, 18),
         Ok("g19") => return boot_loader_glesfeat_g(root, 19),
+        Ok("g20") => return boot_loader_glesfeat_g(root, 20),
         Ok(other) => {
-            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g19"));
+            return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g or g2-g20"));
         }
         Err(_) => {}
     }
@@ -3480,7 +3481,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 19 {
+    let (env, name, ours, after) = if test == 20 {
+        ("RP_GLESFEAT_G20", "G20", "G20 way 1 (", "G20 way 2 (")
+    } else if test == 19 {
         ("RP_GLESFEAT_G19", "G19", "G19 way 1 (", "G19 way 2 (")
     } else if test == 18 {
         ("RP_GLESFEAT_G18", "G18", "G18 way 1 (", "G18 way 2 (")
@@ -3522,7 +3525,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     let frame = root.join("target/g7-synthetic-frame.bin");
     let also = if matches!(
         test,
-        7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19
+        7 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20
     ) {
         std::fs::write(&frame, crate::g7::synthetic())
             .map_err(|e| format!("{}: {e}", frame.display()))?;
@@ -3564,7 +3567,26 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 19 {
+    let wants: &[&str] = if test == 20 {
+        &[
+            "G17: the screen as found: offset 0x",
+            "test G20, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G20 way 1 (Dell's frame, the screen safe, no video plane):",
+            "G20 way 2 (Dell's frame, the screen safe, the video plane full outside):",
+            "G20 way 3 (Dell's frame, the screen safe, a small video plane inside):",
+            "G20 way 4 (Dell's frame, the screen safe, a small video plane outside):",
+            "G20 way 5 (a 2D copy, the screen safe):",
+            "G20 way 6 (a 2D copy, the screen outside):",
+            "    G20 set-up: the screen at 0x0, GSCADR 0x80000000; video None at 0x0, 0 rows",
+            "    G20 set-up: the screen at 0x0, GSCADR 0x80000000; video FullOutside at 0x100000, 640 rows",
+            "    G20 set-up: the screen at 0x0, GSCADR 0x80000000; video BandInside at 0x96000, 96 rows",
+            "    G20 set-up: the screen at 0x0, GSCADR 0x80000000; video BandOutside at 0x100000, 96 rows",
+            "    G20 set-up: the screen at 0x100000, GSCADR 0x80010000; video None at 0x0, 0 rows",
+            "G20: right at 74.75 / 1 of 20:",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 19 {
         &[
             "G17: the screen as found: offset 0x",
             "test G19, Gouraud at the cores' divide 1",
@@ -3874,7 +3896,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     }
     // Each way that drew runs every setting: G3 three, G and G2 one;
     // G14's first way none (it stays at the clock it found).
-    let settings = if test == 18 || test == 19 {
+    let settings = if test == 18 || test == 19 || test == 20 {
         1
     } else if test >= 3 {
         3
@@ -3932,6 +3954,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         18 => &[2, 3, 4, 5, 6, 7, 8, 9],
         // Every place drawn (none over the emulator's frame).
         19 => &[2, 3, 4, 5, 6, 7, 8, 9, 10],
+        // The replay of our scene whatever the video plane does.
+        20 => &[2, 3, 4],
         _ => &[],
     };
     if !same.is_empty() {
@@ -4009,6 +4033,40 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     // G16: each way's mapping and the display's fetch as set, and renders
     // made with the fetch read back off in ways 3 and 4 only (each count is
     // logged at the next way's set-up, the last at the end).
+    // G20: the 2D copies (ways 5 and 6) one picture, not the frame's, and
+    // the video plane on (its stream bit) in ways 2-4 only.
+    if test == 20 {
+        let hash = |way: u32| {
+            log.split(&format!("{name} way {way} ("))
+                .nth(1)
+                .and_then(|s| s.split("reference hash ").nth(1))
+                .map(|s| s.chars().take(10).collect::<String>())
+        };
+        if hash(5).is_none() || hash(5) != hash(6) || hash(5) == hash(1) {
+            return Err(format!(
+                "glesfeat {name}: the 2D copies' references {:?} and {:?} (the frame's {:?}):{log}",
+                hash(5),
+                hash(6),
+                hash(1)
+            ));
+        }
+        let vscadr = |way: u32| {
+            log.split(&format!("{name} way {way} ("))
+                .next()
+                .and_then(|b| b.rsplit("    G20 set-up: ").next())
+                .and_then(|l| l.split("VSCADR 0x").nth(1))
+                .and_then(|h| u32::from_str_radix(&h[..8.min(h.len())], 16).ok())
+        };
+        for way in 1..=6u32 {
+            let on = vscadr(way).map(|v| v >> 31 == 1);
+            if on != Some((2..=4).contains(&way)) {
+                return Err(format!(
+                    "glesfeat {name}: way {way}'s video stream on: {on:?}, want {}:{log}",
+                    (2..=4).contains(&way)
+                ));
+            }
+        }
+    }
     // G18: every place that wasn't left out drew, its screen set and read
     // back there (`GSCADR` its place / 16, the stream on), in order.
     if test == 18 || test == 19 {

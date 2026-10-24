@@ -258,6 +258,29 @@ pub const SNAPSHOT_REGS: [(&str, usize); 146] = [
     ("CSC05", 0x2340),
 ];
 
+/// [`Display::show_video_scaled`] on a register block held elsewhere (a
+/// test image's engine): the stream off, the overlay clock on, then the
+/// plane's registers; the gamma bit follows the graphics plane's.
+pub fn video_show<B: RegisterBus>(
+    regs: &mut B,
+    video: &layers::VideoPlane,
+    layer: layers::Layer,
+    scale: layers::Scale,
+) {
+    let gamma = regs.read_field(reg::GSCTRL, GSCTRL_GAMMA_EN) != 0;
+    regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
+    layers::video_clock(regs, true);
+    for (offset, value) in video.registers_scaled(layer, gamma, scale) {
+        regs.write32(offset, value);
+    }
+}
+
+/// [`Display::hide_video`] on a register block held elsewhere.
+pub fn video_hide<B: RegisterBus>(regs: &mut B) {
+    regs.modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
+    layers::video_clock(regs, false);
+}
+
 /// Clears the `handled` bits of `DINTRS` the only safe way: read the
 /// status, write it back without them (Dell's way). Writing anything else
 /// sets every bit written as 1, which made an earlier probe see events
@@ -591,20 +614,12 @@ impl<B: RegisterBus> Display<B> {
         layer: layers::Layer,
         scale: layers::Scale,
     ) {
-        let gamma = self.regs.read_field(reg::GSCTRL, GSCTRL_GAMMA_EN) != 0;
-        self.regs
-            .modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
-        layers::video_clock(&mut self.regs, true);
-        for (offset, value) in video.registers_scaled(layer, gamma, scale) {
-            self.regs.write32(offset, value);
-        }
+        video_show(&mut self.regs, video, layer, scale);
     }
 
     /// Hides the video plane and stops its overlay clock.
     pub fn hide_video(&mut self) {
-        self.regs
-            .modify(layers::reg::VSCADR, layers::SCADR_STR_EN, 0);
-        layers::video_clock(&mut self.regs, false);
+        video_hide(&mut self.regs);
     }
 
     /// The register block, for reads and snapshots.

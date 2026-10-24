@@ -514,6 +514,40 @@ pub const fn dells_divide_1(mbxclk: u32, pllstat: u32) -> bool {
     pllstat & 4 != 0 && mbxclk >> 2 & 3 == 0 && mbxclk & 3 != 0
 }
 
+/// Test G20's video plane in a way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum G20Video {
+    /// Off.
+    None,
+    /// 480 x 640 UYVY (600 KiB) at `0x100000`, outside the safe region.
+    FullOutside,
+    /// A [`G20_BAND_ROWS`]-row band inside the safe region, after the
+    /// screen at `0x0` ([`G20_BAND_INSIDE`]).
+    BandInside,
+    /// The same band at `0x100000`, outside.
+    BandOutside,
+}
+
+/// Rows of G20's video band: 480 x 96 UYVY is 90 KiB, so it fits after a
+/// screen at `0x0` (ending `0x96000`) inside the safe region (G19: harmless
+/// up to `0xAE000`).
+pub const G20_BAND_ROWS: u16 = 96;
+/// Where G20's band lies inside: right after the screen at `0x0`.
+pub const G20_BAND_INSIDE: usize = 0x9_6000;
+
+/// Test G20's ways: (a 2D copy, not Dell's frame; the screen outside the
+/// safe region, at `0x100000`, not at `0x0`; the video plane). At 74.75 / 1
+/// alone (the collision G16-G19 mapped: the 3D core's renders corrupted by
+/// the display reading local memory past ~704 KiB).
+pub const G20_WAYS: [(bool, bool, G20Video); 6] = [
+    (false, false, G20Video::None),
+    (false, false, G20Video::FullOutside),
+    (false, false, G20Video::BandInside),
+    (false, false, G20Video::BandOutside),
+    (true, false, G20Video::None),
+    (true, true, G20Video::None),
+];
+
 /// The on-die frame buffer's power control (`ODFBPWR`: bits 1-0 the mode,
 /// 0 active, 1 active low-power, 2 sleep, 3 shut down; bit 2 slow) and
 /// state (`ODFBSTAT`: bit 2 active, 1 asleep, 0 shut down), Linux mbxfb's
@@ -906,7 +940,7 @@ mod image {
     use rp_drv_blit2d::{self as cmd, Engine, Format, MBX, reg};
     use rp_drv_mbx_display::clock::{self, Speed, with_3d};
     use rp_drv_mbx_display::font::{self, WIDTH};
-    use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers::Layer, reg as dreg};
+    use rp_drv_mbx_display::{Display, PixelFormat, Plane, layers, layers::Layer, reg as dreg};
     use rp_drv_mbx3d::{self as m3, ISP_ALWAYS, PM_READY, RENDER_DONE, TSP_DELL, Vertex};
     use rp_drv_pxa_gpio::Gpio;
     use rp_drv_pxa_keypad::{Keypad, Pressed};
@@ -987,7 +1021,8 @@ mod image {
         || TEST_G16
         || TEST_G17
         || TEST_G18
-        || TEST_G19;
+        || TEST_G19
+        || TEST_G20;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -1068,6 +1103,15 @@ mod image {
     /// codegen-variant rp-glesfeat g19`): G18's way with
     /// [`super::G19_PLACES`].
     const TEST_G19: bool = option_env!("RP_GLESFEAT_G19").is_some();
+    /// Test G20 instead of G (`RP_GLESFEAT_G20=1` and, as G7,
+    /// `RP_GLESFEAT_G7_FRAME`; device build `RP_GLESFEAT_G20=1
+    /// RP_GLESFEAT_G7_FRAME=<abs path>/local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g20`).
+    const TEST_G20: bool = option_env!("RP_GLESFEAT_G20").is_some();
+    const _: () = assert!(
+        !TEST_G20 || cfg!(rp_g7),
+        "test G20 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     const _: () = assert!(
         !TEST_G19 || cfg!(rp_g7),
         "test G19 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
@@ -1136,7 +1180,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G19 {
+    const G_TITLE: &str = if TEST_G20 {
+        "RP-GLESFEAT TEST G20"
+    } else if TEST_G19 {
         "RP-GLESFEAT TEST G19"
     } else if TEST_G18 {
         "RP-GLESFEAT TEST G18"
@@ -1175,7 +1221,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G19 {
+    const G_NAME: &str = if TEST_G20 {
+        "G20"
+    } else if TEST_G19 {
         "G19"
     } else if TEST_G18 {
         "G18"
@@ -1229,6 +1277,7 @@ mod image {
         || TEST_G17
         || TEST_G18
         || TEST_G19
+        || TEST_G20
     {
         super::G7_REF
     } else if TEST_G6 {
@@ -1250,6 +1299,7 @@ mod image {
             || TEST_G17
             || TEST_G18
             || TEST_G19
+            || TEST_G20
             || REF + STRIDE * H as usize <= TAIL
     );
     /// The label scanned out from the first moment: RGB565 (a 32-bit
@@ -1267,6 +1317,7 @@ mod image {
         || TEST_G17
         || TEST_G18
         || TEST_G19
+        || TEST_G20
     {
         super::G6_LABEL
     } else {
@@ -1287,6 +1338,7 @@ mod image {
             || TEST_G17
             || TEST_G18
             || TEST_G19
+            || TEST_G20
             || TARGET + STRIDE * H as usize <= LABEL
     );
     const _: () = assert!(
@@ -1303,6 +1355,7 @@ mod image {
             || TEST_G17
             || TEST_G18
             || TEST_G19
+            || TEST_G20
             || LABEL + LABEL_STRIDE * H as usize <= PM
     );
     /// The label's text: lines, the font's scale, colours (RGB565).
@@ -2288,6 +2341,8 @@ mod image {
         G17(u8),
         /// Test G18: the screen at [`super::G18_PLACES`]' place k.
         G18(u8),
+        /// Test G20: [`super::G20_WAYS`]'s way k.
+        G20(u8),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -2388,6 +2443,12 @@ mod image {
                 Self::G17(1) => "Dell's frame, the screen at Windows Mobile's place",
                 Self::G17(_) => "Dell's frame, the screen at our place, Linux's DMCTRL",
                 Self::G18(_) => "Dell's frame, the screen at the place below",
+                Self::G20(0) => "Dell's frame, the screen safe, no video plane",
+                Self::G20(1) => "Dell's frame, the screen safe, the video plane full outside",
+                Self::G20(2) => "Dell's frame, the screen safe, a small video plane inside",
+                Self::G20(3) => "Dell's frame, the screen safe, a small video plane outside",
+                Self::G20(4) => "a 2D copy, the screen safe",
+                Self::G20(_) => "a 2D copy, the screen outside",
             }
         }
     }
@@ -2657,6 +2718,14 @@ mod image {
             Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => {
                 (replay(e, vram), us_since(t0), [m3::END; TA_LIST])
             }
+            Way::G20(k) => {
+                let done = if super::G20_WAYS[k as usize % super::G20_WAYS.len()].0 {
+                    copy_2d(e, vram)
+                } else {
+                    replay(e, vram)
+                };
+                (done, us_since(t0), [m3::END; TA_LIST])
+            }
             Way::G13(k) => {
                 let done = if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 {
                     replay(e, vram)
@@ -2819,10 +2888,12 @@ mod image {
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
         set_lay(match w {
             Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
-            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => frame()
-                .as_ref()
-                .and_then(super::frame_layout)
-                .unwrap_or(super::OURS_LAYOUT),
+            Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) | Way::G20(_) => {
+                frame()
+                    .as_ref()
+                    .and_then(super::frame_layout)
+                    .unwrap_or(super::OURS_LAYOUT)
+            }
             Way::G13(k) if super::G13_WAYS[k as usize % super::G13_WAYS.len()].0 => frame()
                 .as_ref()
                 .and_then(super::frame_layout)
@@ -2858,6 +2929,10 @@ mod image {
         // G17: the screen's place and the display's memory control.
         if let Way::G17(k) = w {
             g17_way(&mut e.regs, vram, k);
+        }
+        // G20: the screen's place and the video plane.
+        if let Way::G20(k) = w {
+            g20_way(&mut e.regs, vram, k);
         }
         // G18: the screen's place.
         if let Way::G18(k) = w {
@@ -2961,6 +3036,7 @@ mod image {
         // picture (his divide-1 render, right, hashed by g7-frame).
         let replay_way = match w {
             Way::Frame(_) | Way::G15(_) | Way::G16(_) | Way::G17(_) | Way::G18(_) => true,
+            Way::G20(k) => !super::G20_WAYS[k as usize % super::G20_WAYS.len()].0,
             Way::G10(k) => super::G10_WAYS[k as usize % super::G10_WAYS.len()].0,
             Way::G11(k) => super::G11_WAYS[k as usize % super::G11_WAYS.len()].0,
             Way::G12(k) => super::G12_WAYS[k as usize % super::G12_WAYS.len()].0,
@@ -3451,7 +3527,7 @@ mod image {
         let mut dark = [[false; SETTINGS]; MAX_WAYS];
         for (k, &w) in ways.iter().enumerate() {
             // G18 maps places at 74.75 / 1 alone.
-            let settings = if TEST_G18 || TEST_G19 {
+            let settings = if TEST_G18 || TEST_G19 || TEST_G20 {
                 &super::G3_PLLS[..1]
             } else {
                 &super::G3_PLLS[..]
@@ -4730,7 +4806,12 @@ mod image {
     /// Whether a screen at `place` lies over the frame's pages or layout,
     /// or the image's reference or fence.
     fn screen_clashes(l: &super::Layout, place: usize) -> bool {
-        let bytes = LABEL_STRIDE * H as usize;
+        region_clashes(l, place, LABEL_STRIDE * H as usize)
+    }
+
+    /// Whether `bytes` from `place` lie over the frame's pages or layout,
+    /// or the image's reference or fence.
+    fn region_clashes(l: &super::Layout, place: usize, bytes: usize) -> bool {
         let spans = l.spans(W, H, COLS * ROWS);
         frame().is_some_and(|f| f.touches(place, bytes))
             || spans[..4]
@@ -4740,6 +4821,131 @@ mod image {
                 .iter()
                 .any(|&(a, n)| a < place + bytes && place < a + n)
     }
+
+    /// Where test G20's 2D copy reads its pattern (RGB565, 480 x 640,
+    /// 600 KiB: clear of Dell's frame's target, `0xB27000`-`0xBBD000`, and
+    /// the reference, `0xD30000`).
+    const G20_SRC: usize = 0x00BC_0000;
+
+    /// The test pattern G20's 2D copy moves: xorshift words, written once
+    /// by the CPU.
+    fn g20_pattern(vram: &mut [u8]) {
+        let mut x = 0x2700_6020u32;
+        for k in 0..LABEL_STRIDE * H as usize / 4 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            let _ = store32_volatile(vram, G20_SRC + 4 * k, x);
+        }
+        cpu::drain_write_buffer();
+    }
+
+    /// One 2D copy of [`G20_SRC`] into the target (blanked first by
+    /// [`draw`]), the engine's fence awaited. Whether it finished.
+    fn copy_2d(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let (words, n) = rp_image::need(
+            cmd::copy(
+                Format::RGB565,
+                (lay().target, LABEL_STRIDE),
+                (G20_SRC, LABEL_STRIDE),
+                (0, 0),
+                (0, 0, W as u16, H as u16),
+                0,
+            ),
+            "a 2D copy",
+        );
+        e.submit(&words[..n])
+            .and_then(|()| e.finish(vram, 200_000))
+            .is_ok()
+    }
+
+    /// Test G20's way `k` ([`super::G20_WAYS`]): the screen at the safe
+    /// place (`0x0`, G18) or ours outside (`0x100000`), and the video plane
+    /// off, full screen outside, or a 96-row band inside or outside the
+    /// safe region; its picture mid grey (UYVY `0x80`), half transparent
+    /// over the screen so the label still shows. Logged with the planes'
+    /// registers read back.
+    fn g20_way(regs: &mut Mmio, vram: &mut [u8], k: u8) {
+        let (_, outside, video) = super::G20_WAYS[k as usize % super::G20_WAYS.len()];
+        screen_at(regs, vram, if outside { LABEL } else { 0 });
+        rp_drv_mbx_display::video_hide(regs);
+        let plane = match video {
+            super::G20Video::None => None,
+            super::G20Video::FullOutside => Some((LABEL, H as u16)),
+            super::G20Video::BandInside => Some((super::G20_BAND_INSIDE, super::G20_BAND_ROWS)),
+            super::G20Video::BandOutside => Some((LABEL, super::G20_BAND_ROWS)),
+        };
+        if let Some((at, rows)) = plane {
+            let v = layers::VideoPlane::new(layers::VideoFormat::Uyvy, W as u16, rows, at);
+            for i in 0..v.bytes() / 4 {
+                let _ = store32_volatile(vram, at + 4 * i, 0x8080_8080);
+            }
+            cpu::drain_write_buffer();
+            rp_drv_mbx_display::video_show(
+                regs,
+                &v,
+                layers::Layer {
+                    slot: layers::Slot::Top,
+                    blend: layers::Blend::Global(128),
+                },
+                layers::Scale::NONE,
+            );
+        }
+        let (at, rows) = plane.unwrap_or((0, 0));
+        log!(
+            "    G20 set-up: the screen at 0x{:x}, GSCADR 0x{:08x}; video {video:?} at 0x{at:x}, {rows} rows, VSCADR 0x{:08x} VSCTRL 0x{:08x}",
+            label_at(),
+            regs.read32(dreg::GSCADR),
+            regs.read32(layers::reg::VSCADR),
+            regs.read32(layers::reg::VSCTRL)
+        );
+        let _ = display_check(regs, "after the way's set-up");
+    }
+
+    /// Test G20: whether the video plane's reads and the 2D engine meet the
+    /// collision G16-G19 found (the display reading local memory outside the
+    /// first ~704 KiB corrupts the 3D core's renders), at 74.75 / 1.
+    fn test_g20(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G20: at 74.75 MHz / 1, Dell's frame with the video plane off, full screen outside the safe region, a {}-row band inside and outside; a 2D copy with the screen safe and outside",
+            super::G20_BAND_ROWS
+        );
+        let Some(l) = usable_frame() else {
+            return;
+        };
+        // Everything G20 places must lie clear of the frame and the image's
+        // own: the safe screen, the video planes, the copy's source.
+        let video_full = LABEL_STRIDE * H as usize;
+        let band = LABEL_STRIDE * super::G20_BAND_ROWS as usize;
+        for (at, bytes, what) in [
+            (0, video_full, "the safe screen"),
+            (LABEL, video_full, "the outside screen and video plane"),
+            (super::G20_BAND_INSIDE, band, "the band inside"),
+            (G20_SRC, video_full, "the 2D copy's source"),
+        ] {
+            if region_clashes(&l, at, bytes) {
+                log!("G20: {what} (0x{at:x}) lies over the frame or the image's own: nothing run");
+                return;
+            }
+        }
+        g20_pattern(vram);
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G20_WAYS);
+        rp_drv_mbx_display::video_hide(&mut e.regs);
+        screen_at(&mut e.regs, vram, LABEL);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G20's ways.
+    const G20_WAYS: [Way; 6] = [
+        Way::G20(0),
+        Way::G20(1),
+        Way::G20(2),
+        Way::G20(3),
+        Way::G20(4),
+        Way::G20(5),
+    ];
 
     /// The screen places tests G18 and G19 visit.
     fn places() -> &'static [usize] {
@@ -4809,7 +5015,7 @@ mod image {
         let mut display = Display::new(regs);
         // G17: the display as the loader left it (its plane where Windows
         // Mobile put it), before the image adopts it or shows its label.
-        if TEST_G17 || TEST_G18 || TEST_G19 {
+        if TEST_G17 || TEST_G18 || TEST_G19 || TEST_G20 {
             let found = display.on_screen(vram.len());
             let dmctrl = display.regs().read32(super::DMCTRL);
             G17_FOUND.with(|f| *f = Some((found.offset, dmctrl)));
@@ -4828,7 +5034,7 @@ mod image {
         let mut e = Engine::new(regs, FENCE, rt::ticks, 3_250);
         // The label first: the screen says what runs from the first moment.
         let saved = show_label(&mut e.regs, vram);
-        if TEST_G17 || TEST_G18 || TEST_G19 {
+        if TEST_G17 || TEST_G18 || TEST_G19 || TEST_G20 {
             let found = G17_DUMP.with(|d| *d);
             let _ = display_dump(&mut e.regs, "ours (the image's label shown)", Some(&found));
         }
@@ -4837,7 +5043,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G18 || TEST_G19 {
+        let first = if TEST_G20 {
+            "STEP 1 OF 7"
+        } else if TEST_G18 || TEST_G19 {
             "STEP 1 OF 11"
         } else if TEST_G17 {
             "STEP 1 OF 4"
@@ -4926,7 +5134,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && (TEST_G18 || TEST_G19) {
+        if ready && TEST_G20 {
+            test_g20(&mut e, vram);
+        } else if ready && (TEST_G18 || TEST_G19) {
             test_g18(&mut e, vram);
         } else if ready && TEST_G17 {
             test_g17(&mut e, vram);
@@ -6099,5 +6309,26 @@ mod g19_tests {
         // Each place clear of Dell's frame's lowest pages (0x1C0000).
         assert!(G19_PLACES.iter().all(|&p| end(p) <= 0x1C_0000));
         assert_eq!((ODFBPWR, ODFBSTAT), (0x64, 0x68));
+    }
+}
+
+/// Test G20's ways.
+#[cfg(test)]
+mod g20_tests {
+    use super::*;
+
+    #[test]
+    fn the_band_fits_the_safe_region_and_the_ways_hold_their_controls() {
+        let band = 480 * 2 * G20_BAND_ROWS as usize;
+        // After a screen at 0x0, inside G19's harmless end (0xAE000).
+        assert_eq!(G20_BAND_INSIDE, 480 * 640 * 2);
+        assert!(G20_BAND_INSIDE + band <= 0xA_E000);
+        // Dell's frame with nothing outside first; the 2D copy's control
+        // (screen safe) before the copy with the screen outside.
+        assert_eq!(G20_WAYS[0], (false, false, G20Video::None));
+        assert_eq!(G20_WAYS[4], (true, false, G20Video::None));
+        assert_eq!(G20_WAYS[5], (true, true, G20Video::None));
+        // Only the 2D ways put the screen outside.
+        assert!(G20_WAYS.iter().all(|w| !w.1 || w.0));
     }
 }
