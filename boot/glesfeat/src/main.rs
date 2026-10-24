@@ -246,6 +246,24 @@ pub const G3_PLLS: [(u32, &str); 3] = [
 /// 133.25 / 1 (2026-10-23): the test's fault, not the chip's.
 pub const G_LMTYPE: u32 = 0xAC8;
 
+/// Test G4 (2026-10-23, after G3): G3 found Dell's own object sequence
+/// wrong at divide 1 under our register set-up, where Dell's driver draws
+/// it right. Dell's render table at 74.75 MHz / 1 (`rp-wmprobe` run 2,
+/// `local/rp-wmprobe-5.txt`, read after Dell's draws), the words that differ
+/// from ours (`rp_drv_mbx3d::start_table`), the target's two aside.
+pub const DELL_TABLE: [(usize, u32); 7] = [
+    (0x610, 0x0003_0001),
+    (0x614, 0x1E3C_E500),
+    (0x618, 0x1E3C_E500),
+    (0x61C, 0x0002_0007),
+    (0x648, 1),
+    (0x6D8, 0x0900_0000),
+    (0x6DC, 0x3F80_0001),
+];
+/// Dell's target: RGB565 (`0x650` 1) at its stride in words (`0x660`, 480
+/// pixels x 2 bytes / 4).
+pub const DELL_TARGET16: [(usize, u32); 2] = [(0x650, 1), (0x660, 480 * 2 / 4)];
+
 /// The GLES clear of a `width` x `height` target as the TA writes its
 /// object: one triangle covering the target twice over, z 1.0.
 #[must_use]
@@ -437,22 +455,29 @@ mod image {
 
     /// Test G alone instead of A, D, L and M (`RP_GLESFEAT_G=1`; device
     /// build `RP_GLESFEAT_G=1 cargo xtask codegen-variant rp-glesfeat g`).
-    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3;
+    const TEST_G: bool = option_env!("RP_GLESFEAT_G").is_some() || TEST_G2 || TEST_G3 || TEST_G4;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
     /// Test G3 instead of G (`RP_GLESFEAT_G3=1`; device build
     /// `RP_GLESFEAT_G3=1 cargo xtask codegen-variant rp-glesfeat g3`).
     const TEST_G3: bool = option_env!("RP_GLESFEAT_G3").is_some();
+    /// Test G4 instead of G (`RP_GLESFEAT_G4=1`; device build
+    /// `RP_GLESFEAT_G4=1 cargo xtask codegen-variant rp-glesfeat g4`).
+    const TEST_G4: bool = option_env!("RP_GLESFEAT_G4").is_some();
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G3 {
+    const G_TITLE: &str = if TEST_G4 {
+        "RP-GLESFEAT TEST G4"
+    } else if TEST_G3 {
         "RP-GLESFEAT TEST G3"
     } else if TEST_G2 {
         "RP-GLESFEAT TEST G2"
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G3 {
+    const G_NAME: &str = if TEST_G4 {
+        "G4"
+    } else if TEST_G3 {
         "G3"
     } else if TEST_G2 {
         "G2"
@@ -471,7 +496,7 @@ mod image {
     const _: () = assert!(TARGET + STRIDE * H as usize <= LABEL);
     const _: () = assert!(LABEL + LABEL_STRIDE * H as usize <= PM);
     /// The label's text: lines, the font's scale, colours (RGB565).
-    const LABEL_LINES: usize = 12;
+    const LABEL_LINES: usize = 16;
     const LABEL_SCALE: usize = 3;
     const LABEL_LINE_H: usize = 32;
     const LABEL_TOP: usize = 24;
@@ -547,6 +572,19 @@ mod image {
     /// finished. A timeout resets the core (version 21's lesson).
     #[inline(never)]
     fn scene(e: &mut Engine<Mmio>, vram: &mut [u8], objs: &[(&[u32], u32)]) -> bool {
+        scene_with(e, vram, objs, &[])
+    }
+
+    /// [`scene`] with the start table's words `over` written instead of
+    /// ours (test G4: Dell's render table). Each must be a register the
+    /// table writes already; one that isn't is logged and left out.
+    #[inline(never)]
+    fn scene_with(
+        e: &mut Engine<Mmio>,
+        vram: &mut [u8],
+        objs: &[(&[u32], u32)],
+        over: &[(usize, u32)],
+    ) -> bool {
         let mut at = OBJECT;
         let mut list = [m3::END; 16];
         let n = objs.len().min(15);
@@ -557,7 +595,14 @@ mod image {
         }
         store(vram, PARAMS, &list[..=n]);
         regions(vram);
-        let (t, len) = table();
+        let (mut t, len) = table();
+        for &(off, v) in over {
+            // The last pair starts the render: never replaced.
+            match t[..len - 1].iter_mut().find(|p| p.0 == off) {
+                Some(p) => p.1 = v,
+                None => log!("  (0x{off:x} isn't in the start table: not written)"),
+            }
+        }
         let done = run(e, &t[..len], RENDER_DONE, 200_000);
         if !done {
             e.reset(rt::delay_us);
@@ -1243,6 +1288,9 @@ mod image {
         /// Each tile lists only the objects that touch it (the TA's lists),
         /// not every object.
         tiled: bool,
+        /// Start-table words written instead of ours (test G4; not with
+        /// `tiled`).
+        regs: &'static [(usize, u32)],
     }
 
     /// Backgrounds (all black and opaque but the clear's, which has no
@@ -1456,7 +1504,7 @@ mod image {
             for (k, o) in objs[..n].iter().enumerate() {
                 plain[k] = (o.0, o.1);
             }
-            scene(e, vram, &plain[..n])
+            scene_with(e, vram, &plain[..n], f.regs)
         }
     }
 
@@ -1612,11 +1660,11 @@ mod image {
         rt::check_in();
         let _ = display_check(&mut e.regs, "before the reference");
         let ready = clean(e, vram);
-        // G3: the background alone first. The quad covers the whole target,
+        // G3 and G4: the background alone first. The quad covers the whole target,
         // so a background never shows in the reference; its own picture
         // proves it drew (and ways whose backgrounds must look alike are
         // held to each other).
-        if let (true, Way::Direct(f)) = (TEST_G3, w)
+        if let (true, Way::Direct(f)) = (TEST_G3 || TEST_G4, w)
             && f.bg != Bg::Nothing
         {
             blank(vram);
@@ -1718,7 +1766,7 @@ mod image {
                     i / W
                 );
             }
-            if (TEST_G2 || TEST_G3) && t.wrong > 0 {
+            if (TEST_G2 || TEST_G3 || TEST_G4) && t.wrong > 0 {
                 let _ = write!(RunLog, "; on the picture's edge {}", t.edge);
                 if let Some((i, want, got)) = t.first_inner {
                     let _ = write!(
@@ -1832,6 +1880,7 @@ mod image {
             z1: false,
             bg: Bg::Giant,
             tiled: false,
+            regs: &[],
         };
         [
             Way::Direct(OURS),
@@ -1861,6 +1910,7 @@ mod image {
                 z1: true,
                 bg: Bg::Clear,
                 tiled: true,
+                regs: &[],
             }),
             Way::TaStrip4,
             Way::Ta,
@@ -1920,6 +1970,7 @@ mod image {
             z1: false,
             bg: Bg::Giant,
             tiled: false,
+            regs: &[],
         };
         [
             Way::Direct(OURS),
@@ -1958,18 +2009,66 @@ mod image {
         ]
     };
 
-    /// Test G3: each of [`G3_WAYS`] at each of [`super::G3_PLLS`], against
-    /// its own reference; the summary on the label.
+    /// Test G4's ways: our form (the control), G2's colourless clear (the one
+    /// form seen right at divide 1), Dell's render table whole (with our
+    /// 32-bit target, then with Dell's 16-bit one: Dell's set-up exactly),
+    /// then each of Dell's words alone.
+    const G4_WAYS: [Way; 10] = {
+        const OURS: Form = Form {
+            name: "ours",
+            quad: false,
+            z1: false,
+            bg: Bg::Giant,
+            tiled: false,
+            regs: &[],
+        };
+        const D: [(usize, u32); 7] = super::DELL_TABLE;
+        const ALL16: [(usize, u32); 9] = [
+            D[0],
+            D[1],
+            D[2],
+            D[3],
+            D[4],
+            D[5],
+            D[6],
+            super::DELL_TARGET16[0],
+            super::DELL_TARGET16[1],
+        ];
+        const fn one(name: &'static str, regs: &'static [(usize, u32)]) -> Way {
+            Way::Direct(Form { name, regs, ..OURS })
+        }
+        [
+            Way::Direct(OURS),
+            Way::Direct(Form {
+                name: "G2's colourless clear",
+                bg: Bg::Clear,
+                ..OURS
+            }),
+            one("Dell's table, 32-bit", &D),
+            one("Dell's table and RGB565", &ALL16),
+            one("Dell's 0x610 alone", &[D[0]]),
+            one("Dell's 0x614, 0x618 alone", &[D[1], D[2]]),
+            one("Dell's 0x61c alone", &[D[3]]),
+            one("Dell's 0x648 alone", &[D[4]]),
+            one("Dell's 0x6d8 alone", &[D[5]]),
+            one("Dell's 0x6dc alone", &[D[6]]),
+        ]
+    };
+
+    /// The most ways [`test_settings`] takes.
+    const MAX_WAYS: usize = 10;
+
+    /// Test G3 or G4: each of `ways` at each of [`super::G3_PLLS`], against
+    /// its own reference; the summary in the log (each screen-off result
+    /// marked) and on the label.
     #[inline(never)]
-    fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
-        log!(
-            "G3: which background lets Gouraud draw right at the cores' divide 1, at 74.75, 99.67 and 133.25 MHz (TSP 0x{TSP_SMOOTH:08x}, GC2's ARGB8888 quad; Dell's clear as libGLES_CL draws it)"
-        );
+    fn test_settings(e: &mut Engine<Mmio>, vram: &mut [u8], ways: &[Way]) {
         rp_image::on_crash(put_back);
-        let steps = G3_WAYS.len() as u32 + 1;
-        let mut right = [[None; SETTINGS]; G3_WAYS.len()];
-        let mut dark = [[false; SETTINGS]; G3_WAYS.len()];
-        for (k, &w) in G3_WAYS.iter().enumerate() {
+        let ways = &ways[..ways.len().min(MAX_WAYS)];
+        let steps = ways.len() as u32 + 1;
+        let mut right = [[None; SETTINGS]; MAX_WAYS];
+        let mut dark = [[false; SETTINGS]; MAX_WAYS];
+        for (k, &w) in ways.iter().enumerate() {
             let (r, _) = way(e, vram, w, &super::G3_PLLS, k as u32 + 2, steps);
             for s in 0..SETTINGS {
                 right[k][s] = r.right(s);
@@ -1977,8 +2076,8 @@ mod image {
             }
         }
         for (s, (_, mhz)) in super::G3_PLLS.iter().enumerate() {
-            let _ = write!(RunLog, "G3: right at {mhz} / 1 of {G_DRAWS}:");
-            for (k, w) in G3_WAYS.iter().enumerate() {
+            let _ = write!(RunLog, "{G_NAME}: right at {mhz} / 1 of {G_DRAWS}:");
+            for (k, w) in ways.iter().enumerate() {
                 match right[k][s] {
                     Some(n) => {
                         let off = if dark[k][s] { " (screen off)" } else { "" };
@@ -1991,13 +2090,13 @@ mod image {
             }
             log!("");
         }
-        let mut l = [[0u8; 32]; 8];
-        let mut lines: [&str; 12] = [""; 12];
+        let mut l = [[0u8; 32]; MAX_WAYS];
+        let mut lines: [&str; 4 + MAX_WAYS] = [""; 4 + MAX_WAYS];
         lines[0] = G_TITLE;
         lines[1] = "DONE: PRESS A BUTTON";
         lines[2] = "RIGHT OF 20 AT 74/99/133";
         lines[3] = "* = THE SCREEN WENT DARK";
-        for (k, buf) in l.iter_mut().enumerate() {
+        for (k, buf) in l.iter_mut().enumerate().take(ways.len()) {
             let n = |s: usize| right[k][s].map_or(-1, |v| v as i32);
             let d = |s: usize| if dark[k][s] { "*" } else { "" };
             lines[4 + k] = fmt(
@@ -2014,7 +2113,23 @@ mod image {
                 ),
             );
         }
-        say(vram, &lines);
+        say(vram, &lines[..4 + ways.len()]);
+    }
+
+    /// Test G3: the backgrounds.
+    fn test_g3(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G3: which background lets Gouraud draw right at the cores' divide 1, at 74.75, 99.67 and 133.25 MHz (TSP 0x{TSP_SMOOTH:08x}, GC2's ARGB8888 quad; Dell's clear as libGLES_CL draws it)"
+        );
+        test_settings(e, vram, &G3_WAYS);
+    }
+
+    /// Test G4: Dell's render table.
+    fn test_g4(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G4: Dell's render table at the cores' divide 1, whole and word by word, at 74.75, 99.67 and 133.25 MHz (TSP 0x{TSP_SMOOTH:08x}, GC2's quad; Dell's words read by rp-wmprobe at 74.75 / 1)"
+        );
+        test_settings(e, vram, &G4_WAYS);
     }
 
     fn main() -> ! {
@@ -2033,7 +2148,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G2 || TEST_G3 {
+        let first = if TEST_G4 {
+            "STEP 1 OF 11"
+        } else if TEST_G2 || TEST_G3 {
             "STEP 1 OF 9"
         } else {
             "STEP 1 OF 5"
@@ -2060,7 +2177,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G3 {
+        if ready && TEST_G4 {
+            test_g4(&mut e, vram);
+        } else if ready && TEST_G3 {
             test_g3(&mut e, vram);
         } else if ready && TEST_G2 {
             test_g2(&mut e, vram);
@@ -2576,5 +2695,43 @@ mod g3_tests {
                 .windows(2)
                 .all(|p| Speed::rated(p[0].0).khz() < Speed::rated(p[1].0).khz())
         );
+    }
+}
+
+/// Test G4's pure parts: Dell's render table as `rp-wmprobe` read it.
+#[cfg(test)]
+mod g4_tests {
+    use super::*;
+    use rp_drv_mbx3d as m3;
+
+    #[test]
+    fn dells_table_is_the_probes_reading_and_differs_from_ours_in_every_word() {
+        // rp-wmprobe run 2 (local/rp-wmprobe-5.txt), Dell's driver at
+        // 74.75 MHz / 1: "run 2 after: MBX 0x610 0x00030001" and so on.
+        let probe: [(usize, u32); 9] = [
+            (0x610, 0x0003_0001),
+            (0x614, 0x1e3c_e500),
+            (0x618, 0x1e3c_e500),
+            (0x61c, 0x0002_0007),
+            (0x648, 0x0000_0001),
+            (0x650, 0x0000_0001),
+            (0x660, 0x0000_00f0),
+            (0x6d8, 0x0900_0000),
+            (0x6dc, 0x3f80_0001),
+        ];
+        for &(off, v) in DELL_TABLE.iter().chain(DELL_TARGET16.iter()) {
+            assert!(probe.contains(&(off, v)), "0x{off:x} 0x{v:x}");
+        }
+        assert_eq!(DELL_TABLE.len() + DELL_TARGET16.len(), probe.len());
+        // Every word is one our start table writes (the image replaces it,
+        // never adds it), and differs from ours (else it isn't a test).
+        let ours = m3::start_table(0, 0, 480, 640, 480 * 4);
+        for &(off, v) in DELL_TABLE.iter().chain(DELL_TARGET16.iter()) {
+            let mine = ours.iter().find(|p| p.0 == off);
+            assert!(mine.is_some(), "0x{off:x} not in our table");
+            assert_ne!(mine.map(|p| p.1), Some(v), "0x{off:x} the same as ours");
+        }
+        // Never the start register.
+        assert!(!DELL_TABLE.iter().any(|p| p.0 == m3::START));
     }
 }

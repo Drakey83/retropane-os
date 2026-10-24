@@ -2990,6 +2990,7 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g") => return boot_loader_glesfeat_g(root, 1),
         Ok("g2") => return boot_loader_glesfeat_g(root, 2),
         Ok("g3") => return boot_loader_glesfeat_g(root, 3),
+        Ok("g4") => return boot_loader_glesfeat_g(root, 4),
         Ok(other) => {
             return Err(format!("RP_EMU_GLESFEAT_ONLY={other}: want g, g2 or g3"));
         }
@@ -3063,12 +3064,14 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         eprintln!("    glesfeat OK: every case drew as on the X51v, back at the loader");
         boot_loader_glesfeat_g(root, 1)?;
         boot_loader_glesfeat_g(root, 2)?;
-        return boot_loader_glesfeat_g(root, 3);
+        boot_loader_glesfeat_g(root, 3)?;
+        return boot_loader_glesfeat_g(root, 4);
     }
     eprintln!("    glesfeat OK: every case ran and was logged, back at the loader");
     boot_loader_glesfeat_g(root, 1)?;
     boot_loader_glesfeat_g(root, 2)?;
-    boot_loader_glesfeat_g(root, 3)
+    boot_loader_glesfeat_g(root, 3)?;
+    boot_loader_glesfeat_g(root, 4)
 }
 
 /// Test G (`RP_GLESFEAT_G`, the give-up audit's item 1): Gouraud through
@@ -3081,7 +3084,9 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
 /// returns; a release that doesn't model Windows Mobile's 2700G clocks
 /// refuses the change, which the image logs and the check accepts.
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 3 {
+    let (env, name, ours, after) = if test == 4 {
+        ("RP_GLESFEAT_G4", "G4", "G4 way 1 (", "G4 way 2 (")
+    } else if test == 3 {
         ("RP_GLESFEAT_G3", "G3", "G3 way 1 (", "G3 way 2 (")
     } else if test == 2 {
         ("RP_GLESFEAT_G2", "G2", "G2 way 1 (", "G2 way 2 (")
@@ -3119,7 +3124,23 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 3 {
+    let wants: &[&str] = if test == 4 {
+        &[
+            "test G4, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G4 way 1 (ours):",
+            "G4 way 2 (G2's colourless clear):",
+            "G4 way 3 (Dell's table, 32-bit):",
+            "G4 way 4 (Dell's table and RGB565):",
+            "G4 way 10 (Dell's 0x6dc alone):",
+            "G4: right at 74.75 / 1 of 20:",
+            "G4: right at 99.67 / 1 of 20:",
+            "G4: right at 133.25 / 1 of 20:",
+            "    display after the change: underrun ",
+            "; the screen on throughout: ",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 3 {
         &[
             "test G3, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3204,7 +3225,7 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         ));
     }
     // Each way that drew runs every setting: G3 three, G and G2 one.
-    let settings = if test == 3 { 3 } else { 1 };
+    let settings = if test >= 3 { 3 } else { 1 };
     if drew == 0 || refused + controls != drew * settings {
         return Err(format!(
             "glesfeat {name}: {drew} ways drew, {refused} refused the clock and {controls} came back right:{log}"
@@ -3249,20 +3270,24 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
             }
         }
     }
-    // G3: every background drawn alone first (the quad hides it in the
-    // reference), and the three that cover the whole target black in the
-    // fork's modelled form (ways 1, 5 and 6: the giant flat triangle at z 0
-    // and 1.0, the giant black Gouraud one) one picture. A background that
+    // G3 and G4: every background drawn alone first (the quad hides it in
+    // the reference), way 1's (the giant flat triangle) anchored to all
+    // opaque black; in G3 the two others that cover the whole target black
+    // in the fork's modelled form (ways 5 and 6: the giant triangle at z
+    // 1.0, the giant black Gouraud one) the same picture. A background that
     // didn't draw, or drew the wrong colour, is caught here: the reference
     // can't show it.
-    if test == 3 {
+    if test >= 3 {
+        let (same, alone_want): (&[u32], usize) = if test == 3 { (&[5, 6], 6) } else { (&[], 10) };
         let bg = |way: u32| {
-            log.split(&format!("G3 way {way} ("))
+            log.split(&format!("{name} way {way} ("))
                 .nth(1)
                 .and_then(|s| s.split("  background alone: ").nth(1))
                 .map(|s| s.lines().next().unwrap_or("").trim().to_string())
         };
-        let first = bg(1).ok_or(format!("glesfeat G3: way 1 has no background alone:{log}"))?;
+        let first = bg(1).ok_or(format!(
+            "glesfeat {name}: way 1 has no background alone:{log}"
+        ))?;
         // The anchor: the giant triangle covers every pixel, so its picture
         // alone is 480 x 640 words of opaque black, hashed as the image
         // hashes (FNV-1a over words). Without it the group could agree on a
@@ -3273,21 +3298,21 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         let want = format!("rendered true, hash 0x{black:08x}");
         if first != want {
             return Err(format!(
-                "glesfeat G3: way 1's background alone is {first:?}, want {want:?} (all opaque black):{log}"
+                "glesfeat {name}: way 1's background alone is {first:?}, want {want:?} (all opaque black):{log}"
             ));
         }
-        for way in [5, 6] {
+        for &way in same {
             if bg(way).as_deref() != Some(first.as_str()) {
                 return Err(format!(
-                    "glesfeat G3: way {way}'s background isn't way 1's ({:?} against {first}):{log}",
+                    "glesfeat {name}: way {way}'s background isn't way 1's ({:?} against {first}):{log}",
                     bg(way)
                 ));
             }
         }
         let alone = log.matches("  background alone: rendered true").count();
-        if alone != 6 {
+        if alone != alone_want {
             return Err(format!(
-                "glesfeat G3: {alone} backgrounds rendered alone, want 6 (every direct way but 'no background'):{log}"
+                "glesfeat {name}: {alone} backgrounds rendered alone, want {alone_want} (every direct way with a background):{log}"
             ));
         }
     }
