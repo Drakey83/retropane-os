@@ -7,7 +7,8 @@ replaced by a measured number when it exists. Companions:
 [3d-games-catalogue.md](3d-games-catalogue.md) (Q3CE's row, sources),
 [gles-games.md](gles-games.md) (its imports),
 [apps-and-packs.md](../design/apps-and-packs.md) section 6 (the port plan,
-30 fps minimum, 60 the target).
+30 fps minimum, 60 the target), [performance-outlook.md](performance-outlook.md)
+(the clocks' and drivers' gains in general).
 
 ## 1. The 2005 claim
 
@@ -105,12 +106,25 @@ and sound are the CPU's in any case. So for Quake 3:
   vertex math (four 16-bit multiply-adds at once; 6.7x on the audio mix,
   cpu-full-potential.md C6).
 
-**The speed-ups that apply** (measured, `rp-gpubench` GC2S/GC2I, X51v):
-textured drawing 1.41x at 149.50 / 2 (today's overclock), **1.45x at
-99.67 / 1 and 1.78x at 133.25 / 1** (it fetches texels from local
-memory, which runs on the system clock, so it gains less than the cores'
-clock); Gouraud 2.0x and 2.67x at those divide-1 steps, inside the safe
-region (ADR-0034 amendment P, option C; 133.25 / 1 not yet soak-proven).
+**The speed-ups that apply** (measured, `rp-gpubench`, X51v; render time
+against Windows Mobile's clock, the 16-bit target **inside the safe
+region** as option C needs: GC2I, 2026-10-24; the soak status from GC2J):
+
+| Clock | Gouraud | Bilinear texture | Blended 4444 | Status |
+|---|---|---|---|---|
+| 149.50 / 2 (today's overclock) | 1.50x | 1.48x | 1.47x | proven |
+| 99.67 / 1 | 2.00x | 1.65x | 1.76x | soaked clean 20 min |
+| **108.33 / 1** | **2.17x** | **1.79x** | **1.89x** | **soaked clean 20 min (GC2J)** |
+| 117.00 / 1 | 2.35x | 1.94x | 2.06x | 1 wrong pixel in 4,578 renders |
+| 133.25 / 1 | 2.67x | 2.12x | 2.22x | 1 wrong pixel in ~470 renders |
+
+Texturing gains less than shading because texels come from local memory,
+which runs on the system clock. With the target outside the region
+(GC2S) texturing gained less again (1.56x at 108.33 / 1), so C helps
+texture-heavy games twice over: it allows divide 1, and it frees local
+memory from the display's competing reads. Divide 1 above 74.75 needs C
+(or small targets inside the region): under ADR-0034 amendment P's A the
+3D core stays at 74.75 / 1 or divide 2.
 
 ## 4. Projections (estimates)
 
@@ -118,30 +132,27 @@ region (ADR-0034 amendment P, option C; 133.25 / 1 not yet soak-proven).
 owner's run shows 13 fps, and with Quake 3's memory in RAM it reaches the
 2005 figure, **25 fps (40 ms) at 320x240**, split roughly **30 ms CPU,
 10 ms 3D core** (estimate). **Assumption B:** a native port's fixed-point
-math halves the CPU's share (PocketQuake-like; not measured).
+math halves the CPU's share to ~15 ms (PocketQuake-like; not measured).
+The 3D core's share scales by the texturing column above (Quake 3 is
+mostly textured); full screen quadruples it (~40 ms at Windows Mobile's
+clock).
 
-RetroPane on a fast SD card, our drivers, option C at 133.25 / 1:
+RetroPane on a fast SD card, our drivers, option C:
 
 | | 320x240 | 640x480 (full screen) |
 |---|---|---|
-| Today's Q3CE binary, through the binary GLES layer (A) | ~28-33 fps | ~20-33 fps |
-| Our own port (A and B) | ~60 fps | ~45 fps (~35 without C) |
+| Today's Q3CE binary (A), any clock above | ~28-33 fps | ~20-33 fps |
+| Our own port (A, B), today's 149.50 / 2 | ~60 fps | ~37 fps |
+| Our own port (A, B), **108.33 / 1 (proven step)** | ~60 fps | **~45 fps** |
+| Our own port (A, B), 133.25 / 1 (if the edge fault is fixed) | ~60 fps | ~53 fps |
 
-The ranges: the low end with Sync Every Frame's lockstep (CPU then core,
-added), the high end with the pipeline (the longer of the two). Full
-screen quadruples the 3D core's share (~40 ms at Windows Mobile's clock,
-~22 ms with C at 133.25 / 1, ~28 ms at today's 149.50 / 2). Lightmaps in
+The binary's ranges: the low end with Sync Every Frame's lockstep (CPU
+then core, added), the high end with the pipeline (the longer of the
+two); its CPU share (~30 ms) caps it whatever the clock. The port's
+figures are the longer of the CPU (~15 ms) and the 3D core. Lightmaps in
 place of vertex lighting: roughly a quarter off the port's figures
-(estimate). 60 fps at full screen isn't expected on this hardware.
-
-**Since (run GC2J, 2026-10-24, 2700g.md "GC2J on the X51v"):** the
-highest divide-1 step soaked clean so far is **108.33 / 1** (20 minutes,
-no wrong render); 117.00 and 133.25 / 1 show rare single wrong pixels in
-one scene type. At 108.33 / 1 textured drawing gains ~1.56x (GC2S's
-bilinear kind, 12.7 against 19.9 ms), so the port's full-screen figure
-there is **~39 fps** (the 3D core ~26 ms), against ~45 at 133.25 / 1 and
-~35 at today's 149.50 / 2. Which step ships is the owner's ruling
-(ADR-0035; every X51v measured by the self-test).
+(estimate). Which clock step ships is the owner's ruling (ADR-0035; every
+X51v measured by the self-test).
 
 Separately from fps: loading (the owner's ~5 minutes under Windows Mobile;
 the target 15-30 s, DESIGN.md) gains from our faster storage path, and

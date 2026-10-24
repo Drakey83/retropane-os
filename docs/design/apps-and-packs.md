@@ -137,6 +137,15 @@ resolution only with faster clocks; Quake and Hexen II near 60 at a
 reduced 3D resolution; Quake 2 uncertain; Quake 3, Half-Life and Turok
 30 at a reduced resolution, 60 unlikely on this hardware.
 
+**Updated by measurement (2026-10-24, research/performance-outlook.md):**
+one full-screen 16-bit textured layer is 18.9 ms at Windows Mobile's
+clock (`rp-gpubench` GC2I; the 25-29 ms above came from other content),
+12.8 ms at today's 149.50 / 2 and 10.5 ms at 108.33 / 1, the divide-1 step
+soaked clean with the picture inside the safe region (needs ADR-0034
+amendment P's option C). So the Doom family's 3D side looks able to hold
+60 fps at full resolution at 108.33 / 1; their CPU side is unmeasured.
+Quake 3: research/quake3-on-the-x51v.md. Estimates, each port to measure.
+
 **An option to measure when a port's renderer is designed (the owner,
 2026-10-24): draw with textures and blending instead of Gouraud
 shading.** Run GC2S (2700g.md) found textured, blended and a full 32-bit
