@@ -531,13 +531,17 @@ pub const BUDGETS: &[Budget] = &[
     // label (every device program shows its step) and test G, Gouraud at
     // the cores' divide 1 through the TA (the G variant, the larger build,
     // 41.6 KiB measured, + ~10%).
+    // Ratcheted 74 -> 112 KiB on 2026-10-23 (test image): test G7 with the
+    // emulator's frame embedded (our own scene, 30 KiB of region array and
+    // objects); the variant 98.4 KiB, + ~10%. (The device's G7 variant
+    // carries Dell's 177 KiB frame: a measurement variant, not held.)
     // Ratcheted 61 -> 74 KiB on 2026-10-23 (test image): test G5, Dell's
     // chip state copied under the loader, then halved (the state compared
     // word by word, the inherited way); the G5 variant with the emulator's
     // culprit 67.8 KiB, + ~10%.
     Budget {
         image: "rp-glesfeat",
-        max_load: 74 * 1024,
+        max_load: 112 * 1024,
         max_zero: 20 * 1024,
         device: OnDevice::Returns,
     },

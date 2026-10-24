@@ -8,6 +8,7 @@ mod calib;
 mod devlock;
 mod emu;
 mod frames;
+mod g7;
 mod gate;
 mod measure;
 mod mutants;
@@ -154,6 +155,9 @@ commands:
             audit C39/C57): recorded, put back, or still differing
   trace    the last program's trace ring (thread switches, faults,
             calls...) from the loader, as a timeline (item 54)
+  g7-frame  [capture] [log] [out]: Dell's divide-1 frame out of rp-wmprobe
+            v4's capture, for rp-glesfeat G7 (defaults local/rp-wmprobe-div1-vram.bin,
+            local/rp-wmprobe-7.txt, local/g7-dell-frame.bin)
   wmbench   build the stock Windows Mobile baseline program (tools/wmbench:
             run by hand under WM; it writes rp-wm-baseline.txt next to itself)
   reboot-wm reset the X51v back into Windows Mobile the way its own
@@ -533,6 +537,12 @@ fn main() -> ExitCode {
                     eprintln!("    target/wmbench/rp-wmprobe.exe (the Windows Mobile probe and baseline suite): into its own folder with rp-wmbench.exe beside it (cargo xtask put target/wmbench/rp-wmprobe.exe rp-wmprobe/rp-wmprobe.exe, and rp-wmbench.exe to rp-wmprobe/rp-wmbench.exe), run under Windows Mobile, soft-reset when it says, run it again; its log is rp-wmprobe/rp-wmprobe.txt");
                     eprintln!("    target/wmbench/rp-wm3d.exe (ADR-0024 M3): the same way, then start DoomGLES; its log is rp-wm3d.txt, its copies rp-wm3d-1.bin and -2.bin (16 MiB each)");
                 })
+        }
+        "g7-frame" => {
+            // Test G7's frame out of rp-wmprobe v4's capture (xtask/src/g7.rs).
+            eprintln!("==> g7-frame");
+            let rest: Vec<String> = args().skip(2).collect();
+            g7::run(&workspace_root(), &rest)
         }
         "reboot-wm" => {
             eprintln!("==> reboot wm");

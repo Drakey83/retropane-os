@@ -2993,9 +2993,10 @@ pub fn boot_loader_glesfeat(root: &Path) -> Result<(), String> {
         Ok("g4") => return boot_loader_glesfeat_g(root, 4),
         Ok("g5") => return boot_loader_glesfeat_g5(root),
         Ok("g6") => return boot_loader_glesfeat_g(root, 6),
+        Ok("g7") => return boot_loader_glesfeat_g(root, 7),
         Ok(other) => {
             return Err(format!(
-                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5 or g6"
+                "RP_EMU_GLESFEAT_ONLY={other}: want g, g2, g3, g4, g5, g6 or g7"
             ));
         }
         Err(_) => {}
@@ -3221,7 +3222,9 @@ fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
 }
 
 fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
-    let (env, name, ours, after) = if test == 6 {
+    let (env, name, ours, after) = if test == 7 {
+        ("RP_GLESFEAT_G7", "G7", "G7 way 1 (", "G7 way 2 (")
+    } else if test == 6 {
         ("RP_GLESFEAT_G6", "G6", "G6 way 1 (", "G6 way 2 (")
     } else if test == 4 {
         ("RP_GLESFEAT_G4", "G4", "G4 way 1 (", "G4 way 2 (")
@@ -3233,7 +3236,18 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         ("RP_GLESFEAT_G", "G", "G way 2 (", "G way 3")
     };
     let loader = raw_image(root, "rp-loader")?;
-    let bin = variant_image_with(root, "rp-glesfeat", (env, "1"), None)?;
+    // G7 replays a frame file: in the emulator, one of our own scene
+    // (`g7::synthetic`: Dell's frames stay local), whose replay must draw
+    // the very picture way 1 draws directly.
+    let frame = root.join("target/g7-synthetic-frame.bin");
+    let also = if test == 7 {
+        std::fs::write(&frame, crate::g7::synthetic())
+            .map_err(|e| format!("{}: {e}", frame.display()))?;
+        Some(("RP_GLESFEAT_G7_FRAME", frame.to_str().unwrap_or("")))
+    } else {
+        None
+    };
+    let bin = variant_image_with(root, "rp-glesfeat", (env, "1"), also)?;
     let payload = std::fs::read(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;
     let check = || -> Result<(), String> {
         let mut mon = crate::screen::Monitor::connect(monitor_port())?;
@@ -3263,7 +3277,25 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
     if crashed(log) || log.contains("did not return") {
         return Err(format!("glesfeat {name}: didn't return cleanly:{log}"));
     }
-    let wants: &[&str] = if test == 6 {
+    let wants: &[&str] = if test == 7 {
+        &[
+            "test G7, Gouraud at the cores' divide 1",
+            "parameter memory ready: true",
+            "G7: the frame: ",
+            "target 0x200000 (ARGB8888), parameters 0x600000 (1024 KiB, table 0x700000), region array 0xd10000",
+            "G7 way 1 (ours, our places):",
+            "G7 way 2 (Dell's frame replayed):",
+            "G7 way 3 (Dell's frame replayed, his NINTPW and clock order):",
+            "  Dell's own picture: none in this frame",
+            "    NINTPW 0x15 by Dell's rule (read back 0x15)",
+            "G7: right at 74.75 / 1 of 20:",
+            "G7: right at 99.67 / 1 of 20:",
+            "G7: right at 133.25 / 1 of 20:",
+            "    display after the change: underrun ",
+            "; the screen on throughout: ",
+            "RETROPANE-GLESFEAT: DONE",
+        ]
+    } else if test == 6 {
         &[
             "test G6, Gouraud at the cores' divide 1",
             "parameter memory ready: true",
@@ -3430,6 +3462,8 @@ fn boot_loader_glesfeat_g(root: &Path, test: u8) -> Result<(), String> {
         2 => &[3, 5],
         3 => &[4, 5, 6],
         6 => &[2],
+        // The replays of our own scene: way 1's picture exactly.
+        7 => &[2, 3],
         _ => &[],
     };
     if !same.is_empty() {

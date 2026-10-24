@@ -48,6 +48,35 @@ const CRASH_BOX_TO: &str =
 /// here, so the test is known to bite.
 pub const MUTANTS: &[Mutant] = &[
     Mutant {
+        name: "glesfeat G7: a frame's parameter memory one page short",
+        file: "boot/glesfeat/src/main.rs",
+        from: "        pm_size: (last - first + 2) << 12,",
+        to: "        pm_size: (last - first + 1) << 12,",
+        check: Check::Host(&[
+            "-p",
+            "rp-glesfeat",
+            "dells_layout_is_read_from_his_registers",
+        ]),
+    },
+    Mutant {
+        name: "g7-frame: an object's next page left out (an object across a page cut short)",
+        file: "xtask/src/g7.rs",
+        from: "            page(o + PAGE, &mut pages);",
+        to: "            let _ = o;",
+        check: Check::Host(&[
+            "-p",
+            "xtask",
+            "every_page_the_render_reads_and_nothing_it_never_does",
+        ]),
+    },
+    Mutant {
+        name: "G7 frame file: a register in the start's place let through",
+        file: "boot/glesfeat/src/frame.rs",
+        from: "pub const NEVER: [usize; 5] = [0x080, 0x12C, 0x134, 0x680, 0x800];",
+        to: "pub const NEVER: [usize; 4] = [0x080, 0x12C, 0x134, 0x800];",
+        check: Check::Host(&["-p", "rp-glesfeat", "every_broken_file_is_refused"]),
+    },
+    Mutant {
         name: "glesfeat G6: Dell's parameter memory 1 MiB, not his 8",
         file: "boot/glesfeat/src/main.rs",
         from: "    pm_size: 0x0080_0000,

@@ -1102,6 +1102,7 @@ dependencies = [
  "rp-display-cal",
  "rp-draw",
  "rp-drv-mbx-display",
+ "rp-drv-mbx3d",
  "rp-fat",
  "rp-gfx",
  "rp-hal-api",

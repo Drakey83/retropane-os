@@ -25,6 +25,8 @@
 #![cfg_attr(target_os = "none", no_std, no_main)]
 #![forbid(unsafe_code)]
 
+pub mod frame;
+
 /// Printed with the verdict.
 pub const MARKER: &str = "RETROPANE-GLESFEAT";
 
@@ -464,6 +466,41 @@ pub const G6_LAYOUTS: [Layout; 4] = [OURS_LAYOUT, DELL_PM_LAYOUT, DELL_LAYOUT, D
 pub const G6_LABEL: usize = 0x0010_0000;
 /// And the reference picture (ARGB8888 480 x 640, or RGB565).
 pub const G6_REF: usize = 0x00A3_0000;
+/// Test G7's reference: clear of Dell's captured frame (his target at
+/// `0xB27000`, his parameter memory `0x291000`-`0xA91000`, his lists from
+/// `0x564000`: `local/g7-dell-frame.bin`, 2026-10-23) and of ours (region
+/// array `0xD10000`); the image checks the frame it carries against it.
+pub const G7_REF: usize = 0x00D3_0000;
+
+/// The MBX words a frame carries that the image never writes directly:
+/// the parameter memory manager's (`0x820`-`0x83C`), set up through
+/// [`rp_drv_mbx3d::pm_init_table`]'s sequence from the frame's
+/// `0x824`/`0x828`/`0x82C`/`0x83C` instead.
+pub const PM_BLOCK: core::ops::RangeInclusive<usize> = 0x820..=0x83C;
+
+/// The layout a frame's registers give: its target (`0x65C`, RGB565 when
+/// `0x650` is 1), parameter memory (`0x83C`, pages `0x828`-`0x82C`, table
+/// `0x824`), region array (`0x608`) and TA buffers (`0x840`, `0x844`; ours
+/// if absent). `None` if a register is missing or the pages are reversed.
+#[must_use]
+pub fn frame_layout(f: &frame::Frame<'_>) -> Option<Layout> {
+    let (first, last) = (f.reg(0x828)?, f.reg(0x82C)?);
+    if last < first {
+        return None;
+    }
+    Some(Layout {
+        target: (f.reg(0x65C)? & 0x01FF_FFFC) as usize,
+        rgb565: f.reg(0x650)? == 1,
+        pm: f.reg(0x83C)? as usize,
+        // `pm_init_table`'s pages: the first at `pm + 4 KiB`, the last
+        // `pages - 2` after it.
+        pm_size: (last - first + 2) << 12,
+        pm_table: f.reg(0x824)? as usize,
+        regions: (f.reg(0x608)? & 0x01FF_FFFC) as usize,
+        tail: f.reg(0x840).map_or(OURS_LAYOUT.tail, |v| v as usize),
+        ta_regions: f.reg(0x844).map_or(OURS_LAYOUT.ta_regions, |v| v as usize),
+    })
+}
 
 impl Layout {
     /// The target's size in bytes for `w` x `h`.
@@ -740,7 +777,8 @@ mod image {
         || TEST_G3
         || TEST_G4
         || TEST_G5
-        || TEST_G6;
+        || TEST_G6
+        || TEST_G7;
     /// Test G2 instead of G (`RP_GLESFEAT_G2=1`; device build
     /// `RP_GLESFEAT_G2=1 cargo xtask codegen-variant rp-glesfeat g2`).
     const TEST_G2: bool = option_env!("RP_GLESFEAT_G2").is_some();
@@ -756,6 +794,20 @@ mod image {
     /// Test G6 instead of G (`RP_GLESFEAT_G6=1`; device build
     /// `RP_GLESFEAT_G6=1 cargo xtask codegen-variant rp-glesfeat g6`).
     const TEST_G6: bool = option_env!("RP_GLESFEAT_G6").is_some();
+    /// Test G7 instead of G (`RP_GLESFEAT_G7=1` and
+    /// `RP_GLESFEAT_G7_FRAME=<frame file>`; device build
+    /// `cargo xtask g7-frame`, then `RP_GLESFEAT_G7=1
+    /// RP_GLESFEAT_G7_FRAME=local/g7-dell-frame.bin cargo xtask
+    /// codegen-variant rp-glesfeat g7`).
+    const TEST_G7: bool = option_env!("RP_GLESFEAT_G7").is_some();
+    #[cfg(rp_g7)]
+    static FRAME_FILE: &[u8] = include_bytes!(env!("RP_GLESFEAT_G7_FRAME"));
+    #[cfg(not(rp_g7))]
+    static FRAME_FILE: &[u8] = &[];
+    const _: () = assert!(
+        !TEST_G7 || cfg!(rp_g7),
+        "test G7 needs RP_GLESFEAT_G7_FRAME (cargo xtask g7-frame)"
+    );
     /// The emulator's check only (`RP_GLESFEAT_G5_CULPRIT=<item>`): the
     /// fork draws right at every clock, so with this a G5 check counts as
     /// right only when its mask holds that item, and the halving must end
@@ -763,7 +815,9 @@ mod image {
     /// device build.
     const G5_CULPRIT: Option<&str> = option_env!("RP_GLESFEAT_G5_CULPRIT");
     /// The label's title and the log's way prefix.
-    const G_TITLE: &str = if TEST_G6 {
+    const G_TITLE: &str = if TEST_G7 {
+        "RP-GLESFEAT TEST G7"
+    } else if TEST_G6 {
         "RP-GLESFEAT TEST G6"
     } else if TEST_G5 {
         "RP-GLESFEAT TEST G5"
@@ -776,7 +830,9 @@ mod image {
     } else {
         "RP-GLESFEAT TEST G"
     };
-    const G_NAME: &str = if TEST_G6 {
+    const G_NAME: &str = if TEST_G7 {
+        "G7"
+    } else if TEST_G6 {
         "G6"
     } else if TEST_G5 {
         "G5"
@@ -792,18 +848,24 @@ mod image {
     /// Draws per way at divide 1 (GC2's rule 6).
     const G_DRAWS: u32 = 20;
     /// Test G's reference picture (ARGB8888, as the target).
-    const REF: usize = if TEST_G6 { super::G6_REF } else { 0x0080_0000 };
-    const _: () = assert!(TEST_G6 || REF + STRIDE * H as usize <= TAIL);
+    const REF: usize = if TEST_G7 {
+        super::G7_REF
+    } else if TEST_G6 {
+        super::G6_REF
+    } else {
+        0x0080_0000
+    };
+    const _: () = assert!(TEST_G6 || TEST_G7 || REF + STRIDE * H as usize <= TAIL);
     /// The label scanned out from the first moment: RGB565 (a 32-bit
     /// screen corrupts 32-bit renders: ADR-0023), after the target.
-    const LABEL: usize = if TEST_G6 {
+    const LABEL: usize = if TEST_G6 || TEST_G7 {
         super::G6_LABEL
     } else {
         0x0040_0000
     };
     const LABEL_STRIDE: usize = 480 * 2;
-    const _: () = assert!(TEST_G6 || TARGET + STRIDE * H as usize <= LABEL);
-    const _: () = assert!(TEST_G6 || LABEL + LABEL_STRIDE * H as usize <= PM);
+    const _: () = assert!(TEST_G6 || TEST_G7 || TARGET + STRIDE * H as usize <= LABEL);
+    const _: () = assert!(TEST_G6 || TEST_G7 || LABEL + LABEL_STRIDE * H as usize <= PM);
     /// The label's text: lines, the font's scale, colours (RGB565).
     const LABEL_LINES: usize = 16;
     const LABEL_SCALE: usize = 3;
@@ -818,14 +880,19 @@ mod image {
 
     /// The layout the current way draws in (an index into
     /// [`super::G6_LAYOUTS`]; 0, ours, for every test but G6).
-    static LAY: rt::Global<usize> = rt::Global::new(0);
+    static LAY: rt::Global<super::Layout> = rt::Global::new(super::OURS_LAYOUT);
 
     fn lay() -> super::Layout {
-        super::G6_LAYOUTS[LAY.with(|k| *k) % super::G6_LAYOUTS.len()]
+        LAY.with(|l| *l)
     }
 
-    fn set_lay(k: usize) {
-        LAY.with(|v| *v = k);
+    fn set_lay(l: super::Layout) {
+        LAY.with(|v| *v = l);
+    }
+
+    /// Test G7's frame, if the image carries one that parses.
+    fn frame() -> Option<super::frame::Frame<'static>> {
+        super::frame::parse(FRAME_FILE).ok()
     }
 
     /// The target's words (two RGB565 pixels a word).
@@ -1653,6 +1720,9 @@ mod image {
         /// Test G6: ours in [`super::G6_LAYOUTS`]'s layout k (k 0-3), Dell's
         /// whole state with it from k 2, through the TA at k 3.
         G6(u8),
+        /// Test G7: Dell's frame replayed word for word (with his NINTPW
+        /// rule and clock order when true).
+        Frame(bool),
     }
 
     /// Test G2's direct forms: which of the TA's choices it takes.
@@ -1712,6 +1782,8 @@ mod image {
                 Self::G6(1) => "Dell's parameter memory (8 MiB at 0x22b000)",
                 Self::G6(2) => "Dell's places and state (RGB565 target)",
                 Self::G6(_) => "Dell's places and state, through the TA",
+                Self::Frame(false) => "Dell's frame replayed",
+                Self::Frame(true) => "Dell's frame replayed, his NINTPW and clock order",
             }
         }
     }
@@ -1978,6 +2050,7 @@ mod image {
                 let out = through_ta(e, vram, &[&clear[..], &q[..nq]], words, &[]);
                 (out.ta && out.done, us_since(t0), out.list)
             }
+            Way::Frame(_) => (replay(e, vram), us_since(t0), [m3::END; TA_LIST]),
             // G6: ours in the way's layout; ways 3 and 4 with Dell's whole
             // state (G5's items), way 4 through the TA as Dell's driver
             // sends it (his colour clear, then the quad as one strip).
@@ -2075,7 +2148,14 @@ mod image {
         let mut name = [0u8; 32];
         let name = fmt(&mut name, format_args!("WAY {}: {}", step - 1, w.name()));
         say(vram, &[G_TITLE, head, name, "WM CLOCK: REFERENCE"]);
-        set_lay(if let Way::G6(k) = w { k as usize } else { 0 });
+        set_lay(match w {
+            Way::G6(k) => super::G6_LAYOUTS[k as usize % super::G6_LAYOUTS.len()],
+            Way::Frame(_) => frame()
+                .as_ref()
+                .and_then(super::frame_layout)
+                .unwrap_or(super::OURS_LAYOUT),
+            _ => super::OURS_LAYOUT,
+        });
         log!("{G_NAME} way {} ({}):", step - 1, w.name());
         rt::check_in();
         let _ = display_check(&mut e.regs, "before the reference");
@@ -2109,8 +2189,8 @@ mod image {
         // G5: Dell's MBX words read back from the core after the render
         // (that they reached it; 0x6D0 and the TA's words read safely
         // under Windows Mobile, rp-wmprobe v3).
-        // G6: the layout's addresses as the core holds them.
-        if let Way::G6(_) = w {
+        // G6 and G7: the layout's addresses as the core holds them.
+        if let Way::G6(_) | Way::Frame(_) = w {
             let _ = write!(RunLog, "  layout read back after the render:");
             for off in [
                 0x608, 0x60C, 0x650, 0x65C, 0x660, 0x824, 0x828, 0x82C, 0x83C, 0x840, 0x844,
@@ -2136,6 +2216,26 @@ mod image {
             log!("");
         }
         keep_reference(vram);
+        // G7: the replay at Windows Mobile's clock against Dell's own
+        // picture (his divide-1 render, right, hashed by g7-frame).
+        if let (Way::Frame(_), Some(f)) = (w, frame()) {
+            let h = picture_hash(vram, REF);
+            if f.picture_words == 0 {
+                log!("  Dell's own picture: none in this frame (hash 0x{h:08x})");
+            } else {
+                log!(
+                    "  against Dell's own picture: hash 0x{h:08x}, his 0x{:08x} ({} words, ours {}): {}",
+                    f.picture_hash,
+                    f.picture_words,
+                    target_words(),
+                    if h == f.picture_hash && f.picture_words as usize == target_words() {
+                        "the same"
+                    } else {
+                        "DIFFERENT"
+                    }
+                );
+            }
+        }
         // The reference's hash: ways that must draw the same picture (G2's
         // forms of one quad over one background) are held to each other,
         // not only each to itself.
@@ -2193,6 +2293,7 @@ mod image {
             let dell = match w {
                 Way::Dell(m) => m,
                 Way::G6(k) if k >= 2 => super::DELL_ALL,
+                Way::Frame(true) => super::DELL_ALL,
                 _ => 0,
             };
             s.clocked = to_divide_1(
@@ -2914,7 +3015,103 @@ mod image {
         );
         let enable0 = e.regs.read32(ENABLE);
         test_settings(e, vram, &G6_WAYS);
-        set_lay(0);
+        set_lay(super::OURS_LAYOUT);
+        e.regs.write32(ENABLE, enable0);
+    }
+
+    /// Test G7's replay of Dell's frame: its pages written into local
+    /// memory, its registers (the parameter memory manager's aside, set up
+    /// by [`clean`] from the frame's layout), then the 3D stage started.
+    /// The target is blanked first by [`draw`]. Whether it finished.
+    #[inline(never)]
+    fn replay(e: &mut Engine<Mmio>, vram: &mut [u8]) -> bool {
+        let Some(f) = frame() else {
+            log!("  no frame: nothing replayed");
+            return false;
+        };
+        for (addr, data) in f.segs() {
+            for (k, c) in data.chunks_exact(4).enumerate() {
+                let _ = store32_volatile(
+                    vram,
+                    addr + 4 * k,
+                    u32::from_le_bytes([c[0], c[1], c[2], c[3]]),
+                );
+            }
+        }
+        cpu::drain_write_buffer();
+        let mut pairs = [(0usize, 0u32); 160];
+        let mut n = 0;
+        for (off, v) in f.regs() {
+            if super::PM_BLOCK.contains(&off) || n + 1 >= pairs.len() {
+                continue;
+            }
+            pairs[n] = (off, v);
+            n += 1;
+        }
+        pairs[n] = (m3::START, 1);
+        let done = run(e, &pairs[..=n], RENDER_DONE, 200_000);
+        if !done {
+            e.reset(rt::delay_us);
+            let ok = pm_init(e, vram);
+            log!("  (timed out: core reset, memory manager ready again: {ok})");
+        }
+        done
+    }
+
+    /// Test G7's ways: ours, Dell's frame replayed, the same with his
+    /// NINTPW rule and clock order.
+    const G7_WAYS: [Way; 3] = [Way::G6(0), Way::Frame(false), Way::Frame(true)];
+
+    /// Test G7: Dell's own divide-1 frame replayed under the loader.
+    fn test_g7(e: &mut Engine<Mmio>, vram: &mut [u8]) {
+        log!(
+            "G7: Dell's own frame (his driver's region array, lists and objects as he left them after his divide-1 draws, rp-wmprobe v4) replayed word for word, at 74.75, 99.67 and 133.25 MHz, against ours"
+        );
+        let Some(f) = frame() else {
+            log!(
+                "G7: the frame doesn't parse ({:?}): nothing run",
+                super::frame::parse(FRAME_FILE).err()
+            );
+            return;
+        };
+        let Some(l) = super::frame_layout(&f) else {
+            log!("G7: the frame lacks its layout's registers: nothing run");
+            return;
+        };
+        let pages: usize = f.segs().map(|s| s.1.len()).sum();
+        log!(
+            "G7: the frame: {} registers, {} bytes of local memory in {} segments; target 0x{:x} ({}), parameters 0x{:x} ({} KiB, table 0x{:x}), region array 0x{:x}",
+            f.regs().count(),
+            pages,
+            f.segs().count(),
+            l.target,
+            if l.rgb565 { "RGB565" } else { "ARGB8888" },
+            l.pm,
+            l.pm_size >> 10,
+            l.pm_table,
+            l.regions
+        );
+        // Nothing of the image's own may be under the frame (the label is
+        // scanned out, the reference kept, the fence the 2D engine's).
+        let own = [
+            (LABEL, LABEL_STRIDE * H as usize, "the label"),
+            (REF, STRIDE * H as usize, "the reference"),
+            (FENCE, 0x1000, "the fence"),
+        ];
+        let spans = l.spans(W, H, COLS * ROWS);
+        for (from, bytes, what) in own {
+            let hit = f.touches(from, bytes)
+                || spans[..4]
+                    .iter()
+                    .any(|s| s.0 < from + bytes && from < s.0 + s.1);
+            if hit {
+                log!("G7: the frame lies over {what} (0x{from:x}): nothing run");
+                return;
+            }
+        }
+        let enable0 = e.regs.read32(ENABLE);
+        test_settings(e, vram, &G7_WAYS);
+        set_lay(super::OURS_LAYOUT);
         e.regs.write32(ENABLE, enable0);
     }
 
@@ -2950,7 +3147,9 @@ mod image {
         } else {
             "RP-GLESFEAT A D L M"
         };
-        let first = if TEST_G6 {
+        let first = if TEST_G7 {
+            "STEP 1 OF 4"
+        } else if TEST_G6 {
             "STEP 1 OF 5"
         } else if TEST_G5 {
             "STEP 1 OF 6"
@@ -3010,7 +3209,9 @@ mod image {
             "MBXCLK 0x{clk0:x} -> 0x{:x}, parameter memory ready: {ready}",
             e.regs.read32(MBXCLK)
         );
-        if ready && TEST_G6 {
+        if ready && TEST_G7 {
+            test_g7(&mut e, vram);
+        } else if ready && TEST_G6 {
             test_g6(&mut e, vram);
         } else if ready && TEST_G5 {
             test_g5(&mut e, vram, inherited);
@@ -3838,5 +4039,107 @@ mod g6_tests {
         );
         assert_eq!(DELL_PM_LAYOUT.regions, OURS_LAYOUT.regions);
         assert!(!DELL_PM_LAYOUT.rgb565);
+    }
+}
+
+/// Test G7's pure parts: the layout a frame's registers give, and where
+/// the image's own buffers sit against Dell's captured frame.
+#[cfg(test)]
+mod g7_tests {
+    use super::*;
+
+    /// Dell's registers after his divide-1 draws (`rp-wmprobe` v4 run 2,
+    /// `local/rp-wmprobe-7.txt`): the ones a layout reads.
+    const DELL: [(usize, u32); 8] = [
+        (0x608, 0x001D_6000),
+        (0x650, 1),
+        (0x65C, 0x00B2_7000),
+        (0x824, 0x001C_0000),
+        (0x828, 0x292),
+        (0x82C, 0xA90),
+        (0x83C, 0x0029_1000),
+        (0x840, 0x001E_0000),
+    ];
+
+    #[test]
+    fn dells_layout_is_read_from_his_registers() {
+        let b = frame::write(&DELL, &[], (0, 0));
+        let f = frame::parse(&b).expect("parses");
+        let l = frame_layout(&f).expect("a layout");
+        assert_eq!(l.target, 0x00B2_7000);
+        assert!(l.rgb565);
+        assert_eq!(
+            (l.pm, l.pm_size, l.pm_table),
+            (0x0029_1000, 8 << 20, 0x001C_0000)
+        );
+        assert_eq!(l.regions, 0x001D_6000);
+        assert_eq!(l.tail, 0x001E_0000);
+        assert_eq!(l.ta_regions, OURS_LAYOUT.ta_regions, "0x844 absent: ours");
+        // Our set-up of his parameter memory writes his words exactly.
+        let t = rp_drv_mbx3d::pm_init_table(l.pm as u32, l.pm_size, l.pm_table as u32);
+        for &(off, v) in &DELL[3..7] {
+            assert_eq!(
+                t.iter().find(|p| p.0 == off).map(|p| p.1),
+                Some(v),
+                "0x{off:x}"
+            );
+        }
+        // A register missing, or the pages reversed: no layout.
+        let short = frame::write(&DELL[1..], &[], (0, 0));
+        assert!(frame_layout(&frame::parse(&short).unwrap()).is_none());
+        let mut rev = DELL;
+        rev[4].1 = 0xA91;
+        let b = frame::write(&rev, &[], (0, 0));
+        assert!(frame_layout(&frame::parse(&b).unwrap()).is_none());
+    }
+
+    #[test]
+    fn the_images_own_buffers_are_clear_of_dells_frame_and_ours() {
+        let dell = frame_layout(&frame::parse(&frame::write(&DELL, &[], (0, 0))).unwrap()).unwrap();
+        let own = [
+            (G7_REF, 480 * 640 * 4),
+            (G6_LABEL, 480 * 640 * 2),
+            (0x00FF_F000, 0x1000),
+        ];
+        let tiles = (480 / rp_drv_mbx3d::TILE_W) * (640 / rp_drv_mbx3d::TILE_H);
+        for l in [dell, OURS_LAYOUT] {
+            for s in &l.spans(480, 640, tiles)[..4] {
+                for o in own {
+                    assert!(
+                        !(s.0 < o.0 + o.1 && o.0 < s.0 + s.1),
+                        "{} at 0x{:x} over 0x{:x}",
+                        s.2,
+                        s.0,
+                        o.0
+                    );
+                }
+            }
+        }
+        assert!(G7_REF + 480 * 640 * 4 <= 16 << 20);
+    }
+
+    #[test]
+    fn the_local_frame_file_if_here_parses_and_lies_clear() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../local/g7-dell-frame.bin");
+        let Ok(b) = std::fs::read(path) else {
+            eprintln!("local/g7-dell-frame.bin not here: not re-checked");
+            return;
+        };
+        let f = frame::parse(&b).expect("Dell's frame parses");
+        let l = frame_layout(&f).expect("and gives a layout");
+        assert_eq!(
+            (l.target, l.pm, l.regions),
+            (0x00B2_7000, 0x0029_1000, 0x001D_6000)
+        );
+        for (from, bytes) in [
+            (G7_REF, 480 * 640 * 4),
+            (G6_LABEL, 480 * 640 * 2),
+            (0x00FF_F000, 0x1000),
+        ] {
+            assert!(!f.touches(from, bytes), "a segment over 0x{from:x}");
+        }
+        assert_eq!(f.picture_words, 480 * 640 / 2);
+        // Never the starts or the status.
+        assert!(f.regs().all(|(o, _)| !frame::NEVER.contains(&o)));
     }
 }
