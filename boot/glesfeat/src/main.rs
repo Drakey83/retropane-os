@@ -494,6 +494,20 @@ pub enum Wait {
 /// system block), never read by either side's whole-block dump.
 pub const SYS_FREEZE: [usize; 4] = [0x12C, 0x30C, 0x85C, 0xF00];
 
+/// Test G9: the system block's words both dumps read: every register it
+/// is known to have (Linux mbxfb's names below the display, as
+/// `rp-gpubench`'s snapshot and `rp-wmprobe`'s module read them safely),
+/// `0x080`-`0x088` (read safely under Windows Mobile), Dell's `0x0C0`-`0x0C8`
+/// resets and `0x300`/`0x304`. Not the holes: reading every word stalled
+/// the emulator at `0x9C0` and froze Windows Mobile at `0x08C` (2026-10-23).
+pub const SYS_WORDS: [usize; 56] = [
+    0x000, 0x004, 0x008, 0x00C, 0x014, 0x018, 0x01C, 0x020, 0x024, 0x02C, 0x030, 0x034, 0x038,
+    0x03C, 0x040, 0x044, 0x048, 0x04C, 0x050, 0x054, 0x058, 0x05C, 0x060, 0x064, 0x068, 0x06C,
+    0x070, 0x074, 0x078, 0x080, 0x084, 0x088, 0x0C0, 0x0C4, 0x0C8, 0x204, 0x210, 0x214, 0x218,
+    0x220, 0x224, 0x228, 0x300, 0x304, 0xFF0, 0x1004, 0x1008, 0x100C, 0x1010, 0x1014, 0x1018,
+    0x101C, 0x1020, 0x1024, 0x1028, 0x102C,
+];
+
 /// [`Wait::Quiet`]'s wait: past the slowest render seen (Dell's frame,
 /// 19.9 ms at 74.75 / 1; G3's quad at 12.6) with room to spare.
 pub const QUIET_US: u32 = 60_000;
@@ -3245,8 +3259,8 @@ mod image {
         e.regs.write32(ENABLE, enable0);
     }
 
-    /// Every word of the MBX core's block and of the system block below the
-    /// display ([`super::SYS_FREEZE`] aside), then the PXA27x's registers
+    /// Every word of the MBX core's block and of the system block's
+    /// [`super::SYS_WORDS`], then the PXA27x's registers
     /// of `diag`'s list: `rp-wmprobe` v5's lines exactly, for the diff.
     /// Each line is written before the next read.
     fn full(regs: &mut Mmio, tag: &str) {
@@ -3257,10 +3271,7 @@ mod image {
                 regs.read32(MBX + off)
             );
         }
-        for off in (0..0x2000).step_by(4) {
-            if super::SYS_FREEZE.contains(&off) {
-                continue;
-            }
+        for &off in &super::SYS_WORDS {
             log!("full {tag}: SYS 0x{off:04x} 0x{:08x}", regs.read32(off));
         }
         let mut snap = [0u32; diag::COUNT];
@@ -4383,5 +4394,37 @@ mod g8_tests {
         // and still under the 200 ms every render is allowed.
         assert!(QUIET_US >= 2 * 19_940);
         assert!(QUIET_US < 200_000);
+    }
+}
+
+/// Test G9's pure parts.
+#[cfg(test)]
+mod g9_tests {
+    use super::*;
+
+    #[test]
+    fn the_system_words_are_known_registers_never_a_hole_that_froze() {
+        assert!(
+            SYS_WORDS.windows(2).all(|w| w[0] < w[1]),
+            "sorted, each once"
+        );
+        assert!(
+            SYS_WORDS.iter().all(|o| o % 4 == 0 && *o < 0x2000),
+            "below the display"
+        );
+        for bad in SYS_FREEZE.iter().chain(&[0x08C, 0x9C0]) {
+            assert!(
+                !SYS_WORDS.contains(bad),
+                "0x{bad:x} froze or stalled a reader"
+            );
+        }
+        // Every register Dell's driver writes on the 3D path is in it
+        // (docs/hw/2700g.md "Dell's register writes").
+        for w in [
+            0x000, 0x014, 0x018, 0x02C, 0x038, 0x040, 0x04C, 0x050, 0x054, 0x058, 0x064, 0x0C0,
+            0x0C4, 0x0C8, 0x304, 0x1004, 0x1008, 0x1014, 0x1018, 0x101C,
+        ] {
+            assert!(SYS_WORDS.contains(&w), "0x{w:x}");
+        }
     }
 }

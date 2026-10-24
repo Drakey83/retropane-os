@@ -3226,7 +3226,7 @@ fn boot_loader_glesfeat_g5(root: &Path) -> Result<(), String> {
 /// Test G9 (`RP_GLESFEAT_G9`): every register of the 2700G's two blocks and
 /// the PXA27x's, under the loader after our render at Windows Mobile's
 /// clock and at 74.75 / 1, for the diff with `rp-wmprobe` v5's. Held: both
-/// dumps whole (1,024 MBX words, 2,044 of the system block, every PXA
+/// dumps whole (1,024 MBX words, the system block's 56 known words, every PXA
 /// register of `diag`'s list, each once), the renders drawn, the clock put
 /// back, the image back at the loader.
 fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
@@ -3278,9 +3278,9 @@ fn boot_loader_glesfeat_g9(root: &Path) -> Result<(), String> {
             .collect();
         let count = |what: &str| lines.iter().filter(|l| l.contains(what)).count();
         let (mbx, sys, px) = (count(": MBX 0x"), count(": SYS 0x"), count(": PXA 0x"));
-        if mbx != 1024 || sys != 2044 || px != pxa || !lines.iter().any(|l| l.ends_with("ends")) {
+        if mbx != 1024 || sys != 56 || px != pxa || !lines.iter().any(|l| l.ends_with("ends")) {
             return Err(format!(
-                "glesfeat G9: {tag}: {mbx} MBX, {sys} SYS and {px} PXA lines, want 1024, 2044 and {pxa}:{log}"
+                "glesfeat G9: {tag}: {mbx} MBX, {sys} SYS and {px} PXA lines, want 1024, 56 and {pxa}:{log}"
             ));
         }
         for frozen in ["SYS 0x012c ", "SYS 0x030c ", "SYS 0x085c ", "SYS 0x0f00 "] {

@@ -279,14 +279,18 @@ static void capture(const WCHAR *name)
 }
 
 /* v5 (2026-10-23, test G9): every word of the MBX core's block (0x000-
- * 0xFFC) and of the system block below the display (0x000-0x1FFC, the four
- * offsets that froze Windows Mobile when read there left out), then the
+ * 0xFFC) and the system block's known registers (sys_words), then the
  * PXA27x's clock, memory, PC Card, interrupt, power, PWM/LCD and GPIO
  * registers (rp_hal_pxa27x::diag's list), after Dell's draws: the same
  * lines `rp-glesfeat` G9 writes under the loader, to diff. Each value is
  * written and flushed before the next read, so a read that freezes the
  * device is the one after the last line. Reads only. */
-static const unsigned long sys_freeze[] = {0x12C, 0x30C, 0x85C, 0xF00};
+/* The system block's words read: its known registers, 0x080-0x088, Dell's
+ * 0x0C0-0x0C8 and 0x300/0x304 (rp-glesfeat's SYS_WORDS, the same); not the
+ * holes: v5's first run froze reading 0x08C, the emulator stalled at 0x9C0. */
+static const unsigned long sys_words[] = {
+    0x000, 0x004, 0x008, 0x00C, 0x014, 0x018, 0x01C, 0x020, 0x024, 0x02C, 0x030, 0x034, 0x038, 0x03C, 0x040, 0x044, 0x048, 0x04C, 0x050, 0x054, 0x058, 0x05C, 0x060, 0x064, 0x068, 0x06C, 0x070, 0x074, 0x078, 0x080, 0x084, 0x088, 0x0C0, 0x0C4, 0x0C8, 0x204, 0x210, 0x214, 0x218, 0x220, 0x224, 0x228, 0x300, 0x304, 0xFF0, 0x1004, 0x1008, 0x100C, 0x1010, 0x1014, 0x1018, 0x101C, 0x1020, 0x1024, 0x1028, 0x102C,
+};
 static const unsigned long pxa_regs[] = {
     0x41300000, 0x41300004, 0x41300008, 0x4130000C,
     0x48000000, 0x48000004, 0x48000008, 0x4800000C, 0x48000010, 0x48000014,
@@ -305,7 +309,7 @@ static const unsigned long pxa_regs[] = {
 static void log_full(const char *tag)
 {
     unsigned long off;
-    unsigned i, k;
+    unsigned i;
     if (!sys || !mbx) {
         out("full %s: registers not mapped", tag);
         return;
@@ -313,14 +317,8 @@ static void log_full(const char *tag)
     out("full %s: begins (MBX, SYS, PXA)", tag);
     for (off = 0; off < 0x1000; off += 4)
         out("full %s: MBX 0x%03lx 0x%08lx", tag, off, mbx[off / 4]);
-    for (off = 0; off < 0x2000; off += 4) {
-        int skip = 0;
-        for (k = 0; k < sizeof sys_freeze / sizeof sys_freeze[0]; k++)
-            skip |= off == sys_freeze[k];
-        if (skip)
-            continue;
-        out("full %s: SYS 0x%04lx 0x%08lx", tag, off, sys[off / 4]);
-    }
+    for (i = 0; i < sizeof sys_words / sizeof sys_words[0]; i++)
+        out("full %s: SYS 0x%04lx 0x%08lx", tag, sys_words[i], sys[sys_words[i] / 4]);
     for (i = 0; i < sizeof pxa_regs / sizeof pxa_regs[0]; i++) {
         volatile unsigned long *r = map_phys(pxa_regs[i] & ~0xFFFUL, 0x1000);
         if (!r)
